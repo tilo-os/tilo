@@ -883,6 +883,25 @@ impl AuthenticatorApp {
             _ => {}
         }
         self.refresh_list();
+        // The states a pointer causes: a hovered row shows its actions, a
+        // hovered code is where a click copies.
+        let account_at = |index: usize| self.vault.ordered().get(index).map(|a| a.id);
+        match scenario {
+            Some("hover") => self.list.stage_hover(2, false),
+            Some("copied") => {
+                if let Some(id) = account_at(1) {
+                    self.selected = Some(id);
+                    self.list.set_selected(self.selected);
+                    self.list.stage_hover(1, true);
+                    self.copy_account(id);
+                    // A capture is not on the toast's clock: it stays up.
+                    if let Some((_, shown, _)) = &mut self.toast {
+                        *shown = ui::time::now() + Duration::from_secs(60 * 60);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     // ---- painting --------------------------------------------------------
@@ -1136,6 +1155,10 @@ impl Widget for AuthenticatorApp {
         // Re-project the vault from the document so palette dispatches and remote
         // edits appear (a cheap no-op when nothing changed).
         self.reload_from_doc(state);
+        // Sheets that left the tree last frame can go now.
+        if self.add_panel.reap() {
+            self.structure_dirty = true;
+        }
         // The header's add button asked for the sheet.
         if let Some(requests) = &self.add_requests {
             let count = requests.with(|count| *count);
