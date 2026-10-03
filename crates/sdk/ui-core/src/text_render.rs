@@ -16,10 +16,10 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 /// the names here makes plain text, rich text, and theme tokens agree instead
 /// of depending on each machine's fontconfig defaults.
 ///
-/// The UI face covers Latin. Greek and Cyrillic fall back to faces matched
-/// to it, sized to its x-height (see [`crate::font_catalog`]); Vietnamese and
-/// every other script fall back to Noto.
-pub const UI_SANS_FAMILY: &str = "Instrument Sans";
+/// The UI face covers Latin, Vietnamese and Greek. Cyrillic falls back to a
+/// face matched to it, sized to its x-height (see [`crate::font_catalog`]);
+/// every other script falls back to Noto.
+pub const UI_SANS_FAMILY: &str = "Tilo Sans";
 /// The built-in "Hyperlegible" UI face a theme or the accessibility layer
 /// can choose instead of [`UI_SANS_FAMILY`].
 pub const UI_HYPERLEGIBLE_FAMILY: &str = "Atkinson Hyperlegible Next";

@@ -100,7 +100,12 @@ Checks on the binaries, besides `build.py`'s own:
 To ship a held-back script or feature once it is approved: delete its entry
 from `HELD_BACK` in `scripts/release.py`, run `build.py`, check the new
 `fonts/default/` with `scripts/shaping_tests.py` and the proofs, and copy
-`fonts/default/*.ttf` into the toolkit's font assets.
+`fonts/default/*.ttf` into the toolkit's font assets the way
+`crates/sdk/ui-core/assets/fonts/PROVENANCE.md` describes (a reproducible
+build at a recorded commit, the manifest and the copyright notices). The
+toolkit applies the distinct I/l and slashed zero by capability, so shipping
+them needs no code change; its tests check them on a few letters of the full
+build (`scripts/toolkit_fixture.py`).
 
 ## Layout
 
@@ -119,6 +124,7 @@ vendor/fonts/tilo-sans/
   scripts/release.py       fonts/default/ (shipped: held-back scripts removed) and fonts/full/
   scripts/shaping_tests.py HarfBuzz tests: Vietnamese and Greek NFC = NFD, marks, I/l, locl, default = full
   scripts/review_sheet.py  Greek / Cyrillic beside their fallback, for native readers
+  scripts/toolkit_fixture.py   the UI toolkit's test face for the held-back I/l and zero
   scripts/import_upstream.py   how sources/ was made from upstream (do not rerun)
   scripts/greek/           the Greek: outline generator, kerning, checks (see Greek)
   sources/
@@ -760,6 +766,6 @@ italic `i`/`j` components, and base classes on spacing accents.
 Changes under `vendor/fonts/` do not count as Cargo inputs
 (`tools/ci/affected_packages.py`, `tools/apps/app_release.py`, the `app-sdk`,
 `release-apps` and `build-image` workflows) and are excluded from the image build
-context (`.containerignore`). No crate reads these files; shipping a build of Tilo
-Sans means copying `fonts/default/*.ttf` into the toolkit's font assets in a separate
-change.
+context (`.containerignore`). No crate reads these files; the toolkit ships a copy
+of `fonts/default/*.ttf` in its font assets, so a change here reaches Tilo only
+when a new build is copied there.

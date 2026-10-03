@@ -15,11 +15,11 @@ fn fixture() -> FontCatalog {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
-    // phase: controlled_catalog_has_only_the_twenty_manifest_faces
+    // phase: controlled_catalog_has_only_the_manifest_faces
     {
         let catalog = fixture();
         let fs = catalog.load().unwrap();
-        assert_eq!(fs.db().len(), 26); // 21 single faces plus five TTC faces.
+        assert_eq!(fs.db().len(), 25); // 20 single faces plus five TTC faces.
         let root = catalog.root().canonicalize().unwrap();
         for face in fs.db().faces() {
             match &face.source {
@@ -134,11 +134,10 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
             .load_with_system(|_| panic!("must not mask missing font"))
             .err()
             .unwrap();
-        assert!(error.to_string().contains("InstrumentSans[wdth,wght].ttf"));
-        let mut bytes =
-            std::fs::read(fixture().root().join("InstrumentSans[wdth,wght].ttf")).unwrap();
+        assert!(error.to_string().contains("TiloSans[wdth,wght].ttf"));
+        let mut bytes = std::fs::read(fixture().root().join("TiloSans[wdth,wght].ttf")).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
-        std::fs::write(root.join("InstrumentSans[wdth,wght].ttf"), bytes).unwrap();
+        std::fs::write(root.join("TiloSans[wdth,wght].ttf"), bytes).unwrap();
         let error = catalog
             .load_with_system(|_| panic!("must not mask corruption"))
             .err()
@@ -259,10 +258,9 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
     assert_eq!(
         requested,
         [
-            "InstrumentSans[wdth,wght].ttf",
-            "InstrumentSans-Italic[wdth,wght].ttf",
+            "TiloSans[wdth,wght].ttf",
+            "TiloSans-Italic[wdth,wght].ttf",
             "Onest-Cyrillic[wght].ttf",
-            "Geologica-Greek[wght].ttf",
             "NotoSans[wght].ttf",
             "NotoSans-Italic[wght].ttf",
             "NotoSerif[wght].ttf",
@@ -275,9 +273,9 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        4_231_868
+        4_368_688
     );
-    assert_eq!(fonts.db().len(), 9);
+    assert_eq!(fonts.db().len(), 8);
 }
 
 #[test]
