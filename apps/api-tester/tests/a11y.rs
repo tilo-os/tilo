@@ -323,6 +323,43 @@ fn escape_dismisses_a_sheet() {
     );
 }
 
+/// The environment picker chooses an environment, and its commands open the
+/// sheets that manage environments without becoming the picker's value.
+#[test]
+fn the_environment_picker_switches_environments_and_opens_management_sheets() {
+    let mut d = driver();
+    let env_value = |d: &Driver| {
+        d.focus_access_nodes()
+            .iter()
+            .find(|n| n.role == Role::ComboBox && n.name.as_deref() == Some("Environment"))
+            .and_then(|n| n.value.clone())
+    };
+    assert_eq!(env_value(&d).as_deref(), Some("Production"));
+    d.click_named("api.env").unwrap();
+    d.key("ArrowDown");
+    d.key("Enter");
+    assert_eq!(env_value(&d).as_deref(), Some("Staging"), "the pick sticks");
+
+    d.click_named("api.env").unwrap();
+    // Staging, Local, No environment, then the first command.
+    for _ in 0..3 {
+        d.key("ArrowDown");
+    }
+    d.key("Enter");
+    assert!(
+        d.focus_access_nodes()
+            .iter()
+            .any(|n| n.role == Role::TextInput && n.name.as_deref() == Some("Name")),
+        "New environment opens its sheet"
+    );
+    d.key("Escape");
+    assert_eq!(
+        env_value(&d).as_deref(),
+        Some("Staging"),
+        "a command is not the picker's value"
+    );
+}
+
 /// Typing in the table's blank row keeps the caret where it is, makes the row
 /// a pair and gives the table a new blank row to type the next one in.
 #[test]

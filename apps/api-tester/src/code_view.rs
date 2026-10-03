@@ -378,3 +378,64 @@ impl Widget for CodeView {
 fn band_for_caret(caret: Rect, band: Rect) -> Rect {
     Rect::new(caret.x0 - 2.0, band.y0, caret.x1 + 2.0, band.y1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::headless::FrameHarness;
+
+    fn harness(view: CodeView) -> FrameHarness {
+        FrameHarness::for_root(ui::State::new(), view, (600, 400), Theme::dark())
+    }
+
+    /// The fold caret and the line number are two columns: the caret never
+    /// overprints a number, whatever the document's length.
+    #[test]
+    fn the_fold_gutter_sits_beside_the_line_numbers() {
+        let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
+        let d = harness(CodeView::json("Body", &body));
+        let _ = d.render_rgba();
+        let view = d.root::<CodeView>();
+        let m = view.metrics.clone().expect("measured");
+        let numbers_end = view.rect.x0 + m.pad_x + m.number_w;
+        assert!(!view.folds.is_empty(), "the object folds");
+        for (rect, _) in &view.folds {
+            assert!(
+                rect.x0 + 2.0 >= numbers_end,
+                "caret starts at {} after the numbers end at {numbers_end}",
+                rect.x0 + 2.0
+            );
+        }
+    }
+
+    /// A press on a caret folds its block away, and the next press unfolds it.
+    #[test]
+    fn pressing_a_caret_folds_and_unfolds_its_block() {
+        let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
+        let mut d = harness(CodeView::json("Body", &body));
+        let _ = d.render_rgba();
+        let all = d.root::<CodeView>().visible().len();
+        let (caret, _) = d.root::<CodeView>().folds[0];
+        d.click_at(caret.center().x, caret.center().y);
+        let _ = d.render_rgba();
+        let folded = d.root::<CodeView>().visible().len();
+        assert!(
+            folded < all,
+            "the block folded away: {folded} of {all} lines"
+        );
+        let (caret, _) = d.root::<CodeView>().folds[0];
+        d.click_at(caret.center().x, caret.center().y);
+        let _ = d.render_rgba();
+        assert_eq!(d.root::<CodeView>().visible().len(), all);
+    }
+
+    /// Plain text has no folds and one numbered line per line of text.
+    #[test]
+    fn plain_text_is_numbered_without_folds() {
+        let d = harness(CodeView::plain("Body", "one\ntwo\nthree"));
+        let _ = d.render_rgba();
+        let view = d.root::<CodeView>();
+        assert!(view.folds.is_empty());
+        assert_eq!(view.visible().len(), 3);
+    }
+}

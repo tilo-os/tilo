@@ -94,7 +94,8 @@ fn replaying_history_fills_the_builder_without_sending() {
 /// The environment picker is wired through the action host: selecting a new
 /// environment dispatches exactly the [`SetActiveEnvironment`] the Ctrl+K
 /// "activate" spec would build (affordance == `ActionSpec`), and the choice
-/// lands in the shared document.
+/// lands in the shared document. Its commands open the sheets that manage
+/// environments and are not kept as a value.
 #[test]
 fn selecting_environment_dispatches_the_set_active_action() {
     let (mut a, mut doc) = demo();
@@ -102,8 +103,8 @@ fn selecting_environment_dispatches_the_set_active_action() {
     let target = a.environments[1].clone();
     assert_ne!(a.active_env, Some(target.id), "target isn't already active");
 
-    ApiDoc::set_text(&mut doc, &ROOT, ENV_PATH, &target.name);
-    a.reconcile_pickers(&mut doc, &ROOT);
+    push(&a, Cmd::PickEnvironment(target.name.clone()));
+    a.drain_commands(&mut doc, &ROOT);
 
     assert_eq!(
         a.active_env,
@@ -132,6 +133,17 @@ fn selecting_environment_dispatches_the_set_active_action() {
             .is_some_and(|url| url.contains("staging")),
         "the variable hint follows the environment"
     );
+
+    push(
+        &a,
+        Cmd::PickEnvironment(ENVIRONMENT_COMMANDS[2].0.to_owned()),
+    );
+    a.drain_commands(&mut doc, &ROOT);
+    assert_eq!(
+        a.form.as_ref().map(|form| form.mode),
+        Some(FormMode::NewVariable)
+    );
+    assert_eq!(a.env_state.get(), target.name, "a command is not a value");
 }
 
 /// Renaming or deleting the active environment updates the picker to match
@@ -151,7 +163,7 @@ fn renaming_the_active_environment_keeps_it_active() {
     a.drain_commands(&mut doc, &ROOT);
     a.sync(&mut doc, &ROOT);
     assert_eq!(a.active_env, Some(active));
-    assert_eq!(ApiDoc::read_text(&doc, &ROOT, ENV_PATH), "Live");
+    assert_eq!(a.env_state.get(), "Live");
 
     a.open_form(FormMode::DeleteEnvironment, FormTarget::default());
     push(&a, Cmd::SubmitForm);
@@ -159,7 +171,12 @@ fn renaming_the_active_environment_keeps_it_active() {
     a.sync(&mut doc, &ROOT);
     assert!(a.environments.iter().all(|e| e.id != active));
     assert_eq!(a.active_env, None);
-    assert_eq!(ApiDoc::read_text(&doc, &ROOT, ENV_PATH), NO_ENV);
+    assert_eq!(
+        a.environments.len(),
+        2,
+        "only the environment itself was deleted"
+    );
+    assert_eq!(a.env_state.get(), NO_ENV);
 }
 
 /// Each sheet collects what its action needs and dispatches the canonical
