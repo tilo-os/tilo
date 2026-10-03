@@ -698,9 +698,12 @@ Chrome reads `colors.surfaces.*`. It does **not** reach into
 about contrast* that every material keeps, at every temperature.
 
 The neutral material is defined in OKLCH and shares one hue
-(`colors.neutral_hue`, chroma at most 0.010), so a theme or a workspace can
+(`colors.palette.hue`, chroma at most 0.010), so a theme or a workspace can
 shift its temperature without moving contrast (`Theme::with_neutral_hue`;
-each workspace takes the hue of its wallpaper, `ui::workspace_hue`).
+each workspace takes the hue of its wallpaper, `ui::workspace_hue`). A
+palette without a hue (`Palette::hue == None`, the light preset) is pure
+grey until the window's workspace gives it one; nothing falls back to a
+default hue.
 
 | Surface | Dark L | Light L | Use |
 |---|---|---|---|
@@ -901,9 +904,14 @@ inactive one secondary ink.
 **Your colour** is the local person's presence colour — one of the twelve
 presence hues (`PresenceHue`), the colour their cursor has for
 collaborators. It is identity, not theme: stored as `identity.colour` or
-derived from the identity, applied with `Theme::with_your_colour(hue)` (the
-shell from the person's identity, a standalone app from the hue nearest the
-host accent). The theme sets only its lightness and chroma.
+derived from the stable identity, never read by `Theme::configured`. The
+host that shows a window applies it with the workspace's temperature
+(`ui::WindowAppearance`, `Theme::in_window`): the shell resolves both and
+sends each app window its own over the shell-ui channel
+(`FloatingSurfaceHostMessage::Appearance`, applied by
+`App::set_window_appearance`); a standalone app starts from the stored
+choice, or the hue nearest the host accent, and stays neutral. The theme
+sets only its lightness and chroma.
 
 **Emphasis** is the one theme role that may colour controls: under
 `Emphasis::Tinted { hue }` the `intent.inverted` fill (primary actions, on
