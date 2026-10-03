@@ -482,7 +482,14 @@ impl MediaEngine {
             if !accepted {
                 accepted = self.seek_with(ms, SeekMode::Accurate);
             }
-            self.poll();
+            // A pipeline error stops the engine: no picture is coming.
+            if self
+                .poll()
+                .iter()
+                .any(|event| matches!(event, MediaEvent::Error(_)))
+            {
+                return false;
+            }
             if accepted && self.frame_is_current() {
                 return true;
             }
