@@ -1,18 +1,21 @@
 //! Disk Usage as a [`tilo_resource::Resource`]: scan jobs are Effects; recent
 //! directories are the shared projection. A finished scan submits
-//! [`DiskUsageAction::Remember`] through the framework dispatcher when hosted,
-//! and through the local action host for standalone, `--shots`, and unit tests.
+//! [`DiskUsageAction::Remember`] through the framework dispatcher, or through
+//! the local action host in unit tests of the bare widget.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::app::{DiskUsageApp, DiskUsageOperation, operation_action};
 use crate::doc::DiskUsageDoc;
+use crate::scan::ScanResult;
 
 /// Remember a directory the local scan just finished.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,9 +103,6 @@ impl ResourceApp for DiskUsageShell {
     const ID: &'static str = "so.tilo.disk-usage";
     const TITLE: &'static str = "Disk Usage Analyzer";
     const ICON: Option<&'static str> = Some("disk-usage");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1180, 760)
-    }
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {
         cx.surface(DiskUsageApp::new())
@@ -118,10 +118,48 @@ impl ResourceApp for DiskUsageShell {
             "home-narrow",
         ]
     }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| name.ends_with("narrow")) {
+            (560, 720)
+        } else {
+            (1180, 760)
+        }
+    }
+
+    /// An analysis shows a made-up home folder instead of scanning the
+    /// machine the screenshot is taken on.
+    fn fixture(fixture: &mut Fixture<DiskUsage>) {
+        if fixture
+            .scenario()
+            .is_none_or(|name| name.starts_with("analysis"))
+        {
+            fixture.provide(ScanResult::sample());
+        }
+    }
+
+    /// The home view lists two folders scanned before.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<DiskUsage>> {
+        if !name.is_some_and(|name| name.starts_with("home")) {
+            return Vec::new();
+        }
+        [
+            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
+            PathBuf::from("/home/you/Projects/tilo"),
+        ]
+        .iter()
+        .filter_map(|path| {
+            Invoke::apply(&DiskUsageAction::Remember {
+                path: path.to_string_lossy().into_owned(),
+            })
+            .ok()
+        })
+        .collect()
+    }
 }
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
+/// Framework dispatcher when hosted; the local action host for unit tests of
+/// the bare widget.
 #[derive(Default)]
 pub(crate) struct ActionSink {
     local: ui::ActionHost,
@@ -182,6 +220,16 @@ impl ResourceSurface<DiskUsage> for DiskUsageApp {
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
         self.actions.attach(cx.dispatcher());
         self.mark_framework_hosted();
+        self.immediate = cx.mode() == RunMode::Capture;
+        if let Some(scan) = cx.fixture::<ScanResult>() {
+            self.set_result((*scan).clone());
+        }
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if scenario.is_some_and(|name| name.starts_with("analysis-hover")) {
+            self.inspect("/home/you/projects");
+        }
     }
 }
 
@@ -237,7 +285,7 @@ mod tests {
                 .any(|resource| resource.kind == "disk-usage.folder")
         );
 
-        let mut analysis = DiskUsageApp::sample();
+        let mut analysis = crate::app::analysed();
         assert!(analysis.in_analysis());
         ResourceSurface::<DiskUsage>::present(
             &mut analysis,
@@ -295,5 +343,39 @@ mod tests {
                 .any(|resource| resource.kind == "disk-usage.folder"),
             "places stay on the widget"
         );
+    }
+
+    /// Every screenshot is the framework's capture: the home view lists the
+    /// scenario's remembered folders, an analysis shows the made-up scan
+    /// instead of this machine's, and a narrow one gets a phone-sized window.
+    #[test]
+    fn captures_stage_through_actions_and_fixtures() {
+        use ui::prelude::TestApp;
+
+        let mut home = TestApp::<DiskUsageShell>::capture(Some("home-narrow")).unwrap();
+        assert_eq!(home.harness().inspection().viewport, [560, 720]);
+        assert_eq!(
+            home.state().recent,
+            [
+                PathBuf::from("/home/you/Projects/tilo"),
+                PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
+            ]
+        );
+        let frame = home.harness().inspection_json().unwrap();
+        assert!(frame.contains("\"tilo\""), "{frame}");
+
+        let mut analysis = TestApp::<DiskUsageShell>::capture(Some("analysis-hover")).unwrap();
+        assert_eq!(analysis.harness().inspection().viewport, [1180, 760]);
+        let frame = analysis.harness().inspection_json().unwrap();
+        assert!(frame.contains("Projects"), "{frame}");
+        assert!(
+            analysis.state().recent.is_empty(),
+            "a staged scan is not one this person made"
+        );
+
+        // A live window starts on the home view, with no made-up scan.
+        let mut live = TestApp::<DiskUsageShell>::new().unwrap();
+        let frame = live.harness().inspection_json().unwrap();
+        assert!(!frame.contains("Projects"), "{frame}");
     }
 }
