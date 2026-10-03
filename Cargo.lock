@@ -8353,6 +8353,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-vello",
  "tilo-winit",
+ "tracing",
  "workspace-hack",
 ]
 

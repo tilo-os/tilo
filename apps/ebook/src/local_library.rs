@@ -27,7 +27,7 @@ pub(crate) struct LocalLibrary {
 
 impl LocalLibrary {
     pub(crate) fn load() -> Self {
-        Self::from_section(&ui::storage::Settings::section(SECTION).load())
+        Self::from_section(&ui::storage::SettingsSection::named(SECTION).load())
     }
 
     pub(crate) fn remember_book(&mut self, id: &str, path: &Path) {
@@ -80,7 +80,7 @@ impl LocalLibrary {
     }
 
     pub(crate) fn save(&self) {
-        if let Err(error) = ui::storage::Settings::section(SECTION).update(self.section()) {
+        if let Err(error) = ui::storage::SettingsSection::named(SECTION).update(self.section()) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }
@@ -163,12 +163,16 @@ impl LocalLibrary {
 
     #[cfg(test)]
     fn from_path(path: &Path) -> Self {
-        Self::from_section(&ui::storage::Settings::section(SECTION).in_file(path).load())
+        Self::from_section(
+            &ui::storage::SettingsSection::named(SECTION)
+                .in_file(path)
+                .load(),
+        )
     }
 
     #[cfg(test)]
     fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        ui::storage::Settings::section(SECTION)
+        ui::storage::SettingsSection::named(SECTION)
             .in_file(path)
             .update(self.section())
     }
