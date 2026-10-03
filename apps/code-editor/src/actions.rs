@@ -43,7 +43,7 @@ use tilo_actions::{
     RetryPolicy,
 };
 
-use crate::command_palette::Command;
+use crate::commands::Command;
 use crate::doc::{CollaborativeFile, EditorDoc, FilePatch, ParentPatch};
 
 /// Registry `type_id` for every Code action.
@@ -57,14 +57,12 @@ pub enum CodeEditorOperation {
     },
     /// Open a file and reproduce an exact editor location. A disk path is
     /// carried for project-search hits whose lazy tree node is not revealed
-    /// yet; symbols use `node` directly. `show_search` restores the results
-    /// panel for a result row but stays false for file/symbol navigation.
+    /// yet; symbols use `node` directly.
     RevealLocation {
         file_id: Option<String>,
         path: Option<String>,
         line: usize,
         col: usize,
-        show_search: bool,
     },
     OpenFile {
         path: Option<String>,
@@ -1322,7 +1320,7 @@ pub(crate) fn publish_document_children(
 /// create stays on [`Resource::declarations`].
 pub(crate) fn project_view_effect_specs() -> Vec<ActionSpec> {
     let mut specs = Vec::new();
-    for (command, command_label, _) in Command::catalogue() {
+    for (command, command_label) in Command::catalogue() {
         let operation = CodeEditorOperation::Command {
             id: command.id().to_string(),
             argument: None,
@@ -1419,7 +1417,6 @@ fn symbol_resource(symbol: &SymbolRef) -> Resource {
             path: None,
             line: symbol.line,
             col: symbol.col,
-            show_search: false,
         },
     ))
 }
@@ -1439,7 +1436,6 @@ fn result_resource(result: &SearchResultRef) -> Resource {
             path: result.disk_path.clone(),
             line: result.line,
             col: result.col,
-            show_search: true,
         },
     ))
 }
