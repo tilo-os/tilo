@@ -419,7 +419,7 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
 
 /// Prepare `definition` on `host`: the record a launch named, else the one
 /// the instance showed last, else the room's default.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(tilo_native_runner)]
 pub(crate) fn prepare_on(
     host: &mut ApplicationHost,
     definition: &ApplicationDefinition,
@@ -444,7 +444,7 @@ pub(crate) fn prepare_on(
 
 /// Prepare `A` for a launch: the record its arguments name, and the
 /// arguments handed to the component for [`ResourceApp::launch`].
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(tilo_native_runner)]
 fn prepare_app<A: ResourceApp>(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
@@ -466,7 +466,7 @@ fn prepare_definition(
     prepare_named(definition, args, None)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(tilo_native_runner)]
 fn prepare_named(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
@@ -513,7 +513,7 @@ fn prepare_named(
 
 /// Take the launch's actions ([`ResourceApp::launch`]) as the live host's
 /// first idle tick does, before anything else drives the harness.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(tilo_native_runner)]
 pub(crate) fn settle_launch(harness: &mut FrameHarness) {
     harness.wait_until(ui_core::time::Duration::ZERO, |_| true);
 }
