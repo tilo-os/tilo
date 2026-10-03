@@ -27,10 +27,13 @@
 //!
 //! A host started without a certificate serves only `/install` until it has
 //! one: the body is the root-signed `DeviceCert` for its device key as JSON
-//! (what a page's root issues) or in its canonical encoding, with the
-//! install token the host was
+//! (what a page's root issues) or in its canonical encoding, or
+//! [`InstallCertificates`], with the install token the host was
 //! provisioned with in [`INSTALL_TOKEN_HEADER`]. `200` answers
-//! [`Installed`] as JSON; every other route answers `503` meanwhile.
+//! [`Installed`] as JSON; every other route answers `503` meanwhile. A
+//! `GET` with the token answers [`InstallInfo`]: the host's key and, on a
+//! node, the key of the session beside it, which the root certifies at the
+//! same time as one of the person's devices.
 //!
 //! `/join` is the one route after `/certify` a device calls without a
 //! session: a person a host does not know yet joins through it. Routes after
@@ -51,6 +54,49 @@ pub const SESSION_HEADER: &str = "x-tilo-session";
 pub const INSTALL_TOKEN_HEADER: &str = "x-tilo-install-token";
 /// The route that installs a waiting host's certificate.
 pub const INSTALL_ROUTE: &str = "/install";
+
+/// What a waiting host says about itself on `GET /install` (JSON).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallInfo {
+    /// The host's device key, hex.
+    pub device_public_key: String,
+    /// On a node, the session that runs the person's apps and agents beside
+    /// the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<NodeSession>,
+}
+
+/// The device key of the session beside a node, vouched for by the node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSession {
+    /// The session's device key, hex.
+    pub device_public_key: String,
+    /// The node's device key's Ed25519 signature over
+    /// [`node_session_message`], hex. A page that got the node's key out of
+    /// band certifies the session's key only when this verifies.
+    pub signature: String,
+}
+
+/// What a node signs to vouch for the session beside it.
+#[must_use]
+pub fn node_session_message(node: &[u8; 32], session: &[u8; 32]) -> Vec<u8> {
+    let mut message = b"tilo node session v1\0".to_vec();
+    message.extend_from_slice(node);
+    message.extend_from_slice(session);
+    message
+}
+
+/// `POST /install` with the certificates of a node and of the session
+/// beside it (JSON): each in its canonical encoding, base64, as a page's
+/// `certifyDevice` resolves.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallCertificates {
+    /// The host's certificate.
+    pub certificate: String,
+    /// The session's certificate, when the host has one beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_certificate: Option<String>,
+}
 
 /// A waiting host's answer to an accepted `/install` (JSON).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
