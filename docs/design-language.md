@@ -51,8 +51,9 @@ tertiary 0.62 / 0.56 (dark / light). Every pairing meets WCAG AA for its role,
 and the existing contrast tests enforce it.
 
 **Default chroma.** The default dark theme is pure neutral (chroma 0). The
-default light theme carries chroma 0.010, so it takes on the workspace's
-temperature.
+default light theme has no hue of its own: it is pure neutral until the
+workspace it is shown in gives it one, and then carries chroma 0.010 at that
+hue.
 
 **Dark presets.** Three more dark palettes ship as presets with the same
 contract:
@@ -65,8 +66,10 @@ contract:
 
 **Workspace temperature.** Each workspace derives the neutral hue (never more
 chroma) from its wallpaper. Switching workspaces feels like entering a
-different room. A palette with chroma 0 shows no temperature; the fallback hue
-is 255.
+different room. A palette with chroma 0 shows no temperature. There is no
+fallback hue: a grey wallpaper, a window shown without a shell and a capture
+stay pure neutral. The shell gives the temperature to its own chrome and to
+every app window in that workspace.
 
 **No brand accent.**
 - A primary action is an *inverted* control: primary ink as its fill and the
@@ -78,7 +81,9 @@ is 255.
 
 **Your colour.** The local user's presence colour is their focus ring, text
 caret and text-selection tint, the same colour their cursor has for
-collaborators. Each collaborator's and agent's colour marks their presence,
+collaborators. Their presence carries it to every collaborator's machine;
+until they choose one, it derives from their stable identity, so every
+machine shows the same colour. Each collaborator's and agent's colour marks their presence,
 cursor, selection and attribution.
 
 **Presence palette.** Twelve hues at equal OKLCH lightness and chroma (dark
