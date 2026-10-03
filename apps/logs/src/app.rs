@@ -4,7 +4,7 @@
 //! [`NavShell`] whose content is the journal table with its filters
 //! ([`JournalPane`]) and whose inspector shows every field of the selected
 //! entry. The content header holds the journal's commands: refresh, live
-//! tail, export and History.
+//! tail and export.
 //!
 //! `LogsApp` owns the journal (an external, read-only render cache) and the
 //! shared view state: filters and the selected entry sync as document
@@ -31,11 +31,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionAddress, ActionBinding, ControlInvocation, OperationKind, Resource};
-use ui::widget::{
-    Button, Element, InspectorPlacement, NavShell, TaffyTreeExt, Text, Toggle, Widget,
-    history_button,
-};
-use ui::{LocalState, TextRole};
+use ui::tokens::Spacing;
+use ui::widget::{Button, Element, InspectorPlacement, NavShell, TaffyTreeExt, Widget};
 
 use crate::actions::{self, LogsOperation};
 use crate::model::{Filter, LogEntry, Priority};
@@ -68,34 +65,29 @@ fn journal_door(live_tail: bool, allow_live: bool) -> Resource {
         )
 }
 
-/// The content header's commands: refresh, live tail, export and History.
-fn header_actions(door: &Resource, live: &LocalState<bool>) -> Vec<Element> {
+/// The content header's commands: refresh, live tail and export. Live tail
+/// is a toggle glyph that stands on the selection lift while the journal is
+/// followed.
+fn header_actions(door: &Resource, live_tail: bool) -> Vec<Element> {
     let mut actions: Vec<Element> = Vec::new();
     if let Ok(binding) = ActionBinding::unit_for(door, "refresh") {
         actions.push(Box::new(
             Button::icon_only("logs.refresh", Icon::Refresh, "Refresh journal").on_action(binding),
         ));
     }
-    actions.push(Box::new(Text::new("Live tail").with_role(TextRole::Label)));
-    let toggle = Toggle::from_state(live)
-        .with_id("logs.live-tail")
-        .with_accessible_name("Live tail");
-    let binding = door
-        .actions
-        .iter()
-        .find(|spec| spec.id == "set-live-tail")
-        .and_then(|spec| ActionBinding::new(door, spec, |_: bool| serde_json::Map::new()).ok());
-    actions.push(Box::new(match binding {
-        Some(binding) => toggle.on_action(binding),
-        None => toggle,
-    }));
+    let live = Button::icon_only("logs.live-tail", Icon::Play, "Live tail").toggled(live_tail);
+    actions.push(Box::new(
+        match ActionBinding::unit_for(door, "set-live-tail") {
+            Ok(binding) => live.on_action(binding),
+            Err(_) => live,
+        },
+    ));
     if let Ok(binding) = ActionBinding::unit_for(door, "export-filtered-jsonl") {
         actions.push(Box::new(
             Button::icon_only("logs.export", Icon::Download, "Export filtered logs")
                 .on_action(binding),
         ));
     }
-    actions.push(Box::new(history_button()));
     actions
 }
 
@@ -153,7 +145,10 @@ pub struct LogsApp {
     rect: Rect,
     shell: NavShell,
     shared: Shared,
-    live: LocalState<bool>,
+    /// The live-tail state the header's toggle shows.
+    shown_live_tail: bool,
+    /// The spacing the inspector was laid out with.
+    spacing: Spacing,
     /// The fingerprints of the state and the rows last handed to the views.
     published: Option<u64>,
     published_rows: Option<u64>,
@@ -182,7 +177,6 @@ impl LogsApp {
     /// it gates the refresh, live tail and export Effects.
     pub fn new(entries: Vec<LogEntry>, allow_live: bool) -> Self {
         let shared: Shared = Rc::new(RefCell::new(Bridge::default()));
-        let live = LocalState::new(false);
         let door = journal_door(false, allow_live);
         if let Ok(refresh) = ActionBinding::unit_for(&door, "refresh") {
             shared.borrow_mut().refresh = Some(refresh);
@@ -190,8 +184,8 @@ impl LogsApp {
         let shell = NavShell::new()
             .with_id("logs.shell")
             .content(Box::new(JournalPane::new(Rc::clone(&shared))))
-            .content_header("", header_actions(&door, &live))
-            .inspector(crate::view::entry_detail(None));
+            .content_header("", header_actions(&door, false))
+            .inspector(crate::view::entry_detail(None, &Spacing::default()));
         let mut app = Self {
             entries,
             units: Vec::new(),
@@ -209,7 +203,8 @@ impl LogsApp {
             rect: Rect::ZERO,
             shell,
             shared,
-            live,
+            shown_live_tail: false,
+            spacing: Spacing::default(),
             published: None,
             published_rows: None,
             inspected: Inspected::Stale,
@@ -429,8 +424,11 @@ impl LogsApp {
             bridge.has_entries = !self.entries.is_empty();
             bridge.total = self.entries.len();
         }
-        if self.live.with(|shown| *shown != self.live_tail) {
-            self.live.set(self.live_tail);
+        if self.shown_live_tail != self.live_tail {
+            self.shown_live_tail = self.live_tail;
+            let door = journal_door(self.live_tail, self.allow_live);
+            let shell = std::mem::take(&mut self.shell);
+            self.shell = shell.content_header("", header_actions(&door, self.live_tail));
         }
         self.show_inspector(selected);
         self.layout_dirty = true;
@@ -460,7 +458,7 @@ impl LogsApp {
         }
         self.inspected = shows;
         self.shell
-            .set_inspector(Some(crate::view::entry_detail(entry)));
+            .set_inspector(Some(crate::view::entry_detail(entry, &self.spacing)));
         let title = entry.map_or_else(String::new, |e| e.unit.clone());
         let shell = std::mem::take(&mut self.shell);
         self.shell = shell.inspector_header(title, Vec::new());
@@ -812,6 +810,13 @@ impl Widget for LogsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_dirty = false;
+        if self.spacing != theme.tokens.spacing {
+            // The inspector's content lines up with its property list in
+            // this theme's spacing.
+            self.spacing = theme.tokens.spacing;
+            self.inspected = Inspected::Stale;
+            self.show_inspector(self.effective_selected());
+        }
         let shell = self.shell.build_layout(taffy, theme, node_map);
         let node = fill_node(taffy, shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -1013,6 +1018,29 @@ mod tests {
             .any(|(_, node)| node.label() == Some(name))
     }
 
+    /// Live tail is a toggle glyph in the header that reads as on while the
+    /// journal is followed.
+    #[test]
+    fn live_tail_is_a_header_toggle_that_follows_the_state() {
+        fn live_tail(harness: &ui::headless::FrameHarness) -> Option<ui::accesskit::Toggled> {
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("Live tail"))
+                .and_then(|(_, node)| node.toggled())
+        }
+        let mut window = harness(LogsApp::new(sample_entries(), false), (1280, 800));
+        assert_eq!(live_tail(&window), Some(ui::accesskit::Toggled::False));
+
+        let mut doc = AutoCommit::new();
+        window
+            .root_mut::<LogsApp>()
+            .perform_effect(LogsOperation::SetLiveTail { enabled: true }, &mut doc)
+            .unwrap();
+        window.send(&WindowEvent::RedrawRequested);
+        assert_eq!(live_tail(&window), Some(ui::accesskit::Toggled::True));
+    }
+
     /// Facets and shared filter actions narrow the entry list and write the
     /// collaborative view document.
     #[test]
@@ -1124,7 +1152,6 @@ mod tests {
             "Refresh journal",
             "Live tail",
             "Export filtered logs",
-            "History",
         ] {
             assert!(named(&desktop, name), "{name} is exposed");
         }

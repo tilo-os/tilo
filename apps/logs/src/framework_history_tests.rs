@@ -83,7 +83,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
         "offline filtered journal row is visible"
     );
 
-    driver.click_named("history-open").unwrap();
+    driver.open_history().unwrap();
     let history = driver.inspection_json().unwrap();
     assert!(history.contains(crate::framework_history::LIMITATION));
     assert!(driver.targets().contains_key("history-open"));
@@ -266,7 +266,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         "exact selected row is live"
     );
 
-    driver.click_named("history-open").unwrap();
+    driver.open_history().unwrap();
     assert!(picker.is_pending(), "portal request remains pending");
     driver.click_named("history-open").unwrap();
     let returned = driver.inspection_json().unwrap();
