@@ -558,7 +558,12 @@ impl MessageReader {
             }
         }
         flow.y += gutter;
-        let content_h = flow.y + self.scroll - r.y0;
+        // An HTML body fills the reader; it scrolls inside its own view.
+        let content_h = if webview_rect.is_some() {
+            r.height()
+        } else {
+            flow.y + self.scroll - r.y0
+        };
         let attachments = std::mem::take(&mut flow.attachments);
         flow.ctx.scene.pop_layer();
         self.attachments = attachments;
@@ -568,7 +573,7 @@ impl MessageReader {
             let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
             let track = Rect::new(r.x1 - gutter, r.y0, r.x1, r.y1);
             self.scrollbar
-                .draw(scene_of(&mut flow), t, track, metrics, theme, false);
+                .draw(flow.ctx.scene, t, track, metrics, theme, false);
         }
         drop(flow);
         drop(state);
@@ -629,10 +634,6 @@ impl MessageReader {
             view.handle_event(event, ctx);
         }
     }
-}
-
-fn scene_of<'a>(flow: &'a mut Flow<'_, '_>) -> &'a mut Scene {
-    flow.ctx.scene
 }
 
 impl Widget for MessageReader {
