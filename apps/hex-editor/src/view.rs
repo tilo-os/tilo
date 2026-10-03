@@ -702,6 +702,11 @@ impl HexView {
         }
         let took = *ctx.handled;
         self.apply_strip_picks();
+        // The strips repaint themselves under the pointer; the view paints
+        // them, so it has to know when they changed.
+        if Widget::needs_redraw(&self.mode_group) || Widget::needs_redraw(&self.endian_group) {
+            self.dirty = true;
+        }
         took
     }
 
@@ -859,6 +864,7 @@ impl HexView {
     /// Events while no file is open: the empty state's action and Ctrl+O.
     fn handle_empty_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.empty.handle_event(event, ctx);
+        self.dirty = true;
         if self.empty.take_action() {
             self.begin_open();
             *ctx.handled = true;
@@ -1200,7 +1206,7 @@ impl Widget for HexView {
         if self.has_file {
             children.push(
                 AccessNode::new(Role::StaticText).with_name(
-                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+G go to offset, Ctrl+Z undo, Ctrl+Y redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+G go to offset, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Y redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
                 ).with_hashed_key("hex.keyboard-help"),
             );
             children.push(
@@ -1224,6 +1230,17 @@ impl Widget for HexView {
                             .disabled(self.redo.is_empty()),
                     )
                     .with_action_target("hex.redo"),
+            );
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(if self.drawer.is_open() {
+                        "Hide inspector"
+                    } else {
+                        "Show inspector"
+                    })
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.geo.toggle)
+                    .with_action_target("hex.inspector"),
             );
             children.extend(self.mode_group.accessibility());
             if self.geo.inspector_visible {
@@ -1277,6 +1294,7 @@ impl Widget for HexView {
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "hex.open" => self.begin_open(),
+                "hex.inspector" if self.has_file => self.toggle_inspector(),
                 "hex.undo" if self.has_file && !self.undo.is_empty() => {
                     let _ = self.undo_local();
                 }
@@ -1292,11 +1310,13 @@ impl Widget for HexView {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || (self.has_file && self.drawer.is_animating())
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        Widget::mark_drawn(&mut self.mode_group);
+        Widget::mark_drawn(&mut self.endian_group);
     }
 }
 
@@ -1543,6 +1563,11 @@ impl HexView {
             }
             "g" | "G" => {
                 self.open_goto();
+                *handled = true;
+                true
+            }
+            "i" | "I" => {
+                self.toggle_inspector();
                 *handled = true;
                 true
             }
