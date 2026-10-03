@@ -15,6 +15,8 @@ mod fixtures;
 
 #[path = "app_manifests.rs"]
 mod app_manifests;
+#[path = "image.rs"]
+mod image;
 #[path = "manifest.rs"]
 mod manifest;
 #[path = "pack_unpack.rs"]

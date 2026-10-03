@@ -1,23 +1,22 @@
-//! The permission broker.
+//! The broker.
 //!
 //! Starts with the session, runs on the host, outlives nothing. Every
-//! privileged request from inside the guest arrives here as a line of JSON
-//! on a Unix socket, is decided against [`crate::policy`], and is written
-//! to [`crate::audit`] whichever way it went.
+//! request from inside the guest that reaches past it arrives here as a line
+//! of JSON on a Unix socket, is decided, and is written to [`crate::audit`]
+//! whichever way it went.
 //!
-//! # Why a broker at all, when the guest is uid 0
+//! # Why a broker at all
 //!
-//! The guest is root *in its own user namespace*, so it can already write
-//! its own layer without asking — what it cannot do is reach the store:
-//! `policy.json` and `audit/` are not bound into the namespace at any path.
-//! The broker is the only route to the two files that decide what the
-//! *next* session can see, and the only writer of the record of what was
-//! asked for.
+//! The guest cannot reach the environment record or the store: neither is
+//! bound into the namespace at any path. The broker is the only route to the
+//! record that decides what the *next* session is — its tools and its
+//! grants — and the only writer of the record of what was asked for.
 //!
-//! A decision here does not take effect in the running guest: a new bind
-//! needs a new mount namespace, so `perm trust-dir` answers with
-//! [`Response::NeedsRestart`] and the user runs `restart` — pretending
-//! otherwise would mean a grant that appears made and has not.
+//! A decision here does not take effect in the running guest: a new tool or
+//! a new bind needs a new mount namespace, so `pkg install` and
+//! `perm trust-dir` answer with [`Response::NeedsRestart`] and the user runs
+//! `restart` — pretending otherwise would mean a change that appears made
+//! and has not.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -30,10 +29,11 @@ use std::time::{Duration, Instant};
 
 use collab_types::caps::Verb;
 use tilo_clock::unix_now;
+use tilo_environment::{Environment, ToolBuilder};
 
 use crate::audit::{AuditLog, AuditRecord};
-use crate::policy::{Policy, is_trustable};
-use crate::profile::Profile;
+use crate::policy::Policy;
+use crate::records::Records;
 
 /// What a guest can ask for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -63,7 +63,7 @@ pub enum Request {
     TrustDir {
         path: PathBuf,
     },
-    /// `perm list` — the decisions in force.
+    /// `perm list` — the grants in force.
     ListPerms,
     /// `perm revoke <id>`.
     Revoke {
@@ -74,23 +74,20 @@ pub enum Request {
         path: PathBuf,
         write: bool,
     },
-    /// A package transaction happened in the guest. Recorded, and — when it was
-    /// `--one-time` — remembered so the session can undo it on the way out.
-    PkgRecorded {
-        package: String,
-        action: String,
-        one_time: bool,
+    /// `pkg install` — build a tool image for the packages and add it.
+    AddTool {
+        packages: Vec<String>,
     },
-    /// `pkg freeze` — keep the one-time installs.
-    Freeze,
-    /// `pkg diff` — what the layer changed relative to the base. Answered on
-    /// the host: from inside the guest the two are one merged view.
-    LayerDiff {
-        limit: usize,
+    /// `pkg remove` — take the tools providing the packages out.
+    RemoveTool {
+        packages: Vec<String>,
     },
-    /// `pkg burn` — destroy the layer's files, deferred to session end since an
-    /// overlay `upperdir` can't be removed from under a live mount.
-    Burn,
+    /// `pkg list` — the runtime and the tools.
+    ListTools,
+    /// Which image a guest path comes from. Answers `scan`.
+    Provenance {
+        path: PathBuf,
+    },
     /// `guard status`.
     Status,
     /// `restart` — rebuild the guest in place.
@@ -120,9 +117,12 @@ pub enum Response {
     Check {
         allowed: bool,
     },
-    Diff {
-        entries: Vec<DiffEntry>,
-        truncated: usize,
+    Tools {
+        runtime: String,
+        tools: Vec<ToolEntry>,
+    },
+    Provenance {
+        image: Option<String>,
     },
     /// Boxed: `SessionStatus` is several strings and vecs wide, dwarfing
     /// every other variant here — every `Response` would otherwise pay for
@@ -132,9 +132,10 @@ pub enum Response {
     },
 }
 
-/// Socket-only framing for commands whose output may take a while. The public
-/// [`ask`] API still returns one complete [`Response`]; clients which opt in to
-/// [`ask_streaming`] additionally receive each output chunk as it arrives.
+/// Socket-only framing for requests whose output may take a while (host
+/// management commands, tool builds). The public [`ask`] API still returns
+/// one complete [`Response`]; clients which opt in to [`ask_streaming`]
+/// additionally receive each output chunk as it arrives.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "frame", rename_all = "kebab-case")]
 enum WireFrame {
@@ -155,7 +156,7 @@ struct HostCommand {
     mutating: bool,
 }
 
-fn host_command_for(base: &Path, req: &Request) -> Option<HostCommand> {
+fn host_command_for(host_root: &Path, req: &Request) -> Option<HostCommand> {
     let (operation, program, args, mutating) = match req {
         Request::AppUpdate { package } => {
             let mut args = vec!["update".into()];
@@ -206,17 +207,16 @@ fn host_command_for(base: &Path, req: &Request) -> Option<HostCommand> {
         operation,
         program,
         args,
-        binary: base.join("usr/bin").join(program),
+        binary: host_root.join("usr/bin").join(program),
         mutating,
     })
 }
 
-/// One line of `pkg diff`.
+/// One line of `pkg list`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DiffEntry {
-    pub path: String,
-    pub kind: String,
-    pub bytes: u64,
+pub struct ToolEntry {
+    pub id: String,
+    pub packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -230,39 +230,72 @@ pub struct PermEntry {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionStatus {
     pub session: String,
-    pub profile: String,
-    pub posture: String,
-    pub layer: String,
-    pub layer_kind: String,
+    pub environment: String,
+    pub record: String,
+    pub runtime: String,
+    pub tools: Vec<String>,
     pub seccomp: String,
     pub landlock: String,
     pub trusted_dirs: Vec<String>,
     pub readable_dirs: Vec<String>,
-    pub one_time_packages: Vec<String>,
     pub audit_records: usize,
 }
 
+/// The environment a session was built from, and the way back to its record.
+#[derive(Debug, Clone)]
+pub struct EnvironmentHandle {
+    pub records: Records,
+    pub key: String,
+    /// The record as the session was built from it.
+    pub built_from: Environment,
+}
+
+impl EnvironmentHandle {
+    /// The record as it stands now — another device or Terminal may have
+    /// changed it since the session started. Falls back to what the session
+    /// was built from when the record cannot be read.
+    pub fn current(&self) -> Environment {
+        match self.records.load(&self.key) {
+            Ok(Some(env)) => env,
+            Ok(None) => self.built_from.clone(),
+            Err(e) => {
+                tracing::warn!(error = %e, "environment record unreadable; using the session's copy");
+                self.built_from.clone()
+            }
+        }
+    }
+
+    fn policy(&self) -> Policy {
+        Policy::new(self.current().grants.0)
+    }
+}
+
 /// The state one broker owns for the life of a session.
-#[derive(Debug)]
 pub struct BrokerState {
     pub session_id: String,
-    pub profile: Profile,
-    pub policy_path: PathBuf,
-    pub policy: Policy,
+    pub environment: EnvironmentHandle,
     pub audit: AuditLog,
-    /// Packages installed this session with `--one-time`, to be removed from
-    /// the layer when the session ends.
-    pub one_time: Vec<String>,
     /// Set by `restart`; read by the supervisor after the guest exits.
     pub restart_requested: bool,
-    /// Set by `pkg burn`; acted on once the overlay is unmounted.
-    pub burn_requested: bool,
-    /// The host root the layer shadows, for `pkg diff`.
-    pub base: PathBuf,
+    /// The machine's root, where the management commands live.
+    pub host_root: PathBuf,
+    /// The images the guest was built from, `(label, root)`, topmost first —
+    /// what `scan` reports provenance against.
+    pub images: Vec<(String, PathBuf)>,
+    /// How `pkg install` builds a tool image.
+    pub builder: Arc<dyn ToolBuilder>,
     /// For `guard status`, filled in by the supervisor at start.
-    pub layer: PathBuf,
-    pub layer_kind: String,
     pub landlock: String,
+}
+
+impl std::fmt::Debug for BrokerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrokerState")
+            .field("session_id", &self.session_id)
+            .field("environment", &self.environment)
+            .field("restart_requested", &self.restart_requested)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BrokerState {
@@ -314,28 +347,39 @@ impl BrokerState {
             Request::Check { path, write } => {
                 let verb = if write { Verb::Write } else { Verb::Read };
                 Response::Check {
-                    allowed: self.policy.permits(&path, verb, Some(unix_now())),
+                    allowed: self
+                        .environment
+                        .policy()
+                        .permits(&path, verb, Some(unix_now())),
                 }
             }
-            Request::PkgRecorded {
-                package,
-                action,
-                one_time,
-            } => self.record_pkg(&package, &action, one_time),
-            Request::Freeze => self.freeze(),
-            Request::LayerDiff { limit } => self.layer_diff(limit),
-            Request::Burn => {
-                self.burn_requested = true;
-                self.restart_requested = true;
-                let layer = self.layer.display().to_string();
-                self.log("pkg-burn", Some(&layer), true, None);
-                Response::NeedsRestart {
-                    detail: format!(
-                        "{layer} is destroyed when this session ends, and a fresh \
-                         layer built in its place."
-                    ),
+            Request::AddTool { packages } => {
+                let plan = match self.plan_add_tool(&packages) {
+                    Ok(plan) => plan,
+                    Err(response) => return response,
+                };
+                let builder = Arc::clone(&self.builder);
+                let built = run_build(&*builder, &plan, &mut std::io::sink());
+                self.finish_add_tool(&plan, built)
+            }
+            Request::RemoveTool { packages } => self.remove_tools(&packages),
+            Request::ListTools => {
+                let env = self.environment.current();
+                Response::Tools {
+                    runtime: env.runtime.clone(),
+                    tools: env
+                        .tools
+                        .iter()
+                        .map(|t| ToolEntry {
+                            id: t.id.clone(),
+                            packages: t.packages.clone(),
+                        })
+                        .collect(),
                 }
             }
+            Request::Provenance { path } => Response::Provenance {
+                image: crate::guard::provenance(&path, &self.images),
+            },
             Request::Status => Response::Status {
                 status: Box::new(self.status()),
             },
@@ -353,7 +397,7 @@ impl BrokerState {
             self.log(operation, Some(program), false, Some(&reason));
             return Response::Denied { reason };
         }
-        let binary = self.base.join("usr/bin").join(program);
+        let binary = self.host_root.join("usr/bin").join(program);
         let output = match std::process::Command::new(&binary).args(args).output() {
             Ok(output) => output,
             Err(error) => {
@@ -381,12 +425,43 @@ impl BrokerState {
         }
     }
 
-    fn trust_dir(&mut self, path: &Path) -> Response {
+    /// Apply one action to the session's environment record, logging it.
+    fn apply(
+        &self,
+        operation: &str,
+        subject: &str,
+        invoke: tilo_resource::Invoke<Environment>,
+    ) -> Result<Environment, String> {
+        let key = self.environment.key.clone();
+        match self.environment.records.apply(&key, invoke) {
+            Ok(env) => {
+                self.log(operation, Some(subject), true, None);
+                Ok(env)
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                self.log(operation, Some(subject), false, Some(&reason));
+                Err(reason)
+            }
+        }
+    }
+
+    fn trust_dir(&self, path: &Path) -> Response {
         // Resolve first: a symlink under a guest-controlled directory could name a
         // path the user never saw. `canonicalize` failing on a missing path is
         // also correct — trusting nothing there.
         let resolved = match path.canonicalize() {
-            Ok(p) => p,
+            Ok(p) if p.is_dir() => p,
+            Ok(p) => {
+                let reason = format!("{} is not a directory", p.display());
+                self.log(
+                    "trust-dir",
+                    Some(&p.display().to_string()),
+                    false,
+                    Some(&reason),
+                );
+                return Response::Denied { reason };
+            }
             Err(e) => {
                 let reason = format!("{}: {e}", path.display());
                 self.log(
@@ -398,140 +473,174 @@ impl BrokerState {
                 return Response::Denied { reason };
             }
         };
-        if !resolved.is_dir() {
-            let reason = format!("{} is not a directory", resolved.display());
-            self.log(
-                "trust-dir",
-                Some(&resolved.display().to_string()),
-                false,
-                Some(&reason),
-            );
-            return Response::Denied { reason };
-        }
-        if !is_trustable(&resolved) {
-            let reason = format!(
-                "{} is part of the base the overlay owns; binding it would put \
-                 the host's copy back on top of your layer",
-                resolved.display()
-            );
-            self.log(
-                "trust-dir",
-                Some(&resolved.display().to_string()),
-                false,
-                Some(&reason),
-            );
-            return Response::Denied { reason };
-        }
-        let Some(id) = self.policy.trust_dir(&resolved) else {
-            let reason = format!("{} cannot be trusted", resolved.display());
-            self.log(
-                "trust-dir",
-                Some(&resolved.display().to_string()),
-                false,
-                Some(&reason),
-            );
-            return Response::Denied { reason };
-        };
-        if let Err(e) = self.policy.save(&self.policy_path) {
-            let reason = format!("could not save the decision: {e}");
-            self.log(
-                "trust-dir",
-                Some(&resolved.display().to_string()),
-                false,
-                Some(&reason),
-            );
-            return Response::Denied { reason };
-        }
-        self.log(
+        let shown = resolved.display().to_string();
+        match self.apply(
             "trust-dir",
-            Some(&resolved.display().to_string()),
-            true,
-            Some(&id),
-        );
+            &shown,
+            Environment::GRANT_DIR.with((shown.clone(), true)),
+        ) {
+            Ok(_) => Response::NeedsRestart {
+                detail: format!(
+                    "{shown} is granted (grant {}). Run `restart` to bring it into this session.",
+                    tilo_environment::grant_id(&resolved)
+                ),
+            },
+            Err(reason) => Response::Denied { reason },
+        }
+    }
+
+    fn revoke(&self, id: &str) -> Response {
+        match self.apply("revoke", id, Environment::REVOKE_GRANT.with(id.to_owned())) {
+            Ok(_) => Response::NeedsRestart {
+                detail: format!("{id} revoked. Run `restart` to drop it from this session."),
+            },
+            Err(reason) => Response::Denied { reason },
+        }
+    }
+
+    /// What `pkg install` will build, or the answer when there is nothing to.
+    fn plan_add_tool(&self, packages: &[String]) -> Result<ToolPlan, Response> {
+        let packages: Vec<String> = packages
+            .iter()
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if packages.is_empty() {
+            return Err(Response::Denied {
+                reason: "pkg install needs a package name".into(),
+            });
+        }
+        if packages.iter().map(String::len).sum::<usize>() > MAX_ARG_BYTES {
+            return Err(Response::Denied {
+                reason: "too many package names".into(),
+            });
+        }
+        let env = self.environment.current();
+        let (present, wanted): (Vec<String>, Vec<String>) = packages
+            .into_iter()
+            .partition(|p| env.tool_providing(p).is_some());
+        if wanted.is_empty() {
+            return Err(Response::NeedsRestart {
+                detail: format!(
+                    "{} {} already in this environment; nothing to build.",
+                    present.join(", "),
+                    if present.len() == 1 { "is" } else { "are" }
+                ),
+            });
+        }
+        let runtime = env
+            .runtime_id()
+            .map_err(|reason| Response::Denied { reason })?;
+        Ok(ToolPlan { runtime, wanted })
+    }
+
+    fn finish_add_tool(
+        &self,
+        plan: &ToolPlan,
+        built: Result<tilo_environment::PackageId, String>,
+    ) -> Response {
+        let subject = plan.wanted.join(",");
+        let id = match built {
+            Ok(id) => id,
+            Err(reason) => {
+                self.log("pkg-install", Some(&subject), false, Some(&reason));
+                return Response::Denied { reason };
+            }
+        };
+        match self.apply(
+            "pkg-install",
+            &subject,
+            Environment::ADD_TOOL.with((id.to_string(), plan.wanted.clone())),
+        ) {
+            Ok(_) => Response::NeedsRestart {
+                detail: format!(
+                    "{} added to this environment ({id}). Run `restart` to use it here; \
+                     new sessions have it already.",
+                    plan.wanted.join(", ")
+                ),
+            },
+            Err(reason) => Response::Denied { reason },
+        }
+    }
+
+    fn remove_tools(&self, packages: &[String]) -> Response {
+        let env = self.environment.current();
+        let mut tools: Vec<&tilo_environment::ToolRef> = Vec::new();
+        for package in packages {
+            let Some(tool) = env.tool_providing(package) else {
+                let reason = format!(
+                    "{package} is not a tool in this environment; `pkg list` shows what is"
+                );
+                self.log("pkg-remove", Some(package), false, Some(&reason));
+                return Response::Denied { reason };
+            };
+            if !tools.iter().any(|t| t.id == tool.id) {
+                tools.push(tool);
+            }
+        }
+        if tools.is_empty() {
+            return Response::Denied {
+                reason: "pkg remove needs a package name".into(),
+            };
+        }
+        // A tool image is one build; taking out part of it would mean another
+        // build. Say which packages travel together instead.
+        for tool in &tools {
+            let missing: Vec<&String> = tool
+                .packages
+                .iter()
+                .filter(|p| !packages.contains(p))
+                .collect();
+            if !missing.is_empty() {
+                let reason = format!(
+                    "{} was installed together with {}; remove them together: pkg remove {}",
+                    packages.join(", "),
+                    missing
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    tool.packages.join(" ")
+                );
+                self.log(
+                    "pkg-remove",
+                    Some(&packages.join(",")),
+                    false,
+                    Some(&reason),
+                );
+                return Response::Denied { reason };
+            }
+        }
+        let ids: Vec<String> = tools.iter().map(|t| t.id.clone()).collect();
+        for id in ids {
+            if let Err(reason) = self.apply(
+                "pkg-remove",
+                &packages.join(","),
+                Environment::REMOVE_TOOL.with(id),
+            ) {
+                return Response::Denied { reason };
+            }
+        }
         Response::NeedsRestart {
             detail: format!(
-                "{} is trusted (capability {id}). Run `restart` to bring it into this session.",
-                resolved.display()
+                "{} removed from this environment. Run `restart` to drop it here.",
+                packages.join(", ")
             ),
-        }
-    }
-
-    fn revoke(&mut self, id: &str) -> Response {
-        if !self.policy.revoke(id) {
-            let reason = format!("no decision with id {id}");
-            self.log("revoke", Some(id), false, Some(&reason));
-            return Response::Denied { reason };
-        }
-        if let Err(e) = self.policy.save(&self.policy_path) {
-            let reason = format!("could not save the decision: {e}");
-            self.log("revoke", Some(id), false, Some(&reason));
-            return Response::Denied { reason };
-        }
-        self.log("revoke", Some(id), true, None);
-        Response::NeedsRestart {
-            detail: format!("{id} revoked. Run `restart` to drop it from this session."),
-        }
-    }
-
-    fn record_pkg(&mut self, package: &str, action: &str, one_time: bool) -> Response {
-        if one_time && action == "install" && !self.one_time.iter().any(|p| p == package) {
-            self.one_time.push(package.to_string());
-        }
-        if action == "remove" {
-            self.one_time.retain(|p| p != package);
-        }
-        self.log(
-            &format!("pkg-{action}"),
-            Some(package),
-            true,
-            one_time.then(|| "one-time".to_string()).as_deref(),
-        );
-        Response::Ok
-    }
-
-    fn freeze(&mut self) -> Response {
-        let kept = std::mem::take(&mut self.one_time);
-        self.log(
-            "pkg-freeze",
-            (!kept.is_empty()).then(|| kept.join(",")).as_deref(),
-            true,
-            None,
-        );
-        Response::Ok
-    }
-
-    fn layer_diff(&self, limit: usize) -> Response {
-        let kind = if self.layer_kind == "ephemeral" {
-            crate::layer::LayerKind::Ephemeral
-        } else {
-            crate::layer::LayerKind::Persistent
-        };
-        let all = crate::layer::Layer::new(self.layer.clone(), kind).diff(&self.base);
-        let total = all.len();
-        let entries: Vec<DiffEntry> = all
-            .into_iter()
-            .take(limit)
-            .map(|c| DiffEntry {
-                path: c.path.display().to_string(),
-                kind: c.kind.as_str().to_string(),
-                bytes: c.bytes,
-            })
-            .collect();
-        Response::Diff {
-            truncated: total.saturating_sub(entries.len()),
-            entries,
         }
     }
 
     fn perm_entries(&self) -> Vec<PermEntry> {
         use collab_types::caps::{Effect, Expiry, Scope};
-        self.policy
-            .capabilities
+        self.environment
+            .current()
+            .grants
+            .0
             .iter()
             .map(|c| PermEntry {
                 id: c.id.clone(),
                 scope: match &c.scope {
                     Scope::FsPath(p) => p.clone(),
+                    Scope::NetHost(h) => format!("net {h}"),
                     other => format!("{other:?}"),
                 },
                 allows: format!(
@@ -554,37 +663,36 @@ impl BrokerState {
 
     fn status(&self) -> SessionStatus {
         let now = Some(unix_now());
+        let env = self.environment.current();
+        let policy = Policy::new(env.grants.0.clone());
         SessionStatus {
             session: self.session_id.clone(),
-            profile: self.profile.as_str().to_string(),
-            posture: self.profile.posture_summary().to_string(),
-            layer: self.layer.display().to_string(),
-            layer_kind: self.layer_kind.clone(),
-            seccomp: if self.profile.confines_namespaces() {
-                "enforcing: namespace and mount syscalls denied".into()
-            } else {
-                "relaxed: namespace and mount syscalls allowed (developer profile)".into()
-            },
+            environment: env.name.clone(),
+            record: self.environment.key.clone(),
+            runtime: env.runtime.clone(),
+            tools: env
+                .tools
+                .iter()
+                .map(|t| format!("{} ({})", t.packages.join(", "), t.id))
+                .collect(),
+            seccomp: "enforcing: namespace and mount syscalls denied".into(),
             landlock: self.landlock.clone(),
-            trusted_dirs: self
-                .policy
+            trusted_dirs: policy
                 .trusted_dirs(now)
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect(),
-            readable_dirs: self
-                .policy
+            readable_dirs: policy
                 .readable_dirs(now)
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect(),
-            one_time_packages: self.one_time.clone(),
             audit_records: self.audit.read_all().len(),
         }
     }
 
     fn log(&self, request: &str, subject: Option<&str>, allowed: bool, detail: Option<&str>) {
-        let mut rec = AuditRecord::new(&self.session_id, self.profile.as_str(), request, allowed);
+        let mut rec = AuditRecord::new(&self.session_id, &self.environment.key, request, allowed);
         if let Some(s) = subject {
             rec = rec.about(s);
         }
@@ -593,6 +701,23 @@ impl BrokerState {
         }
         self.audit.append(&rec);
     }
+}
+
+/// A tool build the broker has decided to run.
+#[derive(Debug, Clone)]
+struct ToolPlan {
+    runtime: tilo_environment::PackageId,
+    wanted: Vec<String>,
+}
+
+fn run_build(
+    builder: &dyn ToolBuilder,
+    plan: &ToolPlan,
+    progress: &mut dyn Write,
+) -> Result<tilo_environment::PackageId, String> {
+    builder
+        .build(&plan.runtime, &plan.wanted, progress)
+        .map_err(|e| e.to_string())
 }
 
 /// A running broker: a listener and the thread serving it.
@@ -704,19 +829,6 @@ impl Broker {
     pub fn restart_requested(&self) -> bool {
         self.state.lock().is_ok_and(|s| s.restart_requested)
     }
-
-    /// Did the guest ask for its layer to be destroyed?
-    pub fn burn_requested(&self) -> bool {
-        self.state.lock().is_ok_and(|s| s.burn_requested)
-    }
-
-    /// Packages installed with `--one-time` that the session must undo.
-    pub fn one_time_packages(&self) -> Vec<String> {
-        self.state
-            .lock()
-            .map(|s| s.one_time.clone())
-            .unwrap_or_default()
-    }
 }
 
 impl Drop for Broker {
@@ -777,10 +889,16 @@ fn serve_connection(
         }
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(req) => {
+                if let Request::AddTool { packages } = &req {
+                    if serve_add_tool(packages, state, &mut writer) {
+                        continue;
+                    }
+                    break;
+                }
                 let command = state
                     .lock()
                     .ok()
-                    .and_then(|s| host_command_for(&s.base, &req));
+                    .and_then(|s| host_command_for(&s.host_root, &req));
                 if let Some(command) = command {
                     if serve_host_command(
                         &command,
@@ -1051,6 +1169,65 @@ fn log_disconnected(state: &Arc<Mutex<BrokerState>>, command: &HostCommand) {
     }
 }
 
+/// Build a tool without holding the state lock, streaming the builder's
+/// output to the guest as it comes. Returns true when the complete response
+/// reached the guest.
+fn serve_add_tool(
+    packages: &[String],
+    state: &Arc<Mutex<BrokerState>>,
+    writer: &mut UnixStream,
+) -> bool {
+    let planned = match state.lock() {
+        Ok(s) => s
+            .plan_add_tool(packages)
+            .map(|plan| (plan, Arc::clone(&s.builder))),
+        Err(_) => Err(Response::Denied {
+            reason: "the broker is in a failed state".into(),
+        }),
+    };
+    let (plan, builder) = match planned {
+        Ok(planned) => planned,
+        Err(response) => return write_frame(writer, &WireFrame::Complete { response }),
+    };
+    let built = {
+        let mut progress = FrameWriter { stream: writer };
+        run_build(&*builder, &plan, &mut progress)
+    };
+    let response = match state.lock() {
+        Ok(s) => s.finish_add_tool(&plan, built),
+        Err(_) => Response::Denied {
+            reason: "the broker is in a failed state".into(),
+        },
+    };
+    write_frame(writer, &WireFrame::Complete { response })
+}
+
+/// Progress output, framed for the guest.
+struct FrameWriter<'a> {
+    stream: &'a mut UnixStream,
+}
+
+impl Write for FrameWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let frame = WireFrame::Output {
+            stderr: false,
+            data: data.to_vec(),
+        };
+        if write_frame(self.stream, &frame) {
+            Ok(data.len())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the guest stopped listening",
+            ))
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 fn write_frame(writer: &mut UnixStream, frame: &WireFrame) -> bool {
     let Ok(mut bytes) = serde_json::to_vec(frame) else {
         return false;
@@ -1159,21 +1336,35 @@ mod tests {
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: Duration = Duration::from_secs(30);
 
+    use tilo_environment::DEFAULT_RECORD;
+
     fn state(dir: &Path) -> BrokerState {
+        state_with(dir, Arc::new(tilo_environment::NoToolBuilder))
+    }
+
+    fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
+        let records = Records::at(dir.join("records"));
+        let built_from = records
+            .create(DEFAULT_RECORD, &Environment::new("Default", &image(1)))
+            .unwrap();
         BrokerState {
             session_id: "s1".into(),
-            profile: Profile::Ush,
-            policy_path: dir.join("policy.json"),
-            policy: Policy::default(),
+            environment: EnvironmentHandle {
+                records,
+                key: DEFAULT_RECORD.into(),
+                built_from,
+            },
             audit: AuditLog::at(dir.join("audit")),
-            one_time: Vec::new(),
             restart_requested: false,
-            burn_requested: false,
-            base: dir.join("base"),
-            layer: dir.join("layers/persistent"),
-            layer_kind: "persistent".into(),
+            host_root: dir.join("base"),
+            images: Vec::new(),
+            builder,
             landlock: "not attempted".into(),
         }
+    }
+
+    fn trusted(s: &BrokerState) -> Vec<PathBuf> {
+        Policy::new(s.environment.current().grants.0).trusted_dirs(Some(1_000))
     }
 
     #[test]
@@ -1510,11 +1701,10 @@ mod tests {
                 matches!(resp, Response::NeedsRestart { .. }),
                 "a new bind needs a new mount namespace, so the answer has to say so: {resp:?}"
             );
-            // Saved, so the next session picks it up.
-            let saved = Policy::load(&s.policy_path);
-            assert_eq!(saved.trusted_dirs(Some(1_000)).len(), 1);
+            // In the record, so the next session picks it up.
+            assert_eq!(trusted(&s).len(), 1);
         }
-        // phase: trusting_a_base_subtree_is_refused_and_recorded
+        // phase: trusting_a_guest_owned_path_is_refused_and_recorded
         {
             let dir = tempfile::tempdir().unwrap();
             let mut s = state(dir.path());
@@ -1522,7 +1712,7 @@ mod tests {
                 path: PathBuf::from("/usr"),
             });
             assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
-            assert!(Policy::load(&s.policy_path).capabilities.is_empty());
+            assert!(s.environment.current().grants.0.is_empty());
 
             let log = s.audit.read_all();
             assert_eq!(log.len(), 1);
@@ -1545,10 +1735,8 @@ mod tests {
             let mut s = state(dir.path());
             s.handle(Request::TrustDir { path: link });
 
-            let saved = Policy::load(&s.policy_path);
-            let trusted = saved.trusted_dirs(Some(1_000));
             assert_eq!(
-                trusted,
+                trusted(&s),
                 vec![real.canonicalize().unwrap()],
                 "the grant must name the resolved directory, not the symlink"
             );
@@ -1591,74 +1779,188 @@ mod tests {
     }
 
     #[test]
-    fn session_state_tracks_one_time_installs_restart_and_posture() {
-        // phase: a_one_time_install_is_remembered_and_freeze_forgets_it
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut s = state(dir.path());
-            s.handle(Request::PkgRecorded {
-                package: "sl".into(),
-                action: "install".into(),
-                one_time: true,
-            });
-            s.handle(Request::PkgRecorded {
-                package: "htop".into(),
-                action: "install".into(),
-                one_time: false,
-            });
-            assert_eq!(s.one_time, vec!["sl".to_string()]);
+    fn restart_is_a_flag_and_status_reports_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = state(dir.path());
+        assert!(!s.restart_requested);
+        assert_eq!(s.handle(Request::Restart), Response::Ok);
+        assert!(s.restart_requested);
 
-            s.handle(Request::Freeze);
-            assert!(
-                s.one_time.is_empty(),
-                "freeze promotes the session's installs, so nothing is left to undo"
-            );
-        }
-        // phase: removing_a_package_clears_its_one_time_record
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut s = state(dir.path());
-            s.handle(Request::PkgRecorded {
-                package: "sl".into(),
-                action: "install".into(),
-                one_time: true,
-            });
-            s.handle(Request::PkgRecorded {
-                package: "sl".into(),
-                action: "remove".into(),
-                one_time: true,
-            });
-            assert!(s.one_time.is_empty());
-        }
-        // phase: restart_is_a_flag_the_supervisor_reads
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut s = state(dir.path());
-            assert!(!s.restart_requested);
-            assert_eq!(s.handle(Request::Restart), Response::Ok);
-            assert!(s.restart_requested);
-        }
-        // phase: status_reports_the_real_posture
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut s = state(dir.path());
-            let Response::Status { status } = s.handle(Request::Status) else {
-                panic!("expected a status");
-            };
-            assert_eq!(status.profile, "ush");
-            assert!(status.seccomp.starts_with("enforcing"));
+        let Response::Status { status } = s.handle(Request::Status) else {
+            panic!("expected a status");
+        };
+        assert_eq!(status.environment, "Default");
+        assert_eq!(status.record, DEFAULT_RECORD);
+        assert_eq!(status.runtime, image(1).to_string());
+        assert!(status.seccomp.starts_with("enforcing"));
+    }
 
-            s.profile = Profile::Dsh;
-            let Response::Status { status } = s.handle(Request::Status) else {
-                panic!("expected a status");
-            };
-            assert!(
-                status.seccomp.starts_with("relaxed"),
-                "dsh must not report itself as enforcing: {}",
-                status.seccomp
-            );
-            assert!(status.posture.contains("NOT a sandbox"));
+    struct FakeBuilder {
+        id: tilo_environment::PackageId,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl ToolBuilder for FakeBuilder {
+        fn build(
+            &self,
+            runtime: &tilo_environment::PackageId,
+            packages: &[String],
+            progress: &mut dyn Write,
+        ) -> Result<tilo_environment::PackageId, tilo_environment::ToolBuildError> {
+            use tilo_environment::ToolBuildError;
+            if *runtime != image(1) {
+                return Err(ToolBuildError::Failed(
+                    "a tool is built for the environment's runtime".into(),
+                ));
+            }
+            writeln!(progress, "building {}", packages.join(" "))
+                .map_err(|e| ToolBuildError::Failed(e.to_string()))?;
+            self.calls
+                .lock()
+                .map_err(|e| ToolBuildError::Failed(e.to_string()))?
+                .push(packages.to_vec());
+            Ok(self.id)
         }
+    }
+
+    fn image(byte: u8) -> tilo_environment::PackageId {
+        tilo_environment::PackageId::from_bytes([byte; 32])
+    }
+
+    fn fake_builder() -> Arc<FakeBuilder> {
+        Arc::new(FakeBuilder {
+            id: image(2),
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    #[test]
+    fn pkg_install_builds_a_tool_and_adds_it_to_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let builder = fake_builder();
+        let mut s = state_with(dir.path(), builder.clone());
+
+        let resp = s.handle(Request::AddTool {
+            packages: vec!["pandoc".into()],
+        });
+        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+        let stored = s.environment.records.load(DEFAULT_RECORD).unwrap().unwrap();
+        assert_eq!(stored.tools.len(), 1);
+        assert_eq!(stored.tools[0].id, image(2).to_string());
+        assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
+
+        // Already there: nothing is built.
+        let resp = s.handle(Request::AddTool {
+            packages: vec!["pandoc".into()],
+        });
+        assert!(
+            matches!(resp, Response::NeedsRestart { ref detail } if detail.contains("already"))
+        );
+        assert_eq!(builder.calls.lock().unwrap().len(), 1);
+
+        let Response::Tools { runtime, tools } = s.handle(Request::ListTools) else {
+            panic!("expected tools");
+        };
+        assert_eq!(runtime, image(1).to_string());
+        assert_eq!(tools[0].packages, vec!["pandoc".to_string()]);
+
+        let audit = s.audit.read_all();
+        assert!(
+            audit
+                .iter()
+                .any(|r| r.request == "pkg-install" && r.allowed)
+        );
+    }
+
+    #[test]
+    fn without_a_builder_pkg_install_says_building_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = state_with(dir.path(), Arc::new(tilo_environment::NoToolBuilder));
+        let Response::Denied { reason } = s.handle(Request::AddTool {
+            packages: vec!["pandoc".into()],
+        }) else {
+            panic!("an install without a builder must be refused");
+        };
+        assert!(reason.contains("not available"), "{reason}");
+        assert!(s.environment.current().tools.is_empty());
+        assert!(
+            s.audit
+                .read_all()
+                .iter()
+                .any(|r| r.request == "pkg-install" && !r.allowed)
+        );
+    }
+
+    #[test]
+    fn pkg_remove_takes_a_whole_tool_out_or_says_what_travels_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = state_with(dir.path(), fake_builder());
+        s.handle(Request::AddTool {
+            packages: vec!["git".into(), "jq".into()],
+        });
+
+        let Response::Denied { reason } = s.handle(Request::RemoveTool {
+            packages: vec!["jq".into()],
+        }) else {
+            panic!("half a tool cannot be removed");
+        };
+        assert!(reason.contains("pkg remove git jq"), "{reason}");
+        assert!(matches!(
+            s.handle(Request::RemoveTool {
+                packages: vec!["htop".into()]
+            }),
+            Response::Denied { .. }
+        ));
+
+        let resp = s.handle(Request::RemoveTool {
+            packages: vec!["jq".into(), "git".into()],
+        });
+        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+        assert!(s.environment.current().tools.is_empty());
+    }
+
+    #[test]
+    fn provenance_names_the_image_a_path_comes_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir_all(runtime.join("usr/bin")).unwrap();
+        std::fs::write(runtime.join("usr/bin/sh"), b"").unwrap();
+        let mut s = state(dir.path());
+        s.images = vec![("runtime tapp:01".into(), runtime)];
+        assert_eq!(
+            s.handle(Request::Provenance {
+                path: PathBuf::from("/usr/bin/sh")
+            }),
+            Response::Provenance {
+                image: Some("runtime tapp:01".into())
+            }
+        );
+        assert_eq!(
+            s.handle(Request::Provenance {
+                path: PathBuf::from("/home/you/sh")
+            }),
+            Response::Provenance { image: None }
+        );
+    }
+
+    #[test]
+    fn a_tool_build_streams_its_progress_to_the_guest() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state_with(dir.path(), fake_builder())).unwrap();
+        let mut out = Vec::new();
+        let resp = ask_streaming(
+            &socket,
+            &Request::AddTool {
+                packages: vec!["pandoc".into()],
+            },
+            &mut out,
+            &mut std::io::sink(),
+        )
+        .unwrap();
+        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+        assert_eq!(String::from_utf8(out).unwrap(), "building pandoc\n");
+        drop(broker);
     }
 
     #[test]

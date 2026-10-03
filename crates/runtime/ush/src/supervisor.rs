@@ -6,15 +6,16 @@
 //!
 //! ```text
 //! ush
-//!  ├─ ensure the store and the layer                       (crate::layer)
-//!  ├─ compile the guest's seccomp filter                   (crate::profile)
+//!  ├─ resolve the environment record (the default is made on first use)
+//!  ├─ resolve its images to read-only trees                (crate::images)
+//!  ├─ compile the guest's seccomp filter                   (crate::seccomp)
 //!  ├─ start the broker on a socket in the session dir      (crate::broker)
-//!  ├─ exec bwrap ─┬─ unshare, mount the overlays, pivot
-//!  │              ├─ install the seccomp filter        ← the boundary
-//!  │              └─ exec tilo-ush guest-init ─┬─ install Landlock
-//!  │                                          └─ exec the shell
+//!  ├─ spawn bwrap ─┬─ unshare, stack the images, pivot
+//!  │               ├─ install the seccomp filter        ← the boundary
+//!  │               └─ exec tilo-ush guest-init ─┬─ install Landlock
+//!  │                                           └─ exec the shell
 //!  ├─ wait
-//!  └─ undo one-time installs, burn if asked, restart if asked
+//!  └─ restart if asked, from the record as it stands then
 //! ```
 //!
 //! # `serve` — how an app reaches a guest
@@ -23,53 +24,49 @@
 //! syscalls and its sandbox has no path to this binary), so `apps/terminal`
 //! asks for a guest instead of starting one: `tilo-ush serve` listens on a
 //! socket `tilo-launcher` passes every app as a connected descriptor, and one
-//! line of JSON gets back a pty master over `SCM_RIGHTS` — a terminal, never
-//! a namespace, a capability, or a `dsh` session
-//! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
+//! line of JSON naming a [`Target`] gets back a pty master over `SCM_RIGHTS` —
+//! a terminal, never a namespace or a capability.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tilo_clock::unix_now;
+use tilo_environment::{Environment, HomePolicy, Target, ToolBuilder, is_record_key};
 
 use crate::audit::AuditLog;
-use crate::broker::{Broker, BrokerState};
-use crate::guest::GuestPlan;
-use crate::layer::Layer;
+use crate::broker::{Broker, BrokerState, EnvironmentHandle};
+use crate::guest::{GuestPlan, GuestUser};
+use crate::images::Images;
 use crate::policy::Policy;
-use crate::profile::Profile;
+use crate::records::Records;
 use crate::store::Store;
 
 /// What the user asked for on the command line.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
-    pub profile: Profile,
-    /// `--ephemeral`: a layer of this session's own, destroyed on the way out.
-    pub ephemeral: bool,
+    /// The environment record to build from; `None` is the default
+    /// environment.
+    pub environment: Option<String>,
     /// `ush -c "…"`. Empty means an interactive shell.
     pub command: Vec<String>,
     pub term: String,
-    /// The host root to shadow. `/` outside tests.
-    pub base: PathBuf,
+    /// The machine's root. `/` outside tests.
+    pub host_root: PathBuf,
     pub verbose: bool,
-    /// The terminal's shell executes in the caller's home. The `ush` CLI
-    /// leaves this off so a package runtime still sees only the store's copy.
-    pub user_home: bool,
 }
 
 impl Default for SessionOptions {
     fn default() -> Self {
         Self {
-            profile: Profile::Ush,
-            ephemeral: false,
+            environment: None,
             command: Vec::new(),
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
-            base: PathBuf::from("/"),
+            host_root: PathBuf::from("/"),
             verbose: false,
-            user_home: false,
         }
     }
 }
@@ -79,9 +76,8 @@ impl Default for SessionOptions {
 const SANDBOX_SETUP_FAILED: &str = "\
 ush: the shell's sandbox could not be set up, so no shell started;
 ush: bwrap's reason is above. An overlay mount refused with \"Invalid
-ush: argument\" usually means /usr is already a stacked overlay (a
-ush: system extension merged over the image): the kernel stacks no
-ush: deeper, and `dmesg` shows \"maximum fs stacking depth exceeded\".";
+ush: argument\" usually means the images sit on a filesystem overlayfs
+ush: cannot stack on (another overlay): `dmesg` shows why.";
 
 /// Where the runtime's own binary is, as the supervisor sees it.
 /// `current_exe` rather than a constant: the guest must run the same build
@@ -98,19 +94,26 @@ pub fn runtime_binary() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
-/// The shell a guest hosts. The host's `$SHELL` is a hint, not guaranteed to
-/// exist in the guest — a shell that isn't falls back to `/usr/bin/bash`
-/// then `/bin/sh`, so a session never fails to start over a preference.
-pub fn guest_shell(base_visible: &Path) -> PathBuf {
+/// The shell a guest hosts. The host's `$SHELL` is a hint: it is used when
+/// the images have it, else `/usr/bin/bash`, else `/usr/bin/sh`, so a session
+/// never fails to start over a preference.
+pub fn guest_shell(images: &[PathBuf]) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(s) = std::env::var_os("SHELL") {
-        candidates.push(PathBuf::from(s));
+        let s = PathBuf::from(s);
+        // `/bin` is a link into `/usr/bin` in the guest; look where it points.
+        let in_usr = s
+            .strip_prefix("/bin")
+            .map_or_else(|_| s.clone(), |rest| Path::new("/usr/bin").join(rest));
+        candidates.push(in_usr);
     }
     candidates.push(PathBuf::from("/usr/bin/bash"));
-    candidates.push(PathBuf::from("/bin/sh"));
+    candidates.push(PathBuf::from("/usr/bin/sh"));
     for c in &candidates {
-        let on_host = base_visible.join(c.strip_prefix("/").unwrap_or(c));
-        if on_host.exists() {
+        let Ok(relative) = c.strip_prefix("/") else {
+            continue;
+        };
+        if images.iter().any(|image| image.join(relative).exists()) {
             return c.clone();
         }
     }
@@ -122,58 +125,73 @@ pub struct Session {
     pub store: Store,
     pub opts: SessionOptions,
     pub session_id: String,
+    pub images: Arc<dyn Images>,
+    pub builder: Arc<dyn ToolBuilder>,
 }
 
-/// Where `~` points, and which directory under it must stay hidden.
-///
-/// A terminal session (`user_home`) binds the caller's real home so a typed
-/// `echo ok > ~/probe` creates that file where the user can see it. The store
-/// lives under that home and holds `policy.json`, so it is covered. The `ush`
-/// CLI leaves `user_home` off and keeps the isolated copy.
-fn session_directories(
-    user_home: bool,
-    home_mountpoint: &Path,
-    store_home: PathBuf,
-    store_root: &Path,
-) -> (PathBuf, Option<PathBuf>) {
-    if !user_home {
-        return (store_home, None);
-    }
-    let masked_store = store_root
-        .starts_with(home_mountpoint)
-        .then(|| store_root.to_path_buf());
-    (home_mountpoint.to_path_buf(), masked_store)
+/// An environment resolved for one guest: its record and its image trees.
+#[derive(Debug, Clone)]
+pub struct Resolved {
+    pub key: String,
+    pub environment: Environment,
+    /// `(label, root)`, topmost first: tools newest first, the runtime last.
+    pub images: Vec<(String, PathBuf)>,
 }
 
 impl Session {
-    pub fn new(store: Store, opts: SessionOptions) -> Self {
+    pub fn new(
+        store: Store,
+        opts: SessionOptions,
+        images: Arc<dyn Images>,
+        builder: Arc<dyn ToolBuilder>,
+    ) -> Self {
         Self {
             store,
             opts,
             session_id: uuid::Uuid::new_v4().simple().to_string(),
+            images,
+            builder,
         }
     }
 
-    fn layer(&self) -> Layer {
-        if self.opts.ephemeral {
-            self.store.ephemeral_layer(&self.session_id)
-        } else {
-            self.store.persistent_layer()
-        }
+    fn records(&self) -> Records {
+        Records::at(self.store.records_root())
     }
 
-    fn lower_layers(&self) -> Vec<PathBuf> {
-        if self.opts.ephemeral {
-            let persistent = self.store.persistent_layer();
-            if persistent.exists() {
-                return vec![persistent.path().to_path_buf()];
-            }
+    /// The environment this session names, as the record stands now, with
+    /// every image resolved to its tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record cannot be resolved (see
+    /// [`Records::resolve`]) or an image is not available.
+    pub fn resolve(&self) -> anyhow::Result<Resolved> {
+        let (key, environment) = self
+            .records()
+            .resolve(self.opts.environment.as_deref(), &*self.images)?;
+        let mut images = Vec::new();
+        let runtime = environment.runtime_id().map_err(anyhow::Error::msg)?;
+        let tools = environment
+            .tool_ids_topmost_first()
+            .map_err(anyhow::Error::msg)?;
+        for (id, tool) in tools.iter().zip(environment.tools.iter().rev()) {
+            self.images
+                .check_tool(id, &runtime)
+                .map_err(anyhow::Error::msg)?;
+            let tree = self.images.tree(id).map_err(anyhow::Error::msg)?;
+            images.push((format!("tool {id} ({})", tool.packages.join(", ")), tree));
         }
-        Vec::new()
+        let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
+        images.push((format!("runtime {runtime}"), tree));
+        Ok(Resolved {
+            key,
+            environment,
+            images,
+        })
     }
 
     /// Build the plan for this session: everything the guest will be is decided
-    /// here, from the store and the policy — never from anything the guest said.
+    /// here, from the record and the store — never from anything the guest said.
     ///
     /// # Errors
     ///
@@ -181,44 +199,41 @@ impl Session {
     /// (see [`runtime_binary`]).
     pub fn plan(
         &self,
+        resolved: &Resolved,
         broker_socket: PathBuf,
         seccomp_blob: PathBuf,
     ) -> std::io::Result<GuestPlan> {
-        let policy = Policy::load(&self.store.policy_path());
+        let policy = Policy::new(resolved.environment.grants.0.clone());
         let now = Some(unix_now());
-        // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
-        // symlink to `var/home`, and `bwrap` refuses to mount through a symlink.
-        // `/var/home/you` is real, and the base's link still resolves to it too.
-        let home_mountpoint = xdg_paths::home()
-            .map_or_else(|| PathBuf::from("/root"), |h| h.canonicalize().unwrap_or(h));
-        let store_root = self
-            .store
-            .root()
-            .canonicalize()
-            .unwrap_or_else(|_| self.store.root().to_path_buf());
-        let (guest_home, masked_store) = session_directories(
-            self.opts.user_home,
-            &home_mountpoint,
-            self.store.guest_home(),
-            &store_root,
-        );
-
+        let session_dir = self.store.session_dir(&self.session_id);
+        let guest_home = match resolved.environment.home {
+            HomePolicy::Persistent => self.store.environment_home(&resolved.key),
+            HomePolicy::Ephemeral => session_dir.join("home"),
+        };
+        let images: Vec<PathBuf> = resolved.images.iter().map(|(_, p)| p.clone()).collect();
+        // Resolved, as a grant names its directory: `bwrap` mounts through
+        // the real path, and a grant of the home must still find the store
+        // under it.
+        let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         Ok(GuestPlan {
-            profile: self.opts.profile,
-            base: self.opts.base.clone(),
-            upper: self.layer().path().to_path_buf(),
-            lower_layers: self.lower_layers(),
-            workdir_root: self.store.session_dir(&self.session_id),
+            shell: guest_shell(&images),
+            images,
+            host_root: self.opts.host_root.clone(),
+            session_dir,
+            var_dir: self.store.environment_var(&resolved.key),
             guest_home,
-            home_mountpoint,
-            masked_store,
+            user: GuestUser::current(),
+            environment: resolved.environment.name.clone(),
+            masked: vec![
+                canonical(self.store.root()),
+                canonical(self.store.records_root()),
+            ],
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             runtime_bin: runtime_binary()?,
             broker_socket,
             seccomp_blob,
             command: self.opts.command.clone(),
-            shell: guest_shell(&self.opts.base),
             term: self.opts.term.clone(),
             env: Vec::new(),
         })
@@ -226,8 +241,7 @@ impl Session {
 
     /// May a restart request rebuild this session, or is it a one-shot? Only an
     /// interactive session restarts: `ush -c "…"` has a command with side
-    /// effects, and rebuilding would re-run it — `pkg burn` asking for a restart
-    /// would burn, rebuild, burn, forever.
+    /// effects, and rebuilding would re-run it.
     pub fn restarts_in_place(&self) -> bool {
         self.opts.command.is_empty()
     }
@@ -248,53 +262,51 @@ impl Session {
                 code = exit;
                 break;
             }
-            // A restart is a new namespace: a new session directory and broker socket.
-            // Reusing the old ids would leave a stale overlay workdir the next mount refuses.
+            // A restart is a new namespace: a new session directory and broker
+            // socket, and the record read again — that is how a tool added or a
+            // directory granted reaches the shell.
             self.session_id = uuid::Uuid::new_v4().simple().to_string();
         }
         Ok(code)
     }
 
     fn run_once(&self) -> anyhow::Result<(i32, bool)> {
-        let layer = self.layer();
-        // Before anything is written: a store on tmpfs mounts every bind and then
-        // dies at the overlay with only `Invalid argument`, far from the cause.
-        crate::layer::upper_filesystem_supported(layer.path())?;
-        layer.create(&self.opts.base)?;
-        // Seeding writes a guest `.bashrc`. That belongs in the isolated home,
-        // never in the directory the user actually lives in.
-        if !self.opts.user_home {
-            seed_guest_home(&self.store.guest_home())?;
-        }
-
+        let resolved = self.resolve()?;
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
-        let seccomp_blob = crate::profile::write_guest_filter(&session_dir, self.opts.profile)?;
-        let broker_socket = session_dir.join("broker.sock");
+        let outcome = self.run_guest(&resolved, &session_dir);
+        // Holds the generated `/etc`, the broker socket, an ephemeral home.
+        crate::guest::remove_dir_all_forced(&session_dir);
+        outcome
+    }
 
+    fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<(i32, bool)> {
+        let seccomp_blob = crate::seccomp::write_guest_filter(session_dir)?;
+        let broker_socket = session_dir.join("broker.sock");
         let broker = Broker::start(
             broker_socket.clone(),
             BrokerState {
                 session_id: self.session_id.clone(),
-                profile: self.opts.profile,
-                policy_path: self.store.policy_path(),
-                policy: Policy::load(&self.store.policy_path()),
+                environment: EnvironmentHandle {
+                    records: self.records(),
+                    key: resolved.key.clone(),
+                    built_from: resolved.environment.clone(),
+                },
                 audit: AuditLog::at(self.store.audit_dir()),
-                one_time: Vec::new(),
                 restart_requested: false,
-                burn_requested: false,
-                base: self.opts.base.clone(),
-                layer: layer.path().to_path_buf(),
-                layer_kind: layer.kind().as_str().to_string(),
+                host_root: self.opts.host_root.clone(),
+                images: resolved.images.clone(),
+                builder: Arc::clone(&self.builder),
                 landlock: "installed by the guest at startup".into(),
             },
         )?;
 
-        let plan = self.plan(broker_socket, seccomp_blob)?;
+        let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
         plan.prepare()?;
+        seed_guest_home(&plan.guest_home)?;
 
         if self.opts.verbose {
-            let argv = crate::guest::build_argv(&plan, None, None);
+            let argv = crate::guest::build_argv(&plan, None);
             eprintln!(
                 "ush: {}",
                 argv.iter()
@@ -306,7 +318,6 @@ impl Session {
 
         // The guest's first process is this binary again, so it can install Landlock
         // inside the namespace — using the paths the guest itself will use.
-        let mut plan = plan;
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
         let mut command = vec![
@@ -328,62 +339,14 @@ impl Session {
         if code != 0 && !broker.guest_connected() {
             eprintln!("{SANDBOX_SETUP_FAILED}");
         }
-
         let restart = broker.restart_requested();
-        let burn = broker.burn_requested();
-        let one_time = broker.one_time_packages();
         drop(broker);
-
-        // The overlay is unmounted now, so the layer is an ordinary directory
-        // again and both of these are safe.
-        if !one_time.is_empty() && !burn {
-            self.undo_one_time(&one_time);
-        }
-        if burn {
-            layer.burn()?;
-        }
-        crate::guest::remove_dir_all_forced(&session_dir);
-        if self.opts.ephemeral && !restart {
-            layer.burn()?;
-        }
         Ok((code, restart))
-    }
-
-    /// Remove the packages a `--one-time` install put in the layer, by starting
-    /// a throwaway non-interactive guest against the same layer — removing an
-    /// rpm means running rpm, which needs the base to run its scriptlets.
-    fn undo_one_time(&self, packages: &[String]) {
-        let releasever = crate::pkg::releasever();
-        let argv = crate::pkg::remove_argv(packages, &releasever);
-        let mut opts = self.opts.clone();
-        opts.command = argv;
-        opts.ephemeral = false;
-        opts.verbose = false;
-        let cleanup = Session {
-            store: self.store.clone(),
-            opts,
-            session_id: format!("{}-cleanup", self.session_id),
-        };
-        // A failure here leaves the package in the layer (visible in `pkg list`,
-        // removable by hand) — not a reason to fail a session already finished.
-        if let Err(e) = cleanup.run_once() {
-            tracing::warn!(error = %e, "could not undo the session's one-time installs");
-        }
-        let manifest = self
-            .layer()
-            .path()
-            .join(crate::pkg::MANIFEST_PATH.trim_start_matches('/'));
-        let mut m = crate::pkg::Manifest::load(&manifest);
-        for p in packages {
-            m.forget(p);
-        }
-        let _ = m.save(&manifest);
     }
 }
 
-/// Give a fresh guest home the dotfiles that make a shell usable.
-/// Minimal home contents for the guest. The home is write-isolated by default,
-/// so it is not seeded from the user's home directory.
+/// Give a fresh guest home the dotfiles that make a shell usable. Never
+/// seeded from the user's own home: an environment's home is its own.
 #[allow(
     clippy::literal_string_with_formatting_args,
     reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"
@@ -398,7 +361,7 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
         &bashrc,
         "# ush guest shell\n\
          [ -f /etc/bashrc ] && . /etc/bashrc\n\
-         PS1='[\\[\\e[36m\\]${TILO_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
+         PS1='[\\[\\e[36m\\]${TILO_USH_ENVIRONMENT:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
          alias ls='ls --color=auto'\n",
     )
 }
@@ -409,10 +372,10 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum ServeRequest {
-    /// Open a guest and hand back its pty master.
+    /// Open a session on `target` and hand back its pty master.
     OpenSession {
         #[serde(default)]
-        profile: String,
+        target: Target,
         #[serde(default = "default_cols")]
         cols: u16,
         #[serde(default = "default_rows")]
@@ -440,33 +403,36 @@ pub enum ServeResponse {
     /// The pty master follows as an `SCM_RIGHTS` descriptor on this message.
     Session {
         session: String,
-        profile: String,
+        /// The environment record the session was built from.
+        environment: String,
     },
     Denied {
         reason: String,
     },
 }
 
-/// Decide one request. Pure, so the gate on `dsh` can be tested without a pty.
+/// Decide one request: the environment record it names (`None` for the
+/// default). Pure, so the gate can be tested without a pty.
 ///
 /// # Errors
 ///
-/// Returns an error if the requested profile is not reachable from an app
-/// launch (currently only `dsh`, the unsandboxed developer profile).
-pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
-    match req {
-        ServeRequest::OpenSession { profile, .. } => {
-            let requested = Profile::parse(profile);
-            if !requested.reachable_from_app_launch() {
-                return Err(format!(
-                    "`{}` is the developer profile and is not a sandbox; it is \
-                     reachable only by running it yourself, never from an app \
-                     launch",
-                    requested.as_str()
-                ));
-            }
-            Ok(requested)
-        }
+/// Returns the reason a target cannot be served: the host target (not served
+/// here), or a record key an app may not use.
+pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
+    let ServeRequest::OpenSession { target, .. } = req;
+    match target {
+        Target::Host => Err(
+            "not available: this supervisor builds environments only; the host target \
+             (your own login shell) is not served here"
+                .into(),
+        ),
+        Target::Environment { record: None } => Ok(None),
+        Target::Environment {
+            record: Some(record),
+        } if is_record_key(record) => Ok(Some(record.clone())),
+        Target::Environment {
+            record: Some(record),
+        } => Err(format!("{record:?} does not name an environment record")),
     }
 }
 
@@ -477,7 +443,7 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
 /// Returns an error if the store cannot be prepared, the socket path's
 /// parent cannot be created, the socket cannot be bound, or its permissions
 /// cannot be set to owner-only.
-pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
+pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     store.ensure()?;
     let listener = if let Some(listener) = systemd_listener(socket)? {
         listener
@@ -498,9 +464,9 @@ pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let store = store.clone();
-        let base = base.to_path_buf();
+        let host_root = host_root.to_path_buf();
         std::thread::spawn(move || {
-            if let Err(e) = serve_one(&stream, &store, base) {
+            if let Err(e) = serve_one(&stream, &store, &host_root) {
                 tracing::warn!(error = %e, "ush: serve failed");
             }
         });
@@ -558,7 +524,7 @@ fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
     Ok(Some(listener))
 }
 
-fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Result<()> {
+fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -576,11 +542,11 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
             );
         }
     };
-    let profile = match decide_serve(&req) {
-        Ok(p) => p,
+    let environment = match decide_serve(&req) {
+        Ok(e) => e,
         Err(reason) => {
             AuditLog::at(store.audit_dir()).append(
-                &crate::audit::AuditRecord::new("serve", "ush", "open-session", false)
+                &crate::audit::AuditRecord::new("serve", "-", "open-session", false)
                     .because(&reason),
             );
             return reply(&mut writer, &ServeResponse::Denied { reason }, None);
@@ -596,41 +562,37 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     } = req;
     let (master, slave) = open_pty(cols, rows)?;
 
-    let mut opts = SessionOptions {
-        profile,
-        base,
-        term: term.unwrap_or_else(|| "xterm-256color".into()),
-        // This socket is the terminal's shell. Commands the user types,
-        // including `echo ok > ~/probe`, have to land in their home. The
-        // `ush` CLI does not set this, so package sessions stay isolated.
-        user_home: true,
-        ..SessionOptions::default()
-    };
-    opts.command = command;
-
-    let session = Session::new(store.clone(), opts);
-    let id = session.session_id.clone();
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let record = environment
+        .clone()
+        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
         &id,
-        profile.as_str(),
+        &record,
         "open-session",
         true,
     ));
+    let launch = Launch {
+        store,
+        environment: environment.as_deref(),
+        term: term.as_deref().unwrap_or("xterm-256color"),
+        host_root,
+        command: &command,
+    };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let child = spawn_attached(&session, &slave)?;
-    // Matches the timing spawn_attached had when it owned `slave`: the
-    // child already holds its own clones for stdio, so the original can
+    let child = spawn_attached(&launch, &slave)?;
+    // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
     reply(
         &mut writer,
         &ServeResponse::Session {
             session: id.clone(),
-            profile: profile.as_str().to_string(),
+            environment: record.clone(),
         },
         Some(master.as_raw_fd()),
     )?;
@@ -664,7 +626,7 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
         },
     };
     AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, "ush", "close-session", true).because(termination),
+        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
     );
     Ok(())
 }
@@ -733,10 +695,20 @@ fn wait_for_terminal(stream: &UnixStream) -> LifetimeEnd {
     LifetimeEnd::TerminalClosed
 }
 
+/// What a served session runs: `tilo-ush run` on the same store, for one
+/// environment.
+struct Launch<'a> {
+    store: &'a Store,
+    environment: Option<&'a str>,
+    term: &'a str,
+    host_root: &'a Path,
+    command: &'a [String],
+}
+
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
 /// pty as its controlling terminal.
 fn spawn_attached(
-    session: &Session,
+    launch: &Launch<'_>,
     slave: &std::fs::File,
 ) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
@@ -746,12 +718,16 @@ fn spawn_attached(
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("run");
-    if session.opts.user_home {
-        cmd.arg("--user-home");
+    if let Some(record) = launch.environment {
+        cmd.arg("--environment").arg(record);
     }
-    cmd.env(crate::store::STORE_ENV, session.store.root());
-    cmd.env("TERM", &session.opts.term);
-    cmd.env("TILO_USH_BASE", &session.opts.base);
+    cmd.arg("--host-root").arg(launch.host_root);
+    if !launch.command.is_empty() {
+        cmd.arg("--").args(launch.command);
+    }
+    cmd.env(crate::store::STORE_ENV, launch.store.root());
+    cmd.env(crate::store::RECORDS_ENV, launch.store.records_root());
+    cmd.env("TERM", launch.term);
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
     cmd.stderr(Stdio::from(slave.try_clone()?));
@@ -833,6 +809,7 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_environment::{DEFAULT_RECORD, PackageId};
 
     #[test]
     fn the_session_ends_when_the_guest_or_the_terminal_does() {
@@ -867,158 +844,239 @@ mod tests {
         }
     }
 
-    use crate::layer::LayerKind;
-
-    /// The gate on the deliberate exception, at the place an app would hit it.
-    #[test]
-    fn serve_refuses_dsh_and_defaults_every_other_profile_to_ush() {
-        let open = |profile: &str| ServeRequest::OpenSession {
-            profile: profile.into(),
+    fn open(target: Target) -> ServeRequest {
+        ServeRequest::OpenSession {
+            target,
             cols: 80,
             rows: 24,
             term: None,
             command: Vec::new(),
-        };
-        let err = decide_serve(&open("dsh")).unwrap_err();
-        assert!(err.contains("not a sandbox"), "{err}");
-        for name in ["ush", "", "nonsense"] {
-            assert_eq!(decide_serve(&open(name)).unwrap(), Profile::Ush, "{name:?}");
         }
     }
 
     #[test]
-    fn a_session_request_may_name_a_program_and_defaults_to_the_shell() {
-        let shell: ServeRequest =
-            serde_json::from_str(r#"{"op":"open-session","profile":"ush"}"#).unwrap();
-        assert!(
-            matches!(shell, ServeRequest::OpenSession { ref command, .. } if command.is_empty())
+    fn serve_builds_environments_and_refuses_the_host_target() {
+        assert_eq!(decide_serve(&open(Target::default_environment())), Ok(None));
+        assert_eq!(
+            decide_serve(&open(Target::Environment {
+                record: Some("work".into())
+            })),
+            Ok(Some("work".into()))
         );
+        let err = decide_serve(&open(Target::Host)).unwrap_err();
+        assert!(err.starts_with("not available"), "{err}");
+        let err = decide_serve(&open(Target::Environment {
+            record: Some("../../etc".into()),
+        }))
+        .unwrap_err();
+        assert!(err.contains("does not name"), "{err}");
+    }
+
+    #[test]
+    fn a_session_request_names_its_target_and_may_name_a_program() {
+        let shell: ServeRequest =
+            serde_json::from_str(r#"{"op":"open-session","target":{"kind":"environment"}}"#)
+                .unwrap();
+        assert!(matches!(
+            shell,
+            ServeRequest::OpenSession { ref target, ref command, .. }
+                if *target == Target::default_environment() && command.is_empty()
+        ));
         let program: ServeRequest = serde_json::from_str(
-            r#"{"op":"open-session","profile":"ush","command":["htop","-d","5"]}"#,
+            r#"{"op":"open-session","target":{"kind":"environment","record":"work"},"command":["htop","-d","5"]}"#,
         )
         .unwrap();
         assert!(matches!(
             program,
             ServeRequest::OpenSession { ref command, .. } if command == &["htop", "-d", "5"]
         ));
-        assert_eq!(decide_serve(&program).unwrap(), Profile::Ush);
+        assert_eq!(decide_serve(&program).unwrap(), Some("work".into()));
     }
 
-    #[test]
-    fn session_options_choose_layers_and_restart_behaviour() {
-        // phase: an_ephemeral_session_stacks_the_persistent_layer_and_a_normal_one_does_not
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-            store.ensure().unwrap();
-            // A persistent layer has to exist to be stacked.
-            std::fs::create_dir_all(store.persistent_dir()).unwrap();
-            std::fs::write(store.persistent_dir().join(".ush-layer"), b"persistent\n").unwrap();
-
-            let normal = Session::new(store.clone(), SessionOptions::default());
-            assert!(normal.lower_layers().is_empty());
-            assert_eq!(normal.layer().kind(), LayerKind::Persistent);
-
-            let ephemeral = Session::new(
-                store.clone(),
-                SessionOptions {
-                    ephemeral: true,
-                    ..SessionOptions::default()
-                },
-            );
-            assert_eq!(
-                ephemeral.lower_layers(),
-                vec![store.persistent_dir()],
-                "an ephemeral session must still see what you installed for good"
-            );
-            assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
+    struct FixtureImages(PathBuf);
+    impl Images for FixtureImages {
+        fn tree(&self, id: &PackageId) -> Result<PathBuf, String> {
+            let tree = self.0.join(id.to_hex());
+            tree.is_dir()
+                .then_some(tree)
+                .ok_or_else(|| format!("{id} is not here"))
         }
-        // phase: a_one_shot_command_never_restarts_in_place
-        // `pkg burn` asks for a restart so the guest comes back on a fresh layer;
-        // under `ush -c` that would re-run the command that asked, looping forever.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-
-            let interactive = Session::new(store.clone(), SessionOptions::default());
-            assert!(interactive.restarts_in_place());
-
-            let one_shot = Session::new(
-                store,
-                SessionOptions {
-                    command: vec!["/bin/sh".into(), "-c".into(), "pkg burn".into()],
-                    ..SessionOptions::default()
-                },
-            );
-            assert!(
-                !one_shot.restarts_in_place(),
-                "restarting a session that was given a command re-runs the command"
-            );
+        fn check_tool(&self, tool: &PackageId, _runtime: &PackageId) -> Result<(), String> {
+            if *tool == PackageId::from_bytes([9; 32]) {
+                Err("tool was built for another runtime".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn current_runtime(&self) -> Result<PackageId, String> {
+            Ok(PackageId::from_bytes([1; 32]))
         }
     }
 
-    #[test]
-    fn the_plan_grants_exactly_what_the_policy_file_names() {
-        // phase: the_plan_takes_its_grants_from_the_policy_file
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-            store.ensure().unwrap();
-            let trusted = dir.path().join("src");
-            std::fs::create_dir_all(&trusted).unwrap();
-
-            let mut policy = Policy::default();
-            policy.trust_dir(&trusted).unwrap();
-            policy.save(&store.policy_path()).unwrap();
-
-            let session = Session::new(store, SessionOptions::default());
-            let plan = session
-                .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
-                .unwrap();
-            assert_eq!(plan.trusted_dirs, vec![trusted]);
+    fn session_in(dir: &Path) -> Session {
+        let images = dir.join("images");
+        for byte in [1_u8, 2] {
+            let tree = images.join(PackageId::from_bytes([byte; 32]).to_hex());
+            std::fs::create_dir_all(tree.join("usr/bin")).unwrap();
+            std::fs::create_dir_all(tree.join("etc")).unwrap();
         }
-        // phase: a_session_with_no_policy_grants_nothing
-        // A guest with an empty policy sees no host directory. The plan is where
-        // that is decided, so it is where it is asserted.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-            store.ensure().unwrap();
-            let session = Session::new(store, SessionOptions::default());
-            let plan = session
-                .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
-                .unwrap();
-            assert!(plan.trusted_dirs.is_empty());
-            assert!(plan.readable_dirs.is_empty());
-        }
+        std::fs::write(
+            images
+                .join(PackageId::from_bytes([1; 32]).to_hex())
+                .join("usr/bin/bash"),
+            b"",
+        )
+        .unwrap();
+        let store = Store::at(dir.join("ush"));
+        store.ensure().unwrap();
+        Session::new(
+            store,
+            SessionOptions::default(),
+            Arc::new(FixtureImages(images)),
+            Arc::new(tilo_environment::NoToolBuilder),
+        )
     }
 
     #[test]
-    fn the_guest_home_and_shell_are_prepared_without_the_real_ones() {
-        // phase: the_guest_home_is_seeded_once_and_not_from_the_real_one
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let home = dir.path().join("home");
-            seed_guest_home(&home).unwrap();
-            let rc = home.join(".bashrc");
-            assert!(rc.is_file());
-            std::fs::write(&rc, b"# edited by the user\n").unwrap();
-            seed_guest_home(&home).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(&rc).unwrap(),
-                "# edited by the user\n",
-                "re-seeding must not overwrite what the user put in their guest home"
-            );
-        }
-        // phase: the_guest_shell_falls_back_rather_than_failing_the_session
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-            std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("SHELL", "/usr/bin/definitely-not-here");
-            assert_eq!(guest_shell(dir.path()), PathBuf::from("/usr/bin/bash"));
-        }
+    fn the_plan_comes_from_the_record_its_images_and_its_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session_in(dir.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("SHELL", "/bin/bash");
+
+        // First use creates the default environment on the current runtime.
+        let resolved = session.resolve().unwrap();
+        assert_eq!(resolved.key, DEFAULT_RECORD);
+        assert_eq!(resolved.images.len(), 1);
+        assert!(resolved.images[0].0.starts_with("runtime "));
+
+        let records = session.records();
+        let granted = dir.path().join("src");
+        std::fs::create_dir_all(&granted).unwrap();
+        records
+            .apply(
+                DEFAULT_RECORD,
+                Environment::ADD_TOOL.with((
+                    PackageId::from_bytes([2; 32]).to_string(),
+                    vec!["pandoc".into()],
+                )),
+            )
+            .unwrap();
+        records
+            .apply(
+                DEFAULT_RECORD,
+                Environment::GRANT_DIR.with((granted.display().to_string(), true)),
+            )
+            .unwrap();
+
+        let resolved = session.resolve().unwrap();
+        assert!(
+            resolved.images[0].0.contains("pandoc"),
+            "the tool stacks on top"
+        );
+        assert!(resolved.images[1].0.starts_with("runtime "));
+        let plan = session
+            .plan(
+                &resolved,
+                PathBuf::from("/tmp/b.sock"),
+                PathBuf::from("/tmp/f.bpf"),
+            )
+            .unwrap();
+        assert_eq!(plan.trusted_dirs, vec![granted]);
+        assert!(plan.readable_dirs.is_empty());
+        assert_eq!(
+            plan.guest_home,
+            session.store.environment_home(DEFAULT_RECORD)
+        );
+        assert_eq!(plan.var_dir, session.store.environment_var(DEFAULT_RECORD));
+        assert_eq!(plan.shell, PathBuf::from("/usr/bin/bash"));
+        assert_eq!(plan.environment, tilo_environment::DEFAULT_NAME);
+        assert!(
+            plan.masked
+                .contains(&session.store.root().canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn a_missing_image_or_record_stops_the_session_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session_in(dir.path());
+        session.resolve().unwrap();
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::ADD_TOOL.with((
+                    PackageId::from_bytes([7; 32]).to_string(),
+                    vec!["gone".into()],
+                )),
+            )
+            .unwrap();
+        let err = session.resolve().unwrap_err().to_string();
+        assert!(err.contains("is not here"), "{err}");
+
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::REMOVE_TOOL.with(PackageId::from_bytes([7; 32]).to_string()),
+            )
+            .unwrap();
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::ADD_TOOL.with((
+                    PackageId::from_bytes([9; 32]).to_string(),
+                    vec!["elsewhere".into()],
+                )),
+            )
+            .unwrap();
+        let err = session.resolve().unwrap_err().to_string();
+        assert!(err.contains("another runtime"), "{err}");
+
+        let mut named = session_in(dir.path());
+        named.opts.environment = Some("work".into());
+        let err = named.resolve().unwrap_err().to_string();
+        assert!(err.contains("no environment"), "{err}");
+    }
+
+    #[test]
+    fn a_one_shot_command_never_restarts_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let interactive = session_in(dir.path());
+        assert!(interactive.restarts_in_place());
+        let mut one_shot = session_in(dir.path());
+        one_shot.opts.command = vec!["/bin/sh".into(), "-c".into(), "restart".into()];
+        assert!(!one_shot.restarts_in_place());
+    }
+
+    #[test]
+    fn the_guest_home_is_seeded_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        seed_guest_home(&home).unwrap();
+        let rc = home.join(".bashrc");
+        assert!(rc.is_file());
+        std::fs::write(&rc, b"# edited by the user\n").unwrap();
+        seed_guest_home(&home).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&rc).unwrap(),
+            "# edited by the user\n"
+        );
+    }
+
+    #[test]
+    fn the_guest_shell_falls_back_rather_than_failing_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("SHELL", "/usr/bin/definitely-not-here");
+        assert_eq!(
+            guest_shell(&[dir.path().to_path_buf()]),
+            PathBuf::from("/usr/bin/bash")
+        );
     }
 
     #[test]
@@ -1064,25 +1122,5 @@ mod tests {
             // SAFETY: we own `fd` now.
             unsafe { libc::close(fd) };
         }
-    }
-
-    #[test]
-    fn a_terminal_session_uses_the_caller_home_and_covers_the_store() {
-        let home = Path::new("/var/home/you");
-        let store = Path::new("/var/home/you/.local/share/ush");
-        let (guest, mask) = session_directories(true, home, store.join("home"), store);
-        assert_eq!(guest, home);
-        assert_eq!(mask.as_deref(), Some(store));
-
-        let (guest, mask) = session_directories(false, home, PathBuf::from("/store/home"), store);
-        assert_eq!(guest, PathBuf::from("/store/home"));
-        assert!(mask.is_none());
-
-        // A store kept outside the home is already unreachable; covering a
-        // path the guest cannot see would only hide a directory they own.
-        let outside = Path::new("/var/lib/ush");
-        let (guest, mask) = session_directories(true, home, outside.join("home"), outside);
-        assert_eq!(guest, home);
-        assert!(mask.is_none());
     }
 }
