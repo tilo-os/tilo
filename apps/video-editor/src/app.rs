@@ -2323,12 +2323,18 @@ impl VideoEditorApp {
         let mut out = Vec::new();
         let row_h = self.bin_row_height();
         let mut y = r.bin.y0 + self.bin_list_top() - self.bin_scroll;
+        let inset = S2 * self.bin_ui_scale();
+        // A list that scrolls keeps its rows clear of the bar beside them.
+        let trailing = if self.bin_metrics(r).overflows() {
+            inset + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+        } else {
+            inset
+        };
         for mid in self.bin_order() {
-            let inset = 8.0 * self.bin_ui_scale();
             let rect = Rect::new(
                 r.bin.x0 + inset,
                 y,
-                r.bin.x1 - inset,
+                r.bin.x1 - trailing,
                 y + row_h - S2 * self.bin_ui_scale(),
             );
             out.push((mid, rect));
@@ -4736,7 +4742,7 @@ impl VideoEditorApp {
     /// rename field is placed.
     fn bin_name_rect(row: Rect) -> Rect {
         // Mirrors draw_bin: a 64px thumbnail at the left, then the name text.
-        let x0 = row.x0 + 8.0 + 64.0 + 12.0;
+        let x0 = row.x0 + 8.0 + 64.0 + 8.0;
         Rect::new(x0, row.y0 + 4.0, row.x1 - 8.0, row.y0 + 30.0)
     }
 
