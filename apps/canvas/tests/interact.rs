@@ -484,6 +484,64 @@ fn the_eraser_rubs_out_paint_or_whole_strokes() {
     );
 }
 
+/// A pen paints with its own pressure, whatever the hand's speed; its
+/// eraser end erases.
+#[test]
+fn a_pen_paints_with_its_pressure_and_erases_with_its_other_end() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    let pen = |desk: &mut Desk, pressure: f64, eraser: bool| {
+        desk.app.harness().send(&WindowEvent::PenSample {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            pressure,
+            tilt: (0.0, 0.0),
+            eraser,
+        });
+    };
+    pen(&mut desk, 0.1, false);
+    desk.pointer(100.0, 450.0);
+    pen(&mut desk, 0.1, false);
+    desk.button(ElementState::Pressed);
+    for (step, x) in [150.0, 200.0, 250.0, 300.0, 350.0, 400.0]
+        .into_iter()
+        .enumerate()
+    {
+        pen(
+            &mut desk,
+            0.25 + 0.14 * f64::from(u32::try_from(step).unwrap()),
+            false,
+        );
+        desk.pointer(x, 450.0);
+    }
+    pen(&mut desk, 0.95, false);
+    desk.button(ElementState::Released);
+    let stroke = desk.art().marks.last().cloned().unwrap();
+    let Shape::Stroke { points, .. } = &stroke.shape else {
+        panic!("a stroke")
+    };
+    assert!(
+        points[0][2] < 0.15,
+        "it lands as lightly as the pen: {points:?}"
+    );
+    assert!(
+        points.last().unwrap()[2] > 0.8,
+        "it lifts as hard as the pen pressed: {points:?}"
+    );
+
+    for (pressure, at) in [(0.8, (200.0, 400.0)), (0.8, (200.0, 500.0))] {
+        pen(&mut desk, pressure, true);
+        desk.pointer(at.0, at.1);
+        if at.1 < 450.0 {
+            pen(&mut desk, pressure, true);
+            desk.button(ElementState::Pressed);
+        }
+    }
+    pen(&mut desk, 0.8, true);
+    desk.button(ElementState::Released);
+    let rub = desk.art().marks.last().cloned().unwrap();
+    assert_eq!(rub.style.brush.as_deref(), Some("eraser"), "{rub:?}");
+}
+
 /// With a stroke selected, the brush landing on its end carries it on; a
 /// double click edits its path, the stretch near a dragged point bending.
 #[test]
