@@ -1168,11 +1168,14 @@ COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boo
 # and Cisco's packages, from their own servers), verifies them and builds local
 # system extensions. Which extensions exist, which hosts their bytes may come
 # from and which key signs their manifests is decided by the image itself
-# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/cosign.pub). The
+# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/extensions.pub). The
 # image carries no extension payload. See
 # /usr/share/tilo/system-extensions/README.md.
 FROM scratch AS extension-files
 COPY --chmod=0755 os/usr/libexec/tilo-extension /usr/libexec/tilo-extension
+# The only key a manifest may be signed with (KMS alias/tilo-extension-manifests);
+# separate from cosign.pub, so the OS update key cannot authorize one.
+COPY keys/extensions.pub /usr/share/tilo/extensions.pub
 # Starts the deferred install the moment NetworkManager reports internet
 # connectivity, for an owner who opted in while offline.
 COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension \
