@@ -125,6 +125,60 @@ RATCHETS = {
     ),
 }
 
+# The one resource/action/view model (docs/architecture/README.md): an app's
+# edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
+# its durable state is the resource's document, and nothing beside
+# `Action::apply` writes that document. These count production code only (test
+# files and the trailing `#[cfg(test)]` module are exempt) and may only go down.
+MODEL_RATCHETS = {
+    "app_action_host": (
+        re.compile(r"\bActionHost\b"),
+        "app-owned ActionHost; submit edits through the framework Dispatcher",
+    ),
+    "standalone_launch": (
+        re.compile(
+            r"\bLaunchSpec\s*::\s*new\b|\bLegacyLaunchInputs\b|\bLegacyRecordPolicy\b"
+            r"|\.\s*as_definition\s*\(|\.\s*shot_root\s*\("
+        ),
+        "standalone widget launch; launch the ResourceApp and stage shots with ResourceApp::scenario",
+    ),
+    "direct_document_api": (
+        re.compile(r"\bDocMut\b"),
+        "direct document write; change the document through the resource's Action",
+    ),
+    "empty_action_vocabulary": (
+        re.compile(r"\benum\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>{}]*>)?\s*\{\s*\}"),
+        "empty action vocabulary; the app's durable state belongs in its resource document",
+    ),
+    "widget_owned_document": (
+        re.compile(r"\bAutoCommit\s*::\s*(?:new|load|load_with\w*)\s*\("),
+        "app-owned document; the framework owns the resource document",
+    ),
+}
+RATCHET_REASONS = {
+    **{rule: reason for rule, (_, reason) in RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
+}
+TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
+
+
+def is_test_source(relative: str) -> bool:
+    name = relative.rsplit("/", 1)[-1]
+    return (
+        "/tests/" in relative
+        or name in {"tests.rs", "test_support.rs", "testing.rs"}
+        or name.endswith("_tests.rs")
+        or name.startswith("test_")
+    )
+
+
+def production_code(text: str) -> str:
+    """Code up to the conventional trailing test module, without comments or literals."""
+    found = TEST_MODULE_START.search(text)
+    if found:
+        text = text[: found.start()]
+    return rust_code_only(text)
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -215,7 +269,16 @@ def audit_ratchets(
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = rust_code_only(source_text)
-        for rule, (pattern, reason) in RATCHETS.items():
+        rules = [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        # A Tilo workspace invariant, like the app host check in `audit`; the
+        # miniature SDK apps the policy tests build are not held to it.
+        if root.resolve() == ROOT.resolve():
+            production = "" if is_test_source(relative) else production_code(source_text)
+            rules += [
+                (rule, pattern, reason, production)
+                for rule, (pattern, reason) in MODEL_RATCHETS.items()
+            ]
+        for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
             limit = baseline.get(rule, {}).get(relative, 0)
             if len(matches) <= limit:
@@ -613,7 +676,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     ratchet_baseline = load_ratchet_baseline(root)
     baseline_path = root / BASELINE
     for rule, entries in ratchet_baseline.items():
-        if rule not in RATCHETS:
+        if rule not in RATCHET_REASONS:
             violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
         for relative in entries:
             if not (root / relative).is_file():
