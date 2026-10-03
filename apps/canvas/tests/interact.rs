@@ -490,8 +490,7 @@ fn shots() -> std::path::PathBuf {
 #[ignore = "writes screenshots to look at"]
 fn screenshots_of_gestures_in_progress() {
     for scenario in ["selection", "turned", "points", "close-up", "landscape"] {
-        let mut app = TestApp::<App>::new().unwrap();
-        app.stage(Some(scenario)).unwrap();
+        let mut app = TestApp::<App>::capture(Some(scenario)).unwrap();
         let mut desk = Desk {
             canvas: app.harness().targets().get("canvas").copied().unwrap(),
             app,
@@ -549,8 +548,7 @@ fn screenshots_of_gestures_in_progress() {
 
     // A stroke on the oil layer, shown as the oil will paint it before the
     // brush lifts.
-    let mut app = TestApp::<App>::new().unwrap();
-    app.stage(Some("landscape")).unwrap();
+    let mut app = TestApp::<App>::capture(Some("landscape")).unwrap();
     app.harness()
         .perform_named("canvas-layer", &ui::a11y::Action::SetValue("land".into()))
         .unwrap();

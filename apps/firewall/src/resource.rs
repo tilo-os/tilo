@@ -73,7 +73,9 @@ impl ResourceApp for FirewallShell {
     const ID: &'static str = "so.tilo.firewall";
     const TITLE: &'static str = "Firewall";
     const ICON: Option<&'static str> = Some("firewall");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
+    }
 
     fn view(cx: &mut ViewCx<Firewall>) -> Element {
         cx.surface(FirewallApp::new())

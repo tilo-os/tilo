@@ -100,7 +100,9 @@ impl ResourceApp for SettingsShell {
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Settings";
     const ICON: Option<&'static str> = Some("settings");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
     // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
     // scale, theme, contrast and motion apply live.
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {

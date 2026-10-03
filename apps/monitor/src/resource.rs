@@ -214,7 +214,9 @@ impl ResourceApp for MonitorShell {
     const ID: &'static str = "so.tilo.monitor";
     const TITLE: &'static str = "System Monitor";
     const ICON: Option<&'static str> = Some("monitor");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Monitor>) -> Element {
         // `new` seeds fabricated sample processes for screenshots. The live

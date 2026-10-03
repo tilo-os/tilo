@@ -76,7 +76,9 @@ impl ResourceApp for TotpShell {
     const ID: &'static str = "so.tilo.totp";
     const TITLE: &'static str = "Authenticator";
     const ICON: Option<&'static str> = Some("totp");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
         cx.surface(AuthenticatorApp::new())

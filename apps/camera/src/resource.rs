@@ -127,7 +127,9 @@ impl ResourceApp for CameraShell {
     const ID: &'static str = "so.tilo.camera";
     const TITLE: &'static str = "Camera";
     const ICON: Option<&'static str> = Some("camera");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Camera>) -> Element {
         cx.surface(CameraApp::disk())
