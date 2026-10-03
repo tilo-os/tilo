@@ -111,6 +111,9 @@ pub(crate) struct StandaloneHistoryHost {
     toolbar: Option<Button>,
     search: Option<Button>,
     search_enabled: bool,
+    /// The app shows a [`history_button`] in its own toolbar, so the window
+    /// draws no History button of its own.
+    app_presents_button: bool,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
     content_focus: Option<CompositionFocus>,
@@ -160,6 +163,7 @@ impl StandaloneHistoryHost {
             ),
             search: None,
             search_enabled: false,
+            app_presents_button: false,
             pane: StandaloneHistoryPane::new(),
             content_target: Err(HistoryError::Unavailable),
             content_focus: None,
@@ -289,6 +293,13 @@ impl StandaloneHistoryHost {
         self.session
             .as_ref()
             .map_or(0, |session| session.selection().len())
+    }
+
+    /// Whether the app places a [`history_button`] in its own toolbar. The
+    /// window then draws no History button of its own; the button's action
+    /// is the same.
+    pub(crate) fn set_app_presents_button(&mut self, presents: bool) {
+        self.app_presents_button = presents;
     }
 
     /// The host's own chrome presents History and Search: drop the in-window
@@ -772,9 +783,11 @@ impl StandaloneHistoryHost {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         viewport_width: f64,
     ) -> HostHistoryLayout {
+        let app_presents_button = self.app_presents_button;
         let toolbar = self
             .toolbar
             .as_mut()
+            .filter(|_| !app_presents_button)
             .map(|button| button.build_layout(taffy, theme, nodes));
         let search = self
             .search
@@ -955,11 +968,15 @@ impl StandaloneHistoryHost {
         presence: &PresenceCtx,
     ) -> Result<(), HistoryHostError> {
         self.refresh(context)?;
-        if self.toolbar.is_some() {
-            crate::chrome::paint_bar(scene, transform, theme, self.bar_rect);
+        let toolbar_shown = self.toolbar.is_some() && !self.app_presents_button;
+        if toolbar_shown || self.search.is_some() {
+            bar_edge(scene, transform, theme, self.bar_rect);
         }
-        for button in self.in_window_controls_mut() {
+        if toolbar_shown && let Some(button) = self.toolbar.as_mut() {
             button.draw(scene, transform, text, theme, presence);
+        }
+        if let Some(search) = self.search.as_mut() {
+            search.draw(scene, transform, text, theme, presence);
         }
         if self.is_open() {
             self.pane.draw(scene, transform, text, theme, presence);
@@ -968,6 +985,26 @@ impl StandaloneHistoryHost {
             self.canvas.draw(scene, transform, text, theme, presence);
         }
         Ok(())
+    }
+
+    /// The History chrome's part of the window's top layer: the restore
+    /// review is a modal, painted over everything else in the window.
+    pub(crate) fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.is_open() {
+            self.pane
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+        if self.preview_visible {
+            self.canvas
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
     }
 }
 
@@ -1017,6 +1054,60 @@ impl Widget for PresentationRoots<'_> {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+/// The test id of [`history_button`], by which the host finds it in the
+/// app's tree.
+pub(crate) const HISTORY_BUTTON_ID: &str = "history-button";
+
+/// The History button an app places in its own toolbar. It opens History
+/// exactly as the window's History button does, and while the app shows it
+/// the window draws no separate History bar above the app.
+///
+/// # Panics
+///
+/// Never: the History action is a fixed unit operation whose binding always
+/// serializes.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "fixed unit View operation and its nullary binding serialize infallibly"
+)]
+pub fn history_button() -> Button {
+    let binding = ActionBinding::unit_for(&open_resource(), "open").expect("unit history action");
+    Button::new(HISTORY_BUTTON_ID, "standalone-history-title", None)
+        .with_icon(crate::icons::Icon::History)
+        .ghost()
+        .on_action(binding)
+}
+
+/// Whether `root`'s tree shows a [`history_button`].
+pub(crate) fn presents_history_button(root: &dyn Widget) -> bool {
+    if root.test_id() == Some(HISTORY_BUTTON_ID) {
+        return true;
+    }
+    let mut found = false;
+    root.for_each_child(&mut |child| {
+        found = found || presents_history_button(child);
+    });
+    found
+}
+
+/// The edge under a bar of window chrome: the bar stands on the content
+/// ground and is told from the app by one hairline at its bottom, never by
+/// a raised fill.
+pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule <= 0.0 || bar.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+        None,
+        &Rect::new(bar.x0, bar.y1 - rule, bar.x1, bar.y1),
+    );
 }
 
 #[expect(
@@ -1452,6 +1543,47 @@ mod tests {
             host.session.as_ref().unwrap().selection(),
             [decode_entry(&entry).unwrap()]
         );
+    }
+
+    #[test]
+    fn an_app_history_button_replaces_the_window_bar() {
+        // Case `the_button_is_found_anywhere_in_the_app_tree`.
+        {
+            let plain = crate::widget::Row::new().push(Box::new(Text::new("app")));
+            assert!(!presents_history_button(&plain));
+            let toolbar = crate::widget::Row::new()
+                .push(Box::new(Text::new("Notes")))
+                .push(Box::new(history_button()));
+            let app = crate::widget::Column::new().push(Box::new(toolbar));
+            assert!(presents_history_button(&app));
+            let button = history_button();
+            assert_eq!(
+                Widget::accessibility(&button).and_then(|node| node.name),
+                Some(I18nManager::lookup_plain("standalone-history-title")),
+                "the app's button is named like the window's"
+            );
+        }
+
+        // Case `the_window_draws_no_bar_while_the_app_shows_the_button`.
+        {
+            let mut host = StandaloneHistoryHost::new();
+            let mut app = Text::new("app");
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let app_node = app.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let with_bar =
+                host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
+            assert!(with_bar.toolbar.is_some(), "the window's own History bar");
+
+            host.set_app_presents_button(true);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let app_node = app.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let layout =
+                host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
+            assert!(layout.toolbar.is_none(), "no stacked bar above the app");
+            assert_eq!(tree.children(layout.root).unwrap(), vec![layout.content]);
+        }
     }
 
     use super::*;
