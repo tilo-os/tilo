@@ -206,34 +206,9 @@ impl Agent {
                 message: error.to_string(),
             });
         }
-        let runtime_dir = self.user.runtime_dir();
-        ensure_runtime_dir(&runtime_dir, &self.user);
-        let bus = runtime_dir.join("bus");
-        let x_display = match request.display {
-            Display::Forwarded => self.ensure_xwayland(launch::waypipe_port(request)),
-            Display::None => None,
-        };
-        let is_dir = |path: &Path| path.is_dir();
-        let mut view = self.view(x_display, &is_dir);
-        view.session_bus = bus.exists().then_some(bus.as_path());
-        let spec = launch::spec(request, &view);
-        if let Some(note) = &spec.note {
-            reply(&GuestMessage::Stderr(note.clone().into_bytes()))?;
-        }
-        let mut command = self.command(&spec);
-        match request.stdio {
-            legacy_agent_protocol::Stdio::Relay => {
-                command
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-            }
-            legacy_agent_protocol::Stdio::Null => {
-                command
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-            }
+        let (mut command, note) = self.prepare(request);
+        if let Some(note) = note {
+            reply(&GuestMessage::Stderr(note.into_bytes()))?;
         }
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -293,15 +268,39 @@ impl Agent {
                 code: None,
                 signal: None,
             },
-            |status| {
-                use std::os::unix::process::ExitStatusExt as _;
-                ExitStatus {
-                    code: status.code(),
-                    signal: status.signal(),
-                }
-            },
+            exit_status,
         );
         reply(&GuestMessage::Exited(status))
+    }
+
+    /// The guest process for `request`, and what to tell its stderr first.
+    fn prepare(&self, request: &Launch) -> (Command, Option<String>) {
+        let runtime_dir = self.user.runtime_dir();
+        ensure_runtime_dir(&runtime_dir, &self.user);
+        let bus = runtime_dir.join("bus");
+        let x_display = match request.display {
+            Display::Forwarded => self.ensure_xwayland(launch::waypipe_port(request)),
+            Display::None => None,
+        };
+        let is_dir = |path: &Path| path.is_dir();
+        let mut view = self.view(x_display, &is_dir);
+        view.session_bus = bus.exists().then_some(bus.as_path());
+        let spec = launch::spec(request, &view);
+        let mut command = self.command(&spec);
+        let stdio = || match request.stdio {
+            legacy_agent_protocol::Stdio::Relay => Stdio::piped(),
+            legacy_agent_protocol::Stdio::Null => Stdio::null(),
+        };
+        command.stdin(stdio()).stdout(stdio()).stderr(stdio());
+        (command, spec.note)
+    }
+}
+
+fn exit_status(status: std::process::ExitStatus) -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt as _;
+    ExitStatus {
+        code: status.code(),
+        signal: status.signal(),
     }
 }
 
