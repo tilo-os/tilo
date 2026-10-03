@@ -10,17 +10,18 @@
 //! The configuration lives in the shared Automerge document (`doc.rs`): every
 //! mutation is a [`FirewallAction`] that addresses a native scalar, text, or
 //! stable record, and `sync` adopts remote edits so two instances pointed at
-//! one collab socket edit the same ruleset. Which zone is open, the filter,
-//! the tab and the draft are this window's presentation and never enter the
-//! document.
+//! one collab socket edit the same ruleset. Which zone is open, the tab and
+//! the draft are this window's presentation and never enter the document.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::LocalState;
@@ -29,7 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{ToastKind, ToastStack};
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 
 use crate::actions::FirewallAction;
@@ -39,7 +40,7 @@ use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Zone, ZoneKind, validate_port,
     validate_source,
 };
-use crate::view::{self, Draft, Filter, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
+use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
 
 /// How long a result toast stays before it hides itself.
 const TOAST_TTL: Duration = Duration::from_secs(5);
@@ -70,14 +71,6 @@ pub(crate) struct Notice {
     pub tone: Tone,
 }
 
-struct ToastState {
-    notice: Notice,
-    shown_at: Instant,
-    /// A capture pins its toast so it does not expire before the frame.
-    pinned: bool,
-    close: Rect,
-}
-
 #[derive(Clone, Copy)]
 enum FirewallEffect {
     Apply,
@@ -93,13 +86,17 @@ struct PendingFirewallEffect {
 
 /// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a snapshot of independent view inputs, compared as a whole"
+)]
 struct ViewKey {
     rev: u64,
     available: bool,
     zone: ZoneKind,
     rule: Option<RuleId>,
-    filter: Filter,
     tab: Tab,
+    wide: bool,
     service: bool,
     proto: Proto,
     action: Action,
@@ -128,12 +125,17 @@ pub struct FirewallApp {
     rev: u64,
     selected_zone: ZoneKind,
     selected_rule: Option<RuleId>,
-    filter: Filter,
     tab: Tab,
     draft: Draft,
     backend: Backend,
     notice: Option<Notice>,
-    toast: Option<ToastState>,
+    /// The result toast, and when it was last advanced.
+    toasts: ToastStack,
+    toasts_ticked: Instant,
+    /// The content column is wide enough for the services' descriptions:
+    /// at least `wide_from`, the width of a compact window.
+    wide: bool,
+    wide_from: f64,
 
     /// Whether the displayed config reflects a real, readable firewall.
     /// `false` means firewalld is absent/stopped and we show an honest
@@ -164,7 +166,6 @@ pub struct FirewallApp {
     scroll: Rc<Cell<(f32, f32)>>,
     /// A control changed what the window shows; `update` asks for a sync.
     changed: bool,
-    cursor: Point,
 }
 
 impl Default for FirewallApp {
@@ -185,7 +186,7 @@ fn shell_for(
             .sidebar_header("Zones", Vec::new())
             .content_header("", view::header_actions(intents, enabled, panic))
     } else {
-        shell.content_header("", vec![Box::new(ui::widget::history_button())])
+        shell
     }
 }
 
@@ -230,12 +231,14 @@ impl FirewallApp {
             config,
             rev: 0,
             selected_rule: None,
-            filter: Filter::All,
             tab: Tab::Rules,
             draft: Draft::new(),
             backend: Backend::detect(),
             notice: None,
-            toast: None,
+            toasts: ToastStack::new().with_max(1).with_default_ttl(TOAST_TTL),
+            toasts_ticked: ui::time::now(),
+            wide: true,
+            wide_from: 0.0,
             available,
             pending_delete: None,
             adding: false,
@@ -248,7 +251,6 @@ impl FirewallApp {
             listed: None,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             changed: true,
-            cursor: Point::ZERO,
         }
     }
 
@@ -279,9 +281,6 @@ impl FirewallApp {
                     ..self.config.clone()
                 });
                 self.report("Home is now the active zone", Tone::Success);
-                if let Some(toast) = self.toast.as_mut() {
-                    toast.pinned = true;
-                }
             }
             "service-error" => {
                 self.set_config(FirewallConfig::empty());
@@ -290,7 +289,8 @@ impl FirewallApp {
                     "Permission to read firewalld was denied. Ask an administrator for access, then try again.",
                     Tone::Error,
                 );
-                self.toast = None;
+                // The empty state carries the reason; no toast repeats it.
+                self.toasts.dismiss(0);
             }
             "services" => self.tab = Tab::Services,
             "selected" => {
@@ -343,20 +343,9 @@ impl FirewallApp {
             text: text.into(),
             tone,
         };
-        self.toast = Some(ToastState {
-            notice: notice.clone(),
-            shown_at: Instant::now(),
-            pinned: false,
-            close: Rect::ZERO,
-        });
+        self.toasts.push(notice.text.clone(), notice.tone.kind());
         self.notice = Some(notice);
         self.changed = true;
-    }
-
-    fn toast_visible(&self) -> bool {
-        self.toast
-            .as_ref()
-            .is_some_and(|t| t.pinned || t.shown_at.elapsed() < TOAST_TTL)
     }
 
     /// Dispatch one [`FirewallAction`] — the single CRDT-mutation path shared
@@ -443,8 +432,8 @@ impl FirewallApp {
             available: self.available,
             zone: self.selected_zone,
             rule: self.selected_rule,
-            filter: self.filter,
             tab: self.tab,
+            wide: self.wide,
             service: self.draft.service,
             proto: self.draft.proto,
             action: self.draft.action,
@@ -513,11 +502,11 @@ impl FirewallApp {
             config: &self.config,
             zone,
             tab: self.tab,
-            filter: self.filter,
             selected_rule: self.selected_rule,
             pending_delete,
             draft: &self.draft,
             adding: self.adding,
+            wide: self.wide,
         };
         let page = view::zone_page(&model, &self.intents, &self.switches, &self.scroll);
         self.shell.set_content_title(zone.kind.title());
@@ -559,10 +548,6 @@ impl FirewallApp {
         match *intent {
             Intent::SelectZone(zone) => self.select_zone(zone),
             Intent::SelectRule(id) => self.selected_rule = Some(id),
-            Intent::SetFilter(filter) => {
-                self.filter = filter;
-                self.selected_rule = None;
-            }
             Intent::SetTab(tab) => self.tab = tab,
             Intent::SetMatchService(service) => {
                 self.draft.service = service;
@@ -671,7 +656,7 @@ impl FirewallApp {
             &crate::actions::add_rule_action(self.selected_zone, rule),
         );
         self.selected_rule = Some(id);
-        self.filter = Filter::All;
+        self.tab = Tab::Rules;
         self.adding = false;
         self.draft.port.set(String::new());
         self.draft.source.set(String::new());
@@ -853,35 +838,28 @@ impl FirewallApp {
         }
     }
 
-    /// Paint the result toast, if one is showing.
-    fn paint_toast(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        if !self.toast_visible() {
-            self.toast = None;
-            return;
+    /// Advance the result toast's clock and place it in the window's
+    /// bottom trailing corner; the stack expires, paints and dismisses it.
+    fn place_toast(&mut self, window: Rect, theme: &Theme) {
+        let now = ui::time::now();
+        self.toasts
+            .tick(now.saturating_duration_since(self.toasts_ticked));
+        self.toasts_ticked = now;
+        self.toasts
+            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
+    }
+
+    /// When the showing toast expires, so the window wakes to hide it. A
+    /// toast under the pointer waits for it to leave.
+    fn toast_deadline(&self) -> Option<Instant> {
+        if self.toasts.is_hovered() {
+            return None;
         }
-        let Some(toast) = self.toast.as_mut() else {
-            return;
-        };
-        let card = ToastCard::new(&toast.notice.text, toast.notice.tone.kind())
-            .closable(true)
-            .close_hovered(toast.close.contains(self.cursor));
-        let hit = paint_transient(
-            scene,
-            transform,
-            text,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-            &card,
-        );
-        toast.close = hit.close_rect;
+        self.toasts
+            .iter()
+            .map(|toast| toast.ttl_remaining)
+            .min()
+            .map(|left| self.toasts_ticked + left)
     }
 
     fn admit_resource_operation(
@@ -1027,25 +1005,29 @@ impl ui::widget::Decorator for FirewallApp {
         shell || self.changed || self.pending_effect.is_some()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.wide_from = f64::from(theme.tokens.metrics.compact_breakpoint);
+        self.shell.build_layout(taffy, theme, node_map)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.shell.apply_layout(taffy, node, origin);
+        let wide = self.shell.geometry().content_column.width() >= self.wide_from;
+        if wide != self.wide {
+            self.wide = wide;
+            self.changed = true;
         }
-        // The toast's close control.
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && self
-            .toast
-            .as_ref()
-            .is_some_and(|t| t.close.contains(self.cursor))
-        {
-            self.toast = None;
-            *ctx.handled = true;
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // The result toast: hovering holds it, a click dismisses it.
+        self.toasts.handle_event(event, ctx);
+        if *ctx.handled {
             return;
         }
         self.shell.handle_event(event, ctx);
@@ -1082,11 +1064,22 @@ impl ui::widget::Decorator for FirewallApp {
             .viewport
             .get()
             .unwrap_or_else(|| self.shell.get_rect());
-        self.paint_toast(scene, transform, text, theme, window);
+        self.place_toast(window, theme);
+        self.toasts.draw(scene, transform, text, theme, presence);
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.toast.as_ref().is_some_and(|t| !t.pinned) || self.shell.needs_animation_frame()
+        // A width that crossed the services' breakpoint rebuilds the page.
+        let relayout = self.built.as_ref().is_some_and(|key| key.wide != self.wide);
+        relayout || self.shell.needs_animation_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let shell = self.shell.next_wake_deadline();
+        match (shell, self.toast_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn name(&self) -> &'static str {
