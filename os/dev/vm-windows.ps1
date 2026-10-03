@@ -36,7 +36,7 @@ $uart = Join-Path $run 'uart.log'
 $proof = Join-Path $run 'install-proof.log'
 
 function Resolve-Tool([string]$name) {
-    $override = if ($name -eq 'qemu-img') { $env:TILO_QEMU_IMG } else { $env:TILO_QEMU_SYSTEM }
+    $override = switch ($name) { 'qemu-img' { $env:TILO_QEMU_IMG }; 'qemu-system-aarch64' { $env:TILO_QEMU_SYSTEM }; default { $null } }
     if ($override) { return (Resolve-Path -LiteralPath $override).Path }
     $cmd = Get-Command "$name.exe" -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
