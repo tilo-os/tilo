@@ -20,9 +20,9 @@ use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Badge, Banner, Button, ButtonRole, ChipStyle, Column, Decorator, Dropdown, Element, EmptyState,
-    Field, FormControl, ModalDialog, NavItem, NavList, NavSection, Property, PropertyList, Row,
-    Scrollable, Section, SegmentedStyle, Spacer, StatGroup, StatTile, Text, TextInput,
-    TextInputKind, Toggle, ToggleGroup, Tone, Widget,
+    Field, FormControl, LabelPlacement, ModalDialog, NavItem, NavList, NavSection, Property,
+    PropertyList, Row, Scrollable, Section, SectionHeader, SegmentedStyle, Spacer, StatGroup,
+    StatTile, Text, TextInput, TextInputKind, Toggle, ToggleGroup, Tone, Widget,
 };
 
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
@@ -34,7 +34,6 @@ use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, 
 pub(crate) enum Intent {
     SelectZone(ZoneKind),
     SelectRule(RuleId),
-    SetFilter(Filter),
     SetTab(Tab),
     SetMatchService(bool),
     SetProto(Proto),
@@ -112,34 +111,6 @@ impl Switches {
     }
 }
 
-/// Which rules the table shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Filter {
-    All,
-    Allow,
-    Deny,
-}
-
-impl Filter {
-    pub(crate) const ALL: [Filter; 3] = [Filter::All, Filter::Allow, Filter::Deny];
-
-    fn label(self) -> &'static str {
-        match self {
-            Filter::All => "All",
-            Filter::Allow => "Allow",
-            Filter::Deny => "Deny",
-        }
-    }
-
-    pub(crate) fn admits(self, rule: &Rule) -> bool {
-        match self {
-            Filter::All => true,
-            Filter::Allow => rule.action == Action::Allow,
-            Filter::Deny => rule.action == Action::Deny,
-        }
-    }
-}
-
 /// The two halves of a zone's page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -205,15 +176,7 @@ impl Draft {
 /// The zone list: the active zone first, then every other zone in
 /// firewalld's order from least to most trusted.
 pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &Intents) -> NavList {
-    let item = |zone: &Zone| {
-        let item = NavItem::new(zone_id(zone.kind), zone.kind.title()).without_actions();
-        // How many rules and services the zone holds; an empty zone shows none.
-        match u32::try_from(zone.rules.len() + zone.services.len()) {
-            Ok(0) => item,
-            Ok(count) => item.count(count),
-            Err(_) => item.count(u32::MAX),
-        }
-    };
+    let item = |zone: &Zone| NavItem::new(zone_id(zone.kind), zone.kind.title()).without_actions();
     let active: Vec<NavItem> = config
         .zone(config.default_zone)
         .map(item)
@@ -269,7 +232,6 @@ pub(crate) fn header_actions(
                 .tooltip("Apply the configuration to the system")
                 .on_effect(move || apply.push(Intent::Apply)),
         ),
-        Box::new(ui::widget::history_button()),
     ]
 }
 
@@ -346,12 +308,13 @@ pub(crate) struct PageModel<'a> {
     pub config: &'a FirewallConfig,
     pub zone: &'a Zone,
     pub tab: Tab,
-    pub filter: Filter,
     pub selected_rule: Option<RuleId>,
     pub pending_delete: Option<&'a Rule>,
     pub draft: &'a Draft,
     /// The add-rule dialog is open.
     pub adding: bool,
+    /// The content column is wide enough for the services' descriptions.
+    pub wide: bool,
 }
 
 /// The selected zone's page.
@@ -362,8 +325,13 @@ pub(crate) fn zone_page(
     offset: &Rc<Cell<(f32, f32)>>,
 ) -> Element {
     let mut page = Column::new().with_intrinsic_height();
-    for banner in banners(model.config) {
+    let banners = banners(model.config);
+    let warned = !banners.is_empty();
+    for banner in banners {
         page = page.push(banner);
+    }
+    if warned {
+        page = page.push(group_gap());
     }
     page = page.push(Box::new(zone_status(model, intents)));
     page = page.push(group_gap());
@@ -371,10 +339,10 @@ pub(crate) fn zone_page(
     page = page.push(group_gap());
     page = page.push(Box::new(details(model.zone)));
     page = page.push(group_gap());
-    page = page.push(Box::new(tabs(model.tab, intents)));
+    page = page.push(Box::new(tab_bar(model.tab, intents)));
     page = match model.tab {
         Tab::Rules => page.push(rules(model, intents, switches)),
-        Tab::Services => page.push(Box::new(services(model.zone, switches))),
+        Tab::Services => page.push(Box::new(services(model.zone, model.wide, switches))),
     };
     if model.adding {
         page = page.push(Box::new(add_rule_dialog(
@@ -443,10 +411,6 @@ fn stats(zone: &Zone) -> StatGroup {
     let (allow, deny) = zone.rule_counts();
     StatGroup::new(vec![
         Box::new(StatTile::new(
-            "Interfaces",
-            zone.interfaces.len().to_string(),
-        )),
-        Box::new(StatTile::new(
             "Allowed services",
             zone.services.len().to_string(),
         )),
@@ -472,13 +436,14 @@ fn details(zone: &Zone) -> Section {
     )
 }
 
-fn tabs(selected: Tab, intents: &Intents) -> ToggleGroup {
-    let intents = intents.clone();
+/// The page's two halves, and on the rules half the command that adds one.
+fn tab_bar(selected: Tab, intents: &Intents) -> Row {
+    let tab_intents = intents.clone();
     let index = Tab::ALL
         .iter()
         .position(|tab| *tab == selected)
         .unwrap_or(0);
-    ToggleGroup::new(
+    let tabs = ToggleGroup::new(
         Tab::ALL
             .iter()
             .map(|tab| Segment::new(tab.label()))
@@ -488,9 +453,18 @@ fn tabs(selected: Tab, intents: &Intents) -> ToggleGroup {
     .with_style(SegmentedStyle::Tabs)
     .on_view("firewall-tabs", move |i| {
         if let Some(tab) = Tab::ALL.get(i) {
-            intents.push(Intent::SetTab(*tab));
+            tab_intents.push(Intent::SetTab(*tab));
         }
-    })
+    });
+    let bar = Row::new().no_wrap().push(Box::new(tabs));
+    if selected != Tab::Rules {
+        return bar;
+    }
+    let add = intents.clone();
+    bar.push(Box::new(Spacer::new())).push(Box::new(
+        Button::new("firewall-rule-new", "Add rule", None)
+            .on_view(move || add.push(Intent::OpenAddRule)),
+    ))
 }
 
 // ---- rules ---------------------------------------------------------------
@@ -520,55 +494,53 @@ impl RuleRow {
     }
 }
 
+/// The zone's rules, the ones that let traffic through apart from the ones
+/// that stop it, so what a rule does reads from where it stands.
 fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Element {
-    let filter_intents = intents.clone();
-    let filter_index = Filter::ALL
-        .iter()
-        .position(|f| *f == model.filter)
-        .unwrap_or(0);
-    let filter = ToggleGroup::new(
-        Filter::ALL
+    if model.zone.rules.is_empty() {
+        return Box::new(
+            Text::new("This zone has no rules yet.")
+                .with_role(TextRole::Body)
+                .dimmed(),
+        );
+    }
+    let mut groups = Column::new().with_intrinsic_height().with_no_padding();
+    let mut shown = false;
+    for action in [Action::Allow, Action::Deny] {
+        let rows: Vec<RuleRow> = model
+            .zone
+            .rules
             .iter()
-            .map(|f| Segment::new(f.label()))
-            .collect(),
-        filter_index,
-    )
-    .with_style(SegmentedStyle::Quiet)
-    .on_view("firewall-rule-filter", move |i| {
-        if let Some(filter) = Filter::ALL.get(i) {
-            filter_intents.push(Intent::SetFilter(*filter));
+            .filter(|rule| rule.action == action)
+            .map(RuleRow::of)
+            .collect();
+        if rows.is_empty() {
+            continue;
         }
-    });
-
-    let rows: Vec<RuleRow> = model
-        .zone
-        .rules
-        .iter()
-        .filter(|rule| model.filter.admits(rule))
-        .map(RuleRow::of)
-        .collect();
-    let body: Element = if rows.is_empty() {
-        let message = match (model.zone.rules.is_empty(), model.filter) {
-            (true, _) | (false, Filter::All) => "This zone has no rules yet.",
-            (false, Filter::Allow) => "This zone has no allow rules.",
-            (false, Filter::Deny) => "This zone has no deny rules.",
+        if shown {
+            groups = groups.push(group_gap());
+        }
+        shown = true;
+        let title = match action {
+            Action::Allow => "Allow rules",
+            Action::Deny => "Deny rules",
         };
-        Box::new(Text::new(message).with_role(TextRole::Body).dimmed())
-    } else {
-        Box::new(rule_table(rows, model.selected_rule, intents, switches))
-    };
-    let add = intents.clone();
-    let bar = Row::new()
-        .push(Box::new(filter))
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(
-            Button::new("firewall-rule-new", "Add rule", None)
-                .on_view(move || add.push(Intent::OpenAddRule)),
+        groups = groups.push(Box::new(
+            Section::new(vec![Box::new(rule_table(
+                action,
+                rows,
+                model.selected_rule,
+                intents,
+                switches,
+            ))])
+            .with_header(SectionHeader::group(title)),
         ));
-    Box::new(Section::new(vec![Box::new(bar), body]))
+    }
+    Box::new(groups)
 }
 
 fn rule_table(
+    action: Action,
     rows: Vec<RuleRow>,
     selected: Option<RuleId>,
     intents: &Intents,
@@ -581,8 +553,6 @@ fn rule_table(
             .with_text(|row: &RuleRow| row.title.clone()),
         ColumnDef::new("protocol", "Protocol", ColumnWidth::Auto)
             .with_text(|row: &RuleRow| row.protocol.to_string()),
-        ColumnDef::new("action", "Action", ColumnWidth::Auto)
-            .with_text(|row: &RuleRow| row.action.title().to_string()),
         ColumnDef::new("source", "Source", ColumnWidth::Flex(1.0))
             .with_kind(TextKind::Identifier)
             .with_optional_text(|row: &RuleRow| row.source.clone(), "Anywhere"),
@@ -611,8 +581,14 @@ fn rule_table(
             )
         }),
     ])
-    .with_id("firewall-rules")
-    .with_accessible_name("Rules")
+    .with_id(match action {
+        Action::Allow => "firewall-allow-rules",
+        Action::Deny => "firewall-deny-rules",
+    })
+    .with_accessible_name(match action {
+        Action::Allow => "Allow rules",
+        Action::Deny => "Deny rules",
+    })
     .selectable(true);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
     if let Some(index) = selected.and_then(|id| ids.iter().position(|row| *row == id)) {
@@ -693,36 +669,30 @@ fn choice<T: Copy + PartialEq + 'static>(
     )
 }
 
+/// A field of the add-rule dialog: its label above the control, so every
+/// control in the dialog starts on one edge.
+fn stacked<C: FormControl + 'static>(label: &str, control: C) -> Field {
+    Field::new(label, control).with_label_placement(Some(LabelPlacement::Above))
+}
+
+/// A field whose control keeps its own width (a segmented choice).
+fn choice_field(label: &str, control: Choice) -> Field {
+    stacked(label, control).with_trailing_control()
+}
+
 /// The add-rule dialog: what the rule matches, what it does and where the
 /// traffic comes from. Each field says what is wrong with it.
-/// The dialog's fields, one under the other.
-trait Fields {
-    fn field(self, field: Field) -> Self;
-}
-
-impl Fields for Column {
-    fn field(self, field: Field) -> Self {
-        self.push(Box::new(field))
-    }
-}
-
 fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDialog<Column> {
-    let mut section = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .field(
-            Field::new(
-                "Match",
-                choice(
-                    "firewall-rule-match",
-                    &[(true, "Service"), (false, "Port")],
-                    draft.service,
-                    intents,
-                    Intent::SetMatchService,
-                ),
-            )
-            .with_trailing_control(),
-        );
+    let mut fields: Vec<Field> = vec![choice_field(
+        "Match",
+        choice(
+            "firewall-rule-match",
+            &[(true, "Service"), (false, "Port")],
+            draft.service,
+            intents,
+            Intent::SetMatchService,
+        ),
+    )];
     if draft.service {
         let mut services =
             Dropdown::from_state(Vec::new(), &draft.service_id).with_id("firewall-rule-service");
@@ -732,9 +702,9 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
                 .map(|s| (s.id.to_string(), s.name.to_string()))
                 .collect(),
         );
-        section = section.field(Field::new("Service", services).with_trailing_control());
+        fields.push(stacked("Service", services));
     } else {
-        let mut port = Field::new(
+        let mut port = stacked(
             "Port",
             TextInput::from_state(&draft.port)
                 .with_id("firewall-rule-port")
@@ -744,50 +714,50 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         if let Some(error) = &draft.port_error {
             port = port.with_error(error);
         }
-        section = section.field(port).field(
-            Field::new(
-                "Protocol",
-                choice(
-                    "firewall-rule-protocol",
-                    &[(Proto::Tcp, "TCP"), (Proto::Udp, "UDP")],
-                    draft.proto,
-                    intents,
-                    Intent::SetProto,
-                ),
-            )
-            .with_trailing_control(),
-        );
+        fields.push(port);
+        fields.push(choice_field(
+            "Protocol",
+            choice(
+                "firewall-rule-protocol",
+                &[(Proto::Tcp, "TCP"), (Proto::Udp, "UDP")],
+                draft.proto,
+                intents,
+                Intent::SetProto,
+            ),
+        ));
     }
-    let mut source = Field::new(
+    fields.push(choice_field(
+        "Action",
+        choice(
+            "firewall-rule-action",
+            &[(Action::Allow, "Allow"), (Action::Deny, "Deny")],
+            draft.action,
+            intents,
+            Intent::SetAction,
+        ),
+    ));
+    let source = stacked(
         "Source",
         TextInput::from_state(&draft.source)
             .with_id("firewall-rule-source")
             .with_kind(TextInputKind::Number)
             .with_placeholder("Anywhere"),
     );
-    source = match &draft.source_error {
+    fields.push(match &draft.source_error {
         Some(error) => source.with_error(error),
         None => source.with_help("An IPv4 address or network, such as 192.168.1.0/24"),
-    };
-    section = section
-        .field(
-            Field::new(
-                "Action",
-                choice(
-                    "firewall-rule-action",
-                    &[(Action::Allow, "Allow"), (Action::Deny, "Deny")],
-                    draft.action,
-                    intents,
-                    Intent::SetAction,
-                ),
-            )
-            .with_trailing_control(),
-        )
-        .field(source);
+    });
+    let mut body = Column::new().with_no_padding().with_intrinsic_height();
+    for (index, field) in fields.into_iter().enumerate() {
+        if index > 0 {
+            body = body.push(group_gap());
+        }
+        body = body.push(Box::new(field));
+    }
     let add = intents.clone();
     let cancel = intents.clone();
     let dismiss = intents.clone();
-    ModalDialog::new(format!("Add a rule to {}", zone.title()), section)
+    ModalDialog::new(format!("Add a rule to {}", zone.title()), body)
         .with_test_id("firewall-add-rule-dialog")
         .primary_action("Add rule", move || add.push(Intent::AddRule))
         .secondary_action("Cancel", move || cancel.push(Intent::CancelAddRule))
@@ -838,13 +808,27 @@ struct ServiceRow {
 }
 
 /// The catalog's services, each with a switch that lets it through the zone.
-fn services(zone: &Zone, switches: &Switches) -> DataTable<ServiceRow> {
+/// A column too narrow for the descriptions leaves them out rather than
+/// cutting each one short.
+fn services(zone: &Zone, wide: bool, switches: &Switches) -> DataTable<ServiceRow> {
     let toggles = switches.clone();
-    let mut table = DataTable::new(vec![
-        ColumnDef::new("service", "Service", ColumnWidth::Auto)
-            .with_text(|row: &ServiceRow| row.name.to_string()),
-        ColumnDef::new("description", "Description", ColumnWidth::Flex(1.0))
-            .with_text(|row: &ServiceRow| row.description.to_string()),
+    let mut columns = Vec::new();
+    if wide {
+        columns.push(
+            ColumnDef::new("service", "Service", ColumnWidth::Auto)
+                .with_text(|row: &ServiceRow| row.name.to_string()),
+        );
+        columns.push(
+            ColumnDef::new("description", "Description", ColumnWidth::Flex(1.0))
+                .with_text(|row: &ServiceRow| row.description.to_string()),
+        );
+    } else {
+        columns.push(
+            ColumnDef::new("service", "Service", ColumnWidth::Flex(1.0))
+                .with_text(|row: &ServiceRow| row.name.to_string()),
+        );
+    }
+    columns.extend([
         ColumnDef::new("ports", "Ports", ColumnWidth::Auto)
             .with_kind(TextKind::Numeric)
             .with_text(|row: &ServiceRow| row.ports.to_string()),
@@ -862,9 +846,10 @@ fn services(zone: &Zone, switches: &Switches) -> DataTable<ServiceRow> {
                         .with_accessible_name(&format!("Allow {}", row.name)),
                 )
             }),
-    ])
-    .with_id("firewall-services")
-    .with_accessible_name("Services");
+    ]);
+    let mut table = DataTable::new(columns)
+        .with_id("firewall-services")
+        .with_accessible_name("Services");
     table.set_rows(
         ServiceCatalog::ALL
             .iter()
