@@ -94,7 +94,7 @@ pub fn compose(
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
+                    unsafe { Widget::measure(&mut *ptr, known, available, tr) }
                 } else {
                     taffy::Size::ZERO
                 }

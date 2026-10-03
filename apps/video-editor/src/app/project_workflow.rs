@@ -190,7 +190,7 @@ impl VideoEditorApp {
         let replaced = !self.project_is_empty();
         let mut notice = Self::opened_notice(&path, &project);
         if replaced {
-            notice.text.push_str(" · Undo to go back");
+            notice.text.push_str(". Undo to go back");
         }
         self.project_notice = Some(notice);
 
