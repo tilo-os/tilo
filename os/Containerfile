@@ -2146,9 +2146,6 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
 # The ESP random seed refresh runs only where /boot is writable; Tilo's is not.
 COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf /usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf
-# ldconfig rebuilds the image's linker cache only when it is missing, not on
-# the first boot of every deployment.
-COPY os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -2970,6 +2967,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 # layer. Its current RUN may still mount DNS under /run; the next one will not.
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
+    --mount=type=bind,source=os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf,target=/usr/local/libexec/tilo-ldconfig-image-cache.conf,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
@@ -3016,6 +3014,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     # if it goes missing (its drop-in). The hardware database lives in /usr
     # with none in /etc, so systemd-hwdb-update.service has nothing to do on
     # the first boot of a deployment either.
+    && install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf \
+         /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf \
     && ldconfig \
     && systemd-hwdb update --usr \
     && rm -f /etc/udev/hwdb.bin \
