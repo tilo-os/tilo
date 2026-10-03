@@ -20,7 +20,7 @@
 //!   is not persisted to the document either.
 //!
 //! - **Presentation — never actions.** Which screen is showing, the selected
-//!   file or commit, scroll offsets, the sidebar flap, the armed-discard
+//!   file or commit, scroll offsets, the list drawer, a pending discard
 //!   confirmation, keyboard focus — all local, per-instance view state.
 //!
 //! ## What genuinely lives in the shared document
@@ -193,7 +193,7 @@ pub fn encode(action: &GitClientAction) -> Result<EncodedAction, ActionError> {
 }
 
 /// Build the "set the diff layout to `layout`" action — the single source of
-/// truth shared by the app-bar segmented control (see [`crate::app`]) and the
+/// truth shared by the header's layout control (see [`crate::app`]) and the
 /// Ctrl+K resource tree below.
 pub fn set_diff_layout_action(layout: DiffLayout) -> GitClientAction {
     GitClientAction::SetDiffLayout {
