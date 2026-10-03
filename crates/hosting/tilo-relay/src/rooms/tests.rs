@@ -24,7 +24,7 @@ fn a_created_room_restores_with_its_governance_and_publication() {
     let created = GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
-    let restored = GovernedRoom::open(created.path.clone(), &cert).unwrap();
+    let restored = GovernedRoom::open(created.path.clone(), &cert, &key).unwrap();
     assert_eq!(restored.record.room, created.record.room);
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
@@ -38,7 +38,7 @@ fn a_room_is_only_restored_by_its_governor() {
     let created = GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
     let mut other = cert;
     other.device_label = "someone else".into();
-    assert!(GovernedRoom::open(created.path, &other).is_err());
+    assert!(GovernedRoom::open(created.path, &other, &key).is_err());
 }
 
 #[test]

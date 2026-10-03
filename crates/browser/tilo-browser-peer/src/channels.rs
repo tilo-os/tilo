@@ -166,6 +166,10 @@ pub(crate) struct Channels {
     /// Governors the page learned from the room itself, which no genesis
     /// frame can override.
     pinned: HashMap<String, Ed25519PublicKey>,
+    /// The host, when its root certified it to own workspaces: a node
+    /// governs the rooms it hosts unless a genesis frame names another of
+    /// this person's devices.
+    host: Option<Ed25519PublicKey>,
     /// Genesis frames whose sender's certificate has not arrived yet.
     candidates: Vec<(String, [u8; 32], MlsGovernanceFrameV1)>,
     /// Restored member state, waiting for its route to open.
@@ -185,6 +189,7 @@ impl Channels {
             unopened: HashMap::new(),
             rooms: HashMap::new(),
             pinned: HashMap::new(),
+            host: None,
             candidates: Vec::new(),
             saved: HashMap::new(),
             dirty: false,
@@ -282,11 +287,26 @@ impl Channels {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
     }
 
+    /// Let the host govern the rooms no device of this person was seen
+    /// governing, when `host` (its verified certificate) owns workspaces:
+    /// the node a person's root certified to host and govern their rooms.
+    /// A plain host never governs.
+    pub(crate) fn govern_by_host(&mut self, host: &DeviceCert) {
+        self.host = (host.capabilities.can_own_workspaces
+            && !host.capabilities.foreign
+            && tilo_user_identity::verify_device_cert(host).is_ok())
+        .then(|| Ed25519PublicKey::from_bytes(host.device_public_key));
+    }
+
     fn governance(&self, room: &str) -> Governance {
         if let Some(pinned) = self.pinned.get(room) {
             return Governance::Governed(*pinned);
         }
-        self.rooms.get(room).copied().unwrap_or(Governance::Unknown)
+        match (self.rooms.get(room), self.host) {
+            (Some(learned), _) => *learned,
+            (None, Some(host)) => Governance::Governed(host),
+            (None, None) => Governance::Unknown,
+        }
     }
 
     /// Name `room`'s governor as the page learned it from the room itself.
@@ -349,7 +369,9 @@ impl Channels {
             && frame.previous_frame_digest == [0; 32]
             && frame.signed_by.as_bytes() == &author
             && frame.verify_signature().is_ok();
-        if !genesis || matches!(self.governance(room), Governance::Governed(_)) {
+        let learned = self.pinned.contains_key(room)
+            || matches!(self.rooms.get(room), Some(Governance::Governed(_)));
+        if !genesis || learned {
             return Changes::default();
         }
         if !self.certs.contains_key(&author) {
@@ -784,6 +806,47 @@ mod tests {
         let changes = channels.receive_frame(device(&server), ROOM, genesis(&server, &note), 0);
         assert_eq!(requests(&changes), 1);
         assert_eq!(steward_of(&channels, &note), Some(device(&server)));
+    }
+
+    /// A page on a node asks the node for a room's channels without waiting
+    /// for a genesis, also in another person's room; a plain host governs
+    /// nothing, and a device of this person that governs the room still
+    /// takes its channels over.
+    #[test]
+    fn a_node_host_governs_the_rooms_it_hosts() {
+        let owner = SigningKey::from_bytes(&[1; 32]);
+        let guest = SigningKey::from_bytes(&[2; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let server = SigningKey::from_bytes(&[5; 32]);
+        let laptop = SigningKey::from_bytes(&[6; 32]);
+        let note = route("note-1");
+        let node_cert = cert(
+            &owner,
+            &server,
+            tilo_user_identity::cloud_enrollment::host_capabilities(),
+        );
+
+        let mut plain = Channels::new(device(&browser), device(&guest), [4; 32]);
+        plain.govern_by_host(&cert(&owner, &server, DeviceCapabilities::host()));
+        plain.open(&note, 0);
+        assert_eq!(steward_of(&plain, &note), None);
+
+        let mut invited = Channels::new(device(&browser), device(&guest), [4; 32]);
+        invited.govern_by_host(&node_cert);
+        assert_eq!(requests(&invited.open(&note, 0)), 1);
+        assert_eq!(steward_of(&invited, &note), Some(device(&server)));
+
+        let mut own = Channels::new(device(&browser), device(&owner), [4; 32]);
+        own.govern_by_host(&node_cert);
+        own.open(&note, 0);
+        own.note_cert(
+            device(&laptop),
+            cert(&owner, &laptop, DeviceCapabilities::primary()),
+            0,
+        );
+        let changes = own.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
+        assert_eq!(requests(&changes), 1);
+        assert_eq!(steward_of(&own, &note), Some(device(&laptop)));
     }
 
     /// A room whose governor has not shown up is not ungoverned: a genesis
