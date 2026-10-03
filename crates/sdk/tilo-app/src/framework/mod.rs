@@ -65,6 +65,20 @@
 //!   wrapped widget and override only the hooks that change; every other
 //!   `Widget` method, including the ones containers must forward, reaches
 //!   the wrapped widget by default.
+//! * **A resource nested in another** — a note's rich-text body, a draft's
+//!   message, a saved query's SQL — is a child resource: a resource type of
+//!   its own stored at a place in its parent's document, whose edits the
+//!   parent carries in one of its own actions (`EditBody { page, edit }`).
+//!   The parent publishes it from `children` with
+//!   [`publish_child`](tilo_resource::publish_child); a view or surface
+//!   edits it through [`ViewCx::child`] / [`SurfaceCx::child`], a
+//!   [`Dispatcher`] of the child type that wraps each edit into the
+//!   parent's action. The child is addressed, permissioned, undone (by its
+//!   own coalescing) and named in history like a root, and applies as the
+//!   parent. Rich text is `tilo_rich_text::RichTextField` over such a
+//!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),
+//!   whose [`TextControl`] binds a `TextInput` or `CodeEditor` so every
+//!   keystroke is a splice action.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
@@ -91,6 +105,7 @@ mod switch;
 // The test hosts discover native presentation, which the browser has not got.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
+mod text;
 mod view;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,4 +121,5 @@ pub use live::Live;
 pub use preview::PastVersion;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
+pub use text::{EditsText, TextControl};
 pub use view::ViewCx;

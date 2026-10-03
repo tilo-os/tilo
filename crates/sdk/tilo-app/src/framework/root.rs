@@ -636,7 +636,13 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         address: &tilo_actions::ActionAddress,
         result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
-        if result.is_err() && address.resource == self.dispatch.resource_id() {
+        // The resource itself, or a child its dispatcher edits through it.
+        let ours = address.resource == self.dispatch.resource_id()
+            || address
+                .resource
+                .strip_prefix(R::KIND)
+                .is_some_and(|rest| rest.starts_with('/'));
+        if result.is_err() && ours {
             self.live.represent();
         }
         ui_core::widget::controls::on_control_invocation_result(
