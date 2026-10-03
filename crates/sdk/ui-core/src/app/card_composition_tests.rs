@@ -13,11 +13,11 @@ fn fixture() -> App {
     let cards: Vec<Element> = (0_usize..3)
         .map(|index| {
             Box::new(
-                Card::composed(Box::new(Text::new(
+                Card::new(Box::new(Text::new(
                     &"Useful description. ".repeat(index.checked_add(1).unwrap()),
                 )))
                 .with_title("Connection")
-                .with_footer(Box::new(
+                .with_footer(
                     Actions::new(
                         Button::new(
                             &format!("primary-{index}"),
@@ -31,12 +31,11 @@ fn fixture() -> App {
                         "Details",
                         None,
                     )),
-                )),
+                ),
             ) as Element
         })
         .collect();
-    let mut app =
-        App::new_with_controlled_inputs(State::new(), Box::new(CardGrid::content_sized(cards)));
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(CardGrid::new(cards)));
     app.init_layout();
     app
 }
@@ -148,7 +147,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             .with_intrinsic_height()
             .with_gap(8.0);
         for index in 0..8 {
-            content = content.push(Box::new(Card::composed(Box::new(Text::new(&format!(
+            content = content.push(Box::new(Card::new(Box::new(Text::new(&format!(
                 "Application {index}: {}",
                 "A useful multi-line description that remains inside its card. ".repeat(3)
             ))))));

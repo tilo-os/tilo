@@ -53,8 +53,8 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::{
-    Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
-    ToggleGroup, Widget,
+    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
+    Text, ToggleGroup, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -205,7 +205,10 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                        .push(Box::new(
+                            Avatar::person(format!("Teammate {i}"), format!("teammate-{i}"))
+                                .size(AvatarSize::Small),
+                        )),
                 ));
             }
         }
@@ -265,8 +268,12 @@ fn build_tree(include_animated: bool) -> Box<dyn Widget> {
     // still returning `needs_redraw = true` by default.
     let footer = Row::new()
         .push(Box::new(Text::new("dash_title")))
-        .push(Box::new(Avatar::from_initials("DB", 28.0)))
-        .push(Box::new(Avatar::from_initials("QD", 28.0)))
+        .push(Box::new(
+            Avatar::person("Dana Brooks", "dana.brooks").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Regular),
+        ))
         .push(Box::new(Badge::count(42)));
 
     Box::new(

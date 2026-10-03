@@ -48,9 +48,8 @@ pub struct Container {
     min_width: Option<f32>,
     /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
-    /// Also implies `has_background`. `None` paints `surfaces.raised` (a
-    /// well inside content) when [`Container::with_background`] is used.
-    fill_color: Option<vello::peniko::Color>,
+    /// Pressing the container activates it; it lifts under the pointer.
+    activation: crate::widget::activation::Activation,
     /// Grows from a zero basis instead of claiming `percent(1.0)`. In a
     /// wrapping flex row this is the difference between filling the
     /// leftover width AFTER siblings are placed (correct) and demanding
@@ -82,7 +81,7 @@ impl Container {
             min_width: None,
             max_width: None,
             fixed_height: None,
-            fill_color: None,
+            activation: crate::widget::activation::Activation::default(),
             flex_grow: false,
         }
     }
@@ -214,14 +213,80 @@ impl Container {
         self
     }
 
-    /// Implies a background. Pass a surface token (`surfaces.raised` for a
-    /// well inside content) so the tint stays OS-controlled; a region's
-    /// ground is the framework's, never a container fill.
+    /// Make the whole container one pressable target (a tile that opens
+    /// something): it lifts under the pointer and when pressed, takes
+    /// keyboard focus with a ring, and runs `f` on a click, Enter, Space or
+    /// an assistive-technology activation. Controls inside keep their own
+    /// clicks. `id` names it for keyboard, tests and assistive technology.
     #[must_use]
-    pub fn with_fill(mut self, color: vello::peniko::Color) -> Self {
-        self.fill_color = Some(color);
-        self.has_background = true;
+    pub fn interactive(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
+        self.activation = crate::widget::activation::Activation::new(id);
+        self.activation.set_callback(Box::new(f));
         self
+    }
+
+    /// [`Self::interactive`] through an exported resource action.
+    #[must_use]
+    pub fn interactive_action(
+        mut self,
+        id: impl Into<String>,
+        binding: tilo_actions::ActionBinding<()>,
+    ) -> Self {
+        self.activation = crate::widget::activation::Activation::new(id);
+        self.activation.set_action(binding);
+        self
+    }
+
+    /// The container's surface under its current interaction: the raised
+    /// well when it has a background (lifted on hover and press), the
+    /// ground's selection lift when it is bare and interactive.
+    fn surface_fill(&self, theme: &Theme) -> Option<vello::peniko::Color> {
+        let colors = &theme.tokens.colors;
+        let state = self.activation.state;
+        let live = self.activation.is_bound() && !state.disabled;
+        if self.has_background {
+            let raised = colors.surfaces.raised;
+            Some(if live && state.pressed {
+                colors.lift_on(raised, 1.0)
+            } else if live && state.hovered {
+                colors.lift_on(raised, 0.5)
+            } else {
+                raised
+            })
+        } else if live && state.pressed {
+            Some(colors.intent.selection)
+        } else if live && state.hovered {
+            Some(colors.intent.selection_hover)
+        } else {
+            None
+        }
+    }
+
+    fn paint_surface(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        match self.surface_fill(theme) {
+            // Rest edge derived from the fill itself (HIG §9.5), crisp 1 px
+            // inset so the stroke sits on the surface.
+            Some(fill) if self.has_background => {
+                crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
+            }
+            Some(fill) => scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(self.rect, theme.radius_standard),
+            ),
+            None => {}
+        }
+        if self.activation.state.focused && self.activation.is_bound() {
+            crate::widget::paint_focus_ring(
+                scene,
+                transform,
+                self.rect,
+                theme.radius_standard,
+                theme,
+            );
+        }
     }
 
     /// The default (auto height) is correct for card-style containers;
@@ -247,6 +312,7 @@ impl Container {
 
 impl Widget for Container {
     crate::provides!(
+        dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::undo::UndoPoints
@@ -368,16 +434,7 @@ impl Widget for Container {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        if self.has_background {
-            // Rest edge derived from the fill itself (HIG §9.5): a declared
-            // `border_standard` is three shades off `raised` on the dark
-            // preset and vanishes. Crisp 1 px inset so the stroke sits on
-            // the surface, not half on the ground beside it.
-            let fill = self
-                .fill_color
-                .unwrap_or(theme.tokens.colors.surfaces.raised);
-            crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
-        }
+        self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
             child.draw(scene, transform, text_renderer, theme, presence);
@@ -390,6 +447,49 @@ impl Widget for Container {
         {
             child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
+        if self.activation.is_bound() {
+            if *ctx.handled {
+                // A control inside took the press; the container stays put.
+                self.activation.state.pressed = false;
+                return;
+            }
+            self.activation.handle_pointer(event, ctx, self.rect, &[]);
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.activation.is_bound() && self.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.activation.is_bound()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.activation.state.focused = focused && self.activation.is_bound();
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AppModel,
+        _root: &ModelPath,
+    ) -> bool {
+        matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        self.activation.is_bound().then(|| {
+            AccessNode::new(Role::Button)
+                .with_semantic_key(self.activation.id())
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.activation.state.focused),
+                )
+        })
     }
 
     /// So an outer container's event-routing short-circuit honours an
@@ -441,7 +541,9 @@ impl Widget for Container {
     }
 
     fn test_id(&self) -> Option<&str> {
-        self.id.as_deref()
+        self.id
+            .as_deref()
+            .or_else(|| self.activation.is_bound().then(|| self.activation.id()))
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
@@ -449,7 +551,7 @@ impl Widget for Container {
     }
 
     fn is_focused(&self) -> bool {
-        false
+        self.activation.state.focused
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -470,16 +572,7 @@ impl Widget for Container {
         if presence.should_cull(self.get_rect()) {
             return;
         }
-        if self.has_background {
-            // Rest edge derived from the fill itself (HIG §9.5): a declared
-            // `border_standard` is three shades off `raised` on the dark
-            // preset and vanishes. Crisp 1 px inset so the stroke sits on
-            // the surface, not half on the ground beside it.
-            let fill = self
-                .fill_color
-                .unwrap_or(theme.tokens.colors.surfaces.raised);
-            crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
-        }
+        self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
             child.draw_with_presence(
@@ -527,6 +620,8 @@ impl crate::undo::UndoPoints for Container {
     }
 }
 
+crate::widget::activation::activation_controls!(Container, activation);
+
 impl crate::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
@@ -549,8 +644,6 @@ impl crate::permissions::capability::PermissionGated for Container {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use vello::peniko::Color;
-    use vello_encoding::DrawTag;
 
     /// 800×600 viewport. Drives the real five-pass path so the taffy width
     /// pin is exercised end-to-end.
@@ -635,24 +728,38 @@ mod tests {
             );
         }
 
-        fn with_fill_emits_background_distinct_from_bg_primary() {
-            let custom = Color::from_rgb8(10, 20, 30);
-            let (mut c, _rect) = lay_out(Container::new().with_fill(custom));
+        fn interactive_containers_lift_and_activate() {
             let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = crate::presence::PresenceCtx::default();
-            let mut scene = Scene::new();
-            c.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                fills >= 1,
-                "with_fill must emit at least one COLOR fill (the surface tint)"
+            let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counter = hits.clone();
+            let mut c = Container::new()
+                .with_background()
+                .interactive("open-channel", move || counter.set(counter.get() + 1));
+            let rest = c.surface_fill(&theme);
+            assert_eq!(rest, Some(theme.tokens.colors.surfaces.raised));
+            c.activation.state.hovered = true;
+            assert_ne!(c.surface_fill(&theme), rest, "hover lifts");
+            c.activation.state.pressed = true;
+            let pressed = c.surface_fill(&theme);
+            c.activation.state.pressed = false;
+            assert_ne!(pressed, c.surface_fill(&theme), "press lifts further");
+            let bare = Container::new();
+            assert_eq!(
+                bare.surface_fill(&theme),
+                None,
+                "a plain container paints nothing"
             );
+            assert!(c.is_focusable());
+            let mut doc = automerge::AutoCommit::new();
+            assert!(Widget::perform_action(
+                &mut c,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(hits.get(), 1);
+            let node = Widget::accessibility(&c).unwrap();
+            assert_eq!(node.role, crate::a11y::Role::Button);
         }
 
         with_width_pins_outer_width();
@@ -660,6 +767,6 @@ mod tests {
         default_container_still_fills_width();
         padding_override_insets_child_without_losing_fluid_width();
         centered_max_width_caps_wide_parent_and_remains_fluid();
-        with_fill_emits_background_distinct_from_bg_primary();
+        interactive_containers_lift_and_activate();
     }
 }

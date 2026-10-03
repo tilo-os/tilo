@@ -724,6 +724,196 @@ for row in &self.rows {
 
 ## Content widgets
 
+The patterns every app drew by hand are library widgets. Each comes in two
+forms with one geometry: a retained widget for widget trees, and a `*Face`
+immediate painter (`ListRowFace`, `PropertyListFace`, `CardFace`,
+`StatTileFace`, `MediaCardFace`, `DropZoneFace`, `SkeletonFace`,
+`ProgressRingFace`, `StepperFace`, `AvatarFace`) for apps that paint into a
+`Scene`. A face is built per frame, sized with `height(...)` and painted
+with `paint(&mut PaintCtx, rect)`. Every widget is semantic: none takes a
+colour, font size, radius, padding or pixel size. Where an app needs a mark
+with meaning it passes a `Tone`.
+
+### Removed APIs and their replacements
+
+Apply the first row that matches each call.
+
+| Old | New |
+|---|---|
+| `Card::composed(body)`, `ContentCard` | `Card::new(body)` |
+| `.with_header(element)` on a card | `.with_title(title)`, or `.with_title_action(title, action)` when the header held one control. A custom header element has no replacement: put the content in the body. |
+| `.with_footer(Box::new(actions))` | `.with_footer(actions)` (an `Actions`, unboxed) |
+| `Card::titled(title, body)` holding settings, a form section, statistics or explanatory text | `Section::titled(title, vec![body])` |
+| `Card::titled(title, body)` for an object (something the person opens, moves, shares or drags) | `Card::new(body).with_title(title)` |
+| `Card::titled_with_action(title, action, body)` | Not an object: `Section::new(vec![body]).with_header(SectionHeader::heading(title).action(button))`. An object: `Card::new(body).with_title_action(title, action)`. |
+| `Container::new().with_background().with_child(..)` used as a card | The same two rows above. |
+| `CardGrid::content_sized(cards)` | `CardGrid::new(cards)` (rows are always content-sized) |
+| `CardGrid::with_card_height(px)`, `DEFAULT_CARD_HEIGHT` | Delete. A row is as tall as its tallest card. |
+| `CardGrid::with_min_card_width(px)`, `DEFAULT_CARD_MIN_WIDTH` | `.with_card_width(CardWidth::Compact)` for px ≤ 220, `CardWidth::Regular` (the default; delete the call) for ≤ 300, `CardWidth::Wide` above. |
+| `CardGrid::with_gap(px)` | Delete (`rhythm.sibling`). |
+| `Section::with_gap(items, gap)` | `Section::new(items)` |
+| `DEFAULT_SECTION_GAP` | `theme.tokens.spacing.rhythm.sibling` |
+| `FormSection` titles | Unchanged call; the title is now `Heading`, not `Title`. |
+| `ActionRowFace::new(rect, name)…paint(..)` | `ListRowFace::new(name)…paint(&mut ctx, rect)`; hit-test the rect you laid out; `face.accessibility(rect, target)` for the node. |
+| `ActionRowFace::…paint_focus(..)` alone (a painted control's focus) | `ui::widget::paint_focus_ring(scene, transform, rect, radius, theme)` |
+| `ActionRowFace::accented(true)` / `.outlined(true)` | Delete: rows are not accented. The one recommended choice goes first. |
+| `ChoiceCardFace::new(rect, icon, title, description)` | `ListRowFace::new(title).leading(RowLeading::Icon(icon)).secondary(description).disclosure()` |
+| `data_table::paint_selected_row(..)` (crate-private) | `ui::chrome::paint_row_selection(scene, transform, rect, state, ground, theme)` ([Navigation](#navigation)) |
+| `StatTile::with_icon(icon)` | Delete. |
+| `StatTile::with_value_color(c)` | `.tone(Tone::Success / Warning / Danger / Info)` by what the colour meant; a colour that meant nothing: delete. |
+| `StatTile::with_delta(text, trend)` | `.change(text, trend)`, with text that says against what ("12% this week"). The arrow is grey; the meaning is the tile's tone. |
+| A value with its unit in one string (`"48 ms"`, `"1.2 TB"`) | `StatTile::new(label, "48").unit("ms")` |
+| `StatTile::paint(ctx, rect, &StatTileContent { .. })` | `StatTileFace::new(label, value)…paint(ctx, rect)` (size it with `.height(text, theme)`) |
+| A `Row` of `StatTile`s | `StatGroup::new(tiles)` (reflows 4 → 2 → 1) |
+| `Avatar::from_initials(initials, size)` | `Avatar::person(name, identity).size(AvatarSize::…)`: size ≤ 24 `Small`, ≤ 40 `Regular` (default; omit), ≤ 56 `Large`, else `Hero`. `identity` is a stable id (a peer id, an address, an account key), never a list index. |
+| `Avatar::new(image, size)` | `Avatar::person(name, identity).with_image(image).size(..)` |
+| An app widget that loads an avatar picture (tube `ChannelAvatar`) | Delete it; `Avatar::person(name, id).with_image_url(store, url)` |
+| `Avatar::draw_at(scene, t, rect, initials, colour, theme, text)` | `AvatarFace::new(name, identity).paint(&mut PaintCtx::new(scene, t, text, theme), rect)`. When you hold the person's presence colour (a collaborator's chosen colour), add `.presence(colour)` instead of hashing. |
+| `Avatar::draw_ringed_at(ctx, rect, initials, colour, AvatarRing { color: ground, .. })` | `AvatarFace::new(..).presence(colour).ringed_on(ground).paint(ctx, rect)` |
+| `Avatar::draw_overflow_at(ctx, rect, n, ring)` | `AvatarFace::paint_overflow(ctx, rect, n, Some(ground))` |
+| `Avatar::color_for_initials(..)`, `Avatar::background_color` | `AvatarFace::new(name, identity).colour(theme)` |
+| `Avatar::initials_for_name(name)` | `ui::widget::initials_for_name(name)` (first and last word) |
+| `Avatar::initial_ink(fill)` | `ui::widget::avatar::initial_ink(fill, theme)` |
+| `AvatarRing` | Deleted. |
+| A square account/site icon drawn as a rounded rect with a letter | `AvatarFace::new(..).square()` / `Avatar::person(..).square()` |
+| `RingGauge::new(f).with_label(value, caption)` | `ProgressRing::new(f).value(value).caption(caption)` |
+| A ring that colours by threshold (CPU, disk) | add `.level(GaugeThresholds::default())` |
+| `RingGauge::with_color(c)` | `.tone(Tone::…)` by meaning; delete for plain progress (the inverted fill). |
+| `RingGauge::with_size(px)` | `.size(ProgressRingSize::Small)` (no readout, inline), `Regular` (default), `Large` (the screen's hero) |
+| `RingGauge::with_thickness`, `with_style`, `GaugeStyle` on a ring | Delete. |
+| `RingGauge::draw_at(ctx, circle, thickness, &reading)` | `ProgressRingFace::new(frac).value(..).caption(..).paint(ctx, rect)` |
+| `EmptyStateContent { icon, title, message, action_label }` | Add `illustration: None, error: false`, or write `EmptyStateContent { icon, message, ..EmptyStateContent::new(title) }`. |
+| A hand-drawn error placeholder ("Couldn't load …" with a red or accent icon) | `EmptyState::error(title, detail).with_icon(icon)`; immediate: `error: true`. |
+| An empty state with an app-drawn picture | `.with_illustration(|ctx, rect| …)` (immediate: `illustration: Some(&painter)`), painting from theme values. |
+| `Container::with_fill(colour)` | Over a whole pane or the window: delete it. A well inside content: `.with_background()`. |
+| A `Container` (or painted rect) with its own hit-test and hover fill | `Container::new()…interactive(id, || …)` (or `.interactive_action(id, binding)`) |
+| `ui::widget::Table`, `widget::table::*` | `DataTable` with `ColumnDef`s. The editable grid is the block editor's own document table. |
+| A `DataTable` column painted with `with_text_render` that only right-aligns a number | `.with_kind(TextKind::Numeric).with_text(..)`: numeric columns align cells and header to the trailing edge |
+| A cell painting `NULL`, `—` or an empty string for a missing value | `.with_optional_text(|row| …, "NULL")` (the absent label is painted in tertiary ink and read out) |
+| App code painting a table header band, a sort triangle, zebra rows or a selected-row fill | Delete it; `DataTable` paints all four. `.ruled()` for rules between columns (query results, spreadsheets). |
+| `FunctionPlane::paint_grid(scene, t, text, theme, ground, label_size)` | Drop `label_size`: labels are `Caption`, culled when they would collide and kept whole inside the canvas. |
+| A legend painted next to a `PieChart` | `PieChart::new(slices).with_legend()` |
+| `PageSidebar` markup dots drawn by the app | `sidebar.set_marked(page_indices)` |
+| `PageSidebar::with_header("PAGES")` | Delete the call (the default is "Pages"), or pass sentence case. |
+
+### Which widget replaces which hand-drawn pattern
+
+| Widget (face) | Use it for | Replaces |
+|---|---|---|
+| `ListRow` (`ListRowFace`) | One row of a content list: a message, a contact, a request, a file, a device, a setting that opens a page | mail list rows and swipe (mail `pane.rs:1466-1800`), contacts rows (`app.rs:4449-4565`), snippets/feeds rows (snippets `app.rs:90-160`, feeds `list_layout.rs`), remote hosts (`app.rs:4672`), api-tester method rows (`navrow.rs`) |
+| `PropertyList` (`PropertyListFace`) | Labelled values: details, metadata, fields | contacts detail (`app.rs:4895-5010`), passwords fields with copy (`showcase.rs:3050-3112`), hex-editor inspector (`view.rs:1295-1420`), file info panes |
+| `Section` + `SectionHeader` | A titled group on the ground; a list of `ListRow`s | git-client change groups with count and "Stage all" (`changes.rs:420-520`), every "Title + count + Clear all" row |
+| `FormSection::grouped()` | Settings rows: label leading, control trailing, separators | camera settings (`app.rs:6346-6770`) |
+| `Card` (`CardFace`) + `CardGrid` | Objects: apps, documents, comments, saved connections | store cards (`app.rs:2000`), word-processor review cards (`.leading_stripe(Tone::Presence(..))`), clocks quick starts |
+| `StatTile` (`StatTileFace`) + `StatGroup` | One number and what it measures | backups summary tiles (`app.rs:2200-2295`), monitor tiles with live sparkline and click-to-select (`app.rs:2236-2408`), vpn 2×2 (`app.rs:2308-2376`) |
+| `DataTable` | Tabular data | db-client grid (`grid.rs`), logs (`app.rs:980-1060`), api-tester headers/params tables |
+| `MediaCard` (`MediaCardFace`) + `MediaGrid` / `justified_rows` | Covers, thumbnails, album art, photos, app art | ebook covers (`app.rs:7824-8180`), tube video tiles (`widgets/large_video_meta.rs`), music albums (`render.rs:784`, generated art `art.rs:120-127`), photos justified rows (`app.rs:11069-11200`), store artwork (`artwork.rs:42-62`) |
+| `DropZone` (`DropZoneFace`) | A drop target for files | ebook import (`app.rs:8182-8296`), imager source (`app.rs:2858-2958`) |
+| `Skeleton` (`SkeletonFace`) | Content still loading | music loading rows (`render.rs:8702`) |
+| `ProgressRing` (`ProgressRingFace`) | A countdown, progress or measured level in a ring | imager progress (`app.rs:3882-3942`), totp countdown (`ring.rs`), speed-test dial (`app.rs:527-575`) |
+| `Stepper` (`StepperFace`) | Where a wizard is | imager stations (`app.rs:2533-2657`) |
+| `EmptyState` | Nothing here yet, or something failed | weather illustration (`core.rs:2218-2276`), pdf error (`app_draw.rs:1199-1210`) |
+| `Avatar` (`AvatarFace`) | A person's or account's picture or initials | mail avatars (`draw.rs:108-150`), passwords site icons (`.square()`), tube `channel_avatar.rs` |
+| `Container::interactive` | A whole tile that opens something | tube clickable tiles (`widgets/flex.rs`) |
+
+### Choosing
+
+- **Card, Section or StatTile.** Can the person open, move, share or drag
+  it? It is a `Card`. Is it a number? A `StatTile` in a `StatGroup`. Is it
+  settings, a form, or a group of facts? A `Section` (with a `PropertyList`,
+  `ListRow`s or `FormSection` inside). Never put a section, a form or a stat
+  inside a card.
+- **Section header.** `SectionHeader::heading` for a section of a page,
+  `SectionHeader::group` for a group inside one. `.count(n)` when the number
+  of items matters (unread, changes); `.action(button)` for one text action
+  on the whole group. No subtitle: if the person must know something to act,
+  put one sentence in the content.
+- **ListRow leading column.** `.avatar(name, identity)` for people and
+  accounts, `.icon(icon)` for kinds of things, `.badge(code)` for a short
+  classifying code (`GET`, `PDF`, `WARN`). With faces, compute
+  `badge_column_width(text, theme, &all_badges)` once per list and pass it to
+  every row's `.leading_column(..)` so titles line up.
+- **ListRow text.** Title in `Body` (`.emphasized(true)` for unread),
+  `.secondary(text)` for the one secondary fact (`.two_line_secondary()` for a
+  message preview), `.meta(text)` for a time, size or count. More than one
+  secondary fact: a `PropertyList` in the detail view, or columns in a
+  `DataTable`. Never join facts with `·`.
+- **ListRow trailing.** `.active()`, `.warning()`, `.error()`, `.idle()` for a
+  status dot; `.presence(identity)` for a person's presence; `.disclosure()`
+  when activating opens a page; `.action(icon, label, f)` for actions shown on
+  hover and focus (they replace the meta); `.swipe_action(icon, label,
+  destructive, f)` for touch.
+- **Lists.** Put `ListRow`s in a `Section`: consecutive rows become one list,
+  edge to edge, with inset separators that hide beside the selected row.
+  With faces, call `.separator(next_selected)` on every row but the last.
+  Selection is `.selected(true)`; never paint a row fill.
+- **Tone.** `Success`, `Warning`, `Danger` and `Info` for status,
+  `Tone::of_identity(id)` / `Tone::Presence(hue)` for a person. `Neutral` is
+  no colour. A tone is never decoration: a card stripe or a stat ticker
+  without a meaning is deleted.
+- **Media.** `MediaAspect::Square` for albums and app art, `Wide` for video,
+  `Portrait` for books and posters, `Ratio(w / h)` for photos (with
+  `MediaGrid::justified`). `MediaSource::Url { store, url }` loads in the
+  background; until it lands, and for missing art, the generated placeholder
+  shows. Badges: `Duration`, `Progress`, `Live`, `Downloaded`. Up to two
+  `.meta(..)` lines.
+- **Progress ring.** Plain progress or a countdown: no fill call. A measured
+  level: `.level(thresholds)`. A status: `.tone(..)`.
+
+### What to delete in an app
+
+1. Hand-drawn list rows: per-row hover/selection fills, separators, avatar
+   circles, timestamp placement, unread dots, status dots, hover-action
+   hit-testing. Use `ListRow` / `ListRowFace`.
+2. Key/value grids drawn with two `Text` columns or measured label offsets.
+   Use `PropertyList`.
+3. Cards around settings, forms or stats (`Card::titled`,
+   `Container::with_background` used as a group). Use `Section`.
+4. Stat tiles painted as cards with a value colour or an accent ticker. Use
+   `StatTile` / `StatGroup` with a tone.
+5. Table headers, sort triangles, zebra stripes, selected-row fills and
+   column measurement around a `DataTable`.
+6. Cover and thumbnail painters, generated-art gradients made of stacked
+   rects, duration pills, progress bars and live badges over media, and
+   column math for media grids (`card_columns` stays for custom layouts).
+7. Drop-target dashed boxes, loading placeholder bars, progress rings,
+   wizard step indicators, and empty or error placeholders.
+8. App avatar widgets and avatar colour tables indexed by position.
+9. The status enums, colour tables and pixel constants these painters used
+   (`ROW_H`, `AVATAR_D`, `TILE_PAD`, …).
+
+### Painted app with content faces
+
+```rust
+use ui::paint::PaintCtx;
+use ui::widget::{AvatarFace, ListRowFace, RowLeading, StatTileFace, Tone};
+
+let mut ctx = PaintCtx::new(scene, transform, text, theme);
+let mut y = list.y0;
+for (i, message) in messages.iter().enumerate() {
+    let face = ListRowFace::new(&message.sender)
+        .leading(RowLeading::Avatar(AvatarFace::new(&message.sender, &message.address)))
+        .secondary(&message.preview)
+        .meta(&message.time)
+        .emphasized(message.unread)
+        .selected(Some(i) == selected)
+        .interaction(row_interaction(i));
+    let face = match messages.get(i + 1) {
+        Some(_) => face.separator(Some(i + 1) == selected),
+        None => face,
+    };
+    let h = face.height(ctx.text, ctx.theme);
+    let rect = Rect::new(list.x0, y, list.x1, y + h);
+    face.paint(&mut ctx, rect);
+    row_rects.push(rect);
+    y += h;
+}
+
+let tile = StatTileFace::new("Protected", "1.2").unit("TB").tone(Tone::Success);
+let h = tile.height(ctx.text, ctx.theme);
+tile.paint(&mut ctx, Rect::new(x, y, x + w, y + h));
+```
+
 ## Search
 
 Search belongs to the platform. An app draws no search field, no result list

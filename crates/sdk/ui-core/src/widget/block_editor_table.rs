@@ -1,9 +1,11 @@
-//! `Table` — a CRDT-native **editable grid**. Unlike
-//! [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
-//! sortable list view), this is a structural editor: the user types into
-//! cells and adds / removes rows and columns anywhere via hover affordances
-//! in the gutters, with every mutation writing straight through to the
-//! Automerge document.
+//! `DocumentTable` — the block editor's CRDT-native **editable grid**: a
+//! table *inside a document*. Apps show tabular data with
+//! [`crate::widget::data_table::DataTable`], the one table widget; this is
+//! the document engine's structural editor, where the user types into cells
+//! and adds / removes rows and columns via hover affordances in the
+//! gutters, every mutation writing straight through to the Automerge
+//! document. It wears the table look of `DataTable`: no ground of its own,
+//! rules and bands derived from the ground it sits on.
 //!
 //! # Data model (under the widget's `path`, a Map)
 //!
@@ -165,6 +167,7 @@ pub fn col_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
 }
 
 /// `(rows, cols)` dimensions.
+#[cfg(test)]
 pub fn dims(doc: &AutoCommit, t: &ObjId) -> (usize, usize) {
     (
         rows_list(doc, t).map_or(0, |l| doc.length(&l)),
@@ -192,6 +195,7 @@ fn next_id(doc: &mut AutoCommit, t: &ObjId) -> String {
 }
 
 /// Resolve the `Text` object backing cell `(r, c)` in display coordinates.
+#[cfg(test)]
 pub fn cell_obj(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> Option<ObjId> {
     let rid = row_ids(doc, t).into_iter().nth(r)?;
     let cid = col_ids(doc, t).into_iter().nth(c)?;
@@ -204,6 +208,7 @@ pub fn cell_obj(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> Option<ObjId
 }
 
 /// Current text of cell `(r, c)`; empty string when the cell has no content.
+#[cfg(test)]
 pub fn cell_text(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> String {
     match cell_obj(doc, t, r, c) {
         Some(obj) => doc.text(&obj).unwrap_or_default(),
@@ -213,6 +218,7 @@ pub fn cell_text(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> String {
 
 /// Replace the whole content of cell `(row, col)`. Creates the backing
 /// `Text` if it does not exist yet.
+#[cfg(test)]
 pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, row: usize, col: usize, text: &str) {
     ensure(doc, t);
     let (Some(rid), Some(cid)) = (
@@ -314,11 +320,6 @@ pub fn header(doc: &AutoCommit, t: &ObjId) -> bool {
     )
 }
 
-pub fn set_header(doc: &mut AutoCommit, t: &ObjId, on: bool) {
-    ensure(doc, t);
-    let _ = doc.put(t, K_HEADER, on);
-}
-
 fn col_width(doc: &AutoCommit, t: &ObjId, cid: &str) -> f64 {
     match widths_map(doc, t).and_then(|w| doc.get(&w, cid).ok().flatten()) {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
@@ -397,11 +398,8 @@ struct Resize {
               are never combined into a state machine, so a bitflags/enum encoding would not \
               simplify the call sites"
 )]
-pub struct Table {
+pub struct DocumentTable {
     id: String,
-    /// Optional seed applied once when the model is first initialised.
-    seed: Option<(usize, usize)>,
-    seed_header: bool,
 
     // --- model mirror (refreshed each `sync`) ---
     row_ids: Vec<String>,
@@ -428,12 +426,10 @@ pub struct Table {
     projection_exit: Option<bool>,
 }
 
-impl Table {
+impl DocumentTable {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            seed: None,
-            seed_header: false,
             row_ids: Vec::new(),
             col_ids: Vec::new(),
             col_widths: Vec::new(),
@@ -449,21 +445,6 @@ impl Table {
             pending_commit: false,
             projection_exit: None,
         }
-    }
-
-    /// Seed the table with `rows`×`cols` empty cells the first time it is
-    /// synced against a fresh (uninitialised) document.
-    #[must_use]
-    pub fn seeded(mut self, rows: usize, cols: usize) -> Self {
-        self.seed = Some((rows, cols));
-        self
-    }
-
-    /// Render the first row as a header band (also applied on first seed).
-    #[must_use]
-    pub fn with_header(mut self) -> Self {
-        self.seed_header = true;
-        self
     }
 
     fn n_rows(&self) -> usize {
@@ -1003,7 +984,7 @@ impl Table {
         let line = Stroke::new(1.0);
         // Rules derive from the body surface they cross (HIG §9.5): a white
         // veneer vanishes on a light table, a declared border on a dark one.
-        let line_color = crate::surface::edge_on(tk.colors.surfaces.raised);
+        let line_color = crate::surface::edge_on(tk.colors.surfaces.content);
         // A 1 px rule centred on an integer edge smears over two half-alpha
         // columns; the edges are whole pixels (see `draw`), so centre each
         // rule on the pixel just inside the body.
@@ -1040,7 +1021,7 @@ impl Table {
             scene.stroke(
                 &line,
                 transform,
-                crate::surface::edge_on_with(tk.colors.surfaces.raised, crate::chrome::GLOW_ALPHA),
+                crate::surface::edge_on_with(tk.colors.surfaces.content, crate::chrome::GLOW_ALPHA),
                 None,
                 &Line::new((gl, y), (gr, y)),
             );
@@ -1326,28 +1307,12 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
     );
 }
 
-impl Widget for Table {
+impl Widget for DocumentTable {
     crate::provides!(dyn crate::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         ensure(state, path);
-        // First-run seed.
-        if let Some((r, c)) = self.seed.take() {
-            let (er, ec) = dims(state, path);
-            if er == 0 && ec == 0 {
-                for _ in 0..c {
-                    insert_column(state, path, usize::MAX);
-                }
-                for _ in 0..r {
-                    insert_row(state, path, usize::MAX);
-                }
-                if self.seed_header {
-                    set_header(state, path, true);
-                }
-            }
-        }
-
         let new_rows = row_ids(state, path);
         let new_cols = col_ids(state, path);
         self.header = header(state, path);
@@ -1460,16 +1425,6 @@ impl Widget for Table {
         let tk = &theme.tokens;
         let radius = f64::from(tk.radii.control);
 
-        // Outer frame (spans the gutters too).
-        let frame = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tk.colors.surfaces.base,
-            None,
-            &frame,
-        );
-
         if self.is_empty() {
             self.draw_empty_state(scene, transform, text_renderer, theme, radius);
             return;
@@ -1479,14 +1434,10 @@ impl Widget for Table {
         let (ys, body) = (&grid.ys, grid.body);
         let (gl, gr) = (body.x0, body.x1);
 
-        // Grid body surface + header band + zebra rows.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tk.colors.surfaces.raised,
-            None,
-            &body,
-        );
+        // The table stands on its document's ground: header band and zebra
+        // rows are derived tiers of that ground, as in `DataTable`.
+        let ground = tk.colors.surfaces.content;
+        let _ = body;
         for (r, w) in ys.windows(2).enumerate() {
             let [y0, y1] = *w else { continue };
             let row_rect = Rect::new(gl, y0, gr, y1);
@@ -1495,15 +1446,9 @@ impl Widget for Table {
             // surface (HIG §9.5), so they flip polarity on a light palette
             // instead of laying a white veneer over a white table.
             let fill = if is_header {
-                crate::widget::data_table::tier_on(
-                    tk.colors.surfaces.raised,
-                    crate::chrome::HAIRLINE_ALPHA,
-                )
+                crate::widget::data_table::tier_on(ground, crate::chrome::HAIRLINE_ALPHA)
             } else if r % 2 == 1 {
-                crate::widget::data_table::tier_on(
-                    tk.colors.surfaces.raised,
-                    crate::widget::data_table::ZEBRA_ALPHA,
-                )
+                crate::widget::data_table::tier_on(ground, crate::widget::data_table::ZEBRA_ALPHA)
             } else {
                 continue;
             };
@@ -1618,7 +1563,7 @@ impl Widget for Table {
     }
 
     fn name(&self) -> &'static str {
-        "Table"
+        "DocumentTable"
     }
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
@@ -1672,7 +1617,7 @@ impl Widget for Table {
     }
 }
 
-impl crate::undo::UndoPoints for Table {
+impl crate::undo::UndoPoints for DocumentTable {
     fn needs_commit(&self) -> bool {
         self.pending_commit
             || self
@@ -1851,7 +1796,11 @@ mod tests {
         reason = "test-only layout size is a small pixel value; f32 precision loss is \
                   immaterial"
     )]
-    fn layout(table: &mut Table, doc: &mut AutoCommit, root: &ObjId) -> (TaffyTree<()>, NodeId) {
+    fn layout(
+        table: &mut DocumentTable,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+    ) -> (TaffyTree<()>, NodeId) {
         table.sync(doc, root);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -1923,7 +1872,7 @@ mod tests {
     }
 
     fn dispatch(
-        table: &mut Table,
+        table: &mut DocumentTable,
         taffy: &TaffyTree<()>,
         node: NodeId,
         doc: &mut AutoCommit,
@@ -1961,7 +1910,7 @@ mod tests {
             set_cell_text(&mut doc, &t, 0, 0, "A");
             set_cell_text(&mut doc, &t, 0, 1, "B");
 
-            let mut table = Table::new("t");
+            let mut table = DocumentTable::new("t");
             let (taffy, node) = layout(&mut table, &mut doc, &t);
 
             // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
@@ -2001,7 +1950,7 @@ mod tests {
                 insert_row(&mut doc, &t, usize::MAX);
                 set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
             }
-            let mut table = Table::new("t");
+            let mut table = DocumentTable::new("t");
             let (taffy, node) = layout(&mut table, &mut doc, &t);
 
             // Delete handle for row 1 sits in the left gutter at that row's centre.
@@ -2029,7 +1978,7 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 2);
-            let mut table = Table::new("t");
+            let mut table = DocumentTable::new("t");
             let (taffy, node) = layout(&mut table, &mut doc, &t);
 
             let cid0 = col_ids(&doc, &t)[0].clone();
@@ -2080,7 +2029,7 @@ mod tests {
         // Case `empty_table_add_affordance_creates_a_cell`.
         {
             let (mut doc, t) = doc_with_table();
-            let mut table = Table::new("t"); // no seed → empty
+            let mut table = DocumentTable::new("t"); // no seed → empty
             let (taffy, node) = layout(&mut table, &mut doc, &t);
             assert!(table.is_empty());
 
@@ -2112,7 +2061,7 @@ mod tests {
             // Clear the seeded content so we assert on exactly what we type.
             set_cell_text(&mut doc, &t, 0, 0, "");
 
-            let mut table = Table::new("t");
+            let mut table = DocumentTable::new("t");
             let (taffy, node) = layout(&mut table, &mut doc, &t);
 
             // Focus the only cell (emulating the App's focus dispatch).
@@ -2133,7 +2082,7 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 2, 2);
-            let mut table = Table::new("t");
+            let mut table = DocumentTable::new("t");
             let (taffy, node) = layout(&mut table, &mut doc, &t);
 
             // Focus the top-left cell (index 0). Cell below is index n_cols == 2.

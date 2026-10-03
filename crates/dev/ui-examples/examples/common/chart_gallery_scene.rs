@@ -18,7 +18,7 @@ use tilo_ui::widget::{
 const CHART_HEIGHT: f32 = 270.0;
 
 fn card(title: &str, chart: impl Widget + 'static) -> Box<dyn Widget> {
-    Box::new(Card::titled(title, Box::new(chart)))
+    Box::new(Card::new(Box::new(chart)).with_title(title))
 }
 
 /// Build the same scene used by the live example and offscreen visual checks.
@@ -427,10 +427,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
             "Resize to reflow. Hover points, cells, links, nodes, and segments; click to activate accessible data targets.",
         )))
         .push(Box::new(
-            CardGrid::new(cards)
-                .with_min_card_width(430.0)
-                .with_card_height(350.0)
-                .with_gap(18.0),
+            CardGrid::new(cards).with_card_width(tilo_ui::widget::CardWidth::Wide),
         ));
     Box::new(Scrollable::new_vertical().with_child(Box::new(content)))
 }

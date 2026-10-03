@@ -7,8 +7,8 @@ crates/sdk/ui-core/src/chrome/toolbar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 13
 crates/sdk/ui-core/src/widget/autocomplete.rs pixel_const 5
 crates/sdk/ui-core/src/widget/block_editor.rs pixel_const 11
+crates/sdk/ui-core/src/widget/block_editor_table.rs pixel_const 11
 crates/sdk/ui-core/src/widget/button.rs pixel_const 8
-crates/sdk/ui-core/src/widget/card.rs pixel_const 3
 crates/sdk/ui-core/src/widget/channel_browser.rs pixel_const 12
 crates/sdk/ui-core/src/widget/channel_browser.rs taffy_length 1
 crates/sdk/ui-core/src/widget/chart.rs pixel_const 1
@@ -27,7 +27,6 @@ crates/sdk/ui-core/src/widget/date_picker.rs pixel_const 4
 crates/sdk/ui-core/src/widget/document_viewport.rs pixel_const 6
 crates/sdk/ui-core/src/widget/drag.rs pixel_const 1
 crates/sdk/ui-core/src/widget/dropdown.rs pixel_const 7
-crates/sdk/ui-core/src/widget/empty_state.rs pixel_const 2
 crates/sdk/ui-core/src/widget/file_picker.rs pixel_const 12
 crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 3
 crates/sdk/ui-core/src/widget/gauge.rs pixel_const 1
@@ -57,17 +56,12 @@ crates/sdk/ui-core/src/widget/scrollable.rs pixel_const 5
 crates/sdk/ui-core/src/widget/scrollbar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/search_field.rs pixel_const 9
 crates/sdk/ui-core/src/widget/search_results.rs pixel_const 9
-crates/sdk/ui-core/src/widget/section.rs literal_gap 1
-crates/sdk/ui-core/src/widget/section.rs pixel_const 1
 crates/sdk/ui-core/src/widget/segmented.rs pixel_const 1
 crates/sdk/ui-core/src/widget/shortcut_recorder.rs pixel_const 2
 crates/sdk/ui-core/src/widget/shortcut_recorder.rs taffy_length 1
 crates/sdk/ui-core/src/widget/slash_menu.rs pixel_const 6
 crates/sdk/ui-core/src/widget/slider.rs pixel_const 3
 crates/sdk/ui-core/src/widget/spinner.rs pixel_const 2
-crates/sdk/ui-core/src/widget/stat_tile.rs pixel_const 2
-crates/sdk/ui-core/src/widget/stat_tile.rs taffy_length 1
-crates/sdk/ui-core/src/widget/table.rs pixel_const 11
 crates/sdk/ui-core/src/widget/tabs.rs pixel_const 23
 crates/sdk/ui-core/src/widget/text_input.rs pixel_const 4
 crates/sdk/ui-core/src/widget/tile_host.rs pixel_const 6
