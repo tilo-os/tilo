@@ -3,12 +3,12 @@
 # requires-python = ">=3.11"
 # dependencies = ["fonttools==4.60.1"]
 # ///
-"""Rebuild the catalog's matched script fallbacks from their pinned upstream fonts.
+"""Rebuild the catalog's matched script fallback from its pinned upstream font.
 
-Instrument Sans covers Latin only. Greek and Cyrillic fall back to faces chosen
-to match it (see crates/sdk/ui-core/assets/fonts/PROVENANCE.md). Only the
-script each face serves ships, plus the punctuation, digits and marks its runs
-need, so the catalog does not carry a second Latin.
+Tilo Sans, as shipped, has no Cyrillic, which falls back to a face chosen to
+match it (see crates/sdk/ui-core/assets/fonts/PROVENANCE.md). Only the script
+the face serves ships, plus the punctuation, digits and marks its runs need,
+so the catalog does not carry a second Latin.
 
     uv run tools/font-fallback-subsets.py          # rebuild into the checkout
     uv run tools/font-fallback-subsets.py --check  # rebuild and compare
@@ -28,7 +28,6 @@ from pathlib import Path
 
 from fontTools import subset
 from fontTools.ttLib import TTFont
-from fontTools.varLib import instancer
 
 GOOGLE_FONTS = "9710da1eacb3be272583c3224dcb70f9da6eadbb"
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,17 +57,7 @@ FALLBACKS = [
         "output": "Onest-Cyrillic[wght].ttf",
         "source": "ofl/onest/Onest[wght].ttf",
         "sha256": "966c5c29b4755da84b6854d5c21dd4eaa2420225d0e9874de602de176d4a9f31",
-        "pin": {},
         "script": [(0x0400, 0x052F), (0x1C80, 0x1C8F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)],
-    },
-    {
-        "output": "Geologica-Greek[wght].ttf",
-        "source": "ofl/geologica/Geologica[CRSV,SHRP,slnt,wght].ttf",
-        "sha256": "9124d9e88ac6c11d761f35241713a51d68e2c4ebedce0edaca834717a00959ec",
-        # Upright, sharpness and cursive off: the plain Geologica the toolkit
-        # sets Greek in. Only the weight axis remains variable.
-        "pin": {"CRSV": 0, "SHRP": 0, "slnt": 0},
-        "script": [(0x0370, 0x03FF), (0x1F00, 0x1FFF)],
     },
 ]
 
@@ -88,10 +77,6 @@ def codepoints(ranges):
 
 def build(spec):
     font = TTFont(io.BytesIO(fetch(spec["source"], spec["sha256"])), recalcTimestamp=False)
-    if spec["pin"]:
-        pinned = io.BytesIO()
-        instancer.instantiateVariableFont(font, spec["pin"]).save(pinned)
-        font = TTFont(io.BytesIO(pinned.getvalue()), recalcTimestamp=False)
     options = subset.Options()
     options.layout_features = ["*"]
     options.name_IDs = ["*"]

@@ -8,7 +8,7 @@
 
 The sources hold everything every area has drawn. Not all of it ships: a
 script or feature that review has not yet approved is held back, so Tilo's
-fallback face (Onest for Cyrillic, Geologica for Greek) keeps drawing it.
+fallback face (Onest for Cyrillic) keeps drawing it.
 
     fonts/TiloSans[wdth,wght].ttf, fonts/TiloSans-Italic[wdth,wght].ttf
         what build.py compiles: everything (the tools and proofs use these)
@@ -37,15 +37,15 @@ FILES = ("TiloSans[wdth,wght].ttf", "TiloSans-Italic[wdth,wght].ttf")
 # area -> what to hold back. Code points as inclusive ranges.
 HELD_BACK = {
     # Cyrillic: Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian,
-    # Kazakh. Held back until the kerning and heavy-weight issues found in
-    # review are fixed and native readers have approved it.
+    # Kazakh. Held back until native readers have approved it (and a
+    # Bulgarian reader the locl BGR forms).
     "cyrillic": {
         "codepoints": [(0x0400, 0x052F), (0x1C80, 0x1C8F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)],
         "features": [],
     },
     # Distinct I and l (ss13, cv01, cv02) and the slashed zero: held back
-    # until the serif I keeps its distance from 1, 4, ¿ and the accents
-    # diagonally, not only side by side.
+    # until review approves the diagonal clearances (serif I against 1, 4,
+    # ¿ and the accents) and I1 at 12-14 px (proofs/sheets/il-sheet/).
     "il": {
         "codepoints": [],
         "features": ["ss13", "cv01", "cv02", "zero"],

@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Yi-cy.ss13" format="2">
+  <advance width="322"/>
+  <outline>
+    <contour>
+      <point x="43" y="828" type="line"/>
+      <point x="142" y="828" type="line"/>
+      <point x="142" y="930" type="line"/>
+      <point x="43" y="930" type="line"/>
+    </contour>
+    <contour>
+      <point x="180" y="828" type="line"/>
+      <point x="278" y="828" type="line"/>
+      <point x="278" y="930" type="line"/>
+      <point x="180" y="930" type="line"/>
+    </contour>
+    <component base="I.ss13"/>
+  </outline>
+</glyph>
