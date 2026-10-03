@@ -132,13 +132,45 @@ initrd_gaps() {
     t > end { exit }
     p != "" && t - p > 300000 { m = $0; sub(/^[^]]*]/, "", m); printf "  %7.3fs before [%s]%s\n", (t - p) / 1e6, $2, substr(m, 1, 110) }
     { p = t }' <<<"$log" | sort -rn | head -10 || true
+  # A busy initrd has no gaps: name the units that ran longest instead, from
+  # systemd's own Starting/Finished lines in the same window.
+  printf 'initrd, longest units (%s journal entries in the phase):\n' \
+    "$(awk -F'[][]' -v start="$initrd_us" -v end="$userspace_us" \
+         '{ t = $2 * 1e6 } t >= start && t <= end { n++ } END { print n + 0 }' <<<"$log")"
+  awk -F'[][]' -v start="$initrd_us" -v end="$userspace_us" '
+    { t = $2 * 1e6 }
+    t < start || t > end { next }
+    {
+      m = $0; sub(/^[^]]*]/, "", m)
+      if (m ~ /systemd\[1\]: Starting /) {
+        u = m; sub(/.*systemd\[1\]: Starting /, "", u); sub(/ - .*/, "", u); sub(/\.\.\.$/, "", u)
+        begun[u] = t
+      } else if (m ~ /systemd\[1\]: (Finished|Started) /) {
+        u = m; sub(/.*systemd\[1\]: (Finished|Started) /, "", u); sub(/ - .*/, "", u); sub(/\.$/, "", u)
+        if (u in begun) { printf "  %7.3fs %s\n", (t - begun[u]) / 1e6, u; delete begun[u] }
+      }
+    }
+    END { for (u in begun) printf "  %7.3fs %s (still running at switch-root)\n", (end - begun[u]) / 1e6, u }' \
+    <<<"$log" | sort -rn | head -8 || true
 }
 kernel_gaps() {
   local log
   # Journald timestamps imported early messages at receipt. Those timestamps
   # can place every early message after the initrd started. Read the kernel's
   # own clock instead; an unprivileged failure must not fabricate kernel gaps.
-  log="$(dmesg --color=never 2>/dev/null)" || log="$(sudo -n dmesg --color=never 2>/dev/null)" || {
+  # dmesg is restricted for the gate user. journald keeps the kernel's own
+  # timestamp of each kernel message as _SOURCE_MONOTONIC_TIMESTAMP, which the
+  # gate user reads through wheel.
+  log="$(dmesg --color=never 2>/dev/null)" || log="$(sudo -n dmesg --color=never 2>/dev/null)" \
+    || log="$(journalctl -k -b -o json --no-pager 2>/dev/null | python3 -c '
+import json, sys
+for line in sys.stdin:
+    entry = json.loads(line)
+    stamp = entry.get("_SOURCE_MONOTONIC_TIMESTAMP")
+    message = entry.get("MESSAGE")
+    if stamp and isinstance(message, str):
+        print(f"[{int(stamp) / 1e6:12.6f}] {message}")
+' 2>/dev/null)" && [ -n "$log" ] || {
     printf 'raw kernel timestamps unavailable; no kernel gap attribution\n'
     return 0
   }
