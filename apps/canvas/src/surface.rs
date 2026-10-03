@@ -2316,6 +2316,8 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
             self.text = None;
         }
         self.art = Rc::clone(state);
+        // What the window shows is what the magic wand finds colour in.
+        crate::author::see(&self.tools.renderer, &self.art);
     }
 
     fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {
