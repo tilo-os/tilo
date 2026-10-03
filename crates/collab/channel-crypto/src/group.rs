@@ -385,6 +385,22 @@ impl ChannelGroup {
     where
         F: FnOnce(&ChannelGroup, &MemberAddition) -> Result<()>,
     {
+        let addition = self.stage_add(candidate_key_package)?;
+        if let Err(error) = persist(self, &addition) {
+            self.clear_pending()?;
+            return Err(error);
+        }
+        self.merge_pending_transaction()?;
+        Ok(addition)
+    }
+
+    /// Stage an add and leave it pending: the caller records it durably,
+    /// then merges it ([`Self::merge_pending_transaction`]) or drops it
+    /// ([`Self::discard_pending_transaction`]).
+    pub(crate) fn stage_add(
+        &mut self,
+        candidate_key_package: KeyPackage,
+    ) -> Result<MemberAddition> {
         let preexisting_members = self.member_count();
         let (commit_msg, welcome_msg, _gi) = self
             .group
@@ -394,41 +410,32 @@ impl ChannelGroup {
                 &[candidate_key_package],
             )
             .map_err(Error::openmls)?;
-        let welcome = welcome_msg
-            .tls_serialize_detached()
-            .map_err(Error::tls_codec)?;
-        let commit = if preexisting_members > 1 {
-            Some(
-                commit_msg
-                    .tls_serialize_detached()
-                    .map_err(Error::tls_codec)?,
-            )
-        } else {
-            None
-        };
-        let epoch = self.epoch().saturating_add(1);
-        let key_history = match self.pending_key_history(epoch) {
-            Ok(history) => history,
-            Err(error) => {
-                self.clear_pending()?;
-                return Err(error);
-            }
-        };
-        let addition = MemberAddition {
-            welcome,
-            commit,
-            key_history,
-            epoch,
-        };
-        if let Err(error) = persist(self, &addition) {
+        let staged = (|| {
+            let welcome = welcome_msg
+                .tls_serialize_detached()
+                .map_err(Error::tls_codec)?;
+            let commit = if preexisting_members > 1 {
+                Some(
+                    commit_msg
+                        .tls_serialize_detached()
+                        .map_err(Error::tls_codec)?,
+                )
+            } else {
+                None
+            };
+            let epoch = self.epoch().saturating_add(1);
+            let key_history = self.pending_key_history(epoch)?;
+            Ok(MemberAddition {
+                welcome,
+                commit,
+                key_history,
+                epoch,
+            })
+        })();
+        if staged.is_err() {
             self.clear_pending()?;
-            return Err(error);
         }
-        self.group
-            .merge_pending_commit(&self.member.provider)
-            .map_err(Error::openmls)?;
-        self.record_epoch_key()?;
-        Ok(addition)
+        staged
     }
 
     fn clear_pending(&mut self) -> Result<()> {
@@ -711,6 +718,18 @@ impl ChannelGroup {
     where
         F: FnOnce(&ChannelGroup, &[u8], u64) -> Result<()>,
     {
+        let (commit, epoch) = self.stage_remove(leaf_index)?;
+        if let Err(error) = persist(self, &commit, epoch) {
+            self.clear_pending()?;
+            return Err(error);
+        }
+        self.merge_pending_transaction()?;
+        Ok(commit)
+    }
+
+    /// Stage a removal and leave it pending, as [`Self::stage_add`]. Returns
+    /// the commit and the epoch it moves to.
+    pub(crate) fn stage_remove(&mut self, leaf_index: u32) -> Result<(Vec<u8>, u64)> {
         let (commit, _welcome, _group_info) = self
             .group
             .remove_members(
@@ -719,16 +738,13 @@ impl ChannelGroup {
                 &[LeafNodeIndex::new(leaf_index)],
             )
             .map_err(Error::openmls)?;
-        let commit = commit.tls_serialize_detached().map_err(Error::tls_codec)?;
-        if let Err(error) = persist(self, &commit, self.epoch().saturating_add(1)) {
-            self.clear_pending()?;
-            return Err(error);
+        match commit.tls_serialize_detached() {
+            Ok(commit) => Ok((commit, self.epoch().saturating_add(1))),
+            Err(error) => {
+                self.clear_pending()?;
+                Err(Error::tls_codec(error))
+            }
         }
-        self.group
-            .merge_pending_commit(&self.member.provider)
-            .map_err(Error::openmls)?;
-        self.record_epoch_key()?;
-        Ok(commit)
     }
 
     /// Finish a pending member commit restored from a sealed crash-recovery
