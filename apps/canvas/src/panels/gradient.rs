@@ -79,6 +79,7 @@ pub fn across(kind: Kind, area: Rect, degrees: f64, stops: Vec<(f64, String)>) -
         from: [from.x, from.y],
         to: [to.x, to.y],
         stops,
+        focal: None,
     }
 }
 
@@ -495,7 +496,7 @@ fn kind_picker(
             kinds.iter().position(|k| *k == kind).unwrap_or(0),
         )
         .with_flexible_width()
-        .with_style(ui::widget::toggle_group::SegmentedStyle::Pill)
+        .with_style(ui::widget::toggle_group::SegmentedStyle::Underline)
         .with_id("canvas-fill-kind")
         .on_change(move |index| {
             let Some(chosen) = kinds.get(index).copied() else {

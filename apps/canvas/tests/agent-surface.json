@@ -2933,6 +2933,15 @@
     ]
   },
   {
+    "resource": "tilo.control:canvas-dock-fold",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Fold the layers and history away",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "tilo.control:canvas-sidebar",
     "action": "invoke",
     "resource_kind": "tilo.control",

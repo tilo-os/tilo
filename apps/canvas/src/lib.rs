@@ -134,7 +134,7 @@ enum Dock {
 /// The tool rail's width.
 const RAIL: f32 = 56.0; // a pointer target and its inset, laid out before a theme is known
 /// The sidebar's width.
-const SIDEBAR: f32 = 288.0; // the swatches' width plus insets: a layout width, not spacing
+pub(crate) const SIDEBAR: f32 = 288.0; // the swatches' width plus insets: a layout width, not spacing
 
 /// The tools, top to bottom, each with its key, and at the foot the paint
 /// the brush is loaded with.
