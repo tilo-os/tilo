@@ -382,6 +382,11 @@ pub struct ColorSwatchPicker {
     hovered: Option<usize>,
     focused: bool,
     focus_index: usize,
+    /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
+    on_change: Option<Box<dyn FnMut(usize)>>,
+    /// Lay the swatches out on their own, without the raised panel and its
+    /// padding: for a palette inline in a form.
+    bare: bool,
 }
 
 /// Matches the permissions editor.
@@ -417,7 +422,47 @@ impl ColorSwatchPicker {
             hovered: None,
             focused: false,
             focus_index: 0,
+            on_change: None,
+            bare: false,
         }
+    }
+
+    /// Run `f` with each index the user chooses.
+    #[must_use]
+    pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// The side of one swatch's cell, in logical px (default 30).
+    #[must_use]
+    pub fn with_cell(mut self, cell: f64) -> Self {
+        self.cell = cell.max(12.0);
+        self
+    }
+
+    /// Without the raised panel and its padding.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// Show `idx` as chosen (`None`: none is), without telling `on_change`.
+    pub fn set_selected(&mut self, idx: Option<usize>) {
+        self.selected = idx.filter(|idx| *idx < self.palette.len());
+    }
+
+    fn chose(&mut self, idx: usize) {
+        self.selected = Some(idx);
+        self.choice = Some(idx);
+        if let Some(on_change) = self.on_change.as_mut() {
+            on_change(idx);
+        }
+    }
+
+    fn pad(&self) -> f64 {
+        if self.bare { 0.0 } else { 8.0 }
     }
 
     #[must_use]
@@ -456,7 +501,7 @@ impl ColorSwatchPicker {
     )]
     fn recompute_swatches(&mut self) {
         self.swatch_rects.clear();
-        let pad = 8.0;
+        let pad = self.pad();
         for i in 0..self.palette.len() {
             let r = i.checked_div(self.columns).unwrap_or(0) as f64;
             let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
@@ -479,7 +524,7 @@ impl ColorSwatchPicker {
                   far below f32's exact-integer range"
     )]
     fn grid_size(&self) -> (f32, f32) {
-        let pad = 8.0_f32;
+        let pad = px(self.pad());
         let cell = px(self.cell);
         let w = self.columns as f32 * cell + pad * 2.0;
         let h = self.rows() as f32 * cell + pad * 2.0;
@@ -546,13 +591,15 @@ impl Widget for ColorSwatchPicker {
             return;
         }
         // Panel with its derived rest edge (HIG §9.5), crisp 1 px inset.
-        crate::surface::card(
-            scene,
-            transform,
-            self.rect,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.surfaces.raised,
-        );
+        if !self.bare {
+            crate::surface::card(
+                scene,
+                transform,
+                self.rect,
+                f64::from(theme.tokens.radii.md),
+                theme.tokens.colors.surfaces.raised,
+            );
+        }
 
         for (i, (&rgb, sr)) in self
             .palette
@@ -563,6 +610,14 @@ impl Widget for ColorSwatchPicker {
             let shape = RoundedRect::from_rect(*sr, 6.0);
             let swatch = packed_color(rgb);
             scene.fill(Fill::NonZero, transform, swatch, None, &shape);
+            // A rest edge, so a swatch the colour of the panel still shows.
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+                None,
+                &crate::surface::edge_outline(*sr, 6.0),
+            );
             if self.selected == Some(i) || (self.focused && self.focus_index == i) {
                 scene.stroke(
                     &Stroke::new(2.5),
@@ -605,8 +660,7 @@ impl Widget for ColorSwatchPicker {
                     .iter()
                     .position(|r| r.contains(self.last_cursor))
                 {
-                    self.selected = Some(i);
-                    self.choice = Some(i);
+                    self.chose(i);
                     self.focused = true;
                     self.focus_index = i;
                     *ctx.focus_target = Some(ctx.node_id);
@@ -635,8 +689,7 @@ impl Widget for ColorSwatchPicker {
                     Key::Named(NamedKey::Home) => 0,
                     Key::Named(NamedKey::End) => last,
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        self.selected = Some(self.focus_index);
-                        self.choice = Some(self.focus_index);
+                        self.chose(self.focus_index);
                         *ctx.handled = true;
                         return;
                     }
@@ -651,6 +704,12 @@ impl Widget for ColorSwatchPicker {
 
     fn name(&self) -> &'static str {
         "ColorSwatchPicker"
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        let labels = self.accessible_labels.as_ref()?;
+        let index = self.swatch_rects.iter().position(|r| r.contains(point))?;
+        Some((*self.swatch_rects.get(index)?, labels.get(index)?.clone()))
     }
 
     fn get_rect(&self) -> Rect {
@@ -754,8 +813,7 @@ impl Widget for ColorSwatchPicker {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
-        self.selected = Some(index);
-        self.choice = Some(index);
+        self.chose(index);
         true
     }
 }

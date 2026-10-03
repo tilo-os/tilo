@@ -141,6 +141,33 @@ pub enum Icon {
     Undo2,
     /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
     Redo2,
+    // --- Drawing set ---
+    /// A paint brush. Lucide `brush`.
+    Brush,
+    /// A circle, for an ellipse tool. Lucide `circle`.
+    Circle,
+    /// A diagonal line. Lucide `slash`.
+    Slash,
+    /// A text tool. Lucide `type`.
+    Type,
+    /// An eyedropper that picks a colour. Lucide `pipette`.
+    Pipette,
+    /// Hidden. Lucide `eye-off`.
+    EyeOff,
+    /// Locked. Lucide `lock`.
+    Lock,
+    /// Unlocked. Lucide `lock-open`.
+    LockOpen,
+    /// An agent. Lucide `bot`.
+    Bot,
+    /// A person. Lucide `user`.
+    User,
+    /// A named point, a checkpoint. Lucide `flag`.
+    Flag,
+    /// A paint drop. Lucide `droplet`.
+    Droplet,
+    /// A painter's palette. Lucide `palette`.
+    Palette,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -714,6 +741,72 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m15 14 5-5-5-5"),
             path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
         ],
+        Icon::Brush => vec![
+            path_from_d("m11 10 3 3"),
+            path_from_d("M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z"),
+            path_from_d("M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031"),
+        ],
+        Icon::Circle => vec![circle_path(12.0, 12.0, 10.0)],
+        Icon::Slash => vec![path_from_d("M22 2 2 22")],
+        Icon::Type => vec![
+            path_from_d("M12 4v16"),
+            path_from_d("M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"),
+            path_from_d("M9 20h6"),
+        ],
+        Icon::Pipette => vec![
+            path_from_d(
+                "m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12",
+            ),
+            path_from_d(
+                "m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z",
+            ),
+            path_from_d("m2 22 .414-.414"),
+        ],
+        Icon::EyeOff => vec![
+            path_from_d(
+                "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",
+            ),
+            path_from_d("M14.084 14.158a3 3 0 0 1-4.242-4.242"),
+            path_from_d(
+                "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",
+            ),
+            path_from_d("m2 2 20 20"),
+        ],
+        Icon::Lock => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 10 0v4"),
+        ],
+        Icon::LockOpen => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
+        ],
+        Icon::Bot => vec![
+            path_from_d("M12 8V4H8"),
+            rect_path(4.0, 8.0, 16.0, 12.0, 2.0),
+            path_from_d("M2 14h2"),
+            path_from_d("M20 14h2"),
+            path_from_d("M15 13v2"),
+            path_from_d("M9 13v2"),
+        ],
+        Icon::User => vec![
+            path_from_d("M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"),
+            circle_path(12.0, 7.0, 4.0),
+        ],
+        Icon::Flag => vec![path_from_d(
+            "M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528",
+        )],
+        Icon::Droplet => vec![path_from_d(
+            "M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z",
+        )],
+        Icon::Palette => vec![
+            path_from_d(
+                "M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z",
+            ),
+            circle_path(13.5, 6.5, 0.5),
+            circle_path(17.5, 10.5, 0.5),
+            circle_path(6.5, 12.5, 0.5),
+            circle_path(8.5, 7.5, 0.5),
+        ],
     }
 }
 
@@ -1278,6 +1371,19 @@ mod tests {
                 Icon::CornerDownLeft,
                 Icon::Undo2,
                 Icon::Redo2,
+                Icon::Brush,
+                Icon::Circle,
+                Icon::Slash,
+                Icon::Type,
+                Icon::Pipette,
+                Icon::EyeOff,
+                Icon::Lock,
+                Icon::LockOpen,
+                Icon::Bot,
+                Icon::User,
+                Icon::Flag,
+                Icon::Droplet,
+                Icon::Palette,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

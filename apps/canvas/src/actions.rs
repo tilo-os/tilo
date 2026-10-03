@@ -66,6 +66,8 @@ pub struct EditLayer {
     pub medium: Option<String>,
     pub opacity: Option<f64>,
     pub visible: Option<bool>,
+    /// Locked marks are not picked by the pointer.
+    pub locked: Option<bool>,
     /// `front`, `back`, `forward` or `backward` among the layers.
     pub to: Option<String>,
 }
@@ -1144,6 +1146,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
             medium,
             opacity: add.opacity.unwrap_or(1.0),
             visible: true,
+            locked: false,
         },
     )?;
     Ok(())
@@ -1170,6 +1173,9 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     }
     if let Some(visible) = edit.visible {
         layer.visible = visible;
+    }
+    if let Some(locked) = edit.locked {
+        layer.locked = locked;
     }
     if let Some(to) = &edit.to {
         let all: Vec<(String, String)> = art

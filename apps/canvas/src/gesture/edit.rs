@@ -381,6 +381,7 @@ mod tests {
                 medium: String::new(),
                 opacity: 1.0,
                 visible: true,
+                locked: false,
             }],
             marks: vec![
                 mark("a", 0.0, "pair"),
