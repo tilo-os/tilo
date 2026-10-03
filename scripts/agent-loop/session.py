@@ -375,11 +375,17 @@ def report(args) -> int:
     page, _ = client.tool("tilo_query", {"peer_id": peers[-1]})
     written = []
     for resource in page.get("resources", []):
-        detail, _ = client.tool("tilo_query", {"peer_id": peers[-1], "parent_resource": resource["resource"]})
         actions = {}
-        for entry in detail.get("resources", []):
-            if entry.get("resource") == resource["resource"]:
-                actions = entry.get("actions", {})
+        query = {"peer_id": peers[-1], "parent_resource": resource["resource"]}
+        # A resource's actions can span pages; read on to the last one.
+        while True:
+            detail, _ = client.tool("tilo_query", query)
+            for entry in detail.get("resources", []):
+                if entry.get("resource") == resource["resource"]:
+                    actions.update(entry.get("actions", {}))
+            if detail.get("exhausted", True) or not detail.get("next_cursor"):
+                break
+            query = {**query, "cursor": detail["next_cursor"]}
         for view in ("history", "inspect", "look"):
             if view not in actions:
                 continue
