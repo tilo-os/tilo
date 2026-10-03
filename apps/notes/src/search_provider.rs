@@ -215,14 +215,14 @@ impl SearchProvider for NoteSearchProvider {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &ui::search::SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
         let mut page = self
             .catalog
-            .query_page(query, cursor, work_budget, result_limit);
+            .query_page(query.text(), cursor, work_budget, result_limit);
         // Context is derived only for this bounded page of hits. The retained
         // catalogue still owns matching and continuation, including full bodies.
         let snapshot = self
@@ -246,7 +246,7 @@ impl SearchProvider for NoteSearchProvider {
             };
             let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
             let lower = collapsed.to_lowercase();
-            let needle = query.to_lowercase();
+            let needle = query.text().to_lowercase();
             let offset = lower
                 .find(needle.trim())
                 .or_else(|| needle.split_whitespace().find_map(|word| lower.find(word)))
@@ -455,7 +455,9 @@ mod tests {
                     ],
                 )]),
             );
-            let hits = provider.search_page("migration", None, 512, 64).results;
+            let hits = provider
+                .search_page(&ui::search::SearchQuery::new("migration"), None, 512, 64)
+                .results;
             let short = hits
                 .iter()
                 .find(|hit| {
@@ -492,10 +494,15 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let first = provider.search_page("ordinary", None, 7, 3);
+            let first = provider.search_page(&ui::search::SearchQuery::new("ordinary"), None, 7, 3);
             assert!(first.next.is_some(), "broad query exposes a continuation");
             assert!(first.inspected <= 7 && first.results.len() <= 3);
-            let second = provider.search_page("ordinary", first.next.as_ref(), 7, 3);
+            let second = provider.search_page(
+                &ui::search::SearchQuery::new("ordinary"),
+                first.next.as_ref(),
+                7,
+                3,
+            );
             assert!(second.inspected <= 7 && second.results.len() <= 3);
         }
     }

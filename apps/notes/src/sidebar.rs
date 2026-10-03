@@ -25,11 +25,9 @@ use std::rc::Rc;
 use ui::icons::Icon;
 use ui::presence::PresenceKey;
 use ui::reorder::{DropPlacement, ReorderDrop};
-use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::tree_view::{
-    NodeId, TreeHeadingAction, TreeModel, TreeModelChange, TreeRowAction, TreeRowDecoration,
-    TreeView,
+    NodeId, TreeModel, TreeModelChange, TreeRowAction, TreeRowDecoration, TreeView,
 };
 
 use crate::model::{PageId, Workspace};
@@ -99,7 +97,7 @@ pub(crate) fn note_menu_items() -> Vec<MenuItem> {
         MenuItem::icon_action(Icon::Download, ui::i18n!("notes-menu-export"), || {}),
         MenuItem::icon_action(Icon::Image, ui::i18n!("notes-menu-insert-image"), || {}),
         MenuItem::separator(),
-        MenuItem::icon_action(Icon::Trash2, ui::i18n!("notes-menu-delete"), || {}),
+        MenuItem::destructive_action(ui::i18n!("notes-menu-delete"), || {}).with_icon(Icon::Trash2),
     ]
 }
 
@@ -117,26 +115,6 @@ fn empty_area_items() -> Vec<MenuItem> {
         MenuItem::icon_action(Icon::FilePlus, "New note", || {}),
         MenuItem::icon_action(Icon::CloudDownload, "Import Markdown", || {}),
     ]
-}
-
-/// The tier a chosen control lifts to off a `surfaces.raised` ground — the
-/// narrow top bar's drawer toggle, the History page tree: whichever of the
-/// theme's semantic tiers moves furthest from `raised`, so the selection is a
-/// contrast step on every preset (HIG §9.3) instead of raised-on-raised with
-/// only an outline. `chrome::selection_tier` lifts base → raised and would
-/// land on the ground itself here.
-pub(crate) fn selection_fill_on_raised(theme: &Theme) -> vello::peniko::Color {
-    use ui::a11y::relative_luminance;
-    let c = &theme.tokens.colors;
-    let g = relative_luminance(c.surfaces.raised);
-    [c.surfaces.base, c.lift(1.0)]
-        .into_iter()
-        .max_by(|a, b| {
-            (relative_luminance(*a) - g)
-                .abs()
-                .total_cmp(&(relative_luminance(*b) - g).abs())
-        })
-        .unwrap_or(c.surfaces.base)
 }
 
 /// Stable tree keys for page ids. Keys survive every rebuild of the model,
@@ -392,27 +370,17 @@ impl PageSidebar {
         let on_delete = (Rc::clone(&outbox), Rc::clone(&keys));
         let on_reorder = Rc::clone(&outbox);
         let on_row_action = (Rc::clone(&outbox), Rc::clone(&keys));
-        let on_heading = Rc::clone(&outbox);
         let on_menu = (Rc::clone(&outbox), Rc::clone(&keys));
         let tree = TreeView::from_model(model)
             .with_id("page_tree")
+            .with_accessible_name(ui::i18n!("notes-title"))
             .hide_root()
             .fill()
-            .with_heading(ui::i18n!("notes-title"))
-            .with_ground(|theme| theme.tokens.colors.surfaces.raised)
-            .with_trailing_edge()
-            .with_row_height(30.0)
-            .inset_rows()
             .with_indent_guides()
             .selection_follows_focus(true)
             .rename_on_double_click()
             .tab_indents(true)
             .with_row_hint(ui::i18n!("notes-affordance-note-row"))
-            .with_heading_action(
-                TreeHeadingAction::new(Icon::Plus, ui::i18n!("notes-affordance-new-note"))
-                    .accessible_name("New note")
-                    .description("Create a top-level note"),
-            )
             .with_row_actions(vec![
                 TreeRowAction::new(Icon::Plus, ui::i18n!("notes-affordance-new-child"))
                     .accessible_name(ui::i18n!("notes-a11y-new-child-under")),
@@ -465,12 +433,6 @@ impl PageSidebar {
                 push_for(&on_row_action.0, &on_row_action.1, key, |page| {
                     OutEvent::CreateChild { parent: Some(page) }
                 });
-            })
-            .on_heading_action(move || {
-                on_heading
-                    .borrow_mut()
-                    .events
-                    .push(OutEvent::CreateChild { parent: None });
             })
             .on_context_menu_item(move |target, index| {
                 let (outbox, keys) = &on_menu;
@@ -684,14 +646,6 @@ impl PageSidebar {
             .map(ui::widget::TextInput::is_plain)
     }
 
-    /// Test hook: the centre of the heading's "+" new-page button.
-    #[doc(hidden)]
-    pub fn new_page_btn_center_for_test(&self) -> vello::kurbo::Point {
-        self.tree
-            .heading_action_rect()
-            .map_or(vello::kurbo::Point::ZERO, |rect| rect.center())
-    }
-
     /// Test hook: whether a drag past the threshold is in flight.
     #[doc(hidden)]
     pub fn drag_active_for_test(&self) -> bool {
@@ -720,6 +674,7 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use ui::Widget;
     use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use vello::kurbo::{Point, Rect};
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, NamedKey};
@@ -812,29 +767,6 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn sidebar_rows_track_pages_and_scale_at_high_text_on_every_preset() {
-        eprintln!("phase selection_fill_moves_off_the_raised_sidebar_on_every_preset");
-        {
-            use ui::surface::{edge_delta, edge_on};
-            use ui::tokens::colors::HAIRLINE_MIN_DELTA;
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let raised = theme.tokens.colors.surfaces.raised;
-                let lifted = selection_fill_on_raised(&theme);
-                assert!(edge_delta(lifted, raised) > 0.0, "{}", theme.name);
-                if theme.name != "High Contrast" {
-                    assert!(
-                        edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA,
-                        "{}",
-                        theme.name
-                    );
-                }
-                assert!(
-                    edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA,
-                    "{}",
-                    theme.name
-                );
-            }
-        }
-
         eprintln!("phase sync_from_workspace_flattens_to_visible_rows");
         {
             let mut ws = Workspace::new();
@@ -893,8 +825,6 @@ mod tests {
                 .and_then(|(key, _, _)| tree.disclosure_rect(key))
                 .unwrap();
 
-            let heading = tree.heading_action_rect().unwrap();
-            assert!(heading.y1 <= first.y0, "rows start below the heading");
             assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
             assert!(first.height() > 30.0, "rows grow with the text");
             assert!(disclosure.x1 < first.x1 - 4.0, "the label keeps room");
@@ -915,17 +845,15 @@ mod tests {
                 node.name.as_deref(),
                 Some(ui::i18n!("notes-title").as_str())
             );
-            assert_eq!(node.children.len(), 2);
-            assert_eq!(node.children[0].role, ui::a11y::Role::Button);
-            assert_eq!(node.children[0].name.as_deref(), Some("New note"));
-            assert_eq!(node.children[1].name.as_deref(), Some("Project plan"));
+            assert_eq!(node.children.len(), 1, "the tree exposes its rows only");
+            assert_eq!(node.children[0].name.as_deref(), Some("Project plan"));
             let key = tree.key(root).unwrap();
             assert_eq!(
-                Widget::synthetic_accessibility_rect(tree.tree(), &[1]),
+                Widget::synthetic_accessibility_rect(tree.tree(), &[0]),
                 tree.row_rect(key)
             );
             tree.selection_mut().clear();
-            assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[1]));
+            assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[0]));
             assert_eq!(
                 tree.selected(),
                 Some(key),

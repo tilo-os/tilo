@@ -16,45 +16,73 @@ pub fn register_messages() {
     I18nManager::add_resource("de", include_str!("../locales/de.ftl").to_owned());
 }
 
-impl NoteDates {
-    pub fn labels(self) -> Vec<String> {
-        self.display_labels(false)
-    }
-
-    pub fn display_labels(self, compact: bool) -> Vec<String> {
-        use ui::i18n::I18nManager;
-        let date = |value: Option<i64>| {
-            value
-                .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-                .map(|date| {
-                    date.format(if compact {
-                        "%Y-%m-%d"
-                    } else {
-                        "%d %b %Y, %H:%M UTC"
-                    })
-                    .to_string()
-                })
-        };
-        let mut labels = Vec::new();
-        for (key, value) in [
-            ("notes-created-date", self.created),
-            ("notes-edited-date", self.edited),
-        ] {
-            if let Some(date) = date(value) {
-                labels.push(I18nManager::format(key, &[("date", date.into())]));
-            }
-        }
-        if labels.is_empty() {
-            labels.push(I18nManager::lookup("notes-date-unavailable", None));
-        }
-        labels
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NoteDates {
     pub created: Option<i64>,
     pub edited: Option<i64>,
+}
+
+impl NoteDates {
+    /// The dates as the one line the note header shows, in the local time
+    /// zone, read against the clock a capture pins. A date the history does
+    /// not know is left out; a note with no known date shows nothing.
+    pub fn labels(self) -> Vec<String> {
+        self.labels_at(ui::clock::local_now())
+    }
+
+    /// [`Self::labels`] against an explicit `now`.
+    pub fn labels_at(self, now: chrono::DateTime<chrono::Local>) -> Vec<String> {
+        use ui::i18n::I18nManager;
+        let created = self.created.map(|seconds| when(seconds, now));
+        let edited = self.edited.map(|seconds| when(seconds, now));
+        let line = match (created, edited) {
+            (Some(created), Some(edited)) if created != edited => I18nManager::format(
+                "notes-dates",
+                &[("created", created.into()), ("edited", edited.into())],
+            ),
+            (Some(date), _) => I18nManager::format("notes-created-date", &[("date", date.into())]),
+            (None, Some(date)) => {
+                I18nManager::format("notes-edited-date", &[("date", date.into())])
+            }
+            (None, None) => return Vec::new(),
+        };
+        vec![line]
+    }
+}
+
+/// One moment as a person says it: the time today, else the day (with its
+/// year when it is not this one), in the local time zone.
+fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
+    use chrono::{Datelike, TimeZone, Timelike};
+    use ui::i18n::I18nManager;
+    let Some(moment) = chrono::Local.timestamp_opt(seconds, 0).single() else {
+        return String::new();
+    };
+    // A moment the clock has not reached yet (a peer's skewed clock) still
+    // reads as today rather than as a date in the future.
+    if moment.date_naive() >= now.date_naive() {
+        let time = format!("{:02}:{:02}", moment.hour(), moment.minute());
+        return I18nManager::format("notes-date-today", &[("time", time.into())]);
+    }
+    let month = ui::format::month_abbrev(moment.month0() as usize);
+    if moment.year() == now.year() {
+        I18nManager::format(
+            "notes-date-day",
+            &[
+                ("day", moment.day().to_string().into()),
+                ("month", month.into()),
+            ],
+        )
+    } else {
+        I18nManager::format(
+            "notes-date-day-year",
+            &[
+                ("day", moment.day().to_string().into()),
+                ("month", month.into()),
+                ("year", moment.year().to_string().into()),
+            ],
+        )
+    }
 }
 
 #[derive(Default)]

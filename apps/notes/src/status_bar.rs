@@ -11,9 +11,6 @@
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
-use ui::theme::Theme;
-use vello::peniko::Color;
-
 use crate::storage::SaveStatus;
 
 /// Snapshot of the note's status. Cheap to clone (small strings, two
@@ -72,14 +69,7 @@ impl StatusModel {
         }
     }
 
-    pub fn save_color(&self, theme: &Theme) -> Color {
-        match self.state.save_status {
-            SaveStatus::Saved | SaveStatus::SessionOnly => theme.tokens.colors.text_dim,
-            SaveStatus::Saving => theme.accent_primary,
-            SaveStatus::Failed => theme.tokens.colors.semantic.danger,
-        }
-    }
-
+    /// How much the notebook and the open note hold, as a sentence fragment.
     pub fn right_text(&self) -> String {
         let pages = match self.state.page_count {
             1 => "1 note".to_string(),
@@ -91,15 +81,19 @@ impl StatusModel {
                     1 => "1 word".to_string(),
                     _ => format!("{w} words"),
                 };
-                format!("{pages} · {words}")
+                format!("{pages}, {words}")
             }
             None => pages,
         }
     }
 
-    /// The full bubble label: save state, then the page/word counts.
+    /// The bubble's label: the save state, then how long the open note is.
     pub fn bubble_text(&self) -> String {
-        format!("{}  ·  {}", self.save_text(), self.right_text())
+        match self.state.word_count {
+            Some(1) => format!("{}, 1 word", self.save_text()),
+            Some(words) => format!("{}, {words} words", self.save_text()),
+            None => self.save_text().to_string(),
+        }
     }
 }
 
@@ -135,8 +129,8 @@ mod tests {
         // (page path, pages, words, right-hand text): counts singularize and a
         // missing word count is dropped.
         for (page_path, page_count, word_count, text) in [
-            ("Welcome", 1, Some(1), "1 note · 1 word"),
-            ("Welcome", 4, Some(142), "4 notes · 142 words"),
+            ("Welcome", 1, Some(1), "1 note, 1 word"),
+            ("Welcome", 4, Some(142), "4 notes, 142 words"),
             ("", 3, None, "3 notes"),
         ] {
             bar.set_state(StatusBarState {

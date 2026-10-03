@@ -122,9 +122,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             "scroll_y must clamp to the content extent (can't exceed it)"
         );
         let panel = app.main_panel_mut();
+        let gutter = f64::from(Theme::dark().tokens.spacing.rhythm.group);
         assert!(
-            panel.editor().content_bottom() <= panel.get_rect().y1 - 44.0,
-            "the final row must remain above the save status, not underneath it"
+            panel.editor().content_bottom() <= panel.get_rect().y1 - gutter + 1.0,
+            "the final row must end a gutter above the window's bottom edge"
         );
 
         // Scroll back up past the top: clamps at 0.
@@ -139,7 +140,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         );
     }
 
-    eprintln!("phase bottom_scroll_reveals_the_last_row_just_above_the_actual_status_pill");
+    eprintln!(
+        "phase bottom_scroll_leaves_one_gutter_under_the_last_row_and_the_page_runs_to_the_window_bottom"
+    );
     {
         for scale in [1.0, 2.0] {
             let tmp = TempDir::new().unwrap();
@@ -155,16 +158,19 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             Framed::harness_mut(&mut app)
                 .relayout_themed((1000, 1000), Theme::dark().with_text_scale(scale))
                 .unwrap();
-            let mut renderer = crate::component_support::renderer();
-            renderer.set_text_scale(scale);
-            let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, 12.0, 0.0);
-            let pill_top = app.get_rect().y1 - 14.0 - pill_height;
+            // The note scrolls to the window's bottom edge; the transient
+            // status floats over it instead of reserving a strip.
+            let panel_bottom = app.main_panel_mut().get_rect().y1;
+            assert!(
+                (panel_bottom - app.get_rect().y1).abs() <= 1.0,
+                "at {scale}x, the note panel must reach the window's bottom edge"
+            );
             let content_bottom = app.main_panel_mut().editor().content_bottom();
-            let gap = pill_top - content_bottom;
+            let gap = panel_bottom - content_bottom;
             let theme = Theme::dark().with_text_scale(scale);
             assert!(
-                (gap - f64::from(theme.tokens.spacing.s2)).abs() <= 1.0,
-                "at {scale}x, last row ends at {content_bottom}, pill starts at {pill_top}: {gap}px gap wastes space or overlaps the status"
+                (gap - f64::from(theme.tokens.spacing.rhythm.group)).abs() <= 1.0,
+                "at {scale}x, last row ends at {content_bottom} of {panel_bottom}: {gap}px is not one gutter"
             );
         }
     }
