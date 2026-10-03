@@ -182,6 +182,9 @@ pub const MAX_REFERENCE_BYTES: usize = 40 << 20;
 /// The ground where an artwork's colour cannot be read: white primed
 /// canvas, the artwork's own colour, the same in every theme.
 pub const BLANK_GROUND: Color = Color::WHITE; // document colour
+/// What an eraser covers, as the mask that takes paint out: an eraser has
+/// no colour, only its coverage counts.
+const ERASED: Color = Color::TRANSPARENT.with_alpha(1.0);
 /// A shadow's colour where its mark names none; the artwork's, not the
 /// theme's.
 pub const SHADOW_INK: Color = Color::from_rgba8(0, 0, 0, 96); // document colour
@@ -445,7 +448,7 @@ impl Renderer {
             }
             let palette = media::palette_for(art, &mark.layer);
             let ink = if mark.erases() {
-                Some(Color::BLACK)
+                Some(ERASED)
             } else {
                 mark.style
                     .stroke
@@ -1281,7 +1284,7 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
         scene.fill(
             Fill::NonZero,
             transform * mark.affine(),
-            Color::BLACK.multiply_alpha(narrow(mark.style.opacity())),
+            ERASED.multiply_alpha(narrow(mark.style.opacity())),
             None,
             &silhouette(mark),
         );
@@ -1331,7 +1334,7 @@ fn draw_dabbed(
     let style = &mark.style;
     let eraser = crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser;
     let ink = if eraser {
-        Color::BLACK
+        ERASED
     } else {
         let Some(ink) = style
             .stroke
