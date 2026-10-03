@@ -472,9 +472,12 @@ scope = { inputs = [
 
 [[cargo]]
 package = "ui-examples"
-# Gallery shots render with the toolkit's checked-in typography fixture fonts.
+# Gallery and type specimen shots render with the toolkit's checked-in fonts.
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/dev/ui-examples/examples/gallery_shots.rs"]
+readers = [
+  "crates/dev/ui-examples/examples/gallery_shots.rs",
+  "crates/dev/ui-examples/examples/type_specimen_shots.rs",
+]
 
 [[cargo]]
 package = "tilo-app-package"
