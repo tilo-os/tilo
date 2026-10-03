@@ -396,6 +396,9 @@ pub struct Theme {
     /// Carried on the theme (not passed through `draw`) so every widget
     /// reacts without new plumbing. Default `false`.
     pub reduce_motion: bool,
+    /// Floating chrome draws its material opaque instead of over the blurred
+    /// backdrop (`crate::floating_surface::Material`). Default `false`.
+    pub reduce_transparency: bool,
     /// `1.0` = default. Baked into `tokens.typography.scale`/
     /// `font_size_base` by [`Theme::with_text_scale`]; kept here too so a
     /// widget can scale a size it computes itself.
@@ -515,6 +518,7 @@ impl Theme {
             padding_standard: tokens.spacing.s3,
             gap_standard: tokens.spacing.s3,
             reduce_motion: false,
+            reduce_transparency: false,
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
@@ -957,6 +961,7 @@ impl Theme {
             high_contrast: admitted && file.high_contrast,
             forced_colors: admitted && file.forced_colors,
             thick_caret: admitted && file.thick_caret,
+            reduce_transparency: admitted && file.reduce_transparency,
             text_scale: 1.0,
             ui_scale: 1.0,
             reduce_motion: reduce_motion_override,
@@ -1139,6 +1144,12 @@ impl Theme {
     #[must_use]
     pub fn with_reduce_motion(mut self, on: bool) -> Self {
         self.reduce_motion = on;
+        self
+    }
+
+    #[must_use]
+    pub fn with_reduce_transparency(mut self, on: bool) -> Self {
+        self.reduce_transparency = on;
         self
     }
 
