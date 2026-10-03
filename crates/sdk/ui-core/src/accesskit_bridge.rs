@@ -938,7 +938,16 @@ impl TreeWalk<'_> {
 
             let mut my_children: Vec<AkNodeId> = Vec::new();
             let mut hosted = HostedByIndex::new();
+            // A child the widget represents in its own synthetic tree is not
+            // exported again; if it holds keyboard focus, the representation
+            // does, so the reader lands on the one copy that exists.
+            let mut represents_focus = false;
             for (child_index, child) in w.children().into_iter().enumerate() {
+                if w.accessibility_represents_child(child_index) {
+                    represents_focus |=
+                        self.focused.is_some() && self.ptr_to_taffy.get(child) == self.focused;
+                    continue;
+                }
                 if let Some(mut child_path) = w.accessibility_child_path(child_index)
                     && !child_path.is_empty()
                 {
@@ -954,7 +963,7 @@ impl TreeWalk<'_> {
             // Synthetic children with no backing widget — a table's rows/cells, a
             // timeline's clips. Only the widget that actually holds keyboard focus
             // may nominate an active descendant.
-            let owns_focus = taffy_id.is_some() && taffy_id == self.focused;
+            let owns_focus = (taffy_id.is_some() && taffy_id == self.focused) || represents_focus;
             for (ordinal, synth) in access_node.children.iter().enumerate() {
                 self.visit_synthetic::<BOUND>(
                     synth,
@@ -1301,6 +1310,7 @@ mod tests {
         rect: vello::kurbo::Rect,
         kids: Vec<Box<dyn Widget>>,
         name: String,
+        represents: Vec<usize>,
     }
 
     impl TestWidget {
@@ -1310,6 +1320,7 @@ mod tests {
                 rect: vello::kurbo::Rect::new(0.0, 0.0, 0.0, 0.0),
                 kids: vec![],
                 name: "test".into(),
+                represents: vec![],
             }
         }
         fn with_rect(mut self, x0: f64, y0: f64, x1: f64, y1: f64) -> Self {
@@ -1374,6 +1385,9 @@ mod tests {
         }
         fn accessibility(&self) -> Option<AccessNode> {
             self.access.clone()
+        }
+        fn accessibility_represents_child(&self, child_index: usize) -> bool {
+            self.represents.contains(&child_index)
         }
     }
 
@@ -2636,6 +2650,42 @@ mod tests {
             let orphan = label_id(&update, "orphan");
             assert!(is_synthetic_id(orphan));
             assert_eq!(resolve_node_id(&root, &empty_map, orphan), None);
+        }
+
+        // Case `a_child_the_host_represents_is_exported_once`.
+        {
+            // A host that publishes a child's semantics itself (the shell's
+            // palette inside its overlay tree) must not have the child's own
+            // node exported beside it, and keyboard focus on the child lands
+            // on the representation.
+            let child = TestWidget::new(Some(
+                AccessNode::new(Role::Dialog).with_name("palette widget"),
+            ));
+            let mut host = TestWidget::new(Some(AccessNode::new(Role::Group).with_children(vec![
+                    AccessNode::new(Role::Dialog)
+                        .with_name("palette")
+                        .with_state(AccessState::new().focusable(true).focused(true)),
+                ])))
+            .with_child(Box::new(child));
+            host.represents = vec![0];
+            let (_taffy, node_map, _n) = lay_out(&mut host);
+            let widget_id = node_map
+                .iter()
+                .find(|(_, w)| {
+                    unsafe { (***w).accessibility() }
+                        .is_some_and(|a| a.name.as_deref() == Some("palette widget"))
+                })
+                .map(|(id, _)| *id)
+                .expect("the child is laid out");
+            let update = build_tree_update(&host, &node_map, Some(widget_id), 1.0);
+            assert!(
+                !update
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("palette widget")),
+                "the represented child is not exported again"
+            );
+            assert_eq!(update.focus, label_id(&update, "palette"));
         }
 
         // Case `a_synthetic_text_field_exports_its_run_and_resolves_it_to_its_owner`.
