@@ -100,7 +100,9 @@ impl ResourceApp for DiskUsageShell {
     const ID: &'static str = "so.tilo.disk-usage";
     const TITLE: &'static str = "Disk Usage Analyzer";
     const ICON: Option<&'static str> = Some("disk-usage");
-    const SHOT_VIEWPORT: (u32, u32) = (1180, 760);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1180, 760)
+    }
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {
         cx.surface(DiskUsageApp::new())

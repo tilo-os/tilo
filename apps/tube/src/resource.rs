@@ -205,7 +205,9 @@ impl ResourceApp for TubeShell {
     const ID: &'static str = "so.tilo.tube";
     const TITLE: &'static str = "Tube";
     const ICON: Option<&'static str> = Some("tube");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Tube>) -> Element {
         cx.surface(Self::surface())

@@ -196,7 +196,9 @@ impl ResourceApp for ChatShell {
     const ID: &'static str = "so.tilo.chat";
     const TITLE: &'static str = "Chat";
     const ICON: Option<&'static str> = Some("chat");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
         cx.surface(ChatApp::new())
