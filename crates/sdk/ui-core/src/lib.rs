@@ -429,7 +429,6 @@ pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
 // Conflict toolkit — see `widget/merge_strategy.rs` module doc-comment for
 // the design intent and convention for declaring a merge strategy on a
 // CRDT-bound widget.
-pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
