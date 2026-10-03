@@ -1,5 +1,10 @@
-//! Pixel-level computer use: the fallback for surfaces that publish no typed
-//! action, such as a legacy application's window.
+//! Pixel-level computer use: a person's pointer, keyboard and eyes on a
+//! window. The fallback for surfaces that publish no typed action, such as a
+//! legacy application's window, and how an agent tries an app's own UI.
+//!
+//! An action naming an `app_id` acts in that app's window alone: the window
+//! takes focus, coordinates are its pixels from its top-left (the same
+//! pixels its `render` view shows) and screenshots show just the window.
 //!
 //! The canonical action schema is the one hosted computer-use providers and
 //! model vendors share (screenshot, click, type, key, scroll, drag, zoom…), so
@@ -26,10 +31,21 @@ pub const CONTROL_ENV: &str = "TILO_RUNTIME_COMPUTER_CONTROL";
 /// Longest side of a returned screenshot; larger outputs are scaled down and
 /// coordinates are scaled back up.
 const MAX_FRAME: (u32, u32) = (1280, 800);
+/// The same for one app's window, larger so that a window on an ordinary
+/// screen keeps its own pixels, which its `render` view shares.
+const MAX_WINDOW_FRAME: (u32, u32) = (2048, 2048);
 const MAX_BATCH: usize = 50;
 const MAX_REPEAT: u32 = 100;
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long after a window's last new frame it counts as done answering.
+const SETTLE_QUIET: Duration = Duration::from_millis(600);
+/// How long a window may take to start answering input before it counts
+/// as having nothing to show for it.
+const SETTLE_FIRST: Duration = Duration::from_millis(2000);
+/// Longest wait for windows that keep drawing, such as an animation.
+const SETTLE_MAX: Duration = Duration::from_secs(5);
+const SETTLE_POLL: Duration = Duration::from_millis(25);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One compositor reached through its control socket, shared by every agent
@@ -63,6 +79,8 @@ struct Turn<'a> {
     computer: &'a Computer,
     agent: Option<&'a Agent>,
     state: &'a Mutex<State>,
+    /// The app whose window the current step acts in; `None` for the screen.
+    window: std::cell::RefCell<Option<String>>,
 }
 
 #[derive(Default)]
@@ -72,21 +90,39 @@ struct State {
     frame: u64,
     /// Screen size and returned frame size of the last screenshot.
     geometry: Option<Geometry>,
+    /// Input was sent since the last screenshot, which waits for the
+    /// windows to answer it.
+    unsettled: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Geometry {
     screen: (u32, u32),
     frame: (u32, u32),
+    /// The app whose window this is; `None` for the screen.
+    window: Option<String>,
 }
 
 impl Geometry {
-    fn to_screen(self, [x, y]: [f64; 2]) -> (f64, f64) {
+    /// A frame of `screen` pixels, scaled to fit the returned frame size.
+    fn fit(screen: (u32, u32), window: Option<String>) -> Self {
+        let max = if window.is_some() {
+            MAX_WINDOW_FRAME
+        } else {
+            MAX_FRAME
+        };
+        Self {
+            screen,
+            frame: fit(screen, max),
+            window,
+        }
+    }
+    fn to_screen(&self, [x, y]: [f64; 2]) -> (f64, f64) {
         let sx = f64::from(self.screen.0) / f64::from(self.frame.0.max(1));
         let sy = f64::from(self.screen.1) / f64::from(self.frame.1.max(1));
         (x * sx, y * sy)
     }
-    fn to_frame(self, (x, y): (f64, f64)) -> [f64; 2] {
+    fn to_frame(&self, (x, y): (f64, f64)) -> [f64; 2] {
         let sx = f64::from(self.frame.0) / f64::from(self.screen.0.max(1));
         let sy = f64::from(self.frame.1) / f64::from(self.screen.1.max(1));
         [(x * sx).round(), (y * sy).round()]
@@ -124,6 +160,9 @@ pub struct Action {
     pub format: Option<String>,
     #[serde(default)]
     pub quality: Option<u8>,
+    /// Act in this app's window alone (an app id from `tilo_list_apps`).
+    #[serde(default)]
+    pub app_id: Option<String>,
 }
 
 /// A step's outcome: text for the model and, unless suppressed, a frame.
@@ -198,6 +237,7 @@ impl Computer {
             computer: self,
             agent,
             state: &state,
+            window: std::cell::RefCell::default(),
         }
         .run(actions, batch)
     }
@@ -214,6 +254,7 @@ impl Computer {
             computer: self,
             agent: Some(agent),
             state: &state,
+            window: std::cell::RefCell::default(),
         }
         .send(&json!({"op":"agent_seat"}))
     }
@@ -230,6 +271,7 @@ impl Computer {
             computer: self,
             agent: Some(agent),
             state: &state,
+            window: std::cell::RefCell::default(),
         }
         .send(&json!({"op":"agent_leave"}))
     }
@@ -274,6 +316,7 @@ impl Turn<'_> {
     }
 
     fn step(&self, action: &Action, wants_frame: bool) -> Result<Outcome, String> {
+        self.window.replace(action.app_id.clone());
         let repeat = action.repeat.unwrap_or(1).clamp(1, MAX_REPEAT);
         let mut detail = Value::Null;
         match action.action.as_str() {
@@ -289,17 +332,22 @@ impl Turn<'_> {
             }
             "mouse_move" => {
                 let at = self.point(action.coordinate)?;
-                self.move_to(at)?;
+                self.with_modifier(action.modifier.as_deref(), || self.move_to(at))?;
             }
             "left_click" | "right_click" | "middle_click" | "double_click" | "triple_click" => {
                 self.click(action, repeat)?;
             }
             "left_mouse_down" | "left_mouse_up" => {
-                if let Some(coordinate) = action.coordinate {
-                    let at = self.point(Some(coordinate))?;
-                    self.move_to(at)?;
-                }
-                self.button("left", action.action == "left_mouse_down")?;
+                let at = action
+                    .coordinate
+                    .map(|coordinate| self.point(Some(coordinate)))
+                    .transpose()?;
+                self.with_modifier(action.modifier.as_deref(), || {
+                    if let Some(at) = at {
+                        self.move_to(at)?;
+                    }
+                    self.button("left", action.action == "left_mouse_down")
+                })?;
             }
             "left_click_drag" => {
                 let from = match action.start_coordinate {
@@ -307,7 +355,9 @@ impl Turn<'_> {
                     None => self.cursor().0,
                 };
                 let to = self.point(action.coordinate)?;
-                self.send(&json!({"op":"drag","x_from":from.0,"y_from":from.1,"x_to":to.0,"y_to":to.1,"steps":12}))?;
+                self.with_modifier(action.modifier.as_deref(), || {
+                    self.send(&json!({"op":"drag","x_from":from.0,"y_from":from.1,"x_to":to.0,"y_to":to.1,"steps":12}))
+                })?;
                 self.set_cursor(to);
             }
             "scroll" => self.scroll(action)?,
@@ -392,10 +442,16 @@ impl Turn<'_> {
     fn outcome(&self, action: &Action, detail: Value, image: Option<Frame>) -> Outcome {
         let (frame, (width, height)) = {
             let state = self.lock();
-            (state.frame, state.geometry.map_or((0, 0), |g| g.frame))
+            (
+                state.frame,
+                state.geometry.as_ref().map_or((0, 0), |g| g.frame),
+            )
         };
         let mut text =
             json!({"action":action.action,"frame_id":frame,"width":width,"height":height});
+        if let (Some(app_id), Some(fields)) = (&action.app_id, text.as_object_mut()) {
+            fields.insert("app_id".into(), json!(app_id));
+        }
         if !detail.is_null()
             && let Some(fields) = text.as_object_mut()
         {
@@ -412,14 +468,15 @@ impl Turn<'_> {
 
     fn cursor(&self) -> ((f64, f64), Option<Geometry>) {
         let state = self.lock();
-        (state.cursor, state.geometry)
+        (state.cursor, state.geometry.clone())
     }
 
     fn set_cursor(&self, at: (f64, f64)) {
         self.lock().cursor = at;
     }
 
-    /// A model coordinate in the last frame, in screen pixels.
+    /// A model coordinate in the last frame, in the pixels the compositor
+    /// takes: the screen's, or the aimed-at window's from its top-left.
     fn point(&self, coordinate: Option<[f64; 2]>) -> Result<(f64, f64), String> {
         let coordinate = coordinate.ok_or("coordinate is required")?;
         if coordinate
@@ -428,15 +485,51 @@ impl Turn<'_> {
         {
             return Err("coordinate must be non-negative".into());
         }
-        let geometry = self
-            .lock()
-            .geometry
-            .ok_or("take a screenshot before acting on coordinates")?;
+        let window = self.window.borrow().clone();
+        let geometry = match window {
+            // A window's size is asked for, not remembered: it may have been
+            // resized since, and its pixels are known without a screenshot.
+            Some(app_id) => self.window_geometry(app_id)?,
+            None => self
+                .lock()
+                .geometry
+                .clone()
+                .filter(|geometry| geometry.window.is_none())
+                .ok_or("take a screenshot before acting on screen coordinates (or name app_id to use an app's window pixels)")?,
+        };
         let (x, y) = geometry.to_screen(coordinate);
         if x >= f64::from(geometry.screen.0) || y >= f64::from(geometry.screen.1) {
-            return Err("coordinate is outside the screen".into());
+            let [width, height] =
+                geometry.to_frame((f64::from(geometry.screen.0), f64::from(geometry.screen.1)));
+            let what = geometry
+                .window
+                .as_ref()
+                .map_or_else(|| "the screen".to_owned(), |app| format!("{app}'s window"));
+            return Err(format!(
+                "coordinate is outside {what}, which is {width}x{height}"
+            ));
         }
         Ok((x, y))
+    }
+
+    /// The aimed-at window's size, as its frames are returned, from the
+    /// compositor; the window takes focus.
+    fn window_geometry(&self, app_id: String) -> Result<Geometry, String> {
+        let answer = self.answer(&json!({"op":"agent_seat"}))?;
+        let size = answer
+            .get("viewport")
+            .and_then(Value::as_array)
+            .and_then(|viewport| Some((viewport.get(2)?.as_f64()?, viewport.get(3)?.as_f64()?)))
+            .ok_or("the compositor did not say how large the window is")?;
+        let geometry = Geometry::fit(
+            (
+                clamp_u32(size.0, u32::MAX).max(1),
+                clamp_u32(size.1, u32::MAX).max(1),
+            ),
+            Some(app_id),
+        );
+        self.lock().geometry = Some(geometry.clone());
+        Ok(geometry)
     }
 
     fn move_to(&self, (x, y): (f64, f64)) -> Result<(), String> {
@@ -489,13 +582,30 @@ impl Turn<'_> {
         result
     }
 
-    /// Send one control command, for this turn's agent, and require an `ok`
-    /// reply.
+    /// Send one control command, for this turn's agent and window, and
+    /// require an `ok` reply.
     fn send(&self, command: &Value) -> Result<(), String> {
+        self.answer(command).map(drop)
+    }
+
+    /// [`Self::send`], answering the reply's payload.
+    fn answer(&self, command: &Value) -> Result<Value, String> {
         let mut command = command.clone();
-        if let (Some(agent), Some(fields)) = (self.agent, command.as_object_mut()) {
-            fields.insert("agent".into(), json!(agent.id));
-            fields.insert("agent_label".into(), json!(agent.label));
+        if let Some(fields) = command.as_object_mut() {
+            if let Some(agent) = self.agent {
+                fields.insert("agent".into(), json!(agent.id));
+                fields.insert("agent_label".into(), json!(agent.label));
+            }
+            if let Some(app_id) = self.window.borrow().as_ref() {
+                fields.insert("window".into(), json!(app_id));
+            }
+        }
+        let op = command.get("op").and_then(Value::as_str).unwrap_or("");
+        if !matches!(
+            op,
+            "snapshot" | "foreign_frames" | "agent_seat" | "agent_leave" | "watch"
+        ) {
+            self.lock().unsettled = true;
         }
         let reply = self.request(&command).map_err(|error| error.to_string())?;
         if let Some(error) = reply.get("err") {
@@ -503,7 +613,7 @@ impl Turn<'_> {
             let message = error.get("message").and_then(Value::as_str).unwrap_or("");
             return Err(format!("{code}: {message}"));
         }
-        Ok(())
+        Ok(reply.get("answer").cloned().unwrap_or(reply))
     }
 
     fn request(&self, command: &Value) -> io::Result<Value> {
@@ -519,6 +629,74 @@ impl Turn<'_> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
+    /// One snapshot from the compositor: the screen, or the aimed-at window.
+    fn snapshot(&self) -> Result<image::RgbaImage, String> {
+        let shot = self.computer.shots.fetch_add(1, Ordering::Relaxed);
+        let path = self.computer.scratch.join(format!("frame-{shot}.png"));
+        let _ = std::fs::remove_file(&path);
+        self.send(&json!({"op":"snapshot","path":path.to_string_lossy()}))?;
+        let image = read_png(&path, SNAPSHOT_TIMEOUT);
+        let _ = std::fs::remove_file(&path);
+        image
+    }
+
+    /// A snapshot once the windows in view answered the input sent since
+    /// the last one: their frames stopped coming, or none came at all.
+    fn settled_snapshot(&self) -> Result<image::RgbaImage, String> {
+        if std::mem::take(&mut self.lock().unsettled) {
+            self.settle();
+        }
+        self.snapshot()
+    }
+
+    /// Wait until the windows in view drew what the input asked for: after a
+    /// new frame, until none followed for [`SETTLE_QUIET`]; with no new
+    /// frame, for [`SETTLE_FIRST`]; never longer than [`SETTLE_MAX`].
+    fn settle(&self) {
+        let Some(mut frames) = self.frame_count() else {
+            return;
+        };
+        let started = Instant::now();
+        let mut drew: Option<Instant> = None;
+        loop {
+            std::thread::sleep(SETTLE_POLL);
+            let Some(now) = self.frame_count() else {
+                return;
+            };
+            let at = Instant::now();
+            if now != frames {
+                frames = now;
+                drew = Some(at);
+            }
+            let calm = match drew {
+                Some(drew) => at.duration_since(drew) >= SETTLE_QUIET,
+                None => at.duration_since(started) >= SETTLE_FIRST,
+            };
+            if calm || at.duration_since(started) >= SETTLE_MAX {
+                return;
+            }
+        }
+    }
+
+    /// The frames drawn so far by the aimed-at window, or every window when
+    /// none is aimed at; `None` when the compositor does not say.
+    fn frame_count(&self) -> Option<u64> {
+        let reply = self.answer(&json!({"op":"foreign_frames"})).ok()?;
+        let frames = reply.pointer("/foreign_frames/frames")?.as_array()?;
+        let window = self.window.borrow();
+        Some(
+            frames
+                .iter()
+                .filter(|frame| {
+                    window
+                        .as_deref()
+                        .is_none_or(|app_id| frame["app_id"].as_str() == Some(app_id))
+                })
+                .filter_map(|frame| frame["frame_seq"].as_u64())
+                .sum(),
+        )
+    }
+
     /// A fresh frame of the whole screen, or of `region` scaled up to the
     /// frame size, encoded as the action asks.
     fn capture(&self, region: Option<[f64; 4]>, action: &Action) -> Result<Frame, String> {
@@ -526,29 +704,25 @@ impl Turn<'_> {
             let mut state = self.lock();
             state.frame = state.frame.saturating_add(1);
         }
-        let shot = self.computer.shots.fetch_add(1, Ordering::Relaxed);
-        let path = self.computer.scratch.join(format!("frame-{shot}.png"));
-        let _ = std::fs::remove_file(&path);
-        self.send(&json!({"op":"snapshot","path":path.to_string_lossy()}))?;
-        let screen = read_png(&path, SNAPSHOT_TIMEOUT)?;
-        let _ = std::fs::remove_file(&path);
+        let screen = self.settled_snapshot()?;
         let screen_size = (screen.width(), screen.height());
-        let frame_size = fit(screen_size, MAX_FRAME);
+        let window = self.window.borrow().clone();
+        let current = Geometry::fit(screen_size, window);
+        let frame_size = current.frame;
         let previous = {
             let mut state = self.lock();
-            let previous = state.geometry;
+            let previous = state.geometry.clone();
             if region.is_none() {
-                state.geometry = Some(Geometry {
-                    screen: screen_size,
-                    frame: frame_size,
-                });
+                state.geometry = Some(current.clone());
             }
             previous
         };
         let image = match region {
             None => resize(&screen, frame_size),
             Some([x0, y0, x1, y1]) => {
-                let geometry = previous.ok_or("take a screenshot before zooming")?;
+                let geometry = previous
+                    .filter(|previous| previous.window == current.window)
+                    .ok_or("take a screenshot (of the same window) before zooming")?;
                 let (sx0, sy0) = geometry.to_screen([x0, y0]);
                 let (sx1, sy1) = geometry.to_screen([x1, y1]);
                 if !(sx1 > sx0 && sy1 > sy0) {
@@ -574,6 +748,7 @@ impl crate::watch::WatchSink for Computer {
             computer: self,
             agent: None,
             state: &state,
+            window: std::cell::RefCell::default(),
         }
         .send(&json!({"op":"watch","watching":watching}))
     }
@@ -780,17 +955,18 @@ pub fn tool_definitions() -> Vec<Value> {
             "region":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4},
             "no_screenshot":{"type":"boolean"},
             "format":{"type":"string","enum":["jpeg","png"]},
-            "quality":{"type":"integer","minimum":1,"maximum":95}
+            "quality":{"type":"integer","minimum":1,"maximum":95},
+            "app_id":{"type":"string","description":"Act in this app's window alone: it takes focus, screenshots show just it and coordinates are its pixels from its top-left (a point of the app's render plus the render's window_origin)"}
         },
         "required":["action"],
         "additionalProperties":false
     });
     let effect = json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true});
     vec![
-        json!({"name":"computer","description":"Pixel fallback for windows that publish no typed action (use tilo_query/tilo_invoke first). One action; returns the post-action screenshot. Coordinates are pixels in the last screenshot's frame; take a screenshot before acting","inputSchema":action,"annotations":effect}),
+        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns a screenshot once the window stopped drawing (a slow app may lag: screenshot again). For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"","inputSchema":action,"annotations":effect}),
         // Each step takes the `computer` tool's arguments; restating that
         // schema here would double what every model turn reads.
-        json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
+        json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise. app_id applies to every step naming none. A stroke along a path: left_mouse_down, mouse_move steps, left_mouse_up","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH},"app_id":{"type":"string"}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
     ]
 }
 
