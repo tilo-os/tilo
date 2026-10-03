@@ -57,13 +57,32 @@ use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{
-    El, caption, card, choice_row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, choice_row, rows, setting_row, setting_row_described, slider_row,
+    slider_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
     DisplayTransactionState, MonitorIdentity, OutputConfig, OutputDescriptor, OutputMode,
     OutputTransform, logical_extent,
 };
+
+/// A mode as the person reads it: `1920 × 1080, 60 Hz` (`59.94 Hz` when the
+/// refresh rate is not whole).
+pub(crate) fn mode_label(mode: OutputMode) -> String {
+    let hertz = if mode.refresh_mhz.is_multiple_of(1000) {
+        (mode.refresh_mhz / 1000).to_string()
+    } else {
+        format!("{:.2}", f64::from(mode.refresh_mhz) / 1000.0)
+    };
+    t_args(
+        "display-mode-label",
+        &[
+            ("width", i64::from(mode.width).into()),
+            ("height", i64::from(mode.height).into()),
+            ("hertz", hertz.as_str().into()),
+        ],
+    )
+}
 
 /// CRDT key the brightness slider writes into.
 pub const BRIGHTNESS_KEY: &str = "display.brightness";
@@ -425,9 +444,15 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
 /// Virtual connectors (compositor writeback) are skipped — they are not
 /// displays a user can plug into.
 fn read_outputs() -> Vec<DisplayOutput> {
-    let mut out: Vec<_> = DisplayHardwareSnapshot::load()
+    DisplayHardwareSnapshot::load().map_or_else(Vec::new, outputs_from_snapshot)
+}
+
+/// The outputs of a compositor snapshot as the pane lists them: built-in
+/// first, then connected ones, then alphabetically.
+pub(crate) fn outputs_from_snapshot(snapshot: DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
+    let mut out: Vec<_> = snapshot
+        .outputs
         .into_iter()
-        .flat_map(|snapshot| snapshot.outputs)
         .map(|snapshot| {
             let label = snapshot_label(&snapshot.descriptor, snapshot.builtin);
             let connector_label = snapshot.descriptor.label().to_string();
@@ -663,42 +688,6 @@ impl DisplayPane {
         self
     }
 
-    /// Add an external monitor beside the built-in display, for captures.
-    #[cfg(not(feature = "thin"))]
-    #[must_use]
-    pub(crate) fn with_external_monitor_for_shot(mut self) -> Self {
-        let mode = OutputMode {
-            width: 2560,
-            height: 1440,
-            refresh_mhz: 59_950,
-        };
-        self.outputs.push(DisplayOutput {
-            label: "Dell U2720Q (DP-2)".into(),
-            connected: true,
-            builtin: false,
-            connector: "DP-2".into(),
-            connector_label: "DP-2".into(),
-            modes: vec![mode],
-            current_mode: Some(mode),
-            scale: 1.0,
-            hdr: false,
-            sink_hdr: false,
-            hdr_unavailable_reason: None,
-            vrr: false,
-            sink_vrr: false,
-            vrr_unavailable_reason: None,
-            color_profiles: Vec::new(),
-            color_profile_labels: BTreeMap::new(),
-            monitor: Some(MonitorIdentity {
-                make: "Dell".into(),
-                model: "DELL U2720Q".into(),
-                serial: "7XKQ3H2".into(),
-                physical_size_mm: Some((597, 336)),
-            }),
-        });
-        self
-    }
-
     /// Pin which monitors have a brightness control (tests / `--shots`).
     #[must_use]
     pub fn with_monitor_brightness(mut self, levels: &[os_actions::MonitorLevel]) -> Self {
@@ -867,7 +856,7 @@ impl DisplayPane {
                 let _ = state.put(root, output_key(connector, "color_profile"), label.as_str());
             }
             Op::SetMode { connector, mode } => {
-                let _ = state.put(root, output_key(connector, "mode"), mode.label());
+                let _ = state.put(root, output_key(connector, "mode"), mode_label(*mode));
             }
             Op::SetTransform {
                 connector,
@@ -1076,7 +1065,7 @@ impl DisplayPane {
         card(
             &t("display-brightness"),
             rows(vec![
-                setting_row(
+                slider_row(
                     &t("display-brightness"),
                     Box::new(
                         Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
@@ -1158,7 +1147,7 @@ impl DisplayPane {
             });
         let mut output_rows = Vec::new();
         if self.output_brightness.contains_key(&output.connector) {
-            output_rows.push(setting_row(
+            output_rows.push(slider_row(
                 &t("display-brightness"),
                 Box::new(
                     Slider::new(
@@ -1323,16 +1312,11 @@ impl DisplayPane {
                 "Compositor capability data unavailable",
             ));
         } else {
-            let mode_choices: Vec<String> = output
-                .modes
-                .iter()
-                .copied()
-                .map(OutputMode::label)
-                .collect();
+            let mode_choices: Vec<String> = output.modes.iter().copied().map(mode_label).collect();
             let mode_placeholder = config
                 .mode
                 .or(output.current_mode)
-                .map_or_else(|| "Preferred".into(), OutputMode::label);
+                .map_or_else(|| "Preferred".into(), mode_label);
             out_rows.push(choice_row(
                 "Resolution & refresh rate",
                 Box::new(
@@ -1398,7 +1382,7 @@ impl DisplayPane {
                 ),
             ));
             let sdr_key = output_key(&output.connector, "sdr_brightness");
-            out_rows.push(setting_row_described(
+            out_rows.push(slider_row_described(
                 &crate::i18n::t("display-hdr-sdr-brightness"),
                 &crate::i18n::t("display-hdr-sdr-brightness-description"),
                 Box::new(
@@ -1684,7 +1668,11 @@ impl DisplayPane {
                 profile,
             );
             if let Some(mode) = cfg.mode.or(output.current_mode) {
-                let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
+                let _ = state.put(
+                    root,
+                    output_key(&output.connector, "mode"),
+                    mode_label(mode),
+                );
             }
         }
     }
@@ -1987,7 +1975,11 @@ impl DisplayPane {
                 );
             let _ = state.put(root, output_key(&output.connector, "mirror"), mirror);
             if let Some(mode) = cfg.mode {
-                let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
+                let _ = state.put(
+                    root,
+                    output_key(&output.connector, "mode"),
+                    mode_label(mode),
+                );
             }
             let _ = state.put(
                 root,
@@ -2301,7 +2293,7 @@ impl DisplayPane {
                 .modes
                 .iter()
                 .copied()
-                .find(|mode| mode.label() == label)
+                .find(|mode| mode_label(*mode) == label)
             && cfg.mode != Some(mode)
         {
             cfg.mode = Some(mode);
@@ -3572,7 +3564,11 @@ mod tests {
         let kanshi = DisplayTool::new("/usr/bin/kanshi");
         TrustedDisplayTools::trust(kanshi.clone()).expect("trust");
         assert!(DisplayPane::build_trusted_tools_card().is_some());
-        let section = crate::actions::displays_section(&AutoCommit::new(), &SystemPrefs::default());
+        let section = crate::actions::displays_section(
+            &AutoCommit::new(),
+            &SystemPrefs::default(),
+            crate::facts::DeviceFacts::LIVE,
+        );
         assert!(
             section.children.iter().any(|resource| {
                 resource.id.0 == "settings.display-tool:/usr/bin/kanshi"

@@ -97,14 +97,29 @@ impl TimeZonePoint {
 /// has no embedded city/coordinate database. Aliases absent from the tzdata
 /// coordinate table remain available in the searchable selector.
 pub fn timezone_map(zones: &[String]) -> Vec<TimeZonePoint> {
-    const TABLES: &[&str] = &[
-        "/usr/share/zoneinfo/zone1970.tab",
-        "/usr/share/zoneinfo/zone.tab",
-    ];
-    TABLES
+    installed_zone_table().map_or_else(Vec::new, |table| timezone_map_from_tab(zones, &table))
+}
+
+const ZONE_TABLES: &[&str] = &[
+    "/usr/share/zoneinfo/zone1970.tab",
+    "/usr/share/zoneinfo/zone.tab",
+];
+
+/// The installed tzdata coordinate table, when this machine has one.
+fn installed_zone_table() -> Option<String> {
+    ZONE_TABLES
         .iter()
         .find_map(|path| fs::read_to_string(path).ok())
-        .map_or_else(Vec::new, |table| timezone_map_from_tab(zones, &table))
+}
+
+/// Every zone id the table publishes, in table order.
+fn zone_ids_in_table(table: &str) -> Vec<String> {
+    table
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| line.split('\t').nth(2))
+        .map(str::to_string)
+        .collect()
 }
 
 fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
@@ -323,16 +338,24 @@ impl TimeZoneMap {
         }
     }
 
+    /// The caption under the plot: the city under the pointer or keyboard
+    /// cursor, else the chosen one.
     fn active_label(&self) -> String {
-        let active = self.hover.or_else(|| self.cursor.filter(|_| self.focused));
+        let active = self
+            .hover
+            .or_else(|| self.cursor.filter(|_| self.focused))
+            .or_else(|| self.selected_index());
         active.and_then(|index| self.points.get(index)).map_or_else(
-            || {
+            || self.selected.clone(),
+            |point| {
                 t_args(
-                    "time-map-selected",
-                    &[("zone", ArgValue::from(self.selected.as_str()))],
+                    "time-map-place",
+                    &[
+                        ("city", ArgValue::from(point.city.as_str())),
+                        ("region", ArgValue::from(point.region.as_str())),
+                    ],
                 )
             },
-            |point| format!("{} — {}", point.city, point.region),
         )
     }
 }
@@ -488,11 +511,17 @@ impl Widget for TimeZoneMap {
         }
 
         let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-        ctx.text_role(
+        ctx.text_role_in_band(
             &self.active_label(),
             ui::TextRole::Caption,
             theme.text_primary,
-            Point::new(self.rect.x0 + self.pad, self.rect.y1 - self.band),
+            self.rect.x0 + self.pad,
+            Rect::new(
+                self.rect.x0,
+                self.rect.y1 - self.band,
+                self.rect.x1,
+                self.rect.y1,
+            ),
             Some((self.rect.width() - 2.0 * self.pad) as f32),
         );
     }
@@ -839,11 +868,6 @@ impl TimeDatePane {
             .to_string();
         let today = local.format("%A, %-d %B %Y").to_string();
 
-        let clock_format = if self.h24 {
-            t("time-clock-24h")
-        } else {
-            t("time-clock-12h")
-        };
         let sync = match self.sync_status.synchronized {
             Some(true) => t("time-sync-ok"),
             Some(false) if self.initial_auto => t("time-sync-waiting"),
@@ -891,11 +915,6 @@ impl TimeDatePane {
             ]),
         );
 
-        let formats = card(
-            &t("time-display-title"),
-            rows(vec![value_row(&t("time-clock-format"), &clock_format)]),
-        );
-
         // Without coordinates there is nothing to draw: the selector above
         // is the whole control.
         let map = (!self.timezone_points.is_empty()).then(|| {
@@ -918,7 +937,7 @@ impl TimeDatePane {
 
         let mut cards = vec![clock];
         cards.extend(map);
-        cards.extend([source, formats]);
+        cards.push(source);
         if let Some(notice) = &self.notice {
             cards.insert(
                 0,
@@ -1105,6 +1124,16 @@ mod fixture {
                     longitude_e6: (longitude * 1e6) as i32,
                 })
                 .collect();
+            // The same published zone table the live pane reads, when this
+            // machine has it: the whole world rather than fourteen cities.
+            if let Some(table) = super::installed_zone_table() {
+                let zones = super::zone_ids_in_table(&table);
+                let points = super::timezone_map_from_tab(&zones, &table);
+                if points.iter().any(|point| point.id == zone) {
+                    pane.timezones = zones;
+                    pane.timezone_points = points;
+                }
+            }
             pane.timezone.clone_from(&zone);
             pane.last_timezone.clone_from(&zone);
             pane.sync_status = os_actions::TimeSyncStatus {

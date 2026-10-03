@@ -36,15 +36,15 @@ use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Column, Container, NavMode, NavPane, NavShell, Scrollable, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
-/// The measure (logical px) a form-like pane's content is centred within on
-/// wide windows, so a trailing control sits near its label: the toolkit's
-/// form-sheet width.
-const FORM_MEASURE: f32 = Metrics::BASE.panel_width_sheet;
+/// The measure (logical px) every pane's content is centred within on wide
+/// windows, so a trailing control sits near its label and the left edge does
+/// not move when the category changes: the toolkit's form-sheet width.
+const MEASURE: f32 = Metrics::BASE.panel_width_sheet;
 
-/// The measure of a pane whose rows carry several controls (accounts,
-/// devices, displays): a form sheet beside a list panel.
-const WIDE_MEASURE: f32 = Metrics::BASE.panel_width_sheet + Metrics::BASE.panel_width_list;
-
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent presentation flag of the one window: rebuild pending, hosted, shot hardware, stacked choosers"
+)]
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -102,6 +102,9 @@ pub struct SettingsApp {
     /// The live theme's text growth (at least 1×), recorded at layout so the
     /// readable measure and the first-frame width hint grow with the type.
     text_growth: f32,
+    /// Whether the panes were last composed with their choosers beneath
+    /// their labels (a phone-width page); a change after layout rebuilds them.
+    composed_stacked: bool,
     /// The window shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its responsive state survives a category
     /// switch. Its content and header are swapped on selection.
@@ -157,6 +160,7 @@ impl SettingsApp {
             account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             text_growth: 1.0,
+            composed_stacked: false,
             shell: None,
         }
     }
@@ -220,7 +224,9 @@ impl SettingsApp {
             scenario.demo,
             Some(Demo::AccountsPopulated | Demo::AccountsForm)
         ) {
-            self.account_directory_override = Some(crate::accounts::sample_directory());
+            let directory = crate::accounts::sample_directory();
+            self.account_resources = crate::shots::account_inventory(&directory);
+            self.account_directory_override = Some(directory);
         }
         if scenario.demo == Some(Demo::AccountsForm) {
             self.account_form_override = Some(crate::accounts::AccountKind::Nextcloud);
@@ -250,11 +256,24 @@ impl SettingsApp {
         self.selected
     }
 
+    /// Where the live device facts behind the published resources come from.
+    pub(crate) fn device_facts(&self) -> crate::facts::DeviceFacts {
+        #[cfg(not(feature = "thin"))]
+        if self.deterministic_hardware_for_shot {
+            return crate::facts::DeviceFacts::FIXED;
+        }
+        crate::facts::DeviceFacts::LIVE
+    }
+
     pub(crate) fn account_resource_inventory(&self) -> &[accounts::Account] {
         &self.account_resources
     }
 
     fn refresh_account_resources(&mut self) {
+        // A capture lists the fixed accounts, whatever the store holds.
+        if self.account_directory_override.is_some() {
+            return;
+        }
         self.account_resources = self.account_root.store().all().to_vec();
     }
 
@@ -319,7 +338,7 @@ impl SettingsApp {
         column.map(|width| {
             let gutter = ui::tokens::Spacing::BASE.s6;
             (width - 2.0 * gutter)
-                .min(self.readable_measure() * self.text_growth)
+                .min(MEASURE * self.text_growth)
                 .max(0.0)
         })
     }
@@ -363,7 +382,7 @@ impl SettingsApp {
             .push(body);
         // Forms are more legible as a column on large displays: a trailing
         // control stays near its label.
-        let measure = (self.readable_measure() + 2.0 * gutter) * self.text_growth;
+        let measure = (MEASURE + 2.0 * gutter) * self.text_growth;
         let content: Box<dyn Widget> = Box::new(
             Container::new()
                 .with_no_padding()
@@ -371,20 +390,6 @@ impl SettingsApp {
                 .with_child(Box::new(inner)),
         );
         Box::new(Scrollable::new_vertical().with_child(content))
-    }
-
-    /// The readable measure (logical px) a pane's content is centred within
-    /// on large monitors. Every cap is a maximum, so narrow screens stay
-    /// fluid. Panes whose rows carry several controls get the wide measure.
-    fn readable_measure(&self) -> f32 {
-        match self.selected {
-            Category::ExternalAccounts
-            | Category::DeviceMesh
-            | Category::Displays
-            | Category::Printers
-            | Category::Users => WIDE_MEASURE,
-            _ => FORM_MEASURE,
-        }
     }
 
     /// Remember the dispatcher so preference panes built later submit through it.
@@ -455,6 +460,12 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
+            #[cfg(not(feature = "thin"))]
+            Category::DeviceMesh if self.deterministic_hardware_for_shot => Box::new(
+                panes::device_mesh::DeviceMeshPane::for_shot()
+                    .with_command_state(&self.device_mesh_commands)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::DeviceMesh => Box::new(
                 panes::device_mesh::DeviceMeshPane::new()
                     .with_command_state(&self.device_mesh_commands)
@@ -463,6 +474,20 @@ impl SettingsApp {
             Category::Sound => Box::new(
                 panes::audio::AudioPane::new()
                     .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            #[cfg(not(feature = "thin"))]
+            Category::Speakers if self.shot_demo == Some(crate::shots::Demo::SpeakersLayout) => {
+                Box::new(
+                    panes::speakers::SpeakersPane::for_shot_layout()
+                        .with_command_state(&self.speaker_commands)
+                        .with_operation_status(&self.local_operation_status),
+                )
+            }
+            #[cfg(not(feature = "thin"))]
+            Category::Speakers if self.deterministic_hardware_for_shot => Box::new(
+                panes::speakers::SpeakersPane::for_shot()
+                    .with_command_state(&self.speaker_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Speakers => Box::new(
@@ -475,11 +500,18 @@ impl SettingsApp {
                     crate::dispatcher::dispatcher_or_real(None),
                     0.62,
                 )
-                .with_external_monitor_for_shot(),
+                .with_outputs(panes::display::outputs_from_snapshot(
+                    crate::shots::display_snapshot(),
+                )),
             ),
             Category::Displays => Box::new(
                 panes::display::DisplayPane::new()
                     .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            #[cfg(not(feature = "thin"))]
+            Category::MouseKeyboard if self.deterministic_hardware_for_shot => Box::new(
+                panes::mouse_keyboard::MouseKeyboardPane::for_shot()
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::MouseKeyboard => Box::new(
@@ -607,6 +639,12 @@ impl SettingsApp {
                         .with_account_tester(std::sync::Arc::clone(&self.account_tester)),
                 )
             }
+            #[cfg(not(feature = "thin"))]
+            Category::AgentModels if self.deterministic_hardware_for_shot => Box::new(
+                panes::agent_models::AgentModelsPane::for_shot()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::AgentModels => Box::new(
                 panes::agent_models::AgentModelsPane::new()
                     .with_command_state(&self.local_pane_command)
@@ -617,12 +655,19 @@ impl SettingsApp {
                 if let Some(dispatcher) = &self.framework {
                     pane.bind_dispatcher(dispatcher.clone());
                 }
-                Box::new(match self.content_width_hint() {
-                    Some(width) => pane.with_width_hint(width),
-                    None => pane,
-                })
+                Box::new(pane)
+            }
+            #[cfg(not(feature = "thin"))]
+            Category::Permissions if self.deterministic_hardware_for_shot => {
+                panes::permissions::build_for_shot()
             }
             Category::Permissions => panes::permissions::build(),
+            #[cfg(not(feature = "thin"))]
+            Category::Updates if self.deterministic_hardware_for_shot => Box::new(
+                panes::updates::UpdatesPane::for_shot()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Updates => Box::new(
                 panes::updates::UpdatesPane::new()
                     .with_command_state(&self.local_pane_command)
@@ -654,10 +699,7 @@ impl SettingsApp {
                 ))],
             )
             .content(self.build_content())
-            .content_header(
-                self.page_title(),
-                vec![Box::new(ui::widget::history_button())],
-            );
+            .content_header(self.page_title(), Vec::new());
         if let Some(pane) = self.narrow_front {
             shell.show(pane);
         }
@@ -1815,6 +1857,8 @@ impl Widget for SettingsApp {
         // category switches (which rebuild the content).
         crate::widgets::set_compose_text_growth(theme.text_growth());
         self.text_growth = theme.text_growth();
+        crate::widgets::set_compose_width(self.content_width_hint());
+        self.composed_stacked = crate::widgets::choices_stack();
         if self.shell.is_none() {
             self.shell = Some(self.build_shell());
         }
@@ -1864,6 +1908,13 @@ impl Widget for SettingsApp {
             && let Some(&shell_node) = children.first()
         {
             shell.apply_layout(taffy, shell_node, origin);
+        }
+        // The page width is only known once it has been laid out: a pane
+        // composed for the wrong form (inline or stacked choosers) is
+        // composed again for the right one.
+        crate::widgets::set_compose_width(self.content_width_hint());
+        if crate::widgets::choices_stack() != self.composed_stacked {
+            self.structure_dirty = true;
         }
     }
 
@@ -2127,7 +2178,11 @@ impl ui::resources::PublishesResources for SettingsApp {
     /// `SettingsAction` preference door — keep only live device extras.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
-            return crate::actions::live_device_resources(doc, self.account_resource_inventory());
+            return crate::actions::live_device_resources(
+                doc,
+                self.account_resource_inventory(),
+                self.device_facts(),
+            );
         }
         self.publish_resources(doc)
     }

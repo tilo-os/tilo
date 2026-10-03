@@ -29,7 +29,8 @@ use ui::icons::Icon;
 use ui::tokens::{Metrics, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
-    Badge, ChipStyle, Column, Container, IconWidget, Row, Section, Spacer, Text, Widget,
+    Badge, Button, ChipStyle, Column, Container, ControlSize, IconWidget, Row, Section, Spacer,
+    Text, Widget,
 };
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -111,16 +112,53 @@ pub fn card_with_action(title: &str, action: El, body: El) -> El {
     Box::new(Section::new(vec![Box::new(header), body]))
 }
 
-/// A label-on-the-left, control-on-the-right row — the workhorse settings
-/// line. The `Spacer` pushes the control to the trailing edge, and the `Row`
-/// centres label and control on one line whatever the control's height.
-pub fn setting_row(label: &str, control: El) -> El {
+/// The label of a row: it takes the width its control leaves over and wraps
+/// there, so a long label never pushes the control off the row.
+fn row_label(label: &str) -> El {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_flex_grow()
+            .with_child(Box::new(Text::new(label))),
+    )
+}
+
+/// A label with a description hugging it, as one block of a row. The
+/// description sits one caption gap under the label, so it reads as part of
+/// its row rather than floating between two.
+fn row_label_described(label: &str, description: &str) -> El {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_flex_grow()
+            .with_child(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(spacing().s1)
+                    .push(Box::new(Text::new(label)))
+                    .push(caption(description)),
+            )),
+    )
+}
+
+/// One line of a settings list: `lead` takes the room, `control` keeps its
+/// own size at the trailing edge and is centred on the line.
+fn trailing_row(lead: El, control: El) -> El {
     Box::new(
         Row::new()
-            .push(Box::new(Text::new(label)))
-            .push(Box::new(Spacer::new()))
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(lead)
             .push(control),
     )
+}
+
+/// A label-on-the-left, control-on-the-right row — the workhorse settings
+/// line. The label grows to the control and the control stays at the
+/// trailing edge, centred on the line whatever its height.
+pub fn setting_row(label: &str, control: El) -> El {
+    trailing_row(row_label(label), control)
 }
 
 /// A label/value row where the value is plain read-only text.
@@ -129,24 +167,102 @@ pub fn value_row(label: &str, value: &str) -> El {
 }
 
 /// A label with a short helper line beneath it, paired with a trailing
-/// control. Used where a setting needs a one-line explanation.
-///
-/// The label and control sit inline on the top line, with the description on
-/// its own line beneath. The description hugs its row by the caption gap
-/// (`s1`), so it reads as belonging to the label above it rather than
-/// floating halfway to the next row.
+/// control. The helper line is part of the label block and the control is
+/// centred on the pair, so the description groups with its own row.
 pub fn setting_row_described(label: &str, description: &str, control: El) -> El {
-    let top = Row::new()
-        .push(Box::new(Text::new(label)))
-        .push(Box::new(Spacer::new()))
-        .push(control);
+    trailing_row(row_label_described(label, description), control)
+}
+
+/// A row for a continuous control (a slider) that wants the whole measure:
+/// the label on its own line and the control spanning the section.
+pub fn slider_row(label: &str, control: El) -> El {
+    choice_row_stacked(label, control)
+}
+
+/// A row for a text field: the label on its own line and the field beneath
+/// it spanning the section, as every form in Settings lays its fields out.
+pub fn field_row(label: &str, control: El) -> El {
+    choice_row_stacked(label, control)
+}
+
+/// [`slider_row`] with a helper line under the label.
+pub fn slider_row_described(label: &str, description: &str, control: El) -> El {
+    stacked_block(
+        vec![
+            Box::new(Text::new(label)) as El,
+            caption(description),
+            control,
+        ],
+        spacing().s1,
+    )
+}
+
+/// One entry of a list of things (a printer, a user, a device): its name with
+/// any status marks on the top line, what is worth knowing about it hugging
+/// the name below, and the actions that apply to it under the text. Every
+/// such list reads the same way, whether or not an entry has actions.
+pub fn item_row(title: &str, status: Vec<El>, details: &[String], actions: Vec<Button>) -> El {
+    let mut top = Row::new()
+        .no_wrap()
+        .with_align_items(taffy::AlignItems::Center)
+        .push(row_label(title));
+    for mark in status {
+        top = top.push(mark);
+    }
+    let mut block = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(spacing().s1)
+        .push(Box::new(top));
+    for detail in details {
+        block = block.push(caption(detail));
+    }
+    if actions.is_empty() {
+        return Box::new(block);
+    }
+    let mut buttons = Row::new().with_gap(spacing().s2);
+    for action in actions {
+        buttons = buttons.push(Box::new(action.control_size(ControlSize::Small)));
+    }
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing().s1)
-            .push(Box::new(top))
-            .push(caption(description)),
+            .with_gap(spacing().s2)
+            .push(Box::new(block))
+            .push(Box::new(buttons)),
+    )
+}
+
+/// A row for a thing with an icon (a network, a device): the icon, its name
+/// with a line of detail hugging it, and a trailing control. The control
+/// keeps its place however narrow the window gets.
+pub fn icon_row(icon: Icon, title: &str, detail: &str, control: El) -> El {
+    let text = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(spacing().s1)
+        .push(Box::new(Text::new(title)))
+        .push(caption(detail));
+    let lead = Row::new()
+        .no_wrap()
+        .with_align_items(taffy::AlignItems::Center)
+        .with_gap(spacing().s3)
+        .push(Box::new(IconWidget::new(icon, Metrics::BASE.icon_md)))
+        .push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_flex_grow()
+                .with_child(Box::new(text)),
+        ));
+    trailing_row(
+        Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_flex_grow()
+                .with_child(Box::new(lead)),
+        ),
+        control,
     )
 }
 
@@ -157,6 +273,7 @@ pub fn caption(text: &str) -> El {
 
 thread_local! {
     static COMPOSE_TEXT_GROWTH: Cell<f32> = const { Cell::new(1.0) };
+    static COMPOSE_WIDTH: Cell<Option<f32>> = const { Cell::new(None) };
 }
 
 /// Record the live theme's [`ui::Theme::text_growth`] before a pane
@@ -173,6 +290,22 @@ pub fn set_compose_text_growth(growth: f32) {
 
 fn compose_text_growth() -> f32 {
     COMPOSE_TEXT_GROWTH.get()
+}
+
+/// Record the width (logical px) the page gives the pane being composed, or
+/// `None` before the page has been laid out. Every choice row of the pane
+/// then settles on one form together ([`choices_stack`]).
+pub fn set_compose_width(width: Option<f32>) {
+    COMPOSE_WIDTH.set(width.filter(|w| w.is_finite()));
+}
+
+/// Whether the pane composes its choice rows with the chooser beneath the
+/// label. One decision for the whole page, so a narrow window never shows
+/// some rows inline and their neighbours stacked.
+pub fn choices_stack() -> bool {
+    COMPOSE_WIDTH
+        .get()
+        .is_some_and(|width| width < choice_rows_stack_below())
 }
 
 /// The width of a compact right-aligned chooser (dropdown, segmented
@@ -203,41 +336,62 @@ pub fn compact_control_w(width: f32, control: El) -> El {
 }
 
 /// A settings row whose trailing control is a compact, right-aligned chooser
-/// (see [`compact_control`]). Use for dropdown/segmented settings so the
-/// label stays left and the control sits at the row's right edge on one line.
+/// (see [`compact_control`]). The label stays left and the chooser sits at
+/// the row's right edge on one line; in a narrow page the whole pane's
+/// choosers go beneath their labels instead ([`choices_stack`]).
 pub fn choice_row(label: &str, control: El) -> El {
-    Box::new(
-        Row::new()
-            .with_gap(spacing().s1)
-            .push(Box::new(Text::new(label)))
-            .push(Box::new(Spacer::new()))
-            .push(compact_control(control)),
+    if choices_stack() {
+        return choice_row_stacked(label, control);
+    }
+    trailing_row(row_label(label), compact_control(control))
+}
+
+/// [`choice_row`] with a helper line under the label. The description spans
+/// the whole row, hugging it, so a long one is not squeezed into the label's
+/// column beside the chooser.
+pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
+    if choices_stack() {
+        return stacked_block(
+            vec![
+                Box::new(Text::new(label)) as El,
+                caption(description),
+                control,
+            ],
+            spacing().s1,
+        );
+    }
+    stacked_block(
+        vec![
+            trailing_row(row_label(label), compact_control(control)),
+            caption(description),
+        ],
+        spacing().s1,
     )
 }
 
-/// [`choice_row`] with a helper line under the label.
-pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
-    setting_row_described(label, description, compact_control(control))
+fn stacked_block(items: Vec<El>, gap: f32) -> El {
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(gap);
+    for item in items {
+        column = column.push(item);
+    }
+    Box::new(column)
 }
 
-/// The narrow-screen form of [`choice_row`]: the label on its own line and
-/// the chooser beneath it, spanning the section. A phone-width section
-/// cannot seat a label beside a compact chooser, so a pane switches a whole
-/// section to this form at once (see [`choice_rows_stack_below`]).
+/// The narrow form of [`choice_row`]: the label on its own line and the
+/// chooser beneath it, spanning the section.
 pub fn choice_row_stacked(label: &str, control: El) -> El {
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing().s1)
-            .push(Box::new(Text::new(label)))
-            .push(control),
+    stacked_block(
+        vec![Box::new(Text::new(label)) as El, control],
+        spacing().s1,
     )
 }
 
 /// The section width (logical px) below which a pane composes its choice
-/// rows with [`choice_row_stacked`] instead of [`choice_row`]: the compact
-/// chooser, one `s3` gap and room for a typical settings label.
+/// rows with the chooser beneath the label: the compact chooser, one `s3`
+/// gap and room for a typical settings label.
 pub fn choice_rows_stack_below() -> f32 {
     compact_chooser_width() + spacing().s3 + Metrics::BASE.sidebar_min_width / 2.0
 }
@@ -253,33 +407,19 @@ pub fn semantic_status_pill(label: &str, tone: StatusTone) -> El {
     status_pill(label, tone)
 }
 
-/// A prominent identity block for a pane's first section: a large icon with
-/// a `Title` and a `Caption` stacked *beside* it. Used where a pane benefits
-/// from a hero (About's device identity, Power's battery).
-///
-/// The text block sits in a flex-growing container so it takes the width the
-/// icon leaves over instead of claiming the whole row and wrapping underneath
-/// the glyph.
-pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
-    let text_block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(spacing().s1)
-        .push(Box::new(Text::new(title).with_role(TextRole::Title)))
-        .push(caption(subtitle));
+/// A prominent identity block for a pane's first section: a large icon
+/// beside a `Title` (About's device name).
+pub fn hero(icon: Icon, title: &str) -> El {
     let row = Row::new()
         .no_wrap()
+        .with_align_items(taffy::AlignItems::Center)
+        .with_gap(spacing().s3)
         .push(Box::new(IconWidget::new(icon, Metrics::BASE.icon_lg)))
         .push(Box::new(
             Container::new()
                 .with_no_padding()
                 .with_flex_grow()
-                .with_child(Box::new(text_block)),
+                .with_child(Box::new(Text::new(title).with_role(TextRole::Title))),
         ));
     Box::new(row)
-}
-
-/// Horizontal spacing inside a control row.
-pub fn hgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_size(px, 1.0))
 }

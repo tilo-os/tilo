@@ -168,8 +168,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
-    // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
+    // The machine's name and icon head the page; the OS is a row below.
+    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname);
 
     let person = info
         .identity_name

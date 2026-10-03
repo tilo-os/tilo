@@ -34,7 +34,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::i18n::t;
-use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
+use crate::panes::appearance::{text_size_label, text_size_scale};
 use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair, SystemPrefs,
@@ -181,13 +181,8 @@ impl AccessibilityPane {
         ])
     }
 
-    // --- Vision: high contrast, reduce motion, text size.
+    // --- Vision: high contrast, reduce motion, colour filter, magnifier.
     fn build_vision_card(&self) -> Box<dyn Widget> {
-        let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
-        let text_size = text_size_label(self.appearance.text_scale);
-        let size = Self::choice(size_opts, TEXT_SIZE_KEY, "text-size")
-            .with_id("a11y.text_size")
-            .with_placeholder(&text_size);
         card(
             &t("a11y-vision-title"),
             rows(vec![
@@ -201,7 +196,6 @@ impl AccessibilityPane {
                     &t("a11y-reduce-motion-desc"),
                     Self::toggle("a11y.reduce_motion", REDUCE_MOTION_KEY, "reduce-motion"),
                 ),
-                choice_row(&t("a11y-text-size"), Box::new(size)),
                 choice_row(
                     &t("a11y-colour-filter"),
                     Box::new(

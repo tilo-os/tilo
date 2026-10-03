@@ -78,7 +78,9 @@ use winit::event::WindowEvent;
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::prefs::{AudioPrefs, SystemPrefs};
-use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
+use crate::widgets::{
+    caption, card, choice_row, choice_row_described, rows, setting_row, slider_row,
+};
 use media::event_sound::SoundTheme;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs};
 
@@ -1028,9 +1030,9 @@ impl AudioPane {
             if let Some(name) = self.devices.default_sink() {
                 dd = dd.with_placeholder(name);
             }
-            output_rows.push(setting_row(&t("sound-output-device"), Box::new(dd)));
+            output_rows.push(choice_row(&t("sound-output-device"), Box::new(dd)));
         }
-        output_rows.push(setting_row(
+        output_rows.push(slider_row(
             &t("sound-volume"),
             Box::new(
                 Slider::new("settings.audio.volume", VOLUME_KEY)
@@ -1054,7 +1056,7 @@ impl AudioPane {
         ));
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
-            output_rows.push(setting_row(
+            output_rows.push(slider_row(
                 &t("sound-balance"),
                 Box::new(
                     Slider::new("settings.audio.balance", BALANCE_KEY)
@@ -1153,9 +1155,9 @@ impl AudioPane {
             if let Some(name) = self.devices.default_source() {
                 dd = dd.with_placeholder(name);
             }
-            input_rows.push(setting_row(&t("sound-input-device"), Box::new(dd)));
+            input_rows.push(choice_row(&t("sound-input-device"), Box::new(dd)));
         }
-        input_rows.push(setting_row(
+        input_rows.push(slider_row(
             &t("sound-input-level"),
             Box::new(
                 Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
@@ -1310,7 +1312,7 @@ impl AudioPane {
                 .with_placeholder(&current);
             let route_row =
                 choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
-            let vol_row = setting_row(
+            let vol_row = slider_row(
                 &t("sound-volume"),
                 Box::new(
                     Slider::new("settings.audio.volume", &vol_key)
@@ -1907,7 +1909,7 @@ impl AudioPane {
         if !self.system_sounds.enabled {
             return card(&t("sound-system"), rows(sound_rows));
         }
-        sound_rows.push(setting_row(
+        sound_rows.push(slider_row(
             &t("sound-volume"),
             Box::new(
                 Slider::new(
@@ -1930,7 +1932,7 @@ impl AudioPane {
             && let Some(binding) = crate::actions::audio_sound_theme_binding(themes.clone())
         {
             let names = themes.into_iter().map(|(name, _)| name).collect();
-            sound_rows.push(setting_row(
+            sound_rows.push(choice_row(
                 &t("sound-theme"),
                 Box::new(
                     Dropdown::new(names, SOUND_THEME_KEY)

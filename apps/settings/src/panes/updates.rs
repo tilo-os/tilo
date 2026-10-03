@@ -694,11 +694,12 @@ type FirmwareRefreshEvent = Result<
     String,
 >;
 
-/// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
+/// The "last checked" stamp, e.g. `4 July 2026, 14:05`, read through the
+/// toolkit clock so a capture shows its pinned time.
 fn now_stamp() -> String {
-    let date = os_actions::now_date().unwrap_or_default();
-    let time = os_actions::now_clock(true).unwrap_or_default();
-    format!("{date} {time}").trim().to_string()
+    ui::clock::local_now()
+        .format("%-d %B %Y, %H:%M")
+        .to_string()
 }
 
 #[allow(
@@ -1474,11 +1475,10 @@ impl UpdatesPane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut all = vec![
-            self.overview_card(),
             self.status_card(),
+            self.preferences_card(),
             self.firmware_card(),
             self.codecs_card(),
-            self.detail_card(),
             self.lifecycle_card(),
             self.rollback_card(),
             self.help_card(),
@@ -1501,161 +1501,120 @@ impl UpdatesPane {
         crate::widgets::cards(all)
     }
 
-    /// Status card — current + staged + the primary action.
+    /// Software updates: where the system stands and what to do about it.
     fn status_card(&self) -> El {
-        let action: El = match &self.status.staged_version {
-            Some(staged) => Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&t_args(
-                        "upd-ready",
-                        &[("version", staged.as_str().into())],
-                    ))))
-                    .push(Box::new(
-                        Text::new(&t("upd-restart-apply"))
-                            .with_role(ui::TextRole::Caption)
-                            .dimmed(),
-                    ))
-                    .push(Box::new(
-                        Row::new()
-                            .push(Box::new(operation_button(
-                                "settings.updates.restart",
-                                &t("upd-restart-update"),
-                                "restart",
-                            )))
-                            .push(Box::new(Spacer::new())),
-                    )),
-            ),
-            None => Box::new(Text::new(&t("upd-up-to-date"))),
-        };
-        card(&t("upd-software"), action)
-    }
-
-    fn overview_card(&self) -> El {
-        let os_value = if self.status.staged_version.is_some() {
-            t("upd-os-staged")
-        } else {
-            t("upd-os-current")
-        };
-        let mut overview = vec![value_row(&t("upd-os"), &os_value)];
-        if let Ok(updates) = &self.firmware_updates {
-            let fw_value = if updates.is_empty() {
-                t("upd-firmware-current")
-            } else {
-                t("upd-firmware-available")
-            };
-            overview.push(value_row(&t("upd-firmware"), &fw_value));
-        }
-        card(&t("upd-overview"), rows(overview))
-    }
-
-    fn detail_card(&self) -> El {
-        let automatic = t("upd-automatic");
-        let unavailable = t("upd-unavailable");
-        let schedule_label = t("upd-schedule");
         let check_label = if self.check_pending {
             t("upd-checking")
         } else {
             t("upd-check")
         };
-        let schedule_placeholder = self.schedule.as_deref().map(schedule_shown);
-        card(
-            &t("upd-details"),
-            rows(vec![
-                value_row(&t("upd-current-version"), &self.status.current_version),
-                value_row(&t("upd-last-checked"), &self.prefs.last_checked),
-                value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
-                match self.timer_enabled {
-                    Some(_) => setting_row(
-                        &automatic,
-                        Box::new(
-                            Toggle::new("settings.updates.auto", AUTO_KEY)
-                                .with_id("updates.auto")
-                                .on_action(crate::actions::updates_bool_binding("automatic").expect(
-                                    "automatic updates are part of the static resource contract",
-                                )),
-                        ),
-                    ),
-                    // Not a switch stuck in one position: a switch that cannot
-                    // reach the timer would report "off" for a machine that is
-                    // updating itself, which is worse than saying so.
-                    None => value_row(&automatic, &unavailable),
-                },
-                match &schedule_placeholder {
-                    Some(schedule) => choice_row(
-                        &schedule_label,
-                        Box::new(
-                            Dropdown::new(
-                                UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)).collect(),
-                                SCHEDULE_KEY,
-                            )
-                            .on_action(crate::actions::updates_schedule_binding().expect(
-                                "update schedule is part of the static resource contract",
-                            ))
-                            .with_placeholder(schedule),
-                        ),
-                    ),
-                    None => value_row(&schedule_label, &unavailable),
-                },
-                match self.allow_metered {
-                    Some(_) => setting_row(
-                        &t("upd-metered"),
-                        Box::new(
-                            Toggle::new("settings.updates.metered", METERED_KEY)
-                                .with_id("updates.metered")
-                                .on_action(crate::actions::updates_bool_binding("metered").expect(
-                                    "metered update policy is part of the static resource contract",
-                                )),
-                        ),
-                    ),
-                    None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
-                },
+        let state = if self.status.staged_version.is_some() {
+            t("upd-os-staged")
+        } else {
+            t("upd-os-current")
+        };
+        let mut body = vec![
+            value_row(&t("upd-current-version"), &self.status.current_version),
+            value_row(&t("upd-status"), &state),
+            value_row(&t("upd-last-checked"), &self.prefs.last_checked),
+        ];
+        let mut actions = Row::new().push(Box::new(operation_button(
+            "settings.updates.check",
+            &check_label,
+            "check",
+        )));
+        if let Some(staged) = &self.status.staged_version {
+            body.push(value_row(&t("upd-ready"), staged));
+            actions = actions.push(Box::new(operation_button(
+                "settings.updates.restart",
+                &t("upd-restart-update"),
+                "restart",
+            )));
+        }
+        body.push(Box::new(actions));
+        card(&t("upd-software"), rows(body))
+    }
+
+    /// Automatic updates, the download schedule and the metered-network
+    /// policy: only the controls this machine can actually reach.
+    fn preferences_card(&self) -> El {
+        let mut body: Vec<El> = Vec::new();
+        if self.timer_enabled.is_some() {
+            body.push(setting_row(
+                &t("upd-automatic"),
                 Box::new(
-                    Row::new()
-                        .push(Box::new(operation_button(
-                            "settings.updates.check",
-                            &check_label,
-                            "check",
-                        )))
-                        .push(Box::new(Spacer::new())),
+                    Toggle::new("settings.updates.auto", AUTO_KEY)
+                        .with_id("updates.auto")
+                        .on_action(
+                            crate::actions::updates_bool_binding("automatic").expect(
+                                "automatic updates are part of the static resource contract",
+                            ),
+                        ),
                 ),
-            ]),
-        )
+            ));
+        }
+        if let Some(schedule) = self.schedule.as_deref().map(schedule_shown) {
+            body.push(choice_row(
+                &t("upd-schedule"),
+                Box::new(
+                    Dropdown::new(
+                        UPDATE_SCHEDULES
+                            .iter()
+                            .map(|id| schedule_shown(id))
+                            .collect(),
+                        SCHEDULE_KEY,
+                    )
+                    .on_action(
+                        crate::actions::updates_schedule_binding()
+                            .expect("update schedule is part of the static resource contract"),
+                    )
+                    .with_placeholder(&schedule),
+                ),
+            ));
+        }
+        if self.allow_metered.is_some() {
+            body.push(setting_row(
+                &t("upd-metered"),
+                Box::new(
+                    Toggle::new("settings.updates.metered", METERED_KEY)
+                        .with_id("updates.metered")
+                        .on_action(crate::actions::updates_bool_binding("metered").expect(
+                            "metered update policy is part of the static resource contract",
+                        )),
+                ),
+            ));
+        }
+        if body.is_empty() {
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
+        }
+        card(&t("upd-preferences"), rows(body))
     }
 
     fn lifecycle_card(&self) -> El {
-        let not_reported = t("upd-not-reported");
-        let no_doc = t("upd-no-doc-url");
-        let mut lifecycle_rows = vec![value_row(
-            &t("upd-rollback-health"),
-            self.details
-                .rollback_health
-                .as_deref()
-                .unwrap_or(&not_reported),
-        )];
-        lifecycle_rows.push(value_row(
-            &t("upd-release-notes"),
-            self.details.release_notes.as_deref().unwrap_or(&no_doc),
-        ));
-        if self.details.history.is_empty() {
-            lifecycle_rows.push(caption(&t("upd-no-bootc-history")));
-        } else {
-            lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
+        let mut lifecycle_rows = Vec::new();
+        if let Some(health) = &self.details.rollback_health {
+            lifecycle_rows.push(value_row(&t("upd-rollback-health"), health));
+        }
+        if let Some(notes) = &self.details.release_notes {
+            lifecycle_rows.push(value_row(&t("upd-release-notes"), notes));
+        }
+        lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
+        if lifecycle_rows.is_empty() {
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
         }
         card(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
     fn firmware_card(&self) -> El {
         let body = match &self.firmware_updates {
-            Err(error) => self.firmware_card_error(error),
+            Err(_) => self.firmware_card_error(),
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
         card(&t("upd-firmware"), body)
     }
 
-    fn firmware_card_error(&self, error: &str) -> El {
+    fn firmware_card_error(&self) -> El {
         let refresh_label = if self.firmware_refresh_pending {
             t("upd-refreshing")
         } else {
@@ -1663,7 +1622,6 @@ impl UpdatesPane {
         };
         rows(vec![
             value_row(&t("upd-fw-status"), &t("upd-fw-query-failed")),
-            caption(&t_args("upd-fwupd-reported", &[("error", error.into())])),
             Box::new(
                 Row::new()
                     .push(Box::new(operation_button(
@@ -1795,15 +1753,12 @@ impl UpdatesPane {
                 }
                 card(&t("upd-fw-history"), rows(entries))
             }
-            Err(error) => card(
+            Err(_) => card(
                 &t("upd-fw-history"),
-                rows(vec![
-                    value_row(&t("upd-fw-status"), &t("upd-history-query-failed")),
-                    caption(&t_args(
-                        "upd-fwupd-reported",
-                        &[("error", error.as_str().into())],
-                    )),
-                ]),
+                rows(vec![value_row(
+                    &t("upd-fw-status"),
+                    &t("upd-history-query-failed"),
+                )]),
             ),
         }
     }
@@ -2615,6 +2570,89 @@ impl Widget for UpdatesPane {
     }
 }
 
+/// The `--shots` pane: a machine that is up to date, with every control the
+/// pane offers reachable, so a capture reads the same everywhere.
+#[cfg(not(feature = "thin"))]
+mod capture {
+    use super::{
+        Arc, Rebooter, UpdateControl, UpdateDetails, UpdatePrefs, UpdateStatus, UpdatesPane,
+        now_stamp, t_args,
+    };
+
+    struct Reachable;
+
+    impl UpdateControl for Reachable {
+        fn timer_enabled(&self) -> Option<bool> {
+            Some(true)
+        }
+        fn set_timer(&self, _on: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn rollback_target(&self) -> Option<String> {
+            Some("Tilo 1.0.2".into())
+        }
+        fn roll_back(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn schedule(&self) -> Option<String> {
+            Some("Daily".into())
+        }
+        fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn allow_metered(&self) -> Option<bool> {
+            Some(false)
+        }
+        fn set_allow_metered(&self, _allow: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_now(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Held;
+
+    impl Rebooter for Held {
+        fn reboot(&self) -> Result<(), String> {
+            Err("a capture never restarts the machine".into())
+        }
+    }
+
+    impl UpdatesPane {
+        pub(crate) fn for_shot() -> Self {
+            let status = UpdateStatus {
+                current_version: "Tilo 1.0.3".into(),
+                staged_version: None,
+            };
+            let prefs = UpdatePrefs {
+                last_checked: now_stamp(),
+                ..UpdatePrefs::default()
+            };
+            let provider = status.clone();
+            let mut pane = Self::with_parts_and_control(
+                status,
+                prefs,
+                Arc::new(move || provider.clone()),
+                Arc::new(now_stamp),
+                Arc::new(Held),
+                Arc::new(Reachable),
+            );
+            pane.details = UpdateDetails {
+                history: Vec::new(),
+                release_notes: None,
+                rollback_health: Some(t_args(
+                    "upd-health-protected",
+                    &[("target", "Tilo 1.0.2".into())],
+                )),
+            };
+            pane.firmware_updates = Ok(Vec::new());
+            pane.firmware_history = Ok(Vec::new());
+            pane
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2701,8 +2739,8 @@ mod tests {
         for needle in [
             "RPM Fusion",
             "Cisco",
-            "hardware video on AMD and Intel",
-            "screen sharing and calls",
+            "patented formats",
+            "under their own licences",
             "Tilo does not host or distribute",
         ] {
             assert!(explanation.contains(needle), "{needle}: {explanation}");

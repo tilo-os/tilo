@@ -37,8 +37,8 @@ use crate::speaker_setup::{
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    StatusTone, caption, card, cards, choice_row_described, rows, semantic_status_pill,
-    setting_row, setting_row_described, value_row,
+    StatusTone, caption, card, cards, choice_row_described, item_row, rows, semantic_status_pill,
+    setting_row, setting_row_described, slider_row, value_row,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -793,7 +793,7 @@ impl SpeakersPane {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut actions = ui::widget::Row::new().push(semantic_status_pill(
+        let mut marks = vec![semantic_status_pill(
             &t_args(
                 "speakers-ready-count",
                 &[
@@ -806,9 +806,9 @@ impl SpeakersPane {
             } else {
                 StatusTone::Warning
             },
-        ));
+        )];
         if let Some(playback) = &group.playback {
-            actions = actions.push(semantic_status_pill(
+            marks.push(semantic_status_pill(
                 &playback_text(playback),
                 match playback {
                     ui::collaboration::SpeakerPlaybackInfo::Playing => StatusTone::Success,
@@ -820,32 +820,27 @@ impl SpeakersPane {
                 },
             ));
         }
+        let mut actions: Vec<Button> = Vec::new();
         if group.led_here {
             let calibrate = group_key("calibrate", &group.id);
-            actions = actions.push(Box::new(Button::new(
+            actions.push(Button::new(
                 &calibrate,
                 &t("speakers-calibrate-button"),
                 Some(&calibrate),
-            )));
+            ));
             let delete = group_key("delete", &group.id);
             if self.delete_armed.contains(&group.id) {
                 let keep = group_key("keep", &group.id);
-                actions = actions
-                    .push(Box::new(Button::new(
-                        &keep,
-                        &t("speakers-keep"),
-                        Some(&keep),
-                    )))
-                    .push(Box::new(
-                        Button::new(&delete, &t("speakers-delete"), Some(&delete))
-                            .role(ui::widget::ButtonRole::Destructive),
-                    ));
+                actions.push(Button::new(&keep, &t("speakers-keep"), Some(&keep)));
+                actions.push(
+                    Button::new(&delete, &t("speakers-delete"), Some(&delete))
+                        .role(ui::widget::ButtonRole::Destructive),
+                );
             } else {
-                actions = actions.push(Box::new(Button::new(
-                    &delete,
-                    &t("speakers-delete-arm"),
-                    Some(&delete),
-                )));
+                actions.push(
+                    Button::new(&delete, &t("speakers-delete-arm"), Some(&delete))
+                        .role(ui::widget::ButtonRole::Destructive),
+                );
             }
         }
         let mut description = if group.led_here {
@@ -870,7 +865,7 @@ impl SpeakersPane {
                 ],
             );
         }
-        setting_row_described(&group.name, &description, Box::new(actions))
+        item_row(&group.name, marks, &[description], actions)
     }
 
     fn build_overview(&self) -> Vec<Box<dyn Widget>> {
@@ -1027,29 +1022,33 @@ impl SpeakersPane {
             body.push(setting_row(
                 label,
                 Box::new(
-                    ui::widget::Row::new()
-                        .push(Box::new(
-                            Slider::from_state(x)
-                                .with_id(&format!("speakers.layout.{index}.x"))
-                                .with_accessible_name(&t_args(
-                                    "speakers-layout-x",
-                                    &[("label", label.as_str().into())],
-                                )),
-                        ))
-                        .push(Box::new(
-                            Slider::from_state(y)
-                                .with_id(&format!("speakers.layout.{index}.y"))
-                                .with_accessible_name(&t_args(
-                                    "speakers-layout-y",
-                                    &[("label", label.as_str().into())],
-                                )),
-                        ))
-                        .push(Box::new(
-                            Button::new(&play, &t("speakers-layout-play"), Some(&play))
-                                .with_accessible_name(&t_args(
-                                    "speakers-layout-play-on",
-                                    &[("label", label.as_str().into())],
-                                )),
+                    Button::new(&play, &t("speakers-layout-play"), Some(&play))
+                        .control_size(ui::widget::ControlSize::Small)
+                        .with_accessible_name(&t_args(
+                            "speakers-layout-play-on",
+                            &[("label", label.as_str().into())],
+                        )),
+                ),
+            ));
+            body.push(slider_row(
+                &t("speakers-layout-across"),
+                Box::new(
+                    Slider::from_state(x)
+                        .with_id(&format!("speakers.layout.{index}.x"))
+                        .with_accessible_name(&t_args(
+                            "speakers-layout-x",
+                            &[("label", label.as_str().into())],
+                        )),
+                ),
+            ));
+            body.push(slider_row(
+                &t("speakers-layout-depth"),
+                Box::new(
+                    Slider::from_state(y)
+                        .with_id(&format!("speakers.layout.{index}.y"))
+                        .with_accessible_name(&t_args(
+                            "speakers-layout-y",
+                            &[("label", label.as_str().into())],
                         )),
                 ),
             ));
@@ -1656,6 +1655,122 @@ impl Widget for RoomCanvas {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+/// The `--shots` panes: a living room set up across three of your devices.
+#[cfg(not(feature = "thin"))]
+mod capture {
+    use ui::collaboration::{
+        SpeakerDeviceInfo, SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo,
+        SpeakerMemberStatus, SpeakerPlaybackInfo,
+    };
+
+    use super::{
+        Arc, Arrangement, SpeakerCommand, SpeakerReply, SpeakerRoleSpec, SpeakerService,
+        SpeakerSnapshot, SpeakerTrimInfo, SpeakersPane, Step,
+    };
+
+    struct Fixture(SpeakerSnapshot);
+
+    impl SpeakerService for Fixture {
+        fn call(&self, command: SpeakerCommand) -> Result<SpeakerReply, String> {
+            Ok(match command {
+                SpeakerCommand::Snapshot => SpeakerReply::Snapshot {
+                    snapshot: self.0.clone(),
+                },
+                _ => SpeakerReply::Done { group: None },
+            })
+        }
+    }
+
+    const DEVICES: [(&str, bool); 3] = [
+        ("ada-laptop", true),
+        ("Studio tower", false),
+        ("Pixel 9", false),
+    ];
+
+    fn selector(device: &str) -> String {
+        format!("{:0>32x}", device.len() * 7919)
+    }
+
+    fn device(label: &str, local: bool) -> SpeakerDeviceInfo {
+        SpeakerDeviceInfo {
+            id: label.into(),
+            label: label.into(),
+            online: true,
+            local,
+            can_join: true,
+            outputs: vec![SpeakerEndpointInfo {
+                selector: selector(label),
+                label: "Speakers".into(),
+                is_default: true,
+            }],
+            microphones: Vec::new(),
+        }
+    }
+
+    fn member(label: &str, role: SpeakerRoleSpec) -> SpeakerMemberInfo {
+        SpeakerMemberInfo {
+            device: label.into(),
+            device_label: label.into(),
+            output: selector(label),
+            output_label: None,
+            role,
+            status: SpeakerMemberStatus::Ready,
+            trim: SpeakerTrimInfo::default(),
+        }
+    }
+
+    fn snapshot() -> SpeakerSnapshot {
+        SpeakerSnapshot {
+            media_enabled: true,
+            devices: DEVICES
+                .iter()
+                .map(|(label, local)| device(label, *local))
+                .collect(),
+            groups: vec![SpeakerGroupInfo {
+                id: "ab".repeat(16),
+                name: "Living room".into(),
+                leader_label: "ada-laptop".into(),
+                led_here: true,
+                members: vec![
+                    member("ada-laptop", SpeakerRoleSpec::Left),
+                    member("Studio tower", SpeakerRoleSpec::Right),
+                ],
+                playback: Some(SpeakerPlaybackInfo::Playing),
+                microphones: Vec::new(),
+            }],
+            calibrations: Vec::new(),
+        }
+    }
+
+    impl SpeakersPane {
+        /// The overview: one saved stereo pair, playing.
+        pub(crate) fn for_shot() -> Self {
+            let snapshot = snapshot();
+            let mut pane = Self::with_service(Arc::new(Fixture(snapshot.clone())));
+            pane.adopt(snapshot);
+            pane
+        }
+
+        /// The layout step of a new set of speakers around the room.
+        pub(crate) fn for_shot_layout() -> Self {
+            let mut pane = Self::for_shot();
+            pane.setup.begin();
+            pane.arrangement_state.set(Arrangement::Room.label());
+            pane.setup.set_arrangement(Arrangement::Room);
+            for candidate in pane.setup.candidates() {
+                pane.setup.toggle(&candidate);
+            }
+            if pane.setup.confirm_outputs().is_ok() {
+                while matches!(pane.setup.step(), Step::Identify { .. }) {
+                    pane.setup.skip_identify();
+                }
+            }
+            pane.structure_dirty = true;
+            pane
+        }
     }
 }
 

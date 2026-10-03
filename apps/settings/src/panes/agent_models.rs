@@ -24,7 +24,7 @@ use zeroize::Zeroize;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, hgap, rows, semantic_status_pill, value_row,
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, value_row,
 };
 
 fn location_shown(location: EndpointLocation) -> String {
@@ -775,11 +775,9 @@ impl AgentModelsPane {
         let hardware = &self.snapshot.hardware;
         let fit_label = hardware.fit.label();
         let mem = gib(i64::from(hardware.memory_gib));
-        let hw_fit = t("agent-hw-fit");
         let hw_mem = t("agent-hw-memory");
         let hw_accel = t("agent-hw-accel");
         let mut body = vec![
-            value_row(&hw_fit, &fit_label),
             value_row(&hw_mem, &mem),
             value_row(&hw_accel, &hardware.accelerator),
         ];
@@ -969,7 +967,6 @@ impl AgentModelsPane {
                     None,
                     "add-anthropic",
                 )))
-                .push(hgap(8.0))
                 .push(Box::new(provider_action_button(
                     &action_resources,
                     "agent-models-add-openai",
@@ -1086,7 +1083,6 @@ impl AgentModelsPane {
                             }));
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-protocol-{profile_id}"),
@@ -1094,7 +1090,6 @@ impl AgentModelsPane {
                         Some(&profile_id),
                         "set-protocol",
                     )))
-                    .push(hgap(8.0))
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-enabled-{profile_id}"),
@@ -1106,7 +1101,6 @@ impl AgentModelsPane {
                         Some(&profile_id),
                         if profile.enabled { "disable" } else { "enable" },
                     )))
-                    .push(hgap(8.0))
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-remove-provider-{profile_id}"),
@@ -1596,6 +1590,97 @@ fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
         let _ = state.put(root, key, false);
     }
     pressed
+}
+
+/// The `--shots` pane: a roomy laptop whose model service is up, with one
+/// model running and another recommended.
+#[cfg(not(feature = "thin"))]
+mod capture {
+    use super::{
+        AgentModelsPane, Arc, HardwareFit, HardwareRecommendation, InstalledLocalModel,
+        LocalModelControl, LocalModelPackage, LocalModelPhase, LocalModelSnapshot, t,
+    };
+
+    struct Service;
+
+    fn package(
+        id: &str,
+        name: &str,
+        description: &str,
+        license: &str,
+        bytes: u64,
+    ) -> LocalModelPackage {
+        LocalModelPackage {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            source: format!("huggingface.co/{id}"),
+            revision: "5206a32e0bd3".into(),
+            license: license.into(),
+            license_url: "https://ai.google.dev/gemma/terms".into(),
+            download_bytes: bytes,
+            installed_bytes: bytes,
+            vision: false,
+            face_recognition: false,
+        }
+    }
+
+    impl LocalModelControl for Service {
+        fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+            Ok(LocalModelSnapshot {
+                hardware: HardwareRecommendation {
+                    fit: HardwareFit::Excellent,
+                    memory_gib: 32,
+                    accelerator: "AMD Radeon 780M".into(),
+                    accelerator_memory_gib: Some(16),
+                    free_storage_gib: Some(412),
+                    reason: t("agent-reason-excellent"),
+                },
+                recommendation: Some(package(
+                    "meta-llama/Llama-3.1-8B-Instruct",
+                    "Llama 3.1 8B Instruct",
+                    "A capable everyday assistant for summaries, drafting and tool use.",
+                    "Llama 3.1 Community License",
+                    4_920_000_000,
+                )),
+                models: vec![InstalledLocalModel {
+                    package: package(
+                        "google/gemma-2-9b-it",
+                        "Gemma 2 9B",
+                        "A balanced model for everyday questions.",
+                        "Gemma Terms of Use",
+                        5_760_000_000,
+                    ),
+                    phase: LocalModelPhase::Ready {
+                        running: true,
+                        endpoint: None,
+                    },
+                }],
+                accelerator_setup: None,
+            })
+        }
+        fn install(&self, _model: &LocalModelPackage) -> Result<(), String> {
+            Ok(())
+        }
+        fn start(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn remove(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn stage_accelerator(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl AgentModelsPane {
+        pub(crate) fn for_shot() -> Self {
+            Self::with_control(Arc::new(Service))
+        }
+    }
 }
 
 #[cfg(test)]
