@@ -41,6 +41,9 @@
 # for package binaries and exclude only these two private stores.
 %global __provides_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
 %global __requires_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
+# The env-runtime environment image in the app store is a signed userland:
+# rewriting its scripts' interpreter lines would change signed bytes.
+%global __brp_mangle_shebangs_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
 
 Name:           tilo-session
 Version:        %{tilo_version}

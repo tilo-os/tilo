@@ -1,0 +1,30 @@
+[package]
+name = "tilo-environment"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The environment record: where a shell runs, which images make up its /usr, and which directories it was granted."
+
+[lib]
+name = "tilo_environment"
+path = "src/lib.rs"
+
+[dependencies]
+# The record layer: an environment is a `#[resource]` record with actions.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+# Grants are capabilities in the shared vocabulary, not a second permission type.
+collab-types = { path = "../../collab/collab-types" }
+# Images are tapp packages, named by their content address.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+automerge.workspace = true
+fnv.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

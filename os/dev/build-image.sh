@@ -232,6 +232,17 @@ else
 fi
 [ -n "${RPMS_REF:-}" ] || [ "${TILO_SKIP_BUILD:-0}" = 1 ] \
   || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
+# The env-runtime environment image the system app store ships, resolved the
+# way CI resolves it (by the fingerprint of os/Containerfile.env-runtime). An
+# explicit ENV_RUNTIME_REF wins; with none published yet the image ships none.
+if [ -z "${ENV_RUNTIME_REF:-}" ] && [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
+  if ! ENV_RUNTIME_REF="$("$TILO_OS_DIR/dev/resolve-env-runtime.sh")"; then
+    "$TILO_OS_DIR/dev/resolve-env-runtime.sh" --exists \
+      && die "the published env-runtime does not verify"
+    warn "no env-runtime published for os/Containerfile.env-runtime: this image ships none"
+    ENV_RUNTIME_REF=scratch
+  fi
+fi
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
@@ -568,6 +579,7 @@ build_image() {
     --build-arg "TILO_WINDOWS_ARCH=$TILO_WINDOWS_ARCH" \
     --build-arg "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}" \
     --build-arg "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}" \
+    --build-arg "ENV_RUNTIME_REF=${ENV_RUNTIME_REF:-scratch}" \
     --build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS" \
     --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
     --build-arg "TILO_WITH_BROWSER=$TILO_WITH_BROWSER" \
