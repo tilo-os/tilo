@@ -458,18 +458,17 @@ inputs = [
 ]
 readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
-  "crates/sdk/ui-core/tests/design_token_audit.rs",
-  "crates/sdk/ui-core/tests/spacing_token_audit.rs",
+  "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
 ]
-# App, shell and framework sources are read only by the two audits in the
-# `it` target. A change confined to them runs those audits, not the whole
+# App, shell and framework sources are read only by the look ratchets in the
+# `it` target. A change confined to them runs those ratchets, not the whole
 # toolkit suite; the vendored quit request is compiled into the library, so a
 # change there still runs everything.
 scope = { inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
-], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/)" }
+], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
 [[cargo]]
 package = "tilo-app-package"
