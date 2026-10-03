@@ -708,7 +708,7 @@ impl CalcScreen {
             draw::text_in(
                 &mut ctx,
                 Rect::new(header.x0 + inset, header.y0, x1 - inset, header.y1),
-                "History",
+                "Calculations",
                 &local.text(TextRole::Heading),
                 local.tokens.colors.text_primary,
                 Align::Left,

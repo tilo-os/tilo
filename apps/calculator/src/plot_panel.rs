@@ -53,19 +53,6 @@ pub const SURFACES: Words = Words {
     item: "surface",
 };
 
-/// Where the caret starts in a freshly built editor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Park {
-    /// Inside the first 2D structure, so a static frame shows the caret
-    /// living in the notation.
-    #[default]
-    Structure,
-    /// At the very end of the formula, with its tail in view.
-    End,
-    /// A representative selection, for a frame that shows the highlight.
-    Selection,
-}
-
 /// Which of a row's two buttons the pointer is over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowButton {
@@ -80,6 +67,15 @@ pub struct Hover {
     pub button: Option<(usize, RowButton)>,
     pub add: bool,
     pub toggle: bool,
+}
+
+/// What the panel paints: the rows, which one is selected and whether the
+/// window has keyboard focus (only then does the selected row show a caret).
+#[derive(Clone, Copy, Debug)]
+pub struct Formulas<'a> {
+    pub rows: &'a [PlotFn],
+    pub active: usize,
+    pub focused: bool,
 }
 
 /// The theme's measurements the panel lays out with, cached from the last
@@ -144,7 +140,6 @@ pub struct PlotPanel {
     /// The side of a row button's pointer target.
     target: f64,
     hover: Hover,
-    park: Park,
     /// The theme-resolved size of a formula, set in `Title`.
     formula_size: f32,
     m: PanelMetrics,
@@ -167,7 +162,6 @@ impl PlotPanel {
             prefix_w: 0.0,
             target: f64::from(stock.tokens.metrics.min_pointer_target),
             hover: Hover::default(),
-            park: Park::default(),
             formula_size: stock.tokens.typography.size(TextRole::Title),
             m: PanelMetrics::of(&stock),
         }
@@ -185,11 +179,6 @@ impl PlotPanel {
         &mut self.panel
     }
 
-    /// Where a freshly built editor parks its caret.
-    pub fn set_park(&mut self, park: Park) {
-        self.park = park;
-    }
-
     /// Adopt the theme's scale and metrics.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.panel.scale_for(theme);
@@ -203,7 +192,7 @@ impl PlotPanel {
     /// Reconcile the editors with the model's rows: one per row, fed the
     /// row's current formula. Local edits survive because `set_source` is a
     /// no-op when the string is unchanged.
-    pub fn sync_fields(&mut self, rows: &[PlotFn], active: usize) {
+    pub fn sync_fields(&mut self, rows: &[PlotFn]) {
         if self.fields.len() == rows.len() {
             for (field, row) in self.fields.iter_mut().zip(rows) {
                 field.set_source(&row.expr);
@@ -218,13 +207,6 @@ impl PlotPanel {
                 field
             })
             .collect();
-        if let Some(field) = self.fields.get_mut(active) {
-            match self.park {
-                Park::Structure => field.park_caret_in_structure(),
-                Park::End => field.park_caret_at_end(),
-                Park::Selection => field.park_demo_selection(),
-            }
-        }
     }
 
     pub fn active_field_mut(&mut self, active: usize) -> Option<&mut MathField> {
@@ -252,10 +234,10 @@ impl PlotPanel {
     /// Measure every formula, the prefix and the add button at the size they
     /// paint at, so `layout` can place variable-height rows. A formula
     /// taller than the maximum clamps and scrolls within its editor.
-    pub fn fit(&mut self, rows: &[PlotFn], active: usize, tr: &mut TextRenderer, theme: &Theme) {
+    pub fn fit(&mut self, rows: &[PlotFn], tr: &mut TextRenderer, theme: &Theme) {
         self.scale_for(theme);
         self.formula_size = mathfield::formula_size(theme, tr);
-        self.sync_fields(rows, active);
+        self.sync_fields(rows);
         let (prefix_w, _) = tr.measure_style(self.words.prefix, None, &theme.text(TextRole::Body));
         self.prefix_w = f64::from(prefix_w);
         self.add_w = ButtonFace::new(Rect::ZERO, self.words.add)
@@ -419,15 +401,15 @@ impl PlotPanel {
     // -- paint ---------------------------------------------------------------
 
     /// Paint the panel: the scrim of a floating drawer, the panel's ground,
-    /// its header, the rows, the add button and the show/hide button.
+    /// its header, the rows, the add button and the show/hide button. The
+    /// active row shows a caret only while the window has keyboard focus.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        rows: &[PlotFn],
-        active: usize,
+        formulas: Formulas<'_>,
     ) {
         self.panel.paint_scrim(scene, t, theme);
         if self.panel.column() == Rect::ZERO {
@@ -437,7 +419,7 @@ impl PlotPanel {
         }
         let local = self.panel.paint_panel(scene, t, theme);
         self.draw_header(scene, t, tr, &local);
-        self.draw_rows(scene, t, tr, &local, rows, active);
+        self.draw_rows(scene, t, tr, &local, formulas);
         let add = ButtonFace::new(self.add, self.words.add)
             .icon(Icon::Plus)
             .hovered(self.hover.add);
@@ -474,9 +456,13 @@ impl PlotPanel {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        rows: &[PlotFn],
-        active: usize,
+        formulas: Formulas<'_>,
     ) {
+        let Formulas {
+            rows,
+            active,
+            focused,
+        } = formulas;
         let colors = &theme.tokens.colors;
         let palette = ChartPalette::from_theme(theme);
         let ground = colors.surfaces.content;
@@ -534,7 +520,7 @@ impl PlotPanel {
                 );
             } else if let Some(field) = self.fields.get_mut(i) {
                 field.set_rect(geo.edit, tr);
-                field.draw(scene, t, tr, theme, ink, is_active);
+                field.draw(scene, t, tr, theme, ink, is_active && focused);
             }
             let name = |verb: &str| format!("{verb} {} {}", self.words.item, i + 1);
             let (show, delete) = (name("Show"), name("Delete"));
@@ -587,7 +573,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut panel = PlotPanel::new(CURVES);
             let rows = plots(&["(x^2+1)/(x-3)"]);
-            panel.fit(&rows, 0, &mut tr, &theme);
+            panel.fit(&rows, &mut tr, &theme);
             panel.layout(area, rows.len());
             let row = panel.row_rect(0).expect("row laid out");
             assert!(
@@ -610,7 +596,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut panel = PlotPanel::new(CURVES);
             let rows = plots(&["(1/x)/(1/y)"]);
-            panel.fit(&rows, 0, &mut tr, &theme);
+            panel.fit(&rows, &mut tr, &theme);
             panel.layout(area, rows.len());
             let expected = mathfield::CARD_MAX_H + 2.0 * f64::from(theme.tokens.spacing.s2);
             let row = panel.row_rect(0).expect("row laid out");
@@ -636,7 +622,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut panel = PlotPanel::new(CURVES);
             let rows = plots(&["sin(x)"]);
-            panel.fit(&rows, 0, &mut tr, &theme);
+            panel.fit(&rows, &mut tr, &theme);
             panel.layout(area, rows.len());
             let row = panel.row_rect(0).expect("row laid out");
             assert!(
@@ -657,7 +643,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut panel = PlotPanel::new(CURVES);
             let rows = plots(&["(x^2+1)/(x-3)", "sin(x)"]);
-            panel.fit(&rows, 0, &mut tr, &theme);
+            panel.fit(&rows, &mut tr, &theme);
             panel.layout(area, rows.len());
             let (first, second) = (
                 panel.row_rect(0).expect("first row"),
@@ -682,7 +668,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut panel = PlotPanel::new(SURFACES);
         let rows = plots(&["x*y", "sin(x)*cos(y)"]);
-        panel.fit(&rows, 0, &mut tr, &theme);
+        panel.fit(&rows, &mut tr, &theme);
         panel.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), rows.len());
         let vis = panel.visibility_rect(1).expect("visibility target");
         assert!(panel.set_pointer(vis.center()));
@@ -712,7 +698,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut panel = PlotPanel::new(CURVES);
         let rows = plots(&["(x^2+1)/(x-3)"]);
-        panel.fit(&rows, 0, &mut tr, &theme);
+        panel.fit(&rows, &mut tr, &theme);
         panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
         let edit = panel.field_rect(0).expect("editor");
         let content = panel.fields[0].content_height(&mut tr);
@@ -732,7 +718,7 @@ mod tests {
         tr.set_text_scale(1.5);
         let mut panel = PlotPanel::new(CURVES);
         let rows = plots(&["(x^2+1)/(x-3)"]);
-        panel.fit(&rows, 0, &mut tr, &theme);
+        panel.fit(&rows, &mut tr, &theme);
         panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
         let edit = panel.field_rect(0).expect("editor");
         let content = panel.fields[0].content_height(&mut tr) * 1.5;

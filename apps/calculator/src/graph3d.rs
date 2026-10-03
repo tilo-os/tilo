@@ -18,13 +18,21 @@ use crate::engine;
 use crate::graph2d::Pointer;
 use crate::mathfield::MathField;
 use crate::model::CalcModel;
-use crate::plot_panel::{Hover, Park, PlotPanel, SURFACES};
+use crate::plot_panel::{Formulas, Hover, PlotPanel, SURFACES};
 use crate::zoom::ZoomAnim3d;
 
 /// Half-width of the sampled domain in x and y.
 const DOM: f64 = 7.0;
 /// Grid resolution (cells per axis).
 const N: usize = 40;
+/// Cells per axis of the floor grid.
+const FLOOR_CELLS: usize = 7;
+/// How far under the lowest surface the floor sits, as a share of the
+/// surfaces' height range.
+const FLOOR_DROP: f64 = 0.6;
+/// Opacity of the floor's grid lines and of its outline.
+const FLOOR_GRID_ALPHA: u8 = 38;
+const FLOOR_OUTLINE_ALPHA: u8 = 96;
 
 pub struct Graph3dScreen {
     /// The plot, below the header row.
@@ -76,10 +84,21 @@ struct SurfaceKey {
     canvas: (u64, u64, u64, u64),
 }
 
+/// The floor under the surfaces: a square grid on the domain, drawn so the
+/// plot has a scale and a ground to read heights against.
+#[derive(Default)]
+struct Floor {
+    /// The grid's interior lines.
+    grid: BezPath,
+    /// The domain's outline.
+    outline: BezPath,
+}
+
 #[derive(Default)]
 struct SurfaceCache {
     key: Option<SurfaceKey>,
     cells: Vec<SurfaceCell>,
+    floor: Floor,
     /// Counts actual (re)samples; lets a test prove a theme/tab switch reuses
     /// the cached surfaces instead of re-sampling + re-projecting + re-sorting.
     rebuilds: u32,
@@ -166,13 +185,7 @@ impl Graph3dScreen {
 
     /// Reconcile the per-row editors with `model.surfaces`.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        self.panel
-            .sync_fields(&model.surfaces, model.active_surface);
-    }
-
-    /// Where a freshly built editor parks its caret.
-    pub fn set_park(&mut self, park: Park) {
-        self.panel.set_park(park);
+        self.panel.sync_fields(&model.surfaces);
     }
 
     /// The math field for the active surface row, if any.
@@ -289,8 +302,7 @@ impl Graph3dScreen {
     /// Measure the formulas and lay the screen out for this frame, then
     /// advance the eased zoom. Call once per draw, before painting.
     pub fn prepare(&mut self, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, area: Rect) {
-        self.panel
-            .fit(&model.surfaces, model.active_surface, tr, theme);
+        self.panel.fit(&model.surfaces, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
         self.zoom.tick(model.view3d.zoom, theme.reduce_motion);
@@ -329,9 +341,14 @@ impl Graph3dScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
+        focused: bool,
     ) {
-        self.panel
-            .draw(scene, t, tr, theme, &model.surfaces, model.active_surface);
+        let formulas = Formulas {
+            rows: &model.surfaces,
+            active: model.active_surface,
+            focused,
+        };
+        self.panel.draw(scene, t, tr, theme, formulas);
     }
 
     fn draw_surfaces(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
@@ -356,14 +373,31 @@ impl Graph3dScreen {
         // The ground shows through between cells, which reads as the mesh.
         let colors = &theme.tokens.colors;
         let wire = colors.surfaces.content;
-        let wire_stroke = Stroke::new(0.6);
         let palette = ChartPalette::from_theme(theme);
+        // From above the floor lies behind every surface; from below it is in
+        // front of them.
+        let floor_behind = model.view3d.pitch >= 0.0;
+        if floor_behind {
+            self.draw_floor(scene, tt, theme);
+        }
         for cell in &self.surface_cache.cells {
             let color = scale_rgb(palette.categorical(cell.series), cell.shade);
             scene.fill(vello::peniko::Fill::NonZero, tt, color, None, &cell.path);
-            scene.stroke(&wire_stroke, tt, wire, None, &cell.path);
+            stroke_path(scene, tt, 0.6, wire, &cell.path);
+        }
+        if !floor_behind {
+            self.draw_floor(scene, tt, theme);
         }
         scene.pop_layer();
+    }
+
+    /// The floor grid, in the rule colours the 2D plane draws its grid in.
+    fn draw_floor(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
+        let ground = theme.tokens.colors.surfaces.content;
+        let floor = &self.surface_cache.floor;
+        let rule = |alpha| ui::surface::edge_on_with(ground, alpha);
+        stroke_path(scene, t, 1.0, rule(FLOOR_GRID_ALPHA), &floor.grid);
+        stroke_path(scene, t, 1.0, rule(FLOOR_OUTLINE_ALPHA), &floor.outline);
     }
 
     /// Begin a smooth zoom toward the (already-updated) model zoom.
@@ -402,6 +436,7 @@ impl Graph3dScreen {
             self.surface_cache = SurfaceCache {
                 key: Some(key),
                 cells: Vec::new(),
+                floor: Floor::default(),
                 rebuilds,
             };
             return;
@@ -413,10 +448,11 @@ impl Graph3dScreen {
         let zmid = 0.5 * (zmin + zmax);
         let zspan = (zmax - zmin).max(1e-6);
 
-        let cells = self.project_and_rank_cells(&sampled, (zmid, zspan), model);
+        let (cells, floor) = self.project_and_rank_cells(&sampled, (zmid, zspan), model);
         self.surface_cache = SurfaceCache {
             key: Some(key),
             cells,
+            floor,
             rebuilds,
         };
     }
@@ -462,12 +498,12 @@ impl Graph3dScreen {
         sampled: &[SampledSurface],
         z_normalize: (f64, f64),
         model: &CalcModel,
-    ) -> Vec<SurfaceCell> {
+    ) -> (Vec<SurfaceCell>, Floor) {
         let (zmid, zspan) = z_normalize;
         let v = &model.view3d;
         let (sin_yaw, cos_yaw) = v.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = v.pitch.sin_cos();
-        let s = self.canvas.height().min(self.canvas.width()) * 0.40 / (DOM * 1.7) * v.zoom;
+        let s = self.canvas.height().min(self.canvas.width()) * 0.56 / (DOM * 1.7) * v.zoom;
         let cx = self.canvas.center().x;
         let cy = self.canvas.center().y;
 
@@ -494,7 +530,28 @@ impl Graph3dScreen {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        cells.into_iter().map(|c| c.cell).collect()
+        let floor = Self::project_floor(&project, zmid - zspan * FLOOR_DROP);
+        (cells.into_iter().map(|c| c.cell).collect(), floor)
+    }
+
+    /// The floor grid at height `z`, projected like the surfaces above it.
+    fn project_floor(project: &impl Fn(f64, f64, f64) -> (Point, f64), z: f64) -> Floor {
+        let mut floor = Floor::default();
+        for k in 0..=FLOOR_CELLS {
+            let at = -DOM + 2.0 * DOM * k as f64 / FLOOR_CELLS as f64;
+            let rule = |path: &mut BezPath| {
+                path.move_to(project(at, -DOM, z).0);
+                path.line_to(project(at, DOM, z).0);
+                path.move_to(project(-DOM, at, z).0);
+                path.line_to(project(DOM, at, z).0);
+            };
+            if k == 0 || k == FLOOR_CELLS {
+                rule(&mut floor.outline);
+            } else {
+                rule(&mut floor.grid);
+            }
+        }
+        floor
     }
 
     /// Project one surface's grid into ranked quads, appending them to
@@ -561,6 +618,11 @@ impl Graph3dScreen {
         }
         self.canvas.contains(p)
     }
+}
+
+/// Stroke `path` in `color` at `width`.
+fn stroke_path(scene: &mut Scene, t: Affine, width: f64, color: Color, path: &BezPath) {
+    scene.stroke(&Stroke::new(width), t, color, None, path);
 }
 
 fn scale_rgb(c: Color, f: f64) -> Color {
