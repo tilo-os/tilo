@@ -196,3 +196,26 @@ fn compare_scores_the_artwork_against_its_reference() {
     app.invoke(remove.with(true))
         .expect("removing an absent reference is already done");
 }
+
+/// One group of a set exports alone: cropped to it, without the ground,
+/// and it imports back as the same marks.
+#[test]
+fn a_group_exports_alone_cropped_to_it() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    import(&mut app, BADGE, "badge");
+    let op: ActionRef<ArtworkResource, Vec<String>> = ActionRef::new("export-svg", &["ids"]);
+    let exported = app
+        .operate(op.with(vec!["badge".into()]))
+        .unwrap()
+        .unwrap()
+        .value
+        .unwrap();
+    let svg = exported["svg"].as_str().expect("small SVG answers inline");
+    assert!(!svg.contains("tilo-canvas-ground"), "{svg}");
+    assert!(
+        svg.contains(r#"width="200" height="100""#),
+        "cropped to the badge: {svg}"
+    );
+    let refused = app.operate(op.with(vec!["nothing".into()])).unwrap_err();
+    assert!(refused.to_string().contains("nothing"), "{refused}");
+}
