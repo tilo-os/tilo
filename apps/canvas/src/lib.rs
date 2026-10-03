@@ -47,12 +47,16 @@ impl ResourceApp for App {
         let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
 
         let chosen = tools.tool.clone();
+        let current = tools.tool.with(|tool| *tool);
         let rail = ToggleGroup::new(
             surface::Tool::ALL
                 .iter()
                 .map(|tool| Segment::new(ui::i18n::I18nManager::lookup_plain(tool.label())))
                 .collect(),
-            1,
+            surface::Tool::ALL
+                .iter()
+                .position(|tool| *tool == current)
+                .unwrap_or_default(),
         )
         .control_size(ControlSize::Small)
         .on_view("Tool", move |index| {
@@ -64,12 +68,12 @@ impl ResourceApp for App {
             NavShell::new()
                 .with_id("canvas-shell")
                 .content(canvas)
-                .content_header(
-                    "",
-                    vec![Box::new(rail), Box::new(ui::widget::history_button())],
-                )
+                .content_header("", vec![Box::new(rail)])
                 .inspector(Box::new(
                     Scrollable::new_vertical()
+                        // The inspector is taller than a short window: the
+                        // bar stays visible so the rest is known to be there.
+                        .always_visible()
                         .with_semantic_key("canvas-inspector")
                         .fill_parent_height()
                         .with_child(Box::new(inspector)),
@@ -268,10 +272,12 @@ fn inspector(cx: &ViewCx<ArtworkResource>, tools: &surface::Tools) -> Column {
             items,
         ))
     };
-    // The colour picker is 260 wide; a gutter of `s3` fits it in the inspector.
+    // The inspector is a dense tool panel: one `s3` inset on every side, so
+    // all of it fits a window of the shot height without scrolling.
     let gutter = ui::tokens::Spacing::BASE.s3;
     Column::new()
         .with_intrinsic_height()
+        .with_vertical_padding(gutter)
         .with_horizontal_padding(gutter, gutter)
         .push(section(
             "canvas-colour",

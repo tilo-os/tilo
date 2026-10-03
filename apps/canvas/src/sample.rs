@@ -2,7 +2,7 @@
 //! actions a person or an agent uses. Never shown in the app a user opens.
 
 use crate::CanvasAction;
-use crate::actions::{AddLayer, Draw, NewMark, NewStroke, Paint};
+use crate::actions::{AddLayer, Draw, NewMark, NewStroke, Paint, RemoveLayer};
 use crate::model::{Gradient, Shape};
 
 fn mark(id: &str, shape: Shape, fill: &str) -> NewMark {
@@ -41,6 +41,10 @@ pub fn landscape() -> Vec<CanvasAction> {
             ..AddLayer::default()
         })
     };
+    // A new sheet starts with one empty layer; the landscape brings its own.
+    art.push(CanvasAction::RemoveLayer(RemoveLayer {
+        id: "layer-1".into(),
+    }));
     art.push(layer("sky", "Sky", "watercolour-wet"));
     art.push(layer("land", "Land", "oil"));
     art.push(layer("ink", "Linework", ""));
