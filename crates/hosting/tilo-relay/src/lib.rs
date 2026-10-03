@@ -92,17 +92,7 @@ pub mod compute_transport;
 pub mod compute_worker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_bridge;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_guest;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_routing;
 pub mod framing;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod legacy_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
@@ -166,8 +156,8 @@ pub use compute_transport::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_worker::{
-    ComputeWorkerError, FileComputeContentStore, ProductionComputeWorkerConfig, WorkerEnvironments,
-    run_production_compute_worker, serve_worker_stream, spawn_worker_stream,
+    ComputeWorkerError, FileComputeContentStore, ProductionComputeWorkerConfig,
+    run_production_compute_worker,
 };
 pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]
