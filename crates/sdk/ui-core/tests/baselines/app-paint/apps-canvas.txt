@@ -2,6 +2,5 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/canvas/src/render.rs raw_paint 13
-apps/canvas/src/surface.rs legacy_alias 1
-apps/canvas/src/surface.rs literal_alpha 3
-apps/canvas/src/surface.rs raw_paint 8
+apps/canvas/src/surface.rs literal_alpha 2
+apps/canvas/src/surface.rs raw_paint 5
