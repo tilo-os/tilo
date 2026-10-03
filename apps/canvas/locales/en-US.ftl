@@ -102,10 +102,8 @@ canvas-undo-run = Undo everything { $run } did
 canvas-checkpoint = Checkpoint
 canvas-checkpoint-name = Checkpoint { $number }
 canvas-history-now = Now
-canvas-history-steps = { $action } and { $more ->
-    [one] 1 step before
-   *[other] { $more } steps before
-}
+canvas-history-steps = { $steps } steps
+canvas-history-created = Created
 canvas-viewing-past = Viewing an earlier version
 canvas-restore = Restore
 canvas-preview-banner = Earlier version · Esc returns to now

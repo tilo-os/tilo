@@ -34,6 +34,7 @@ struct Choice {
 /// A selectable row over a [`Row`] of content.
 pub struct ListRow {
     content: Row,
+    id: Option<String>,
     name: Option<String>,
     choice: Option<Choice>,
     selected: bool,
@@ -49,6 +50,7 @@ impl ListRow {
     pub fn new(content: Row) -> Self {
         Self {
             content,
+            id: None,
             name: None,
             choice: None,
             selected: false,
@@ -90,6 +92,13 @@ impl ListRow {
     #[must_use]
     pub fn on_raised(mut self) -> Self {
         self.raised = true;
+        self
+    }
+
+    /// A stable name to find the row by in tests and tools.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
         self
     }
 
@@ -150,6 +159,10 @@ impl crate::widget::Decorator for ListRow {
 
     fn concrete_type_name(&self) -> &'static str {
         "ListRow"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {

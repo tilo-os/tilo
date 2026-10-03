@@ -199,25 +199,25 @@ fn now_row(tools: &Tools) -> Element {
 
 fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Element {
     let by_agent = entry.run.is_some();
-    let action = if entry.steps > 1 {
-        ui::i18n::I18nManager::format(
-            "canvas-history-steps",
-            &[
-                ("action", entry.action.clone().into()),
-                ("more", entry.steps.saturating_sub(1).into()),
-            ],
-        )
+    let action = if entry.action.is_empty() {
+        ui::i18n::I18nManager::lookup_plain("canvas-history-created")
     } else {
         entry.action.clone()
     };
     let title = Text::new(&action);
     let title = if entry.undone { title.dimmed() } else { title };
+    let mut byline = vec![entry.author.clone()];
+    if entry.steps > 1 {
+        byline.push(ui::i18n::I18nManager::format(
+            "canvas-history-steps",
+            &[("steps", entry.steps.into())],
+        ));
+    }
     let when = ago(entry.time_ms);
-    let byline = if when.is_empty() {
-        entry.author.clone()
-    } else {
-        format!("{} · {when}", entry.author)
-    };
+    if !when.is_empty() {
+        byline.push(when);
+    }
+    let byline = byline.join(", ");
     let mut text = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -269,6 +269,7 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
         ListRow::new(content)
             .on_raised()
             .choosing(&tools.preview, Some(entry.change.clone()))
+            .with_id(format!("canvas-version-{}", entry.change))
             .with_accessible_name(byline),
     )
 }
