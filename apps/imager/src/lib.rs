@@ -52,7 +52,7 @@
 //! Disk Imager — Tilo native app for writing an OS image to a drive, and for
 //! installing Tilo (CRDT-native, built on the `ui` toolkit).
 //!
-//! A single guided **wizard** with a six-station step indicator, covering both
+//! A single guided **wizard** with a six-step stepper, covering both
 //! "write this image to a USB stick" and "install Tilo onto a disk":
 //!
 //!   1. **Source** — pick a local `.iso` / `.img` via the platform's native
@@ -122,49 +122,61 @@ pub mod setup;
 pub mod write;
 pub mod write_setup;
 
-/// The imager's spacing rhythm (HIG §7b): the same relationship always gets
-/// the same step, and every step is a token of `Spacing::BASE` — the
-/// compile-time reference the wizard's immediate-mode hit layout and the
-/// setup pages' retained compositions both need, because neither receives a
-/// `Theme` when its geometry is declared. Declared once here; every view
-/// imports the steps it uses instead of restating them.
+/// The setup pages' spacing rhythm (HIG §7b). Their retained compositions
+/// are declared before a `Theme` is in hand and `Column` / `Row` gaps take
+/// logical pixels, so the steps come from the unscaled `Spacing::BASE`
+/// rhythm, named once here by relationship.
 pub(crate) mod rhythm {
-    use ui::tokens::Spacing;
-    const S: Spacing = Spacing::BASE;
-    /// A label and its control; an icon and its label; two lines of one block.
-    pub const LABEL: f64 = S.s1 as f64;
-    /// Related rows that read as one group: a title and its explanation, a
-    /// section caption and its list, help copy under a field.
-    pub const RELATED: f64 = S.s2 as f64;
-    /// Siblings of equal weight: list rows, cards in a list, the two footer
-    /// actions, a card and the banner that follows it.
-    pub const SIBLING: f64 = S.s3 as f64;
-    /// Section padding: the inset inside a card or row; the compact page gutter.
-    pub const SECTION: f64 = S.s4 as f64;
-    /// Before the next group; the page gutter.
-    pub const GROUP: f64 = S.s6 as f64;
-    /// Between major regions: the step rail and the step body, the progress
-    /// ring and its bars, the hero disc and its headline.
-    pub const REGION: f64 = S.s8 as f64;
-    /// The Done hero's stand-off from the content top.
-    pub const HERO: f64 = S.s16 as f64;
-
-    /// The same steps as `f32`, for the retained setup pages whose taffy
-    /// styles and `Column` / `Row` gaps take `f32`.
     pub mod px {
+        use ui::tokens::Spacing;
+        const R: ui::tokens::Rhythm = Spacing::BASE.rhythm;
         /// A title and its explanation.
-        pub const RELATED: f32 = super::RELATED as f32;
+        pub const RELATED: f32 = R.related;
         /// Siblings: the cards of one section, the page's own bands.
-        pub const SIBLING: f32 = super::SIBLING as f32;
-        /// Before the next group of the page; between the saved folders of
-        /// one card.
-        pub const GROUP: f32 = super::GROUP as f32;
+        pub const SIBLING: f32 = R.sibling;
+        /// Before the next group of the page.
+        pub const GROUP: f32 = R.group;
         /// The page gutter, all four sides.
-        pub const PAGE_GUTTER: f32 = super::GROUP as f32;
-        /// The scrollbar's footprint beside the content.
-        pub const SCROLLBAR_GUTTER: f32 = super::SECTION as f32;
-        /// A sticky footer's clean edge inside the scroll viewport.
-        pub const FOOTER_INSET: f32 = super::LABEL as f32;
+        pub const PAGE_GUTTER: f32 = R.group;
+    }
+}
+
+/// The painted views' spacing, named by relationship (HIG §7b) and read from
+/// the theme's rhythm, so a density preference or the UI scale moves every
+/// gap together.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Gaps {
+    /// A label and its control; an icon and its label.
+    pub tight: f64,
+    /// A title and its explanation; a section header and its list.
+    pub related: f64,
+    /// Siblings of equal weight.
+    pub sibling: f64,
+    /// A step title and the step's first block; the compact page gutter.
+    pub section: f64,
+    /// Before the next group; the page gutter.
+    pub group: f64,
+    /// Between major regions: the stepper and the step body.
+    pub region: f64,
+}
+
+impl Gaps {
+    pub(crate) fn of(spacing: &ui::tokens::Spacing) -> Self {
+        let rhythm = &spacing.rhythm;
+        Self {
+            tight: f64::from(rhythm.tight),
+            related: f64::from(rhythm.related),
+            sibling: f64::from(rhythm.sibling),
+            section: f64::from(rhythm.section),
+            group: f64::from(rhythm.group),
+            region: f64::from(spacing.s8),
+        }
+    }
+}
+
+impl Default for Gaps {
+    fn default() -> Self {
+        Self::of(&ui::tokens::Spacing::BASE)
     }
 }
 
@@ -333,6 +345,14 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
     if scenario == "drive" {
         select_source(doc, demo_iso_source());
     }
+    // A person preparing their own laptop, not the empty defaults.
+    let mut profile = crate::doc::ImagerDoc::profile(doc);
+    profile.hostname = "ada-laptop".into();
+    profile.user.full_name = "ada de Vries".into();
+    profile.user.username = "ada".into();
+    profile.timezone = "Europe/Amsterdam".into();
+    profile.keyboard = "us".into();
+    crate::doc::ImagerDoc::set_profile(doc, &profile);
 }
 pub use resource::{Imager, ImagerShell};
 

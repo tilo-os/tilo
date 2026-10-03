@@ -54,3 +54,19 @@ pub(crate) fn page(header: Column) -> Column {
         .with_gap(crate::rhythm::px::GROUP)
         .push(Box::new(header))
 }
+
+/// A page's width: the wizard's readable column inside the page gutter.
+pub(crate) fn readable_page_width() -> f32 {
+    crate::app::READABLE_WIDTH as f32 + 2.0 * crate::rhythm::px::PAGE_GUTTER
+}
+
+/// `widget` in the column beside a page's scrolling body, ending where the
+/// body's content ends: the scroll view keeps its scroll bar gutter on the
+/// trailing edge, and the page's fixed rows keep the same edge.
+pub(crate) fn beside_scroll(widget: Box<dyn ui::widget::Widget>) -> Box<dyn ui::widget::Widget> {
+    Box::new(
+        stack()
+            .with_horizontal_padding(0.0, ui::tokens::Metrics::BASE.scrollbar_gutter)
+            .push(widget),
+    )
+}

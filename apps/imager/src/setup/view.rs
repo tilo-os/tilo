@@ -13,6 +13,7 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::Politeness;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -20,11 +21,11 @@ use ui::tokens::typography::TextRole;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use ui::widget::NumberInput;
 use ui::widget::{
-    Button, Card, Column, Container, Row, Scrollable, Spacer, Text, TextInput, Widget,
+    Banner, Button, ButtonRole, Card, Column, Container, Row, Scrollable, Section, Spacer, Stepper,
+    Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
 use super::controller::{FolderDestination, SetupController, SetupPage};
@@ -44,7 +45,7 @@ use super::model::{Capabilities, Experience, FolderMode, HostOs};
 use super::staging::helper::Action as HelperAction;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use super::{page, stack};
-use crate::rhythm::px::{FOOTER_INSET, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
+use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED};
 
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
@@ -337,7 +338,7 @@ impl SetupApp {
                     message: "The host check worker stopped before reporting readiness.".into(),
                 },
                 _ => DesktopFlowState::Unavailable {
-                    host: "fedora 44 (aarch64)".into(),
+                    host: "Fedora Linux 44 (x86-64)".into(),
                     reasons: vec![
                         "No authenticated Desktop release matches this exact host.".into(),
                     ],
@@ -1156,9 +1157,7 @@ impl SetupApp {
 
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label, None)
-            .fit_content(40.0)
-            .on_effect(move || sink.borrow_mut().push(command))
+        Button::new(id, label, None).on_effect(move || sink.borrow_mut().push(command))
     }
 
     fn desktop_experience_status(&self) -> (String, bool) {
@@ -1215,9 +1214,9 @@ impl SetupApp {
                     .with_role(TextRole::Title)
                     .with_heading_level(1),
             ))
-            .push(Box::new(Text::new(
-                "Setup keeps your current operating system. Options that are not ready in this build stay unavailable.",
-            ).dimmed()));
+            .push(Box::new(
+                Text::new("Setup keeps your current operating system.").dimmed(),
+            ));
         let mut body = stack();
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if let Some(resume) = self.internal_resume_card() {
@@ -1246,7 +1245,7 @@ impl SetupApp {
                 )
                 .with_enabled(supported);
             if selected {
-                choose = choose.primary();
+                choose = choose.role(ButtonRole::Primary);
             }
             let mut card_body = Column::new()
                 .with_no_padding()
@@ -1279,10 +1278,9 @@ impl SetupApp {
                         .with_id("setup.internal.readiness")
                         .with_live(Politeness::Polite),
                 ));
-                body = body.push(Box::new(Card::titled(
-                    experience_label(experience),
-                    Box::new(card_body),
-                )));
+                body = body.push(Box::new(
+                    Card::new(Box::new(card_body)).with_title(experience_label(experience)),
+                ));
                 continue;
             }
             if !supported && experience != Experience::Desktop {
@@ -1294,10 +1292,9 @@ impl SetupApp {
                     .dimmed(),
                 ));
             }
-            body = body.push(Box::new(Card::titled(
-                experience_label(experience),
-                Box::new(card_body),
-            )));
+            body = body.push(Box::new(
+                Card::new(Box::new(card_body)).with_title(experience_label(experience)),
+            ));
         }
         Box::new(page(header).push(Box::new(body)))
     }
@@ -1317,7 +1314,7 @@ impl SetupApp {
             )
             .with_enabled(enabled);
         if selected {
-            button = button.primary();
+            button = button.role(ButtonRole::Primary);
         }
         let detail = if mode == FolderMode::Connected && !enabled {
             format!("{explanation} Folder syncing is not available in this build yet.")
@@ -1363,29 +1360,32 @@ impl SetupApp {
                 SetupCommand::AddSuggested(index),
             )
             .with_enabled(enabled && self.folder_selection_settled());
-        Card::titled(
-            known.kind.label(),
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&detail).dimmed()))
-                    .push(Box::new(add)),
-            ),
-        )
+        Card::new(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(Text::new(&detail).dimmed()))
+                .push(Box::new(add)),
+        ))
+        .with_title(known.kind.label())
     }
 
     fn selected_folder_card(&self, index: usize, folder: &super::controller::FolderChoice) -> Card {
         let source = folder.scan.source.display().to_string();
         let details = format!(
-            "{} files · {} · source: {source}",
+            "{} {}, {}",
             folder.scan.file_count,
+            if folder.scan.file_count == 1 {
+                "file"
+            } else {
+                "files"
+            },
             ui::format::bytes_si(folder.scan.bytes)
         );
         let destination = match &folder.destination {
             FolderDestination::Resolved(path) => path.display().to_string(),
             FolderDestination::Unresolved => {
-                "Pending — choose and review a Tilo-managed destination after login".into()
+                "Choose and review a Tilo-managed destination after login".into()
             }
         };
         let destination_field = TextInput::local()
@@ -1411,7 +1411,7 @@ impl SetupApp {
             )
             .with_enabled(true);
         if folder.mode == FolderMode::Copy {
-            copy = copy.primary();
+            copy = copy.role(ButtonRole::Primary);
         }
         let mut connected = self
             .button(
@@ -1421,7 +1421,7 @@ impl SetupApp {
             )
             .with_enabled(self.capabilities.connected_folders);
         if folder.mode == FolderMode::Connected {
-            connected = connected.primary();
+            connected = connected.role(ButtonRole::Primary);
         }
         let mut later = self.button(
             &format!("setup.folder.{index}.later"),
@@ -1429,7 +1429,7 @@ impl SetupApp {
             SetupCommand::SetFolderMode(index, FolderMode::Later),
         );
         if folder.mode == FolderMode::Later {
-            later = later.primary();
+            later = later.role(ButtonRole::Primary);
         }
         let follow = self
             .button(
@@ -1472,7 +1472,7 @@ impl SetupApp {
             .push(Box::new(
                 Row::new().push(Box::new(follow)).push(Box::new(remove)),
             ));
-        Card::titled(source, Box::new(card_body))
+        Card::new(Box::new(card_body)).with_title(source)
     }
 
     fn folders_body(&self) -> Box<dyn Widget> {
@@ -1489,7 +1489,7 @@ impl SetupApp {
         let mut modes = stack()
             .push(Box::new(self.mode_card(
                 FolderMode::Copy,
-                "Copy selected folders — recommended",
+                "Copy selected folders (recommended)",
                 "Your originals stay where they are; later changes do not carry between systems.",
             )))
             .push(Box::new(self.mode_card(
@@ -1512,12 +1512,9 @@ impl SetupApp {
                 SetupCommand::ToggleHelp,
             )));
         if self.show_help {
-            modes = modes.push(Box::new(Card::titled(
-                "Help me choose",
-                Box::new(Text::new(
+            modes = modes.push(Box::new(Section::titled("Help me choose", vec![Box::new(Text::new(
                     "If you are trying Tilo or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
-                )),
-            )));
+                ))])));
         }
         // Each heading opens its own section, a `GROUP` after the previous
         // one; the cards inside keep the sibling step.
@@ -1551,15 +1548,15 @@ impl SetupApp {
         Box::new(body)
     }
 
-    fn review_copy_status(&self, experience: Experience) -> Card {
+    fn review_copy_status(&self, experience: Experience) -> Section {
         let pending = if experience == Experience::FullOs {
             "Full Tilo folder copying remains pending until target-side migration resolves and reviews retained volume identities after installation. No destination or copy is authorized yet."
         } else {
             "Your folder choices are retained. After the first Tilo login, setup will resolve and show each Tilo-managed destination for review before any copy begins."
         };
-        Card::titled(
+        Section::titled(
             "Folder copy status",
-            Box::new(
+            vec![Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
@@ -1569,11 +1566,11 @@ impl SetupApp {
                         "Add folders now…",
                         SetupCommand::OpenImports,
                     ))),
-            ),
+            )],
         )
     }
 
-    fn desktop_install_card(&self) -> Card {
+    fn desktop_install_card(&self) -> Section {
         let detail = match self.desktop_flow.state() {
             DesktopFlowState::Checking => {
                 "Checking the live host and authenticated Desktop catalog…".to_string()
@@ -1631,18 +1628,18 @@ impl SetupApp {
                 )
             }
         };
-        Card::titled(
+        Section::titled(
             "Tilo Desktop readiness",
-            Box::new(
+            vec![Box::new(
                 Text::new(&detail)
                     .with_id("setup.desktop.status")
                     .with_live(Politeness::Polite),
-            ),
+            )],
         )
     }
 
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-    fn internal_download_card(&self) -> Card {
+    fn internal_download_card(&self) -> Section {
         let mut content = stack();
         if let Some(flow) = &self.internal_download_flow {
             let presentation = flow.presentation();
@@ -1712,7 +1709,7 @@ impl SetupApp {
                     .with_live(Politeness::Assertive),
             ));
         }
-        Card::titled("Full Tilo download", Box::new(content))
+        Section::titled("Full Tilo download", vec![Box::new(content)])
     }
 
     #[allow(
@@ -1745,9 +1742,8 @@ impl SetupApp {
                         }
                     };
                     let summary = format!(
-                        "{} → {} · {} · {}",
+                        "{}: {}, {}. {destination}.",
                         folder.scan.source.display(),
-                        destination,
                         mode_label(folder.mode),
                         ui::format::bytes_si(folder.scan.bytes)
                     );
@@ -1841,25 +1837,16 @@ impl SetupApp {
         if plan.experience == Experience::FullOs {
             body = body.push(Box::new(self.internal_download_card()));
         }
-        body = body.push(Box::new(Card::titled(
-                    "Operating systems",
-                    Box::new(Text::new(&format!(
+        body = body.push(Box::new(Section::titled("Operating systems", vec![Box::new(Text::new(&format!(
                         "{retained}. Tilo setup uses {}. Your existing OS stays the startup default initially.",
                         experience_label(plan.experience)
-                    ))),
-                )))
-                .push(Box::new(Card::titled(
-                    "Folder policies",
-                    Box::new(Text::new(&folders).with_id("setup.review.folders")),
-                )))
-                .push(Box::new(Card::titled(
-                    "Space estimate",
-                    Box::new(Text::new(&estimate).with_id("setup.review.estimate")),
-                )));
+                    )))])))
+                .push(Box::new(Section::titled("Folder policies", vec![Box::new(Text::new(&folders).with_id("setup.review.folders"))])))
+                .push(Box::new(Section::titled("Space estimate", vec![Box::new(Text::new(&estimate).with_id("setup.review.estimate"))])));
         if !internal_offered {
-            body = body.push(Box::new(Card::titled(
+            body = body.push(Box::new(Section::titled(
                 "Current blockers",
-                Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
+                vec![Box::new(Text::new(&blockers).with_live(Politeness::Polite))],
             )));
         }
         Box::new(page(header).push(Box::new(body.push(Box::new(copy_status)))))
@@ -1886,20 +1873,7 @@ impl SetupApp {
         let scroll = Scrollable::new_vertical()
             .fill_parent_height()
             .always_visible()
-            .with_content_gutter(SCROLLBAR_GUTTER)
-            .with_bottom_content_inset(FOOTER_INSET)
             .with_child(body);
-        let status = Text::new(&self.status).with_live(if self.status_is_error {
-            Politeness::Assertive
-        } else {
-            Politeness::Polite
-        });
-        let status = Card::new(Box::new(
-            Scrollable::new_vertical()
-                .with_max_height(56.0)
-                .with_content_gutter(SCROLLBAR_GUTTER)
-                .with_child(Box::new(stack().push(Box::new(status)))),
-        ));
         let mut nav = Row::new().no_wrap();
         if page == SetupPage::Experience {
             nav = nav.push(Box::new(self.button(
@@ -1908,11 +1882,10 @@ impl SetupApp {
                 SetupCommand::OpenImports,
             )));
         } else {
-            nav = nav.push(Box::new(self.button(
-                "setup.back",
-                "Back",
-                SetupCommand::Back,
-            )));
+            nav = nav.push(Box::new(
+                self.button("setup.back", "Back", SetupCommand::Back)
+                    .with_icon(Icon::ChevronLeft),
+            ));
         }
         nav = nav.push(Box::new(Spacer::new()));
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1971,7 +1944,7 @@ impl SetupApp {
             };
             nav = nav.push(Box::new(
                 self.button(id, label, command)
-                    .primary()
+                    .role(ButtonRole::Primary)
                     .with_enabled(enabled),
             ));
         } else {
@@ -1984,33 +1957,54 @@ impl SetupApp {
             };
             nav = nav.push(Box::new(
                 self.button("setup.next", "Continue", SetupCommand::Next)
-                    .primary()
+                    .role(ButtonRole::Primary)
                     .with_enabled(next_enabled),
             ));
         }
 
+        let stepper = Stepper::new(vec![
+            "Experience".to_string(),
+            "Folders".to_string(),
+            "Review".to_string(),
+        ])
+        .current(match page {
+            SetupPage::Experience => 0,
+            SetupPage::Folders => 1,
+            SetupPage::Review => 2,
+        });
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
+            .with_vertical_padding(PAGE_GUTTER)
+            .with_gap(GROUP)
+            .push(super::beside_scroll(Box::new(stepper)))
+            .push(Box::new(scroll));
+        if !self.status.is_empty() {
+            column = column.push(super::beside_scroll(status_line(
+                &self.status,
+                self.status_is_error,
+            )));
+        }
         Box::new(
-            Container::new().filling().with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-                    .with_vertical_padding(PAGE_GUTTER)
-                    .with_gap(SIBLING)
-                    .push(Box::new(
-                        Text::new(&format!(
-                            "Set up Tilo  ·  Step {} of 3",
-                            match page {
-                                SetupPage::Experience => 1,
-                                SetupPage::Folders => 2,
-                                SetupPage::Review => 3,
-                            }
-                        ))
-                        .with_role(TextRole::Label),
-                    ))
-                    .push(Box::new(scroll))
-                    .push(Box::new(status))
-                    .push(Box::new(nav)),
-            )),
+            Container::new()
+                .filling()
+                .with_centered_max_width(super::readable_page_width())
+                .with_child(Box::new(column.push(super::beside_scroll(Box::new(nav))))),
+        )
+    }
+}
+
+/// The page's latest outcome above its actions: a problem the person has to
+/// act on is a banner; anything else is a quiet line.
+pub(super) fn status_line(status: &str, is_error: bool) -> Box<dyn Widget> {
+    if is_error {
+        Box::new(Banner::error(status))
+    } else {
+        Box::new(
+            Text::new(status)
+                .with_role(TextRole::Caption)
+                .dimmed()
+                .with_live(Politeness::Polite),
         )
     }
 }
@@ -2497,7 +2491,7 @@ impl SetupApp {
         row
     }
 
-    fn internal_plan_card(&self) -> Card {
+    fn internal_plan_card(&self) -> Section {
         let t = super::strings::t;
         let t_args = super::strings::t_args;
         let install = &self.internal_install;
@@ -2585,7 +2579,6 @@ impl SetupApp {
                         .with_suffix("GiB")
                         .with_id("setup.internal.target-size")
                         .with_accessible_name(t("imager-setup-internal-size-label"))
-                        .with_size(180.0, 40.0)
                         .with_enabled(editable),
                 ))
                 .push(Box::new(
@@ -2611,10 +2604,13 @@ impl SetupApp {
                     .dimmed(),
             ));
         }
-        Card::titled(t("imager-setup-internal-plan-title"), Box::new(content))
+        Section::titled(
+            t("imager-setup-internal-plan-title"),
+            vec![Box::new(content)],
+        )
     }
 
-    fn internal_blockers_card(&self, extra: Option<&str>) -> Card {
+    fn internal_blockers_card(&self, extra: Option<&str>) -> Section {
         let t = super::strings::t;
         let install = &self.internal_install;
         let idle_host = self.host_command_pending.is_none();
@@ -2666,17 +2662,20 @@ impl SetupApp {
             )
             .with_enabled(!install.is_probing() && !install.is_running()),
         ));
-        Card::titled(t("imager-setup-internal-blockers-title"), Box::new(content))
+        Section::titled(
+            t("imager-setup-internal-blockers-title"),
+            vec![Box::new(content)],
+        )
     }
 
-    fn internal_resume_card(&self) -> Option<Card> {
+    fn internal_resume_card(&self) -> Option<Section> {
         let t = super::strings::t;
         let install = &self.internal_install;
         install.pending()?;
         let enabled = !install.is_running();
-        Some(Card::titled(
+        Some(Section::titled(
             t("imager-setup-internal-resume-title"),
-            Box::new(
+            vec![Box::new(
                 stack()
                     .push(Box::new(
                         Text::new(&t("imager-setup-internal-resume"))
@@ -2701,11 +2700,11 @@ impl SetupApp {
                                 .with_enabled(enabled),
                             )),
                     )),
-            ),
+            )],
         ))
     }
 
-    fn internal_run_card(&self) -> Option<Card> {
+    fn internal_run_card(&self) -> Option<Section> {
         let t = super::strings::t;
         let install = &self.internal_install;
         let host = install.host();
@@ -2767,13 +2766,13 @@ impl SetupApp {
                 Politeness::Assertive,
             ),
         };
-        Some(Card::titled(
+        Some(Section::titled(
             &title,
-            Box::new(
+            vec![Box::new(
                 Text::new(&detail)
                     .with_id("setup.internal.run")
                     .with_live(politeness),
-            ),
+            )],
         ))
     }
 
@@ -2796,7 +2795,7 @@ impl SetupApp {
                     &t("imager-setup-internal-restart-now"),
                     SetupCommand::RestartInternal,
                 )
-                .primary()
+                .role(ButtonRole::Primary)
                 .with_enabled(self.host_command_pending.is_none()),
             ));
         }
@@ -2813,7 +2812,7 @@ impl SetupApp {
                 &label,
                 SetupCommand::InstallInternal,
             )
-            .primary()
+            .role(ButtonRole::Primary)
             .with_enabled(
                 install
                     .install_blocker(self.internal_download_ready())
@@ -2949,7 +2948,7 @@ fn scan_warning(scan: &FolderScan) -> Option<String> {
             SkipReason::ReadError(error) => format!("could not read: {error}"),
             SkipReason::UnsupportedFileType => "unsupported file type".to_string(),
         };
-        let _ = write!(warning, "\n{} — {reason}", skipped.path.display());
+        let _ = write!(warning, "\n{}: {reason}", skipped.path.display());
     }
     if scan.skipped_count > scan.skipped.len() as u64 {
         let hidden = scan.skipped_count - scan.skipped.len() as u64;
@@ -3005,7 +3004,7 @@ fn fixture_desktop_release() -> DesktopRelease {
 
 fn fixture_desktop_selection(already_installed: bool) -> DesktopSelection {
     DesktopSelection {
-        host: "fedora 44 (aarch64)".into(),
+        host: "Fedora Linux 44 (x86-64)".into(),
         release: fixture_desktop_release(),
         already_installed,
     }
@@ -3155,13 +3154,6 @@ impl Widget for SetupApp {
             import_app.draw(scene, transform, text_renderer, theme, presence);
             return;
         }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
         if let Some(composed) = &mut self.composed {
             composed.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -4387,7 +4379,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.desktop.status")
-                        .name_contains("fedora 44 (aarch64)"),
+                        .name_contains("Fedora Linux 44 (x86-64)"),
                 )
                 .unwrap();
             harness
@@ -5396,7 +5388,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 detail,
-                "experience no experience selected · common copy · 2 folders · 1 active · help closed · imports closed"
+                "experience no experience selected, common copy, folders 2, active 1, help closed, imports closed"
             );
             assert_eq!(selection.children.len(), 2);
             assert_eq!(selection.children[0].kind, "imager.setup.folder");
@@ -5409,7 +5401,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("copy · common")
+                    .contains("copy, common")
             );
             assert!(
                 selection.children[1]
@@ -5419,7 +5411,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("later · override")
+                    .contains("later, override")
             );
             for folder in &selection.children {
                 assert!(!folder.label.contains("Documents"));

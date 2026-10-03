@@ -9,23 +9,22 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::AccessNode;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::{ModalDialog, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 const TITLE: &str = "Embedded setup profile";
-const MAX_WIDTH: f64 = 640.0;
-const MAX_HEIGHT: f64 = 620.0;
-const WIDTH_FRACTION: f64 = 0.62;
-const COMPACT_WIDTH_FRACTION: f64 = 0.9;
-const HEIGHT_FRACTION: f64 = 0.8;
+/// The one thing the person needs to know about the profile below.
+const NOTE: &str = "The installer applies these choices. Passwords and keys are set on the device.";
 
 struct ExportConfigBody {
     text: String,
     rect: Rect,
+    theme: Option<Theme>,
 }
 
 impl ExportConfigBody {
@@ -33,6 +32,7 @@ impl ExportConfigBody {
         Self {
             text: String::new(),
             rect: Rect::ZERO,
+            theme: None,
         }
     }
 
@@ -40,15 +40,30 @@ impl ExportConfigBody {
         self.text = text;
     }
 
-    fn line_color(theme: &Theme, line: &str) -> vello::peniko::Color {
-        let colors = &theme.tokens.colors;
-        if line.starts_with('#') {
-            colors.neutral[6]
-        } else if line.starts_with('[') {
-            colors.accent[6]
-        } else {
-            colors.text_primary
-        }
+    /// The note and the profile's lines, with their styles, top to bottom.
+    fn blocks<'a>(&'a self, theme: &Theme) -> Vec<(&'a str, TextStyle, bool)> {
+        let mut blocks = vec![(NOTE, theme.text(TextRole::Caption), true)];
+        blocks.extend(
+            self.text
+                .lines()
+                .map(|line| (line, theme.text(TextRole::Code), false)),
+        );
+        blocks
+    }
+
+    /// The body's height at `width`: the note, a gap, then every line.
+    fn height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let wrap = Some(width.max(1.0) as f32);
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        self.blocks(theme)
+            .iter()
+            .enumerate()
+            .map(|(index, (text, style, _))| {
+                let line = if text.is_empty() { " " } else { text };
+                f64::from(tr.measure_style(line, wrap, style).1)
+                    + if index == 0 { gap } else { 0.0 }
+            })
+            .sum()
     }
 }
 
@@ -56,9 +71,10 @@ impl Widget for ExportConfigBody {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.theme = Some(theme.clone());
         #[allow(
             clippy::expect_used,
             reason = "a fresh Taffy leaf cannot fail; Widget::build_layout cannot return a result"
@@ -67,13 +83,33 @@ impl Widget for ExportConfigBody {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+                    height: Dimension::auto(),
                 },
                 ..Default::default()
             })
             .expect("fresh export body leaf");
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let Some(theme) = self.theme.clone() else {
+            return taffy::Size::ZERO;
+        };
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            _ => 1.0,
+        });
+        let height = self.height(text_renderer, &theme, f64::from(width));
+        taffy::Size {
+            width,
+            height: height as f32,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -94,61 +130,32 @@ impl Widget for ExportConfigBody {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let colors = &theme.tokens.colors;
-        // ModalDialog's body begins six pixels below the original subtitle
-        // baseline. Drawing upward preserves the established card rhythm.
-        let compact = self.rect.width() < 360.0;
-        let subtitle = if compact {
-            "Exact embedded profile; secrets are collected on the device."
-        } else {
-            "Embedded setup profile (JSON) — these choices are applied by the installer; secrets are collected on the device."
-        };
-        let text_width = (self.rect.width() - 8.0).max(0.0) as f32;
-        text_renderer.draw_text_weighted(
-            scene,
-            subtitle,
-            11.5,
-            colors.text_dim,
-            transform * Affine::translate((self.rect.x0 + 4.0, self.rect.y0 - 6.0)),
-            Some(text_width),
-            TextWeight::Regular,
-        );
-
-        let (_, subtitle_height) =
-            text_renderer.measure_weighted(subtitle, 11.5, Some(text_width), TextWeight::Regular);
-        let mut y = self.rect.y0 - 6.0 + f64::from(subtitle_height) + 10.0;
-        for line in self.text.lines() {
+        let wrap = Some(self.rect.width().max(1.0) as f32);
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        let mut y = self.rect.y0;
+        for (index, (text, style, note)) in self.blocks(theme).into_iter().enumerate() {
             if y > self.rect.y1 {
                 break;
             }
-            text_renderer.draw_text_weighted(
+            let ink = if note {
+                theme.text_dim
+            } else {
+                theme.text_primary
+            };
+            text_renderer.draw_style(
                 scene,
-                line,
-                12.0,
-                Self::line_color(theme, line),
-                transform * Affine::translate((self.rect.x0 + 4.0, y)),
-                Some(text_width),
-                TextWeight::Regular,
+                text,
+                ink,
+                transform * Affine::translate((self.rect.x0, y)),
+                wrap,
+                &style,
             );
-            let (_, line_height) =
-                text_renderer.measure_weighted(line, 12.0, Some(text_width), TextWeight::Regular);
-            y += f64::from(line_height).max(17.0) + 3.0;
+            let line = if text.is_empty() { " " } else { text };
+            y += f64::from(text_renderer.measure_style(line, wrap, &style).1);
+            if index == 0 {
+                y += gap;
+            }
         }
-        let hint = "click anywhere or press Esc to close";
-        let (hint_width, _) = text_renderer.measure(hint, 11.0, None);
-        text_renderer.draw_text_weighted(
-            scene,
-            hint,
-            11.0,
-            colors.neutral[6],
-            transform
-                * Affine::translate((
-                    self.rect.center().x - f64::from(hint_width) / 2.0,
-                    self.rect.y1 + 30.0,
-                )),
-            None,
-            TextWeight::Regular,
-        );
     }
 
     fn name(&self) -> &'static str {
@@ -168,8 +175,7 @@ pub(crate) struct ExportDialog {
 impl ExportDialog {
     pub(crate) fn new() -> Self {
         Self {
-            dialog: ModalDialog::new(TITLE, ExportConfigBody::new())
-                .with_max_size(MAX_WIDTH, MAX_HEIGHT),
+            dialog: ModalDialog::new(TITLE, ExportConfigBody::new()).on_dismiss(|| {}),
         }
     }
 
@@ -189,25 +195,8 @@ impl ExportDialog {
             .map(|node| node.with_value(self.dialog.content().text.clone()))
     }
 
-    pub(crate) fn layout_in(
-        &mut self,
-        viewport: Rect,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
-        let width_fraction = if viewport.width() < 600.0 {
-            COMPACT_WIDTH_FRACTION
-        } else {
-            WIDTH_FRACTION
-        };
-        self.dialog.set_max_size(
-            (viewport.width() * width_fraction).min(MAX_WIDTH),
-            (viewport.height() * HEIGHT_FRACTION).min(MAX_HEIGHT),
-        );
-        self.dialog.layout_in(viewport, theme, text_renderer);
-    }
-
-    pub(crate) fn draw_detached(
+    /// The sheet, in the window's top layer over the whole window.
+    pub(crate) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -215,8 +204,13 @@ impl ExportDialog {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if !self.dialog.is_open() {
+            return;
+        }
+        // The body measures in the theme the sheet is painted with.
+        self.dialog.content_mut().theme = Some(theme.clone());
         self.dialog
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     pub(crate) fn handle_detached(
@@ -305,50 +299,52 @@ mod tests {
         }
     }
 
+    /// Paint the dialog's top layer over `window`, as the host does.
+    fn present(dialog: &mut ExportDialog, window: Rect) {
+        let presence = PresenceCtx::empty();
+        let previous = presence.push_viewport(window);
+        let mut scene = Scene::new();
+        dialog.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &presence,
+        );
+        presence.pop_viewport(previous);
+    }
+
     /// Export dialog layout, dismissal and read-only accessibility.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn export_dialog_layout_input_and_accessibility() {
-        // Phase `responsive_layout_matches_the_existing_export_card`.
+        // Phase `the_sheet_follows_its_content_inside_the_window`.
         {
             let mut dialog = ExportDialog::new();
-            dialog.show("[install]\nhostname = tilo".into());
-            dialog.layout_in(
+            dialog.show("{\n  \"hostname\": \"tilo\"\n}".into());
+            for window in [
                 Rect::new(0.0, 0.0, 1280.0, 800.0),
-                &Theme::dark(),
-                &mut TextRenderer::new(),
-            );
-            let rect = dialog.dialog_rect();
-            assert_eq!(rect.width(), 640.0);
-            assert_eq!(rect.height(), 620.0);
-
-            dialog.layout_in(
                 Rect::new(0.0, 0.0, 800.0, 600.0),
-                &Theme::dark(),
-                &mut TextRenderer::new(),
-            );
-            let narrow = dialog.dialog_rect();
-            assert_eq!(narrow.width(), 800.0 * WIDTH_FRACTION);
-            assert_eq!(narrow.height(), 600.0 * HEIGHT_FRACTION);
-
-            dialog.layout_in(
                 Rect::new(0.0, 0.0, 320.0, 640.0),
-                &Theme::dark(),
-                &mut TextRenderer::new(),
-            );
-            let compact = dialog.dialog_rect();
-            assert_eq!(compact.width(), 320.0 * COMPACT_WIDTH_FRACTION);
-            assert_eq!(compact.height(), 640.0 * HEIGHT_FRACTION);
+            ] {
+                present(&mut dialog, window);
+                let rect = dialog.dialog_rect();
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(
+                    rect.x0 >= window.x0 && rect.x1 <= window.x1,
+                    "{rect:?} fits {window:?}"
+                );
+                assert!(
+                    rect.height() < window.height(),
+                    "a short profile is a short sheet"
+                );
+            }
         }
 
         // Phase `escape_and_any_left_click_are_captured_and_dismiss`.
         {
             let mut dialog = ExportDialog::new();
             let mut doc = AutoCommit::new();
-            dialog.show("# config".into());
+            dialog.show("{}".into());
             assert!(dialog.handle_detached(
                 &cursor_move(),
                 1.0,
@@ -369,7 +365,7 @@ mod tests {
             ));
             assert!(!dialog.is_open());
 
-            dialog.show("# config".into());
+            dialog.show("{}".into());
             assert!(dialog.handle_detached(
                 &left_click(),
                 1.0,
@@ -380,29 +376,18 @@ mod tests {
             assert!(!dialog.is_open());
         }
 
-        // Phase `syntax_roles_and_accessibility_preserve_the_read_only_document`.
+        // Phase `accessibility_preserves_the_read_only_document`.
         {
-            let theme = Theme::dark();
-            assert_eq!(
-                ExportConfigBody::line_color(&theme, "# heading"),
-                theme.tokens.colors.neutral[6]
-            );
-            assert_eq!(
-                ExportConfigBody::line_color(&theme, "[install]"),
-                theme.tokens.colors.accent[6]
-            );
-            assert_eq!(
-                ExportConfigBody::line_color(&theme, "hostname = tilo"),
-                theme.tokens.colors.text_primary
-            );
-
             let mut dialog = ExportDialog::new();
-            dialog.show("[install]\nhostname = tilo".into());
+            dialog.show("{\n  \"hostname\": \"tilo\"\n}".into());
             let modal = dialog.accessibility().expect("dialog accessibility");
             assert_eq!(modal.role, ui::a11y::Role::Dialog);
             assert!(modal.state.modal);
             assert!(!modal.state.hidden);
-            assert_eq!(modal.value.as_deref(), Some("[install]\nhostname = tilo"));
+            assert_eq!(
+                modal.value.as_deref(),
+                Some("{\n  \"hostname\": \"tilo\"\n}")
+            );
         }
     }
 }
