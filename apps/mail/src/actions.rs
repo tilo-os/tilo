@@ -846,7 +846,7 @@ fn message_label(m: &MessageRow) -> String {
     let s = m.subject.trim();
     let base = if s.is_empty() { "(no subject)" } else { s };
     if m.starred {
-        format!("★ {base}")
+        format!("{base} (starred)")
     } else {
         base.to_string()
     }
@@ -977,7 +977,7 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
         format!("mail.attachment:{message_id}:{index}"),
         "mail.attachment",
         format!(
-            "{} · {}",
+            "{} ({})",
             attachment.filename,
             ui::format::bytes(attachment.size)
         ),
@@ -1082,7 +1082,7 @@ fn accounts_collection(ctx: &MailResourceCtx) -> Resource {
                 format!("mail.account:{id}"),
                 "mail.account",
                 if *active {
-                    format!("{label} · Active")
+                    format!("{label} (open)")
                 } else {
                     label.clone()
                 },
@@ -1492,6 +1492,23 @@ pub(crate) fn publish_document_children(state: &crate::resource::MailboxState) -
     children
 }
 
+/// The address search gives a message: its folder's anchor, then the
+/// message, so a search narrowed to the folder keeps it.
+pub(crate) fn message_search_address(message: &crate::model::Message) -> String {
+    format!(
+        "mail.folder:{}/mail.message:{}",
+        message.folder.as_key(),
+        message.id
+    )
+}
+
+/// The message id of a folder-scoped message address.
+pub(crate) fn message_in_folder(id: &str) -> Option<&str> {
+    let (folder, message) = id.split_once("/mail.message:")?;
+    let folder = folder.strip_prefix("mail.folder:")?;
+    (Folder::from_key(folder).is_some() && !message.is_empty()).then_some(message)
+}
+
 pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
     // The RFC References root (or the model's documented legacy fallback) is
     // a stable domain identity. Scoping it to the folder prevents virtual
@@ -1529,6 +1546,14 @@ impl crate::app::MailApp {
                 }
             }
             None
+        }
+
+        // A search hit addresses a message under its folder, so a search
+        // narrowed to that folder keeps it; it is the same message.
+        if let Some(message) = message_in_folder(id) {
+            let mut resource = self.publish_resource(doc, &format!("mail.message:{message}"))?;
+            resource.id = tilo_actions::ResourceId::new(id);
+            return Some(resource);
         }
 
         if id.starts_with("mail.attachment:") || id.starts_with("mail.thread:") {

@@ -6,11 +6,12 @@
 //! palette by subject, sender or body. Messages and folders name stable exported
 //! resource `View` operations, resolved by the shared search host.
 //!
-//! The provider is deliberately **library-scoped and synchronous**: it indexes
-//! every message already loaded in memory (excluding Trash), never the IMAP
-//! engine. A Ctrl+K query therefore never blocks on the network; the live
-//! server search stays in Mail's own search field, driven off-thread by the
-//! engine worker.
+//! The provider is **library-scoped and synchronous**: it indexes every
+//! message already loaded in memory (excluding Trash), never the IMAP engine,
+//! so a query never blocks on the network. Each message is addressed under
+//! its folder (`mail.folder:inbox/mail.message:…`), and every folder is a
+//! scope, so a search narrowed to a folder keeps exactly its messages. A hit
+//! is drawn as a message row: sender, subject, snippet, date and unread.
 
 use std::collections::HashMap;
 #[cfg(test)]
@@ -20,8 +21,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, FieldWeight, SearchCatalog,
-    SearchCursor, SearchPage, SearchProvider, SearchRecord, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, FieldWeight, ScopeDecl,
+    SearchCatalog, SearchCursor, SearchPage, SearchProvider, SearchQuery, SearchRecord,
+    SearchResult, SearchRow,
 };
 
 use crate::model::{Folder, Mailbox};
@@ -31,7 +33,15 @@ pub const MAIL_KIND: &str = "Mail";
 pub const FOLDER_KIND: &str = "Mail folders";
 
 /// Shown for a message whose subject is blank.
-const NO_SUBJECT: &str = "(no subject)";
+const NO_SUBJECT: &str = "No subject";
+
+/// The folders a search can be narrowed to.
+pub(crate) fn folder_scopes() -> Vec<ScopeDecl> {
+    Folder::ALL
+        .iter()
+        .map(|folder| ScopeDecl::new(format!("mail.folder:{}", folder.as_key()), folder.title()))
+        .collect()
+}
 
 /// Retained state shared by every palette provider cloned from one Mail app.
 /// The revision and resource rows are published with each replacement so an
@@ -81,8 +91,8 @@ impl MailSearchProvider {
         provider
     }
 
-    fn message_address(id: crate::model::MessageId) -> ActionAddress {
-        ActionAddress::new(format!("mail.message:{id}"), "open")
+    fn message_address(message: &crate::model::Message) -> ActionAddress {
+        ActionAddress::new(crate::actions::message_search_address(message), "open")
     }
 
     fn folder_address(folder: Folder) -> ActionAddress {
@@ -115,6 +125,7 @@ impl MailSearchProvider {
         for folder in Folder::ALL {
             catalog_rows.push(Self::folder_catalog_row(folder));
         }
+        let now_min = crate::state::now_minutes();
         let mut resource_rows = HashMap::with_capacity(mailbox.messages.len());
         for message in mailbox
             .messages
@@ -122,7 +133,7 @@ impl MailSearchProvider {
             .filter(|message| message.folder != Folder::Trash)
         {
             let row = crate::actions::message_row(message);
-            catalog_rows.push(Self::message_catalog_row(message));
+            catalog_rows.push(Self::message_catalog_row(message, now_min));
             resource_rows.insert(row.id.clone(), row);
         }
         self.replace_snapshot(revision, catalog_rows, resource_rows)
@@ -180,19 +191,27 @@ impl MailSearchProvider {
         self.materialized_resources.load(Ordering::Relaxed)
     }
 
-    fn message_catalog_row(message: &crate::model::Message) -> SearchRecord {
-        let resource_id = format!("mail.message:{}", message.id);
-        let result = SearchResult::for_action(
-            MAIL_KIND,
-            if message.subject.trim().is_empty() {
-                NO_SUBJECT.to_string()
-            } else {
-                message.subject.clone()
-            },
-            Self::message_address(message.id),
-        )
-        .with_subtitle(message.from.display())
-        .with_icon(Icon::Mail);
+    fn message_catalog_row(message: &crate::model::Message, now_min: i64) -> SearchRecord {
+        let address = Self::message_address(message);
+        let resource_id = address.resource.clone();
+        let subject = if message.subject.trim().is_empty() {
+            NO_SUBJECT.to_string()
+        } else {
+            message.subject.clone()
+        };
+        let date = crate::util::format_relative(
+            crate::util::local_minutes(message.timestamp_min),
+            crate::util::local_minutes(now_min),
+        );
+        let result = SearchResult::for_action(MAIL_KIND, subject.clone(), address)
+            .with_subtitle(message.from.display())
+            .with_icon(Icon::Mail)
+            .with_row(
+                SearchRow::message(message.from.display(), subject)
+                    .snippet(message.snippet())
+                    .date(date)
+                    .unread(!message.read),
+            );
         SearchRecord::new(resource_id, result)
             .field(&message.subject, FieldWeight::TITLE)
             .field(message.from.display(), FieldWeight::SUBTITLE)
@@ -222,7 +241,7 @@ impl MailSearchProvider {
                     SearchResult::for_action(
                         MAIL_KIND,
                         "Invalid row",
-                        Self::message_address(uuid::Uuid::nil()),
+                        ActionAddress::new(format!("mail.message:{}", uuid::Uuid::nil()), "open"),
                     ),
                 )
                 .field("invalid row", FieldWeight::TITLE),
@@ -278,28 +297,35 @@ impl SearchProvider for MailSearchProvider {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        if query.trim().is_empty() {
-            return SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            };
+        let text = query.text().trim();
+        if text.is_empty() {
+            return SearchPage::empty();
         }
         let (work_budget, result_limit) = Self::page_limits(work_budget, result_limit);
-        self.catalog
-            .query_page(query.trim(), cursor, work_budget, result_limit)
+        let mut page = self
+            .catalog
+            .query_page(text, cursor, work_budget, result_limit);
+        // Narrowed to a folder, only that folder's messages are hits.
+        page.results.retain(|hit| query.in_scope(&hit.anchor()));
+        page
+    }
+
+    fn search_scopes(&self) -> Vec<ScopeDecl> {
+        folder_scopes()
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         if address.action != "open" {
             return None;
         }
-        if let Some(id) = address.resource.strip_prefix("mail.message:") {
+        let message = crate::actions::message_in_folder(&address.resource)
+            .or_else(|| address.resource.strip_prefix("mail.message:"));
+        if let Some(id) = message {
             // A retained provider shares this map with every open palette. If
             // a later mailbox revision removed or trashed the message, refuse
             // the old address instead of reviving stale read/star state.
@@ -317,7 +343,9 @@ impl SearchProvider for MailSearchProvider {
                 .cloned()?;
             #[cfg(test)]
             self.materialized_resources.fetch_add(1, Ordering::Relaxed);
-            return Some(crate::actions::message_resource(&row));
+            let mut resource = crate::actions::message_resource(&row);
+            resource.id = tilo_actions::ResourceId::new(address.resource.as_str());
+            return Some(resource);
         }
         let folder = Folder::from_key(address.resource.strip_prefix("mail.folder:")?)?;
         // Mail's global search snapshot has no Automerge document, so it cannot
@@ -337,6 +365,54 @@ mod tests {
 
     fn sample() -> Mailbox {
         crate::sample::sample_mailbox()
+    }
+
+    #[test]
+    fn a_search_narrowed_to_a_folder_keeps_only_its_messages_as_message_rows() {
+        let mailbox = sample();
+        let provider = MailSearchProvider::new(&mailbox);
+        assert!(
+            provider
+                .search_scopes()
+                .iter()
+                .any(|scope| scope.anchor == "mail.folder:inbox" && scope.label == "Inbox"),
+            "every folder is a scope"
+        );
+        // "launch" matches the inbox thread and its reply in Sent.
+        let everywhere = provider.search_page(&SearchQuery::new("launch"), None, 64, 64);
+        let anchors: Vec<String> = everywhere
+            .results
+            .iter()
+            .map(SearchResult::anchor)
+            .collect();
+        assert!(anchors.iter().any(|a| a.starts_with("mail.folder:inbox/")));
+        assert!(anchors.iter().any(|a| a.starts_with("mail.folder:sent/")));
+        let inbox = provider.search_page(
+            &SearchQuery::new("launch").within("mail.folder:inbox"),
+            None,
+            64,
+            64,
+        );
+        assert!(!inbox.results.is_empty());
+        assert!(
+            inbox
+                .results
+                .iter()
+                .all(|hit| hit.anchor().starts_with("mail.folder:inbox/")),
+            "a narrowed search keeps the folder's messages"
+        );
+        let hit = &inbox.results[0];
+        assert!(
+            matches!(hit.row, Some(SearchRow::Message { .. })),
+            "a message hit is drawn as a message row: {:?}",
+            hit.row
+        );
+        assert!(
+            provider
+                .resolve_action_resource(&hit.action_address().unwrap())
+                .is_some(),
+            "the folder-scoped address opens the message"
+        );
     }
 
     #[test]
@@ -410,7 +486,7 @@ mod tests {
         // Phase `an_absent_query_gram_short_circuits_before_body_inspection`.
         {
             let provider = MailSearchProvider::new(&sample());
-            let page = provider.search_page("\0\0", None, 8, 8);
+            let page = provider.search_page(&SearchQuery::new("\0\0"), None, 8, 8);
             assert!(page.results.is_empty());
             assert_eq!(page.inspected, 0, "missing grams must avoid body work");
         }
@@ -451,7 +527,7 @@ mod tests {
             let provider = MailSearchProvider::new(&mailbox);
             assert_eq!(
                 provider
-                    .search_page("bounded", None, usize::MAX, usize::MAX)
+                    .search_page(&SearchQuery::new("bounded"), None, usize::MAX, usize::MAX)
                     .results
                     .len(),
                 DEFAULT_SEARCH_RESULT_LIMIT,
@@ -477,7 +553,7 @@ mod tests {
                 mailbox.insert(message);
             }
             let provider = MailSearchProvider::new(&mailbox);
-            let page = provider.search_page("bounded", None, usize::MAX, 1);
+            let page = provider.search_page(&SearchQuery::new("bounded"), None, usize::MAX, 1);
             assert!(
                 page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,
                 "a caller cannot force unbounded candidate inspection"
@@ -499,7 +575,8 @@ mod tests {
             let mut cursor = None;
             let mut seen = 0;
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page =
+                    provider.search_page(&SearchQuery::new("common"), cursor.as_ref(), 17, 5);
                 assert!(page.inspected <= 17, "each page has a hard work budget");
                 assert!(page.results.len() <= 5, "rows are materialised per page");
                 seen += page.results.len();
@@ -603,7 +680,7 @@ mod tests {
                 .find(|message| message.folder != Folder::Trash)
                 .unwrap()
                 .clone();
-            let address = MailSearchProvider::message_address(message.id);
+            let address = MailSearchProvider::message_address(&message);
             assert!(provider.resolve_action_resource(&address).is_some());
 
             mailbox.delete(message.id);
@@ -625,7 +702,7 @@ mod tests {
                 .values()
                 .find(|message| message.folder != Folder::Trash)
                 .expect("sample message");
-            let address = MailSearchProvider::message_address(message.id);
+            let address = MailSearchProvider::message_address(message);
             // `replace_snapshot` holds this same state mutex while it swaps the
             // search catalogue and its matching lazy rows. An activation therefore
             // cannot see the new catalogue with the old row map in between.
@@ -660,7 +737,7 @@ mod tests {
             }
             let provider = MailSearchProvider::new(&mailbox);
             let cursor = provider
-                .search_page("cursor", None, 1, 1)
+                .search_page(&SearchQuery::new("cursor"), None, 1, 1)
                 .next
                 .expect("the broad result set is paged");
             let mut changed = template;
@@ -684,7 +761,7 @@ mod tests {
                         SearchResult::for_action(
                             MAIL_KIND,
                             "Invalid row",
-                            MailSearchProvider::message_address(existing.id),
+                            MailSearchProvider::message_address(existing),
                         ),
                     )
                     .field("invalid row", FieldWeight::TITLE),
@@ -825,10 +902,8 @@ mod tests {
                 let hits = providers[0].search(&word);
                 let hit = hits.into_iter().next().expect("a seeded message is a hit");
                 let address = hit.action_address().expect("canonical address");
-                let id = address
-                    .resource
-                    .strip_prefix("mail.message:")
-                    .expect("message resource id")
+                let id = crate::actions::message_in_folder(&address.resource)
+                    .expect("a message addressed under its folder")
                     .parse()
                     .expect("valid message id");
                 (address, id)
