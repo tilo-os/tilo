@@ -200,13 +200,11 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
 
 #[test]
 fn overview_transition_uploads_the_panel_not_both_outputs() {
+    // Each draw samples the wall clock, so pin the fade halfway just before it.
     fn mid_fade(host: &mut ShellOverlayHost) {
         host.tick_overview_transition(1.0, false);
-        let started = host
-            .transition_started
-            .expect("opening the overview latches a transition");
         host.transition_started = Some(
-            started
+            std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
                 .expect("the clock is older than half a transition"),
         );
@@ -240,6 +238,7 @@ fn overview_transition_uploads_the_panel_not_both_outputs() {
     let fills = host.overview_panel_cache_fills();
     assert_eq!(fills, 1, "the first fade frame records the panel once");
     let mut again = Scene::new();
+    mid_fade(&mut host);
     host.draw_overview_overlay(&mut again, Affine::IDENTITY, &mut renderer, &theme, true);
     assert_eq!(
         host.overview_panel_cache_fills(),
@@ -252,8 +251,10 @@ fn overview_transition_uploads_the_panel_not_both_outputs() {
         "a mid-fade frame still draws the panel"
     );
 
-    let started = host.transition_started.expect("the fade is still running");
     host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing the overview latches a transition");
     host.transition_started = Some(
         started
             .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS + 1))
