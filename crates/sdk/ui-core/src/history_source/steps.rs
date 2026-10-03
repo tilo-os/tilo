@@ -106,7 +106,8 @@ enum Kind {
     Redo(Vec<String>),
     /// An edit of the content.
     Edit,
-    /// Nothing a person did to the content: a checkpoint, a schema genesis.
+    /// Nothing a person did to the content: a checkpoint, a schema genesis,
+    /// housekeeping, content from outside.
     Bookkeeping,
 }
 
@@ -131,7 +132,7 @@ fn kind_of(doc: &mut AutoCommit, version: &Version) -> Kind {
         || version
             .context
             .as_ref()
-            .is_some_and(ActionContext::is_housekeeping)
+            .is_some_and(|context| !context.change.is_step())
     {
         return Kind::Bookkeeping;
     }
