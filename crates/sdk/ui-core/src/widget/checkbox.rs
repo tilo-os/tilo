@@ -11,7 +11,6 @@ use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// The box itself: 24 px (`spacing.s6` at 1×), centred in the interaction
@@ -43,7 +42,6 @@ pub struct CheckboxFace {
     rect: Rect,
     checked: bool,
     interact: CheckboxInteract,
-    fill_unchecked: bool,
 }
 
 type BoolChangeCallback = Box<dyn FnMut(bool)>;
@@ -54,7 +52,6 @@ impl CheckboxFace {
             rect,
             checked,
             interact: CheckboxInteract::default(),
-            fill_unchecked: true,
         }
     }
 
@@ -73,14 +70,6 @@ impl CheckboxFace {
     #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.interact.disabled = disabled;
-        self
-    }
-
-    /// Let the surrounding canvas provide the unchecked background. Useful
-    /// for checkboxes embedded in rows and cards rather than standalone forms.
-    #[must_use]
-    pub fn transparent_unchecked(mut self) -> Self {
-        self.fill_unchecked = false;
         self
     }
 }
@@ -276,8 +265,13 @@ impl Checkbox {
     }
 
     /// Paint a checkbox without taking ownership of its state or events.
+    ///
+    /// The box is always square: the largest square centred in `face.rect`,
+    /// with the item radius.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
-        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.control));
+        let rect = square_box(face.rect);
+        let radius = f64::from(theme.tokens.radii.item);
+        let shape = RoundedRect::from_rect(rect, radius);
         if face.interact.disabled {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -301,7 +295,7 @@ impl Checkbox {
         } else {
             theme.tokens.colors.surfaces.raised
         };
-        if face.checked || face.fill_unchecked || face.interact.hovered {
+        {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -314,7 +308,7 @@ impl Checkbox {
         // Focus ring wins; the accent-filled checked box is self-defining
         // (like a Primary button) and takes no rest edge.
         let edge = if face.interact.focused {
-            Some((2.0, theme.border_focus))
+            Some((2.0, theme.tokens.colors.intent.you))
         } else if face.checked {
             None
         } else {
@@ -327,32 +321,32 @@ impl Checkbox {
                 transform,
                 color,
                 None,
-                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.control)),
+                &crate::surface::edge_outline(rect, radius),
             );
         }
 
         if face.checked {
             let mut path = BezPath::new();
             path.move_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.25,
-                face.rect.y0 + face.rect.height() * 0.50,
+                rect.x0 + rect.width() * 0.25,
+                rect.y0 + rect.height() * 0.50,
             ));
             path.line_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.42,
-                face.rect.y0 + face.rect.height() * 0.67,
+                rect.x0 + rect.width() * 0.42,
+                rect.y0 + rect.height() * 0.67,
             ));
             path.line_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.75,
-                face.rect.y0 + face.rect.height() * 0.25,
+                rect.x0 + rect.width() * 0.75,
+                rect.y0 + rect.height() * 0.25,
             ));
             scene.stroke(
-                &Stroke::new((face.rect.width().min(face.rect.height()) * 0.105).max(1.5))
+                &Stroke::new((rect.width().min(rect.height()) * 0.105).max(1.5))
                     .with_caps(vello::kurbo::Cap::Round)
                     .with_join(vello::kurbo::Join::Round),
                 transform,
                 theme.tokens.colors.ink_on_any(
                     &[box_color],
-                    Color::WHITE,
+                    theme.tokens.colors.intent.on_inverted,
                     crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
                 ),
                 None,
@@ -716,11 +710,32 @@ impl crate::widget::controls::ActionControls for Checkbox {
     }
 }
 
+/// The largest square centred in `rect`: a checkbox is always square,
+/// whatever rect a canvas hands its face.
+fn square_box(rect: Rect) -> Rect {
+    let side = rect.width().min(rect.height());
+    Rect::from_center_size(rect.center(), (side, side))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
+
+    #[test]
+    fn an_unchecked_box_is_square_in_any_rect() {
+        for rect in [
+            Rect::new(0.0, 0.0, 40.0, 20.0),
+            Rect::new(10.0, 10.0, 30.0, 60.0),
+            Rect::new(0.0, 0.0, 24.0, 24.0),
+        ] {
+            let square = square_box(rect);
+            assert_eq!(square.width(), square.height(), "{rect:?}");
+            assert_eq!(square.center(), rect.center());
+            assert!(rect.contains(square.origin()));
+        }
+    }
 
     #[test]
     fn checkbox_identity_face_and_scaled_label_geometry() {
@@ -739,14 +754,12 @@ mod tests {
             let face = CheckboxFace::new(rect, true)
                 .hovered(true)
                 .focused(true)
-                .disabled(true)
-                .transparent_unchecked();
+                .disabled(true);
             assert_eq!(face.rect, rect);
             assert!(face.checked);
             assert!(face.interact.hovered);
             assert!(face.interact.focused);
             assert!(face.interact.disabled);
-            assert!(!face.fill_unchecked);
         }
 
         fn visible_label_is_part_of_the_checkbox_click_target() {

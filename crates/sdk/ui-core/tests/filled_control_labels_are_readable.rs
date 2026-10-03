@@ -200,7 +200,8 @@ fn toggle_knobs_stay_visible_and_in_place() {
                         },
                     ),
                 ] {
-                    let (track, knob, _border, _w) = toggle_face_colors(&theme, on, interact);
+                    let face = toggle_face_colors(&theme, on, interact);
+                    let (track, knob) = (face.track, face.knob_outline());
                     let ratio = contrast_ratio(knob, track);
                     if ratio < NON_TEXT_MIN_CONTRAST {
                         failures.push(format!(
@@ -227,8 +228,8 @@ fn toggle_knobs_stay_visible_and_in_place() {
     {
         for theme in themes() {
             for on in [true, false] {
-                let (track, rest, _, _) = toggle_face_colors(&theme, on, ToggleInteract::default());
-                let (_, hovered, _, _) = toggle_face_colors(
+                let rest = toggle_face_colors(&theme, on, ToggleInteract::default());
+                let hovered = toggle_face_colors(
                     &theme,
                     on,
                     ToggleInteract {
@@ -236,6 +237,8 @@ fn toggle_knobs_stay_visible_and_in_place() {
                         ..Default::default()
                     },
                 );
+                let (track, rest, hovered) =
+                    (rest.track, rest.knob_outline(), hovered.knob_outline());
                 let lighter_than_track = |k: Color| {
                     contrast_ratio(k, Color::from_rgb8(255, 255, 255))
                         < contrast_ratio(track, Color::from_rgb8(255, 255, 255))
