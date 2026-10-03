@@ -16,9 +16,13 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 /// the names here makes plain text, rich text, and theme tokens agree instead
 /// of depending on each machine's fontconfig defaults.
 ///
-/// The UI face covers Latin; Greek, Cyrillic and Vietnamese fall back to
-/// Noto Sans, the first family of the common fallback list.
+/// The UI face covers Latin. Greek and Cyrillic fall back to faces matched
+/// to it, sized to its x-height (see [`crate::font_catalog`]); Vietnamese and
+/// every other script fall back to Noto.
 pub const UI_SANS_FAMILY: &str = "Instrument Sans";
+/// The built-in "Hyperlegible" UI face a theme or the accessibility layer
+/// can choose instead of [`UI_SANS_FAMILY`].
+pub const UI_HYPERLEGIBLE_FAMILY: &str = "Atkinson Hyperlegible Next";
 pub const UI_SERIF_FAMILY: &str = "Noto Serif";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.
@@ -489,6 +493,39 @@ impl OpenTypeTag {
     }
 }
 
+/// What a run of text *is*, so the toolkit can pick its OpenType features.
+///
+/// Applications never name a feature: they say what the text is (or the
+/// widget knows it) and the features are resolved against the face the text
+/// is actually set in, applying only what that face supports.
+///
+/// | Kind | Features, where the face has them |
+/// |---|---|
+/// | `Prose` | none |
+/// | `Numeric` | tabular lining figures (`tnum`, `lnum`) |
+/// | `Secret` | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
+/// | `Identifier` | distinct I and l |
+/// | `Code` | none; set in the mono face |
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextKind {
+    /// Running text. Numbers stay proportional.
+    #[default]
+    Prose,
+    /// Figures that line up in columns or change in place: times, dates,
+    /// durations, counts, prices, sizes, progress, clocks.
+    Numeric,
+    /// Characters someone copies or compares one by one: verification and
+    /// recovery codes, TOTP, API keys, hashes, revealed passwords, Wi-Fi and
+    /// licence keys.
+    Secret,
+    /// Names that must not be mistaken for another: usernames, handles,
+    /// email addresses, invite codes, room names shown for verification,
+    /// other people's file names, URLs in security-relevant places.
+    Identifier,
+    /// Source code and terminal text, in the mono face.
+    Code,
+}
+
 /// One explicit OpenType substitution/positioning setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpenTypeFeature {
@@ -656,6 +693,9 @@ pub struct TextStyle {
     /// What `size` is relative to, and so whether the renderer's
     /// accessibility text scale still applies to it.
     pub scaling: TextScaling,
+    /// What the text is; resolved to OpenType features against each face it
+    /// is set in.
+    pub kind: TextKind,
 }
 
 /// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in.
@@ -699,6 +739,7 @@ impl TextStyle {
             hanging_punctuation: HangingPunctuation::default(),
             fragmentation: Fragmentation::default(),
             scaling: TextScaling::Renderer,
+            kind: TextKind::Prose,
         }
     }
 
@@ -748,6 +789,17 @@ impl TextStyle {
     pub fn with_tracking(self, em: f32) -> Self {
         let size = self.size;
         self.with_letter_spacing(em * size)
+    }
+
+    /// Say what the text is ([`TextKind`]). `Code` also sets it in the mono
+    /// face.
+    #[must_use]
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
+        self.kind = kind;
+        if kind == TextKind::Code {
+            self.family = FontChoice::Monospace;
+        }
+        self
     }
 
     #[must_use]
@@ -967,6 +1019,7 @@ impl TextStyle {
         self.wrap_mode.hash(&mut h);
         self.hanging_punctuation.hash(&mut h);
         self.fragmentation.hash(&mut h);
+        self.kind.hash(&mut h);
         h.finish()
     }
 }
@@ -1465,6 +1518,9 @@ struct ShapeKey {
 struct GlyphRun {
     face_id: cosmic_text::fontdb::ID,
     font_weight: Weight,
+    /// The size the run was shaped at: the style's, or a matched fallback's
+    /// x-height-matched size.
+    size: f32,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
 }
@@ -1787,6 +1843,24 @@ impl TextRenderer {
         } else {
             1.0
         };
+    }
+
+    /// Set the family the generic sans-serif resolves to: the theme's UI face
+    /// ([`crate::tokens::Typography::sans_family`]). Text that names a role
+    /// already carries the family; this makes text built on the generic
+    /// family (inputs, toolkit internals) follow the same face. A family the
+    /// font system does not have is ignored.
+    pub fn set_ui_face(&mut self, family: &str) {
+        let db = self.font_system.db();
+        if db.family_name(&Family::SansSerif) == family
+            || !db
+                .faces()
+                .any(|face| face.families.iter().any(|(name, _)| name == family))
+        {
+            return;
+        }
+        self.font_system.db_mut().set_sans_serif_family(family);
+        self.bump_generation();
     }
 
     /// The effective accessibility text scale used for both measurement and
@@ -2344,7 +2418,7 @@ impl TextRenderer {
         let style = &scaled_style;
         let max_width = self.collapse_unused_max_width(text, max_width, style, true);
         let runs = self.shaped_runs(text, max_width, style);
-        self.paint_runs(scene, &runs, style.size, color, transform);
+        self.paint_runs(scene, &runs, color, transform);
     }
 
     /// How far below the origin [`Self::draw_style`], given the same
@@ -2397,28 +2471,26 @@ impl TextRenderer {
     ) -> PreparedBuffer {
         self.note_browser_explicit_family(style);
         let line_height = style.line_height_px();
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.size, line_height));
+        let metrics = Metrics::new(style.size, line_height);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
         let attrs = style.cosmic_attrs();
         let offset_map = max_width.map(|_| style.hyphenation.offset_map(text));
         let shaping_text = offset_map
             .as_ref()
             .map_or(std::borrow::Cow::Borrowed(text), |map| map.shape_text(text));
         let emoji = self.browser_font_assets.contains("Noto-COLRv1.ttf");
-        if emoji && browser_text_demands_emoji(&shaping_text) {
-            buffer.set_rich_text(
-                browser_emoji_runs(&shaping_text, &attrs, true),
-                &attrs,
-                Shaping::Advanced,
-                style.align.to_cosmic(),
-            );
-        } else {
-            buffer.set_text(
-                &shaping_text,
-                &attrs,
-                Shaping::Advanced,
-                style.align.to_cosmic(),
-            );
-        }
+        let spans = crate::font_catalog::matched::plan(
+            self.font_system.db(),
+            browser_emoji_runs(&shaping_text, &attrs, emoji),
+            metrics,
+            style.kind,
+        );
+        crate::font_catalog::matched::set_spans(
+            &mut buffer,
+            &spans,
+            &attrs,
+            style.align.to_cosmic(),
+        );
         let hyphen_width = if offset_map
             .as_ref()
             .is_some_and(OffsetMap::has_discretionary_hyphens)
@@ -2484,12 +2556,19 @@ impl TextRenderer {
         let Some(demands) = self.browser_font_demands.as_mut() else {
             return;
         };
-        if matches!(&style.family, FontChoice::Named(name) if name == UI_MATH_FAMILY)
-            && !self
-                .browser_font_assets
-                .contains("NotoSansMath-Regular.ttf")
-        {
-            demands.insert("NotoSansMath-Regular.ttf".to_owned());
+        let asset = match &style.family {
+            FontChoice::Named(name) if name == UI_MATH_FAMILY => "NotoSansMath-Regular.ttf",
+            FontChoice::Named(name) if name == UI_HYPERLEGIBLE_FAMILY => {
+                if style.italic {
+                    "AtkinsonHyperlegibleNext-Italic[wght].ttf"
+                } else {
+                    "AtkinsonHyperlegibleNext[wght].ttf"
+                }
+            }
+            _ => return,
+        };
+        if !self.browser_font_assets.contains(asset) {
+            demands.insert(asset.to_owned());
         }
     }
 
@@ -2512,20 +2591,22 @@ impl TextRenderer {
                 .glyphs
                 .last()
                 .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
-            let mut current: Option<(cosmic_text::fontdb::ID, Weight)> = None;
+            let mut current: Option<(cosmic_text::fontdb::ID, Weight, u32)> = None;
             let mut glyphs: Vec<vello::Glyph> = Vec::new();
             for g in run.glyphs {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
                 }
-                let key = (g.font_id, g.font_weight);
-                if let Some((face_id, font_weight)) = current
+                // A matched script fallback is shaped at its own size.
+                let key = (g.font_id, g.font_weight, g.font_size.to_bits());
+                if let Some((face_id, font_weight, size)) = current
                     && current != Some(key)
                     && !glyphs.is_empty()
                 {
                     runs.push(GlyphRun {
                         face_id,
                         font_weight,
+                        size: f32::from_bits(size),
                         glyphs: std::mem::take(&mut glyphs),
                         normalized_coords: self.normalized_coords(
                             face_id,
@@ -2546,12 +2627,13 @@ impl TextRenderer {
                     y,
                 });
             }
-            if let Some((face_id, font_weight)) = current
+            if let Some((face_id, font_weight, size)) = current
                 && !glyphs.is_empty()
             {
                 runs.push(GlyphRun {
                     face_id,
                     font_weight,
+                    size: f32::from_bits(size),
                     glyphs,
                     normalized_coords: self.normalized_coords(face_id, &variations, font_weight),
                 });
@@ -2562,6 +2644,7 @@ impl TextRenderer {
                 runs.push(GlyphRun {
                     face_id: hyphen.font_id,
                     font_weight: hyphen.font_weight,
+                    size: hyphen.font_size,
                     glyphs: vec![vello::Glyph {
                         id: u32::from(hyphen.glyph_id),
                         x: hyphen.x,
@@ -2652,7 +2735,6 @@ impl TextRenderer {
         &mut self,
         scene: &mut Scene,
         runs: &[GlyphRun],
-        size: f32,
         color: Color,
         transform: Affine,
     ) {
@@ -2662,7 +2744,7 @@ impl TextRenderer {
             };
             scene
                 .draw_glyphs(&font)
-                .font_size(size)
+                .font_size(run.size)
                 .normalized_coords(&run.normalized_coords)
                 .brush(color)
                 .transform(transform)

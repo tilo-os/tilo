@@ -103,7 +103,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Open the inline rename field on `id`. Returns `false` when rename is
     /// not enabled or the node is unknown.
     pub fn begin_rename(&mut self, id: NodeId) -> bool {
-        if self.on_rename.is_none() {
+        if self.on_rename.is_none() || !self.model.is_renamable(id) {
             return false;
         }
         let Some(label) = self.model.label(id) else {
