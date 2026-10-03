@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="ge-cy.loclSRB" format="2">
+  <advance width="197"/>
+  <outline>
+    <contour>
+      <point x="106" y="647" type="line"/>
+      <point x="272" y="647" type="line"/>
+      <point x="283" y="695" type="line"/>
+      <point x="117" y="695" type="line"/>
+    </contour>
+    <component base="idotless"/>
+  </outline>
+</glyph>

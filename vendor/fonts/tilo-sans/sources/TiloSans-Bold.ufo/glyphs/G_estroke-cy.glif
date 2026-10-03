@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Gestroke-cy" format="2">
+  <advance width="656"/>
+  <unicode hex="0492"/>
+  <anchor x="193" y="0" name="bottom"/>
+  <anchor x="370" y="720" name="top"/>
+  <outline>
+    <contour>
+      <point x="116" y="0" type="line"/>
+      <point x="270" y="0" type="line"/>
+      <point x="270" y="720" type="line"/>
+      <point x="116" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="188" y="602" type="line"/>
+      <point x="624" y="602" type="line"/>
+      <point x="624" y="720" type="line"/>
+      <point x="188" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="21" y="296" type="line"/>
+      <point x="540" y="296" type="line"/>
+      <point x="540" y="414" type="line"/>
+      <point x="21" y="414" type="line"/>
+    </contour>
+  </outline>
+</glyph>

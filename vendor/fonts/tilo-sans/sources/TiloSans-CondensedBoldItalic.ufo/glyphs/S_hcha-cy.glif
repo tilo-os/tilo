@@ -1,0 +1,45 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Shcha-cy" format="2">
+  <advance width="753"/>
+  <unicode hex="0429"/>
+  <anchor x="298" y="0" name="bottom"/>
+  <anchor x="464" y="720" name="top"/>
+  <outline>
+    <contour>
+      <point x="-9" y="0" type="line"/>
+      <point x="134" y="0" type="line"/>
+      <point x="300" y="720" type="line"/>
+      <point x="157" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="226" y="0" type="line"/>
+      <point x="369" y="0" type="line"/>
+      <point x="535" y="720" type="line"/>
+      <point x="392" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="461" y="0" type="line"/>
+      <point x="604" y="0" type="line"/>
+      <point x="771" y="720" type="line"/>
+      <point x="627" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="62" y="0" type="line"/>
+      <point x="533" y="0" type="line"/>
+      <point x="558" y="110" type="line"/>
+      <point x="88" y="110" type="line"/>
+    </contour>
+    <contour>
+      <point x="533" y="0" type="line"/>
+      <point x="676" y="0" type="line"/>
+      <point x="701" y="110" type="line"/>
+      <point x="558" y="110" type="line"/>
+    </contour>
+    <contour>
+      <point x="507" y="-160" type="line"/>
+      <point x="639" y="-160" type="line"/>
+      <point x="701" y="110" type="line"/>
+      <point x="570" y="110" type="line"/>
+    </contour>
+  </outline>
+</glyph>

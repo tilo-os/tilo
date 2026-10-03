@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="te-cy.loclSRB" format="2">
+  <advance width="676"/>
+  <outline>
+    <contour>
+      <point x="155" y="647" type="line"/>
+      <point x="706" y="647" type="line"/>
+      <point x="717" y="695" type="line"/>
+      <point x="166" y="695" type="line"/>
+    </contour>
+    <component base="m"/>
+  </outline>
+</glyph>

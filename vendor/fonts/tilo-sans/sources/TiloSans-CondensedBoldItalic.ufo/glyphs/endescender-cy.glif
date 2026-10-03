@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="endescender-cy" format="2">
+  <advance width="508"/>
+  <unicode hex="04A3"/>
+  <anchor x="174" y="0" name="bottom"/>
+  <anchor x="292" y="510" name="top"/>
+  <outline>
+    <contour>
+      <point x="-15" y="0" type="line"/>
+      <point x="124" y="0" type="line"/>
+      <point x="242" y="510" type="line"/>
+      <point x="103" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="224" y="0" type="line"/>
+      <point x="363" y="0" type="line"/>
+      <point x="481" y="510" type="line"/>
+      <point x="342" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="103" y="208" type="line"/>
+      <point x="342" y="208" type="line"/>
+      <point x="367" y="316" type="line"/>
+      <point x="128" y="316" type="line"/>
+    </contour>
+    <contour>
+      <point x="294" y="0" type="line"/>
+      <point x="433" y="0" type="line"/>
+      <point x="457" y="108" type="line"/>
+      <point x="319" y="108" type="line"/>
+    </contour>
+    <contour>
+      <point x="268" y="-160" type="line"/>
+      <point x="396" y="-160" type="line"/>
+      <point x="457" y="108" type="line"/>
+      <point x="330" y="108" type="line"/>
+    </contour>
+  </outline>
+</glyph>

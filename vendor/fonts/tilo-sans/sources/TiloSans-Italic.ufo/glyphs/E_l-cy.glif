@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="El-cy" format="2">
+  <advance width="701"/>
+  <unicode hex="041B"/>
+  <anchor x="271" y="0" name="bottom"/>
+  <anchor x="437" y="720" name="top"/>
+  <outline>
+    <contour>
+      <point x="-16" y="0" type="line"/>
+      <point x="66" y="0" type="line"/>
+      <point x="394" y="720" type="line"/>
+      <point x="313" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="337" y="648" type="line"/>
+      <point x="666" y="648" type="line"/>
+      <point x="682" y="720" type="line"/>
+      <point x="354" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="475" y="0" type="line"/>
+      <point x="558" y="0" type="line"/>
+      <point x="724" y="720" type="line"/>
+      <point x="641" y="720" type="line"/>
+    </contour>
+  </outline>
+</glyph>
