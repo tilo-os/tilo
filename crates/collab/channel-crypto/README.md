@@ -128,8 +128,12 @@ chain with no forks to reconcile.
   admitted again. `outbox()` lists, for each device with an unacknowledged
   delivery, the frames after the last one it acknowledged, and
   `acknowledge` applies a device's cumulative acknowledgement. Each change
-  stages the commit, writes the group, appends the frame, then merges; a
-  crash at any point is finished or rolled back on the next open.
+  stages the commit, writes the group, signs the frame, writes the ledger,
+  appends the frame, then merges; a crash at any point is finished or rolled
+  back on the next open. Its records live in a [`StewardStore`]: files on a
+  native device (`FileStewardStore`), or memory a browser exports to
+  `IndexedDB` (`MemoryStewardStore`). It signs through a [`StewardSigner`],
+  which may answer later, as a browser's `WebCrypto` key does.
 - [`ChannelMember`] is every other device's view. It starts `Waiting` and
   signs `MlsAccessRequestV1`s that carry fresh key packages. Its MLS
   credential is the device's certified key, and the steward refuses a
