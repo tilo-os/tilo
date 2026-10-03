@@ -2318,13 +2318,25 @@ impl WorkspaceTree {
     /// batched on shutdown — a compositor that's killed must not forget
     /// which permissions the user granted.
     pub fn flush_to_disk(&self) {
+        let started = std::time::Instant::now();
         if let Some(path) = &self.persist_path
             && let Err(e) = crate::shell::persist::save_tree_to(self, path)
         {
             tracing::warn!("capability persistence failed: {e}");
             return;
         }
+        let saved = started.elapsed();
         self.export_fs_capabilities();
+        let total = started.elapsed();
+        if total > std::time::Duration::from_millis(10) {
+            tracing::warn!(
+                target: "tilo::latency",
+                total_ms = total.as_secs_f64() * 1_000.0,
+                save_ms = saved.as_secs_f64() * 1_000.0,
+                fs_acl_ms = total.saturating_sub(saved).as_secs_f64() * 1_000.0,
+                "workspace tree persistence was slow"
+            );
+        }
     }
 
     /// Turn the room's signed membership authority into the exact numeric

@@ -57,6 +57,15 @@ pub enum InputEvent {
         surface: SurfaceIdWire,
         focused: bool,
     },
+    /// The wheel or a trackpad scrolled by `(dx, dy)` surface pixels, at
+    /// the peer's last pointer position.
+    PointerAxis { dx: f64, dy: f64 },
+    /// The peer pasted `text`: the session offers it as the clipboard, so
+    /// the window's own paste (a key chord that follows) reads it.
+    ClipboardText { text: String },
+    /// The peer closed its view of the window: the window is asked to
+    /// close, as a person's close of its tab does.
+    Close,
 }
 
 /// Wire-side surface id, duplicated to keep `InputEvent` free of a cross-module dependency; equal to [`crate::network::protocol::SurfaceId`].

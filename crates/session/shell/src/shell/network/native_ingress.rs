@@ -165,6 +165,36 @@ impl ShellNetwork {
         envelope.encryption.is_some()
             && RoomId::parse(cluster_id).is_some_and(|room| self.native_room_seals_records(room))
     }
+    /// The identity the governance of the enrolled room on topic `ws`
+    /// admitted for `device`, a member's device the room's relay
+    /// authenticated: a browser of the room announces no identity of its
+    /// own to this device.
+    pub(super) fn governed_identity(
+        &self,
+        ws: u64,
+        device: iroh::EndpointId,
+    ) -> Option<crate::network::identity::PeerIdentity> {
+        let room = self.room_for_topic(ws)?;
+        let owner = self.native_owner().ok()?;
+        owner
+            .with_current(room, |view| {
+                let now = SystemTime::now();
+                let cert = view
+                    .peer()
+                    .certificates()
+                    .into_iter()
+                    .find(|cert| cert.device_public_key == *device.as_bytes())
+                    .ok_or("not a member device")?;
+                view.peer().permissions(cert.device_public_key, now)?;
+                Ok(crate::network::identity::PeerIdentity {
+                    device_pubkey: cert.device_public_key,
+                    user_pubkey: cert.user_public_key,
+                    capabilities: cert.capabilities.clone(),
+                    device_cert: cert,
+                })
+            })
+            .ok()
+    }
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {

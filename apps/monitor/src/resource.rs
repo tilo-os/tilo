@@ -230,6 +230,7 @@ impl ResourceSurface<Monitor> for MonitorApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Monitor>) {
+        self.follow_preferences(cx.settings());
         self.attach_framework(cx.dispatcher());
     }
 }
@@ -310,7 +311,87 @@ pub fn provide_resources(state: &MonitorState) -> Vec<PublishedResource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefs::MonitorPreferences;
     use ui::widget::Widget;
+
+    /// The accessibility node named `name`, depth first.
+    fn announced(node: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
+        if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
+            return Some(node.clone());
+        }
+        match node {
+            serde_json::Value::Object(fields) => {
+                fields.values().find_map(|child| announced(child, name))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|child| announced(child, name))
+            }
+            _ => None,
+        }
+    }
+
+    fn interval_node(app: &mut ui::framework::testing::TestApp<MonitorShell>) -> serde_json::Value {
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        announced(&inspection, "Refresh interval").expect("the refresh interval is announced")
+    }
+
+    /// The interval the window shows, as a screen reader hears it.
+    fn shown_interval(app: &mut ui::framework::testing::TestApp<MonitorShell>) -> String {
+        interval_node(app)["value"].as_str().unwrap().to_owned()
+    }
+
+    /// Click the interval control where a person sees it.
+    fn click_interval(app: &mut ui::framework::testing::TestApp<MonitorShell>) {
+        let bounds = &interval_node(app)["bounds"];
+        let coordinate = |low: &str, high: &str| {
+            f64::midpoint(
+                bounds[low].as_f64().unwrap(),
+                bounds[high].as_f64().unwrap(),
+            )
+        };
+        let (x, y) = (coordinate("x0", "x1"), coordinate("y0", "y1"));
+        app.harness().click_at(x, y);
+    }
+
+    #[test]
+    fn preferences_follow_the_person_and_stay_out_of_the_document() {
+        let mut app = ui::framework::testing::TestApp::<MonitorShell>::new().unwrap();
+        assert_eq!(shown_interval(&mut app), "1.5s");
+
+        // Another of the person's devices changed them.
+        app.settings::<MonitorPreferences>()
+            .set(&MonitorPreferences {
+                interval_ms: 3000,
+                show_kernel_threads: true,
+                confirm_kill: false,
+            })
+            .unwrap();
+        app.harness().relayout();
+        assert_eq!(shown_interval(&mut app), "3s");
+
+        // A click here cycles the cadence and stores it for every device.
+        let versions = app.versions().len();
+        click_interval(&mut app);
+        app.harness().relayout();
+        assert_eq!(shown_interval(&mut app), "5s");
+        assert_eq!(
+            app.settings::<MonitorPreferences>().get(),
+            MonitorPreferences {
+                interval_ms: 5000,
+                show_kernel_threads: true,
+                confirm_kill: false,
+            }
+        );
+        assert_eq!(
+            app.versions().len(),
+            versions,
+            "preferences are not document history"
+        );
+
+        let mut app = app.reopen().unwrap();
+        assert_eq!(shown_interval(&mut app), "5s");
+    }
 
     #[allow(
         clippy::too_many_lines,

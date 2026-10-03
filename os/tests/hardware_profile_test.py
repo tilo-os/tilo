@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/prepare-hardware-profile.py"
 sys.path.insert(0, str(SCRIPT.parent))
+import hardware_profile  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("prepare_hardware_profile", SCRIPT)
 prepare = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prepare)
@@ -392,10 +394,31 @@ class HardwareProfileTest(unittest.TestCase):
             "# Hardware-profile firmware and boot modules needed before the root is mounted.",
             'add_drivers+=" sdhci-of-dwcmshc "',
         ])
+        self.assertFalse((self.root / prepare.KARGS_PATH).exists())
         module.unlink()
         with self.assertRaisesRegex(ValueError, "not built in or installed"):
             prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
                                     target_update_ref=TARGET_REF)
+
+
+    def test_kernel_args_reach_the_sealed_command_line(self):
+        definitions, data = self.definition()
+        data["schema_version"] = 2
+        data["system_firmware"] = []
+        data["kernel_args"] = ["earlycon", "console=ttyS2,1500000n8"]
+        (definitions / "other-board.json").write_text(json.dumps(data))
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                target_update_ref=TARGET_REF)
+        kargs = self.root / prepare.KARGS_PATH
+        self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], data["kernel_args"])
+        self.assertEqual(stat.S_IMODE(kargs.stat().st_mode), 0o644)
+        # bootc reads kargs.d in name order; the board's console must come last.
+        self.assertGreater(kargs.name, "05-credentials.toml")
+        for bad in (["console=ttyS2 quiet"], ['console="ttyS2"'], ["earlycon", "earlycon"], [""], "earlycon"):
+            with self.subTest(kernel_args=bad):
+                data["kernel_args"] = bad
+                with self.assertRaisesRegex(ValueError, "kernel argument"):
+                    hardware_profile.validate_definition(data)
 
 
 class OrangePiWifiFirmwareTest(unittest.TestCase):

@@ -1589,6 +1589,37 @@ is the typed accessor that `docs/architecture/distribution.md` §6 calls for
 How the existing `settings-store` desktop file and the Profile layers fold in
 is Q12.
 
+**What exists today.** `ui::storage::Settings<T>` is that accessor over the
+desktop settings document. A `SettingsSchema` type declares its `Scope`:
+
+- `Personal` lives in the `app_personal` section under the app id. The
+  continuity registry (`settings_store::continuity`) classifies that entry as
+  personal, so the device fabric carries the whole app object to the person's
+  other devices (most recent write wins, at most 64 KiB serialized).
+- `DeviceLocal` lives in `app_device_local` under the app id and never
+  leaves the device.
+- `Shared(name)` reads and writes a per-user section another owner declares
+  (`locale`, `text_assistance`); each of its keys keeps the scope the registry
+  reviewed for it.
+
+Framework views and surfaces get settings from their context
+(`cx.settings::<T>()`), kept current when another window or device writes
+them, and the app's files and secrets from the same place. A secret that
+belongs to a document item (a profile's password, a connection's passphrase)
+is `SecretStore::item(purpose, id)`: the document names the item, the secret
+stays in the device's store. PersonInRoom has no implementation yet.
+
+**Making the settings record the source (Q12, decided, not yet built).**
+Every reader — the compositor, the shell, apps — already reads one document
+through `settings_store::load`, which a host can back with a
+`SettingsSource`. The Settings app's resource becomes the source of truth by
+the shell installing a source that projects the person's settings record
+(personal leaves) over the device's local record (device-local leaves);
+`settings.json` is then a projection the shell writes for processes that
+start before it (the compositor at boot), never edited as the truth. Readers
+do not change; the fabric's settings channel is replaced by the record's own
+sync. Until then `settings.json` remains the stored document.
+
 ### 13.7 Foreign apps
 
 Flatpaks, legacy binaries and Wine keep a private per-`(room, package)`
