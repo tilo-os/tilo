@@ -218,8 +218,8 @@ impl Topbar {
         }
         let (previous_name, next_name) = match view {
             View::Month => ("Previous month", "Next month"),
-            View::Week => ("Previous week", "Next week"),
-            View::Day | View::Agenda => ("Previous day", "Next day"),
+            View::Week | View::Agenda => ("Previous week", "Next week"),
+            View::Day => ("Previous day", "Next day"),
         };
         for (rect, icon, name, action) in [
             (
