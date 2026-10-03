@@ -87,12 +87,13 @@ impl StatusModel {
         }
     }
 
-    /// The bubble's label: the save state, then how long the open note is.
+    /// The bubble's label: the save state and, once the note is saved, how
+    /// long it is. A save that is running or has failed says only that.
     pub fn bubble_text(&self) -> String {
-        match self.state.word_count {
-            Some(1) => format!("{}, 1 word", self.save_text()),
-            Some(words) => format!("{}, {words} words", self.save_text()),
-            None => self.save_text().to_string(),
+        match (self.state.save_status, self.state.word_count) {
+            (SaveStatus::Saved, Some(1)) => format!("{}, 1 word", self.save_text()),
+            (SaveStatus::Saved, Some(words)) => format!("{}, {words} words", self.save_text()),
+            _ => self.save_text().to_string(),
         }
     }
 }

@@ -101,7 +101,11 @@ impl Metrics {
             related: f64::from(spacing.rhythm.related),
             sibling: f64::from(spacing.rhythm.sibling),
             body_gap: f64::from(spacing.s4),
-            title: line(TextRole::LargeTitle) + 2.0 * f64::from(spacing.s2),
+            // The title label centres a line box measured at 1x, so at a larger
+            // text scale its glyphs hang below the centre by the growth; the
+            // band holds the glyphs and that offset.
+            title: line(TextRole::LargeTitle) * (2.0 - 1.0 / f64::from(theme.text_scale.max(1.0)))
+                + 2.0 * f64::from(spacing.s2),
             caption: line(TextRole::Caption),
             group_title: line(TextRole::Subheading),
             chip: ChipFace::height(theme),
