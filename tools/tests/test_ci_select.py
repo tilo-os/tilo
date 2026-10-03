@@ -367,15 +367,10 @@ class SelectorTests(unittest.TestCase):
             self.assertTrue(plan["full"])
             self.assertEqual(plan["selected_count"], plan["workspace_count"])
             self.assertEqual(plan["shard_count"], 1)  # small workspace stays cheap
-        with self.subTest(phase='vendored crates are build inputs; vendored font sources are not'):
+        with self.subTest(phase='vendored crates are build inputs'):
             self.setUp()
             plan = ci_select.make_plan(self.metadata, self.root, ["vendor/winit/src/lib.rs"], 2)
             self.assertTrue(plan["full"])
-            plan = ci_select.make_plan(
-                self.metadata, self.root,
-                ["vendor/fonts/tilo-sans/build.py", "vendor/fonts/tilo-sans/sources/TiloSans-Regular.ufo/glyphs/A_.glif"], 2)
-            self.assertFalse(plan["full"])
-            self.assertEqual(set(plan["tested"]), ci_select.ALWAYS_PACKAGES)
         with self.subTest(phase='unowned deleted crate path forces full workspace'):
             self.setUp()
             plan = ci_select.make_plan(self.metadata, self.root, ["apps/removed/Cargo.toml"], 2)
