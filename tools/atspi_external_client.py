@@ -254,6 +254,40 @@ def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False
     )
 
 
+def app_process(pid: int) -> int:
+    """The app behind an AT-SPI connection. A sandboxed app reaches the bus
+    through the launcher's filtered proxy, so the bus reports the proxy's pid;
+    the app is the launcher's descendant that is neither a proxy nor bwrap."""
+    def comm(process: int) -> str:
+        try:
+            return Path(f"/proc/{process}/comm").read_text().strip()
+        except OSError:
+            return ""
+
+    if comm(pid) != "xdg-dbus-proxy":
+        return pid
+    try:
+        launcher = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return pid
+    children: dict[int, list[int]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            parent = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(parent, []).append(int(entry.name))
+    pending = list(children.get(launcher, []))
+    while pending:
+        process = pending.pop(0)
+        if comm(process) not in ("xdg-dbus-proxy", "bwrap"):
+            return process
+        pending.extend(children.get(process, []))
+    return pid
+
+
 def is_app_connection(client: AtspiClient) -> bool:
     """Whether a connection that appeared after the launch is an application:
     it exports an application node. Clients such as gdbus or busctl do not.
@@ -307,7 +341,7 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
                 if bus in before:
                     continue
                 if is_app_connection(AtspiClient(address, bus)):
-                    return bus, pid
+                    return bus, app_process(pid)
             time.sleep(POLL_SECONDS * 4)
         break
     seen = []
