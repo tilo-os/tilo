@@ -53,7 +53,9 @@ use ui::presence::PresenceCtx;
 use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, FindBar, SidebarDrawer, SplitLayout, TabBar, TabDescriptor, Widget};
+use ui::widget::{
+    Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, TabBar, TabDescriptor, Widget,
+};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -422,8 +424,8 @@ pub struct CodeApp {
     /// strip's leading edge), and whether the pointer is over it.
     toggle_rect: Rect,
     toggle_hovered: bool,
-    /// The "Open folder" button of the sidebar's no-project state, when shown.
-    sidebar_empty_action: Rect,
+    /// The sidebar's no-project state, with its one "Open folder" action.
+    sidebar_empty: EmptyState,
     /// The header row's height and the width the tab strip gives up to the
     /// sidebar toggle, from the theme at layout time.
     header_h: f64,
@@ -540,10 +542,10 @@ pub struct CodeApp {
     conflict: Option<Conflict>,
     /// A tab close waiting on the user's "save your changes?" answer.
     close_prompt: Option<ClosePrompt>,
-    /// Which dialog action the pointer is over, and the action rects the last
-    /// dialog layout produced, for hover and hit-testing.
+    /// Which dialog action the pointer is over, and the last dialog layout,
+    /// which resolves where a pointer landed.
     dialog_hover: Option<usize>,
-    dialog_actions: Vec<Rect>,
+    dialog_layout: Option<ui::widget::modal_dialog::ModalLayout>,
 
     /// A transient message about the last file operation (saved, failed,
     /// reloaded). Shown in the status bar; cleared by the next action.
@@ -830,7 +832,9 @@ impl CodeApp {
             last_width: f64::MAX,
             toggle_rect: Rect::ZERO,
             toggle_hovered: false,
-            sidebar_empty_action: Rect::ZERO,
+            sidebar_empty: EmptyState::new("No folder open")
+                .with_icon(ui::icons::Icon::FolderOpen)
+                .with_action("Open folder"),
             header_h: 0.0,
             toggle_slot_w: 0.0,
             last_cursor: Point::ZERO,
@@ -884,7 +888,7 @@ impl CodeApp {
             conflict: None,
             close_prompt: None,
             dialog_hover: None,
-            dialog_actions: Vec::new(),
+            dialog_layout: None,
             notice: None,
             pending_jump: None,
         }
@@ -2126,6 +2130,13 @@ impl CodeApp {
         if self.panel.take_tab_changed() && self.panel.active_tab() == PanelTab::Terminal {
             self.ensure_terminal();
         }
+        // Choosing a problem takes the caret to where it was reported.
+        if let Some((line, col)) = self.panel.take_jump()
+            && self.editor.is_bound()
+        {
+            self.editor
+                .move_caret_to(line.saturating_sub(1), col.saturating_sub(1));
+        }
     }
 
     /// Move the caret to a 1-based line number (the go-to-line target). Clamped
@@ -2225,13 +2236,20 @@ impl CodeApp {
     }
 
     /// Stage the "save changes before closing?" prompt for the active buffer.
+    ///
+    /// The prompt only appears for a buffer with unsaved edits, so the file's
+    /// saved text is staged one line shorter than the buffer.
     pub fn shots_close_prompt(&mut self) {
-        if let Some(buf) = self.session.active_buffer() {
-            self.close_prompt = Some(ClosePrompt {
-                node: buf.node,
-                name: buf.name.clone(),
-            });
-        }
+        let Some(buf) = self.session.active_buffer_mut() else {
+            return;
+        };
+        let kept = buf.saved_text.trim_end().rfind('\n').map_or(0, |i| i + 1);
+        buf.saved_text.truncate(kept);
+        buf.dirty = true;
+        self.close_prompt = Some(ClosePrompt {
+            node: buf.node,
+            name: buf.name.clone(),
+        });
     }
 
     /// Stage a populated status bar for a screenshot: a live multi-word
@@ -2306,15 +2324,15 @@ impl CodeApp {
                 "range": { "start": {"line": l, "character": c0}, "end": {"line": l, "character": c1} },
                 "severity": 2,
                 "source": "clippy",
-                "message": "manual `unwrap_or` — consider `unwrap_or_default()`"
+                "message": "Magic number 20, name it with a constant"
             }));
         }
-        if let Some((l, c0, c1)) = find_char_span(&text, "parse_limit") {
+        if let Some((l, c0, c1)) = find_char_span(&text, "&args") {
             diag_json.push(serde_json::json!({
                 "range": { "start": {"line": l, "character": c0}, "end": {"line": l, "character": c1} },
                 "severity": 1,
                 "source": "rustc",
-                "message": "cannot find function `parse_limitt` in this scope"
+                "message": "Expected `&[String]`, found `&Vec<String>`"
             }));
         }
         let notif = serde_json::json!({
@@ -2568,6 +2586,15 @@ impl CodeApp {
         editor_col
     }
 
+    /// What the sidebar column holds: the explorer, or the no-project state.
+    fn sidebar_child(&self) -> &dyn Widget {
+        if self.has_project() {
+            &self.sidebar
+        } else {
+            &self.sidebar_empty
+        }
+    }
+
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
@@ -2619,14 +2646,6 @@ impl CodeApp {
             }
             // A click on the scrim (outside the open drawer) dismisses it.
             if overlay && self.drawer.press_dismisses(self.last_cursor) {
-                *handled = true;
-                return true;
-            }
-            // The sidebar's no-project state offers to open one.
-            if self.sidebar_empty_action.width() > 0.0
-                && self.sidebar_empty_action.contains(self.last_cursor)
-            {
-                self.request_open_folder();
                 *handled = true;
                 return true;
             }
@@ -2802,8 +2821,17 @@ impl CodeApp {
         if self.sidebar_visible()
             && let Some(n) = self.sidebar_node
         {
-            self.sidebar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if self.has_project() {
+                self.sidebar
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            } else {
+                // The no-project state offers to open one.
+                self.sidebar_empty
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+                if self.sidebar_empty.take_action() {
+                    self.request_open_folder();
+                }
+            }
         }
 
         // While the drawer is open, it captures pointer presses over its area
@@ -3523,7 +3551,7 @@ impl Widget for CodeApp {
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = vec![
-            &self.sidebar,
+            self.sidebar_child(),
             &self.tabs,
             &self.search_button,
             &self.panel_toggle,
@@ -3539,8 +3567,13 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let has_project = self.has_project();
         let mut out: Vec<&mut (dyn Widget + '_)> = vec![
-            &mut self.sidebar,
+            if has_project {
+                &mut self.sidebar
+            } else {
+                &mut self.sidebar_empty
+            },
             &mut self.tabs,
             &mut self.search_button,
             &mut self.panel_toggle,

@@ -10,7 +10,7 @@
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::modal_dialog;
+use ui::widget::modal_dialog::{self, ModalHit};
 use ui::widget::{ModalAction, ModalSpec};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -86,7 +86,7 @@ impl CodeApp {
         theme: &Theme,
         window: Rect,
     ) {
-        self.dialog_actions.clear();
+        self.dialog_layout = None;
         let Some(question) = self.question() else {
             return;
         };
@@ -121,7 +121,7 @@ impl CodeApp {
             &body_style,
         );
         modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
-        self.dialog_actions = layout.actions;
+        self.dialog_layout = Some(layout);
     }
 
     /// Resolve the open question from a keypress or a click on one of its
@@ -136,18 +136,14 @@ impl CodeApp {
     ) {
         match event {
             WindowEvent::CursorMoved { .. } => {
-                let over = self
-                    .dialog_actions
-                    .iter()
-                    .position(|rect| rect.area() > 0.0 && rect.contains(self.last_cursor));
-                self.dialog_hover = over;
+                self.dialog_hover = self.dialog_action_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(index) = self.dialog_hover_at(self.last_cursor) {
+                if let Some(index) = self.dialog_action_at(self.last_cursor) {
                     self.answer(question, index, doc);
                 }
             }
@@ -160,10 +156,12 @@ impl CodeApp {
         *handled = true;
     }
 
-    fn dialog_hover_at(&self, point: Point) -> Option<usize> {
-        self.dialog_actions
-            .iter()
-            .position(|rect| rect.area() > 0.0 && rect.contains(point))
+    /// The action under `point`, as the sheet's own layout resolves it.
+    fn dialog_action_at(&self, point: Point) -> Option<usize> {
+        match self.dialog_layout.as_ref()?.hit(point)? {
+            ModalHit::Action(index) => Some(index),
+            _ => None,
+        }
     }
 
     /// The action a keypress stands for: Escape cancels, Enter takes the

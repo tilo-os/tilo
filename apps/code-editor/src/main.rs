@@ -53,6 +53,10 @@ const SCENARIOS: &[&str] = &[
     "status",
 ];
 
+/// What the `terminal` scenario types into the live shell: a test run, as a
+/// person working in this project would have it on screen.
+const TERMINAL_SESSION: &str = "printf 'running 1 test\\ntest prime::tests::primes_below_twenty ... ok\\n\\ntest result: ok. 1 passed; 0 failed\\n'\n";
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -211,13 +215,17 @@ fn stage_scenario(app: &mut code_editor::CodeApp, scenario: Option<&str>, frame:
             // One draw settles the terminal's cell metrics + placement, then we
             // drive the real shell and pump `sync` to collect its output.
             let _ = frame.draw(app);
-            app.shots_terminal_input(terminal::demo_session_input());
+            app.shots_terminal_input(TERMINAL_SESSION);
             for _ in 0..24 {
                 frame.sync(app);
                 std::thread::sleep(std::time::Duration::from_millis(60));
             }
         }
-        Some("selection") => app.shots_select_words(),
+        Some("selection") => {
+            app.shots_select_words();
+            // The status bar reads the caret during `sync`.
+            frame.sync(app);
+        }
         Some("completion") => {
             app.shots_completion_demo(&frame.state.doc);
             frame.sync(app);
@@ -234,7 +242,12 @@ fn stage_scenario(app: &mut code_editor::CodeApp, scenario: Option<&str>, frame:
             frame.sync(app);
         }
         Some("conflict") => app.shots_conflict(),
-        Some("close-prompt") => app.shots_close_prompt(),
+        Some("close-prompt") => {
+            app.shots_close_prompt();
+            // The tab's modified mark and the status bar's unsaved note come
+            // from `sync`.
+            frame.sync(app);
+        }
         Some("status") => {
             app.shots_status();
             frame.sync(app);
