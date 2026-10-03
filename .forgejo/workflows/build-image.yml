@@ -2156,6 +2156,12 @@ jobs:
             --profile lenovo-83ed --architecture aarch64 --repo "$GITHUB_WORKSPACE" > /dev/null
           sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
 
+      # The Orange Pi's Wi-Fi firmware is public and pinned in
+      # os/external-assets/github-assets.tsv; staged the same way locally.
+      - name: Stage the Orange Pi Wi-Fi firmware for the board image
+        if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success' && matrix.arch == 'aarch64' && contains(needs.plan.outputs.boards, 'orangepi-3b-v2-1')
+        run: ./os/dev/fetch-orangepi-wifi-firmware.sh
+
       - name: Build and publish the dev image
         id: dev-publish
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'

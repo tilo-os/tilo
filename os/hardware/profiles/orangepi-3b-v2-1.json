@@ -4,9 +4,14 @@
   "architecture": "aarch64",
   "devicetree": "rockchip/rk3566-orangepi-3b-v2.1.dtb",
   "system_firmware": [],
+  "always_on": true,
   "boot_modules": [
     "sdhci-of-dwcmshc",
     "mmc_block",
+    "mmc_core",
+    "cfg80211",
+    "brcmutil",
+    "brcmfmac",
     "pwrseq_simple",
     "rk8xx-core",
     "rk8xx-i2c",
@@ -14,7 +19,18 @@
     "clk-rk808",
     "io-domain",
     "pinctrl-rockchip",
-    "gpio-rockchip"
+    "gpio-rockchip",
+    "rockchipdrm",
+    "dw-hdmi",
+    "phy-rockchip-inno-hdmi",
+    "display-connector"
   ],
-  "firmware": {}
+  "firmware": {
+    "brcmfmac43456-sdio.bin": "brcm/brcmfmac43456-sdio.bin",
+    "brcmfmac43456-sdio.clm_blob": "brcm/brcmfmac43456-sdio.clm_blob",
+    "brcmfmac43456-sdio.txt": "brcm/brcmfmac43456-sdio.txt",
+    "brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.bin": "brcm/brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.bin",
+    "brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.clm_blob": "brcm/brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.clm_blob",
+    "brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.txt": "brcm/brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.txt"
+  }
 }

@@ -398,5 +398,72 @@ class HardwareProfileTest(unittest.TestCase):
                                     target_update_ref=TARGET_REF)
 
 
+class OrangePiWifiFirmwareTest(unittest.TestCase):
+    """The Orange Pi profile carries its Wi-Fi driver and NVRAM into the
+    initramfs, under the board-specific names brcmfmac asks for first, and
+    installs that NVRAM without Broadcom's shared sample MAC."""
+
+    PROFILE = "orangepi-3b-v2-1"
+    BOARD = "xunlong,orangepi-3b-v2.1"
+
+    def test_wifi_firmware_reaches_the_initramfs_without_the_sample_mac(self):
+        profiles = Path(__file__).resolve().parents[1] / "hardware/profiles"
+        definition = json.loads((profiles / f"{self.PROFILE}.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            root, firmware = work / "root", work / "firmware"
+            firmware.mkdir()
+            kver = "6.17.1-tilo.aarch64"
+            kernel = root / f"usr/lib/modules/{kver}"
+            (kernel / "dtb/rockchip").mkdir(parents=True)
+            (kernel / "dtb" / definition["devicetree"]).write_bytes(
+                struct.pack(">II", 0xD00DFEED, 40) + bytes(32))
+            (kernel / "config").write_text("CONFIG_ARM64=y\n", encoding="utf-8")
+            for module in definition["boot_modules"]:
+                (kernel / "kernel").mkdir(exist_ok=True)
+                (kernel / "kernel" / f"{module}.ko.zst").write_bytes(b"module")
+            nvram = b"#AP6256_NVRAM\nboardtype=0x6e4\nmacaddr=00:90:4c:c5:12:38\r\nccode=XZ\n"
+            for name in definition["firmware"]:
+                payload = nvram if name.endswith(".txt") else f"blob {name}".encode()
+                (firmware / name).write_bytes(payload)
+            (firmware / "manifest.json").write_text(json.dumps({
+                "schema_version": 1,
+                "profile": self.PROFILE,
+                "files": {name: hashlib.sha256((firmware / name).read_bytes()).hexdigest()
+                          for name in definition["firmware"]},
+            }), encoding="utf-8")
+            with patch.object(prepare.platform, "machine", return_value="aarch64"), \
+                    patch.object(prepare.os, "geteuid", return_value=0), \
+                    patch.object(prepare.os, "chown"):
+                prepare.prepare_profile(self.PROFILE, root, kver, firmware, profiles,
+                                        target_update_ref=TARGET_REF)
+            dracut = (root / "etc/dracut.conf.d/41-tilo-hardware.conf").read_text(encoding="utf-8")
+            installed = root / "usr/lib/firmware/brcm"
+            for suffix in ("bin", "clm_blob", "txt"):
+                for name in (f"brcmfmac43456-sdio.{suffix}", f"brcmfmac43456-sdio.{self.BOARD}.{suffix}"):
+                    self.assertEqual(definition["firmware"][name], f"brcm/{name}")
+                    self.assertIn(f"/usr/lib/firmware/brcm/{name}", dracut)
+                    expected = (firmware / name).read_bytes()
+                    if suffix == "txt":
+                        expected = b"#AP6256_NVRAM\nboardtype=0x6e4\nccode=XZ\n"
+                    self.assertEqual((installed / name).read_bytes(), expected)
+        drivers = next(line for line in dracut.splitlines() if line.startswith("add_drivers"))
+        for module in ("mmc_core", "cfg80211", "brcmutil", "brcmfmac", "rockchipdrm", "dw-hdmi"):
+            self.assertIn(f" {module} ", drivers)
+
+    def test_fetch_script_stages_every_profile_firmware_name(self):
+        definition = json.loads((Path(__file__).resolve().parents[1]
+                                 / f"hardware/profiles/{self.PROFILE}.json").read_text(encoding="utf-8"))
+        fetch = (Path(__file__).resolve().parents[1] / "dev/fetch-orangepi-wifi-firmware.sh").read_text(
+            encoding="utf-8")
+        assets = (Path(__file__).resolve().parents[1] / "external-assets/github-assets.tsv").read_text(
+            encoding="utf-8")
+        self.assertIn(f"board={self.BOARD}", fetch)
+        for name in definition["firmware"]:
+            if self.BOARD not in name:
+                generic_asset = fetch.split(f"[{name}]=", 1)[1].split()[0]
+                self.assertIn(f"\t{generic_asset}\t", assets)
+
+
 if __name__ == "__main__":
     unittest.main()
