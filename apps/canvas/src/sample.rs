@@ -23,6 +23,7 @@ fn stroke(points: &[[f64; 3]], size: f64, colour: &str, wet: bool) -> NewStroke 
         opacity: None,
         wet: Some(wet),
         params: None,
+        ..NewStroke::default()
     }
 }
 
@@ -205,4 +206,115 @@ pub fn landscape() -> Vec<CanvasAction> {
         ],
     }));
     art
+}
+
+/// A small vector composition on one plain layer: shapes, a turned card, a
+/// grouped flower, a curved leaf and a label, for screenshots of the
+/// selection and path tools.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one composition's actions, read top to bottom"
+)]
+pub fn shapes() -> Vec<CanvasAction> {
+    use ui::vello::kurbo::{Affine, Point};
+    let turned = |degrees: f64, about: (f64, f64)| {
+        Some(Affine::rotate_about(degrees.to_radians(), Point::new(about.0, about.1)).as_coeffs())
+    };
+    let mut marks = vec![
+        NewMark {
+            stroke: Some("#2a1d14".into()),
+            stroke_width: Some(3.0),
+            ..mark(
+                "card",
+                Shape::Rect {
+                    x: 120.0,
+                    y: 140.0,
+                    width: 300.0,
+                    height: 200.0,
+                    radius: 24.0,
+                },
+                "#e9d8b4",
+            )
+        },
+        NewMark {
+            transform: turned(-12.0, (300.0, 620.0)),
+            ..mark(
+                "tilted",
+                Shape::Rect {
+                    x: 180.0,
+                    y: 540.0,
+                    width: 240.0,
+                    height: 160.0,
+                    radius: 0.0,
+                },
+                "#3d6f8f",
+            )
+        },
+        mark(
+            "leaf",
+            Shape::Path {
+                d: "M 620 700 C 640 560 760 470 900 450 C 880 600 780 690 620 700 Z".into(),
+            },
+            "#4f7a3a",
+        ),
+        NewMark {
+            fill: Some("#2a1d14".into()),
+            ..mark(
+                "label",
+                Shape::Text {
+                    x: 120.0,
+                    y: 820.0,
+                    text: "Shapes, paths and words".into(),
+                    size: 40.0,
+                    font: Some("serif".into()),
+                    weight: None,
+                    italic: false,
+                    align: None,
+                    line_height: None,
+                    width: None,
+                },
+                "#2a1d14",
+            )
+        },
+    ];
+    for petal in 0..6 {
+        marks.push(NewMark {
+            group: Some("flower".into()),
+            transform: turned(f64::from(petal) * 60.0, (860.0, 230.0)),
+            ..mark(
+                &format!("petal-{petal}"),
+                Shape::Ellipse {
+                    cx: 860.0,
+                    cy: 165.0,
+                    rx: 26.0,
+                    ry: 58.0,
+                },
+                "#e07a5f",
+            )
+        });
+    }
+    marks.push(NewMark {
+        group: Some("flower".into()),
+        ..mark(
+            "heart",
+            Shape::Ellipse {
+                cx: 860.0,
+                cy: 230.0,
+                rx: 34.0,
+                ry: 34.0,
+            },
+            "#f2cc8f",
+        )
+    });
+    vec![
+        CanvasAction::AddLayer(AddLayer {
+            id: Some("ink".into()),
+            name: "Ink".into(),
+            ..AddLayer::default()
+        }),
+        CanvasAction::Draw(Draw {
+            layer: Some("ink".into()),
+            marks,
+        }),
+    ]
 }

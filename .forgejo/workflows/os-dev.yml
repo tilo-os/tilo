@@ -40,6 +40,9 @@ on:
       - "!os/tests/test_*.py"
       - "!os/dev/test_*.py"
       - "!os/dev/installer-console.py"
+      # Windows host transport and its native test never enter the OS image.
+      - "!os/dev/vm-windows.ps1"
+      - "!os/tests/vm-windows-tool-resolver-test.ps1"
       - "!os/docs/**"
       - "!os/**/*.md"
       - ".forgejo/workflows/os-dev.yml"

@@ -21,7 +21,7 @@ use tilo_relay_protocol::web::{
     API_PREFIX, INSTALL_ROUTE, INSTALL_TOKEN_HEADER, Installed, MAX_REQUEST_BYTES,
 };
 use tilo_user_identity::{DeviceCert, IdentityPaths};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::{Body, WebConfig, body, reply, status, tls};
 use crate::daemon::RelayError;
@@ -31,7 +31,14 @@ struct Waiting {
     token: Vec<u8>,
     allowed_origins: Vec<String>,
     installed: mpsc::Sender<DeviceCert>,
+    /// Turns true once the certificate is in: stop accepting, finish what
+    /// is in flight.
+    closing: watch::Receiver<bool>,
 }
+
+/// How long the requests in flight, the install's own answer among them,
+/// may take to finish once the certificate is in.
+const DRAIN: Duration = Duration::from_secs(5);
 
 /// The listener of a host awaiting its certificate. Dropping it stops
 /// serving.
@@ -41,6 +48,7 @@ pub struct InstallListener {
     /// Plain loopback HTTP address, if any.
     pub plain_addr: Option<SocketAddr>,
     done: mpsc::Receiver<DeviceCert>,
+    close: watch::Sender<bool>,
     tasks: tokio::task::JoinSet<()>,
 }
 
@@ -76,11 +84,13 @@ impl InstallListener {
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
         let (installed, done) = mpsc::channel(1);
+        let (close, closing) = watch::channel(false);
         let waiting = Arc::new(Waiting {
             paths,
             token: token.trim().as_bytes().to_vec(),
             allowed_origins: config.allowed_origins.clone(),
             installed,
+            closing,
         });
         let mut tasks = tokio::task::JoinSet::new();
         tasks.spawn(accept_tls(tcp, acceptor, waiting.clone()));
@@ -98,11 +108,14 @@ impl InstallListener {
             addr,
             plain_addr,
             done,
+            close,
             tasks,
         })
     }
 
-    /// Wait for the certificate, then stop serving.
+    /// Wait for the certificate, then stop serving: stop accepting, and
+    /// let the requests in flight finish (the installing page reads its
+    /// answer) before the address is free for the relay.
     ///
     /// # Errors
     ///
@@ -113,7 +126,14 @@ impl InstallListener {
             .recv()
             .await
             .ok_or_else(|| RelayError::Iroh("install listener: stopped".into()))?;
-        self.tasks.shutdown().await;
+        let _ = self.close.send(true);
+        let drained = tokio::time::timeout(DRAIN, async {
+            while self.tasks.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            self.tasks.shutdown().await;
+        }
         Ok(cert)
     }
 }
@@ -149,14 +169,26 @@ fn bind(listen: SocketAddr) -> Result<tokio::net::TcpListener, String> {
     socket.listen(64).map_err(|error| error.to_string())
 }
 
+/// The next connection, or `None` once the listener is closing.
+async fn next(
+    tcp: &tokio::net::TcpListener,
+    closing: &mut watch::Receiver<bool>,
+) -> Option<std::io::Result<(tokio::net::TcpStream, SocketAddr)>> {
+    tokio::select! {
+        accepted = tcp.accept() => Some(accepted),
+        _ = closing.wait_for(|closing| *closing) => None,
+    }
+}
+
 async fn accept_tls(
     tcp: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     waiting: Arc<Waiting>,
 ) {
+    let mut closing = waiting.closing.clone();
     let mut connections = tokio::task::JoinSet::new();
-    loop {
-        let Ok((stream, _)) = tcp.accept().await else {
+    while let Some(accepted) = next(&tcp, &mut closing).await {
+        let Ok((stream, _)) = accepted else {
             continue;
         };
         while connections.try_join_next().is_some() {}
@@ -170,30 +202,44 @@ async fn accept_tls(
             }
         });
     }
+    drop(tcp);
+    while connections.join_next().await.is_some() {}
 }
 
 async fn accept_plain(tcp: tokio::net::TcpListener, waiting: Arc<Waiting>) {
+    let mut closing = waiting.closing.clone();
     let mut connections = tokio::task::JoinSet::new();
-    loop {
-        let Ok((stream, _)) = tcp.accept().await else {
+    while let Some(accepted) = next(&tcp, &mut closing).await {
+        let Ok((stream, _)) = accepted else {
             continue;
         };
         while connections.try_join_next().is_some() {}
         connections.spawn(serve(stream, waiting.clone()));
     }
+    drop(tcp);
+    while connections.join_next().await.is_some() {}
 }
 
 async fn serve<Io>(io: Io, waiting: Arc<Waiting>)
 where
     Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let mut closing = waiting.closing.clone();
     let service = hyper::service::service_fn(move |request| {
         let waiting = waiting.clone();
         async move { Ok::<_, Infallible>(handle(&waiting, request).await) }
     });
-    let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-        .serve_connection(hyper_util::rt::TokioIo::new(io), service)
-        .await;
+    let builder =
+        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    let connection = builder.serve_connection(hyper_util::rt::TokioIo::new(io), service);
+    tokio::pin!(connection);
+    tokio::select! {
+        _ = connection.as_mut() => return,
+        _ = closing.wait_for(|closing| *closing) => {}
+    }
+    // Answer what was asked on this connection, then close it.
+    connection.as_mut().graceful_shutdown();
+    let _ = connection.await;
 }
 
 async fn handle(waiting: &Waiting, request: Request<hyper::body::Incoming>) -> Response<Body> {
@@ -344,6 +390,18 @@ mod tests {
         serde_json::to_string(&cert).unwrap()
     }
 
+    fn config(dir: &std::path::Path) -> WebConfig {
+        WebConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            tls: TlsSource::Development {
+                hosts: vec!["localhost".into()],
+                store: Some(dir.join("tls")),
+            },
+            allowed_origins: vec!["https://console.example".into()],
+            plain_listen: Some("127.0.0.1:0".parse().unwrap()),
+        }
+    }
+
     /// A host without a certificate takes one only with its token, only for
     /// its own key and only one that lets it host; then it starts serving.
     #[tokio::test]
@@ -353,15 +411,7 @@ mod tests {
         let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let root = SigningKey::from_bytes(&[7; 32]);
-        let config = WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into()],
-                store: Some(dir.path().join("tls")),
-            },
-            allowed_origins: vec!["https://console.example".into()],
-            plain_listen: Some("127.0.0.1:0".parse().unwrap()),
-        };
+        let config = config(dir.path());
         assert!(InstallListener::bind(&config, paths.clone(), "short").is_err());
         let listener =
             InstallListener::bind(&config, paths.clone(), &format!("{TOKEN}\n")).unwrap();
@@ -439,5 +489,38 @@ mod tests {
         .unwrap()
         .shutdown()
         .await;
+    }
+
+    /// The relay waits for the certificate while a page installs it: the
+    /// page still reads its whole answer before the listener stops.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_installing_page_reads_its_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path().join("identity"));
+        let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
+        let own = device.verifying_key().to_bytes();
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let listener = InstallListener::bind(&config(dir.path()), paths, TOKEN).unwrap();
+        let addr = listener.plain_addr.unwrap();
+        let waiting = tokio::spawn(listener.installed());
+        let good = cert(
+            &root,
+            own,
+            tilo_user_identity::cloud_enrollment::host_capabilities(),
+        );
+        let token = format!("{INSTALL_TOKEN_HEADER}: {TOKEN}\r\n");
+        let reply = request(addr, "POST", "/peer/v1/install", &token, &good).await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(
+            reply.ends_with("\r\n0\r\n\r\n"),
+            "the whole chunked answer: {reply}"
+        );
+        assert!(reply.contains(&hex::encode(own)), "{reply}");
+        let installed = waiting.await.unwrap().unwrap();
+        assert_eq!(installed.device_public_key, own);
+        assert!(
+            tokio::net::TcpStream::connect(addr).await.is_err(),
+            "stopped serving"
+        );
     }
 }

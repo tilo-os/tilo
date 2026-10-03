@@ -21,6 +21,7 @@ fn stroke(colour: &str) -> NewStroke {
         opacity: None,
         wet: None,
         params: None,
+        ..NewStroke::default()
     }
 }
 
@@ -209,13 +210,11 @@ fn dragging_a_selection_handle_resizes_about_the_opposite_corner() {
     )))
     .expect("draw");
     let targets = app.harness().targets();
-    let tool = targets
-        .get("Tool")
-        .copied()
-        .expect("the tool rail is addressable");
-    // The rail's first of four segments is the select tool.
+    // V picks the select tool on the focused canvas.
     app.harness()
-        .click_at(tool.x0 + tool.width() / 8.0, tool.center().y);
+        .perform_named("canvas", &ui::a11y::Action::Focus)
+        .expect("the canvas takes focus");
+    app.harness().key("v");
     let canvas = targets
         .get("canvas")
         .copied()

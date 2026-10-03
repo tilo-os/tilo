@@ -836,6 +836,11 @@ jobs:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check Windows scenario tool overrides
+        shell: powershell
+        run: |
+          powershell -NoProfile -File os/tests/vm-windows-tool-resolver-test.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows scenario tool resolution failed" }
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           name: tilo-installer-catalog

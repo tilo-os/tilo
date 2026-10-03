@@ -432,6 +432,7 @@ impl PeerHandle {
             config.cert.user_public_key,
             store.channel_vault().unwrap_or_else(rand::random),
         );
+        channels.govern_by_host(&config.host_cert);
         let saved = store
             .load_channels()
             .and_then(|bytes| SavedPeerChannels::decode(&bytes))

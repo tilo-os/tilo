@@ -484,8 +484,36 @@ installNodeCertificate({origin, certificate, installToken}): Promise<{device_pub
 // certificate (which must be a host of this root), no approver. Defaults:
 // a profile per identity, its device key, the page host's runtime.
 connectPeer({origin, identity, signal, …}): Promise<CertifiedPeer>;
+// Another person's workspace: what an invitation offers, then join it as
+// this identity (its own root certifies the device; the owner admits it).
+inspectInvitation(relayUrl, invitation): Promise<{workspaceName, role, room, workspaceId, expiresAtNs, inviter?: {name, userPublicKey}}>;
+joinWorkspace({origin, invitation, identity?, displayName, signal, onProgress?}): Promise<CertifiedPeer>;
+// onProgress({phase: 'asking' | 'waiting' | 'admitted'}); rejects when declined or refused
 // RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts?), lock()}
 ```
+
+A peer connected to a room its host governs administers it as the owner
+(`web/membership.mjs`; each call is one `/rooms` request the host
+authorizes):
+
+```ts
+peer.createInvitation({role?: 'editor' | 'commenter' | 'viewer', expiresIn?: seconds /* ≤ 30 days, default 7 */})
+  : Promise<string /* invitation text, base64url */>;
+peer.membership.list(): Promise<{room, name, generation,
+  members: [{userPublicKey, name, role, owner, removed}],
+  waiting: [{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}],
+  invitations: [{inviteId, role, expiresAtMs}]}>;
+peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
+  / remove(userPublicKey) / cancelInvitation(inviteId);
+// The rooms the host governs, before the peer is in one (connect again with `room`):
+peer.workspaces.list(): Promise<[{room, name, generation, members}]>;
+peer.workspaces.create(name) / enter(room): Promise<{room, name, generation, members}>;
+```
+
+An invitation names its inviter: the host records the user root of the
+device that asked and the `displayName` the peer connected with, and signs
+both into the invitation (`tilo_peer_state::join::Inviter`, invitation
+version 2), so `inspectInvitation` shows who sent it as the host attests.
 
 `createIdentity` refuses a passkey without PRF (`IdentityError` code
 `prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
@@ -506,7 +534,22 @@ same origin.
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the
-person's rooms; a plain host certificate never does.
+person's rooms; a plain host certificate never does. A page whose host is
+such a node takes it as the governor of every room it joins there, also a
+room of another person it was invited to, unless a genesis frame from a
+device of its own person names another governor.
+
+The node governs the rooms created on it through `/rooms` (the company
+workspace) and stewards their channels (`tilo-relay` `rooms/stewardship.rs`):
+it admits to a channel exactly the room's governed member devices that ask
+for it, removes those governance removed, and retains the channel's
+governance frames as its own writes. Members' records reach the relay only
+sealed; it keeps no copy of a sealed record. Channel state is sealed on disk
+under a key derived from the node's device key. `tests/node_workspace.rs`
+(`tilo-browser-peer`) runs the whole path: a passkey root in Chrome
+certifies and installs a waiting node, the page writes a document the node
+retains only as ciphertext, and a person invited by name joins and reads its
+whole history.
 
 ### Live layer interface
 

@@ -84,7 +84,20 @@ pub struct Renderer {
     ground: Option<(String, Arc<Heightfield>, ImageData)>,
     painted: HashMap<String, PaintedLayer>,
     reference: Option<(String, Option<ImageData>)>,
+    wet: Option<WetPreview>,
 }
+
+/// The last picture of a stroke still being painted, and what it cost, so
+/// a slow medium is previewed only as often as it can keep up.
+struct WetPreview {
+    layer: String,
+    image: ImageData,
+    at: ui::time::Instant,
+    cost: ui::time::Duration,
+}
+
+/// The least time between two previews of a stroke being painted.
+const WET_INTERVAL: ui::time::Duration = ui::time::Duration::from_millis(16);
 
 /// What a scene shows.
 #[derive(Clone, Debug, Default)]
@@ -100,6 +113,9 @@ pub struct Options {
     pub reference: bool,
     /// Leave the ground out: the layers over transparency.
     pub bare: bool,
+    /// A stroke still being painted: shown on its layer as its medium will
+    /// paint it, without being kept.
+    pub wet: Option<Mark>,
 }
 
 /// The largest reference picture, in bytes.
@@ -164,7 +180,8 @@ impl Renderer {
             if let Some(medium) =
                 media::resolve(art, &layer.medium).filter(|_| !layer.medium.is_empty())
             {
-                self.draw_painted(art, layer, &medium, scene, transform, text);
+                let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
+                self.draw_painted(art, (layer, wet), &medium, scene, transform, text);
             } else {
                 let palette = media::palette_for(art, &layer.id);
                 scene.push_layer(
@@ -197,6 +214,50 @@ impl Renderer {
         if options.grid {
             draw_grid(art, options.view.unwrap_or(board), scene, transform, text);
         }
+    }
+
+    /// The colour of the paint at `at`: the topmost shown layer's there,
+    /// else the ground's. A painted layer answers from its simulation as last
+    /// drawn.
+    pub fn sample(&mut self, art: &Artwork, at: Point) -> Color {
+        for layer in art.layers.iter().rev().filter(|layer| layer.visible) {
+            if let Some(entry) = self.painted.get(&layer.id)
+                && let Some(image) = &entry.image
+                && let Some(colour) = pixel(image, Affine::scale(cell_scale(art)) * at)
+                && colour.components[3] > 0.06
+            {
+                return colour.with_alpha(1.0);
+            }
+            let palette = media::palette_for(art, &layer.id);
+            let hit = art
+                .marks_of(&layer.id)
+                .filter(|mark| mark.hit(at) && art.clip_of(mark).is_none_or(|clip| clip.hit(at)));
+            if let Some(mark) = hit.last() {
+                let style = &mark.style;
+                let named = if mark.shape.closed() || matches!(mark.shape, Shape::Text { .. }) {
+                    style.fill.as_ref().or(style.stroke.as_ref())
+                } else {
+                    style.stroke.as_ref().or(style.fill.as_ref())
+                };
+                let gradient = style
+                    .gradient
+                    .as_ref()
+                    .and_then(|gradient| gradient.stops.first())
+                    .map(|(_, colour)| colour);
+                if let Some(colour) = named.or(gradient).and_then(|named| colour(named, &palette)) {
+                    return colour.with_alpha(1.0);
+                }
+            }
+        }
+        if Texture::parse(&art.ground.texture).is_some_and(|texture| texture != Texture::Smooth)
+            && let Some(colour) = pixel(
+                &self.ground(art).2.clone(),
+                Affine::scale(cell_scale(art)) * at,
+            )
+        {
+            return colour;
+        }
+        colour(&art.ground.colour, &[]).unwrap_or(BLANK_GROUND)
     }
 
     /// The reference picture, decoded once per picture.
@@ -291,7 +352,7 @@ impl Renderer {
     fn draw_painted(
         &mut self,
         art: &Artwork,
-        layer: &Layer,
+        (layer, wet): (&Layer, Option<&Mark>),
         medium: &media::MediumSpec,
         scene: &mut Scene,
         transform: Affine,
@@ -314,7 +375,7 @@ impl Renderer {
         let palette = preset.palette;
         let marks: Vec<Painted> = art
             .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, &palette, scale))
+            .flat_map(|mark| wet_marks(mark, art.clip_of(mark), &palette, scale))
             .collect();
         let mut key = blake3::Hasher::new();
         for mark in &marks {
@@ -340,6 +401,33 @@ impl Renderer {
             entry.image = Some(image(pixels, canvas.width, canvas.height));
             entry.key = key;
         }
+        let shown = if let Some(wet) = wet {
+            let now = ui::time::now();
+            let due = self.wet.as_ref().is_none_or(|preview| {
+                preview.layer != layer.id
+                    || now.duration_since(preview.at) >= (preview.cost * 2).max(WET_INTERVAL)
+            });
+            if due {
+                let strokes = wet_marks(wet, art.clip_of(wet), &palette, scale);
+                let pixels = entry.painter.preview(&marks, &strokes);
+                self.wet = Some(WetPreview {
+                    layer: layer.id.clone(),
+                    image: image(pixels, canvas.width, canvas.height),
+                    at: now,
+                    cost: ui::time::now().duration_since(now),
+                });
+            }
+            self.wet.as_ref().map(|preview| preview.image.clone())
+        } else {
+            if self
+                .wet
+                .as_ref()
+                .is_some_and(|preview| preview.layer == layer.id)
+            {
+                self.wet = None;
+            }
+            entry.image.clone()
+        };
         let blend = match engine.blend() {
             Blend::Normal => BlendMode::default(),
             Blend::Multiply => BlendMode::new(Mix::Multiply, Compose::SrcOver),
@@ -352,11 +440,11 @@ impl Renderer {
             transform,
             &board,
         );
-        if let Some(image) = &entry.image {
+        if let Some(image) = shown {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                &ImageBrush::new(image.clone()),
+                &ImageBrush::new(image),
                 Some(Affine::scale(1.0 / scale)),
                 &board,
             );
@@ -369,6 +457,27 @@ impl Renderer {
         }
         scene.pop_layer();
     }
+}
+
+/// The straight-alpha pixel of `image` at `at` (pixel coordinates).
+fn pixel(image: &ImageData, at: Point) -> Option<Color> {
+    if at.x < 0.0 || at.y < 0.0 {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "non-negative and checked against the image's size below"
+    )]
+    let (column, row) = (at.x.floor() as u32, at.y.floor() as u32);
+    if column >= image.width || row >= image.height {
+        return None;
+    }
+    let start =
+        usize::try_from((u64::from(row) * u64::from(image.width) + u64::from(column)) * 4).ok()?;
+    let rgba = image.data.data().get(start..start.checked_add(4)?)?;
+    let [red, green, blue, alpha] = <[u8; 4]>::try_from(rgba).ok()?;
+    Some(Color::from_rgba8(red, green, blue, alpha))
 }
 
 fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
@@ -397,8 +506,20 @@ fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
     contours
 }
 
-/// What a mark is as paint: a laid-in region, a stroke, or both.
-fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
+/// The outline a stroke's paint is cut to, in cells: its clip's silhouette.
+fn clip_contours(clip: Option<&Mark>, scale: f64) -> Vec<Vec<(f32, f32)>> {
+    clip.map(|clip| {
+        contours(
+            &silhouette(&clip.shape),
+            Affine::scale(scale) * clip.affine(),
+        )
+    })
+    .unwrap_or_default()
+}
+
+/// What a mark is as paint: a laid-in region, a stroke, or both. A stroke
+/// stays inside `clip` when it is cut to one.
+fn wet_marks(mark: &Mark, clip: Option<&Mark>, palette: &[Pigment], scale: f64) -> Vec<Painted> {
     let style = &mark.style;
     let to_cells = Affine::scale(scale) * mark.affine();
     let params = style
@@ -413,7 +534,7 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
     };
     let mut painted = Vec::new();
     match &mark.shape {
-        Shape::Stroke { points, size } => {
+        Shape::Stroke { points, size, .. } => {
             if let Some(colour) = paint(&style.stroke).or_else(|| paint(&style.fill)) {
                 let points = points
                     .iter()
@@ -439,6 +560,11 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
                         opacity,
                         wet: style.wet,
                         params,
+                        form: mark
+                            .shape
+                            .form(style.angle)
+                            .map(|form| form.scaled(narrow(scale))),
+                        clip: clip_contours(clip, scale),
                     }),
                 ));
             }
@@ -550,6 +676,8 @@ fn outline_strokes(
                     opacity: narrow(mark.style.opacity()),
                     wet: true,
                     params: params.clone(),
+                    form: None,
+                    clip: Vec::new(),
                 }),
             )
         })
@@ -610,13 +738,13 @@ pub fn mix(blend: &str) -> Option<Mix> {
 /// outline, a text's box, any other shape's outline.
 pub fn silhouette(shape: &Shape) -> BezPath {
     match shape {
-        Shape::Stroke { points, size } => ink_path(points, *size),
+        Shape::Stroke { points, size, .. } => ink_path(points, *size),
         shape => shape.path(),
     }
 }
 
-fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
-    let points: Vec<WetPoint> = points
+fn wet_points(points: &[Vec<f64>]) -> Vec<WetPoint> {
+    points
         .iter()
         .map(|point| {
             WetPoint::new(
@@ -625,9 +753,49 @@ fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
                 narrow(point.get(2).copied().unwrap_or(1.0)),
             )
         })
-        .collect();
-    let samples = tilo_wet_media::brush::smooth(&points, 0.75);
-    let outline = tilo_wet_media::brush::ink_outline(&samples, narrow(size));
+        .collect()
+}
+
+fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
+    ink_outline(&wet_points(points), narrow(size))
+}
+
+/// A stroke drawn in ink on a plain layer: its own line, or every twig or
+/// dab it grows into, grown from the mark's id as a painted layer grows it.
+fn ink_strokes(mark: &Mark, points: &[Vec<f64>], size: f64) -> BezPath {
+    let Some(form) = mark.shape.form(mark.style.angle) else {
+        return ink_path(points, size);
+    };
+    let stroke = WetStroke {
+        points: wet_points(points),
+        size: narrow(size),
+        paint: tilo_wet_media::Paint {
+            colour: tilo_wet_media::Rgb::WHITE,
+            alpha: 1.0,
+            granulation: 0.0,
+            strength: 1.0,
+        },
+        opacity: 1.0,
+        wet: false,
+        params: std::collections::BTreeMap::new(),
+        form: Some(form),
+        clip: Vec::new(),
+    };
+    let mut path = BezPath::new();
+    for (piece, _) in stroke.pieces(tilo_wet_media::painter::seed_of(&mark.id)) {
+        path.extend(
+            ink_outline(&piece.points, piece.size)
+                .elements()
+                .iter()
+                .copied(),
+        );
+    }
+    path
+}
+
+fn ink_outline(points: &[WetPoint], size: f32) -> BezPath {
+    let samples = tilo_wet_media::brush::smooth(points, 0.75);
+    let outline = tilo_wet_media::brush::ink_outline(&samples, size);
     let mut path = BezPath::new();
     for (index, (x, y)) in outline.iter().enumerate() {
         let point = Point::new(f64::from(*x), f64::from(*y));
@@ -758,7 +926,7 @@ fn draw_shadow(
 }
 
 /// The toolkit's text style for a text shape.
-fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
+pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
     let Shape::Text {
         size,
         font,
@@ -878,11 +1046,17 @@ pub fn draw_vector(
             .map(|value| with_opacity(value, opacity))
     };
     match &mark.shape {
-        Shape::Stroke { points, size } => {
+        Shape::Stroke { points, size, .. } => {
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
                 return;
             };
-            scene.fill(Fill::NonZero, at, ink, None, &ink_path(points, *size));
+            scene.fill(
+                Fill::NonZero,
+                at,
+                ink,
+                None,
+                &ink_strokes(mark, points, *size),
+            );
         }
         Shape::Text { .. } => {
             let Some(ink) = named(&style.fill).or_else(|| named(&style.stroke)) else {
