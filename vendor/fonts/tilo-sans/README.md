@@ -28,6 +28,80 @@ matches upstream's italic the same way. The one difference: `bullet.ss01` and
 cubic-to-quadratic conversion, so their circles carry a few more points; the shape is
 the same within one unit. `scripts/verify_upstream.py` checks all of this.
 
+## Coverage and what ships
+
+The sources hold everything every area has drawn. `build.py` compiles all of
+it, then `scripts/release.py` writes two sets of binaries:
+
+| | `fonts/default/` (what Tilo ships) | `fonts/full/` (review only, never shipped) |
+|---|---|---|
+| Latin (Instrument Sans' own set) | yes | yes |
+| Vietnamese: every precomposed letter, stacked tones, ₫, decomposed input | yes | yes |
+| Greek: monotonic, tonos, dialytika, ano teleia, ; | yes | yes |
+| Cyrillic: Russian, Ukrainian, Belarusian, Bulgarian and Serbian/Macedonian (`locl`), Kazakh | **no** (Onest ss02 draws it) | yes |
+| Distinct I and l (`ss13`, `cv01`, `cv02`) and the slashed zero (`zero`) | **no** (features and glyphs removed) | yes |
+| Glyphs / code points | 757 / 521 | 915 / 635 |
+
+Why:
+
+- **Vietnamese** ships, as the product requires. The kerning gaps review found
+  (ũ Ũ ẽ Ẽ ỹ Ỹ ữ Ữ without groups, T/Y before ư ụ ủ ứ ừ ử ữ ự at 0, Tố/Tấ
+  pushed apart in the bold and italic masters) are fixed: every Vietnamese
+  letter kerns like its base letter until a collision says otherwise, and
+  the circumflex of a stacked tone stays where â has it. Still open, for the
+  native reader: the capital stacks Ấ Ầ Ẩ … use the shorter `.case`
+  circumflex while Â Ê Ô keep Instrument's (VÂN beside VẤN); the bold
+  capital tilde and hook stacks reach 1026 units, so at a line height below
+  1.25 (CSS `normal` is 1.22 with this font's metrics) they can touch the
+  descenders of the line above; at 12–13 px Condensed Bold the tones beside
+  a circumflex are two-pixel marks; ỵ's dot sits right of the descender.
+- **Greek** ships: review approved it against the fallback (Geologica at 0.85
+  × the weight). The product owner's sheet is `proofs/final/greek-review/`.
+- **Cyrillic** is held back. Review: the shapes are recognisably Instrument
+  and look better than Onest beside Instrument's Latin, but kerning collides
+  in common words (б and ф kern as rounds under Т Г У: «Тбилиси», «Убрать»;
+  the italic ∂-shaped д under Г Т У: «Где», «Удача»), ї's dieresis is too
+  wide («її»), and bold/condensed-bold в Ф Ю ы have clogged counters.
+  Native readers check `proofs/final/cyrillic-review/` once those are fixed.
+- **Distinct I and l** is held back. Review: the serif I comes diagonally
+  close to the flag of 1 (and to 4, ¿ and lowercase accents) because
+  `il_kern.py`'s floors measure only side-by-side gaps; at 12–14 px `I1`
+  merges. The forms themselves are approved. ĨỈỊ have serif forms too.
+
+Final sheets of the merged family are in `proofs/final/`: one folder per area
+(`vietnamese`, `greek`, `cyrillic`, `il`, `latin`), and the review sheets
+`greek-review/` and `cyrillic-review/` (`scripts/review_sheet.py`): every
+letter large above the fallback's, interface strings and running text at 14,
+16, 20 and 32 px in light and dark, Tilo Sans beside Tilo's Latin plus the
+fallback. Geologica at 340 is still heavier than Tilo Sans at 400 (its stem is
+about 103 units at Tilo's x-height against 80).
+
+Checks on the binaries, besides `build.py`'s own:
+
+- `scripts/shaping_tests.py`: Vietnamese and Greek typed precomposed or
+  decomposed draw the same; the Vietnamese tones and Greek tonos/dialytika
+  typed as combining marks sit on every vowel; ν· takes the ano teleia; ss13,
+  cv01, cv02 and zero work in `full/` and do nothing in `default/`; Bulgarian
+  and Serbian/Macedonian `locl`; `default/` has no Cyrillic and shapes every
+  Latin, Vietnamese and Greek test string exactly like `full/`.
+- `scripts/verify_upstream.py`: every upstream outline and advance unchanged.
+  Its shaping differences are intended: decomposed Vietnamese sequences now
+  compose (E + U+0303 → Ẽ, ấ's stacked tones), the collision kerning on
+  Instrument's own Vietnamese letters (Yì, Yí, fê, Ťý at the condensed
+  masters), and usWinAscent 1026 for the tallest stacks.
+- fontbakery `check-googlefonts`: the FAILs are upstream's own (the STAT
+  combination "SemiCondensed SemiBold" is 32 characters; Dutch `J́` has no
+  anchor on J), plus, in `full/` only, Tajik letters (ҷ ҳ җ) and ʼ missing
+  for languages fontbakery counts as Cyrillic. The WARNs are upstream's (no
+  dotted circle, no meta table, vendor ID, outline alignment, the soft-dotted
+  cases other than ị) plus overlapping segments where two contours meet in
+  β and ω.
+
+To ship a held-back script or feature once it is approved: delete its entry
+from `HELD_BACK` in `scripts/release.py`, run `build.py`, check the new
+`fonts/default/` with `scripts/shaping_tests.py` and the proofs, and copy
+`fonts/default/*.ttf` into the toolkit's font assets.
+
 ## Layout
 
 ```
@@ -42,6 +116,9 @@ vendor/fonts/tilo-sans/
   scripts/inkgeom.py       glyph ink as polygons (shared by the two checks)
   scripts/verify_upstream.py   every upstream glyph unchanged?
   scripts/il_kern.py       kerning of the distinct I and l (ss13), solved from the built fonts
+  scripts/release.py       fonts/default/ (shipped: held-back scripts removed) and fonts/full/
+  scripts/shaping_tests.py HarfBuzz tests: Vietnamese and Greek NFC = NFD, marks, I/l, locl, default = full
+  scripts/review_sheet.py  Greek / Cyrillic beside their fallback, for native readers
   scripts/import_upstream.py   how sources/ was made from upstream (do not rerun)
   scripts/greek/           the Greek: outline generator, kerning, checks (see Greek)
   sources/
@@ -50,9 +127,11 @@ vendor/fonts/tilo-sans/
     TiloSans-{CondensedRegular,CondensedBold,Regular,Bold}.ufo
     TiloSans-{CondensedItalic,CondensedBoldItalic,Italic,BoldItalic}.ufo
     features/*.fea                 OpenType code, one file per feature, shared by all 8 masters
-  fonts/        (ignored)  TiloSans[wdth,wght].ttf, TiloSans-Italic[wdth,wght].ttf
+  fonts/        (ignored)  TiloSans[wdth,wght].ttf, TiloSans-Italic[wdth,wght].ttf (everything),
+                           default/ (what Tilo ships), full/ (for review)
   proofs/work/  (ignored)  every proof run
-  proofs/sheets/           proofs written with --final; the only tracked proofs
+  proofs/sheets/           proofs written with --final, per area
+  proofs/final/            the sheets of the merged family: one per area, and the review sheets
   .upstream/    (ignored)  upstream checkout for import/verify
 ```
 
@@ -85,7 +164,19 @@ uv run vendor/fonts/tilo-sans/scripts/components.py [--all] [--glyphs Abreveacut
 uv run vendor/fonts/tilo-sans/scripts/pairs.py [--show 40] [--text "đĩa Tĩnh"]
 uv run vendor/fonts/tilo-sans/scripts/verify_upstream.py
 uv run vendor/fonts/tilo-sans/scripts/il_kern.py [--check]   # after build; repeat until --check is clean
+uv run vendor/fonts/tilo-sans/scripts/shaping_tests.py        # after build
+uv run vendor/fonts/tilo-sans/scripts/review_sheet.py --script greek   # or cyrillic -> proofs/final/<script>-review/
 ```
+
+Kerning is written by four tools, each owning its pairs. After a change that
+touches kerning, run them in this order, building in between:
+`scripts/greek/kern.py` (Greek) and the Cyrillic kerning in
+`scripts/cyrillic/` (Cyrillic memberships and pairs), then
+`scripts/kerning.py` (Vietnamese groups, and every collision `pairs.py`
+finds, Greek and Cyrillic against punctuation included), then
+`scripts/il_kern.py` (every pair with a serif I or tailed l), repeated until
+`--check` reports nothing. `kerning.py` resets the pairs it generated, so
+`il_kern.py` must follow it.
 
 `verify_upstream.py` and `proof.py --fallback instrument` need the upstream
 checkout in `.upstream/instrument-sans` at `UPSTREAM_COMMIT` (see
@@ -330,8 +421,10 @@ can be rerun at any time. To change a stack, edit the table, run it, then
   88–92 on capitals) so they keep its angle and stroke exactly: sắc and huyền
   stay as far apart as on a single vowel, in the italics too. They overhang the
   next letter instead of standing up; kerning opens the few pairs that would
-  touch. The ligature's anchor sits right of the circumflex's, so the pair is
-  centred over the letter. The grave goes right like the others: on the left it
+  touch. The circumflex stays within 20 units of where `â ê ô` have it
+  (`STACK_SHIFT`) and the tone hangs out to the right; centring the pair over
+  the letter pushed the circumflex left into the arm of a `T` or `Y` before
+  it (`Tố` was kerned apart in the bold and italic masters). The grave goes right like the others: on the left it
   would run into the ascender of the `th`, `kh`, `đ`, `l` that so often precede
   `ầ ề ồ`; a native reader should confirm the choice. Every tone sits on top of
   the breve, the tilde on top of the circumflex, 34 units clear (32 in the bold
@@ -392,9 +485,15 @@ can be rerun at any time. To change a stack, edit the table, run it, then
   same mark height leave its group together: `KO_a` gives up `KO_a__top`
   (`á à ả ã ă â …`) and `KO_a__stack` (`ấ ầ ẩ ẫ ắ …`), which inherit every pair
   of `KO_a` and get, against the neighbour's group, the smallest kern that opens
-  all their members to 24 units. So every tone of a letter spaces alike, and
-  letters get no glyph-to-glyph exceptions: a single-glyph pair appears only
-  where the neighbour is a symbol without a group (`·Đ`, `#Đ`, `ơ·`). Instrument's
+  all their members to 24 units. So every tone of a letter spaces alike. Every
+  added letter also joins its base letter's group on any side where it has
+  none (`ũ` → `KO_u` both sides, `ữ` → `KO_uhorn` on the right), and copies its
+  base letter's glyph-level pairs: Instrument kerns `T u` and `Y u` as glyph
+  pairs, so `Tư Tự Từ Tủ` and `Yư` get the same −94/−77 (raised only where a
+  tone collides). These copies, like every glyph pair on an added Vietnamese
+  letter, are generated: `kerning.py` removes and rewrites them on each run.
+  A Greek or Cyrillic letter that collides with punctuation gets a glyph pair
+  of its own (`ν·`, `(ј`), since those letters share Latin groups. Instrument's
   own exceptions are raised where they govern a colliding pair (`T F K V W f '`
   + `ì`, so `Tìm` clears; `Y` + `è`); the originals are kept in the font lib and
   `--reset` restores them. Pairs that cannot occur in Vietnamese (two toned
@@ -662,5 +761,5 @@ Changes under `vendor/fonts/` do not count as Cargo inputs
 (`tools/ci/affected_packages.py`, `tools/apps/app_release.py`, the `app-sdk`,
 `release-apps` and `build-image` workflows) and are excluded from the image build
 context (`.containerignore`). No crate reads these files; shipping a build of Tilo
-Sans means copying `fonts/*.ttf` into the toolkit's font assets in a separate
+Sans means copying `fonts/default/*.ttf` into the toolkit's font assets in a separate
 change.
