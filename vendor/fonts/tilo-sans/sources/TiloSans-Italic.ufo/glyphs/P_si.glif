@@ -1,0 +1,34 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Psi" format="2">
+  <advance width="823"/>
+  <unicode hex="03A8"/>
+  <anchor x="519" y="720" name="top"/>
+  <outline>
+    <contour>
+      <point x="183" y="720" type="line"/>
+      <point x="114" y="420" type="line" smooth="yes"/>
+      <point x="79" y="271"/>
+      <point x="196" y="163"/>
+      <point x="390" y="163" type="curve" smooth="yes"/>
+      <point x="584" y="163"/>
+      <point x="751" y="271"/>
+      <point x="786" y="420" type="curve" smooth="yes"/>
+      <point x="855" y="720" type="line"/>
+      <point x="769" y="720" type="line"/>
+      <point x="700" y="420" type="line" smooth="yes"/>
+      <point x="674" y="310"/>
+      <point x="550" y="229"/>
+      <point x="406" y="229" type="curve" smooth="yes"/>
+      <point x="261" y="229"/>
+      <point x="174" y="310"/>
+      <point x="200" y="420" type="curve" smooth="yes"/>
+      <point x="269" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="311" y="0" type="line"/>
+      <point x="394" y="0" type="line"/>
+      <point x="561" y="720" type="line"/>
+      <point x="477" y="720" type="line"/>
+    </contour>
+  </outline>
+</glyph>

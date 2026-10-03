@@ -1,0 +1,23 @@
+feature aalt {
+feature locl;
+feature ordn;
+feature pnum;
+feature tnum;
+feature case;
+feature ss01;
+feature ss02;
+feature ss03;
+feature ss04;
+feature ss05;
+feature ss06;
+feature ss07;
+feature ss08;
+feature ss09;
+feature ss10;
+feature ss11;
+feature ss12;
+feature ss13;
+feature cv01;
+feature cv02;
+feature zero;
+} aalt;

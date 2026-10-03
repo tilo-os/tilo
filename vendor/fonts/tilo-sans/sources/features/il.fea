@@ -1,0 +1,75 @@
+# Distinct forms for text where every character must be unambiguous:
+# identifiers, usernames, passwords, codes. Off by default; the UI toolkit
+# turns them on for such fields.
+#
+#   ss13  Distinct I and l: capital I with slab serifs, lowercase l with a tail
+#   cv01  the capital I alone
+#   cv02  the lowercase l alone
+#   zero  slashed zero (the slash stays inside the counter, unlike Ø)
+#
+# Included after liga, so f_l / f_f_l swap to their tailed forms, and after
+# ss01, so Idieresis.ss01 and friends swap to their stacked forms.
+
+lookup IL_capital {
+	sub I by I.ss13;
+	sub Iacute by Iacute.ss13;
+	sub Icircumflex by Icircumflex.ss13;
+	sub Idieresis by Idieresis.ss13;
+	sub Idotaccent by Idotaccent.ss13;
+	sub Igrave by Igrave.ss13;
+	sub Imacron by Imacron.ss13;
+	sub Iogonek by Iogonek.ss13;
+	sub IJ by IJ.ss13;
+	sub Itilde by Itilde.ss13;
+	sub Ihookabove by Ihookabove.ss13;
+	sub Idotbelow by Idotbelow.ss13;
+	sub Idotbelow.ss01 by Idotbelow.ss01.ss13;
+	sub Idieresis.ss01 by Idieresis.ss01.ss13;
+	sub Idotaccent.ss01 by Idotaccent.ss01.ss13;
+} IL_capital;
+
+lookup IL_lower {
+	sub l by l.ss13;
+	sub lacute by lacute.ss13;
+	sub lcaron by lcaron.ss13;
+	sub lcommaaccent by lcommaaccent.ss13;
+	sub lslash by lslash.ss13;
+	sub lcommaaccent.ss01 by lcommaaccent.ss01.ss13;
+	sub f_l by f_l.ss13;
+	sub f_f_l by f_f_l.ss13;
+} IL_lower;
+
+lookup IL_zero {
+	sub zero by zero.zero;
+	sub zero.tf by zero.tf.zero;
+} IL_zero;
+
+feature ss13 {
+featureNames {
+  name "Distinct I and l";
+};
+	lookup IL_capital;
+	lookup IL_lower;
+} ss13;
+
+feature cv01 {
+cvParameters {
+  FeatUILabelNameID {
+    name "Capital I with serifs";
+  };
+};
+	lookup IL_capital;
+} cv01;
+
+feature cv02 {
+cvParameters {
+  FeatUILabelNameID {
+    name "Lowercase l with tail";
+  };
+};
+	lookup IL_lower;
+} cv02;
+
+feature zero {
+	lookup IL_zero;
+} zero;

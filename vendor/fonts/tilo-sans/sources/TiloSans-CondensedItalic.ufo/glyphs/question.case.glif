@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="question.case" format="2">
+  <advance width="394"/>
+  <outline>
+    <contour>
+      <point x="157" y="199" type="curve"/>
+      <point x="217" y="199" type="line"/>
+      <point x="266" y="412"/>
+      <point x="438" y="441"/>
+      <point x="438" y="598" type="curve" smooth="yes"/>
+      <point x="438" y="674"/>
+      <point x="388" y="730"/>
+      <point x="298" y="730" type="curve" smooth="yes"/>
+      <point x="198" y="730"/>
+      <point x="127" y="660"/>
+      <point x="102" y="531" type="curve"/>
+      <point x="170" y="531" type="line"/>
+      <point x="188" y="620"/>
+      <point x="226" y="668"/>
+      <point x="290" y="668" type="curve" smooth="yes"/>
+      <point x="341" y="668"/>
+      <point x="368" y="638"/>
+      <point x="368" y="590" type="curve" smooth="yes"/>
+      <point x="368" y="468"/>
+      <point x="208" y="426"/>
+    </contour>
+    <component base="period" xOffset="94"/>
+  </outline>
+</glyph>

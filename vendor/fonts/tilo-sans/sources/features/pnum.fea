@@ -1,0 +1,21 @@
+feature pnum {
+sub zero.tf by zero;
+sub one.tf by one;
+sub two.tf by two;
+sub three.tf by three;
+sub four.tf by four;
+sub five.tf by five;
+sub six.tf by six;
+sub seven.tf by seven;
+sub eight.tf by eight;
+sub nine.tf by nine;
+sub plus.tf by plus;
+sub minus.tf by minus;
+sub multiply.tf by multiply;
+sub divide.tf by divide;
+sub equal.tf by equal;
+sub greater.tf by greater;
+sub less.tf by less;
+sub percent.tf by percent;
+sub perthousand.tf by perthousand;
+} pnum;

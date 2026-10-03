@@ -1,0 +1,7 @@
+feature ss10 {
+featureNames {
+  name "Alternate 2";
+};
+sub two by two.ss10;
+sub two.tf by two.tf.ss10;
+} ss10;

@@ -1,0 +1,45 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="shcha-cy" format="2">
+  <advance width="655"/>
+  <unicode hex="0449"/>
+  <anchor x="324" y="0" name="bottom"/>
+  <anchor x="324" y="510" name="top"/>
+  <outline>
+    <contour>
+      <point x="44" y="0" type="line"/>
+      <point x="182" y="0" type="line"/>
+      <point x="182" y="510" type="line"/>
+      <point x="44" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="255" y="0" type="line"/>
+      <point x="393" y="0" type="line"/>
+      <point x="393" y="510" type="line"/>
+      <point x="255" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="466" y="0" type="line"/>
+      <point x="604" y="0" type="line"/>
+      <point x="604" y="510" type="line"/>
+      <point x="466" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="113" y="0" type="line"/>
+      <point x="535" y="0" type="line"/>
+      <point x="535" y="108" type="line"/>
+      <point x="113" y="108" type="line"/>
+    </contour>
+    <contour>
+      <point x="535" y="0" type="line"/>
+      <point x="638" y="0" type="line"/>
+      <point x="638" y="108" type="line"/>
+      <point x="535" y="108" type="line"/>
+    </contour>
+    <contour>
+      <point x="511" y="-160" type="line"/>
+      <point x="638" y="-160" type="line"/>
+      <point x="638" y="108" type="line"/>
+      <point x="511" y="108" type="line"/>
+    </contour>
+  </outline>
+</glyph>
