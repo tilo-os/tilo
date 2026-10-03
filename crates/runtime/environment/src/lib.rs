@@ -237,28 +237,30 @@ pub fn parse_image(id: &str) -> Result<PackageId, String> {
     PackageId::from_str(id).map_err(|e| format!("{id:?} is not an image id: {e}"))
 }
 
-/// Guest paths a grant may not cover: the root itself, the images' read-only
-/// `/usr` and `/etc`, the guest's own pseudo-filesystems and scratch, and the
-/// environment's own `/var` state. Binding one would replace part of the
-/// guest rather than add a directory to it.
-const GUEST_OWNED: &[&str] = &[
-    "/usr",
-    "/etc",
-    "/proc",
-    "/dev",
-    "/run",
+/// Guest trees a grant may not reach into: the images' read-only `/usr` and
+/// `/etc`, the guest's pseudo-filesystems and the runtime's commands.
+/// Binding there would replace part of the guest rather than add a
+/// directory to it.
+const GUEST_OWNED_TREES: &[&str] = &[
+    "/usr", "/etc", "/proc", "/dev", "/bin", "/sbin", "/lib", "/lib64", "/run/ush",
+];
+
+/// Guest directories a grant may sit below but not replace: the fresh
+/// scratch mounts, the environment's own `/var` state and the parent of its
+/// home. `/run/media/…`, `/tmp/build` or `/var/lib/data` are ordinary grants.
+const GUEST_OWNED_DIRS: &[&str] = &[
     "/tmp",
+    "/run",
+    "/var",
+    "/var/tmp",
     "/var/lib",
     "/var/cache",
-    "/var/tmp",
-    "/bin",
-    "/sbin",
-    "/lib",
-    "/lib64",
+    "/home",
 ];
 
 /// Whether a host directory may be granted: absolute, without `..`, not the
-/// root, and not a path the guest builds itself (see [`GUEST_OWNED`]).
+/// root, and not a path the guest builds itself (see [`GUEST_OWNED_TREES`]
+/// and [`GUEST_OWNED_DIRS`]).
 pub fn is_grantable(path: &Path) -> bool {
     let Some(raw) = path.to_str() else {
         return false;
@@ -269,9 +271,13 @@ pub fn is_grantable(path: &Path) -> bool {
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return false;
     }
-    !GUEST_OWNED
+    let path = Path::new(raw.trim_end_matches('/'));
+    !GUEST_OWNED_TREES
         .iter()
-        .any(|owned| path == Path::new(owned) || path.starts_with(owned))
+        .any(|owned| path.starts_with(owned))
+        && !GUEST_OWNED_DIRS
+            .iter()
+            .any(|owned| path == Path::new(owned))
 }
 
 /// The grant id for a directory: stable, so granting it again replaces one
@@ -292,7 +298,8 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     if !is_grantable(path) {
         return Err(format!(
             "{} cannot be granted: it is the root, relative, or a path the guest \
-             builds itself (/usr, /etc, /proc, /dev, /run, /tmp, /var/lib, /var/cache)",
+             builds itself (/usr, /etc, /proc, /dev, /run/ush, or /tmp, /run, /var, \
+             /var/lib, /var/cache, /home themselves)",
             path.display()
         ));
     }
@@ -481,7 +488,11 @@ mod tests {
             "/",
             "/usr/bin",
             "/etc",
-            "/var/lib/x",
+            "/var/lib",
+            "/run/ush",
+            "/tmp",
+            "/tmp/",
+            "/home",
             "relative",
             "/a/../etc",
         ] {
@@ -490,6 +501,15 @@ mod tests {
                     .is_err(),
                 "{bad} must not be grantable"
             );
+        }
+        for good in [
+            "/tmp/build",
+            "/run/media/you/usb",
+            "/home/you/src",
+            "/var/lib/data",
+            "/srv/x",
+        ] {
+            assert!(is_grantable(Path::new(good)), "{good} should be grantable");
         }
         r.apply(Environment::REVOKE_GRANT.with(cap.id.clone()))
             .unwrap();
