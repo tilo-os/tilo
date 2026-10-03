@@ -859,3 +859,60 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
     the_registry_split_action_lands_in_the_tree_and_the_resync_builds_the_group();
     the_semantic_route_performs_the_same_action_as_the_pointer();
 }
+
+/// An app asks the shell to open search (`AppHostIntent::OpenSearch`): the
+/// shell brings the app's tab to the front and opens the palette scoped to
+/// that app with the app's query. A repeated request keeps it open; a scope
+/// the app's directory does not publish falls back to the whole app.
+#[test]
+fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
+    use crate::shell::chrome_state::SearchScope;
+    let mut h = harness(2);
+    let workspace = h.chrome.borrow().tree().desktop.active;
+    h.chrome
+        .borrow_mut()
+        .focus_tab(workspace, h.strip, h.group, h.tabs[0]);
+    let source = h.tabs[1];
+
+    h.host.open_app_search(
+        source,
+        &ui::search::SearchRequest::this_app().with_query("invoice"),
+    );
+    assert!(h.host.palette_visible(), "the request opens the palette");
+    assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+    assert_eq!(
+        crate::shell::window_actions::active_tab_id(&h.chrome.borrow()),
+        Some(source),
+        "the asking app's tab comes to the front"
+    );
+    assert_eq!(h.host.palette_query(), "invoice");
+
+    h.host
+        .open_app_search(source, &ui::search::SearchRequest::this_app());
+    assert!(
+        h.host.palette_visible(),
+        "a second request never toggles the palette closed"
+    );
+    assert_eq!(h.host.palette_query(), "");
+
+    h.host.open_app_search(
+        source,
+        &ui::search::SearchRequest::within(ui::search::ScopeDecl::new("folder:inbox", "Inbox")),
+    );
+    assert!(h.host.palette_visible());
+    assert!(
+        h.chrome.borrow().search_resource_scope.is_none(),
+        "without a published directory the search stays on the whole app"
+    );
+
+    // A tab that is not on the workspace in front asks for nothing.
+    h.host.open_app_search(
+        0xdead_beef,
+        &ui::search::SearchRequest::this_app().with_query("x"),
+    );
+    assert_eq!(
+        h.host.palette_query(),
+        "",
+        "the stale request changed nothing"
+    );
+}

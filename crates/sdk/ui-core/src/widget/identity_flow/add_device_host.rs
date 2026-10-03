@@ -42,7 +42,7 @@ use crate::widget::identity_flow::{
 };
 #[cfg(test)]
 use crate::widget::identity_flow::{compute_pairing_mac, derive_pairing_mac_key};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
 
 const TITLE: &str = "Pair another device";

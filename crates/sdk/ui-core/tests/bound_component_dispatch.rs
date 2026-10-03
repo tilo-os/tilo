@@ -41,7 +41,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         );
         assert_eq!(provider.search("").len(), 1);
         assert!(provider.search_limited("", 0).is_empty());
-        let page = provider.search_page("", None, 1, 1);
+        let page = provider.search_page(&"".into(), None, 1, 1);
         assert_eq!(page.results.len(), 1);
         assert!(page.next.is_some());
         assert_eq!(page.inspected, 1);
@@ -88,7 +88,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         );
         assert!(provider.search("").is_empty());
         assert!(provider.search_limited("", 1).is_empty());
-        let page = provider.search_page("", None, 1, 1);
+        let page = provider.search_page(&"".into(), None, 1, 1);
         assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
         assert!(
             provider

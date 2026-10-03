@@ -7042,7 +7042,7 @@ mod tests {
                         (1400, 900),
                         theme.clone(),
                     );
-                    harness.render_window_png(&png);
+                    harness.render_png(&png);
                     if let Ok(json) = harness.inspection_json() {
                         std::fs::write(png.with_extension("inspection.json"), json)
                             .expect("write inspection");

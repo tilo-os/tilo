@@ -412,7 +412,7 @@ what the colour *did* at that line, first match wins:
 | `Theme::in_region(region) -> Theme`, `Theme::on_ground(ground) -> Theme` | The theme for what is drawn on that ground: `surfaces.content` re-pointed to it, ink tiers re-measured, `intent.selection` / `selection_hover` stepped from it. Pass it to the children's `draw`. |
 | `ui::surface::region_needs_edge(ground, content)`, `ui::tokens::colors::REGION_MIN_STEP` | Whether a tier is too close to content to separate by tone (only the high-contrast material). |
 | `theme.tokens.spacing.rhythm.{tight, related, sibling, section, group}` (`ui::tokens::Rhythm`) | Gaps by relationship (4 / 8 / 12 / 16 / 24 at 1×), scaled with `ui_scale` and a custom spacing. |
-| `FrameHarness::render_window_png` / `render_window_rgba` | The frame over the window ground; `--shots` and `--responsive-matrix` write this. |
+| `FrameHarness::render_png` / `render_rgba` | The frame over the window ground; `--shots` and `--responsive-matrix` write this (see Window chrome & shots). |
 | `ShotFrame::new(viewport, theme)` | Now clears to the window ground by default; delete a `.with_background(theme.bg_app)` / `.with_background(surfaces.content)`. |
 
 ### Choosing the region
@@ -738,7 +738,7 @@ padding and label size come from the theme. Apply the steps below in order.
 
 A destructive button is a neutral control lettered in danger ink. The filled
 danger face exists only in the confirmation step, and the toolkit gives it
-there: `ModalDialog::with_destructive(true)` and a `ModalFrame` action made with
+there: `ModalDialog::with_destructive(true)` and a painted modal action made with
 `ModalAction::danger(label)`. An app never asks for a filled danger button.
 
 ### Choosing a size
@@ -913,7 +913,376 @@ ink) and `Live` (the one filled pill: live, recording, an unread count).
 
 ## Search
 
+Search belongs to the platform. An app draws no search field, no result list
+and no palette of its own. Sort every search-like thing in the app into one
+of three jobs and apply that job's mapping:
+
+| The person wants to… | The app provides | The person sees |
+|---|---|---|
+| find something the app holds (a message, a video, a store item, a place) | a `SearchProvider` per findable kind (framework apps: `Resource::search`), `SearchRow`s, scopes, facets | the platform palette: Ctrl+K, `/`, or the app's magnifier button |
+| narrow the list already on screen | `Filterable` on that list | `SearchField::filter()` in the navigation shell's filter slot, or `Filtered` |
+| find in the document on screen | `Findable` on that view | the `FindBar` band at the top of the content (`FindScope`), Ctrl+F |
+
+If a field does two of these (a sidebar box that filters the list *and*
+queries a server on Enter), it is a filter whose Enter escalates — the filter
+mapping covers both.
+
+### Removed APIs
+
+| Removed | Replacement |
+|---|---|
+| `SearchField::opens_palette()` | `ui::search::search_button(SearchRequest::this_app())` in the toolbar. |
+| `SearchField::is_palette_launcher()`, `SearchField::take_palette_request()` | Nothing to poll: the button's action opens search. Delete the polling code and whatever it called (`open_container_palette`, a private `CommandPalette`). |
+| `SearchProvider::search_page(&self, query: &str, …)` | `search_page(&self, query: &SearchQuery, …)`. Use `query.text()` where you used `query`; see steps 4 (scopes) and 5 (facets) under Replace for the rest. Providers that only implement `search`/`search_limited` change nothing. |
+| `SearchPage { results, next, inspected }` | Add `pending: None`, or build it with `SearchPage::of(results, next)` (finished) / `SearchPage::pending(results, token)` (more coming). |
+| The 38 px pill `SearchField` | Nothing: the field is a regular control now (32 px, `radii.control`). Delete any height, radius or padding the app set around it. |
+
+### New API
+
+| API | Use |
+|---|---|
+| `ui::search::search_button(request) -> Button` | The search launcher: an icon-only magnifier button. The only search affordance in an app's chrome. |
+| `ui::search::SearchRequest::{this_app(), within(ScopeDecl), with_query(q)}` | What the launcher opens: this app, or one part of it, optionally pre-filled. |
+| `ui::search::ScopeDecl::new(anchor, label)` (also `tilo_resource::ScopeDecl`) | A part of the app search can be narrowed to. `label` fills the pill "Only Inbox". |
+| `ui::search::open_search_binding(&request)` | Bind any other action control to open search (a menu item, a "Search in this folder" link). |
+| `ui::search::SearchOpener` / `open_search_invocation(&request)` | A painted widget opening search from its own input handler: call `opener.open(request)`, return `opener.take()` from `ActionControls::take_control_invocation`. |
+| `ViewCx::search_button(request)`, `ViewCx::open_search(&request)`, `Dispatcher::open_search(&request)` | The same in a framework app. |
+| `ViewCx::on_open(|anchor| …)` | Show the item a search hit (or an agent's `open` call) points to. |
+| `Resource::search_scopes(state)`, `#[resource(scopes = path)]`, `SearchProvider::search_scopes()` | Declare the parts search can be narrowed to; the palette lists each as a "Search in" row. |
+| `ui::search::SearchQuery` | What a provider receives: `text()`, `filters()` / `filter_values(key)` / `admits(key, values)`, `scope()` / `in_scope(anchor)`. |
+| `ui::search::{Facet, FacetValue, FacetFilter}`, `SearchProvider::facets()`, `CatalogSearchProvider::{facets, admits}` | Filter dimensions: chips in the palette, typed `key:value` tokens parsed by the platform. |
+| `SearchPage::pending(results, PendingToken)`, `SearchProvider::poll_page(&token) -> PagePoll` | A slow source (IMAP, YouTube, a store catalogue, a geocoder): return what you have now, answer the rest when it arrives. |
+| `ui::search::SearchRow::{message, media, file_hit}` + `SearchResult::with_row` | Say what a hit is; the platform draws the row. |
+| `SearchField::filter()`, `.escalates_within(scope)`, `.with_placeholder(..)`, `set_count(Some(FilterCount::new(shown, total)))` | The in-content filter field. |
+| `ui::widget::{Filterable, FilterCount, apply_filter, sync_filter, Filtered}` | Bind a filter field to a list. |
+| `ui::widget::{Findable, FindOptions, FindMode, FindMatch, FindBar, FindScope, paint_find_match, with_findable}` | Find in a document. |
+
+### Replace
+
+Work through these in order. "The field" is the app's own search/filter/find
+input and everything drawn around it.
+
+1. **A field that searches the app's content** (mail's search box, tube's and
+   music's YouTube search, the store search, the maps place search, a
+   snippets/notes search box, containers' launcher pill):
+   - Delete the field, its result list or overlay, any private
+     `CommandPalette`/`ActionPalette`, and the code that runs the query.
+   - Move the query into a provider. A framework app returns its findable items
+     from `Resource::search` as `SearchEntry { anchor, title, text }`; any
+     other app implements `SearchProvider` (prefer `CatalogSearchProvider`
+     over a `SearchCatalog` for local data) and returns it from
+     `SearchSource::search_providers`.
+   - Put `search_button(SearchRequest::this_app())` where the field was in the
+     toolbar or header (framework app: `cx.search_button(..)`).
+   - A source behind the network: `search_page` starts the request, returns
+     the hits it already has (cache, local index) with
+     `SearchPage::pending(hits, PendingToken::new(id))`, and `poll_page`
+     answers `PagePoll::Pending` until the reply is in, then
+     `PagePoll::Ready(SearchPage::of(more, None))`. Never block in either; a
+     token you no longer know answers `Ready(SearchPage::empty())`.
+2. **Hits the app drew itself.** Pick the row shape by what the hit is and
+   fill it with the same values the app drew:
+   - a message, mail, chat line → `SearchRow::message(sender, subject).snippet(..).date(..).unread(..)`;
+   - a video, track, episode → `SearchRow::media(title).thumbnail(AppImage).byline(channel).duration(..)`;
+   - a match in a file or a code search hit → `SearchRow::file_hit(path, line_text).line(n).matched(byte_range)`;
+   - anything else → no row: `title`, `with_subtitle`, `with_icon` (the generic row).
+   Dates and durations are passed already formatted. Delete the app's row
+   painting.
+3. **Opening a hit.** A framework app registers `cx.on_open(|anchor| …)` in
+   the view that shows items and sets the `LocalState` that selects / scrolls
+   to the item, exactly as a click in the list would. The framework then
+   answers both a picked hit and the resource's `open` action (agents) with
+   it. Other apps keep `SearchSource::activate_search_result(action_id, ..)`.
+   Anchors are paths: give items inside a part of the app the part's anchor
+   as prefix (`folder:inbox/msg:12`).
+4. **Scopes** ("Search this folder", "Search in playlist",
+   per-mailbox search): declare each part as a `ScopeDecl { anchor, label }`
+   — framework apps with `#[resource(scopes = my_scopes)]` (or
+   `Resource::search_scopes`), others with `SearchProvider::search_scopes`.
+   A button that searched one part becomes
+   `search_button(SearchRequest::within(ScopeDecl::new(anchor, label)))`.
+   Providers that can narrow cheaply read `query.scope()`; the palette drops
+   hits outside the scope (`query.in_scope(hit.anchor())`) either way. For the
+   shell's drill-down the anchor must also be a published resource id (a
+   `Resource::children` entry).
+5. **Facets** (snippets `language:`/`tag:`, store
+   source/category, a mail `from:`): return them from
+   `SearchProvider::facets()` as `Facet::new("language", "Language").value("rust", "Rust")`.
+   Read the applied values in `search_page` with `query.filter_values("language")`
+   or test a hit with `query.admits("language", &[hit_language])`
+   (`CatalogSearchProvider::admits` for catalogue providers). Delete the app's
+   own token parsing and filter dropdowns next to its search field.
+6. **A field that narrows the visible list** (sidebar filters, a table filter,
+   containers' panel filter, a settings search over the visible settings):
+   - Implement `Filterable` on the list: `set_filter(query)` narrows (match
+     with `ui::search::ListIndex` so it agrees with search), `filter_count()`
+     returns `FilterCount::new(shown, total)`, and `search_scope()` returns the
+     `ScopeDecl` the list shows (or `None` for the whole app).
+   - Place the field: in a `NavShell` sidebar it is the shell's filter slot
+     (see [Navigation](#navigation)); anywhere else wrap the list:
+     `Filtered::new(Box::new(list)).with_placeholder("Filter people")`.
+     A painted host keeps a `SearchField::filter()` and calls
+     `sync_filter(&mut field, &mut list)` after routing each event.
+   - Delete the app's count text ("3 results"), its key-cap or count
+     workaround drawn over the field, its own Escape-to-clear and its "no
+     matches, search online" button: the field shows "3 of 120", clears on
+     Escape, and offers "Search everywhere" when nothing matches.
+   - Placeholder copy names what is filtered ("Filter people"), sentence case,
+     no ellipsis, no marketing.
+7. **Find in a document** (pdf-viewer, hex-editor, ebook, terminal
+   scrollback, text and code views):
+   - Implement `Findable` on the document view: `find(query, options)`
+     searches its own content and keeps the matches, `reveal(i)` scrolls match
+     `i` into view and makes it current, `clear_find()` stops painting. Offer
+     `supports_replace`/`replace`/`replace_all` only where the view edits
+     (replacements go through the view's own actions, so they are undoable),
+     and `supports_hex` in a byte view (`FindMode::Hex`).
+   - Paint each match with `paint_find_match(scene, transform, span_rect, is_current, theme)`
+     over the matched glyphs only — one call per line a match covers. Never
+     tint a whole block, page or row.
+   - Wrap the content: `FindScope::new(Box::new(view))` (configure with
+     `.with_bar(FindBar::new().with_replace())` if needed). A painted app that
+     lays out its own chrome hosts a `FindBar`: `layout(band_rect, theme, text)`,
+     `paint(..)`, `route(event, ctx)`, then `drive(&mut view)`, with the band
+     `FindBar::height(theme)` tall at the top of the content.
+   - Delete the app's find field, counter, case/word toggles, next/previous
+     buttons, its Ctrl+F / F3 / Enter handling and its match colour.
+8. **Keys.** Delete every app handler for Ctrl+K, `/` and Ctrl+F that opens
+   search or find: Ctrl+K and `/` open the platform search (a focused text
+   field or terminal still types `/`), Ctrl+F belongs to the `FindScope` or
+   `Filtered` around the content.
+
+### Delete
+
+- Every app-drawn search field, search pill, magnifier-in-a-box, result list,
+  search overlay and private palette.
+- `open_container_palette` and any other path that builds a `CommandPalette`
+  or `ActionPalette` in the app.
+- Hand-drawn match counters, find toolbars, case/word toggles, highlight
+  colours and whole-block match tints.
+- App handlers for Ctrl+K, `/`, Ctrl+F, F3.
+- App shard entries these leave behind (lower them as in
+  [Updating shards](#updating-shards)).
+
+### What each host shows
+
+The app does the same thing in every host; what the host does with it:
+
+- **A standalone window** opens its own palette: scope pill and "Search in"
+  rows, facet chips, slow pages under a loading row, row shapes.
+- **The Tilo shell** opens the system palette scoped to the app's tab with the
+  request's query, and drills into a scope the app publishes as a browsable
+  resource. App hits reach it through the action directory. Implement rows,
+  facets and slow pages anyway: the provider contract is the same in both.
+
 ## Window chrome & shots
+
+Overlays, status and captures behave the same in every app: one modal, one
+popover, both presented in the window's top layer; persistent status in the
+status bar and transient status in the bubble; chrome over media on the
+floating material; and shots that are the live window, settled, on a pinned
+clock. HIG §7c is the rule; this section is the mechanical part.
+
+### Removed APIs and their replacements
+
+| Removed | Replacement |
+|---|---|
+| `ui::widget::ModalFrame` (namespace) | functions of `ui::widget::modal_dialog`: `layout`, `paint_backdrop`, `paint_actions`, `card_width`, `body_width`, `action_height`, `ink` |
+| `ModalFrame::layout(viewport, &spec, tr, theme)` | `modal_dialog::layout(window, &spec, tr, theme)`; `window` is the whole window (see "Painted apps"), never a pane |
+| `ModalFrame::paint_backdrop(..)` / `ModalFrame::paint_actions(..)` | `modal_dialog::paint_backdrop(..)` / `modal_dialog::paint_actions(..)`, same arguments |
+| `ModalFrame::card_width(viewport, &spec, theme)` / `ModalFrame::body_width(viewport, &spec, theme)` | `modal_dialog::card_width(window, spec.max_width, theme)` / `modal_dialog::body_width(window, spec.max_width, theme)` |
+| `ModalFrame::action_height(theme)` / `ModalFrame::ink(theme)` | `modal_dialog::action_height(theme)` / `modal_dialog::ink(theme)` |
+| `ModalFrame::card_fill(theme)` | delete; a colour derived from the sheet is `ui::chrome::panel_ground(theme)` |
+| `ui::widget::modal_frame::{ModalAction, ModalEmphasis, ModalHit, ModalLayout, ModalSpec}` | same names in `ui::widget::modal_dialog` (also re-exported from `ui::widget`) |
+| `MODAL_SCRIM_ALPHA` (`ui::widget::modal_frame`) | `ui::overlay::scrim::MODAL_STRENGTH`; better, `ui::overlay::scrim::modal(scene, transform, window, openness, theme)` |
+| `MODAL_PAD`, `MODAL_TITLE_ROW_H`, `MODAL_ACTION_ROW_H`, `MODAL_CLOSE_SIZE`, `MODAL_VIEWPORT_MARGIN` | delete; read geometry from the `ModalLayout` |
+| `ModalSpec::body_height(h / text_scale)` | `ModalSpec::body_height(h)`: the body height in the same logical pixels as everything else; never divide by the text scale |
+| `ModalDialog::with_max_size(w, h)` / `set_max_size(w, h)` | `ModalDialog::with_max_width(w)` / `set_max_width(w)`; the height always follows the content (`shortcuts`' `with_max_size(560.0, 520.0)` becomes `with_max_width(560.0)`) |
+| `ModalDialog::layout_in(rect, theme, tr)` and `ModalDialog::with_viewport(rect)` | delete; the top layer places the dialog over the window (see "Mounting a dialog") |
+| `ui::widget::modal_dialog::{MAX_DIALOG_WIDTH, MAX_DIALOG_HEIGHT}` | `ui::widget::modal_dialog::MODAL_MAX_WIDTH`; no height cap |
+| `ui::widget::PopoverWidget::new(anchor, content, side)` | `ui::widget::Popover::with_content(content).anchored(anchor).side(side)` |
+| `ui::widget::popover_widget::PopoverSide` | `ui::widget::PopoverSide` |
+| `ui::overlay::{Modal, Popover, OverlayStack, OverlayEntry, Scrim}` | `ModalDialog`; `ui::widget::Popover`; nothing (the host owns the top layer); `ui::overlay::scrim::{modal, vertical_fade}` |
+| `ui::chrome::STATUS_BAR_HEIGHT` | `ui::chrome::status_bar::height(theme)`, and reserve the band with `status_bar::split` |
+| `ui::status_bubble::draw_chevron(..)` | `ui::icons::Icon::ChevronLeft` / `ChevronRight` `.draw(scene, transform, rect, ink)` |
+| `FrameHarness::render_window_png(path)` / `render_window_rgba()` | `FrameHarness::render_png(path)` / `render_rgba()` (now on `surfaces.content`) |
+| the old transparent `FrameHarness::render_png` / `render_rgba` | `render_png_transparent` / `render_rgba_transparent`, only where a test needs alpha 0 |
+| `ShotFrame::with_background(colour)` | delete; `ShotFrame::write_png` clears to `surfaces.content`, `write_png_transparent` for alpha |
+| `chrono::Local::now()` | `ui::clock::local_now()`; `Local::now().date_naive()` is `ui::clock::today()` |
+
+### New API
+
+| API | Use |
+|---|---|
+| `ModalDialog::with_max_width(w)` | Widest the sheet is drawn (design pixels, default 520). |
+| `ModalDialog::close_rect()` | The close control; shown when the dialog has `on_dismiss` and no secondary action. |
+| `ui::widget::Popover::with_content(c)` + `.anchored(rect)`, `.side(PopoverSide)`, `.open(bool)`, `.on_dismiss(f)`, `.with_viewport(rect)`, `.set_anchor(rect)`, `.set_open(bool)`, `.content()`, `.content_mut()` | An anchored Panel holding any widget. |
+| `ui::widget::Popover::new()` + `.with_label`, `.with_items`, `open_at`, `item_at`, `item_rect`, `move_highlight`, `select`, `take_selection`, `place` | An option menu (unchanged API). |
+| `ui::widget::floating_surface::{paint, paint_faded, radius}` | The body of any floating Panel: `radii.panel`, the blurred material, `elevation.floating`, the panel edge. |
+| `ui::chrome::status_bar::{height, split, draw}` | Persistent status, in a band the content does not cover. |
+| `StatusBubble::show(text, now)`, `pointer_moved(area, p, tr, theme, now)`, `paint(scene, t, tr, theme, area, now)`, `rect_in(area, tr, theme)`, `text()` | The transient bubble owns its text, timing, placement and paint. |
+| `ui::overlay::scrim::modal(scene, t, window, openness, theme)` | The scrim behind a modal Panel (`surfaces.scrim`). |
+| `ui::overlay::scrim::vertical_fade(scene, t, rect, FadeEdge::Top / Bottom, strength, theme)` | One smooth gradient under text on media. |
+| `theme.tokens.colors.media.{letterbox, scrim, ink, ink_dim}` | Media colours, the same in every theme. |
+| `ui::icons::Icon::TriangleAlert` | Warning icon (the `BannerKind::Warning` default). |
+| `ui::widget::history_button()` | The History button for an app's own toolbar; the window then draws no History bar. |
+| `ui::clock::{local_now, today, CAPTURE_LOCAL_TIME}` | Local date and time; pinned to 30 June 2026, 10:42 in captures. |
+| `FrameHarness::settle_for_capture(bound)` | Run frames until no animation runs and no image load is in flight. |
+| `ui::image_store::loads_in_flight()` | Image loads in flight across every store. |
+| `ResourceApp::scenario_viewport(name) -> Option<(u32, u32)>` | The viewport a named scenario is captured at. |
+
+### Mounting a dialog or a popover
+
+`ModalDialog::draw` and `Popover::draw` paint nothing. Both paint in
+`Widget::draw_overlay`, which the host calls after the app and the window's
+chrome, with the window as the presence viewport. So:
+
+1. **Retained apps** (a `Column`/`Row`/framework view holds the dialog):
+   nothing to do beyond deleting any `dialog.draw(..)`/`popover.draw(..)` call
+   the app makes itself. A dialog anywhere in the tree covers the window.
+2. **Painted apps** (a custom `Widget` that owns `dialog: ModalDialog<_>` or
+   `popover: Popover` as a field):
+   - Return it from `children()`, `for_each_child()` and `children_mut()`
+     while it is open, so the default `draw_overlay` reaches it. If the app
+     overrides `draw_overlay`, call `self.dialog.draw_overlay(scene,
+     transform, text, theme, presence)` there instead.
+   - Delete `dialog.layout_in(..)`, `.with_viewport(..)` and the
+     `dialog.draw(..)`/`popover.draw(..)` call in `draw`.
+   - Keep routing events with `dialog.handle_detached(event, scale, mods,
+     doc, path)` or `popover.handle_event(..)` while it is open.
+3. **Immediate-mode sheets** that keep `ModalSpec`/`ModalLayout` (no
+   `ModalDialog`): move the three paint calls into the app's
+   `draw_overlay`, and lay out against the window:
+   `let window = presence.viewport.get().unwrap_or(self.rect);`. Delete any
+   scrim the app paints itself and any opaque "overlay" fill used as a scrim
+   (vpn, mail).
+
+Scrims that covered only a pane (calendar, shortcuts, containers,
+word-processor) cover the window once the dialog is mounted as above; delete
+any per-pane scrim rect.
+
+### Choosing modal or popover
+
+- Confirms a destructive or irreversible step, asks for a value, or blocks
+  until answered → `ModalDialog`. Title says what is being decided; the
+  primary action names what happens ("Delete 3 photos"); `with_destructive`
+  for deleting, revoking or discarding; a `secondary_action("Cancel", ..)` or
+  an `on_dismiss` (which shows the close control).
+- Picks one value next to the control that owns it (an interval, a unit, a
+  sort order) → `Popover::new().with_items(..)`. Delete a hand-drawn list
+  with a solid accent row: the highlight is the panel's lift and the applied
+  option has a check.
+- Shows a small, dismissible form or detail next to its trigger →
+  `Popover::with_content(widget)`.
+- Never a modal for information that needs no decision: use a `Banner` or a
+  `Toast`.
+
+### Status: which surface
+
+| What | Surface |
+|---|---|
+| Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
+| A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
+| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
+| A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
+
+StatusBubble, replacing the hand-rolled pattern (`pill_size` + a margin
+rect + a reveal zone + `push_layer(alpha)` + `draw_pill` + `poke` on change):
+
+```rust
+// state: status_bubble: ui::StatusBubble
+let now = ui::time::now();
+self.status_bubble.show(&label, now);              // every frame is fine; pokes on change only
+// in CursorMoved:
+self.status_bubble.pointer_moved(self.rect, p, tr, theme, now);
+// in draw (or draw_overlay):
+self.status_bubble.paint(scene, transform, tr, theme, self.rect, now);
+// in needs_animation_frame:
+self.status_bubble.needs_frame(ui::time::now())
+```
+
+Delete the app's `status_shown` copy of the text, its `margin`/zone
+constants, `text_size` literals and the alpha layer. Delete
+`arm_status_bubble_for_shots`, `shots_status` and any forced-visible flag: a
+plain `--shots` waits until the bubble has faded. A screenshot scenario that
+wants the bubble in frame stages it in its stage hook with
+`status_bubble.show(text, now)` followed by `status_bubble.set_hover(true,
+now)`. A bubble that hosts controls (ebook's page arrows) keeps `pill_size`
+and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
+`ChevronRight`.
+
+### Scrims and media
+
+- Any scrim colour literal (`Color::from_rgba8(0, 0, 0, a)`, `BLACK.with_alpha`)
+  or app-painted modal dim → delete; the modal paints its own.
+- Stepped bands (several rects of increasing alpha, a hard 64 px band) under
+  text on media → one call:
+  `ui::overlay::scrim::vertical_fade(scene, t, rect, FadeEdge::Bottom, 0.7, theme)`,
+  and draw that text in `theme.tokens.colors.media.ink` (secondary:
+  `media.ink_dim`).
+- Controls over media (capture toolbars, editor transport, photo info) → a
+  floating Panel shaped to the controls:
+  `ui::widget::floating_surface::paint(scene, t, rect, theme)`, inked with
+  `let ink = theme.on_ground(ui::chrome::panel_ground(theme));`
+  (`ink.text_primary`, `ink.text_dim`). Glyphs are `metrics.icon_md` in
+  `metrics.min_pointer_target` hit rects that do not overlap.
+- The area around a frame (letterbox, an empty viewfinder) →
+  `theme.tokens.colors.media.letterbox`, never `surfaces.base`.
+- An idle or error state over media → text only; never draw a play glyph
+  or a ring under it.
+
+### History
+
+- Toolbar apps (logs, themes, weather and any app with its own header row):
+  put `ui::widget::history_button()` into that row (trailing group). The
+  window then draws no History bar; delete any top padding or band the app
+  added under the bar.
+- `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
+  places"). Delete descriptions and developer notes from it: "(not
+  recorded)", "(forecasts are not recorded)", "Process output (not
+  recorded)".
+
+### Shots
+
+1. Delete the `standalone_capture()` branch in `main.rs` that builds a
+   separate `LaunchSpec` or root for `--shots` (clocks, maps, settings,
+   themes, typst-editor, sheets, video-player, weather). `main` is
+   `ui::framework::run::<App>()`. Move each scenario:
+   - resource state → `ResourceApp::scenarios()` names it and
+     `ResourceApp::scenario(Some(name))` returns the actions that stage it;
+   - view state (a selection, an open dialog, a scroll offset, a pushed
+     detail page) → `ViewCx::on_stage` or `ResourceSurface::stage`;
+   - a narrow or phone-sized scenario → `ResourceApp::scenario_viewport`:
+     ```rust
+     fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+         name.ends_with("-narrow").then_some((520, 820))
+     }
+     ```
+2. Replace `chrono::Local::now()` with `ui::clock::local_now()` everywhere
+   (live and capture code alike) and delete per-app fixed demo clocks (maps'
+   `demo_clock_base`): a capture already shows 30 June 2026, 10:42.
+3. Delete `std::thread::sleep`, manual frame loops and
+   `ImageStore::block_until_idle` before a capture: the launcher settles
+   animations and image loads (`CAPTURE_SETTLE_BOUND`).
+4. Capture on the content ground: `render_window_png` → `render_png`; never
+   pass `Color::TRANSPARENT` to a shot.
+5. A shot handler that drives `ShotFrame` itself draws the top layer too:
+   `let mut scene = frame.draw(&mut root); frame.draw_overlay(&mut root, &mut scene); frame.write_png(&scene, out);`
+   (`ui::launch::render_widget_png` does all three).
+6. Light shots through a remote cargo drop-in: pass `--theme light` (the
+   environment is not forwarded).
+
+### What to delete in an app
+
+- Every `ModalFrame`, `PopoverWidget`, `ui::overlay::Modal`/`Popover`/`Scrim`
+  use, per the tables above.
+- Hand-drawn option lists, menus and pickers with an accent-filled selected
+  row → `Popover::new()`.
+- App-painted scrims, dims and "overlay" fills behind dialogs.
+- Status strips painted as a raised band → `chrome::status_bar`.
+- Error text drawn in red over content → `Banner` or `Toast`.
+- `arm_status_bubble_for_shots` and every forced-visible shot flag.
+- Separate capture roots, demo clocks and pre-capture sleeps.
 
 ## Floating material
 
