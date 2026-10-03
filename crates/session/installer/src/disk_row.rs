@@ -172,7 +172,7 @@ impl Widget for DiskRow {
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
 
         let (stroke_w, stroke_color) = if self.selected {
-            (2.0, theme.accent_primary)
+            (2.0, theme.tokens.colors.intent.inverted)
         } else if self.is_focused {
             (2.0, theme.border_focus)
         } else {

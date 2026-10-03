@@ -200,7 +200,7 @@ impl Widget for Link {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
-        let color = theme.accent_primary;
+        let color = theme.tokens.colors.text_primary;
         let (tw, th) = text_renderer.measure(&self.label, self.font_size, None);
         let (tw, th) = (f64::from(tw), f64::from(th));
         let x0 = self.rect.x0;

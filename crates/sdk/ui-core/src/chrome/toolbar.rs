@@ -332,10 +332,7 @@ pub fn draw_with_metrics(
     // Ink on the accent fill comes from the theme (it walks out of white on
     // a bright accent), not from a literal white that the light and
     // high-contrast palettes cannot reach.
-    let on_accent = theme
-        .tokens
-        .colors
-        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+    let on_accent = theme.tokens.colors.text_primary;
     let cy = rect.y0 + rect.height() / 2.0;
     let laid = lay_out(rect, items, tr, metrics);
     for (item, laid) in items.iter().zip(&laid) {
@@ -356,9 +353,12 @@ pub fn draw_with_metrics(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                theme
+                    .tokens
+                    .colors
+                    .lift_on(theme.tokens.colors.surfaces.content, 1.0),
                 None,
-                &RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(r, f64::from(theme.tokens.radii.control)),
             );
         }
         let color = if item.active {

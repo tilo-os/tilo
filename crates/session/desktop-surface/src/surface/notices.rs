@@ -651,7 +651,7 @@ impl Widget for NotificationLayer {
                 scene,
                 transform,
                 panel,
-                f64::from(theme.tokens.radii.lg),
+                f64::from(theme.tokens.radii.control),
                 theme,
             );
             center.draw(host, &layout, scene, transform, text, theme, self.cursor);

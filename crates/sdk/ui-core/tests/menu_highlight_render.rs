@@ -57,8 +57,8 @@ const MIN_DELTA_L: f64 = 4.0;
 /// The floor for an *armed* row (the one Enter / a click activates). The
 /// 10 % veneer that used to paint the context menu's armed row measured
 /// ΔL* 11.6 on dark — the value the user reported as "no highlighting" — so a
-/// floor that the old paint would pass guards nothing. Every shipped preset's
-/// accent clears 20 (the lowest, `gruvboxlight`, measures 28.6).
+/// floor that the old paint would pass guards nothing. The armed row is an
+/// inverted control, which clears it by far on every material.
 const MIN_ARMED_DELTA_L: f64 = 20.0;
 
 fn color_of(px: (u8, u8, u8, u8)) -> Color {
@@ -193,7 +193,7 @@ fn assert_highlight_visible(
 }
 
 /// The assertion for an *armed* row: the sampled fill must be exactly the
-/// theme's primary accent (so a regression back to any veneer fails on the
+/// theme's inverted fill (so a regression back to any veneer fails on the
 /// colour, not on a threshold), the step to the neighbour must clear
 /// [`MIN_ARMED_DELTA_L`], and the ink the row draws its label with must meet
 /// the text-contrast floor against the fill actually painted.
@@ -215,11 +215,11 @@ fn assert_armed_row(
         lo.3, 0xff,
         "{surface}/{theme_name}: plain row sample is not opaque"
     );
-    let accent = theme.tokens.colors.accent[tilo_ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
+    let inverted = theme.tokens.colors.intent.inverted.to_rgba8();
     assert_eq!(
         (hi.0, hi.1, hi.2),
-        (accent.r, accent.g, accent.b),
-        "{surface}/{theme_name}: armed row is painted {hi:?}, not the theme accent"
+        (inverted.r, inverted.g, inverted.b),
+        "{surface}/{theme_name}: armed row is painted {hi:?}, not the inverted fill"
     );
     let delta = (lightness(hi) - lightness(lo)).abs();
     eprintln!("{surface}/{theme_name}: armed {hi:?} vs plain {lo:?} → ΔL*={delta:.2}");
@@ -228,10 +228,7 @@ fn assert_armed_row(
         "{surface}/{theme_name}: armed row {hi:?} vs plain row {lo:?} differ by only \
          ΔL*={delta:.2} (< {MIN_ARMED_DELTA_L})"
     );
-    let ink = theme
-        .tokens
-        .colors
-        .on_accent(tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+    let ink = theme.tokens.colors.intent.on_inverted;
     let ratio = tilo_ui::a11y::contrast_ratio(ink, color_of(hi));
     assert!(
         ratio >= tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST,

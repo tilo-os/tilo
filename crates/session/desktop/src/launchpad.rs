@@ -554,7 +554,7 @@ impl Widget for CollaborationLaunchpad {
             );
         }
 
-        // Control role (HIG §9.1/§9.3): an action tile takes `radii.lg`. The
+        // Control role (HIG §9.1/§9.3): an action tile takes `radii.control`. The
         // hovered or keyboard-selected tile is a lift with the tier's
         // hairline — never an accent wash, which is reserved for live state
         // (§9.4) — and an idle tile rests on its translucent floor with an
@@ -590,9 +590,13 @@ impl Widget for CollaborationLaunchpad {
                 rect.x0 + 42.0,
                 rect.y0 + 42.0,
             );
-            action
-                .icon()
-                .draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.6);
+            action.icon().draw_with_stroke(
+                scene,
+                transform,
+                icon_rect,
+                theme.tokens.colors.intent.inverted,
+                1.6,
+            );
             let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);
             text.draw_text(
                 scene,

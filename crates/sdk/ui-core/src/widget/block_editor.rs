@@ -3089,7 +3089,10 @@ impl BlockEditor {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5].with_alpha_factor(if active { 0.22 } else { 0.12 }),
+                    tokens
+                        .colors
+                        .text_primary
+                        .with_alpha_factor(if active { 0.22 } else { 0.12 }),
                     None,
                     &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
                 );
@@ -4727,7 +4730,7 @@ fn draw_formula_chrome(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5].with_alpha_factor(0.20),
+                colors.text_primary.with_alpha_factor(0.20),
                 None,
                 &shape,
             );
@@ -4803,7 +4806,7 @@ fn draw_visual_formula_editor(
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.25),
+                theme.tokens.colors.intent.selection_tint,
                 None,
                 &band,
             );
@@ -4831,7 +4834,7 @@ fn draw_visual_formula_editor(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[5],
+            theme.tokens.colors.intent.you,
             None,
             &caret,
         );
@@ -6220,7 +6223,7 @@ fn draw_block(
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ctx.theme.tokens.colors.accent[5],
+                ctx.theme.tokens.colors.intent.inverted,
                 None,
                 &rule,
             );
@@ -6325,8 +6328,10 @@ fn draw_transclusion_card(
     preview: Option<&TransclusionPreview>,
 ) {
     let tokens = &theme.tokens;
-    let card =
-        vello::kurbo::RoundedRect::from_rect(rect.inflate(-1.0, -1.0), f64::from(tokens.radii.md));
+    let card = vello::kurbo::RoundedRect::from_rect(
+        rect.inflate(-1.0, -1.0),
+        f64::from(tokens.radii.control),
+    );
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -6372,7 +6377,7 @@ fn draw_transclusion_card(
         scene,
         "Embedded note · Open",
         12.0,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         translated(transform, rect.x0 + 16.0, rect.y1 - 24.0),
         None,
     );
@@ -6469,7 +6474,7 @@ fn draw_checklist_prefix(
         ctx.scene.fill(
             vello::peniko::Fill::NonZero,
             ctx.transform,
-            ctx.theme.tokens.colors.accent[5],
+            ctx.theme.tokens.colors.intent.inverted,
             None,
             &shape,
         );
@@ -6573,7 +6578,7 @@ fn draw_code_block_prefix(
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
-        ctx.theme.tokens.colors.accent[5],
+        ctx.theme.tokens.colors.intent.inverted,
         None,
         &bar,
     );
@@ -7872,7 +7877,7 @@ impl Widget for BlockEditor {
         // The opaque drag preview can cover its destination. Keep the drop
         // marker above both the preview and its code/header chrome.
         if let Some(drag) = self.block_drag.filter(|drag| drag.active) {
-            self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.accent[5], drag);
+            self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.intent.you, drag);
         }
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
         // Link hit geometry depends on the shaped positions produced by this

@@ -88,7 +88,7 @@ pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
     }
 }
 
-/// The Control radius for `rect` (`radii.lg`, HIG §9.1).
+/// The Control radius for `rect` (`radii.control`, HIG §9.1).
 pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
     ChromeRole::Control.radius(theme, rect.height())
 }

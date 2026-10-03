@@ -19,7 +19,6 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
 use taffy::{NodeId, TaffyTree};
-use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_edit::{Edit, EditCore, Motion};
 use ui::text_render::TextRenderer;
@@ -483,19 +482,19 @@ impl EditorPalette {
         let tokens = &theme.tokens;
         // No background of its own, so every neutral here is ink *on the
         // window card* — hence `Theme::on_card` rather than fixed ramp slots.
-        let ink = theme.on_card();
+        let ink = theme.on_content();
         Self {
             body: ink.ink,
             gutter: ink.ink_dim,
             gutter_bg: ink.tint, // a whisper tint of the card, either way round
-            keyword: tokens.colors.accent[5], // indigo-500
+            keyword: tokens.colors.intent.inverted, // indigo-500
             string: tokens.colors.semantic.success, // emerald
             number: tokens.colors.semantic.warning, // amber
             comment: ink.ink_tertiary,
             punct: ink.ink_dim,
             ident: ink.ink,
-            caret: tokens.colors.accent[5],
-            selection: tokens.colors.accent[5].with_alpha_factor(0.22),
+            caret: tokens.colors.intent.inverted,
+            selection: tokens.colors.intent.selection_tint,
         }
     }
 }

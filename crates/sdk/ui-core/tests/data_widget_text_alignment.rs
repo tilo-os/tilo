@@ -331,7 +331,7 @@ fn chart() -> Element {
         Chart::new(vec![
             Series::new(
                 vec![1.0, 3.0, 2.0, 5.0, 4.0, 6.0, 5.5],
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
             )
             .with_legend("Sessions"),
             Series::new(

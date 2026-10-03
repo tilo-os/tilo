@@ -408,7 +408,7 @@ impl PadMap {
             scene,
             transform,
             pad,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(theme.tokens.radii.control),
             colors.lift(0.35),
         );
         let active = pad.inset(-metrics.section);
@@ -417,7 +417,7 @@ impl PadMap {
                 scene,
                 transform,
                 active,
-                f64::from(theme.tokens.radii.md),
+                f64::from(theme.tokens.radii.control),
                 colors.lift(0.15),
             );
         }

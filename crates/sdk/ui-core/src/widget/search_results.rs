@@ -27,7 +27,6 @@ use crate::presence::PresenceCtx;
 use crate::search::{SearchGroup, SearchResult};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
@@ -386,16 +385,22 @@ impl SearchResultsView {
         };
         let selected = row.flat == self.cursor;
         let hovered = self.hover == Some(row.flat);
-        let selected_ink = colors.on_accent(ON_FILL_MIN_CONTRAST);
+        let selected_ink = colors.intent.on_inverted;
 
         // Selection = a filled row (per the command palette convention);
         // hover = a barely-there veneer, distinct from selection.
         let lift = RoundedRect::from_rect(
             row.rect.inflate(0.0, -ROW_LIFT_INSET),
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.detail),
         );
         if selected {
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &lift);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.intent.inverted,
+                None,
+                &lift,
+            );
         } else if hovered {
             // One step off the panel it sits on, polarity chosen the way
             // `hairline_on` chooses it — the white veneer this replaces was
@@ -625,7 +630,7 @@ impl Widget for SearchResultsView {
         // takes the panel ground and the panel edge — the declared
         // `border_standard` this replaces vanished on the dark preset's
         // raised surface.
-        let radius = f64::from(theme.tokens.radii.lg);
+        let radius = f64::from(theme.tokens.radii.control);
         let card = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,

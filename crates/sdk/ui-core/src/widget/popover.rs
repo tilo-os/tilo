@@ -366,7 +366,7 @@ impl Widget for Popover {
         }
         self.place(text_renderer, theme);
         let c = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
 
         // A floating Panel casts the `e4` tier (HIG §9.1) through the one
         // shadow painter, so its shadow follows the panel's own outline and
@@ -377,7 +377,7 @@ impl Widget for Popover {
             transform,
             self.rect,
             radius,
-            &theme.tokens.elevation.e4,
+            &theme.tokens.elevation.floating,
         );
 
         // Panel role (HIG §9.1): the panel ground, walked clear of both the
@@ -409,13 +409,13 @@ impl Widget for Popover {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                    c.intent.inverted,
                     None,
-                    &RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm)),
+                    &RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.detail)),
                 );
             }
             let text_color = if is_hl {
-                c.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                c.intent.on_inverted
             } else {
                 c.text_primary
             };
@@ -423,9 +423,9 @@ impl Widget for Popover {
                 // The tick is a mark, not text, so it answers to the lower
                 // non-text floor — but it still has to answer to something.
                 let check_color = if is_hl {
-                    c.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
+                    c.intent.on_inverted
                 } else {
-                    c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                    c.intent.inverted
                 };
                 Self::draw_check(scene, transform, row, check_color);
             }

@@ -329,15 +329,15 @@ impl CollaboratorsOverlay {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5].multiply_alpha(0.12),
+                colors.intent.inverted.multiply_alpha(0.12),
                 None,
-                &RoundedRect::from_rect(banner, f64::from(tokens.radii.sm)),
+                &RoundedRect::from_rect(banner, f64::from(tokens.radii.detail)),
             );
             text_renderer.draw_text(
                 scene,
                 &crate::i18n::t("people-panel-screen-visible"),
                 tokens.typography.scale.xs,
-                colors.accent[5],
+                colors.intent.inverted,
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
                 None,
             );
@@ -439,9 +439,9 @@ impl CollaboratorsOverlay {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.accent[4],
+                theme.tokens.colors.intent.inverted_hover,
                 None,
-                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm)),
+                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail)),
             );
         }
     }
@@ -1026,7 +1026,7 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(rect, glyph)
-                    .radius(f64::from(theme.tokens.radii.sm))
+                    .radius(f64::from(theme.tokens.radii.detail))
                     .hovered(cursor.is_some_and(|point| rect.contains(point))),
             );
         }
@@ -1093,15 +1093,15 @@ impl CollaboratorsOverlay {
                 colors.lift(0.35)
             },
             None,
-            &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
+            &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.detail)),
         );
         if model.status_editing {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 None,
-                &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
+                &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.detail)),
             );
         }
         let label = crate::i18n::t_args("people-panel-own-status", &[("status", label.into())]);
@@ -1135,7 +1135,7 @@ impl CollaboratorsOverlay {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.25),
                 transform,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 None,
                 &vello::kurbo::Line::new(
                     (caret_x, self.status.y0 + 6.0),
@@ -1146,7 +1146,7 @@ impl CollaboratorsOverlay {
                 scene,
                 "↵",
                 theme.tokens.typography.scale.xs,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 transform.pre_translate((self.status.x1 - 20.0, self.status.y0 + 5.0).into()),
                 None,
             );
@@ -1159,7 +1159,7 @@ impl CollaboratorsOverlay {
                 "○"
             },
             theme.tokens.typography.scale.xs,
-            colors.accent[5],
+            colors.intent.inverted,
             transform.pre_translate((self.status.x0 + 8.0, self.status.y0 + 6.0).into()),
             None,
         );
@@ -1169,12 +1169,12 @@ impl CollaboratorsOverlay {
                 Fill::NonZero,
                 transform,
                 if active {
-                    colors.accent[5]
+                    colors.intent.inverted
                 } else {
                     colors.lift(0.35)
                 },
                 None,
-                &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm)),
+                &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.detail)),
             );
             let text = crate::i18n::t(match mode {
                 ui::StatusSharing::Automatic => "people-panel-sharing-auto",
@@ -1186,7 +1186,7 @@ impl CollaboratorsOverlay {
                 &text,
                 theme.tokens.typography.scale.xs,
                 if active {
-                    colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+                    colors.intent.on_inverted
                 } else {
                     colors.text_dim
                 },
@@ -1235,7 +1235,7 @@ impl CollaboratorsOverlay {
                 frame.y + 3.0,
                 self.panel.x1 - 8.0,
                 frame.y + ROW_H - 3.0,
-                f64::from(tokens.radii.md),
+                f64::from(tokens.radii.control),
             );
             scene.fill(
                 Fill::NonZero,
@@ -1495,7 +1495,7 @@ impl CollaboratorsOverlay {
                 scene,
                 &shown,
                 tokens.typography.scale.xs,
-                colors.accent[5],
+                colors.intent.inverted,
                 transform
                     .pre_translate((text_x, row_y + if has_activity { 45.0 } else { 29.0 }).into()),
                 None,
@@ -1503,8 +1503,8 @@ impl CollaboratorsOverlay {
         }
         if row.followable {
             let action = Self::row_action_rect(self.panel, row_y);
-            // Control role (HIG §9.1): a pressable body takes `radii.lg`;
-            // `radii.sm` is for details drawn inside a control.
+            // Control role (HIG §9.1): a pressable body takes `radii.control`;
+            // `radii.detail` is for details drawn inside a control.
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // the face is handed the theme-scaled label size explicitly.
             let label = crate::i18n::t(if followed {
@@ -1531,7 +1531,7 @@ impl CollaboratorsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         if self.invite.area() > 0.0 {
-            // Control role (HIG §9.1): pressable bodies take `radii.lg`.
+            // Control role (HIG §9.1): pressable bodies take `radii.control`.
             let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // each face is handed the theme-scaled label size explicitly.
@@ -1575,7 +1575,7 @@ impl CollaboratorsOverlay {
             ui::chrome::shell::panel_ground(theme),
         );
         // Control role (HIG §9.1): the activity row takes the Control radius
-        // (`radii.sm` is for details inside a control) and rests on the lift
+        // (`radii.detail` is for details inside a control) and rests on the lift
         // floor with an edge derived from that floor.
         ui::surface::card(
             scene,

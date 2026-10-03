@@ -109,7 +109,7 @@ fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent
         ctx.scene,
         transform,
         rect,
-        f64::from(theme.tokens.radii.lg),
+        f64::from(theme.tokens.radii.control),
         theme.tokens.colors.surfaces.raised,
     );
 

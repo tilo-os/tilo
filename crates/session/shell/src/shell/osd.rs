@@ -635,7 +635,7 @@ fn draw_level_bar(scene: &mut Scene, transform: Affine, bar: Rect, theme: &Theme
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5],
+            colors.intent.inverted,
             None,
             &RoundedRect::from_rect(fill_rect, bar_h / 2.0),
         );

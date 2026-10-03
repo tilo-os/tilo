@@ -472,7 +472,7 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
 /// Badges, chips and avatars. Split out of `build_showcase` to keep that
 /// under the line cap.
 fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
-    let accent = theme.accent_primary;
+    let accent = theme.tokens.colors.intent.inverted;
     card(
         Some(CARD_W),
         "Badges, Chips & Avatars",
@@ -570,7 +570,7 @@ fn build_metrics_card(theme: &Theme) -> Box<dyn Widget> {
 /// Ring gauge, sparkline, bar gauge and area chart. Split out of
 /// `build_showcase` to keep that under the line cap.
 fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
-    let accent = theme.accent_primary;
+    let accent = theme.tokens.colors.intent.inverted;
     card(
         Some(CARD_W),
         "Charts & Gauges",

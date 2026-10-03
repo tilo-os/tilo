@@ -1,4 +1,4 @@
-use super::colors::{ACCENT_PRIMARY_IDX, Colors};
+use super::colors::Colors;
 use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 
@@ -68,12 +68,11 @@ impl TerminalPalette {
         let red = c.semantic.danger;
         let green = c.semantic.success;
         let yellow = c.semantic.warning;
-        let blue = c.accent[ACCENT_PRIMARY_IDX];
-        // Keep cyan distinct from a blue-leaning accent by pulling the theme's
-        // "info" hue toward green.
-        let cyan = mix8(c.semantic.info, green, 0.35);
-        // The theme has no magenta; red + blue lands on a tasteful one.
-        let magenta = mix8(red, blue, 0.5);
+        // Blue, magenta and cyan come from the presence palette (265°, 325°
+        // and 205°), so they sit at the same lightness as each other.
+        let blue = c.presence.get(8);
+        let magenta = c.presence.get(10);
+        let cyan = c.presence.get(6);
 
         Self {
             fg_default: fg,

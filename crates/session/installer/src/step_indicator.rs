@@ -111,7 +111,7 @@ impl StepIndicator {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.inverted,
             None,
             &RoundedRect::from_rect(completed, 3.0),
         );
@@ -170,7 +170,7 @@ impl Widget for StepIndicator {
             return;
         }
         let cy = self.rect.y0 + CIRCLE_CY;
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.inverted;
         let upcoming_bg = theme.bg_primary;
 
         if self.rect.width() < COMPACT_WIDTH {

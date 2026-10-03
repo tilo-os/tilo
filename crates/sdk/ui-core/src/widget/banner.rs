@@ -100,7 +100,7 @@ fn paint_banner(
     let theme = ctx.theme;
     let transform = ctx.transform;
     let accent = kind.color(theme);
-    let radius = f64::from(theme.tokens.radii.md);
+    let radius = f64::from(theme.tokens.radii.control);
 
     ctx.fill_round(rect, radius, accent.with_alpha_factor(0.13));
     ctx.stroke_round(rect, radius, accent.with_alpha_factor(0.4), 1.0);

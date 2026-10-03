@@ -852,7 +852,13 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 visual,
                 &self.rect.inflate(48.0, 48.0),
             );
-            crate::surface::shadow(scene, visual, self.rect, 22.0, &theme.tokens.elevation.e4);
+            crate::surface::shadow(
+                scene,
+                visual,
+                self.rect,
+                22.0,
+                &theme.tokens.elevation.floating,
+            );
             scene.pop_layer();
         }
 

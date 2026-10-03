@@ -139,7 +139,7 @@ impl Widget for Spinner {
             (elapsed_ms / ROTATION_PERIOD_MS).fract()
         };
 
-        let accent = theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
 
         // Evenly spaced offsets so the chain covers a quarter of the orbit.
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {

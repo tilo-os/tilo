@@ -731,13 +731,13 @@ impl PageSidebar {
             // A dragged page is genuinely lifted, so it casts the ramp's
             // dragged-object shadow, shaped to its own corners (HIG §9.3),
             // rather than a black wash nudged down four pixels.
-            let radius = f64::from(theme.tokens.radii.md);
-            crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.e4);
+            let radius = f64::from(theme.tokens.radii.control);
+            crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.floating);
             thumb(scene, tr, base, from, ghost);
             scene.stroke(
                 &Stroke::new(2.0),
                 base,
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
                 None,
                 &RoundedRect::from_rect(ghost, radius),
             );
@@ -811,9 +811,9 @@ impl PageSidebar {
         thumb(scene, tr, base, i, rect);
 
         // The current page wears the focus-ring weight; the others a
-        // hairline. Both follow the thumbnail's `radii.md` corners.
+        // hairline. Both follow the thumbnail's `radii.control` corners.
         let (ring, w) = if is_current {
-            (theme.accent_primary, 2.0)
+            (theme.tokens.colors.intent.inverted, 2.0)
         } else {
             (c.text_primary.with_alpha_factor(0.12), 1.0)
         };
@@ -822,7 +822,7 @@ impl PageSidebar {
             base,
             ring,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
 
         // Right-aligned in the left gutter, one `s2` short of the
@@ -838,7 +838,7 @@ impl PageSidebar {
         let lx = rect.x0 - f64::from(theme.tokens.spacing.s2) - f64::from(lw);
         let ly = rect.y0 + (rect.height() - f64::from(lh)) / 2.0;
         let col = if is_current {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         } else {
             c.text_dim
         };
@@ -870,7 +870,7 @@ impl PageSidebar {
         } else {
             c.surfaces.base
         };
-        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.md), bg);
+        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
         let label = format!("+  {}", self.add_label);
         let size = label_size(theme, tr);
         let (tw, th) = tr.measure_weighted(&label, size, None, TextWeight::Semibold);
@@ -892,12 +892,18 @@ impl PageSidebar {
             return;
         };
         let c = &theme.tokens.colors;
-        // A popover over content: `radii.lg`, the floating-panel shadow
-        // shaped to its corners, hairline edge; rows are `radii.sm` details
+        // A popover over content: `radii.control`, the floating-panel shadow
+        // shaped to its corners, hairline edge; rows are `radii.detail` details
         // inside it, labels on the standard padding.
-        let radius = f64::from(theme.tokens.radii.lg);
+        let radius = f64::from(theme.tokens.radii.control);
         let rr = RoundedRect::from_rect(menu.rect, radius);
-        crate::surface::shadow(scene, base, menu.rect, radius, &theme.tokens.elevation.e4);
+        crate::surface::shadow(
+            scene,
+            base,
+            menu.rect,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
         // Panel role (HIG §9.1/§9.5): the panel ground with its derived
         // border; the hovered row is the hover lift, never an accent wash.
         scene.fill(
@@ -926,7 +932,7 @@ impl PageSidebar {
                     base,
                     tier.fill,
                     None,
-                    &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.sm)),
+                    &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.detail)),
                 );
             }
             let (label, col) = match act {

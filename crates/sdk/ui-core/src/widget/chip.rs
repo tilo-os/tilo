@@ -23,7 +23,7 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::AccentChip;
+use crate::tokens::colors::TintedChip;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -270,7 +270,7 @@ pub struct ChipStyle {
     /// composite can be measured, so a caller that knows its ground resolves
     /// the three through
     /// [`Colors::accent_chip_on`](crate::tokens::colors::Colors::accent_chip_on).
-    pub resolved: Option<AccentChip>,
+    pub resolved: Option<TintedChip>,
 }
 
 impl Default for ChipStyle {
@@ -320,7 +320,7 @@ impl ChipStyle {
 
     /// Chip painted from colours the caller has already measured against the
     /// ground it lands on. See [`ChipStyle::resolved`].
-    pub fn measured(chip: AccentChip) -> Self {
+    pub fn measured(chip: TintedChip) -> Self {
         Self {
             resolved: Some(chip),
             ..Self::default()
@@ -658,7 +658,7 @@ impl Widget for Chip {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.inverted;
         let selected = self.selectable && self.selected;
 
         let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
