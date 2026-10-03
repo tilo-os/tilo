@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -789,4 +789,25 @@ test('joining with an invitation waits for the owner, then connects with the roo
   assert.equal(runtime.peer.room, ROOM);
   assert.equal(rows.get('tilo-join-requests'), '{}', 'the answered request is forgotten');
   await peer.dispose();
+});
+
+test('a device key opened for a peer is let go when it is disposed, aborted or fails to connect', async () => {
+  const custody = () => ({closed: 0, close() { this.closed += 1; }});
+  const disposed = custody();
+  let inner = 0;
+  const peer = await withCustody(disposed, async () => ({dispose: async () => { inner += 1; }}));
+  assert.equal(disposed.closed, 0);
+  await peer.dispose();
+  assert.equal(inner, 1);
+  assert.equal(disposed.closed, 1);
+
+  const failed = custody();
+  await assert.rejects(withCustody(failed, async () => { throw new Error('host unreachable'); }), /host unreachable/);
+  assert.equal(failed.closed, 1);
+
+  const aborted = custody();
+  const controller = new AbortController();
+  await withCustody(aborted, async () => ({dispose: async () => {}}), controller.signal);
+  controller.abort();
+  assert.equal(aborted.closed, 1);
 });
