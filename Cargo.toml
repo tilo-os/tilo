@@ -253,6 +253,7 @@ members = [
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
     "crates/runtime/ush",
+    "crates/runtime/env-tools",
 
     # Session
     "crates/session/console-control",

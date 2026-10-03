@@ -1,0 +1,43 @@
+[package]
+autotests = false
+name = "env-tools"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Builds tool images for environments: resolves packages against an env-runtime, installs them in a build sandbox and seals what they add."
+
+[lib]
+name = "env_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-env-tools"
+path = "src/main.rs"
+
+[dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+
+anyhow.workspace = true
+blake3.workspace = true
+clap.workspace = true
+hex.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
