@@ -1,177 +1,19 @@
+pub use crate::theme_document::{
+    Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial, ThemeMotion,
+    ThemeShape, ThemeType,
+};
 pub use crate::theme_layers::{
-    AccessibilityLayer, ContentSurface, DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_LAYER_ID,
-    DistributionDefaults, DistributionPolicy, PIN_PALETTE, ThemeLayerStack, resolve_theme_layers,
+    AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY, DENSITY_KEY,
+    DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
+    DistributionDefaults, DistributionPolicy, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY, PIN_EMPHASIS,
+    PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE, PINNABLE,
+    ThemeLayerStack, WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document,
+    workspace_temperature_override,
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
-use crate::tokens::{DEFAULT_NEUTRAL_HUE, Material, Tokens};
-use serde::{Deserialize, Serialize};
+use crate::tokens::{Colors, DEFAULT_NEUTRAL_HUE, PresenceHue, Tokens};
+pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
-
-/// Schema this build writes and reads: a theme is a material, a
-/// temperature and its authored scales.
-pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 4;
-
-/// Oldest custom-theme schema this build still opens.
-pub const CUSTOM_THEME_SCHEMA_MIN: u32 = 4;
-
-fn authored_scale_one() -> f32 {
-    1.0
-}
-
-fn default_neutral_hue() -> f32 {
-    DEFAULT_NEUTRAL_HUE
-}
-
-/// Stable, app-independent representation of an authored OS theme.
-///
-/// Built-in defaults, distribution defaults, and the user theme are this
-/// same document. Theme Studio edits it; the shell and every UI app consume
-/// it. A theme picks a material (dark or light) and a temperature; every
-/// colour, contrast promise and radius follows from the design language, so
-/// there is no colour here to get wrong.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CustomThemeSpec {
-    pub schema_version: u32,
-    pub id: String,
-    pub name: String,
-    pub dark_base: bool,
-    /// The OKLCH hue every neutral shares, in degrees. A workspace's own
-    /// temperature (derived from its wallpaper) replaces it while that
-    /// workspace is active.
-    #[serde(default = "default_neutral_hue")]
-    pub neutral_hue: f32,
-    pub spacing_px: f32,
-    pub font: String,
-    /// Multiplier on the duration scale (`fast` / `base` / `slow`). `1.0`
-    /// is the stock timing. Springs stay the shared vocabulary.
-    #[serde(default = "authored_scale_one")]
-    pub motion_scale: f32,
-    /// Multiplier on the floating shadow and the material's backdrop blur.
-    /// `1.0` is the stock material. `0.0` is flat.
-    #[serde(default = "authored_scale_one")]
-    pub material_scale: f32,
-    /// Multiplier on icon sizes. Pointer targets stay put.
-    #[serde(default = "authored_scale_one")]
-    pub icon_scale: f32,
-    /// Thickness of the chrome rule, in logical pixels at 1×. `1` is the
-    /// hairline. `0` draws no rule. `3` is the heaviest edge this schema
-    /// will build.
-    #[serde(default = "authored_scale_one")]
-    pub chrome_weight: f32,
-    /// Feel of the shared UI springs. `1` is the stock snappy motion.
-    /// `0` settles like the subtle spring. `2` moves like the bouncy one.
-    /// Drag tracking and the heavy spring stay the shared physical vocabulary.
-    #[serde(default = "authored_scale_one")]
-    pub motion_character: f32,
-}
-
-impl CustomThemeSpec {
-    /// The `spacing_px` band a theme is actually built at. [`Self::validate`]
-    /// admits `2.0..=64.0`, but the whole spacing scale is proportional to
-    /// `spacing_px` (`s3`), so 2 px would put `s1` under a pixel and 64 px
-    /// would put `s6` at 128; [`Theme::from_custom_spec`] clamps to this
-    /// band instead.
-    pub const SPACING_PX_MIN: f32 = 6.0;
-    /// Usable band for [`Self::motion_scale`]. Wider values still open and
-    /// are clamped here when the theme is built.
-    pub const MOTION_SCALE_MIN: f32 = 0.5;
-    /// See [`Self::MOTION_SCALE_MIN`].
-    pub const MOTION_SCALE_MAX: f32 = 2.0;
-    /// Flat materials.
-    pub const MATERIAL_SCALE_MIN: f32 = 0.0;
-    /// See [`Self::MATERIAL_SCALE_MIN`].
-    pub const MATERIAL_SCALE_MAX: f32 = 2.0;
-    /// Usable band for [`Self::icon_scale`].
-    pub const ICON_SCALE_MIN: f32 = 0.75;
-    /// See [`Self::ICON_SCALE_MIN`].
-    pub const ICON_SCALE_MAX: f32 = 1.75;
-    /// No chrome rule.
-    pub const CHROME_WEIGHT_MIN: f32 = 0.0;
-    /// Heaviest chrome rule, in logical pixels at 1×.
-    pub const CHROME_WEIGHT_MAX: f32 = 3.0;
-    /// Calm motion: the default UI spring becomes the subtle one.
-    pub const MOTION_CHARACTER_MIN: f32 = 0.0;
-    /// Lively motion: the default UI spring becomes the bouncy one.
-    pub const MOTION_CHARACTER_MAX: f32 = 2.0;
-    /// See [`Self::SPACING_PX_MIN`].
-    pub const SPACING_PX_MAX: f32 = 22.0;
-
-    /// # Errors
-    ///
-    /// Returns a static message describing which field is out of range —
-    /// unsupported schema version, an empty/oversize/control-char id, name or
-    /// font, or a hue/spacing/scale outside its accepted range.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if !(CUSTOM_THEME_SCHEMA_MIN..=CUSTOM_THEME_SCHEMA_VERSION).contains(&self.schema_version) {
-            return Err("unsupported custom theme schema");
-        }
-        if self.id.trim().is_empty() || self.id.len() > 128 || self.id.chars().any(char::is_control)
-        {
-            return Err("invalid custom theme id");
-        }
-        if self.name.trim().is_empty()
-            || self.name.len() > 128
-            || self.name.chars().any(char::is_control)
-        {
-            return Err("invalid custom theme name");
-        }
-        if self.font.trim().is_empty()
-            || self.font.len() > 128
-            || self.font.chars().any(char::is_control)
-        {
-            return Err("invalid custom theme font");
-        }
-        if !self.neutral_hue.is_finite() {
-            return Err("invalid custom theme hue");
-        }
-        if !self.spacing_px.is_finite() || !(2.0..=64.0).contains(&self.spacing_px) {
-            return Err("invalid custom theme spacing");
-        }
-        if !self.motion_scale.is_finite() || !(0.25..=4.0).contains(&self.motion_scale) {
-            return Err("invalid custom theme motion scale");
-        }
-        if !self.material_scale.is_finite() || !(0.0..=4.0).contains(&self.material_scale) {
-            return Err("invalid custom theme material scale");
-        }
-        if !self.icon_scale.is_finite() || !(0.5..=3.0).contains(&self.icon_scale) {
-            return Err("invalid custom theme icon scale");
-        }
-        if !self.chrome_weight.is_finite() || !(0.0..=4.0).contains(&self.chrome_weight) {
-            return Err("invalid custom theme chrome weight");
-        }
-        if !self.motion_character.is_finite() || !(0.0..=4.0).contains(&self.motion_character) {
-            return Err("invalid custom theme motion character");
-        }
-        Ok(())
-    }
-}
-
-fn apply_authored_scales(tokens: &mut crate::tokens::Tokens, spec: &CustomThemeSpec) {
-    let motion = spec.motion_scale.clamp(
-        CustomThemeSpec::MOTION_SCALE_MIN,
-        CustomThemeSpec::MOTION_SCALE_MAX,
-    );
-    let material = spec.material_scale.clamp(
-        CustomThemeSpec::MATERIAL_SCALE_MIN,
-        CustomThemeSpec::MATERIAL_SCALE_MAX,
-    );
-    let icons = spec.icon_scale.clamp(
-        CustomThemeSpec::ICON_SCALE_MIN,
-        CustomThemeSpec::ICON_SCALE_MAX,
-    );
-    scale_durations(&mut tokens.motion, motion);
-    apply_motion_character(&mut tokens.motion, spec.motion_character);
-    scale_materials(tokens, material);
-    scale_icons(&mut tokens.metrics, icons);
-    tokens.metrics.chrome_rule_px = spec.chrome_weight.clamp(
-        CustomThemeSpec::CHROME_WEIGHT_MIN,
-        CustomThemeSpec::CHROME_WEIGHT_MAX,
-    );
-    tokens.motion_character = spec.motion_character.clamp(
-        CustomThemeSpec::MOTION_CHARACTER_MIN,
-        CustomThemeSpec::MOTION_CHARACTER_MAX,
-    );
-}
 
 fn mix_spring(
     a: crate::tokens::SpringParams,
@@ -188,10 +30,6 @@ fn mix_spring(
 /// `1` leaves the stock springs. Below that the snappy spring moves toward
 /// subtle; above it, toward bouncy. Heavy and tracking stay put.
 fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
-    let character = character.clamp(
-        CustomThemeSpec::MOTION_CHARACTER_MIN,
-        CustomThemeSpec::MOTION_CHARACTER_MAX,
-    );
     let stock = motion.springs;
     let calm = (1.0 - character).clamp(0.0, 1.0);
     let lively = (character - 1.0).clamp(0.0, 1.0);
@@ -203,49 +41,55 @@ fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
     motion.springs.bouncy = mix_spring(stock.bouncy, stock.snappy, calm);
 }
 
-fn scale_u32(value: u32, factor: f32) -> u32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "duration milliseconds fit in f32 exactly at this magnitude, and the rounded product is clamped before the cast back to u32"
-    )]
-    let scaled = ((value as f32) * factor).round().clamp(1.0, 4_000.0) as u32;
-    scaled
+fn clamp_to(value: f32, band: &std::ops::RangeInclusive<f32>) -> f32 {
+    value.clamp(*band.start(), *band.end())
 }
 
-fn scale_durations(motion: &mut crate::tokens::Motion, factor: f32) {
-    motion.durations.fast_ms = scale_u32(motion.durations.fast_ms, factor);
-    motion.durations.base_ms = scale_u32(motion.durations.base_ms, factor);
-    motion.durations.slow_ms = scale_u32(motion.durations.slow_ms, factor);
-    motion.gesture.fling_projection_ms = scale_u32(motion.gesture.fling_projection_ms, factor);
+/// The colour tokens `document` paints with for the person wearing `you`,
+/// repaired where a floor is missed.
+fn colors_of(document: &ThemeDocument, you: PresenceHue) -> Colors {
+    let mut colors =
+        Colors::of_palette(&document.palette, document.emphasis, document.presence, you);
+    colors.set_material(
+        clamp_to(document.material.blur, &ThemeMaterial::BLUR_USABLE),
+        clamp_to(
+            document.material.tint_opacity,
+            &ThemeMaterial::TINT_ADMITTED,
+        ),
+    );
+    colors
 }
 
-fn scale_shadow(shadow: &mut crate::tokens::Shadow, factor: f32) {
-    shadow.blur *= factor;
-    shadow.offset_y *= factor;
-}
-
-fn scale_materials(tokens: &mut crate::tokens::Tokens, factor: f32) {
-    let elevation = &mut tokens.elevation;
-    scale_shadow(&mut elevation.floating, factor);
-    scale_shadow(&mut elevation.glass_inner, factor);
-    scale_shadow(&mut elevation.glass_outer, factor);
-    elevation.shadow_scale *= factor;
-    tokens.colors.surfaces.material_blur_px *= factor;
-}
-
-fn scale_icons(metrics: &mut crate::tokens::Metrics, factor: f32) {
-    let base = crate::tokens::Metrics::BASE;
-    metrics.icon_sm = base.icon_sm * factor;
-    metrics.icon_md = base.icon_md * factor;
-    metrics.icon_lg = base.icon_lg * factor;
-    metrics.icon_label_gap = base.icon_label_gap * factor;
+/// Every token `document` produces, with values outside a role's usable
+/// band clamped. The document is assumed admitted.
+fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
+    let mut tokens = Tokens::around(colors_of(document, you));
+    tokens.radii = crate::tokens::Radii::from_window_radius(clamp_to(
+        document.shape.window_radius,
+        &ThemeShape::USABLE,
+    ));
+    // Proportional on every step; `Metrics` stay at their defaults, so a
+    // gutter preference never shrinks a pointer target.
+    tokens.spacing = crate::tokens::Spacing::BASE
+        .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
+    tokens
+        .typography
+        .sans_family
+        .clone_from(&document.type_.face);
+    let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
+    tokens.typography.scale = tokens.typography.scale.scaled(size);
+    let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
+    apply_motion_character(&mut tokens.motion, character);
+    tokens.motion_character = character;
+    tokens
 }
 
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub name: String,
+    /// The document this theme was built from, as applied: after the
+    /// workspace temperature and high contrast.
+    pub document: ThemeDocument,
     pub tokens: Tokens,
     // Shortcuts — derived from tokens on construction.
     pub bg_app: Color,
@@ -300,8 +144,15 @@ impl Default for Theme {
 /// all of them. Crate-visible (test builds only) because sibling-module
 /// widget tests sweep the same list.
 #[cfg(test)]
-pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] =
-    &[Theme::dark, Theme::light, Theme::high_contrast];
+pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
+    Theme::dark,
+    || Theme::preset(Preset::DarkCool),
+    || Theme::preset(Preset::DarkGraphite),
+    || Theme::preset(Preset::DarkSoft),
+    Theme::light,
+    Theme::high_contrast,
+    || Theme::preset(Preset::HighContrastLight),
+];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the
 /// live theme. Level-triggered like `fullscreen_intent`: a *steady* value is
@@ -352,11 +203,15 @@ impl Theme {
         tokens.syntax = crate::tokens::SyntaxPalette::from_colors(&tokens.colors);
     }
 
-    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
+    /// The theme `document` describes, worn by `you`. The document is
+    /// assumed admitted; values outside a role's usable band are clamped and
+    /// a missed contrast floor is repaired.
+    fn built(document: ThemeDocument, you: PresenceHue) -> Self {
+        let mut tokens = tokens_of(&document, you);
         Self::derive_palettes(&mut tokens);
         let c = &tokens.colors;
         Self {
-            name: name.into(),
+            name: document.name.clone(),
             bg_app: c.surfaces.base,
             bg_primary: c.surfaces.raised,
             bg_hover: c.neutral[4],
@@ -375,26 +230,43 @@ impl Theme {
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
-            forced_colors: matches!(c.material, Material::HighContrast),
+            forced_colors: document.palette.high_contrast,
+            document,
             tokens,
         }
     }
 
-    /// The dark material at the default temperature.
+    /// The theme a document describes, or `None` for one this build does not
+    /// admit ([`ThemeDocument::validate`]). Values outside a role's usable
+    /// band are clamped, and a pairing that misses a contrast floor is
+    /// repaired, so every theme that materializes is legible.
+    #[must_use]
+    pub fn from_document(document: &ThemeDocument) -> Option<Self> {
+        document.validate().ok()?;
+        Some(Self::built(document.clone(), PresenceHue::Blue))
+    }
+
+    /// A shipped theme.
+    #[must_use]
+    pub fn preset(preset: Preset) -> Self {
+        Self::built(preset.document(), PresenceHue::Blue)
+    }
+
+    /// The default: pure neutral dark.
     pub fn dark() -> Self {
-        Self::from_tokens("Dark", Tokens::of_material(Material::Dark))
+        Self::preset(Preset::Dark)
     }
 
-    /// The light material at the default temperature.
+    /// The light theme.
     pub fn light() -> Self {
-        Self::from_tokens("Light", Tokens::of_material(Material::Light))
+        Self::preset(Preset::Light)
     }
 
-    /// Black ground under near-white ink, every role pairing at WCAG AAA.
+    /// Black ground under near-white ink, every text pairing at WCAG AAA.
     /// Selected when [`A11ySettings::high_contrast`](crate::a11y::A11ySettings)
-    /// is set.
+    /// is set on a dark theme.
     pub fn high_contrast() -> Self {
-        Self::from_tokens("High Contrast", Tokens::of_material(Material::HighContrast))
+        Self::preset(Preset::HighContrast)
     }
 
     /// Ink tiers on the content surface — the window ground every app
@@ -422,31 +294,56 @@ impl Theme {
         self.tokens.colors.window_edge()
     }
 
-    /// The same theme at temperature `hue` (OKLCH degrees). Only the neutral
-    /// material moves: presence, status and the person's own colour keep
+    /// The same theme in a workspace whose temperature is `hue` (OKLCH
+    /// degrees). Only the neutral material's hue moves — never its chroma,
+    /// so a palette with chroma 0 (the default dark) shows no temperature
+    /// at all. Presence, status, emphasis and the person's own colour keep
     /// their hues, and every contrast promise holds at every hue. A
     /// workspace's temperature comes from [`workspace_hue`].
     #[must_use]
     pub fn with_neutral_hue(mut self, hue: f32) -> Self {
-        if !hue.is_finite() {
+        if !hue.is_finite() || self.document.palette.chroma <= 0.0 {
             return self;
         }
-        self.tokens.colors = self.tokens.colors.with_neutral_hue(hue);
-        self.refresh_colour_shortcuts();
+        self.document.palette.hue = hue.rem_euclid(360.0);
+        self.recolour();
         self
     }
 
-    /// The person's own presence colour (`identity`: their avatar or roster
-    /// colour, any lightness) becomes their focus ring, text caret and
+    /// The person's own colour becomes their focus ring, text caret and
     /// text-selection tint, painted at this theme's presence lightness and
-    /// chroma.
+    /// chroma. A colour is identity, not theme: the host that knows who sits
+    /// here applies it ([`PresenceHue::chosen_in`], [`PresenceHue::of_identity`]).
     #[must_use]
-    pub fn with_your_colour(mut self, identity: [u8; 3]) -> Self {
-        self.tokens
-            .colors
-            .set_you(Color::from_rgb8(identity[0], identity[1], identity[2]));
-        self.refresh_colour_shortcuts();
+    pub fn with_your_colour(mut self, hue: PresenceHue) -> Self {
+        if self.tokens.colors.you != hue {
+            self.tokens.colors.you = hue;
+            self.recolour();
+        }
         self
+    }
+
+    /// The same theme on the high-contrast palette of its polarity: shape,
+    /// density, type and motion stay, the person keeps their colour, and
+    /// content surfaces are asked to force their colours.
+    #[must_use]
+    pub fn with_high_contrast(mut self) -> Self {
+        if self.document.palette.high_contrast {
+            return self;
+        }
+        self.document = self.document.in_high_contrast();
+        self.name.clone_from(&self.document.name);
+        self.forced_colors = true;
+        self.recolour();
+        self
+    }
+
+    /// Rebuild the colour tokens from [`Self::document`] after its palette,
+    /// emphasis, presence or material changed, keeping every other token
+    /// (scaled spacing and type stay scaled).
+    fn recolour(&mut self) {
+        self.tokens.colors = colors_of(&self.document, self.tokens.colors.you);
+        self.refresh_colour_shortcuts();
     }
 
     /// Re-derive every shortcut and derived palette after the colour tokens
@@ -464,33 +361,6 @@ impl Theme {
         self.text_dim = c.text_dim;
         self.text_tertiary = c.text_tertiary;
         self.status_success = c.semantic.success;
-    }
-
-    /// `None` only for a structurally invalid spec. Every theme that
-    /// materializes keeps every contrast floor: the colours come from the
-    /// material, not from the file.
-    pub fn from_custom_spec(spec: &CustomThemeSpec) -> Option<Self> {
-        spec.validate().ok()?;
-        let material = if spec.dark_base {
-            Material::Dark
-        } else {
-            Material::Light
-        };
-        let mut tokens = Tokens::of_material(material);
-        tokens.colors = tokens.colors.with_neutral_hue(spec.neutral_hue);
-        // `spacing_px` is the `s3` step; the rest of the scale follows in
-        // the stock proportions (1:2:3:4:6:8:12:16), so a denser theme stays
-        // proportional on every step. `Metrics` stay at their defaults: a
-        // gutter preference must not shrink a pointer target.
-        let spacing_px = spec.spacing_px.clamp(
-            CustomThemeSpec::SPACING_PX_MIN,
-            CustomThemeSpec::SPACING_PX_MAX,
-        );
-        tokens.spacing =
-            crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
-        tokens.typography.sans_family.clone_from(&spec.font);
-        apply_authored_scales(&mut tokens, spec);
-        Some(Self::from_tokens(&spec.name, tokens))
     }
 
     /// Reads `$XDG_CONFIG_HOME/tilo/settings.json` (falling back to
@@ -543,77 +413,58 @@ impl Theme {
         resolve_theme_layers(&stack)
     }
 
-    /// Parser shared by runtime loading and hermetic tests. An "Automatic"
-    /// theme resolves against the local time now.
+    /// The user's theme in a settings document, if it names one this build
+    /// admits. Automatic mode resolves against the local time now.
     pub fn from_settings_json(text: &str) -> Option<Self> {
         Self::from_settings_json_at(text, local_moment())
     }
 
-    /// [`Self::from_settings_json`] at an explicit local moment: "Automatic"
-    /// is the light theme by day and the dark theme by night, on the schedule
-    /// night light shares (`settings_store::day_schedule`).
+    /// [`Self::from_settings_json`] at an explicit local moment: automatic
+    /// mode is the light theme by day and the dark theme by night, on the
+    /// schedule night light shares (`settings_store::day_schedule`).
     pub fn from_settings_json_at(
         text: &str,
         moment: settings_store::day_schedule::LocalMoment,
     ) -> Option<Self> {
-        let v: serde_json::Value = serde_json::from_str(text).ok()?;
-        let appearance = v.get("appearance")?;
-        let active = appearance.get("theme")?.as_str()?;
-        if settings_store::day_schedule::is_automatic(active) {
-            let schedule = settings_store::day_schedule::Scheduled::from_settings(v.as_object()?);
-            return Some(if schedule.is_night(moment) {
-                Self::dark()
-            } else {
-                Self::light()
-            });
-        }
-        if let Some(id) = active.strip_prefix("custom:") {
-            let spec: CustomThemeSpec =
-                serde_json::from_value(appearance.get("custom_theme")?.clone()).ok()?;
-            if spec.id != id {
-                return None;
-            }
-            return Self::from_custom_spec(&spec);
-        }
-        Self::named(active)
+        let settings: serde_json::Value = serde_json::from_str(text).ok()?;
+        let document = crate::theme_layers::user_document(&settings, moment)?;
+        Self::from_document(&document)
     }
 
-    /// The day/night schedule an "Automatic" theme in `settings` follows, or
-    /// `None` when the theme is fixed. Hosts keep it to notice sunrise and
+    /// The day/night schedule an automatic appearance in `settings` follows,
+    /// or `None` when the mode is fixed. Hosts keep it to notice sunrise and
     /// sunset, which change the theme without changing the file.
     pub fn automatic_schedule_from(
         settings: Option<&std::path::Path>,
     ) -> Option<settings_store::day_schedule::Scheduled> {
         let document = settings_store::load_at(settings?);
-        let theme = document.get("appearance")?.get("theme")?.as_str()?;
-        settings_store::day_schedule::is_automatic(theme)
+        let mode = document
+            .get("appearance")?
+            .get(settings_store::day_schedule::MODE_KEY)?
+            .as_str()?;
+        settings_store::day_schedule::is_automatic(mode)
             .then(|| settings_store::day_schedule::Scheduled::from_settings(&document))
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
     ///
     /// Exists so a check can be run against *all* of them rather than against
-    /// whichever two someone remembered. Adding a theme without adding it
-    /// here will fail [`Theme::named`]'s round-trip test.
-    pub const ALL: [&'static str; 3] = ["Dark", "Light", "High Contrast"];
+    /// whichever two someone remembered.
+    pub const ALL: [&'static str; 7] = [
+        Preset::Dark.name(),
+        Preset::DarkCool.name(),
+        Preset::DarkGraphite.name(),
+        Preset::DarkSoft.name(),
+        Preset::Light.name(),
+        Preset::HighContrast.name(),
+        Preset::HighContrastLight.name(),
+    ];
 
-    /// Accepts the exact display name as well as loose forms —
-    /// case-insensitive, spaces / hyphens / underscores ignored
-    /// (`"high-contrast"`, `"highcontrast"`) — so the same lookup serves the
-    /// settings picker, the persisted preference, and the `--shots` theme
-    /// override. Returns `None` for an unknown name.
+    /// A shipped theme by id or name, loosely ([`Preset::find`]), so the
+    /// same lookup serves a picker, the persisted preference and the
+    /// `--shots` theme override. `None` for an unknown name.
     pub fn named(name: &str) -> Option<Self> {
-        let key: String = name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect();
-        Some(match key.as_str() {
-            "dark" | "tilodark" => Self::dark(),
-            "light" => Self::light(),
-            "highcontrast" | "contrast" => Self::high_contrast(),
-            _ => return None,
-        })
+        Preset::find(name).map(Self::preset)
     }
 
     #[must_use]
@@ -722,8 +573,8 @@ impl Theme {
     }
 
     /// UI scale first so it grows the whole system, then text scale layers
-    /// additional type growth on top. The high-contrast track keeps the
-    /// person's own colour.
+    /// additional type growth on top. High contrast keeps the theme's
+    /// polarity, shape, density and type, and the person's own colour.
     #[must_use]
     pub fn with_a11y(
         self,
@@ -732,8 +583,7 @@ impl Theme {
         ui_scale: f32,
     ) -> Self {
         let base = if settings.high_contrast {
-            let you = crate::color::to_rgb8(self.tokens.colors.intent.you);
-            Self::high_contrast().with_your_colour(you)
+            self.with_high_contrast()
         } else {
             self
         };
@@ -758,22 +608,16 @@ mod tests {
     use crate::a11y::contrast_ratio;
     use crate::color::Oklch;
     use crate::color_compat::ColorCompat;
+    use crate::tokens::Emphasis;
 
-    fn quiet_ocean(spacing_px: f32) -> CustomThemeSpec {
-        CustomThemeSpec {
-            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
-            id: "quiet-ocean".into(),
-            name: "Quiet Ocean".into(),
-            dark_base: true,
-            neutral_hue: 220.0,
-            spacing_px,
-            font: "Inter".into(),
-            motion_scale: 1.0,
-            material_scale: 1.0,
-            icon_scale: 1.0,
-            chrome_weight: 1.0,
-            motion_character: 1.0,
-        }
+    fn quiet_ocean(spacing: f32) -> ThemeDocument {
+        let mut doc = Preset::DarkCool.document();
+        doc.id = "quiet-ocean".into();
+        doc.name = "Quiet ocean".into();
+        doc.palette.hue = 220.0;
+        doc.density.spacing = spacing;
+        doc.type_.face = "Inter".into();
+        doc
     }
 
     #[test]
@@ -784,8 +628,10 @@ mod tests {
                 let theme = Theme::named(name).unwrap_or_else(|| panic!("{name} resolves"));
                 assert_eq!(theme.name, name);
             }
-            assert_eq!(Theme::named("high-contrast").unwrap().name, "High Contrast");
+            assert_eq!(Theme::named("high-contrast").unwrap().name, "High contrast");
+            assert_eq!(Theme::named("dark-soft").unwrap().name, "Dark soft");
             assert!(Theme::named("Dracula").is_none(), "no third-party palettes");
+            assert_eq!(ALL_PRESETS_FOR_TEST.len(), Theme::ALL.len());
         }
         // phase: every_shipped_theme_keeps_every_floor
         {
@@ -815,6 +661,7 @@ mod tests {
                 assert!((t.radius_standard - f64::from(t.tokens.radii.control)).abs() < 1e-9);
             }
             assert!(Theme::high_contrast().colors_are_forced());
+            assert!(Theme::preset(Preset::HighContrastLight).colors_are_forced());
             assert!(!Theme::dark().colors_are_forced());
         }
     }
@@ -854,7 +701,7 @@ mod tests {
 
     #[test]
     fn temperature_and_your_colour_are_theme_builders() {
-        // phase: with_neutral_hue_moves_the_material_and_its_shortcuts
+        // phase: a_tinted_palette_takes_the_workspace_hue
         {
             let warm = Theme::light().with_neutral_hue(60.0);
             let h = Oklch::from_color(warm.tokens.colors.surfaces.sidebar).h;
@@ -862,15 +709,27 @@ mod tests {
             assert_eq!(warm.bg_app, warm.tokens.colors.surfaces.base);
             assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
             assert_eq!(warm.name, "Light");
+            assert!((warm.document.palette.hue - 60.0).abs() < f32::EPSILON);
             let same = Theme::light().with_neutral_hue(f32::NAN);
             assert_eq!(same.bg_app, Theme::light().bg_app, "a NaN hue is ignored");
         }
-        // phase: with_your_colour_is_the_focus_ring_and_survives_a_track_switch
+        // phase: the_neutral_default_shows_no_temperature
         {
-            let mine = Theme::dark().with_your_colour([0xEC, 0x48, 0x99]);
+            let dark = Theme::dark().with_neutral_hue(60.0);
+            assert_eq!(dark.bg_app, Theme::dark().bg_app);
+            assert_eq!(
+                dark.tokens.colors.surfaces.content,
+                Theme::dark().tokens.colors.surfaces.content
+            );
+        }
+        // phase: your_colour_is_the_focus_ring_and_survives_every_track
+        {
+            let mine = Theme::dark().with_your_colour(PresenceHue::Magenta);
             let you = mine.tokens.colors.intent.you;
             assert_eq!(mine.border_focus, you);
             assert_ne!(you, Theme::dark().tokens.colors.intent.you);
+            let warm = mine.clone().with_neutral_hue(40.0);
+            assert_eq!(warm.tokens.colors.you, PresenceHue::Magenta);
             let hc = mine.with_a11y(
                 &crate::a11y::A11ySettings {
                     high_contrast: true,
@@ -879,6 +738,7 @@ mod tests {
                 1.0,
                 1.0,
             );
+            assert_eq!(hc.tokens.colors.you, PresenceHue::Magenta);
             let hue = |c: Color| Oklch::from_color(c).h;
             let d = (hue(hc.border_focus) - hue(you)).rem_euclid(360.0);
             assert!(d.min(360.0 - d) < 5.0, "high contrast keeps your hue");
@@ -982,7 +842,7 @@ mod tests {
             assert!(!Theme::configured_from_text("", false).reduce_motion);
         }
 
-        // Case `with_a11y_picks_high_contrast_track_and_folds_in_scale_and_motion`.
+        // Case `with_a11y_picks_the_high_contrast_of_the_theme_s_polarity`.
         {
             use crate::a11y::A11ySettings;
             let settings = A11ySettings {
@@ -991,10 +851,14 @@ mod tests {
                 screen_reader: false,
             };
             let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
-            assert_eq!(theme.name, "High Contrast");
+            assert_eq!(theme.name, "High contrast");
             assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
             assert!(theme.reduce_motion);
             assert_eq!(theme.text_scale, 2.0);
+            let light = Theme::light().with_a11y(&settings, 1.0, 1.0);
+            assert_eq!(light.name, "High contrast light");
+            assert!(light.colors_are_forced());
+            assert!(contrast_ratio(light.text_dim, light.tokens.colors.surfaces.content) >= 7.0);
         }
 
         // Case `with_a11y_all_off_keeps_base_colours`.
@@ -1007,86 +871,87 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_theme_is_a_material_a_temperature_and_its_scales() {
-        // Case `settings_json_materializes_the_custom_theme`.
+    fn a_document_sets_every_role_it_names() {
+        // Case `settings_json_materializes_a_custom_theme`.
         {
-            let spec = quiet_ocean(17.0);
+            let doc = quiet_ocean(1.25);
             let json = serde_json::json!({
-                "appearance": { "theme": "custom:quiet-ocean", "custom_theme": spec }
+                "appearance": {
+                    "mode": "dark",
+                    "dark_theme": "custom:quiet-ocean",
+                    "custom_themes": [doc],
+                }
             });
             let theme = Theme::from_settings_json(&json.to_string()).unwrap();
-            assert_eq!(theme.name, "Quiet Ocean");
-            assert!((theme.tokens.colors.neutral_hue - 220.0).abs() < f32::EPSILON);
-            assert_eq!(theme.tokens.colors.material, Material::Dark);
-            assert_eq!(theme.tokens.spacing.s3, 17.0);
+            assert_eq!(theme.name, "Quiet ocean");
+            assert!((theme.document.palette.hue - 220.0).abs() < f32::EPSILON);
+            assert!(theme.document.palette.dark);
+            assert!((theme.tokens.spacing.s3 - 15.0).abs() < 1e-4);
             assert_eq!(theme.tokens.typography.sans_family, "Inter");
             assert_eq!(theme.tokens.radii, crate::tokens::Radii::default());
             assert!(crate::tokens::contrast::audit(&theme.tokens.colors).is_empty());
         }
 
-        // Case `custom_theme_spacing_rescales_the_whole_scale_and_clamps`.
+        // Case `density_rescales_the_whole_scale_and_clamps`.
         {
-            let theme = Theme::from_custom_spec(&quiet_ocean(17.0)).unwrap();
+            let theme = Theme::from_document(&quiet_ocean(1.25)).unwrap();
             let s = theme.tokens.spacing;
-            let unit = 17.0 / 3.0;
             for (value, steps) in [(s.s1, 1.0), (s.s4, 4.0), (s.s16, 16.0)] {
-                assert!((value - unit * steps).abs() < 1e-3);
+                assert!((value - 4.0 * 1.25 * steps).abs() < 1e-3);
             }
             assert_eq!(theme.tokens.metrics, crate::tokens::Metrics::BASE);
-            let dense = Theme::from_custom_spec(&quiet_ocean(2.0)).unwrap();
-            assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
-            let loose = Theme::from_custom_spec(&quiet_ocean(64.0)).unwrap();
-            assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
-            assert!(Theme::from_custom_spec(&quiet_ocean(1.0)).is_none());
+            let dense = Theme::from_document(&quiet_ocean(0.5)).unwrap();
+            assert!((dense.tokens.spacing.s3 - 12.0 * 0.75).abs() < 1e-4);
+            assert!(Theme::from_document(&quiet_ocean(0.1)).is_none());
         }
 
-        // Case `an_older_schema_or_a_mismatched_id_is_rejected`.
+        // Case `shape_type_motion_and_material_reach_their_tokens`.
         {
-            let mut old = quiet_ocean(12.0);
-            old.schema_version = 3;
-            assert!(Theme::from_custom_spec(&old).is_none());
-            let json = serde_json::json!({
-                "appearance": { "theme": "custom:wanted", "custom_theme": quiet_ocean(12.0) }
-            });
-            assert!(Theme::from_settings_json(&json.to_string()).is_none());
-        }
-
-        // Case `authored_scales_change_motion_material_icons_and_chrome`.
-        {
-            let mut spec = quiet_ocean(12.0);
-            spec.motion_scale = 0.5;
-            spec.material_scale = 2.0;
-            spec.icon_scale = 1.5;
-            spec.chrome_weight = 3.0;
-            spec.motion_character = 0.0;
-            let theme = Theme::from_custom_spec(&spec).unwrap();
+            let mut doc = quiet_ocean(1.0);
+            doc.shape.window_radius = 28.0;
+            doc.type_.base_size = 16.0;
+            doc.motion.character = 0.0;
+            doc.material = ThemeMaterial {
+                blur: 40.0,
+                tint_opacity: 0.9,
+            };
+            doc.emphasis = Emphasis::Tinted { hue: 150.0 };
+            let theme = Theme::from_document(&doc).unwrap();
             let stock = Theme::dark();
-            assert_eq!(
-                theme.tokens.motion.durations.base_ms,
-                crate::tokens::Durations::default().base_ms / 2
-            );
-            assert!((theme.tokens.colors.surfaces.material_blur_px - 48.0).abs() < 0.01);
+            assert!((theme.tokens.radii.tile - 28.0).abs() < 1e-4);
+            assert!((theme.tokens.radii.control - 16.0).abs() < 1e-4);
             assert!(
-                (theme.tokens.elevation.floating.blur - stock.tokens.elevation.floating.blur * 2.0)
-                    .abs()
-                    < 0.01
+                (theme.tokens.typography.size(crate::tokens::TextRole::Body) - 16.0).abs() < 1e-4
             );
-            assert!(
-                (theme.tokens.metrics.icon_md - crate::tokens::Metrics::BASE.icon_md * 1.5).abs()
-                    < 0.01
-            );
-            assert!((theme.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
             assert_eq!(
                 theme.tokens.motion.springs.snappy.stiffness,
                 stock.tokens.motion.springs.subtle.stiffness
             );
+            assert!((theme.tokens.colors.surfaces.material_blur_px - 40.0).abs() < 1e-4);
+            assert_eq!(theme.tokens.colors.surfaces.material.a(), 230);
+            let fill = Oklch::from_color(theme.tokens.colors.intent.inverted);
+            assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
+        }
+
+        // Case `a_document_of_another_schema_or_a_missing_id_applies_nothing`.
+        {
+            let mut old = quiet_ocean(1.0);
+            old.schema_version = 4;
+            assert!(Theme::from_document(&old).is_none());
+            let json = serde_json::json!({
+                "appearance": { "dark_theme": "custom:wanted", "custom_themes": [quiet_ocean(1.0)] }
+            });
+            assert!(Theme::from_settings_json(&json.to_string()).is_none());
+            let legacy =
+                r#"{"appearance":{"theme":"custom:x","custom_theme":{"schema_version":4}}}"#;
+            assert!(Theme::from_settings_json(legacy).is_none());
         }
     }
 
     #[test]
-    fn the_automatic_theme_is_light_by_day_and_dark_by_night() {
+    fn the_automatic_mode_is_light_by_day_and_dark_by_night() {
         use settings_store::day_schedule::LocalMoment;
-        let json = r#"{"appearance":{"theme":"Automatic","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
+        let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dark-soft","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
         let at = |minute_of_day| LocalMoment {
             day_of_year: 100,
             minute_of_day,
@@ -1102,7 +967,7 @@ mod tests {
             Theme::from_settings_json_at(json, at(22 * 60))
                 .unwrap()
                 .name,
-            Theme::dark().name
+            "Dark soft"
         );
     }
 }
@@ -1119,7 +984,7 @@ mod configured_theme {
             let settings = dir.path().join("settings.json");
             std::fs::write(
                 &settings,
-                r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
+                r#"{"version":1,"appearance":{"dark_theme":"high-contrast"}}"#,
             )
             .expect("write settings");
 
@@ -1132,22 +997,33 @@ mod configured_theme {
             // The accessibility switch, whatever theme is chosen beside it.
             std::fs::write(
                 &settings,
-                r#"{"appearance":{"theme":"Light","high_contrast":true}}"#,
+                r#"{"appearance":{"mode":"light","high_contrast":true}}"#,
             )
             .expect("write settings");
             assert_eq!(
                 Theme::configured_from(Some(&settings)).name,
-                Theme::high_contrast().name,
+                "High contrast light",
                 "appearance.high_contrast must reach the shell's chrome",
             );
             std::fs::write(
                 &settings,
-                r#"{"appearance":{"theme":"Light","high_contrast":false}}"#,
+                r#"{"appearance":{"mode":"light","high_contrast":false}}"#,
             )
             .expect("write settings");
             assert_eq!(
                 Theme::configured_from(Some(&settings)).name,
                 Theme::light().name
+            );
+        }
+
+        // Case `your_colour_follows_the_identity_section`.
+        {
+            let dir = tempfile::tempdir().expect("temp config dir");
+            let settings = dir.path().join("settings.json");
+            std::fs::write(&settings, r#"{"identity":{"colour":"teal"}}"#).expect("write");
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).tokens.colors.you,
+                PresenceHue::Teal
             );
         }
 
