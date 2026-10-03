@@ -127,6 +127,22 @@ or physical admission authority. The host records its SHA256 before transport an
 requires the guest result to agree; host refresh history permanently excludes the
 scenario from physical admission.
 
+The transient backend receipt also inventories `ukify`, both conventional ukify
+paths, `objcopy`, and the Python `pefile`/`cryptography` modules. This observes the
+actual installer runtime without installing packages or touching a target disk.
+
+To exercise sealed UKI promotion as well, supply all four optional fixture flags:
+`--promotion-origin`, `--promotion-loader`, `--composefs-digest`, and
+`--update-origin`. The first two files contain the intended bootc origin and BLS
+entry; use the exact original CI EFI and its split payloads in the input tree.
+The probe constructs private scratch deployment/ESP directories in `/run`, calls
+the refreshed promotion helper, and verifies the selected OCI origin and loader
+are unchanged. It compares every PE byte except the `.cmdline` payload and its
+virtual size. Its receipt records both UKI hashes and explicitly identifies
+`scratch-bootc-format-origin`; this does not test an installed root or make the
+scenario physically admissible. The same scratch probe runs after every paused
+warm refresh, avoiding another medium build, download, or OCI import.
+
 For future reusable cache capture, invoke `vm-windows.ps1 stop-cache` with the
 scenario's existing transport environment. It requests guest poweroff and waits
 for owned QEMU exit. If poweroff fails, it leaves the VM running and refuses the

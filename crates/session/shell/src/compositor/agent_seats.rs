@@ -234,7 +234,9 @@ impl AgentSeats {
             return;
         };
         match action {
-            PlannedAction::CursorMoved { x, y } => {
+            // A pen stroke ends out of range, holding nothing, where it
+            // left the cursor.
+            PlannedAction::CursorMoved { x, y } | PlannedAction::Pen { x, y, .. } => {
                 seat.cursor = Some((x - origin.0, y - origin.1));
             }
             PlannedAction::KeyboardKey { key, pressed } => {

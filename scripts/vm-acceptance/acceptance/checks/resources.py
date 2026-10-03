@@ -1,4 +1,4 @@
-"""Essential 5: idle CPU, wakeups and frames; memory per process; frame work
+"""Essential 5: idle CPU, wakeups and frames; memory per app cgroup; frame work
 during interactions. Software rendering in a VM skews GPU-bound numbers, so
 every result carries the renderer it was measured on."""
 
@@ -29,19 +29,6 @@ snap() {
 echo "@@0"; snap; sleep __SECS__; echo "@@1"; snap; echo "HZ $hz"
 '''
 
-MEM = r'''
-uid=__UID__
-for d in /proc/[0-9]*; do
-  [ "$(stat -c %u $d 2>/dev/null)" = "$uid" ] || continue
-  comm=$(tr " " _ < $d/comm 2>/dev/null)
-  rss=$(awk '/^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2} END {if (r) print r, a+0}' $d/status 2>/dev/null)
-  [ -n "$rss" ] || continue
-  pss=$(awk '/^Pss:/ {print $2}' $d/smaps_rollup 2>/dev/null)
-  echo "${d#/proc/} $comm $rss ${pss:--}"
-done
-awk '/MemTotal|MemAvailable/ {print "M", $1, $2}' /proc/meminfo
-'''
-
 
 def _parse_sample(text):
     snaps, cur, hz = [{}, {}], None, 100
@@ -63,10 +50,10 @@ def _parse_sample(text):
 
 
 def measure(ctx, seconds: int) -> dict:
-    t0 = core.trace_now_us(ctx)
     script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.slot_uid()))
+    mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
-    rows = core.trace_since(core.read_trace(ctx), t0 + 1)
+    rows = core.trace_after(ctx, mark)
     (a, b), totals, hz = _parse_sample(text)
     procs = []
     for pid, (comm, ticks, cs) in b.items():
@@ -93,23 +80,37 @@ def measure(ctx, seconds: int) -> dict:
     }
 
 
-def memory(ctx) -> dict:
-    out = ctx.vm.root_exec(MEM.replace("__UID__", str(ctx.vm.slot_uid())))
-    procs, mem = [], {}
-    for line in out.splitlines():
-        parts = line.split()
-        if parts[:1] == ["M"]:
-            mem[parts[1].rstrip(":")] = int(parts[2]) // 1024
-        elif len(parts) == 5 and parts[0].isdigit():
-            pss = None if parts[4] == "-" else round(int(parts[4]) / 1024, 1)
-            procs.append({"pid": int(parts[0]), "comm": parts[1], "rss_mb": round(int(parts[2]) / 1024, 1),
-                          "anon_rss_mb": round(int(parts[3]) / 1024, 1), "pss_mb": pss})
-    procs.sort(key=lambda p: -p["rss_mb"])
-    have_pss = bool(procs) and all(p["pss_mb"] is not None for p in procs)
-    return {"procs": procs, "guest_mem_mb": mem, "pss_available": have_pss,
-            "rss_mb_total": round(sum(p["rss_mb"] for p in procs), 1),
-            "anon_rss_mb_total": round(sum(p["anon_rss_mb"] for p in procs), 1),
-            "pss_mb_total": round(sum(p["pss_mb"] for p in procs), 1) if have_pss else None}
+def memory(ctx, apps: list[str]) -> dict:
+    """Per app: the memory its own cgroup is charged (memory.current, split into anon and
+    file by memory.stat), the number Tilo budgets an app by. Per process: anonymous RSS
+    of the slot user's processes, as evidence of which process holds it. Session services
+    (portals, PipeWire, indexers) are in no app's cgroup and count for no app."""
+    table = core.processes(ctx)
+    uid = ctx.vm.slot_uid()
+    procs = sorted((p for p in table["procs"].values() if p["uid"] == uid),
+                   key=lambda p: -(p["anon_rss_mb"] or 0))
+    shell = next((p for p in procs if p["comm"] == "shell"), None)
+    per_app = {}
+    for app in apps:
+        a = core.app_cgroup(table, app)
+        own = [table["cgroups"].get(c, {}) for c in a["cgroups"]] if not a["shared_with"] else []
+        if own and all(c.get("memory_mb") is not None for c in own):
+            a.update({k: round(sum(c[k] for c in own), 1) for k in ("memory_mb", "anon_mb", "file_mb")})
+        per_app[app] = a
+    session_cgroups = {shell["cgroup"]} if shell else set()
+    session_cgroups |= {c for a in per_app.values() if not a["shared_with"] for c in a["cgroups"]}
+    charged = [table["cgroups"].get(c, {}).get("memory_mb") for c in session_cgroups]
+    return {
+        "apps": per_app,
+        "procs": [{k: p[k] for k in ("pid", "comm", "app", "cgroup", "rss_mb", "anon_rss_mb")}
+                  for p in procs],
+        "shell": shell and {"pid": shell["pid"], "cgroup": shell["cgroup"],
+                            "anon_rss_mb": shell["anon_rss_mb"],
+                            **table["cgroups"].get(shell["cgroup"], {})},
+        "session_memory_mb": round(sum(charged), 1) if charged and None not in charged else None,
+        "session_cgroups": sorted(session_cgroups),
+        "guest_mem_mb": table["meminfo_mb"],
+    }
 
 
 def _open_several(ctx):
@@ -166,44 +167,52 @@ def idle_apps(ctx, res):
     expect(not problems, "; ".join(problems))
 
 
-@check("R03", AREA, "Memory: RSS and PSS per process with apps open stay within budget")
+@check("R03", AREA, "Memory: each open app's cgroup and the compositor stay within budget")
 def mem(ctx, res):
-    if not ctx.facts.get("apps_open_for_memory"):
-        _open_several(ctx)
-    m = memory(ctx)
-    res.metrics.update(top=m["procs"][:15], rss_mb_total=m["rss_mb_total"],
-                       anon_rss_mb_total=m["anon_rss_mb_total"],
-                       pss_mb_total=m["pss_mb_total"], guest_mem_mb=m["guest_mem_mb"])
+    opened = ctx.facts.get("apps_open_for_memory") or _open_several(ctx)
+    m = memory(ctx, opened)
+    res.metrics.update(apps=m["apps"], shell=m["shell"], session_memory_mb=m["session_memory_mb"],
+                       top=m["procs"][:15], guest_mem_mb=m["guest_mem_mb"])
     ctx.write("R03-memory.json", json.dumps(m, indent=1))
     b = ctx.config["budgets"]
-    shell = next((p for p in m["procs"] if p["comm"] == "shell"), None)
-    expect(shell, "no compositor process found")
-    # PSS where the kernel reports it; otherwise anonymous RSS, the memory a process holds
-    # privately, against the same budgets (full RSS counts every shared library in full).
-    key, kind = ("pss_mb", "PSS") if m["pss_available"] else ("anon_rss_mb", "anonymous RSS")
-    problems = []
-    if shell[key] > b["shell_pss_mb"]:
-        problems.append(f"compositor {kind} {shell[key]} MB > {b['shell_pss_mb']} MB")
-    big = [p for p in m["procs"] if p["comm"] != "shell" and p[key] > b["process_pss_mb"]]
+    expect(m["shell"], "no compositor process found")
+    problems, unobserved = [], []
+    if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
+        problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
+    big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
     if big:
-        problems.append(f"over the per-process {kind} budget: " +
-                        ", ".join(f"{p['comm']} {p[key]} MB" for p in big[:5]))
-    total = m["pss_mb_total"] if m["pss_available"] else m["anon_rss_mb_total"]
-    if total > b["session_pss_mb"]:
-        problems.append(f"session {kind} {total} MB > {b['session_pss_mb']} MB")
-    expect(not problems, "; ".join(problems))
-    if not m["pss_available"]:
-        raise core.Unobservable("anonymous RSS is within budget, but the kernel exposes no smaps_rollup "
-                                "(CONFIG_PROC_PAGE_MONITOR off), so PSS cannot be measured")
+        problems.append("over the per-process anonymous RSS budget: " +
+                        ", ".join(f"{p['comm']} ({p['app'] or 'session'}) {p['anon_rss_mb']} MB"
+                                  for p in big[:5]))
+    for app, a in m["apps"].items():
+        if not a["pids"]:
+            unobserved.append(f"{app}: no `tilo-launcher --app-id {app}` process tree")
+        elif a["shared_with"]:
+            where = "; ".join(f"{c} with {', '.join(v[:4])}" for c, v in a["shared_with"].items())
+            problems.append(f"{app} has no cgroup of its own, so its memory cannot be told apart "
+                            f"(runs in {where}; its processes hold {a['anon_rss_mb']} MB anonymous RSS)")
+        elif a.get("memory_mb") is None:
+            unobserved.append(f"{app}: no memory controller on {', '.join(a['cgroups'])}")
+        else:
+            if a["memory_mb"] > b["app_memory_mb"]:
+                problems.append(f"{app} cgroup memory {a['memory_mb']} MB > {b['app_memory_mb']} MB "
+                                f"(anon {a['anon_mb']}, file {a['file_mb']})")
+            if a["anon_mb"] > b["app_anon_mb"]:
+                problems.append(f"{app} cgroup anon {a['anon_mb']} MB > {b['app_anon_mb']} MB")
+    if m["session_memory_mb"] is not None and m["session_memory_mb"] > b["session_memory_mb"]:
+        problems.append(f"compositor and app cgroups {m['session_memory_mb']} MB > {b['session_memory_mb']} MB")
+    expect(not problems, "; ".join(problems + unobserved))
+    if unobserved:
+        raise core.Unobservable("; ".join(unobserved))
 
 
-@check("R04", AREA, "Frame work p50/p95/p99 during overview, focus and workspace interactions")
+@check("R04", AREA, "Frame CPU p50/p95/p99 during overview, focus and workspace interactions")
 def frame_work(ctx, res):
     ctx.reset()
     for _ in range(2):
         ctx.new_terminal_window()
     time.sleep(2)
-    t0 = core.trace_now_us(ctx)
+    mark = core.trace_mark(ctx)
     for _ in range(3):
         ctx.vm.key("super+Tab")
         time.sleep(0.8)
@@ -218,15 +227,24 @@ def frame_work(ctx, res):
     time.sleep(0.6)
     ctx.vm.key("super+minus")
     time.sleep(1.0)
-    rows = core.trace_since(core.read_trace(ctx), t0 + 1)
+    rows = core.trace_after(ctx, mark)
     st = core.frame_stats(rows)
-    res.metrics.update(st, renderer=ctx.facts.get("renderer"))
-    ctx.write("R04-frames.csv", "\n".join(",".join(str(r[k]) for k in r) for r in rows))
+    display = ctx.facts.get("display") or {}
+    res.metrics.update(st, renderer=ctx.facts.get("renderer"), display=display)
+    ctx.write("R04-frames.csv", core.trace_csv(rows))
     b = ctx.config["budgets"]
     expect(st["painted"] > 0, "no frame painted during the interactions")
+    if not core.has_cpu(rows):
+        raise core.Unobservable("the frame trace carries no per-tick CPU time (cpu_us), so the "
+                                "compositor's own work cannot be told from time the thread was "
+                                "descheduled or blocked; the installed compositor predates it")
+    # CPU per painted frame is the compositor's alone. Wall time per frame also holds
+    # time the thread was descheduled or blocked: judged only on real hardware, where
+    # that is the compositor's to answer for, and kept as evidence elsewhere.
     problems = []
-    if st["work_ms_p95"] > b["work_ms_p95"]:
-        problems.append(f"frame work p95 {st['work_ms_p95']} ms > {b['work_ms_p95']} ms")
-    if st["work_ms_p99"] > b["work_ms_p99"]:
-        problems.append(f"frame work p99 {st['work_ms_p99']} ms > {b['work_ms_p99']} ms")
+    for pct in ("p95", "p99"):
+        if st[f"cpu_ms_{pct}"] > b[f"work_ms_{pct}"]:
+            problems.append(f"frame CPU {pct} {st[f'cpu_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
+        if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
+            problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")

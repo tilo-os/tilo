@@ -343,6 +343,32 @@ class Guest(unittest.TestCase):
 
 
 class Bootstrap(unittest.TestCase):
+    def test_promotion_receipt_masks_only_cmdline_payload_and_virtual_size(self):
+        probe=load('promotion_pe_identity',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')
+        raw=bytearray(512); raw[:2]=b'MZ'; struct.pack_into('<I',raw,60,64); raw[64:68]=b'PE\0\0'
+        struct.pack_into('<H',raw,70,1); raw[88:96]=b'.cmdline'; struct.pack_into('<I',raw,96,4)
+        struct.pack_into('<II',raw,104,64,256); raw[256:260]=b'old\0'
+        changed=bytearray(raw); changed[256:260]=b'new\0'; struct.pack_into('<I',changed,96,3)
+        self.assertEqual(probe.non_cmdline_bytes(raw),probe.non_cmdline_bytes(changed))
+        changed[200]=1
+        self.assertNotEqual(probe.non_cmdline_bytes(raw),probe.non_cmdline_bytes(changed))
+        struct.pack_into('<I',changed,108,500)
+        with self.assertRaisesRegex(ValueError,'bounds'): probe.non_cmdline_bytes(changed)
+
+    def test_promotion_metadata_is_bounded_before_archive_or_scratch_writes(self):
+        builder=load('bounded_promotion_builder',ROOT/'dev/make-installer-probe-fixture.py')
+        probe=load('bounded_promotion_probe',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); (root/'input').write_bytes(b'kernel')
+            for metadata in ([], {'composefs_digest':'a'*128,'origin':'x'*16385,
+                                  'loader':'entry','update_origin':'registry/test'}):
+                with self.assertRaisesRegex(ValueError,'invalid promotion fixture'):
+                    builder.create(root,root/'invalid.tar','sha256:'+'a'*64,metadata)
+                self.assertFalse((root/'invalid.tar').exists())
+            with self.assertRaisesRegex(ValueError,'invalid scratch promotion fixture'):
+                probe.promotion_probe(None,root,{'promotion':[]},'7')
+            self.assertFalse((root/'promotion-target').exists())
+
     def test_original_ci_boot_fixture_validates_real_archive_and_refuses_tampering(self):
         from types import SimpleNamespace
         probe=load('original_boot_fixture',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')

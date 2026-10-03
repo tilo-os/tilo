@@ -4,8 +4,9 @@
 #   tools/extensions/publish.sh MANIFEST
 #
 # MANIFEST is what tools/extensions/resolve.py wrote for one image. It is
-# signed with the OS release key (the KMS key whose public half is
-# keys/cosign.pub), the signature is verified against keys/cosign.pub, and both
+# signed with the extension-manifest key (KMS alias/tilo-extension-manifests,
+# public half keys/extensions.pub; not the OS release key), the signature is
+# verified against keys/extensions.pub, and both
 # go to the generic package registry as
 #
 #   <packages>/tilo-extension-<id>/<arch>-<fingerprint>/manifest-r<revision>.json[.sig]
@@ -21,7 +22,8 @@
 # re-resolving every day must not mint revisions that change nothing.
 #
 # Environment:
-#   COSIGN_KEY_REF, AWS_SIGNING_ROLE_ARN   the release signing key (see
+#   COSIGN_KEY_REF, AWS_SIGNING_ROLE_ARN,  the extension-manifest key, its role
+#   TILO_SIGNING_AUDIENCE                  and OIDC audience (see
 #                                          os/dev/configure-cosign-kms.sh)
 #   TILO_PACKAGE_TOKEN                     generic package write access
 #   TILO_PACKAGE_PUBLIC_BASE_URL           https://<forge>/api/packages/<owner>/generic
@@ -29,7 +31,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RESOLVE="$REPO/tools/extensions/resolve.py"
-PUBLIC_KEY="$REPO/keys/cosign.pub"
+PUBLIC_KEY="$REPO/keys/extensions.pub"
 
 die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '::notice::%s\n' "$*"; }
@@ -90,7 +92,7 @@ cp -- "$manifest" "$work/manifest.json"
     --output-signature "$work/manifest.json.sig" "$work/manifest.json"
 )
 verify "$work/manifest.json" "$work/manifest.json.sig" \
-  || die "the new signature does not verify against keys/cosign.pub"
+  || die "the new signature does not verify against keys/extensions.pub"
 cp -- "$work/manifest.json" "$work/manifest-r$revision.json"
 cp -- "$work/manifest.json.sig" "$work/manifest-r$revision.json.sig"
 
