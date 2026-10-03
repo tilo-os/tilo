@@ -68,7 +68,7 @@ pub struct SealReport {
     pub whiteouts: Vec<String>,
     /// Kept files that replace one of the runtime's at the same path.
     pub shadows: Vec<String>,
-    /// Sockets, fifos and device nodes, which a tool can't carry.
+    /// Sockets, fifos, device nodes and names an image can't carry.
     pub skipped: Vec<String>,
 }
 
@@ -154,6 +154,11 @@ fn walk(
         let src = entry.path();
         if is_excluded(&child_rel) {
             report.dropped.push(child_rel);
+            continue;
+        }
+        // A name an image can't carry (systemd escapes `-` as `\x2d`).
+        if !tilo_app_package::is_safe_path(&child_rel) {
+            report.skipped.push(child_rel);
             continue;
         }
         let meta = std::fs::symlink_metadata(&src).map_err(err(&src))?;

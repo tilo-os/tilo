@@ -37,17 +37,11 @@ identity_args=()
 
 results="$out/results.jsonl"
 : > "$results"
-failed_required=()
-failed_optional=()
+failed=()
 while IFS= read -r line; do
   line="${line%%#*}"
   line="$(printf '%s' "$line" | xargs)"
   [ -n "$line" ] || continue
-  optional=false
-  if [[ $line == '?'* ]]; then
-    optional=true
-    line="$(printf '%s' "${line#?}" | xargs)"
-  fi
   read -r -a packages <<<"$line"
   printf '\n==> %s\n' "${packages[*]}" >&2
   started=$(date +%s)
@@ -59,12 +53,9 @@ while IFS= read -r line; do
 import json, sys
 d = json.load(sys.stdin)
 d["wall_seconds"] = int(sys.argv[1])
-d["optional"] = sys.argv[2] == "true"
-print(json.dumps(d))' "$wall" "$optional" >> "$results"
-  elif [ "$optional" = true ]; then
-    failed_optional+=("${packages[*]}")
+print(json.dumps(d))' "$wall" >> "$results"
   else
-    failed_required+=("${packages[*]}")
+    failed+=("${packages[*]}")
   fi
 done < "$catalog_list"
 
@@ -82,10 +73,7 @@ for r in rows:
 PY
 rm -f "$results"
 
-for tool in "${failed_optional[@]}"; do
-  printf '::warning::optional tool %s failed to build\n' "$tool"
-done
-if ((${#failed_required[@]})); then
-  printf '::error::tools failed to build: %s\n' "${failed_required[*]}"
+if ((${#failed[@]})); then
+  printf '::error::tools failed to build: %s\n' "${failed[*]}"
   exit 1
 fi

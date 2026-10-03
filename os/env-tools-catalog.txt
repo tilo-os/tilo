@@ -3,8 +3,11 @@
 # tool is a cache hit instead of a build.
 #
 # One tool image per line: the packages it holds, as `pkg install` would be
-# given them. A line starting with `?` is built and reported but may fail
-# without failing the catalog.
+# given them.
+#
+# Not here: LibreOffice. Writer, Calc and Impress without weak dependencies
+# are 262 packages and a 1.25 GB image (Java, GTK, Mesa), too large to
+# publish for every runtime; `pkg install` builds it on demand.
 git
 python3
 pandoc
@@ -19,4 +22,3 @@ htop
 unzip zip
 rsync
 openssh-clients
-? libreoffice-writer libreoffice-calc libreoffice-impress

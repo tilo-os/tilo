@@ -33,6 +33,12 @@ fn the_seal_keeps_package_files_and_drops_package_manager_churn() {
     write(&upper, "etc/ld.so.cache", "c", 0o644);
     write(&upper, "usr/lib/sysimage/rpm/rpmdb.sqlite", "db2", 0o644);
     write(&upper, "usr/lib/sysimage/libdnf5/history", "h", 0o644);
+    write(
+        &upper,
+        "usr/lib/systemd/system/system-systemd\\x2dmute.slice",
+        "",
+        0o644,
+    );
     std::fs::create_dir_all(upper.join("usr/share/empty/deeper")).unwrap();
     // Copied-up directories carry the runtime's 0555.
     std::fs::set_permissions(
@@ -57,6 +63,10 @@ fn the_seal_keeps_package_files_and_drops_package_manager_churn() {
     );
     assert_eq!(report.shadows, ["etc/shells"]);
     assert!(report.whiteouts.is_empty());
+    assert_eq!(
+        report.skipped,
+        ["usr/lib/systemd/system/system-systemd\\x2dmute.slice"]
+    );
 
     let mode = |rel: &str| std::fs::symlink_metadata(out.join(rel)).unwrap().mode() & 0o7777;
     assert_eq!(mode("usr/bin/jq"), 0o755, "setuid is stripped, exec kept");
