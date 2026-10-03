@@ -143,9 +143,9 @@ fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
         let mut failures = Vec::new();
         for theme in themes() {
             for style in [
-                SegmentedStyle::Solid,
-                SegmentedStyle::Pill,
-                SegmentedStyle::Underline,
+                SegmentedStyle::Segmented,
+                SegmentedStyle::Tabs,
+                SegmentedStyle::Quiet,
             ] {
                 for selected in [true, false] {
                     for hovered in [true, false] {
