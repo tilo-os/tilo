@@ -203,7 +203,7 @@ pub fn compare(
         renderer.draw_reference(art, scene, to);
     })?;
     let ground = crate::render::colour(&art.ground.colour, &[])
-        .unwrap_or(Color::WHITE) // document colour
+        .unwrap_or(crate::render::BLANK_GROUND)
         .to_rgba8();
     let inside = Rect::new(
         (frame.x0 - region.x0) * scale,

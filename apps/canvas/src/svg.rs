@@ -87,7 +87,7 @@ fn matrix(affine: Affine) -> String {
 /// over transparency as a PNG, which the document embeds.
 pub fn export(art: &Artwork, mut painted: impl FnMut(&Layer) -> Option<Vec<u8>>) -> String {
     let mut out = Writer::default();
-    let ground = colour(&art.ground.colour, &[]).unwrap_or(Color::WHITE); // document colour
+    let ground = colour(&art.ground.colour, &[]).unwrap_or(crate::render::BLANK_GROUND);
     let _ = write!(
         out.body,
         r#"<rect id="{GROUND_ID}" width="{}" height="{}"{}/>"#,
@@ -176,7 +176,7 @@ impl Writer {
                 .colour
                 .as_deref()
                 .and_then(|value| colour(value, palette))
-                .unwrap_or(Color::from_rgba8(0, 0, 0, 96)); // document colour
+                .unwrap_or(crate::render::SHADOW_INK);
             let (ink, alpha) = hex(ink);
             let _ = write!(
                 self.defs,

@@ -104,6 +104,12 @@ pub struct Options {
 
 /// The largest reference picture, in bytes.
 pub const MAX_REFERENCE_BYTES: usize = 40 << 20;
+/// The ground where an artwork's colour cannot be read: white primed
+/// canvas, the artwork's own colour, the same in every theme.
+pub const BLANK_GROUND: Color = Color::WHITE; // document colour
+/// A shadow's colour where its mark names none; the artwork's, not the
+/// theme's.
+pub const SHADOW_INK: Color = Color::from_rgba8(0, 0, 0, 96); // document colour
 
 /// A PNG or JPEG decoded to straight RGBA, at most 8192 pixels a side.
 ///
@@ -245,9 +251,7 @@ impl Renderer {
 
     fn draw_ground(&mut self, art: &Artwork, scene: &mut Scene, transform: Affine) {
         let board = art.bounds();
-        // An unreadable ground colour falls back to white primed canvas: the
-        // artwork's own colour, the same in every theme.
-        let base = colour(&art.ground.colour, &[]).unwrap_or(Color::WHITE); // document colour
+        let base = colour(&art.ground.colour, &[]).unwrap_or(BLANK_GROUND);
         let texture = Texture::parse(&art.ground.texture).unwrap_or_default();
         if texture == Texture::Smooth {
             scene.fill(Fill::NonZero, transform, base, None, &board);
@@ -682,12 +686,11 @@ fn draw_shadow(
     scene: &mut Scene,
     (transform, text): (Affine, &mut TextRenderer),
 ) {
-    // A shadow's colour is the artwork's, not the theme's.
     let ink = shadow
         .colour
         .as_deref()
         .and_then(|value| colour(value, palette))
-        .unwrap_or(Color::from_rgba8(0, 0, 0, 96)); // document colour
+        .unwrap_or(SHADOW_INK);
     let alpha = f64::from(ink.components[3]) * mark.style.opacity();
     let ink = ink.with_alpha(1.0);
     let at = transform * Affine::translate((shadow.offset[0], shadow.offset[1])) * mark.affine();
