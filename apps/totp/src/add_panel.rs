@@ -213,6 +213,10 @@ struct AddForm {
     tree: Scrollable,
     cursor: Point,
     rect: Rect,
+    /// The theme the form was last laid out under: what it is built from.
+    theme: Option<Theme>,
+    /// What of that theme the form's building reads.
+    theme_key: Option<(u32, u32, u32)>,
     /// The form is taller than the window allows, so it shows a scroll bar.
     overflows: bool,
     /// Scroll to the end the next time the form is built: a section that just
@@ -239,6 +243,8 @@ impl AddForm {
             values,
             cursor: Point::ZERO,
             rect: Rect::ZERO,
+            theme: None,
+            theme_key: None,
             overflows: false,
             to_end: false,
             offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -346,6 +352,33 @@ impl AddForm {
 
 impl Widget for AddForm {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        // The tree is replaced here, where the window expects a widget to
+        // change its structure (and then asks it whether it did), never while
+        // the window or the sheet is laying it out.
+        if self.stale
+            && let Some(theme) = self.theme.clone()
+        {
+            self.stale = false;
+            // The window's height is known once the sheet has been drawn; only
+            // then is there an end to scroll to.
+            if self.to_end && self.viewport_h > 0.0 {
+                self.offset.set((0.0, f32::MAX));
+                self.to_end = false;
+            }
+            self.tree = build(
+                &self.sheet,
+                &self.values,
+                &theme,
+                &Frame {
+                    cap: body_cap(&theme, self.viewport_h),
+                    bar: self.overflows,
+                    offset: &self.offset,
+                    cursor: self.cursor,
+                },
+            );
+            self.sheet.borrow_mut().focus = None;
+            self.structure_dirty = true;
+        }
         self.tree.sync(state, path);
     }
 
@@ -359,25 +392,17 @@ impl Widget for AddForm {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        if std::mem::take(&mut self.stale) {
-            // The window's height is known once the sheet has been drawn; only
-            // then is there an end to scroll to.
-            if self.to_end && self.viewport_h > 0.0 {
-                self.offset.set((0.0, f32::MAX));
-                self.to_end = false;
-            }
-            self.tree = build(
-                &self.sheet,
-                &self.values,
-                theme,
-                &Frame {
-                    cap: body_cap(theme, self.viewport_h),
-                    bar: self.overflows,
-                    offset: &self.offset,
-                    cursor: self.cursor,
-                },
-            );
-            self.sheet.borrow_mut().focus = None;
+        // The tree is built once the theme is known; until then (and whenever
+        // the theme changes) it waits for the next sync to be built.
+        let key = (
+            theme.tokens.spacing.rhythm.group.to_bits(),
+            theme.text_scale.to_bits(),
+            theme.ui_scale.to_bits(),
+        );
+        if self.theme_key != Some(key) {
+            self.theme_key = Some(key);
+            self.theme = Some(theme.clone());
+            self.stale = true;
         }
         // The form has a node of its own over the scroller's, so that the
         // window's focus order pairs each widget with its node.
@@ -718,7 +743,14 @@ fn problem_field(message: &str) -> FieldId {
 pub struct AddAccountPanel {
     sheet: Shared,
     values: Values,
-    dialog: Option<ModalDialog<AddForm>>,
+    /// Boxed so the sheet's widgets stay where the window's layout map found
+    /// them whatever the panel does with it: a map entry is a raw address.
+    dialog: Option<Box<ModalDialog<AddForm>>>,
+    /// Sheets that closed or were replaced: the window's layout map still
+    /// points at their widgets until it is built again, so they are dropped
+    /// the next time the app syncs ([`Self::reap`]), not while an event is
+    /// being handled.
+    retired: Vec<Box<ModalDialog<AddForm>>>,
     /// The stable account identity being edited, if this panel is an edit
     /// rather than a new-account flow. The secret remains only in this local
     /// form and the encrypted vault; it is never copied to the CRDT.
@@ -740,6 +772,7 @@ impl AddAccountPanel {
             sheet: Rc::new(RefCell::new(Sheet::new())),
             values: Values::new(),
             dialog: None,
+            retired: Vec::new(),
             editing: None,
             provisioning: None,
             event: None,
@@ -747,16 +780,18 @@ impl AddAccountPanel {
     }
 
     pub fn is_open(&self) -> bool {
-        self.dialog.as_ref().is_some_and(ModalDialog::is_open)
+        self.dialog.as_ref().is_some_and(|dialog| dialog.is_open())
     }
 
     /// The open sheet, for the root to mount in its tree.
     pub fn widget(&self) -> Option<&dyn Widget> {
-        self.dialog.as_ref().map(|dialog| dialog as &dyn Widget)
+        self.dialog.as_deref().map(|dialog| dialog as &dyn Widget)
     }
 
     pub fn widget_mut(&mut self) -> Option<&mut dyn Widget> {
-        self.dialog.as_mut().map(|dialog| dialog as &mut dyn Widget)
+        self.dialog
+            .as_deref_mut()
+            .map(|dialog| dialog as &mut dyn Widget)
     }
 
     /// Which text field of the open sheet is under `p`, counting in tree order.
@@ -776,7 +811,7 @@ impl AddAccountPanel {
     pub fn take_structure_dirty(&mut self) -> bool {
         self.dialog
             .as_mut()
-            .is_some_and(Widget::take_structure_dirty)
+            .is_some_and(|dialog| dialog.take_structure_dirty())
     }
 
     fn flow(&self) -> Flow {
@@ -803,19 +838,21 @@ impl AddAccountPanel {
             Flow::Edit => ("totp-add-title-edit", "totp-add-save-edit"),
             Flow::Provision => ("totp-add-title-provision", "totp-add-save-provision"),
         };
+        let sheet = Rc::clone(&self.sheet);
         let queue = |msg: Msg| {
-            let sheet = Rc::clone(&self.sheet);
+            let sheet = Rc::clone(&sheet);
             move || sheet.borrow_mut().queue.push_back(msg)
         };
+        self.retire();
         let form = AddForm::new(Rc::clone(&self.sheet), self.values.clone());
-        self.dialog = Some(
+        self.dialog = Some(Box::new(
             ModalDialog::new(t(title), form)
                 .open(true)
                 .with_test_id("totp-add-dialog")
                 .primary_action(t(save), queue(Msg::Save))
                 .secondary_action(t("totp-add-cancel"), queue(Msg::Cancel))
                 .on_dismiss(queue(Msg::Cancel)),
-        );
+        ));
     }
 
     /// Open the sheet, resetting every field to defaults and collapsing the
@@ -836,7 +873,23 @@ impl AddAccountPanel {
 
     pub fn close(&mut self) {
         self.values.wipe_secret();
-        self.dialog = None;
+        self.retire();
+    }
+
+    /// Take the open sheet out of the tree, keeping it alive until [`Self::reap`].
+    fn retire(&mut self) {
+        if let Some(mut dialog) = self.dialog.take() {
+            dialog.set_open(false);
+            self.retired.push(dialog);
+        }
+    }
+
+    /// Drop the sheets that left the tree. Returns whether any did, so the
+    /// window lays its tree out again.
+    pub fn reap(&mut self) -> bool {
+        let reaped = !self.retired.is_empty();
+        self.retired.clear();
+        reaped
     }
 
     /// Open with the Advanced-options section already expanded.

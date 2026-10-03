@@ -175,6 +175,9 @@ fn code_style(theme: &Theme) -> TextStyle {
 struct RowLayout {
     /// What the [`ListRowFace`] paints: everything left of the trailing column.
     face: Rect,
+    /// What a row without a key says about it, left of its button; empty when
+    /// the row is too narrow to say it.
+    caption: Rect,
     /// The code and ring's hover and hit area; empty for a row without a key.
     code: Rect,
     /// The "Set up" button; empty for a row with a key.
@@ -272,6 +275,17 @@ impl AccountList {
         self.scroll
     }
 
+    /// Show `index`'s row hovered, as a capture of the hover state needs.
+    pub(crate) fn stage_hover(&mut self, index: usize, code: bool) {
+        self.hover = Some((index, if code { Zone::Code } else { Zone::Body }));
+    }
+
+    /// The row the pointer is over.
+    #[cfg(test)]
+    pub(crate) fn hovered_row(&self) -> Option<usize> {
+        self.hover.map(|(row, _)| row)
+    }
+
     /// The rect the empty state's action was last painted at.
     #[cfg(test)]
     pub(crate) fn empty_action_rect(&self) -> Rect {
@@ -358,6 +372,13 @@ impl AccountList {
         let set_up = ButtonFace::new(Rect::ZERO, SET_UP_LABEL).control_size(ControlSize::Small);
         let set_up_w = set_up.intrinsic_width(text, theme);
         let set_up_h = ButtonFace::height(ControlSize::Small, theme);
+        let (caption_w, caption_h) =
+            text.measure_style(UNKEYED_CAPTION, None, &theme.text(TextRole::Caption));
+        let (caption_w, caption_h) = (f64::from(caption_w), f64::from(caption_h));
+        // The caption explaining the button shows when the title keeps half a
+        // utility panel's width beside it.
+        let caption_fits = width - (m.pad + set_up_w + m.gap + caption_w)
+            >= f64::from(theme.tokens.metrics.panel_width_utility) / 2.0;
         let layouts = self
             .accounts
             .iter()
@@ -366,6 +387,8 @@ impl AccountList {
                 let has_secret = account.secret_is_valid();
                 let trailing = if has_secret {
                     m.code_column()
+                } else if caption_fits {
+                    m.pad + set_up_w + m.gap + caption_w
                 } else {
                     m.pad + set_up_w
                 };
@@ -393,6 +416,16 @@ impl AccountList {
                         cy + set_up_h / 2.0,
                     )
                 };
+                let caption = if has_secret || !caption_fits {
+                    Rect::ZERO
+                } else {
+                    Rect::new(
+                        set_up.x0 - m.gap - caption_w,
+                        cy - caption_h / 2.0,
+                        set_up.x0 - m.gap,
+                        cy + caption_h / 2.0,
+                    )
+                };
                 let row_commands = commands(i, count);
                 let actions: Vec<RowAction<'_>> = row_commands.iter().map(|c| c.action()).collect();
                 let hovered = Interaction {
@@ -405,6 +438,7 @@ impl AccountList {
                     .action_rects(face, theme);
                 RowLayout {
                     face,
+                    caption,
                     code,
                     set_up,
                     actions,
@@ -575,6 +609,16 @@ impl AccountList {
         if has_secret {
             self.paint_code(ctx, m, i, account, now, hovered_zone == Some(Zone::Code));
         } else {
+            if layout.caption.area() > 0.0 {
+                let caption = self.at(i, layout.caption);
+                ctx.text_role(
+                    UNKEYED_CAPTION,
+                    TextRole::Caption,
+                    theme.text_dim,
+                    caption.origin(),
+                    None,
+                );
+            }
             let rect = self.at(i, layout.set_up);
             Button::paint(
                 ctx.scene,
@@ -773,6 +817,8 @@ impl AccountList {
 }
 
 const SET_UP_LABEL: &str = "Set up";
+/// What a shared account without its key here says about itself.
+const UNKEYED_CAPTION: &str = "Not set up on this device";
 
 #[cfg(test)]
 #[path = "list_tests.rs"]
