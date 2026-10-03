@@ -60,8 +60,8 @@ photo, and an export grades the full picture.
 
 A person crops on the canvas (Enter, C or double-click on a picture; the
 turn handle straightens), drags the inspector's sliders with the result
-shown while dragging, and adds a picture from the header; opened from the
-desktop, a picture becomes a new artwork the size of the picture.
+shown while dragging, and adds a picture from the header: on an empty
+sheet it becomes the artwork, sized to the picture.
 The selection is an area kept with the artwork, like the reference: it
 syncs and undoes, and is never drawn into it. Rectangles, ellipses, lassos,
 path data and marks' shapes select it; the magic wand and colour find it in

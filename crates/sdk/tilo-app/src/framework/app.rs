@@ -94,24 +94,6 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
-    /// Media types (`image/png`) the app opens when the desktop hands it a
-    /// file of that type: a file association, a file dropped on its icon.
-    /// The app is launched with the file and [`Self::open_file`] makes the
-    /// edit that opens it.
-    const OPENS: &'static [&'static str] = &[];
-
-    /// The edit that opens a file the app was handed (its name and bytes,
-    /// of a type in [`Self::OPENS`]), applied as the app's first step
-    /// through the same door as every control, so it is attributed and
-    /// undone like one.
-    ///
-    /// # Errors
-    /// Why the file cannot be opened; the app then starts as it was.
-    fn open_file(name: &str, bytes: &[u8]) -> Result<Invoke<Self::Resource>, String> {
-        let _ = bytes;
-        Err(format!("{} opens no files, not {name}", Self::TITLE))
-    }
-
     /// What a brand-new record starts with that depends on who creates it or
     /// where: the creator as its owner, a first-run import of settings that
     /// already exist on this device. Everything that depends on neither is
@@ -189,7 +171,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
         optional: vec![],
-        opens: A::OPENS,
+        opens: &[],
         create: create::<A>,
     })
 }
@@ -346,17 +328,6 @@ fn create<A: ResourceApp>(
             )
             .map_err(LaunchError::Record)?;
     }
-    // A file the app was handed is opened by the app's own edit, as if the
-    // person had asked; one it cannot open leaves the app as it was.
-    let opening = context
-        .take_open_file()
-        .and_then(|file| match A::open_file(file.name(), file.bytes()) {
-            Ok(invoke) => Some(invoke),
-            Err(error) => {
-                tracing::warn!(target: "tilo_app::open", file = file.name(), %error, "the handed file was not opened");
-                None
-            }
-        });
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -364,9 +335,6 @@ fn create<A: ResourceApp>(
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let me = context.author().0.clone();
     let root = build_root::<A>(reader, Editing::Live { permissions, me }, context.storage());
-    if let Some(invoke) = opening {
-        root.dispatcher().invoke(invoke);
-    }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component
@@ -430,39 +398,6 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    /// Hand the instance the file it was launched with (the one positional
-    /// argument), when the app opens files of its type. The launch granted
-    /// the read; a file that cannot be read is left out and said so.
-    fn hand_over(
-        definition: &ApplicationDefinition,
-        args: &LaunchArgs,
-        prepared: &mut PreparedComponentInputs,
-    ) {
-        let Some(path) = args.positionals().first().map(std::path::Path::new) else {
-            return;
-        };
-        let Some(media_type) = ui_core::dnd::mime_for_path(path)
-            .filter(|media_type| definition.opens_media_type(media_type))
-        else {
-            tracing::warn!(target: "tilo_app::open", path = %path.display(), "the app does not open files of this type");
-            return;
-        };
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        let file = tilo_files::file_at(path)
-            .and_then(|(dir, file)| tilo_files::blocking::read(&dir, &file))
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| ui_core::application::OpenFile::new(&name, media_type, bytes));
-        match file {
-            Ok((file, _receipt)) => prepared.context.provide_open_file(file),
-            Err(error) => {
-                tracing::warn!(target: "tilo_app::open", path = %path.display(), %error, "the file could not be handed over");
-            }
-        }
-    }
-
     let inputs = ComponentRunnerInputs::from_native_process();
     // Captures, audits and headless driving never touch the user's profile:
     // they run on a private one removed with the process, unless a headless
@@ -504,7 +439,7 @@ fn prepare_definition(
             &author,
             role_permissions(&author.0, Role::Owner),
         )?;
-        let mut prepared = host
+        return host
             .prepare_default(
                 definition,
                 DATA_DIR_INSTANCE,
@@ -517,21 +452,17 @@ fn prepare_definition(
                     prepared,
                     super::testing::data_dir_settings(directory.as_ref()),
                 )
-            })?;
-        hand_over(definition, args, &mut prepared);
-        return Ok(prepared);
+            });
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    let mut prepared = native.host_mut().prepare_default(
+    native.host_mut().prepare_default(
         definition,
         instance,
         default_record_of(definition),
         None,
         inputs,
-    )?;
-    hand_over(definition, args, &mut prepared);
-    Ok(prepared)
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -558,9 +489,6 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .scenarios(A::scenarios())
         .allowed_options(&["--data-dir"])
         .allowed_live_options(&["--data-dir"])
-        // The file a desktop launches the app with, for an app that opens
-        // files.
-        .max_positionals(usize::from(!A::OPENS.is_empty()))
 }
 
 #[cfg(not(tilo_native_runner))]
