@@ -86,6 +86,8 @@ pub struct RunRecord {
     pub shortcut_id: String,
     pub name: String,
     pub status: RunStatus,
+    /// When the run started, as the person reads the clock.
+    pub started: String,
 }
 
 /// The outcome of the last save or delete, for the person to read.
@@ -314,6 +316,7 @@ impl DoorCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: RunStatus::Running,
+                    started: ui::clock::local_now().format("%H:%M").to_string(),
                 },
             );
         });
