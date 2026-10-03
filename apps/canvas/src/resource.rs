@@ -211,11 +211,15 @@ fn store_picture(path: &str) -> Result<String, String> {
 /// # Errors
 /// Returns why the file cannot be read, or that it is too large.
 pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
-    let bytes = std::fs::read(path).map_err(|error| format!("cannot read {path}: {error}"))?;
-    if bytes.len() > limit {
+    let cannot = |error: tilo_files::FsError| format!("cannot read {path}: {error}");
+    let (dir, name) = tilo_files::file_at(std::path::Path::new(path)).map_err(cannot)?;
+    let size = tilo_files::blocking::metadata(&dir, &name)
+        .map_err(cannot)?
+        .len;
+    if usize::try_from(size).map_or(true, |size| size > limit) {
         return Err(format!("{path} is over {limit} bytes"));
     }
-    Ok(bytes)
+    tilo_files::blocking::read(&dir, &name).map_err(cannot)
 }
 
 /// Keep `bytes` in the app's content store; answers their address.

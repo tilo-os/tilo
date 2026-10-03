@@ -1555,6 +1555,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-content",
+ "tilo-files",
  "tilo-wet-media",
  "usvg",
  "uuid",
