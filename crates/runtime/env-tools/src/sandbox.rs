@@ -281,6 +281,21 @@ impl BuildSandbox {
     /// output ceiling or the deadline. A command that runs and fails is an
     /// `Ok` with `success == false`.
     pub fn run(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
+        // The previous run's overlay can outlive its process briefly while
+        // the kernel tears its mount namespace down; until then the upper
+        // is busy. Wait that out rather than fail the build.
+        let mut attempts = 0u32;
+        loop {
+            let ran = self.run_once(argv, timeout)?;
+            attempts = attempts.saturating_add(1);
+            if ran.success || !overlay_busy(&ran.stderr) || attempts >= 20 {
+                return Ok(ran);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    fn run_once(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
         let mut command = if self.identity == Identity::SubordinateIds {
             let mut command = Command::new("unshare");
             command.args(UNSHARE_SUBORDINATE).arg(&self.bwrap);
@@ -407,6 +422,11 @@ pub fn available() -> bool {
     .unwrap_or(false);
     let _ = remove_tree(&probe);
     ok
+}
+
+/// bwrap's report that the upper is still held by an overlay being torn down.
+fn overlay_busy(stderr: &str) -> bool {
+    stderr.contains("Can't make overlay mount") && stderr.contains("Device or resource busy")
 }
 
 /// `rm -rf` that first makes every directory writable and searchable, as the
