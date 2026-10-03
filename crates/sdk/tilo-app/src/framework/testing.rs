@@ -21,8 +21,8 @@ const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, prepare_on, role_permissions,
-    settle_launch,
+    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
+    role_permissions, settle_launch,
 };
 use super::launch::LaunchInput;
 
@@ -152,9 +152,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             ComponentRunnerInputs::from_native_process(),
         )?;
         let checkout = prepared.context.record().clone();
-        prepared
-            .context
-            .provide_launch_arguments(arguments.to_vec());
+        hand_launch(definition, arguments, &mut prepared)?;
         if let Some(file) = file {
             prepared.context.provide_open_file(file);
         }

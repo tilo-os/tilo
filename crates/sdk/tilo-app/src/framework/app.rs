@@ -60,7 +60,9 @@ pub trait ResourceApp: 'static {
     /// shell and every other host of its component protect it alike.
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour::DEFAULT;
     /// Media types (`type/subtype`, lowercase) of the files the app opens
-    /// when a host hands it one; [`Self::launch`] receives the file.
+    /// when a host hands it one (a file association, a file dropped on its
+    /// icon, a path of that type on its command line); [`Self::launch`]
+    /// receives the file.
     const OPENS: &'static [&'static str] = &[];
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
@@ -451,7 +453,9 @@ pub(crate) fn prepare_on(
 }
 
 /// Prepare `A` for a launch: the record its arguments name, and the
-/// arguments handed to the component for [`ResourceApp::launch`].
+/// arguments handed to the component for [`ResourceApp::launch`]. A first
+/// argument naming a file of a type the app [opens](ResourceApp::OPENS) is
+/// also handed over as that file, as a desktop handing it the file would.
 #[cfg(tilo_native_runner)]
 fn prepare_app<A: ResourceApp>(
     definition: &ApplicationDefinition,
@@ -460,10 +464,60 @@ fn prepare_app<A: ResourceApp>(
     let arguments = args.positionals();
     let named = A::launch_record(&LaunchInput::new(arguments, None));
     let mut prepared = prepare_named(definition, args, named)?;
+    hand_launch(definition, arguments, &mut prepared)?;
+    Ok(prepared)
+}
+
+/// Hand a prepared component what its launch named: the arguments, and the
+/// file the first one names when the app opens its type.
+///
+/// # Errors
+/// A file of a type the app opens that cannot be read.
+#[cfg(tilo_native_runner)]
+pub(crate) fn hand_launch(
+    definition: &ApplicationDefinition,
+    arguments: &[String],
+    prepared: &mut PreparedComponentInputs,
+) -> Result<(), LaunchError> {
+    if let Some(path) = arguments.first().map(std::path::Path::new)
+        && let Some(file) = launched_file(definition, path)?
+    {
+        prepared.context.provide_open_file(file);
+    }
     prepared
         .context
         .provide_launch_arguments(arguments.to_vec());
-    Ok(prepared)
+    Ok(())
+}
+
+/// The file at `path` to hand the component, when `definition` opens its
+/// type; `None` for any other argument (a URL, a folder, another type).
+///
+/// # Errors
+/// A file of a type the app opens that cannot be read.
+#[cfg(tilo_native_runner)]
+fn launched_file(
+    definition: &ApplicationDefinition,
+    path: &std::path::Path,
+) -> Result<Option<ui_core::application::OpenFile>, LaunchError> {
+    let Some(media_type) = ui_core::dnd::mime_for_path(path)
+        .filter(|media_type| definition.opens_media_type(media_type))
+    else {
+        return Ok(None);
+    };
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let unreadable = |error: String| {
+        LaunchError::Operation(format!("{} cannot be read: {error}", path.display()))
+    };
+    let bytes = tilo_files::file_at(path)
+        .and_then(|(dir, file)| tilo_files::blocking::read(&dir, &file))
+        .map_err(|error| unreadable(error.to_string()))?;
+    let (file, _receipt) =
+        ui_core::application::OpenFile::new(&name, media_type, bytes).map_err(unreadable)?;
+    Ok(Some(file))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
