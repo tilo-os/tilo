@@ -6,7 +6,9 @@
  *
  * `createMembership({rooms, room, displayName})` takes `rooms(requestJson)`
  * (the wasm peer's `rooms`, resolving to the reply's JSON), the room's uuid
- * and the name invitations record as their inviter.
+ * and the name invitations record as their inviter. `createWorkspaces`
+ * lists, creates and enters the rooms the host governs, before a peer is in
+ * one.
  */
 
 const ROLES = {viewer: 'Viewer', commenter: 'Commenter', editor: 'Editor'};
@@ -134,6 +136,43 @@ export function createMembership({rooms, room, displayName = '', now = () => Dat
     async cancelInvitation(inviteId) {
       return expect(await ask({Cancel: {room, request_id: requestId(), invite_id: bytesOf(inviteId)}}), 'Pending')
         .map(invitation);
+    },
+  };
+}
+
+/**
+ * The workspaces (rooms) the host governs, for a device of its own person:
+ * `list()` resolves to `[{room, name, generation, members}]`,
+ * `create(name)` to the new one, `enter(room)` admits this device as the
+ * room's owner and resolves to it. A peer connected with `room` then works
+ * in it.
+ */
+export function createWorkspaces({rooms}) {
+  const ask = async request => {
+    const reply = JSON.parse(await rooms(JSON.stringify(request)));
+    if (reply.Refused !== undefined) throw new Error(reply.Refused);
+    return reply;
+  };
+  const workspace = value => ({
+    room: value.room, name: value.name, generation: value.generation,
+    members: value.members.map(member),
+  });
+  const one = reply => {
+    if (reply.Room === undefined) throw new Error(`the host answered ${Object.keys(reply)[0]}, not Room`);
+    return workspace(reply.Room);
+  };
+  return {
+    async list() {
+      const reply = await ask('List');
+      if (reply.Rooms === undefined) throw new Error(`the host answered ${Object.keys(reply)[0]}, not Rooms`);
+      return reply.Rooms.map(workspace);
+    },
+    async create(name) {
+      if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
+      return one(await ask({Create: {name: name.trim()}}));
+    },
+    async enter(room) {
+      return one(await ask({Enter: {room}}));
     },
   };
 }

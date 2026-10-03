@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createMembership, encodeInvitation, MAX_INVITATION_SECONDS} from './membership.mjs';
+import {createMembership, createWorkspaces, encodeInvitation, MAX_INVITATION_SECONDS} from './membership.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const key = byte => Array(32).fill(byte);
@@ -68,4 +68,17 @@ test('the owner lists, admits, declines and removes people', async () => {
 test('a peer without a room administers nothing', async () => {
   const membership = createMembership({rooms: async () => { throw new Error('unreachable'); }});
   await assert.rejects(membership.list(), /no room/);
+});
+
+test('the host\'s workspaces are listed, created and entered without a room', async () => {
+  const host = fakeHost({
+    List: () => ({Rooms: [room]}),
+    Create: request => ({Room: {...room, name: request.Create.name}}),
+    Enter: () => ({Refused: 'room administration requires a device of the relay\'s user'}),
+  });
+  const workspaces = createWorkspaces({rooms: host.rooms});
+  assert.deepEqual((await workspaces.list()).map(value => [value.room, value.name]), [[ROOM, 'Acme']]);
+  assert.equal((await workspaces.create(' Acme Inc ')).name, 'Acme Inc');
+  await assert.rejects(workspaces.create(' '), TypeError);
+  await assert.rejects(workspaces.enter(ROOM), /relay's user/);
 });
