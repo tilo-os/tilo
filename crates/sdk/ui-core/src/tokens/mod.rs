@@ -18,9 +18,7 @@ pub use colors::{
 pub use elevation::{Elevation, Shadow};
 pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
-pub use palette::{
-    DEFAULT_NEUTRAL_HUE, Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone,
-};
+pub use palette::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
 pub use radii::Radii;
 pub use spacing::{Rhythm, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
