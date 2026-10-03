@@ -185,6 +185,14 @@ impl PipFeedback {
 
 const BROWSER_OPERATION_TYPE: &str = "browser.operation";
 
+/// A panel a review capture puts on screen.
+#[derive(Clone, Copy, Debug)]
+enum ReviewStage {
+    Site { information: bool },
+    Autofill { addresses: bool },
+    Find,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibrarySection {
     History,
@@ -953,6 +961,9 @@ pub struct BrowserWidget {
     /// judged on the width the text leaves, so a 1200px window at 2× lays
     /// out as the 600px window it is to the eye.
     text_scale: f32,
+    /// A panel a review capture stages. The first page load closes every
+    /// panel, so the fixture waits until the load events have been applied.
+    review_stage: Option<ReviewStage>,
     /// Resource actions that menu rows and row actions queued; drained in
     /// `sync` (see `toolbar.rs`).
     pending_commands: ui::LocalState<Vec<toolbar::ResourceCommand>>,
@@ -1338,6 +1349,7 @@ impl BrowserWidget {
             pip_select_area_rect: Rect::ZERO,
             pending_capture_studio: None,
             cursor: Point::ZERO,
+            review_stage: None,
             compact_chrome: false,
             compact_breakpoint: ui::tokens::Metrics::BASE.compact_breakpoint,
             text_scale: 1.0,
@@ -1583,6 +1595,53 @@ impl BrowserWidget {
         self.show_library = true;
         self.show_settings = false;
         self.structure_dirty = true;
+    }
+
+    /// Headless visual-review hook: the site panel on its protection page, or
+    /// on its connection and data page.
+    pub fn debug_show_site_panel(&mut self, information: bool) {
+        self.review_stage = Some(ReviewStage::Site { information });
+    }
+
+    /// Headless visual-review hook: the passwords panel, or the address
+    /// autofill panel.
+    pub fn debug_show_autofill(&mut self, addresses: bool) {
+        self.review_stage = Some(ReviewStage::Autofill { addresses });
+    }
+
+    /// Headless visual-review hook: find in page, open on a query.
+    pub fn debug_show_find(&mut self) {
+        self.review_stage = Some(ReviewStage::Find);
+    }
+
+    /// Headless visual-review hook: a site asking for the camera.
+    pub fn debug_request_permission(&mut self) {
+        self.capabilities.apply(WebViewEvent::PermissionRequested {
+            id: 1,
+            origin: "https://meet.example.org".into(),
+            permissions: "camera and microphone".into(),
+        });
+        self.structure_dirty = true;
+    }
+
+    /// Headless visual-review hook: a page offering a file.
+    pub fn debug_request_download(&mut self) {
+        self.capabilities
+            .apply(WebViewEvent::NativeDownloadRequested {
+                id: 1,
+                url: "https://example.org/tilo-sdk.tar.zst".into(),
+                name: "tilo-sdk.tar.zst".into(),
+            });
+        self.structure_dirty = true;
+    }
+
+    /// Headless widget in a private window, for visual review.
+    pub fn new_headless_private() -> Self {
+        let engine: SharedEngine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
+        let mut w = Self::with_engine_mode(engine, true, BrowsingMode::Private);
+        w.initial_url = SHOTS_URL.into();
+        w
     }
 
     pub fn debug_show_settings(&mut self) {
@@ -2614,7 +2673,7 @@ impl BrowserWidget {
             ));
         }
         if self.daily.open && !self.show_settings && !self.show_library {
-            column = column.push(self.daily.bar());
+            column = column.push(self.daily.bar(theme));
         }
         if let Some(prompt) = self.capabilities.prompt(&self.engine) {
             column = column.push(prompt);
@@ -2686,6 +2745,20 @@ impl BrowserWidget {
         };
         column = column.push(content);
         Box::new(column)
+    }
+
+    /// Put a staged review panel on screen, once page loads can no longer
+    /// close it.
+    fn apply_review_stage(&mut self) {
+        let Some(stage) = self.review_stage.take() else {
+            return;
+        };
+        match stage {
+            ReviewStage::Site { information } => self.site.stage_for_review(information),
+            ReviewStage::Autofill { addresses } => self.credentials.stage_for_review(addresses),
+            ReviewStage::Find => self.daily.stage_for_review(),
+        }
+        self.structure_dirty = true;
     }
 
     fn sync_bookmarks(&mut self, state: &AutoCommit, _root: &ObjId) {
@@ -3982,6 +4055,7 @@ impl Widget for BrowserWidget {
         }
         self.tick_back_hold(ui::time::now());
         self.apply_engine_events();
+        self.apply_review_stage();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.flush_library_edits(state);
@@ -4015,6 +4089,7 @@ impl Widget for BrowserWidget {
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
         self.compact_breakpoint = theme.tokens.metrics.compact_breakpoint;
+        self.suggestions.set_theme(theme);
         if self.rect.width() > 0.0 {
             self.compact_chrome = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         }
@@ -4069,10 +4144,11 @@ impl Widget for BrowserWidget {
             let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
             let height =
                 (self.rect.height() as f32 - top - theme.tokens.spacing.s12).clamp(180.0, 510.0);
+            let inset = theme.tokens.spacing.s4;
             let mut panel = if self.credentials.open {
-                self.credentials.panel(width, height)
+                self.credentials.panel(width, height, inset)
             } else {
-                self.site.panel(width, height)
+                self.site.panel(width, height, inset)
             };
             let panel_node = panel.build_layout(taffy, theme, node_map);
             #[allow(

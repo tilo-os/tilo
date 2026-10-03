@@ -5,6 +5,7 @@ use std::{
 };
 use ui::{
     LocalState,
+    icons::Icon,
     text_render::TextKind,
     tokens::TextRole,
     webview::{
@@ -116,6 +117,42 @@ impl Credentials {
             document: self.document.clone(),
             action,
         }]
+    }
+    /// Review fixture: the passwords panel (or the address autofill panel)
+    /// open on a secure page with a login form and saved accounts.
+    pub(crate) fn stage_for_review(&mut self, addresses: bool) {
+        self.origin = Some("https://example.com".into());
+        self.address_mode = addresses;
+        self.open = true;
+        self.notice.clear();
+        self.document = "1".into();
+        self.forms = vec![
+            CredentialForm {
+                id: "1".into(),
+                username: String::new(),
+                kind: "login".into(),
+            },
+            CredentialForm {
+                id: "2".into(),
+                username: String::new(),
+                kind: "new-password".into(),
+            },
+        ];
+        self.form = Some("1".into());
+        self.accounts = vec![
+            CredentialAccount {
+                id: "a".into(),
+                username: "alex@example.com".into(),
+            },
+            CredentialAccount {
+                id: "b".into(),
+                username: "alex.morgan".into(),
+            },
+        ];
+        self.account = Some("a".into());
+        if addresses {
+            self.addresses.stage_for_review();
+        }
     }
     pub fn close(&mut self) -> Vec<CredentialRequest> {
         let requests = if self.open {
@@ -381,28 +418,45 @@ impl Credentials {
         }
         row
     }
-    pub fn panel(&self, width: f32, height: f32) -> Box<dyn Widget> {
+    /// The panel, `width` by `height`, with its content inset by `inset`.
+    pub fn panel(&self, width: f32, height: f32, inset: f32) -> Box<dyn Widget> {
         let ready = self.pending.is_empty() && !self.document.is_empty();
-        let mut column = Column::new()
-            .with_intrinsic_height()
+        let refresh = (!self.private && self.origin.is_some() && !self.addresses.is_editing())
+            .then(|| {
+                if self.address_mode {
+                    Button::icon_only("browser.address.refresh", Icon::Refresh, "Refresh forms")
+                        .on_effect(self.command(Action::Refresh))
+                } else {
+                    Button::icon_only(
+                        "browser.credentials.refresh",
+                        Icon::Refresh,
+                        "Refresh forms and accounts",
+                    )
+                    .on_effect(self.command(Action::Refresh))
+                }
+            });
+        let mut header = Row::new()
+            .no_wrap()
             .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(
-                        Text::new(if self.address_mode {
-                            "Address autofill"
-                        } else {
-                            "Passwords"
-                        })
-                        .with_role(TextRole::Title),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(self.button(
-                        "browser.credentials.close",
-                        "Done",
-                        Action::Close,
-                    ))),
+                Text::new(if self.address_mode {
+                    "Address autofill"
+                } else {
+                    "Passwords"
+                })
+                .with_role(TextRole::Title),
             ))
+            .push(Box::new(Spacer::new()));
+        if let Some(refresh) = refresh {
+            header = header.push(Box::new(refresh));
+        }
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(header.push(Box::new(self.button(
+                "browser.credentials.close",
+                "Done",
+                Action::Close,
+            )))))
             .push(Box::new(
                 Text::new(self.origin.as_deref().unwrap_or("No secure page"))
                     .with_role(TextRole::Caption)
@@ -429,7 +483,11 @@ impl Credentials {
                     Scrollable::new(ScrollAxis::Vertical)
                         .with_focus_reveal()
                         .with_height(height)
-                        .with_child(Box::new(Container::new().with_child(Box::new(column)))),
+                        .with_child(Box::new(
+                            Container::new()
+                                .with_padding(inset)
+                                .with_child(Box::new(column)),
+                        )),
                 )),
         )
     }
@@ -457,32 +515,22 @@ impl Credentials {
                     Section::new(forms).with_header(SectionHeader::group("Address form")),
                 ));
             }
-            column = column.push(Box::new(
-                Actions::new(
-                    self.button(
-                        "browser.address.fill",
-                        "Fill selected address",
-                        Action::FillAddress,
-                    )
-                    .role(ButtonRole::Primary)
-                    .with_enabled(ready && self.form.is_some() && self.addresses.has_selection()),
+            column = column.push(Box::new(Actions::new(
+                self.button(
+                    "browser.address.fill",
+                    "Fill selected address",
+                    Action::FillAddress,
                 )
-                .secondary(
-                    self.button("browser.address.refresh", "Refresh forms", Action::Refresh)
-                        .with_enabled(!self.addresses.is_editing()),
-                ),
-            ));
+                .role(ButtonRole::Primary)
+                .with_enabled(ready && self.form.is_some() && self.addresses.has_selection()),
+            )));
         }
         column
     }
 
     fn password_controls(&self, mut column: Column, ready: bool) -> Column {
         if self.document.is_empty() {
-            return column.push(Box::new(self.button(
-                "browser.credentials.refresh",
-                "Refresh forms and accounts",
-                Action::Refresh,
-            )));
+            return column;
         }
         if self.forms.is_empty() {
             column = column.push(line("No supported login form found."));
@@ -555,12 +603,7 @@ impl Credentials {
                     Action::Capture,
                 )
                 .with_enabled(ready && self.form.is_some()),
-            )
-            .secondary(self.button(
-                "browser.credentials.refresh",
-                "Refresh forms and accounts",
-                Action::Refresh,
-            )),
+            ),
         ));
         if let Some((_, username, _)) = &self.capture {
             column = column

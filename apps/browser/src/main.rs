@@ -394,6 +394,14 @@ const SCENARIOS: &[&str] = &[
     "error",
     "pip-empty",
     "pip-active",
+    "site-protection",
+    "site-information",
+    "passwords",
+    "addresses",
+    "find",
+    "permission",
+    "download-prompt",
+    "private",
 ];
 
 /// The widget a `--shots` capture renders for `--scenario`. Without one it is
@@ -405,10 +413,14 @@ fn scenario_widget(
     if scenario == Some("tabs") {
         return Ok(Box::new(tab_strip_fixture(viewport.0)));
     }
-    let mut widget = BrowserWidget::new_headless();
+    let mut widget = if scenario == Some("private") {
+        BrowserWidget::new_headless_private()
+    } else {
+        BrowserWidget::new_headless()
+    };
     widget.debug_set_viewport_width(viewport.0);
     match scenario {
-        None => {}
+        None | Some("private") => {}
         Some("overlay") => widget.debug_force_suggestions(suggestion_fixture()),
         Some("settings") => widget.debug_show_settings(),
         Some("history") => widget.debug_show_library("history"),
@@ -435,6 +447,13 @@ fn scenario_widget(
         Some("error") => widget.debug_show_load_error(),
         Some("pip-empty") => widget.debug_show_empty_pip_feedback(),
         Some("pip-active") => widget.debug_show_active_pip(),
+        Some("site-protection") => widget.debug_show_site_panel(false),
+        Some("site-information") => widget.debug_show_site_panel(true),
+        Some("passwords") => widget.debug_show_autofill(false),
+        Some("addresses") => widget.debug_show_autofill(true),
+        Some("find") => widget.debug_show_find(),
+        Some("permission") => widget.debug_request_permission(),
+        Some("download-prompt") => widget.debug_request_download(),
         Some(other) => {
             return Err(LaunchError::Scenario(format!("unknown scenario {other:?}")));
         }
@@ -603,6 +622,10 @@ fn render_shot_to_png(
     // its placeholder instead of the page URL); re-sync against the built
     // tree, as `ui::App` does each frame.
     let mut frame = ShotFrame::new(viewport, theme).with_resync_after_build();
+    frame.sync(widget.as_mut());
+    frame.layout(widget.as_mut())?;
+    // The window's own size is known to the widget only after the first
+    // layout; a live window lays out again with it, as the capture does.
     frame.sync(widget.as_mut());
     frame.layout(widget.as_mut())?;
     let mut scene = frame.draw(widget.as_mut());

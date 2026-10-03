@@ -3,9 +3,9 @@
 //! A leaf `ui` widget the browser chrome positions directly under the
 //! address [`ui::widget::TextInput`]. It renders the ranked
 //! [`HistoryEntry`] rows produced by
-//! [`History::suggest`](crate::history::History::suggest) — each row shows
-//! the page title in primary text with the URL dimmed beneath it — and
-//! highlights the current selection.
+//! [`History::suggest`](crate::history::History::suggest) as a floating panel
+//! of list rows — each row shows the page title with its URL beneath it —
+//! and lifts the current selection.
 //!
 //! Two integration styles are supported, and the browser uses both:
 //!  * **Imperative** (primary): the chrome owns the address bar's key

@@ -81,6 +81,14 @@ impl DailyControls {
             }
         }
     }
+    /// Review fixture: the bar open on a query with matches found.
+    pub(crate) fn stage_for_review(&mut self) {
+        self.open = true;
+        self.query.set("web browser".into());
+        self.sent = "web browser".into();
+        self.count = 12;
+        self.active = 3;
+    }
     pub fn buffer_text(&mut self, text: &str) {
         if !self.buffered {
             self.query.set(String::new());
@@ -165,7 +173,9 @@ impl DailyControls {
             format!("Actual size ({:.0}%)", 100.0 * 1.2_f64.powf(self.zoom))
         }
     }
-    pub fn bar(&self) -> Box<dyn Widget> {
+    pub fn bar(&self, theme: &ui::theme::Theme) -> Box<dyn Widget> {
+        // Room for "12 of 345", so the count never wraps under the field.
+        let counter_width = theme.tokens.spacing.s16 + theme.tokens.spacing.s4;
         // `no_wrap` keeps the field, the match count and the commands on one
         // centre line: a wrapping row let the full-width field claim the
         // line and pushed the commands onto a second one.
@@ -187,10 +197,15 @@ impl DailyControls {
                     .with_placeholder("Find in page"),
             ))
             .push(Box::new(
-                Text::new(&counter)
-                    .with_role(TextRole::Caption)
-                    .numeric()
-                    .dimmed(),
+                Container::new()
+                    .with_no_padding()
+                    .with_min_width(counter_width)
+                    .with_child(Box::new(
+                        Text::new(&counter)
+                            .with_role(TextRole::Caption)
+                            .numeric()
+                            .dimmed(),
+                    )),
             ))
             .push(Box::new(icon(
                 "browser.find.previous",

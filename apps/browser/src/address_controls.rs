@@ -116,6 +116,38 @@ impl AddressControls {
             country: profile.country.clone(),
         })
     }
+    /// Review fixture: autofill on, with two saved profiles, one chosen.
+    pub(crate) fn stage_for_review(&mut self) {
+        self.private = false;
+        self.enabled = true;
+        self.profiles = vec![
+            AddressProfile {
+                id: "home".into(),
+                label: "Home".into(),
+                full_name: "Alex Morgan".into(),
+                given_name: "Alex".into(),
+                family_name: "Morgan".into(),
+                street: "14 Elm Street".into(),
+                city: "Portland".into(),
+                region: "Oregon".into(),
+                postal_code: "97201".into(),
+                country: "United States".into(),
+            },
+            AddressProfile {
+                id: "work".into(),
+                label: "Work".into(),
+                full_name: "Alex Morgan".into(),
+                given_name: "Alex".into(),
+                family_name: "Morgan".into(),
+                street: "300 Pine Avenue".into(),
+                city: "Seattle".into(),
+                region: "Washington".into(),
+                postal_code: "98101".into(),
+                country: "United States".into(),
+            },
+        ];
+        self.selected = Some("home".into());
+    }
     pub fn is_editing(&self) -> bool {
         self.editing.is_some()
     }
@@ -248,7 +280,7 @@ impl AddressControls {
         move || pending.set(Some(action.clone()))
     }
     pub fn panel(&self) -> Box<dyn Widget> {
-        let mut column = Column::new().with_intrinsic_height();
+        let mut column = Column::new().with_no_padding().with_intrinsic_height();
         if self.private {
             return Box::new(
                 column.push(line("Address autofill is unavailable in private windows.")),

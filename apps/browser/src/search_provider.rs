@@ -429,6 +429,31 @@ mod tests {
             ));
         }
 
+        // Phase `library_sections_are_scopes_that_admit_only_their_own_hits`.
+        {
+            let mut history = crate::history::History::new();
+            history.record_at("https://rust.example.test", "Rust notes", 1);
+            let mut bookmarks = crate::library::Bookmarks::default();
+            assert!(bookmarks.add("https://rust.example.test/book", "Rust book"));
+            let index = BrowserSearchIndex::default();
+            index.sync(&history, &bookmarks);
+            let provider = index.provider();
+            let scopes = provider.search_scopes();
+            assert_eq!(
+                scopes
+                    .iter()
+                    .map(|scope| scope.label.as_str())
+                    .collect::<Vec<_>>(),
+                ["History", "Bookmarks", "Downloads"]
+            );
+            let everywhere = provider.search_page(&SearchQuery::new("rust"), None, 50, 10);
+            assert_eq!(everywhere.results.len(), 2);
+            let only_bookmarks = SearchQuery::new("rust").within(crate::actions::BOOKMARKS_SCOPE);
+            let narrowed = provider.search_page(&only_bookmarks, None, 50, 10);
+            assert_eq!(narrowed.results.len(), 1);
+            assert_eq!(narrowed.results[0].title, "Rust book");
+        }
+
         // Phase `completed_downloads_are_searchable_by_name_source_and_destination`.
         {
             let mut downloads = crate::downloads::Downloads::default();
