@@ -134,7 +134,9 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn fixed_control_needs_do_not_inherit_an_expandable_entry_minimum() {
         let mut field = Field::new(
             "Count",
-            super::super::NumberInput::new(3.0).with_size(96.0, 47.0),
+            super::super::NumberInput::new(3.0)
+                .with_range(0.0, 99.0)
+                .compact(),
         );
         solve(&mut field, 220.0, &Theme::dark());
         assert_eq!(
@@ -142,8 +144,11 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
             LabelPlacement::Beside
         );
         let control = field.children()[1].children()[0].get_rect();
-        assert_eq!(control.width(), 96.0);
-        assert_eq!(control.height(), 47.0);
+        assert!(control.width() < 140.0, "{control:?}");
+        assert_eq!(
+            control.height(),
+            super::super::ControlSize::Regular.height(&Theme::dark())
+        );
     }
 
     wide_fields_align_controls_beside_measured_labels();
