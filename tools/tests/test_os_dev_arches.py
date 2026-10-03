@@ -41,13 +41,13 @@ class OsDevArchesTests(unittest.TestCase):
                 self.assertTrue(selected(path), path)
                 self.assertTrue(any(selected(item) for item in host + [path]))
         self.assertFalse(any(selected(path) for path in host))
-        # Main continues to build both architectures on every push by design.
+        # Main builds x86_64 on every push here, aarch64 in os-dev-arm.yml.
         self.assertRegex(workflow, r"(?m)^  push:\n    branches: \[main\]$")
-        self.assertEqual(MODULE.arches("push", paths=host), ["x86_64", "aarch64"])
+        self.assertEqual(MODULE.arches("push", paths=host), ["x86_64"])
 
     def test_architecture_choice(self):
         both = ["x86_64", "aarch64"]
-        self.assertEqual(MODULE.arches("push"), both)
+        self.assertEqual(MODULE.arches("push"), ["x86_64"])
         self.assertEqual(MODULE.arches("pull_request", paths=["os/etc/chrony.conf"]), ["x86_64"])
         self.assertEqual(MODULE.arches("pull_request", labels=["os-arm64"]), both)
         for path in ("os/kernel/config/aarch64", "os/hardware/profiles/lenovo-83ed.toml",
@@ -56,6 +56,16 @@ class OsDevArchesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(MODULE.arches("pull_request", paths=[path]), both)
         self.assertEqual(MODULE.arch_specific(["os/Containerfile", "os/kernel/x"]), ["os/kernel/x"])
+
+    def test_main_aarch64_builds_newest_commit_one_at_a_time(self):
+        workflow = (ROOT / ".forgejo/workflows/os-dev-arm.yml").read_text()
+        self.assertRegex(workflow, r"(?m)^  push:\n    branches: \[main\]$")
+        self.assertIn("  group: os-dev-aarch64-main\n  cancel-in-progress: false\n", workflow)
+        self.assertIn('if [[ $head == "$GITHUB_SHA" ]]; then', workflow)
+        self.assertIn("    if: needs.newest.outputs.build == 'true'\n"
+                      "    uses: ./.forgejo/workflows/build-image.yml\n"
+                      "    with:\n"
+                      "      arches: '[\"aarch64\"]'\n", workflow)
 
 
 if __name__ == "__main__":
