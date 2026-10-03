@@ -14382,11 +14382,11 @@ dependencies = [
  "serial_test",
  "taffy",
  "tempfile",
- "tilo-actions",
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
+ "tilo-environment",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -15396,6 +15396,21 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-resource",
  "url",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-environment"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "fnv",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-app-package",
+ "tilo-automerge-fork",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -18141,27 +18156,31 @@ name = "ush"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bounded-command",
  "collab-types",
- "fnv",
+ "durable-store",
  "landlock",
  "libc",
+ "package-store",
  "runtime-portal",
  "seccompiler",
+ "semver",
  "serde",
  "serde_json",
  "strsim",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
+ "tilo-app-state",
  "tilo-clock",
- "tilo-files",
+ "tilo-environment",
+ "tilo-resource",
  "tilo-sandbox-core",
  "tilo-test-env",
+ "tilo-user-identity",
  "tilo-xdg-paths",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "walkdir",
  "workspace-hack",
 ]
 

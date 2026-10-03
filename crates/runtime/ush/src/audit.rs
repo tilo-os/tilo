@@ -26,9 +26,8 @@ pub struct AuditRecord {
     pub at: u64,
     /// The session that asked.
     pub session: String,
-    /// `ush` or `dsh` — a request under the developer profile is worth being
-    /// able to pick out later.
-    pub profile: String,
+    /// The environment record the session was built from.
+    pub environment: String,
     /// What was asked: `trust-dir`, `pkg-install`, `open-session`, …
     pub request: String,
     /// What it was asked about: a path, a package name.
@@ -42,11 +41,11 @@ pub struct AuditRecord {
 }
 
 impl AuditRecord {
-    pub fn new(session: &str, profile: &str, request: &str, allowed: bool) -> Self {
+    pub fn new(session: &str, environment: &str, request: &str, allowed: bool) -> Self {
         Self {
             at: unix_now(),
             session: session.to_string(),
-            profile: profile.to_string(),
+            environment: environment.to_string(),
             request: request.to_string(),
             subject: None,
             allowed,
@@ -157,10 +156,10 @@ mod tests {
             let log = AuditLog::at(dir.path().join("audit"));
 
             log.append(
-                &AuditRecord::new("s1", "ush", "trust-dir", true).about("/var/home/you/src"),
+                &AuditRecord::new("s1", "default", "trust-dir", true).about("/var/home/you/src"),
             );
             log.append(
-                &AuditRecord::new("s1", "ush", "trust-dir", false)
+                &AuditRecord::new("s1", "default", "trust-dir", false)
                     .about("/usr")
                     .because("the overlay owns this subtree"),
             );
@@ -181,7 +180,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let log = AuditLog::at(dir.path().join("audit"));
-            log.append(&AuditRecord::new("s1", "ush", "pkg-install", false).about("nethack"));
+            log.append(&AuditRecord::new("s1", "default", "pkg-install", false).about("nethack"));
             let all = log.read_all();
             assert_eq!(all.len(), 1);
             assert!(!all[0].allowed);
@@ -193,7 +192,7 @@ mod tests {
             let log = AuditLog::at(dir.path().join("audit"));
             for i in 0..5 {
                 log.append(
-                    &AuditRecord::new("s1", "ush", "pkg-install", true).about(format!("p{i}")),
+                    &AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}")),
                 );
             }
             assert_eq!(log.read_all().len(), 5);
@@ -206,14 +205,14 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let audit = dir.path().join("audit");
             let log = AuditLog::at(&audit);
-            log.append(&AuditRecord::new("s1", "ush", "trust-dir", true));
+            log.append(&AuditRecord::new("s1", "default", "trust-dir", true));
             std::fs::OpenOptions::new()
                 .append(true)
                 .open(log.file_for(unix_now()))
                 .unwrap()
                 .write_all(b"{ truncated\n")
                 .unwrap();
-            log.append(&AuditRecord::new("s1", "ush", "pkg-install", true));
+            log.append(&AuditRecord::new("s1", "default", "pkg-install", true));
             assert_eq!(log.read_all().len(), 2);
         }
     }
@@ -226,7 +225,7 @@ mod tests {
             let log = AuditLog::at(dir.path().join("audit"));
             for i in 0..10 {
                 let mut r =
-                    AuditRecord::new("s1", "ush", "pkg-install", true).about(format!("p{i}"));
+                    AuditRecord::new("s1", "default", "pkg-install", true).about(format!("p{i}"));
                 r.at = 1_000_000 + i;
                 log.append(&r);
             }
