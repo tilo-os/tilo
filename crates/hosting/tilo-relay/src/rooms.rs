@@ -16,6 +16,7 @@
 //! HTTPS, where the owner then admits it.
 
 mod admin;
+mod admissions;
 mod collaboration;
 mod pages;
 mod stewardship;
@@ -112,6 +113,8 @@ struct GovernedRoom {
     /// Its channels' stewards, when this relay is a node that may own
     /// workspaces ([`stewardship`]).
     stewardship: Option<stewardship::Stewardship>,
+    /// The owner's pre-admissions and notices.
+    admissions: admissions::Admissions,
 }
 
 impl RoomRecord {
@@ -163,8 +166,10 @@ impl GovernedRoom {
             published: 0,
             collaboration: collaboration::CollaborationState::default(),
         };
+        let path = dir.join(format!("{room}.room"));
         let this = Self {
-            path: dir.join(format!("{room}.room")),
+            admissions: admissions::Admissions::open(&path)?,
+            path,
             stewardship: stewardship(dir, &room, authority, key),
             record,
             peer,
@@ -202,6 +207,7 @@ impl GovernedRoom {
             .parent()
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
         Ok(Self {
+            admissions: admissions::Admissions::open(&path)?,
             record,
             peer,
             path,

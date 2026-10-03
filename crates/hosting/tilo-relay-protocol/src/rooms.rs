@@ -134,6 +134,114 @@ pub struct Inviter {
     pub name: String,
 }
 
+/// Domain of the owner's signature over a [`PreAdmission`].
+pub const PRE_ADMISSION_DOMAIN: &[u8] = b"tilo/workspace-pre-admission/v1\0";
+
+/// Longest label a pre-admission gives the person it is for.
+pub const MAX_PRE_ADMISSION_LABEL_CHARS: usize = 128;
+
+/// The room owner's standing decision to admit, without deciding again,
+/// whoever redeems the invitation issued with it and presents the one-time
+/// token whose SHA-256 is `token_sha256`. Whoever hands out the token (a
+/// backend that verified the person's email, say) never holds the room's
+/// keys; the owner's user root signs the grant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreAdmission {
+    /// The room's UUID.
+    pub room: String,
+    /// The role the person gets.
+    pub role: RoomRole,
+    /// SHA-256 of the token the person presents.
+    pub token_sha256: [u8; 32],
+    /// Whom it is for, as the owner knows them (an email address); the
+    /// owner's notice names them with it.
+    pub label: String,
+    /// It stops admitting here, at most 30 days ahead.
+    pub expires_at_ns: u64,
+    /// The owner's user root, which signs it.
+    pub owner_user_public_key: [u8; 32],
+    /// The owner's signature over [`PreAdmission::digest`].
+    #[serde(with = "crate::sig64")]
+    pub signature: [u8; 64],
+}
+
+#[derive(Serialize)]
+struct PreAdmissionView<'a> {
+    room: &'a str,
+    role: RoomRole,
+    token_sha256: &'a [u8; 32],
+    label: &'a str,
+    expires_at_ns: u64,
+    owner_user_public_key: &'a [u8; 32],
+}
+
+impl PreAdmission {
+    /// What the owner's root signs: `blake3(PRE_ADMISSION_DOMAIN ‖ postcard(fields
+    /// but the signature))`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the fields cannot be encoded.
+    pub fn digest(&self) -> Result<[u8; 32], postcard::Error> {
+        let view = PreAdmissionView {
+            room: &self.room,
+            role: self.role,
+            token_sha256: &self.token_sha256,
+            label: &self.label,
+            expires_at_ns: self.expires_at_ns,
+            owner_user_public_key: &self.owner_user_public_key,
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(PRE_ADMISSION_DOMAIN);
+        hasher.update(&postcard::to_allocvec(&view)?);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    /// Whether the owner's root signed it and its label is printable.
+    ///
+    /// # Errors
+    ///
+    /// Returns why it does not verify.
+    pub fn verify(&self) -> Result<(), String> {
+        let label = self.label.trim();
+        if label.is_empty()
+            || label != self.label
+            || label.chars().count() > MAX_PRE_ADMISSION_LABEL_CHARS
+            || label.chars().any(char::is_control)
+        {
+            return Err("pre-admission label is invalid".into());
+        }
+        let digest = self.digest().map_err(|error| error.to_string())?;
+        ed25519_dalek::VerifyingKey::from_bytes(&self.owner_user_public_key)
+            .and_then(|key| {
+                key.verify_strict(
+                    &digest,
+                    &ed25519_dalek::Signature::from_bytes(&self.signature),
+                )
+            })
+            .map_err(|_| "pre-admission signature did not verify".to_string())
+    }
+}
+
+/// Something that happened in a room without its owner deciding it then,
+/// for the owner to see.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoomNotice {
+    /// A person was admitted under the owner's [`PreAdmission`].
+    PreAdmitted {
+        /// The person.
+        user_public_key: [u8; 32],
+        /// The name they gave.
+        name: String,
+        /// The pre-admission's label.
+        label: String,
+        /// Their role.
+        role: RoomRole,
+        /// When.
+        at_ns: u64,
+    },
+}
+
 /// An invitation still redeemable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingInvite {
@@ -230,6 +338,22 @@ pub enum RoomsRequest {
         /// The member.
         user_public_key: [u8; 32],
     },
+    /// Issue a single-use invitation that admits whoever redeems it with
+    /// the token `grant` names, without the owner deciding again: answered
+    /// with [`RoomsReply::Invitation`].
+    PreAdmit {
+        /// Caller-chosen idempotency key; never zero.
+        request_id: [u8; 32],
+        /// The owner's signed grant; its room is the room.
+        grant: PreAdmission,
+        /// How the inviting person names themself.
+        inviter_name: Option<String>,
+    },
+    /// What happened in `room` without the owner deciding it then.
+    Notices {
+        /// The room.
+        room: String,
+    },
 }
 
 /// The answer to a [`RoomsRequest`].
@@ -252,6 +376,8 @@ pub enum RoomsReply {
     Requests(Vec<JoinRequest>),
     /// Refused, and why.
     Refused(String),
+    /// What happened without the owner deciding it then, oldest first.
+    Notices(Vec<RoomNotice>),
 }
 
 /// One `/join` step.
@@ -290,6 +416,19 @@ pub enum JoinStep {
         request_id: [u8; 32],
         /// The joining device.
         device_public_key: [u8; 32],
+    },
+    /// [`JoinStep::Prove`] with the one-time token of the owner's
+    /// [`PreAdmission`] for the invitation: the device is admitted at once.
+    ProvePreAdmitted {
+        /// The challenge exactly as the host sent it.
+        challenge: Vec<u8>,
+        /// Ed25519 signature by the joining device.
+        #[serde(with = "crate::sig64")]
+        signature: [u8; 64],
+        /// How the person names themself, at most [`MAX_JOIN_NAME_CHARS`].
+        name: String,
+        /// The token.
+        token: Vec<u8>,
     },
 }
 

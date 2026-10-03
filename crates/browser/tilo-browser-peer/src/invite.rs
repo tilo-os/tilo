@@ -79,6 +79,46 @@ pub async fn ask_to_join(
     request_id: [u8; 32],
     name: &str,
 ) -> Result<JoinReply, LinkError> {
+    ask(client, invitation, cert, signer, request_id, name, None).await
+}
+
+/// [`ask_to_join`] with the one-time `token` of the owner's pre-admission
+/// for the invitation: the host admits the device at once
+/// ([`JoinReply::Admitted`]) instead of having it wait for the owner.
+///
+/// # Errors
+///
+/// As [`ask_to_join`].
+pub async fn ask_to_join_pre_admitted(
+    client: &dyn HttpClient,
+    invitation: &[u8],
+    cert: &DeviceCert,
+    signer: &dyn DeviceSigner,
+    request_id: [u8; 32],
+    name: &str,
+    token: &[u8],
+) -> Result<JoinReply, LinkError> {
+    ask(
+        client,
+        invitation,
+        cert,
+        signer,
+        request_id,
+        name,
+        Some(token.to_vec()),
+    )
+    .await
+}
+
+async fn ask(
+    client: &dyn HttpClient,
+    invitation: &[u8],
+    cert: &DeviceCert,
+    signer: &dyn DeviceSigner,
+    request_id: [u8; 32],
+    name: &str,
+    token: Option<Vec<u8>>,
+) -> Result<JoinReply, LinkError> {
     if signer.device_public_key() != cert.device_public_key {
         return Err(LinkError::Sign(
             "the signer is not the certified device".into(),
@@ -113,13 +153,19 @@ pub async fn ask_to_join(
         .sign(join_proof_digest(&challenge).to_vec())
         .await
         .map_err(|error| LinkError::Sign(error.0))?;
-    join(
-        client,
-        &JoinStep::Prove {
+    let name = name.to_owned();
+    let step = match token {
+        None => JoinStep::Prove {
             challenge,
             signature,
-            name: name.to_owned(),
+            name,
         },
-    )
-    .await
+        Some(token) => JoinStep::ProvePreAdmitted {
+            challenge,
+            signature,
+            name,
+            token,
+        },
+    };
+    join(client, &step).await
 }

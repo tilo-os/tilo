@@ -9,7 +9,9 @@
 //! workspace and writes a document, which leaves the page sealed and is
 //! retained on the node only as ciphertext, under channel keys the node
 //! stewards. A second person, invited by name, is admitted and reads the
-//! document's whole history.
+//! document's whole history. A third, whom the founder pre-admitted for a
+//! token someone else vouched with, is admitted without the founder, who
+//! finds a notice and removes her.
 
 #![allow(
     clippy::unwrap_used,
@@ -35,7 +37,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
-use tilo_browser_peer::invite::{ask_to_join, guest_certificate, join};
+use sha2::{Digest as _, Sha256};
+use tilo_browser_peer::invite::{ask_to_join, ask_to_join_pre_admitted, guest_certificate, join};
 use tilo_browser_peer::{
     DeviceSigner, DocumentRoute, Host, IssuedRole, PeerHandle, SignError, SignFuture,
     certify_with_root, issue_device_cert,
@@ -44,7 +47,9 @@ use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::install::InstallListener;
 use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_protocol::rooms::{JoinReply, JoinStep, RoomRole, RoomsReply, RoomsRequest};
+use tilo_relay_protocol::rooms::{
+    JoinReply, JoinStep, PreAdmission, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
+};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
@@ -419,17 +424,131 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     assert!(matches!(status, JoinReply::Admitted { .. }), "{status:?}");
 
     // Bo joins after everything was written and reads all of it.
-    let bo = start_peer(Host::Https(https), bo_cert, host_cert, bo_key);
+    let bo = start_peer(
+        Host::Https(https.clone()),
+        bo_cert,
+        host_cert.clone(),
+        bo_key,
+    );
     bo.join(acme.workspace_id).unwrap();
     let mut events = Vec::new();
     assert_eq!(
         next_document(&bo, &mut events).await,
-        DocumentMutation::Snapshot(snapshot)
+        DocumentMutation::Snapshot(snapshot.clone())
     );
     assert_eq!(
         next_document(&bo, &mut events).await,
         DocumentMutation::Incremental(change)
     );
+
+    // Cy is pre-admitted: Ada's root signs a grant for the digest of a
+    // one-time token someone else hands Cy, and Cy is admitted the moment
+    // she redeems the invitation with it. Ada finds a notice and removes
+    // her again.
+    let token = b"one-time token for cy@acme.example";
+    let mut grant = PreAdmission {
+        room: acme.room.clone(),
+        role: RoomRole::Editor,
+        token_sha256: Sha256::digest(token).into(),
+        label: "cy@acme.example".into(),
+        expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+        owner_user_public_key: root.public_key,
+        signature: [0; 64],
+    };
+    grant.signature = root.sign(grant.digest().unwrap().to_vec()).await.unwrap();
+    let RoomsReply::Invitation {
+        signed_invitation, ..
+    } = rooms(
+        &ada,
+        RoomsRequest::PreAdmit {
+            request_id: [3; 32],
+            grant,
+            inviter_name: Some("Ada".into()),
+        },
+    )
+    .await
+    else {
+        panic!("no pre-admitted invitation");
+    };
+    let cy_root = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let cy_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let cy_cert = guest_certificate(
+        &cy_root,
+        cy_key.verifying_key().to_bytes(),
+        "Cy's browser",
+        tilo_clock::unix_now_ns(),
+    )
+    .await
+    .unwrap();
+    let wrong = ask_to_join_pre_admitted(
+        &*https,
+        &signed_invitation,
+        &cy_cert,
+        &cy_key,
+        [4; 32],
+        "Cy",
+        b"a guessed token",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(wrong, JoinReply::Refused(_)), "{wrong:?}");
+    let admitted = ask_to_join_pre_admitted(
+        &*https,
+        &signed_invitation,
+        &cy_cert,
+        &cy_key,
+        [5; 32],
+        "Cy",
+        token,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(&admitted, JoinReply::Admitted { name, role: RoomRole::Editor, .. } if name == "Acme"),
+        "{admitted:?}"
+    );
+    let RoomsReply::Notices(notices) = rooms(
+        &ada,
+        RoomsRequest::Notices {
+            room: acme.room.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("no notices");
+    };
+    assert!(
+        matches!(notices.as_slice(), [RoomNotice::PreAdmitted { user_public_key, name, label, .. }]
+            if *user_public_key == cy_cert.user_public_key && name == "Cy" && label == "cy@acme.example"),
+        "{notices:?}"
+    );
+    let cy_device = cy_cert.device_public_key;
+    let cy = start_peer(
+        Host::Https(https.clone()),
+        cy_cert,
+        host_cert.clone(),
+        cy_key,
+    );
+    cy.join(acme.workspace_id).unwrap();
+    let mut events = Vec::new();
+    assert_eq!(
+        next_document(&cy, &mut events).await,
+        DocumentMutation::Snapshot(snapshot.clone())
+    );
+    let removed = rooms(
+        &ada,
+        RoomsRequest::Remove {
+            room: acme.room.clone(),
+            request_id: [6; 32],
+            user_public_key: cy_root.verifying_key().to_bytes(),
+        },
+    )
+    .await;
+    assert!(matches!(removed, RoomsReply::Room(_)), "{removed:?}");
+    wait_for("the node to end Cy's subscription", || async {
+        (!relay.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
+    })
+    .await;
 
     drop(root);
     let status = tilo_test_env::within("the browser to close", browser.wait())

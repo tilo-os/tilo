@@ -169,6 +169,8 @@ collab-types = { path = "../../collab/collab-types" }
 # A node stewards the encrypted channels of the rooms it governs.
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+# Owners pre-admit people by the SHA-256 of a token someone else hands them.
+sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 socket2 = "0.6"
