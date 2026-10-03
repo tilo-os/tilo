@@ -107,7 +107,30 @@ pub enum Shape {
     /// A brush stroke: a smooth curve through `points`, `size` wide.
     /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
     /// enough, the stroke is smoothed through them.
-    Stroke { points: Vec<StrokePoint>, size: f64 },
+    Stroke {
+        points: Vec<StrokePoint>,
+        size: f64,
+        /// A limb that lifts to a point and forks this many times (1-6)
+        /// into ever thinner twigs: a branch or bare tree in one stroke.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forks: Option<u32>,
+        /// With `forks`: how widely the twigs splay, in degrees (default 35).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spread: Option<f64>,
+        /// Instead of one line, this many short dabs (1-600) of `size`
+        /// scattered along the points: foliage, flowers, broken light.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dabs: Option<u32>,
+        /// With `dabs`: how far they stray either side of the path, in units
+        /// (default twice `size`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scatter: Option<f64>,
+        /// With `dabs`: how long each is, in units (about `size` when
+        /// absent); much longer than `size`, each is a flick that lifts to
+        /// a point, as grass is painted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dab_length: Option<f64>,
+    },
 }
 
 /// A colour gradient across a mark.
@@ -380,6 +403,19 @@ fn finite(values: &[f64]) -> bool {
 }
 
 impl Shape {
+    /// A brush stroke through `points`, `size` wide, that grows nothing.
+    pub fn plain_stroke(points: Vec<StrokePoint>, size: f64) -> Self {
+        Self::Stroke {
+            points,
+            size,
+            forks: None,
+            spread: None,
+            dabs: None,
+            scatter: None,
+            dab_length: None,
+        }
+    }
+
     /// Why this geometry cannot be drawn, in words an agent can act on.
     pub fn problem(&self) -> Option<String> {
         match self {
@@ -450,7 +486,7 @@ impl Shape {
                     None
                 }
             }
-            Self::Stroke { points, size } => {
+            Self::Stroke { points, size, .. } => {
                 if points.is_empty() || points.len() > MAX_POINTS {
                     Some(format!("a stroke needs 1 to {MAX_POINTS} points"))
                 } else if !points
@@ -461,9 +497,39 @@ impl Shape {
                 } else if !size.is_finite() || *size <= 0.0 || *size > MAX_SIDE {
                     Some("a stroke needs a positive size".into())
                 } else {
-                    None
+                    self.growth_problem()
                 }
             }
+        }
+    }
+
+    /// Why a stroke's twigs or dabs cannot be grown.
+    fn growth_problem(&self) -> Option<String> {
+        let Self::Stroke {
+            forks,
+            spread,
+            dabs,
+            scatter,
+            dab_length,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let units =
+            |value: &Option<f64>| value.is_some_and(|value| !(0.0..=MAX_SIDE).contains(&value));
+        if forks.is_some() && dabs.is_some() {
+            Some("a stroke either forks or breaks into dabs, not both".into())
+        } else if forks.is_some_and(|forks| !(1..=6).contains(&forks)) {
+            Some("forks is 1 to 6".into())
+        } else if spread.is_some_and(|spread| !(5.0..=90.0).contains(&spread)) {
+            Some("spread is 5 to 90 degrees".into())
+        } else if dabs.is_some_and(|dabs| !(1..=600).contains(&dabs)) {
+            Some("dabs is 1 to 600".into())
+        } else if units(scatter) || units(dab_length) {
+            Some("scatter and dab_length are 0 or more units".into())
+        } else {
+            None
         }
     }
 
@@ -576,7 +642,15 @@ impl Shape {
                 }
                 moved
             }
-            Self::Stroke { points, size } => Self::Stroke {
+            Self::Stroke {
+                points,
+                size,
+                forks,
+                spread,
+                dabs,
+                scatter,
+                dab_length,
+            } => Self::Stroke {
                 points: points
                     .iter()
                     .map(|point| {
@@ -591,9 +665,51 @@ impl Shape {
                     })
                     .collect(),
                 size: *size,
+                forks: *forks,
+                spread: *spread,
+                dabs: *dabs,
+                scatter: *scatter,
+                dab_length: *dab_length,
             },
         }
     }
+
+    /// What a stroke grows into, in units: twigs, or dabs pointing along
+    /// the path or `angle` degrees.
+    pub fn form(&self, angle: Option<f64>) -> Option<tilo_wet_media::Form> {
+        let Self::Stroke {
+            size,
+            forks,
+            spread,
+            dabs,
+            scatter,
+            dab_length,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if let Some(forks) = forks {
+            return Some(tilo_wet_media::Form::Branch {
+                forks: *forks,
+                spread: narrow(spread.unwrap_or(35.0)),
+            });
+        }
+        dabs.map(|count| tilo_wet_media::Form::Dabs {
+            count,
+            scatter: narrow(scatter.unwrap_or(size * 2.0)),
+            length: narrow(dab_length.unwrap_or(0.0)),
+            angle: angle.map(narrow),
+        })
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "stroke geometry is bounded by the document's size limits"
+)]
+fn narrow(value: f64) -> f32 {
+    value as f32
 }
 
 impl Shape {
@@ -657,7 +773,15 @@ impl Shape {
                 }
                 text
             }
-            Self::Stroke { points, size } if uniform => Self::Stroke {
+            Self::Stroke {
+                points,
+                size,
+                forks,
+                spread,
+                dabs,
+                scatter,
+                dab_length,
+            } if uniform => Self::Stroke {
                 points: points
                     .iter()
                     .map(|point| {
@@ -669,6 +793,11 @@ impl Shape {
                     })
                     .collect(),
                 size: size * sx,
+                forks: *forks,
+                spread: *spread,
+                dabs: *dabs,
+                scatter: scatter.map(|scatter| scatter * sx),
+                dab_length: dab_length.map(|length| length * sx),
             },
             Self::Text { .. } | Self::Stroke { .. } => return None,
         })
@@ -830,6 +959,20 @@ impl Mark {
         let mut path = self.shape.path();
         path.apply_affine(self.affine());
         let reach = match &self.shape {
+            // Twigs reach beyond the limb about as far again as it is long;
+            // dabs stray their scatter from the path.
+            Shape::Stroke {
+                size,
+                forks: Some(_),
+                ..
+            } => size * 0.5 + path.perimeter(0.5) * 0.9,
+            Shape::Stroke {
+                size,
+                dabs: Some(_),
+                scatter,
+                dab_length,
+                ..
+            } => size * 2.0 + scatter.unwrap_or(size * 2.0) + dab_length.unwrap_or(0.0) * 1.4,
             Shape::Stroke { size, .. } => size * 0.5,
             _ => self.style.stroke_width * 0.5,
         };
