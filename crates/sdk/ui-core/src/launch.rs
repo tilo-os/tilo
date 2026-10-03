@@ -175,6 +175,9 @@ pub struct LaunchArgs {
     pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
+    /// `--theme NAME`: the shipped theme a capture renders in
+    /// ([`Theme::named`]), over `TILO_SHOTS_THEME`.
+    pub theme: Option<String>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -193,6 +196,7 @@ impl LaunchArgs {
             native_audit: false,
             pseudo_locale: false,
             text_scale: None,
+            theme: None,
             extras: Vec::new(),
             values: Vec::new(),
             positionals: Vec::new(),
@@ -1586,7 +1590,7 @@ fn dispatch_definition_with_manager(
         )?);
         // The host prepared the component's presentation; a capture that
         // names a palette is drawn in it, as every other `--shots` path is.
-        if std::env::var_os("TILO_SHOTS_THEME").is_some() {
+        if args.theme.is_some() || std::env::var_os("TILO_SHOTS_THEME").is_some() {
             driver.set_theme(shot_theme(args));
         }
         if !args.native_audit
@@ -1991,21 +1995,20 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .or_else(|_| std::env::var("TILO_SHOTS_THEME"))
-        .ok()
+    let theme = args
+        .theme
+        .clone()
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
     // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
-    // app takes as the person's own colour.
+    // app takes as the person's own colour: the presence hue nearest it.
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
+        .and_then(crate::tokens::PresenceHue::nearest)
     {
-        Some(accent) => {
-            use crate::color_compat::ColorCompat;
-            theme.with_your_colour([accent.r(), accent.g(), accent.b()])
-        }
+        Some(hue) => theme.with_your_colour(hue),
         None => theme,
     };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
@@ -2024,11 +2027,10 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
 /// The same capture presentation for app-specific fixture drivers.
 #[must_use]
 pub fn capture_theme(text_scale: Option<f32>) -> Theme {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
+    let theme = std::env::var("TILO_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark);
     let theme = if let Some(scale) = text_scale {
         theme.with_text_scale(scale)
     } else {
@@ -2132,6 +2134,7 @@ fn parse_args_extended(
         native_audit: false,
         pseudo_locale: false,
         text_scale: None,
+        theme: None,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -2169,6 +2172,16 @@ fn parse_args_extended(
             "--scenario" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.scenario, value.to_owned(), flag)?;
+            }
+            "--theme" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                if Theme::named(value).is_none() {
+                    return Err(LaunchError::Scenario(format!(
+                        "{flag}: no shipped theme is called {value:?} (one of {})",
+                        Theme::ALL.join(", ")
+                    )));
+                }
+                set_once(&mut parsed.theme, value.to_owned(), flag)?;
             }
             "--headless-drive" => {
                 let value = take_value(args, &mut index, flag, inline)?;
@@ -2225,6 +2238,9 @@ fn parse_args_extended(
     if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
+        }
+        if parsed.theme.is_some() {
+            return Err(LaunchError::ShotsOnly("--theme".to_owned()));
         }
         // A headless drive may name a scenario: it dumps that fixture's
         // geometry, the counterpart of `--shots --scenario`.

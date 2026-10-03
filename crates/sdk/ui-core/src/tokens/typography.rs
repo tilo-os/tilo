@@ -501,21 +501,9 @@ mod tests {
             UiFace::from_name("atkinson hyperlegible next"),
             Some(UiFace::Hyperlegible)
         );
-        let spec_theme = Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
-            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-            id: "hyperlegible".into(),
-            name: "Hyperlegible".into(),
-            dark_base: true,
-            neutral_hue: 255.0,
-            spacing_px: 12.0,
-            font: "Hyperlegible".into(),
-            motion_scale: 1.0,
-            material_scale: 1.0,
-            icon_scale: 1.0,
-            chrome_weight: 1.0,
-            motion_character: 1.0,
-        })
-        .unwrap();
+        let mut document = crate::theme::Preset::Dark.document();
+        document.type_.face = "Hyperlegible".into();
+        let spec_theme = Theme::from_document(&document).unwrap();
         assert_eq!(spec_theme.tokens.typography.face_name(), "Hyperlegible");
     }
 
