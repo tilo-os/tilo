@@ -21,7 +21,6 @@
 //! [`DataTable`]: crate::widget::data_table::DataTable
 //! [`DocumentViewport`]: crate::widget::DocumentViewport
 
-use crate::color_compat::ColorCompat;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
@@ -40,25 +39,24 @@ pub const PAGE_FRACTION: f64 = 0.9;
 /// "fits" and the bar should be hidden entirely.
 pub const FIT_EPS: f64 = 0.5;
 
-/// Alpha of an idle thumb, derived against the theme's base surface (HIG
-/// §9.5). A declared `border_standard` thumb is three shades off the dark
-/// base and vanishes; a derived wash registers on every palette, and on a
-/// near-black one it takes the tier gain (`data_table::tier_on`).
-pub const THUMB_IDLE_ALPHA: u8 = 72;
-
 /// Alpha of the track behind a pinned or expanded bar — the faintest
 /// derived tier, so the track reads as a groove and not a second thumb.
 pub const TRACK_ALPHA: u8 = 13;
 
-/// The thumb's fill: `text_dim` while hovered, dragged or focused, else a
-/// derived wash on the base surface. One answer for every scroll owner.
+/// The thumb's fill: the tertiary ink at rest and the secondary ink while
+/// hovered, dragged or focused, each stepped out until it clears the
+/// non-text floor (3:1) against the ground it scrolls over. One answer for
+/// every scroll owner.
 #[must_use]
 pub fn thumb_color(theme: &Theme, active: bool) -> Color {
-    if active {
-        theme.tokens.colors.text_dim
+    let colors = &theme.tokens.colors;
+    let ground = colors.surfaces.content;
+    let tone = if active {
+        colors.text_dim
     } else {
-        tier_on(theme.tokens.colors.surfaces.base, THUMB_IDLE_ALPHA)
-    }
+        colors.text_tertiary
+    };
+    colors.ink_on(ground, tone, crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
 }
 
 /// The track's fill behind an expanded bar, derived against the base surface.
@@ -223,16 +221,7 @@ impl Scrollbar {
             return;
         };
         let radius = thumb.width().min(thumb.height()) / 2.0;
-        let color =
-            theme
-                .tokens
-                .colors
-                .text_dim
-                .with_alpha_factor(if self.is_active() || focused {
-                    0.85
-                } else {
-                    0.55
-                });
+        let color = thumb_color(theme, self.is_active() || focused);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -244,7 +233,7 @@ impl Scrollbar {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.border_focus,
+                theme.tokens.colors.intent.you,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(thumb.inflate(2.0, 2.0), radius + 2.0),
             );
@@ -379,6 +368,28 @@ mod tests {
     /// A 300-px-tall vertical track spanning x∈[92,100], y∈[0,300].
     fn v_track() -> Rect {
         Rect::new(92.0, 0.0, 100.0, 300.0)
+    }
+
+    /// The thumb clears the non-text floor against the ground it scrolls
+    /// over, at rest and active, on every material; active is the stronger.
+    #[test]
+    fn the_thumb_clears_the_non_text_floor_on_every_material() {
+        use crate::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            let idle = contrast_ratio(thumb_color(&theme, false), ground);
+            let active = contrast_ratio(thumb_color(&theme, true), ground);
+            assert!(
+                idle >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "{}: idle thumb {idle:.2}:1",
+                theme.name
+            );
+            assert!(
+                active >= idle,
+                "{}: active {active:.2} < idle {idle:.2}",
+                theme.name
+            );
+        }
     }
 
     #[test]

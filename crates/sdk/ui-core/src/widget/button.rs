@@ -1105,6 +1105,20 @@ impl Button {
         }
     }
 
+    /// The face's width with everything shown, measured with the geometry
+    /// captured in `build_layout`.
+    fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
+        let (label, hint) = self.content();
+        px_f32(
+            FaceContent {
+                icon: self.icon,
+                label: &label,
+                hint,
+            }
+            .intrinsic_width(&self.metrics, text, self.face_height()),
+        )
+    }
+
     /// Where a pointer activates the button: the face, grown about its
     /// centre to the minimum pointer target.
     fn hit_rect(&self) -> Rect {
@@ -1213,15 +1227,7 @@ impl Widget for Button {
         _available: Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
     ) -> Size<f32> {
-        let (label, hint) = self.content();
-        let intrinsic = px_f32(
-            FaceContent {
-                icon: self.icon,
-                label: &label,
-                hint,
-            }
-            .intrinsic_width(&self.metrics, text, self.face_height()),
-        );
+        let intrinsic = self.intrinsic_width(text);
         if !self.fill_width {
             // Pinned onto the node after the pass, so a stretching parent
             // cannot widen an intrinsic button.
@@ -1262,17 +1268,7 @@ impl Widget for Button {
             return false;
         }
         if self.measured_width.is_none() {
-            let _ = self.measure(
-                Size {
-                    width: None,
-                    height: None,
-                },
-                Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                text,
-            );
+            self.measured_width = Some(self.intrinsic_width(text));
         }
         self.adjust_layout_style(taffy, node)
     }

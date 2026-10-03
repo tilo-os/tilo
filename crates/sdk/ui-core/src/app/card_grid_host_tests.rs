@@ -186,8 +186,9 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
             .iter()
             .map(|&node| app.inspect_node(node, |widget| widget.get_rect()).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(rects[0].height(), 40.0);
-        assert_eq!(rects[1].height(), 40.0);
+        let control = crate::widget::ControlSize::Regular.height(&Theme::dark());
+        assert_eq!(rects[0].height(), control);
+        assert_eq!(rects[1].height(), control);
         assert_eq!(rects[1].y0 - rects[0].y1, 8.0);
         let target = rects[1].center();
         assert!(app.dispatch_semantic_click(target.x, target.y));

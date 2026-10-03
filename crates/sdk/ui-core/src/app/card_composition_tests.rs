@@ -135,7 +135,9 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             );
             for (_, rect) in controls(&app) {
                 assert!(rect.x0 >= -1.0 && rect.x1 <= f64::from(width) + 1.0);
-                assert!(rect.height() >= 40.0);
+                assert!(
+                    rect.height() >= crate::widget::ControlSize::Regular.height(&Theme::dark())
+                );
             }
         }
     }
