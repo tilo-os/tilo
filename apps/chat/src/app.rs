@@ -26,7 +26,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use ui::ColorCompat;
 use ui::Widget;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
@@ -36,26 +35,17 @@ use ui::theme::Theme;
 use ui::widget::tooltip::TooltipHost;
 use ui::widget::{
     Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
-    MenuItem, SearchField, TextInput, VideoPlayer,
+    MenuItem, SearchField, SidebarDrawer, TextInput, VideoPlayer,
 };
 
 use crate::actions::{self, ChatAction};
 use crate::call::CallState;
 use crate::doc::ChatDoc;
+use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
 use crate::media::MediaEngine;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
 use crate::permissions::ChatPermissions;
-use crate::responsive::{FlapMode, FlapState, LEFT_BREAKPOINT, RIGHT_BREAKPOINT};
-
-// --- Fixed chrome metrics (logical px) ------------------------------------
-pub(crate) const RAIL_W: f64 = 68.0;
-pub(crate) const SIDE_W: f64 = 248.0;
-pub(crate) const HEADER_H: f64 = 60.0;
-pub(crate) const THREAD_W: f64 = 360.0;
-pub(crate) const COMPOSER_MIN_H: f64 = 76.0;
-pub(crate) const COMPOSER_MAX_H: f64 = 200.0;
-pub(crate) const AVATAR: f64 = 40.0;
 
 // --- Floating call huddle home placement (fractions of the window) --------
 // The docked huddle's resting video rect before the user drags it. The
@@ -84,18 +74,22 @@ pub(crate) struct ContextMenu {
 }
 
 impl ContextMenu {
-    pub(crate) fn new(
+    /// A menu whose rows are named by `label`, so a row can say what it will
+    /// do to this target ("Collapse category", "Unpin message").
+    pub(crate) fn labelled(
         target: MenuTarget,
         anchor: Point,
         items: Vec<MenuAction>,
         viewport: Rect,
+        label: impl Fn(MenuAction) -> String,
     ) -> Self {
         let mut widget = SharedContextMenu::new();
         for action in &items {
+            let name = label(*action);
             let item = if action.is_destructive() {
-                MenuItem::destructive_selection(action.label())
+                MenuItem::destructive_selection(&name)
             } else {
-                MenuItem::selection(action.label())
+                MenuItem::selection(&name)
             };
             let icon = match action {
                 MenuAction::Rename | MenuAction::EditMessage => Icon::Pencil,
@@ -138,9 +132,9 @@ pub(crate) enum MenuTarget {
     Workspace(Id),
 }
 
-/// The structural actions reachable from a context menu. The **first**
-/// channel action is also what a left-swipe on the row resolves to, so the
-/// gesture and the menu can never drift (swipe⇔menu parity).
+/// The structural actions reachable from a context menu. A left-swipe on a
+/// channel row resolves to the channel menu's `Delete`, so the gesture and the
+/// menu can never drift (swipe⇔menu parity).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MenuAction {
     Rename,
@@ -172,25 +166,24 @@ impl MenuAction {
             MenuAction::NewChannelHere => "New text channel",
             MenuAction::NewVoiceChannelHere => "New voice channel",
             MenuAction::NewCategory => "New category",
-            MenuAction::ToggleCollapse => "Collapse / expand",
-            MenuAction::Archive => "Archive / unarchive",
+            MenuAction::ToggleCollapse => "Collapse category",
+            MenuAction::Archive => "Archive channel",
             MenuAction::EditMessage => "Edit message",
-            MenuAction::PinMessage => "Pin / unpin",
+            MenuAction::PinMessage => "Pin message",
             MenuAction::DeleteMessage => "Delete message",
         }
     }
     pub fn is_destructive(self) -> bool {
         matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
     }
-    /// Menu items for a channel row, in order. The first (`Delete`) is the
-    /// swipe-left action.
+    /// Menu items for a channel row, in order: the destructive one last.
     pub fn for_channel() -> [MenuAction; 5] {
         [
-            MenuAction::Delete,
-            MenuAction::Archive,
             MenuAction::Rename,
+            MenuAction::Archive,
             MenuAction::MoveUp,
             MenuAction::MoveDown,
+            MenuAction::Delete,
         ]
     }
     /// Menu items for a category row.
@@ -203,9 +196,10 @@ impl MenuAction {
             MenuAction::Delete,
         ]
     }
-    /// The action a swipe-left on a channel row resolves to.
+    /// The action a swipe-left on a channel row resolves to: the channel
+    /// menu's destructive action.
     pub fn channel_swipe_left() -> MenuAction {
-        Self::for_channel()[0]
+        MenuAction::Delete
     }
     /// Menu items for one of your own messages.
     pub fn for_message() -> [MenuAction; 3] {
@@ -338,6 +332,8 @@ pub(crate) enum Hit {
     /// Pick a specific file (by path) from the open attachment picker.
     AttachPick(String),
     StartCall,
+    /// Open the platform search over Chat.
+    Search,
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
@@ -384,6 +380,7 @@ impl Hit {
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::StartCall => "chat.start-call".into(),
+            Self::Search => "chat.search".into(),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
@@ -651,11 +648,14 @@ pub struct ChatApp {
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
 
+    /// Opens the platform search when the header's search button is used.
+    pub(crate) search_opener: ui::search::SearchOpener,
+
     // Responsive flaps.
-    pub(crate) left_flap: FlapState,
-    pub(crate) right_flap: FlapState,
-    pub(crate) left_mode: FlapMode,
-    pub(crate) right_mode: FlapMode,
+    pub(crate) left_flap: SidebarDrawer,
+    pub(crate) right_flap: SidebarDrawer,
+    /// The chrome metrics of the last painted theme.
+    pub(crate) chrome: Chrome,
     /// Local text preference also changes usable layout width; it is never
     /// shared with collaborators.
     pub(crate) layout_text_scale: f32,
@@ -673,7 +673,7 @@ pub struct ChatApp {
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
 
     // Agent display names of agent-authored messages (`agent_authors` in the
-    // document): what every member renders as "<name> · agent".
+    // document): what every member renders as "<name> (agent)".
     pub(crate) agent_authors: HashMap<Id, String>,
     /// Each shown message body, read-only in the SDK editor, by body size
     /// and message id, with the mention colours it was painted with.
@@ -948,10 +948,10 @@ impl ChatApp {
             call_chrome_motion: CallChromeMotion::default(),
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
-            left_flap: FlapState::open_when_docked(),
-            right_flap: FlapState::closed_by_default(),
-            left_mode: FlapMode::Docked,
-            right_mode: FlapMode::Docked,
+            search_opener: ui::search::SearchOpener::new(),
+            left_flap: Self::navigation_drawer(),
+            right_flap: Self::detail_drawer(),
+            chrome: Chrome::default(),
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
@@ -1292,11 +1292,10 @@ impl ChatApp {
                 self.call = CallState::default();
             }
             "context" => {
-                self.menu = Some(ContextMenu::new(
+                self.menu = Some(self.context_menu(
                     MenuTarget::Channel("c_frontend".into()),
                     Point::new(240.0, 230.0),
                     MenuAction::for_channel().to_vec(),
-                    self.rect,
                 ));
             }
             "call" => {
@@ -1396,11 +1395,35 @@ impl ChatApp {
                 self.call = CallState::default();
                 self.focus = Focus::Main;
                 self.shot_composer_draft = Some(
-                    "Shipping the composer on the shared TextInput — real caret, \
-                     selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
+                    "Agenda for Thursday's review:\nWalk through the call grid first, \
+                     then the screen-share stage."
                         .to_string()
-                        + "\nPlease check teh adress",
+                        + "\nCan someone send me teh adress for the offsite?",
                 );
+            }
+            "inbox" => {
+                // Every workspace's conversations, unread first.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.inbox_open = true;
+            }
+            "emoji" => {
+                // The reaction picker over your own last message.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.emoji_open = true;
+                self.emoji_target = Some("m_me2".into());
+                self.emoji_anchor = Point::new(560.0, 300.0);
+            }
+            "edit-history" => {
+                // Every version of an edited message.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.history_open = Some("m_sora".into());
+                self.history_anchor = Point::new(424.0, 420.0);
             }
             "msgmenu" => {
                 // The right-click action menu over one of your own messages,
@@ -1408,11 +1431,10 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
-                self.menu = Some(ContextMenu::new(
+                self.menu = Some(self.context_menu(
                     MenuTarget::Message("m_me2".into()),
                     Point::new(360.0, 300.0),
                     MenuAction::for_message().to_vec(),
-                    self.rect,
                 ));
             }
             _ => {
@@ -1429,6 +1451,24 @@ impl ChatApp {
     /// pointer input and the `Suspended` host reply see authoritative app and
     /// desktop coordinate spaces. The `returning` and `returned` frames land
     /// on identical geometry on opposite sides of the ownership boundary.
+    /// Stage what a scenario needs once the window is laid out: the floating
+    /// call's ownership edge, or the navigation drawer floating open over a
+    /// narrow window (a choice the drawer records per size class).
+    #[doc(hidden)]
+    pub fn stage_after_layout_for_shot(&mut self, scenario: &str) {
+        if scenario == "sidebar-narrow" {
+            self.reconcile_flaps();
+            self.left_flap.snap(true);
+            self.reconcile_flaps();
+        }
+        if scenario == "thread-narrow" {
+            self.reconcile_flaps();
+            self.right_flap.snap(true);
+            self.reconcile_flaps();
+        }
+        self.debug_stage_floating_call_for_shot(scenario);
+    }
+
     #[doc(hidden)]
     pub fn debug_stage_floating_call_for_shot(&mut self, scenario: &str) {
         if !scenario.starts_with("floating-call") {
@@ -1653,7 +1693,7 @@ impl ChatApp {
             return "You".to_string();
         }
         if let Some(agent) = self.agent_authors.get(id) {
-            return format!("{agent} \u{b7} agent");
+            return format!("{agent} (agent)");
         }
         let named = self.display_name(id);
         // A name that happens to equal the id is still a name when the
@@ -1694,7 +1734,7 @@ impl ChatApp {
     /// so the letter never disagrees with the name beside it.
     pub fn initials_for(&self, id: &str) -> String {
         let name = self.display_name(id);
-        let s = ui::widget::Avatar::initials_for_name(&name);
+        let s = ui::widget::initials_for_name(&name);
         if s.is_empty() {
             name.chars()
                 .next()
@@ -1797,10 +1837,7 @@ impl ChatApp {
     /// A single-line local field for channel/category names. The host commits
     /// the trimmed value through the target-specific CRDT action on submit.
     fn new_rename_input() -> TextInput {
-        TextInput::local()
-            .with_enter_submits(true)
-            .with_plain_chrome()
-            .with_font_size(13.0)
+        TextInput::local().with_enter_submits(true)
     }
 
     /// The composer for the surface the user is typing in.
@@ -2006,7 +2043,7 @@ impl ChatApp {
         } else {
             ChatDoc::draft_text(doc, &thread_key)
         };
-        self.composer_thread.set_placeholder("Reply…");
+        self.composer_thread.set_placeholder("Reply in thread");
         self.composer_thread
             .set_local_author(Some(self.me.id.clone()));
         let read_only = !self.can_participate();
@@ -2221,156 +2258,236 @@ impl ChatApp {
         }
     }
 
-    // --- responsive flap geometry ----------------------------------------
+    // --- window geometry ---------------------------------------------------
     //
-    // Each flap's *physical* pane width is fixed; what changes with the mode
-    // is whether the content is inset by it (docked) or whether the pane
-    // floats over the content behind a scrim (overlay). The eased `slide`
-    // animates the float in/out.
+    // Two drawers frame the conversation: the navigation drawer (workspace
+    // rail beside the channel list) at the leading edge, and the detail
+    // drawer (people, or the open thread) at the trailing edge. The toolkit's
+    // `SidebarDrawer` decides, from the window width, whether each docks
+    // beside the conversation or floats over it behind a scrim, eases the
+    // reveal and remembers the person's show/hide choice per size class.
 
-    /// Total width occupied by the left navigation pane (rail + sidebar).
-    pub(crate) fn left_pane_w() -> f64 {
-        RAIL_W + SIDE_W
+    /// The leading navigation drawer: the workspace rail beside the channel
+    /// list, at the shell's sidebar and rail metrics. It docks only while the
+    /// conversation beside it keeps the content minimum for its text after
+    /// the avatar column; below that it becomes a floating drawer.
+    fn navigation_drawer() -> SidebarDrawer {
+        let m = ui::tokens::Metrics::BASE;
+        let s = ui::tokens::Spacing::BASE;
+        let docked = m.rail_width + m.sidebar_width;
+        let avatar_column = s.s6 + m.min_pointer_target + s.s3;
+        SidebarDrawer::new()
+            .docked_width(f64::from(docked))
+            .overlay_width(f64::from(m.rail_width + m.drawer_width))
+            .breakpoint(f64::from(docked + avatar_column + m.content_min_width))
     }
 
-    /// True when the left flap currently shows (docked, or revealed overlay).
+    /// The trailing detail drawer, summoned on demand. It docks while the
+    /// conversation beside it keeps its minimum width.
+    fn detail_drawer() -> SidebarDrawer {
+        let m = ui::tokens::Metrics::BASE;
+        SidebarDrawer::new()
+            .right()
+            .closed()
+            .docked_width(f64::from(m.inspector_width))
+            .overlay_width(f64::from(m.inspector_width))
+            .breakpoint(f64::from(m.content_min_width + m.inspector_width))
+    }
+
+    /// True when the navigation drawer shows (docked, or revealed floating).
     pub(crate) fn left_flap_open(&self) -> bool {
-        self.left_flap.is_open(self.left_mode)
+        self.left_flap.is_open()
     }
-    /// True when the right flap (members / thread) currently shows.
+    /// True when the detail drawer (people / thread) shows.
     pub(crate) fn right_flap_open(&self) -> bool {
-        self.right_flap.is_open(self.right_mode)
+        self.right_flap.is_open()
+    }
+    /// The navigation drawer floats over the conversation (narrow window).
+    pub(crate) fn left_overlay(&self) -> bool {
+        self.left_flap.is_overlay()
+    }
+    /// The detail drawer floats over the conversation.
+    pub(crate) fn right_overlay(&self) -> bool {
+        self.right_flap.is_overlay()
     }
 
-    /// X where the left pane currently starts. In overlay mode it slides in
-    /// from off the left edge as `reveal` rises.
-    pub(crate) fn left_pane_x0(&self) -> f64 {
-        match self.left_mode {
-            FlapMode::Docked => self.rect.x0,
-            FlapMode::Overlay => {
-                self.rect.x0 - Self::left_pane_w() * (1.0 - self.left_flap.slide())
-            }
-        }
+    /// The navigation drawer's panel: header row, rail and channel list.
+    pub(crate) fn nav_rect(&self) -> Rect {
+        self.left_flap.sidebar_rect()
     }
-
-    /// X where the right pane currently starts (its left edge).
-    pub(crate) fn right_pane_x0(&self) -> f64 {
-        let w = THREAD_W;
-        match self.right_mode {
-            FlapMode::Docked => self.rect.x1 - w,
-            FlapMode::Overlay => self.rect.x1 - w * self.right_flap.slide(),
-        }
-    }
-
-    // --- region geometry --------------------------------------------------
+    /// The workspace rail: the drawer's leading column under the header row.
     pub(crate) fn rail_rect(&self) -> Rect {
-        let x0 = self.left_pane_x0();
-        Rect::new(x0, self.rect.y0, x0 + RAIL_W, self.rect.y1)
+        let nav = self.nav_rect();
+        let y0 = (nav.y0 + self.chrome.header_h).min(nav.y1);
+        Rect::new(
+            nav.x0,
+            y0,
+            (nav.x0 + self.chrome.rail_w).min(nav.x1),
+            nav.y1,
+        )
     }
+    /// The channel list beside the rail, under the header row.
     pub(crate) fn sidebar_rect(&self) -> Rect {
-        let x0 = self.left_pane_x0() + RAIL_W;
-        Rect::new(x0, self.rect.y0, x0 + SIDE_W, self.rect.y1)
+        let nav = self.nav_rect();
+        let y0 = (nav.y0 + self.chrome.header_h).min(nav.y1);
+        Rect::new(
+            (nav.x0 + self.chrome.rail_w).min(nav.x1),
+            y0,
+            nav.x1,
+            nav.y1,
+        )
     }
-    /// Right edge of the centre column. In docked mode it yields room to a
-    /// revealed right flap; in overlay mode the content spans full width and
-    /// the flap floats over it.
-    pub(crate) fn center_right(&self) -> f64 {
-        if self.right_mode == FlapMode::Docked && self.right_flap_open() {
-            self.rect.x1 - THREAD_W
+    /// The conversation column: what the docked drawers leave.
+    pub(crate) fn content_rect(&self) -> Rect {
+        let content = self.right_flap.content_rect();
+        if content.width() > 0.0 {
+            content
         } else {
-            self.rect.x1
+            self.rect
         }
     }
     pub(crate) fn center_left(&self) -> f64 {
-        if self.left_mode == FlapMode::Docked && self.left_flap_open() {
-            self.rect.x0 + Self::left_pane_w()
-        } else {
-            // Overlay (or hidden docked): content reclaims the pane width;
-            // leave room for the floating flap toggle button.
-            self.rect.x0
-        }
+        self.content_rect().x0
     }
+    pub(crate) fn center_right(&self) -> f64 {
+        self.content_rect().x1
+    }
+    /// The conversation's part of the window's header row.
     pub(crate) fn header_rect(&self) -> Rect {
         Rect::new(
             self.center_left(),
             self.rect.y0,
             self.center_right(),
-            self.rect.y0 + HEADER_H * f64::from(self.layout_text_scale),
+            self.rect.y0 + self.chrome.header_h,
         )
     }
+    /// The composer field's height for a draft `text` wrapped at `width`:
+    /// one line at rest, growing with the draft up to the cap.
+    fn composer_field_height(&self, tr: &mut TextRenderer, text: &str, width: f64) -> f64 {
+        let chrome = &self.chrome;
+        let wrap = width.max(40.0) as f32;
+        let probe = if text.is_empty() { "Ag" } else { text };
+        let (_, h) = tr.measure_style(probe, Some(wrap), &chrome.body);
+        let pad = chrome.composer_min_h - chrome.body_line;
+        (f64::from(h) + pad).clamp(chrome.composer_min_h, chrome.composer_max_h)
+    }
+    /// The width the composer's draft wraps at inside a field `field_w`
+    /// wide: the field less its buttons (attach, emoji, send).
+    fn composer_text_width(&self, field_w: f64) -> f64 {
+        field_w - 4.0 * self.chrome.composer_min_h
+    }
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
-        let w = (self.center_right() - self.center_left() - 48.0).max(40.0) as f32;
-        let (_, h) = tr.measure(self.draft_main.as_str(), 15.0, Some(w));
-        let scale = f64::from(self.layout_text_scale);
-        (COMPOSER_MIN_H * scale + (f64::from(h) - 19.0 * scale).max(0.0))
-            .clamp(COMPOSER_MIN_H * scale, COMPOSER_MAX_H * scale)
+        let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
+        let text_w = self.composer_text_width(field_w);
+        self.composer_field_height(tr, &self.draft_main, text_w)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
+        let pad = self.chrome.composer_pad;
         Rect::new(
-            self.center_left() + 14.0,
-            self.rect.y1 - h - 12.0,
-            self.center_right() - 14.0,
-            self.rect.y1 - 12.0,
+            self.center_left() + self.chrome.gutter,
+            self.rect.y1 - h - pad,
+            self.center_right() - self.chrome.gutter,
+            self.rect.y1 - pad,
         )
     }
 
-    /// The thread panel's composer: the same control as the main composer,
-    /// so it follows the same height rule — the 1× minimum, growing with the
-    /// measured draft up to the same cap — instead of a separate fixed 48 px
-    /// box. `panel` is the thread panel it sits at the bottom of.
+    /// The thread's composer: the same control and height rule as the main
+    /// composer, at the bottom of the thread panel `panel`.
     pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
-        let inset = 12.0;
-        let w = (panel.width() - 2.0 * inset - 48.0).max(40.0) as f32;
-        let (_, h) = tr.measure(&self.composer_thread.value(), 15.0, Some(w));
-        let h =
-            (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H);
+        let pad = self.chrome.composer_pad;
+        let field_w = panel.width() - 2.0 * pad;
+        let text_w = self.composer_text_width(field_w);
+        let h = self.composer_field_height(tr, &self.composer_thread.value(), text_w);
         Rect::new(
-            panel.x0 + inset,
-            panel.y1 - h - inset,
-            panel.x1 - inset,
-            panel.y1 - inset,
+            panel.x0 + pad,
+            panel.y1 - h - pad,
+            panel.x1 - pad,
+            panel.y1 - pad,
         )
     }
+    /// The timeline: between the header row and the composer.
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
         let composer = self.composer_rect(tr);
         Rect::new(
             self.center_left(),
-            self.rect.y0 + HEADER_H * f64::from(self.layout_text_scale),
+            self.rect.y0 + self.chrome.header_h,
             self.center_right(),
-            composer.y0 - 6.0,
+            composer.y0 - self.chrome.avatar_gap,
         )
     }
+    /// The detail drawer's panel. A thread is content, not a secondary
+    /// sidebar: on a narrow window it becomes a pushed page over the whole
+    /// window rather than a cramped floating panel.
     pub(crate) fn thread_rect(&self) -> Rect {
-        // A thread is content, not a secondary sidebar. On a narrow window it
-        // becomes the pushed detail view rather than a cramped popover.
-        if self.right_mode == FlapMode::Overlay && self.thread_open.is_some() {
+        if self.right_overlay() && self.thread_open.is_some() {
             return self.rect;
         }
-        let x0 = self.right_pane_x0();
-        Rect::new(x0, self.rect.y0, x0 + THREAD_W, self.rect.y1)
+        self.right_flap.sidebar_rect()
+    }
+    /// The open thread fills the window as a pushed page.
+    pub(crate) fn thread_is_page(&self) -> bool {
+        self.right_overlay() && self.thread_open.is_some() && self.right_flap_open()
     }
 
-    /// Resolve flap modes from the current width and advance their eased
-    /// reveals. Called once per frame at the top of `draw`. Returns true
-    /// while either flap is still animating (so the host keeps redrawing).
+    /// Resolve both drawers against the current window: docked or floating,
+    /// and the rects they leave the conversation. Cheap and deterministic, so
+    /// the event path calls it too. Returns true while either drawer slides.
     pub(crate) fn reconcile_flaps(&mut self) -> bool {
-        let w = self.rect.width() / f64::from(self.layout_text_scale.max(1.0));
-        // Ignore a degenerate pre-layout frame: resolving the flap mode from a
-        // zero width would snap it to the overlay default before the real
-        // window size is known. Wait for a genuine allocation so the first
-        // reconcile lands on the actual breakpoint.
-        if w < 1.0 {
+        if self.rect.width() < 1.0 {
             return false;
         }
-        self.left_mode = FlapMode::from_width(w, LEFT_BREAKPOINT);
-        self.right_mode = FlapMode::from_width(w, RIGHT_BREAKPOINT);
-        self.left_flap.reconcile(self.left_mode);
-        self.right_flap.reconcile(self.right_mode);
-        let a = self.left_flap.tick(self.left_mode);
-        let b = self.right_flap.tick(self.right_mode);
-        self.flap_animating = a || b;
-        a || b
+        let content = self.left_flap.resolve(self.rect);
+        self.right_flap.resolve(content);
+        self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
+        self.flap_animating
+    }
+
+    /// Adopt `theme`'s metrics and advance both drawers' reveals for this
+    /// frame (once per paint).
+    pub(crate) fn advance_flaps(&mut self, theme: &Theme) {
+        self.chrome = Chrome::of(theme);
+        self.left_flap.scale_for(theme);
+        self.right_flap.scale_for(theme);
+        if !self.reconcile_flaps() && self.rect.width() < 1.0 {
+            return;
+        }
+        self.left_flap.tick(theme);
+        let content = self.left_flap.content_rect();
+        self.right_flap.resolve(content);
+        self.right_flap.tick(theme);
+        self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
+    }
+
+    /// A context menu over `target` whose rows say what they do to it.
+    pub(crate) fn context_menu(
+        &self,
+        target: MenuTarget,
+        anchor: Point,
+        items: Vec<MenuAction>,
+    ) -> ContextMenu {
+        let collapsed = match &target {
+            MenuTarget::Category(id) => self
+                .categories
+                .iter()
+                .any(|category| category.id == *id && category.collapsed),
+            _ => false,
+        };
+        let pinned = match &target {
+            MenuTarget::Message(id) => self.message(id).is_some_and(|m| m.pinned),
+            _ => false,
+        };
+        let channel = matches!(target, MenuTarget::Channel(_));
+        let label = move |action: MenuAction| match action {
+            MenuAction::ToggleCollapse if collapsed => "Expand category".to_owned(),
+            MenuAction::PinMessage if pinned => "Unpin message".to_owned(),
+            MenuAction::Delete if channel => "Delete channel".to_owned(),
+            MenuAction::Delete => "Delete category".to_owned(),
+            MenuAction::Rename if channel => "Rename channel".to_owned(),
+            MenuAction::Rename => "Rename category".to_owned(),
+            other => other.label().to_owned(),
+        };
+        ContextMenu::labelled(target, anchor, items, self.rect, label)
     }
 
     /// Keep the active workspace / channel / thread pointing at something that
@@ -2509,7 +2626,7 @@ impl ChatApp {
                             String::new()
                         };
                         (
-                            format!("{} {}{context}{unread}", channel.kind.glyph(), channel.name),
+                            format!("{}{context}{unread}", channel.kind.label(&channel.name)),
                             Role::ListItem,
                             channel.id == self.active_channel,
                         )
@@ -2552,6 +2669,7 @@ impl ChatApp {
                         false,
                     ),
                     Hit::StartCall => ("Start or open call".into(), Role::Button, false),
+                    Hit::Search => ("Search Chat".into(), Role::Button, false),
                     Hit::ToggleLeftFlap => {
                         ("Show conversation navigation".into(), Role::Button, false)
                     }
@@ -2673,6 +2791,7 @@ impl ChatApp {
                     hit,
                     Hit::Inbox
                         | Hit::CurrentContext
+                        | Hit::Search
                         | Hit::ToggleLeftFlap
                         | Hit::ToggleRightFlap
                         | Hit::Attach
@@ -2701,7 +2820,7 @@ impl ChatApp {
         if header.contains(point)
             && let Some(channel) = self.channel(&self.active_channel)
         {
-            let mut label = format!("{} {}", channel.kind.glyph(), channel.name);
+            let mut label = channel.kind.label(&channel.name);
             if !channel.topic.trim().is_empty() {
                 label.push_str(" — ");
                 label.push_str(channel.topic.trim());
@@ -3169,6 +3288,18 @@ impl FloatingSurfaceProvider for ChatApp {
     }
 }
 
+impl ui::widget::controls::ActionControls for ChatApp {
+    /// The header's search button asks the platform to open search over
+    /// Chat; everything else comes from the children.
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.search_opener.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+}
+
 impl Widget for ChatApp {
     ui::provides!(
         dyn ui::widget::Collaborative,
@@ -3178,7 +3309,8 @@ impl Widget for ChatApp {
         dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -3481,19 +3613,15 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Resolve flap modes + advance their eased reveals for this frame.
+        // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
-        self.reconcile_flaps();
+        self.advance_flaps(theme);
         self.reconcile_huddle_motion(theme);
         self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
-        let c = &theme.tokens.colors;
 
-        // Base canvas.
-        crate::paint::fill_rect(scene, tf, self.rect, c.surfaces.base);
-
-        // Header + conversation occupy the centre column.
+        // The conversation stands on the window ground the framework painted.
         self.draw_header(scene, tf, tr, theme, &mut hits);
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
@@ -3506,58 +3634,11 @@ impl Widget for ChatApp {
         scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
-        // Right flap (members / thread). In overlay mode a scrim dims the
-        // content behind the floating panel.
-        if self.right_mode == FlapMode::Overlay && self.right_flap.reveal() > 0.001 {
-            let a = (self.right_flap.reveal() * 0.55) as f32;
-            crate::paint::fill_rect(
-                scene,
-                tf,
-                self.rect,
-                c.surfaces.overlay.with_alpha_factor(a),
-            );
-            ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
-        }
-        if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
-            // The right flap is "members / thread": it shows the open thread
-            // when one is up, otherwise the workspace members roster (so the
-            // "👥 N" pill always reveals a real panel, never a blank column).
-            if self.thread_open.is_some() {
-                self.draw_thread(scene, tf, tr, theme, presence, &mut hits);
-            } else {
-                self.draw_members(scene, tf, tr, theme, &mut hits);
-            }
-        }
+        self.draw_drawers(scene, tf, tr, theme, presence, &mut hits);
 
-        // Left flap (rail + channel sidebar). Overlay scrim first.
-        if self.left_mode == FlapMode::Overlay && self.left_flap.reveal() > 0.001 {
-            let a = (self.left_flap.reveal() * 0.55) as f32;
-            crate::paint::fill_rect(
-                scene,
-                tf,
-                self.rect,
-                c.surfaces.overlay.with_alpha_factor(a),
-            );
-            ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
-        }
-        if self.left_flap_open() || self.left_flap.reveal() > 0.001 {
-            self.draw_rail(scene, tf, tr, theme, &mut hits);
-            self.draw_sidebar(scene, tf, tr, theme, presence, &mut hits);
-        }
-
-        // Flap toggle buttons (hamburger / members) float over the header in
-        // overlay mode (or whenever a flap is hidden).
-        self.draw_flap_toggles(scene, tf, tr, theme, &mut hits);
-
-        // Call layers. The host tile is a real VideoPlayer; with no live
-        // capture feeding it (there is no camera here) it paints an honest
-        // "camera off" placeholder rather than any fabricated frame.
-        // The host tile's VideoPlayer surface is painted only once a real
-        // capture has fed it a frame; otherwise the honest "camera off"
-        // placeholder (drawn from live geometry) fully covers the host tile. The
-        // guard also avoids the surface node — whose taffy geometry lags a beat
-        // behind `self.rect` on a single headless `--shots` frame — painting a
-        // stray mark at its stale origin before the placeholder lands.
+        // Call layers. The host tile is a real VideoPlayer, painted only once
+        // a real capture has fed it a frame; otherwise the honest "camera off"
+        // placeholder (drawn from live geometry) covers the host tile.
         let host_has_frame = self.video.latest_frame().is_some();
         if self.call.active && self.call.expanded {
             // Measure the controls and header with this frame's text scale
@@ -3606,7 +3687,13 @@ impl Widget for ChatApp {
             && let Some(index) = self.keyboard_target
         {
             if let Some((rect, ..)) = semantic.get(index) {
-                crate::paint::stroke_round(scene, tf, *rect, 9.0, c.accent[7], 2.0);
+                ui::widget::paint_focus_ring(
+                    scene,
+                    tf,
+                    *rect,
+                    f64::from(theme.tokens.radii.item),
+                    theme,
+                );
             } else {
                 self.keyboard_target = None;
             }
@@ -3719,7 +3806,7 @@ impl Widget for ChatApp {
         let mut children: Vec<AccessNode> = controls;
         if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
-                .with_name(format!("{} {}", channel.kind.glyph(), channel.name))
+                .with_name(channel.kind.label(&channel.name))
                 .with_bounds(self.header_rect())
                 .with_hashed_key(("conversation-heading", &channel.id));
             if !channel.topic.trim().is_empty() {
@@ -4107,6 +4194,73 @@ impl ChatApp {
         self.draw_huddle_fg(scene, transform, text_renderer, theme, hits);
     }
 
+    /// The two drawers over (or beside) the conversation: the detail drawer
+    /// (the open thread, or the workspace's people), the navigation drawer
+    /// (rail and channel list), each over its scrim when it floats, and the
+    /// sidebar toggle.
+    fn draw_drawers(
+        &mut self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        // The detail drawer: the open thread, or the people in the workspace
+        // (so the people button always reveals a real panel).
+        if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
+            if self.thread_is_page() {
+                let page = self.thread_rect();
+                ui::surface::region(scene, tf, page, ui::surface::Region::Content, theme);
+                ChatApp::push_hit(hits, page, Hit::FocusThread);
+                self.draw_thread(scene, tf, tr, theme, presence, hits);
+            } else {
+                let scrim = self.right_flap.scrim_rect();
+                if scrim.width() > 0.5 {
+                    self.right_flap.draw_scrim(scene, tf, theme);
+                    ChatApp::push_hit(hits, scrim, Hit::Dismiss);
+                }
+                let panel = self.right_flap.sidebar_rect();
+                if panel.width() > 0.5 {
+                    crate::paint::push_clip(scene, tf, panel);
+                    let local = self.right_flap.paint_panel(scene, tf, theme);
+                    if self.thread_open.is_some() {
+                        self.draw_thread(scene, tf, tr, &local, presence, hits);
+                    } else {
+                        self.draw_members(scene, tf, tr, &local, hits);
+                    }
+                    scene.pop_layer();
+                }
+            }
+        }
+
+        // The navigation drawer: the workspace rail beside the channel list.
+        // A thread pushed over a narrow window is the whole page.
+        if self.thread_is_page() {
+            return;
+        }
+        let scrim = self.left_flap.scrim_rect();
+        if scrim.width() > 0.5 {
+            self.left_flap.draw_scrim(scene, tf, theme);
+            ChatApp::push_hit(hits, scrim, Hit::Dismiss);
+        }
+        let nav = self.nav_rect();
+        let shown = self.left_flap_open() || self.left_flap.reveal() > 0.001;
+        if shown && nav.width() > 0.5 && nav.x1 > self.rect.x0 {
+            crate::paint::push_clip(scene, tf, nav);
+            let local = self.left_flap.paint_panel(scene, tf, theme);
+            self.draw_nav_header(scene, tf, tr, &local, hits);
+            self.draw_rail(scene, tf, tr, &local, hits);
+            self.draw_sidebar(scene, tf, tr, &local, presence, hits);
+            scene.pop_layer();
+        }
+
+        // The sidebar toggle: at the drawer's top-leading corner while it
+        // shows, else at the conversation header's leading edge.
+        self.draw_flap_toggles(scene, tf, tr, theme, hits);
+    }
+
     /// Flag a taffy rebuild (kept for parity; the video rect is now set in
     /// `apply_layout` so most state changes don't need it, but call expand
     /// still requests a clean relayout).
@@ -4323,7 +4477,7 @@ mod live_draft_presence {
 
 /// Agent attribution: an agent task's `post` (the same operation a person
 /// uses) is authored by the invoking participant and rendered for every member
-/// as "<agent name> · agent"; a person's post is unchanged.
+/// as "<agent name> (agent)"; a person's post is unchanged.
 #[cfg(test)]
 mod agent_attribution_tests {
     use super::*;
@@ -4402,7 +4556,7 @@ mod agent_attribution_tests {
         // Any member (a fresh peer replaying the document) renders the agent.
         let mut member = ChatApp::new_ephemeral();
         member.sync(&mut doc, &ROOT);
-        assert_eq!(member.user_name(agent.as_str()), "Tide \u{b7} agent");
+        assert_eq!(member.user_name(agent.as_str()), "Tide (agent)");
     }
 
     /// The label is applied only to the message's own agent-task author: a

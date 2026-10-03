@@ -39,6 +39,10 @@ pub fn blob_key(hash: &str) -> String {
 pub const DEMO_CALL_GRID: &str = "tilo-demo://call-grid";
 /// A believable "shared screenshot" attachment for the demo `+` action.
 pub const DEMO_SHARED_SHOT: &str = "tilo-demo://shared-shot";
+/// The demo conversation's shared notes file (no picture to decode).
+pub const DEMO_NOTES: &str = "tilo-demo://transport-notes";
+/// The demo conversation's screen recording (no frame to decode).
+pub const DEMO_CLIP: &str = "tilo-demo://tile-promotion";
 
 /// The fetcher injected into the app's [`ui::ImageStore`]. Reads verified
 /// bytes from `content` or synthesises a PNG for the demo scheme. Runs on the

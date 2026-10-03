@@ -88,8 +88,9 @@ const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
 const MAX_MESSAGE_ID_BYTES: usize = 128;
 
 /// Deterministic "now" for the seeded fixture so the offline screenshot is
-/// stable (epoch → 2026-06-30 12:40 UTC). Runtime sends use wall-clock.
-pub const NOW: i64 = 1_782_477_600;
+/// stable: 2026-06-30 10:40 UTC, just before the capture clock's 10:42.
+/// Runtime sends use wall-clock.
+pub const NOW: i64 = 1_782_470_400;
 
 /// A message to append, assembled by the seed or the live composer.
 #[derive(Clone, Debug, Default)]
@@ -645,7 +646,7 @@ impl ChatDoc {
                     text: "Dropping the transport notes here so they don't get lost.".into(),
                     attachment: Some(Attachment::File {
                         name: "moq-over-iroh.md".into(),
-                        blob: "demo:moq-over-iroh".into(),
+                        blob: crate::images::DEMO_NOTES.into(),
                         size: 18_944,
                     }),
                     ..Default::default()
@@ -659,7 +660,7 @@ impl ChatDoc {
                     text: "Screen recording of the tile-promotion motion — this is the feel I'm after:".into(),
                     attachment: Some(Attachment::Video {
                         name: "tile-promotion.webm".into(),
-                        blob: "demo:tile-promotion".into(),
+                        blob: crate::images::DEMO_CLIP.into(),
                         w: 1280,
                         h: 720,
                         size: 6_815_744,
@@ -749,7 +750,7 @@ impl ChatDoc {
             NewMessage {
                 author: "u_iris".into(),
                 ts: m(220),
-                text: "Welcome to Acme Design on Tilo 👋 Channels relate to the workspace you're standing in — switch workspaces from the rail on the left.".into(),
+                text: "Welcome to Acme Design 👋 Say hello and tell us what you're working on this week.".into(),
                 reactions: vec![("👋".into(), vec!["u_me".into(), "u_aria".into(), "u_milo".into()])],
                 ..Default::default()
             },

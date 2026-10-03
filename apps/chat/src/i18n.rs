@@ -51,8 +51,6 @@ mod tests {
         // failure mode that ships an untranslatable literal to a screen.
         for key in [
             "chat-mention-agent-tag",
-            "chat-identity-available",
-            "chat-identity-in-voice",
             "chat-call-connected",
             "chat-call-reconnecting",
             "chat-call-joining",

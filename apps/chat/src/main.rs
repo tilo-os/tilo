@@ -70,6 +70,7 @@ pub fn main() {
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
+                "sidebar-narrow",
                 "history",
                 "compact",
                 "starter",
@@ -78,6 +79,12 @@ pub fn main() {
                 "collaboration",
                 "context",
                 "msgmenu",
+                "inbox",
+                "emoji",
+                "edit-history",
+                "inbox",
+                "emoji",
+                "edit-history",
                 "attach",
                 "attach-loading",
                 "attach-error",
@@ -109,7 +116,7 @@ fn render_shot_to_png(
     frame.sync(&mut app);
     app.prewarm_images();
     frame.layout(&mut app)?;
-    app.debug_stage_floating_call_for_shot(scenario);
+    app.stage_after_layout_for_shot(scenario);
     let mut scene = frame.draw(&mut app);
     frame.draw_floating_surfaces(&mut app, &mut scene);
     // The offscreen renderer publishes the PNG atomically, so a killed
