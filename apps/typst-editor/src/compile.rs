@@ -673,6 +673,28 @@ mod tests {
     }
 
     #[test]
+    fn the_document_can_read_today_from_the_toolkit_clock() {
+        // Case `datetime_today_compiles`:
+        // A document asking for today's date (the bundled letter does) compiles
+        // cleanly instead of failing on a world without a clock.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, "Dated #datetime.today().display()\n", 1.0);
+            assert_eq!(out.error_count(), 0, "{:?}", out.diagnostics);
+            assert!(!out.pages.is_empty());
+        }
+        // Case `civil_date_from_days`:
+        // The shifted UTC date of an explicit offset is the proleptic
+        // Gregorian date of the day count.
+        {
+            assert_eq!(civil_from_days(0), (1970, 1, 1));
+            assert_eq!(civil_from_days(-1), (1969, 12, 31));
+            assert_eq!(civil_from_days(11_016), (2000, 2, 29), "a leap day");
+            assert_eq!(civil_from_days(20_634), (2026, 6, 30));
+        }
+    }
+
+    #[test]
     fn compile_errors_carry_spans_and_both_severities() {
         // Case `error_carries_resolvable_span`:
         // A reference to an undefined variable is surfaced as an error with a

@@ -10,5 +10,5 @@
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::framework::run::<typst_editor::TypstEditorShell>();
+    ui::launch::run_or_exit(&typst_editor::framework_launch_spec());
 }
