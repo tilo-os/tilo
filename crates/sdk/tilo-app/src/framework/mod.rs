@@ -81,6 +81,7 @@ mod controls;
 pub mod dev_reload;
 mod dispatch;
 mod each;
+pub mod history;
 mod live;
 mod preview;
 mod root;

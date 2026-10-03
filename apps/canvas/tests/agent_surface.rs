@@ -57,6 +57,13 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
         "inspect",
         "media",
         "apply",
+        "history",
+        "diff",
+        "undo",
+        "redo",
+        "restore",
+        "checkpoint",
+        "render",
     ] {
         assert!(
             actions.contains(&action),

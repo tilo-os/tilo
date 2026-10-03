@@ -251,6 +251,64 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(started.completed())
     }
 
+    /// Invoke any published action of the resource by id with JSON
+    /// arguments, as an agent's `tilo_invoke` does — the framework's own
+    /// (`undo`, `history`, `render`) as well as the app's — and answer with
+    /// what it reported.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call(
+        &mut self,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_within(None, id, arguments)
+    }
+
+    /// [`Self::call`] as one agent run: every call naming the same `run`
+    /// belongs to it, the way an agent's connection groups its invocations.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call_in_run(
+        &mut self,
+        run: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        let ambient = tilo_actions::ActionContext::default().with_group(
+            run,
+            run,
+            ui_core::history_source::steps::AGENT_RUN,
+        );
+        self.call_within(Some(&ambient), id, arguments)
+    }
+
+    fn call_within(
+        &mut self,
+        ambient: Option<&tilo_actions::ActionContext>,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+        };
+        let harness = self.harness();
+        let started = match ambient {
+            Some(ambient) => harness.invoke_bound_action_within(&address, &arguments, ambient)?,
+            None => harness.invoke_bound_action(&address, &arguments)?,
+        };
+        harness.relayout();
+        Ok(started.completed().and_then(|output| output.value))
+    }
+
     fn invoke_as(
         &mut self,
         invoke: Invoke<A::Resource>,

@@ -22,6 +22,38 @@ use crate::context::ActionContext;
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
 
+thread_local! {
+    static INVOKING: std::cell::RefCell<Option<ActionContext>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The context of the action whose [`Action::apply`] is running on this
+/// thread: who invoked it and in which work group (an agent run). Pinned by
+/// the envelope like the actor and the time, so a replica replaying the
+/// action reads the same value. `None` outside an apply, or for an action
+/// dispatched with no context.
+///
+/// An action whose meaning depends on its author — "undo my last step" —
+/// reads it here; any other action must not.
+pub fn invoking_context() -> Option<ActionContext> {
+    INVOKING.with(|current| current.borrow().clone())
+}
+
+/// Sets [`invoking_context`] for one apply and restores the outer value.
+struct InvokingScope(Option<ActionContext>);
+
+impl InvokingScope {
+    fn enter(context: Option<ActionContext>) -> Self {
+        Self(INVOKING.with(|current| current.replace(context)))
+    }
+}
+
+impl Drop for InvokingScope {
+    fn drop(&mut self) {
+        let outer = self.0.take();
+        INVOKING.with(|current| *current.borrow_mut() = outer);
+    }
+}
+
 /// Build an envelope for `action` at the doc's current heads, without
 /// applying — used by [`dispatch`] so a `ServerPreferred` action can be
 /// submitted before (or instead of) local apply.
@@ -88,7 +120,11 @@ fn apply_under_envelope(
     // start from a clean commit boundary and the action's ops land in
     // their own change under the pinned actor.
     doc.set_actor(env.actor());
-    if let Err(e) = action.apply(doc) {
+    let applied = {
+        let _invoking = InvokingScope::enter(env.context.clone());
+        action.apply(doc)
+    };
+    if let Err(e) = applied {
         abort_pinned_change(doc, prev_actor);
         return Err(e);
     }

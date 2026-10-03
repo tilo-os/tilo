@@ -9,6 +9,8 @@ pub mod action_groups;
 pub mod control_custody_raw_holder;
 #[path = "framework.rs"]
 pub mod framework;
+#[path = "history_actions.rs"]
+pub mod history_actions;
 #[path = "incremental.rs"]
 pub mod incremental;
 #[path = "item_actions.rs"]

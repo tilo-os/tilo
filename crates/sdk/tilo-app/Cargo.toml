@@ -63,6 +63,8 @@ tilo-search = { version = "0.1.0", path = "../search" }
 tilo-automerge.workspace = true
 # Files for apps: the portable replacement for `std::fs`, re-exported as `ui::files`.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The history verbs' typed payload.
+serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
