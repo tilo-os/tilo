@@ -40,6 +40,10 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, TouchPhase, W
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroize;
 
+#[path = "text_input_preparation.rs"]
+mod preparation;
+use preparation::Preparation;
+
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -229,6 +233,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    shaped_preparation: Option<Preparation>,
     /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
@@ -324,10 +329,10 @@ pub struct TextInput {
     highlighter: Option<Box<dyn Highlighter>>,
     /// `Some(0)` inserts a literal `\t`; `None` leaves Tab for focus traversal.
     tab_spaces: Option<usize>,
-    /// Rebuilt only when the text changes (keyed by `hl_sig`).
+    /// Rebuilt only when the exact text or highlighter changes.
     hl_spans: Vec<Vec<Span>>,
     hl_line_starts: Vec<usize>,
-    hl_sig: u64,
+    hl_text: Option<Arc<str>>,
     /// Only re-centres when the caret moves, so a wheel scroll away from it sticks.
     last_scroll_caret: Option<usize>,
     /// Last configured caret width, retained for the platform IME anchor whose
@@ -426,6 +431,7 @@ impl TextInput {
             single_attributes: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
+            shaped_preparation: None,
             shaped_layout_epoch: None,
             rich_spans: None,
             preedit: String::new(),
@@ -488,7 +494,7 @@ impl TextInput {
             tab_spaces: None,
             hl_spans: Vec::new(),
             hl_line_starts: Vec::new(),
-            hl_sig: u64::MAX,
+            hl_text: None,
             last_scroll_caret: None,
             last_caret_width: 2.0,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -847,6 +853,7 @@ impl TextInput {
     pub(super) fn set_rich_spans(&mut self, spans: Option<Vec<RichSpan>>) {
         if self.rich_spans != spans {
             self.rich_spans = spans;
+            self.shaped_preparation = None;
             self.model_layout_dirty = true;
         }
     }
@@ -1864,6 +1871,14 @@ impl TextInput {
         available_width: f32,
     ) {
         self.refresh_layout_epoch(tr);
+        if self.single_layout.is_some()
+            && self
+                .shaped_preparation
+                .as_ref()
+                .is_some_and(|prepared| prepared.matches(self, style, available_width, theme))
+        {
+            return;
+        }
         self.refresh_highlight();
         let display = self.layout_display_text();
         let spans = self.highlighted_display_spans(theme);
@@ -1878,25 +1893,27 @@ impl TextInput {
             self.shaped_signature(&display, &style.family, style.size, Some(available_width)),
             &spans,
         );
-        if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let browser_emoji = tr.browser_color_emoji_installed();
-            let mut layout = RichTextLayout::shape_styled_reusing_browser(
-                &mut tr.font_system,
-                &spans,
-                style,
-                Some(available_width),
-                self.align,
-                self.single_layout.take(),
-                browser_emoji,
-            );
-            tr.note_browser_rich_layout(&layout);
-            if !self.preedit.is_empty() {
-                let start = self.cursor_pos.min(self.text.len());
-                layout.add_underline(start..start.saturating_add(self.preedit.len()));
-            }
-            self.single_layout = Some(layout);
-            self.shaped_layout_signature = signature;
+        let browser_emoji = tr.browser_color_emoji_installed();
+        let mut layout = RichTextLayout::shape_styled_reusing_browser(
+            &mut tr.font_system,
+            &spans,
+            style,
+            Some(available_width),
+            self.align,
+            self.single_layout.take(),
+            browser_emoji,
+        );
+        if self.secret {
+            layout.discard_prepared_inputs();
         }
+        tr.note_browser_rich_layout(&layout);
+        if !self.preedit.is_empty() {
+            let start = self.cursor_pos.min(self.text.len());
+            layout.add_underline(start..start.saturating_add(self.preedit.len()));
+        }
+        self.single_layout = Some(layout);
+        self.shaped_layout_signature = signature;
+        self.shaped_preparation = Preparation::capture(self, style, available_width, Some(theme));
     }
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
@@ -2688,16 +2705,16 @@ impl TextInput {
 
     #[must_use]
     pub fn with_secret(mut self, on: bool) -> Self {
-        self.secret = on;
-        if on {
-            self.kind = TextInputKind::Password;
-        }
+        self.set_secret(on);
         self
     }
 
     pub fn set_secret(&mut self, on: bool) {
         self.secret = on;
         if on {
+            self.shaped_preparation = None;
+            self.hl_text = None;
+            self.single_layout = None;
             self.set_kind(TextInputKind::Password);
         }
     }
@@ -2785,13 +2802,15 @@ impl TextInput {
     #[must_use]
     pub fn with_highlighter(mut self, h: Box<dyn Highlighter>) -> Self {
         self.highlighter = Some(h);
-        self.hl_sig = u64::MAX; // force a rebuild on next draw
+        self.hl_text = None;
+        self.shaped_preparation = None;
         self
     }
 
     pub fn set_highlighter(&mut self, h: Option<Box<dyn Highlighter>>) {
         self.highlighter = h;
-        self.hl_sig = u64::MAX;
+        self.hl_text = None;
+        self.shaped_preparation = None;
     }
 
     /// `0` = literal `\t`. `Shift+Tab` outdents by the same width.
@@ -2842,18 +2861,15 @@ impl TextInput {
     /// code stay coherent.
     fn refresh_highlight(&mut self) {
         let Some(hl) = &self.highlighter else {
+            self.hl_text = None;
             self.hl_spans.clear();
             self.hl_line_starts.clear();
             return;
         };
-        // FNV-1a signature so re-tokenising is skipped when the text hasn't changed.
-        let mut hasher = fnv::FnvHasher::default();
-        std::hash::Hasher::write(&mut hasher, self.text.as_bytes());
-        let sig = std::hash::Hasher::finish(&hasher) ^ self.text.len() as u64;
-        if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
+        if !self.secret && self.hl_text.as_deref() == Some(self.text.as_str()) {
             return;
         }
-        self.hl_sig = sig;
+        self.hl_text = (!self.secret).then(|| Arc::from(self.text.as_str()));
         self.hl_spans.clear();
         self.hl_line_starts.clear();
         let mut carry = 0u64;
@@ -4051,10 +4067,19 @@ impl Widget for TextInput {
                 reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
             )]
             let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
-            let display = self.layout_display_text();
-            let signature =
-                self.shaped_signature(&display, &style.family, style.size, Some(available_width));
-            if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+            if self.single_layout.is_none()
+                || !self
+                    .shaped_preparation
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.matches_inputs(self, &style, available_width))
+            {
+                let display = self.layout_display_text();
+                let signature = self.shaped_signature(
+                    &display,
+                    &style.family,
+                    style.size,
+                    Some(available_width),
+                );
                 let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = RichTextLayout::shape_plain_browser(
                     &mut text_renderer.font_system,
@@ -4070,6 +4095,7 @@ impl Widget for TextInput {
                 }
                 self.single_layout = Some(layout);
                 self.shaped_layout_signature = signature;
+                self.shaped_preparation = Preparation::capture(self, &style, available_width, None);
             }
             self.multiline_shaped = true;
             self.lines.clear();
@@ -4801,6 +4827,7 @@ impl TextInput {
         text_size: f32,
         text_scale: f32,
     ) -> f32 {
+        self.shaped_preparation = None;
         self.refresh_layout_epoch(text_renderer);
         self.char_x_positions.clear();
         self.char_x_positions
@@ -4856,6 +4883,9 @@ impl TextInput {
                         browser_emoji,
                     )
                 };
+                if self.secret {
+                    layout.discard_prepared_inputs();
+                }
                 text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
@@ -5770,3 +5800,7 @@ impl TextInput {
 #[cfg(test)]
 #[path = "text_input_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "text_input_preparation_tests.rs"]
+mod preparation_tests;

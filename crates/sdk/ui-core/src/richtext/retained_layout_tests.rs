@@ -135,3 +135,265 @@ fn retained_idle_paragraphs_keep_both_caches_across_many_layout_owners() {
         );
     }
 }
+
+#[test]
+fn unchanged_rich_preparation_allocates_nothing() {
+    let mut fs = crate::font_catalog::fixture_font_system();
+    let spans = [RichSpan::new("first é\nשלום interior\n👩‍💻 last\n")];
+    let style = TextStyle::new(16.0);
+    let old = RichTextLayout::shape_styled(
+        &mut fs,
+        &spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let (retained, allocations) =
+        crate::semantic_document_read::retirement::measure_test_allocations(|| {
+            RichTextLayout::shape_styled_reusing(
+                &mut fs,
+                &spans,
+                &style,
+                Some(180.0),
+                TextAlign::Left,
+                vec![],
+                vec![],
+                Some(old),
+            )
+        });
+    assert_eq!(allocations.requested, 0, "{allocations:?}");
+    let fresh = shape(&mut fs, &spans[0].text, 180.0, &style);
+    assert_geometry(&retained, &fresh, &spans[0].text);
+}
+
+#[test]
+fn separated_edits_retain_unchanged_interior_paragraphs() {
+    let mut fs = crate::font_catalog::fixture_font_system();
+    let style = TextStyle::new(16.0);
+    let old_text = "first before\nשלום interior é\n👩‍💻 another interior\nlast before";
+    let text = "first changed\nשלום interior é\n👩‍💻 another interior\nlast changed";
+    let old = shape(&mut fs, old_text, 180.0, &style);
+    let identities: Vec<_> = old.buffer.lines[1..3]
+        .iter()
+        .map(|line| {
+            (
+                line.shape_opt().unwrap().spans.as_ptr(),
+                line.layout_opt().unwrap().as_ptr(),
+            )
+        })
+        .collect();
+    let retained = RichTextLayout::shape_styled_reusing(
+        &mut fs,
+        &[RichSpan::new(text)],
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+        Some(old),
+    );
+    for (line, (shape, layout)) in retained.buffer.lines[1..3].iter().zip(identities) {
+        assert_eq!(line.shape_opt().unwrap().spans.as_ptr(), shape);
+        assert_eq!(line.layout_opt().unwrap().as_ptr(), layout);
+    }
+    let fresh = shape(&mut fs, text, 180.0, &style);
+    assert_geometry(&retained, &fresh, text);
+}
+
+#[test]
+fn interior_reuse_handles_insertions_repeated_text_and_marks() {
+    let mut fs = crate::font_catalog::fixture_font_system();
+    let style = TextStyle::new(16.0);
+    let old_spans = [
+        RichSpan::new("start old\n"),
+        RichSpan::new("same שלום").bold(true),
+        RichSpan::new("\n"),
+        RichSpan::new("same שלום"),
+        RichSpan::new("\n"),
+        RichSpan::new("tail old"),
+    ];
+    let old = RichTextLayout::shape_styled(
+        &mut fs,
+        &old_spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let bold_shape = old.buffer.lines[1].shape_opt().unwrap().spans.as_ptr();
+    let normal_shape = old.buffer.lines[2].shape_opt().unwrap().spans.as_ptr();
+    let normal_attrs = old.buffer.lines[2].attrs_list().clone();
+    let bold_attrs = old.buffer.lines[1].attrs_list().clone();
+    let spans = [
+        RichSpan::new("inserted\nstart new\n"),
+        RichSpan::new("same שלום"),
+        RichSpan::new("\n"),
+        RichSpan::new("same שלום").bold(true),
+        RichSpan::new("\n"),
+        RichSpan::new("tail new\n"),
+    ];
+    let retained = RichTextLayout::shape_styled_reusing(
+        &mut fs,
+        &spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+        Some(old),
+    );
+    assert_eq!(retained.buffer.lines[2].attrs_list(), &normal_attrs);
+    assert_eq!(retained.buffer.lines[3].attrs_list(), &bold_attrs);
+    assert_eq!(
+        retained.buffer.lines[2].shape_opt().unwrap().spans.as_ptr(),
+        normal_shape
+    );
+    assert_eq!(
+        retained.buffer.lines[3].shape_opt().unwrap().spans.as_ptr(),
+        bold_shape
+    );
+    let fresh = RichTextLayout::shape_styled(
+        &mut fs,
+        &spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+    assert_geometry(&retained, &fresh, &text);
+}
+
+#[test]
+fn changed_paragraph_default_attributes_match_cold_geometry() {
+    let mut fs = crate::font_catalog::fixture_font_system();
+    let style = TextStyle::new(16.0);
+    let old_spans = [
+        RichSpan::new("start old\n"),
+        RichSpan::new("same שלום\n").bold(true),
+        RichSpan::new("same שלום\n"),
+        RichSpan::new("tail old"),
+    ];
+    let old = RichTextLayout::shape_styled(
+        &mut fs,
+        &old_spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let normal_attrs = old.buffer.lines[2].attrs_list().clone();
+    let spans = [
+        RichSpan::new("inserted\nstart new\n"),
+        RichSpan::new("same שלום\n"),
+        RichSpan::new("same שלום\n").bold(true),
+        RichSpan::new("tail new\n"),
+    ];
+    let retained = RichTextLayout::shape_styled_reusing(
+        &mut fs,
+        &spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+        Some(old),
+    );
+    // cosmic-text can assign a previous span's defaults plus a full-line
+    // override when runs end at a paragraph boundary. Equivalent visible text
+    // is not an exact attribute witness: preserve the conservative fallback.
+    assert_ne!(retained.buffer.lines[2].attrs_list(), &normal_attrs);
+    let fresh = RichTextLayout::shape_styled(
+        &mut fs,
+        &spans,
+        &style,
+        Some(180.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+    for (actual, expected) in retained.buffer.lines.iter().zip(&fresh.buffer.lines) {
+        assert_eq!(actual.attrs_list(), expected.attrs_list());
+    }
+    assert_geometry(&retained, &fresh, &text);
+}
+
+#[test]
+fn retained_preparation_replaces_decorations_and_rechecks_custom_hyphenation() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    struct MutableBreaks(AtomicU64);
+    impl crate::text_render::Hyphenator for MutableBreaks {
+        fn breaks(&self, _: &str) -> Vec<usize> {
+            if self.0.load(Ordering::Relaxed) == 0 {
+                vec![]
+            } else {
+                vec![3, 6, 9]
+            }
+        }
+        fn cache_key(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+    let mut fs = crate::font_catalog::fixture_font_system();
+    let spans = [RichSpan::new("customizable")];
+    let base = TextStyle::new(16.0);
+    let old = RichTextLayout::shape_styled(
+        &mut fs,
+        &spans,
+        &base,
+        Some(60.0),
+        TextAlign::Left,
+        vec![(0, 3)],
+        vec![(3, 6)],
+    );
+    let retained = RichTextLayout::shape_styled_reusing(
+        &mut fs,
+        &spans,
+        &base,
+        Some(60.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+        Some(old),
+    );
+    assert!(retained.underlines.is_empty());
+    assert!(retained.strikes.is_empty());
+    let custom = Arc::new(MutableBreaks(AtomicU64::new(0)));
+    let style = base.with_hyphenator(custom.clone());
+    let old = RichTextLayout::shape_styled(
+        &mut fs,
+        &spans,
+        &style,
+        Some(60.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    assert_eq!(old.offset_map.shape_text(&spans[0].text), "customizable");
+    custom.0.store(1, Ordering::Relaxed);
+    let retained = RichTextLayout::shape_styled_reusing(
+        &mut fs,
+        &spans,
+        &style,
+        Some(60.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+        Some(old),
+    );
+    assert_eq!(
+        retained.offset_map.shape_text(&spans[0].text),
+        "cus\u{ad}tom\u{ad}iza\u{ad}ble"
+    );
+    let fresh = shape(&mut fs, &spans[0].text, 60.0, &style);
+    assert_geometry(&retained, &fresh, &spans[0].text);
+}
