@@ -339,19 +339,24 @@ impl ResourceApp for DisksShell {
             "drawer",
             "phone",
             "phone-drawer",
+            "phone-health",
+            "phone-partitions",
+            "phone-format",
         ]
     }
 
     fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
         match name {
             "narrow" | "drawer" => Some((800, 600)),
-            "phone" | "phone-drawer" => Some((520, 820)),
+            _ if name.starts_with("phone") => Some((520, 820)),
             _ => None,
         }
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Disks>> {
-        let actions: Vec<DisksAction> = match name {
+        // A phone-sized capture stages the same state as its wide twin.
+        let base = name.map(|name| name.strip_prefix("phone-").unwrap_or(name));
+        let actions: Vec<DisksAction> = match base {
             Some("health") => vec![DisksAction::SetTab {
                 tab: "smart".into(),
             }],

@@ -555,7 +555,7 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
     }
     let pick = intents.clone();
     let mut table = DataTable::new(vec![
-        ColumnDef::new("device", "Device", ColumnWidth::Flex(1.0))
+        ColumnDef::new("device", "Device", ColumnWidth::Auto)
             .with_kind(TextKind::Identifier)
             .with_text(|row: &PartitionRow| row.device.clone()),
         ColumnDef::new("label", "Label", ColumnWidth::Flex(1.0))
@@ -565,7 +565,7 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
         ColumnDef::new("size", "Size", ColumnWidth::Auto)
             .with_kind(TextKind::Numeric)
             .with_text(|row: &PartitionRow| row.size.clone()),
-        ColumnDef::new("mount", "Mount point", ColumnWidth::Flex(1.5))
+        ColumnDef::new("mount", "Mount", ColumnWidth::Flex(1.0))
             .with_kind(TextKind::Identifier)
             .with_optional_text(|row: &PartitionRow| row.mount.clone(), "Not mounted"),
         ColumnDef::new("used", "Used", ColumnWidth::Auto)
