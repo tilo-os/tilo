@@ -218,7 +218,7 @@ impl WebClient {
 fn native_sync(config: &RegistryConfig, config_dir: &Path) -> Result<u64, RegistryError> {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_STORE_CONFIG_DIR", config_dir);
-    app_cli::client::fetch_snapshot(config).map(|snapshot| snapshot.sequence)
+    app_cli::client::fetch_snapshot(config).map(|snapshot| snapshot.sequence())
 }
 
 #[test]

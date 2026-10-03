@@ -39,7 +39,7 @@ mod authoring;
 /// Locate the `tilo-install` binary this workspace builds. A missing
 /// binary **fails** the test rather than skipping it; without the binary the
 /// installation path cannot be exercised.
-fn tilo_install_bin() -> PathBuf {
+pub(crate) fn tilo_install_bin() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
         .ancestors()
@@ -73,7 +73,11 @@ fn author_tapp(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
     author_tapp_version(package_id, "1.4.0", identity)
 }
 
-fn author_tapp_version(package_id: &str, version: &str, identity: &SigningIdentity) -> Vec<u8> {
+pub(crate) fn author_tapp_version(
+    package_id: &str,
+    version: &str,
+    identity: &SigningIdentity,
+) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
@@ -116,7 +120,7 @@ type = "gui"
 }
 
 /// Manifest key/value and registry wire label for the runner's architecture.
-fn native_target() -> (&'static str, &'static str, &'static str) {
+pub(crate) fn native_target() -> (&'static str, &'static str, &'static str) {
     #[cfg(target_arch = "x86_64")]
     {
         ("x86_64", "baseline", "x86_64")
@@ -129,7 +133,7 @@ fn native_target() -> (&'static str, &'static str, &'static str) {
     compile_error!("registry installation tests require a supported package architecture");
 }
 
-fn test_publisher() -> SigningIdentity {
+pub(crate) fn test_publisher() -> SigningIdentity {
     SigningIdentity::from_signing_key(SigningKey::from_bytes(&[11_u8; 32]))
 }
 
@@ -292,7 +296,7 @@ fn serve_one(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
 
 /// Point every relevant environment variable at scratch directories, restoring them when the
 /// returned scope drops.
-fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
+pub(crate) fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
     for (k, v) in vars {
         env.set(k, v);

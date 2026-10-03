@@ -19,3 +19,5 @@ pub mod publisher_applications;
 pub mod publisher_client;
 #[path = "snapshot_cli.rs"]
 pub mod snapshot_cli;
+#[path = "version_index.rs"]
+pub mod version_index;

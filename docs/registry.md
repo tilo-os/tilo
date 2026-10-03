@@ -115,7 +115,9 @@ and the length prefix on collections. See
 GET  /registry            → RegistryHandshake         (server identity)
 GET  /health              → { "ok": true }
 GET  /entries             → SignedRegistrySnapshot
+GET  /entries?format=compact → CompactRegistrySnapshot  (the full one until it exists)
 GET  /entries/<pkg-id>    → SignedRegistrySnapshot      (404 if not present)
+GET  /indexes/<blake3>.json → RegistryVersionIndex      (named by a compact snapshot)
 POST /entries             → EntryChangeRequest body    (202/404/409/403)
 GET  /thin/<root>.tapp    → thin form of a reviewed package, by package root
 GET  /blobs/<blake3>      → one payload blob of a reviewed package
@@ -124,7 +126,8 @@ GET  /artifacts/<blake3>.tapp → a full .tapp stored with `import-artifact`
 
 `/entries` carries `Cache-Control: no-cache` and `ETag: "<snapshot hash>"`
 and answers a matching `If-None-Match` with `304`, so a returning client
-costs one small revalidation. The three content-addressed routes are
+costs one small revalidation; the compact form has its own ETag. The
+content-addressed routes are
 immutable (`Cache-Control: public, max-age=31536000, immutable`); the server
 re-checks every file against its name before serving it, and clients verify
 again. A blob that is a WebAssembly binary is served as `application/wasm`
@@ -575,6 +578,47 @@ publisher checks hold on their own. A replay of any older snapshot, pruned or
 not, stays below the checkpoint and is refused. Snapshots older than the
 retained window can only be restored from backups.
 
+### Compact snapshots and version indexes
+
+Every entry keeps up to 128 versions, and every client fetches the snapshot
+at least daily, so the full snapshot grows with each release. Each signing
+command therefore also signs a compact form (protocol 4,
+`registry_types::compact`) with the same key, owner or channel:
+
+- Per entry it keeps only the newest release and the newest pre-release of
+  each exact target (`newest_versions`), in their original order. Any
+  client's newest installable version on either channel is among them.
+- Per entry it signs the BLAKE3 hash and size of a version index,
+  `version-indexes/<blake3>.json` served at `/indexes/<blake3>.json`: the
+  complete publisher-signed entry with every retained version. So the signed
+  snapshot still commits to every older version.
+- It signs `snapshot_hash_hex`, the hash of the full snapshot at the same
+  sequence. That hash is the snapshot's identity: the next snapshot names it
+  as predecessor and clients checkpoint it whichever form they fetched, so
+  rollback, fork and freeze checks are unchanged and a client may switch
+  forms freely.
+
+Clients fetch an index only to install or roll back to an older version
+(`app install <app> --version <v>`, `app rollback <app> [--to <v>]`).
+`verify_version_index` checks its size and hash against the signed values,
+that it is the same package, that the publisher's signature over the
+complete entry verifies, and that the entry reduces exactly to the one in
+the snapshot. A compact snapshot cannot carry publisher signatures, which
+cover complete entries; its own signature, the index check and the package's
+signature on install take their place.
+
+The server serves the compact form only while it verifies and is the form of
+the current full snapshot; otherwise `?format=compact` gets the full one.
+Publishing keeps the version indexes of the current and the previous compact
+snapshot, so a client one snapshot behind can still fetch its index.
+
+**Rollout.** `/entries` without a query keeps serving the full snapshot, so
+released clients work unchanged. The native client (Store and `app`) and the
+browser client ask for `?format=compact` and accept either form, also from
+older registries. Once released images carry those clients, the default can
+change to compact; until then the full form stays the default and remains
+available.
+
 For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
 `review restore` re-checks the signature and current allowlist before
@@ -746,6 +790,9 @@ data-dir/
         <sequence>-<hash>.json # newest signed channel history, bounded
         compacted.json         # highest pruned sequence and its hash
     published-snapshot.json    # atomic current channel pointer
+    published-compact-snapshot.json # compact form of the current snapshot
+    version-indexes/
+        <blake3>.json    # complete signed entries the compact form names
     payload-blobs/
         <blake3>         # payload blobs of reviewed packages
     thin-packages/

@@ -7,3 +7,5 @@
 pub mod channel_cli;
 #[path = "registry_to_installed.rs"]
 pub mod registry_to_installed;
+#[path = "version_index.rs"]
+pub mod version_index;
