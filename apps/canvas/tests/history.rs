@@ -224,3 +224,55 @@ fn a_person_and_an_agent_undo_only_their_own_steps() {
         .to_string();
     assert!(refused.contains("nothing in effect to undo"), "{refused}");
 }
+
+/// The window's width in the test.
+const WIDTH: u32 = 1280;
+
+/// The colour of the window's pixel at `(x, y)`.
+fn pixel_at(app: &mut TestApp<App>, (x, y): (f64, f64)) -> [u8; 4] {
+    let width = WIDTH;
+    let rgba = app.harness().render_window_rgba();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a point inside the window"
+    )]
+    let at = ((y as usize) * (width as usize) + (x as usize)) * 4;
+    [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+}
+
+#[test]
+fn choosing_a_past_version_shows_it_in_place_of_the_artwork() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().resize((WIDTH, 800)).unwrap();
+    app.stage(Some("history")).unwrap();
+    let whole = json!({"kind": "rect", "x": 0, "y": 0, "width": 1200, "height": 900});
+    app.call(
+        "draw",
+        json!({"marks": [{"id": "flood", "shape": whole, "fill": "#d02020"}]}),
+    )
+    .unwrap();
+    let red = app.versions().last().unwrap().hash.to_string();
+    app.call("edit-marks", json!({"ids": ["flood"], "fill": "#2040d0"}))
+        .unwrap();
+    let canvas = app.harness().targets()["canvas"];
+    let centre = (canvas.center().x, canvas.center().y);
+    let now = pixel_at(&mut app, centre);
+    assert!(now[2] > now[0], "the artwork is blue now: {now:?}");
+    let row = app
+        .harness()
+        .targets()
+        .keys()
+        .find(|name| {
+            name.strip_prefix("canvas-version-")
+                .is_some_and(|change| red.starts_with(change) || change.starts_with(&red))
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("a history row for {red}"));
+    app.harness().click_named(&row).unwrap();
+    let then = pixel_at(&mut app, centre);
+    assert!(
+        then[0] > then[2],
+        "the red version is shown in place of the blue artwork: {then:?}"
+    );
+}

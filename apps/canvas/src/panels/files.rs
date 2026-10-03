@@ -318,6 +318,41 @@ impl FileDesk {
     }
 }
 
+/// Carry out a key of the whole window: a tool's letter, `?`, and opening,
+/// saving and exporting. Whether it was one.
+pub fn window_key(
+    tools: &Tools,
+    key: &str,
+    modifiers: ui::winit::keyboard::ModifiersState,
+) -> bool {
+    use crate::tools::{Sheet, Tool};
+    let command = modifiers.control_key() || modifiers.super_key();
+    let shift = modifiers.shift_key();
+    let request = match (key, command, shift) {
+        ("?", false, _) => {
+            tools.sheet.set(Some(Sheet::Shortcuts));
+            return true;
+        }
+        ("o", true, false) => FileRequest::Open,
+        ("s", true, false) => FileRequest::Save,
+        ("s", true, true) => FileRequest::SaveAs,
+        ("e", true, true) => {
+            tools.sheet.set(Some(Sheet::Export));
+            return true;
+        }
+        (letter, false, false) if !modifiers.alt_key() => {
+            let Some(tool) = Tool::for_key(letter) else {
+                return false;
+            };
+            tools.tool.set(tool);
+            return true;
+        }
+        _ => return false,
+    };
+    tools.files.set(Some(request));
+    true
+}
+
 /// `path`, ending in `.extension` (a chooser may answer the name as typed).
 fn with_extension(path: PathBuf, extension: &str) -> PathBuf {
     if path
@@ -393,8 +428,27 @@ impl ui::widget::Decorator for FileDesk {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
+    /// The window's keys work wherever the focus is (a tool just clicked
+    /// in the rail, a panel's button), unless what has it takes the key
+    /// itself (a text field typing it).
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.content.handle_event(event, ctx);
+        if *ctx.handled {
+            return;
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return;
+        };
+        if key.state != ui::winit::event::ElementState::Pressed {
+            return;
+        }
+        let ui::winit::keyboard::Key::Character(typed) = &key.logical_key else {
+            return;
+        };
+        let modifiers = ctx.modifiers.state();
+        if window_key(&self.tools, &typed.to_lowercase(), modifiers) {
+            *ctx.handled = true;
+        }
     }
 
     fn needs_redraw(&self) -> bool {

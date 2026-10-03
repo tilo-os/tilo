@@ -252,6 +252,20 @@ impl ui::widget::Decorator for Shown {
         self.dialog.sync(state, path);
     }
 
+    /// A click or key right after the dialog was asked for already lands
+    /// in it, not in what is beneath, even before the next frame.
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        let open = self.sheet.with(|sheet| *sheet == Some(self.which));
+        if open != self.dialog.is_open() {
+            self.dialog.set_open(open);
+        }
+        ui::widget::Widget::handle_event(&mut self.dialog, event, ctx);
+    }
+
     fn needs_redraw(&self) -> bool {
         self.sheet.with(|sheet| *sheet == Some(self.which)) != self.dialog.is_open()
             || self.dialog.needs_redraw()

@@ -56,7 +56,6 @@ const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-scree
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
 
-use crate::tools::{FileRequest, Sheet};
 pub use crate::tools::{Tool, Tools, ViewRequest};
 
 /// A pointer drag in progress.
@@ -1324,9 +1323,10 @@ impl CanvasSurface {
                 Typed::Ignored => {}
             }
         }
-        if matches!(key, Key::Character(ch) if ch.as_str() == "?") {
-            self.tools.sheet.set(Some(Sheet::Shortcuts));
-            return true;
+        if let Key::Character(ch) = key
+            && ch.as_str() == "?"
+        {
+            return crate::panels::files::window_key(&self.tools, "?", modifiers);
         }
         if self.view_key(key, modifiers) {
             return true;
@@ -1461,11 +1461,12 @@ impl CanvasSurface {
             self.units(self.copy_offset()),
             self.units(self.copy_offset()),
         );
+        let mut held = ModifiersState::CONTROL;
+        held.set(ModifiersState::SHIFT, shift);
+        if crate::panels::files::window_key(&self.tools, ch, held) {
+            return true;
+        }
         match (ch, shift) {
-            ("o", false) => self.tools.files.set(Some(FileRequest::Open)),
-            ("s", false) => self.tools.files.set(Some(FileRequest::Save)),
-            ("s", true) => self.tools.files.set(Some(FileRequest::SaveAs)),
-            ("e", true) => self.tools.sheet.set(Some(Sheet::Export)),
             ("a", _) => {
                 self.select(edit::everything(&self.art));
             }
