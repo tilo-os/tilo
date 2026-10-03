@@ -61,6 +61,8 @@ slides-history-no-slides = This version has no slides.
 slides-history-no-deck = This version has no presentation to restore.
 
 ## Slide content placeholders
+slides-prompt-title = Add a title
+slides-prompt-text = Add text
 slides-image-loading = Loading image
 slides-image-unavailable = Image unavailable
 

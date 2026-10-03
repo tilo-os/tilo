@@ -104,11 +104,13 @@ pub fn draw_slide(
     dest: Rect,
     corner: f64,
 ) {
-    draw_slide_except(ctx, assets, slide, dest, corner, None);
+    draw_slide_except(ctx, assets, slide, dest, corner, None, false);
 }
 
 /// [`draw_slide`], leaving out the words of text element `editing`: the
-/// canvas draws that box's editor in their place.
+/// canvas draws that box's editor in their place. With `prompts`, a text
+/// box with no words yet shows a dimmed prompt for them (the editor's
+/// canvas); a thumbnail or a presentation shows it empty.
 pub fn draw_slide_except(
     ctx: &mut PaintCtx<'_>,
     assets: DeckAssets<'_>,
@@ -116,6 +118,7 @@ pub fn draw_slide_except(
     dest: Rect,
     corner: f64,
     editing: Option<&str>,
+    prompts: bool,
 ) {
     let (scene, transform) = (&mut *ctx.scene, ctx.transform);
     let s = dest.width() / SLIDE_W;
@@ -149,12 +152,17 @@ pub fn draw_slide_except(
             if editing == Some(el.id.as_str()) {
                 continue;
             }
-            let ink = text_ink(palette, slide, el);
+            if el.is_blank_text() && !prompts {
+                continue;
+            }
             let theme = unit_theme.as_ref().unwrap_or(ctx.theme);
+            let prompt = (prompts && el.is_blank_text()).then(|| prompt_for(slide, el));
+            let shown = prompt.as_ref().unwrap_or(el);
+            let ink = text_ink(palette, slide, shown);
             draw_text_element(
                 &mut PaintCtx::new(ctx.scene, ctx.transform, ctx.text, theme),
                 ink,
-                el,
+                shown,
                 dest,
                 s,
             );
@@ -163,6 +171,32 @@ pub fn draw_slide_except(
         draw_element(ctx, assets, el, dest, s);
     }
     ctx.scene.pop_layer();
+}
+
+/// What text box `e` on `slide` asks for while it has no words: the slide's
+/// largest text box asks for a title, any other for text.
+pub fn prompt_text(slide: &Slide, e: &Element) -> String {
+    let largest = slide
+        .elements
+        .iter()
+        .filter(|other| other.kind == ElementKind::Text)
+        .map(|other| other.font_size)
+        .fold(0.0_f64, f64::max);
+    crate::strings::tr(if e.font_size >= largest {
+        "slides-prompt-title"
+    } else {
+        "slides-prompt-text"
+    })
+}
+
+/// Text box `e`, which has no words yet, as the editor shows it: a dimmed
+/// prompt for its words.
+fn prompt_for(slide: &Slide, e: &Element) -> Element {
+    let mut prompt = e.clone();
+    prompt.text = prompt_text(slide, e);
+    prompt.blocks.clear();
+    prompt.fill = "text-dim".into();
+    prompt
 }
 
 /// Per-layout chrome: a faint footer rule + slide-number dot region so a
@@ -376,8 +410,11 @@ const KEPT_TEXT_VIEWS: usize = 4_096;
 
 /// The block editor a text box is laid out with, for its words: the same
 /// for the read-only views and the canvas editor.
+/// The editor a text box's words are set in. An empty box shows no hint of
+/// its own: the canvas prompts for its words (see [`prompt_text`]).
 pub fn text_box_editor(e: &Element) -> BlockEditor {
     BlockEditor::new()
+        .with_empty_hint("")
         .with_wrap_lines(true)
         .with_compact_paragraph_spacing(true)
         .with_body_size(e.font_size as f32)
