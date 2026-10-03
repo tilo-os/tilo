@@ -1,13 +1,11 @@
 //! Spacing and geometry ratchet: the pixel literals the `Theme` should own.
 //!
-//! `design_token_audit.rs` ratchets colour escape hatches. Nothing did the
-//! same for spacing, so `const PAD: f64 = 12.0;` and `length(16.0)` kept
-//! entering widget, chrome, shell and app code with no record. This file
-//! counts them per file and pins the count: a file may never carry more than
-//! `spacing_token_baseline.txt` says; one that sheds some is noted so its
-//! line can be lowered. The number only moves down.
+//! `design_token_audit.rs` ratchets colour escape hatches; this file does
+//! the same for spacing in widget, chrome, shell and app code. Counts live in
+//! `tests/baselines/spacing/<unit>.txt` (see `support::ratchet`) and may only
+//! fall.
 //!
-//! Two shapes are counted, both outside comments and `#[cfg(test)]` modules:
+//! Four shapes are counted, all outside comments and `#[cfg(test)]` items:
 //!
 //! * `pixel_const` — a module-level `const NAME: f32|f64 = <whole number ≥ 1>;`.
 //!   Whole numbers because pixel constants are whole; `0.1`, `0.9` and
@@ -17,11 +15,12 @@
 //!   inside a `Style` (`padding`, `gap`, `margin`, `size`). `length(0.0)`
 //!   is a deliberate "none" and is not counted; `length(theme.gap_standard)`
 //!   is what the ratchet wants and is not a literal.
+//! * `literal_gap` — a literal handed to a container's `with_gap`,
+//!   `with_padding`, `with_row_gap` or `with_column_gap`.
+//! * `literal_spacer` — `Spacer::fixed(<literal>)`.
 //!
-//! Regenerate with `UPDATE_F1_SPACING_BASELINE=1` only after reading the diff;
-//! CI never sets it. A new hit is a request to read the value from
-//! `theme.tokens.spacing` / `theme.tokens.metrics`, or to say in a comment on
-//! the line why it genuinely cannot be a token.
+//! A new hit is a request to read the value from `theme.tokens.spacing` /
+//! `theme.tokens.metrics` or to let the composition own the space.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,65 +32,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use regex::Regex;
-use std::collections::BTreeMap;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use regex::Captures;
 
-use crate::support::ratchet::{
-    Counts, is_skipped, note_stale, ratchet_failures, read_baseline, test_module_spans,
-    write_baseline,
-};
-
-/// Recorded counts, relative to the `ui` crate root.
-const BASELINE: &str = "tests/spacing_token_baseline.txt";
-
-const BASELINE_HEADER: &[&str] = &[
-    "Spacing and geometry literals in production code (see spacing_token_audit.rs).",
-    "Format: <path relative to repository root> <pattern> <count>",
-    "This is a ratchet, not approval: counts may only move down.",
-];
-
-/// The production trees the ratchet covers, relative to the repository root.
-/// `apps/*/src` is expanded at run time so a new app is covered the day it
-/// lands.
-const ROOTS: &[&str] = &[
-    "crates/sdk/ui-core/src/widget",
-    "crates/sdk/ui-core/src/chrome",
-    "crates/session/shell/src",
-];
-
-/// Test fixtures are allowed to state pixel values: integration test
-/// directories, in-tree test modules split into their own file, and
-/// `#[cfg(test)]` blocks (see `test_module_spans`).
-fn is_exempt(path: &Path) -> bool {
-    let s = path.to_string_lossy();
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    s.contains("/tests/") || name == "tests.rs" || name.ends_with("_tests.rs")
-}
-
-fn walk(root: &Path, out: &mut Vec<PathBuf>) {
-    crate::support::ratchet::walk(root, &is_exempt, out);
-}
-
-fn production_files(repository: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for root in ROOTS {
-        walk(&repository.join(root), &mut files);
-    }
-    if let Ok(apps) = fs::read_dir(repository.join("apps")) {
-        for app in apps.flatten() {
-            let src = app.path().join("src");
-            if src.is_dir() {
-                walk(&src, &mut files);
-            }
-        }
-    }
-    files.sort();
-    files
-}
+use crate::support::ratchet::{Pattern, Ratchet, no_exemptions};
 
 /// `"12"`, `"12.0"`, `"12.00"` → a whole pixel count of at least one.
 /// `"0"`, `"0.0"`, `"0.5"`, `"1.25"` → not a pixel constant.
@@ -105,87 +48,54 @@ fn is_nonzero_literal(literal: &str) -> bool {
     literal.chars().any(|c| c.is_ascii_digit() && c != '0')
 }
 
-struct Pattern {
-    key: &'static str,
-    regex: Regex,
-    counts: fn(&str) -> bool,
-    message: &'static str,
+fn whole_pixel(c: &Captures<'_>) -> bool {
+    is_whole_pixel_literal(&c[1])
 }
 
-fn patterns() -> Vec<Pattern> {
-    vec![
-        Pattern {
-            key: "pixel_const",
-            regex: Regex::new(
+fn nonzero(c: &Captures<'_>) -> bool {
+    is_nonzero_literal(&c[1])
+}
+
+/// Spacing and geometry literals in widget, chrome, shell and app
+/// production code.
+pub fn spacing_ratchet() -> Ratchet {
+    Ratchet {
+        name: "spacing",
+        roots: &[
+            "crates/sdk/ui-core/src/widget",
+            "crates/sdk/ui-core/src/chrome",
+            "crates/session/shell/src",
+            "apps/*/src",
+        ],
+        patterns: vec![
+            Pattern::new(
+                "pixel_const",
                 r"^\s*(?:pub(?:\([a-z]+\))?\s+)?const\s+[A-Z][A-Z0-9_]*\s*:\s*f(?:32|64)\s*=\s*(\d+(?:\.\d+)?)(?:_f(?:32|64))?\s*;",
+                "module-level pixel constant — read it from theme.tokens.spacing / theme.tokens.metrics",
             )
-            .unwrap(),
-            counts: is_whole_pixel_literal,
-            message: "module-level pixel constant — read it from theme.tokens.spacing / theme.tokens.metrics",
-        },
-        Pattern {
-            key: "taffy_length",
-            regex: Regex::new(r"\blength\(\s*(\d+(?:\.\d+)?)(?:_f(?:32|64))?\s*\)").unwrap(),
-            counts: is_nonzero_literal,
-            message: "literal taffy length in a Style — pass a spacing token (insets_all / insets_xy take one)",
-        },
-    ]
-}
-
-/// Count every pattern per file, skipping comments and `#[cfg(test)]` items
-/// (`support::ratchet::test_module_spans`, shared with the colour audit).
-fn counts(files: &[PathBuf], repository: &Path) -> Counts {
-    let patterns = patterns();
-    let mut out: Counts = BTreeMap::new();
-    for f in files {
-        let content = fs::read_to_string(f).unwrap();
-        let skip = test_module_spans(&content);
-        let rel = f
-            .strip_prefix(repository)
-            .unwrap_or(f)
-            .to_string_lossy()
-            .replace('\\', "/");
-        for (i, line) in content.lines().enumerate() {
-            if is_skipped(line, i, &skip) {
-                continue;
-            }
-            for pattern in &patterns {
-                let hits = pattern
-                    .regex
-                    .captures_iter(line)
-                    .filter(|c| (pattern.counts)(&c[1]))
-                    .count();
-                if hits > 0 {
-                    let entry = out
-                        .entry((rel.clone(), pattern.key.to_string()))
-                        .or_insert(0);
-                    *entry = entry.saturating_add(hits);
-                }
-            }
-        }
+            .keep(whole_pixel),
+            Pattern::new(
+                "taffy_length",
+                r"\blength\(\s*(\d+(?:\.\d+)?)(?:_f(?:32|64))?\s*\)",
+                "literal taffy length in a Style — pass a spacing token (insets_all / insets_xy take one)",
+            )
+            .keep(nonzero),
+            Pattern::new(
+                "literal_gap",
+                r"\.with_(?:gap|padding|row_gap|column_gap)\(\s*\d+(?:\.\d+)?\s*\)",
+                "literal gap or padding on a container — pass a spacing token, or drop it and \
+                 let the composition space its children",
+            ),
+            Pattern::new(
+                "literal_spacer",
+                r"Spacer::fixed\(\s*\d",
+                "fixed literal spacer — space comes from the composition or a spacing token",
+            ),
+        ],
+        exempt: no_exemptions,
+        advice: "Read the value from theme.tokens.spacing or theme.tokens.metrics (insets_all / \
+                 insets_xy build a padding Rect from one), or let the composition own it.",
     }
-    out
-}
-
-/// What a new hit of `pattern` is told to do.
-fn ratchet_message(pattern: &str) -> String {
-    patterns()
-        .into_iter()
-        .find(|p| p.key == pattern)
-        .map(|p| p.message.to_string())
-        .unwrap_or_default()
-}
-
-fn repository_root() -> PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .expect("UI crate lives under crates/sdk in the repository");
-    assert!(
-        root.join("Cargo.toml").is_file() && root.join("apps").is_dir(),
-        "spacing audit repository anchor must contain Cargo.toml and apps"
-    );
-    root.to_path_buf()
 }
 
 #[allow(
@@ -199,15 +109,12 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
     // on a line that must count and one that must not, so a regex edit that
     // silently stops matching fails here instead of passing an empty audit.
     {
-        let patterns = patterns();
-        let pixel = &patterns[0];
-        let length = &patterns[1];
-        let count = |p: &Pattern, line: &str| {
-            p.regex
-                .captures_iter(line)
-                .filter(|c| (p.counts)(&c[1]))
-                .count()
-        };
+        let ratchet = spacing_ratchet();
+        let pixel = ratchet.pattern("pixel_const");
+        let length = ratchet.pattern("taffy_length");
+        let gap = ratchet.pattern("literal_gap");
+        let spacer = ratchet.pattern("literal_spacer");
+        let count = |p: &Pattern, line: &str| p.hits(line);
 
         assert_eq!(count(pixel, "const PAD: f64 = 12.0;"), 1);
         assert_eq!(
@@ -271,52 +178,30 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
             "arithmetic is not a literal"
         );
         assert_eq!(count(length, "Dimension::length(24.0)"), 1);
+
+        assert_eq!(count(gap, "Row::new().with_gap(12.0)"), 1);
+        assert_eq!(count(gap, "col.with_padding(16)"), 1);
+        assert_eq!(count(gap, "grid.with_row_gap( 8.0 )"), 1);
+        assert_eq!(count(gap, "grid.with_column_gap(4.0)"), 1);
+        assert_eq!(
+            count(gap, "Row::new().with_gap(spacing.s3)"),
+            0,
+            "a token is the goal"
+        );
+        assert_eq!(
+            count(gap, "with_padding(pad * 2.0)"),
+            0,
+            "arithmetic is not a literal"
+        );
+        assert_eq!(count(spacer, "Spacer::fixed(12.0)"), 1);
+        assert_eq!(count(spacer, "Spacer::fixed(spacing.s4)"), 0);
+        assert_eq!(count(spacer, "Spacer::flex()"), 0);
     }
 
     // Case `spacing_literals_do_not_grow`.
     // The `#[cfg(test)]` span finder's shapes are pinned once in
-    // `support::ratchet` (both audits scan through the same finder).
-    //
+    // `support::ratchet` (every ratchet scans through the same finder).
     // Spacing literals in widget, chrome, shell and app production code may
-    // not grow, and a file that has shed some has to record it.
-    {
-        fn spacing_literals_do_not_grow() {
-            let repository = repository_root();
-            let files = production_files(&repository);
-            assert!(!files.is_empty(), "spacing audit found no files to scan");
-            for root in ROOTS.iter().copied().chain(["apps/"]) {
-                assert!(
-                    files.iter().any(|f| f
-                        .strip_prefix(&repository)
-                        .is_ok_and(|r| r.starts_with(root))),
-                    "spacing audit did not reach {root}; the scan cannot observe its subject"
-                );
-            }
-
-            let found = counts(&files, &repository);
-            let baseline_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(BASELINE);
-            if std::env::var_os("UPDATE_F1_SPACING_BASELINE").is_some_and(|value| value == "1") {
-                write_baseline(&baseline_path, BASELINE_HEADER, &found);
-                return;
-            }
-            let baseline = read_baseline(&baseline_path);
-            assert!(
-                !baseline.is_empty(),
-                "{BASELINE} is empty; a ratchet with nothing recorded pins nothing"
-            );
-            let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
-
-            assert!(
-                grew.is_empty(),
-                "{} file(s) gained a spacing literal the Theme should own.\n\
-         Read the value from theme.tokens.spacing or theme.tokens.metrics (insets_all / \
-         insets_xy build a padding Rect from one). If it genuinely cannot be a token, say \
-         why in a comment on the line and raise its count in {BASELINE}.\n{}",
-                grew.len(),
-                grew.join("\n"),
-            );
-            note_stale(BASELINE, "UPDATE_F1_SPACING_BASELINE", &stale);
-        }
-        spacing_literals_do_not_grow();
-    }
+    // not grow; the engine also fails if any root yields no file.
+    spacing_ratchet().check();
 }
