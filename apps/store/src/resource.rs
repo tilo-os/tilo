@@ -137,7 +137,7 @@ impl ResourceApp for StoreShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
-        cx.surface(StoreApp::new())
+        cx.surface(crate::live::LiveStore::surface())
     }
 }
 
@@ -357,6 +357,20 @@ mod tests {
         assert!(
             standalone.last_document_action().is_some(),
             "ActionSink must record document actions on the local host"
+        );
+    }
+
+    /// The App Store window mounts the worker-backed Store, not a bare
+    /// catalogue widget that never loads or installs anything.
+    #[test]
+    fn framework_launch_starts_the_store_worker() {
+        let started = || crate::live::WORKERS_STARTED.with(std::cell::Cell::get);
+        let before = started();
+        let _app = ui::framework::testing::TestApp::<StoreShell>::new().expect("test app");
+        assert_eq!(
+            started(),
+            before + 1,
+            "the window starts one catalogue worker"
         );
     }
 }
