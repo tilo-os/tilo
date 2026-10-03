@@ -18162,6 +18162,7 @@ dependencies = [
  "anyhow",
  "collab-types",
  "durable-store",
+ "env-tools",
  "landlock",
  "libc",
  "package-store",

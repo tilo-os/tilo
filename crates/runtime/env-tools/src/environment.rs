@@ -80,3 +80,19 @@ pub struct RebuildError {
     #[source]
     pub source: ToolBuildError,
 }
+
+/// The builder for a device that can't build tools, saying why (no device
+/// key readable, no cache directory).
+#[derive(Debug, Clone)]
+pub struct Unavailable(pub String);
+
+impl ToolBuilder for Unavailable {
+    fn build(
+        &self,
+        _runtime: &PackageId,
+        _packages: &[String],
+        _progress: &mut dyn Write,
+    ) -> Result<PackageId, ToolBuildError> {
+        Err(ToolBuildError::Unavailable(self.0.clone()))
+    }
+}
