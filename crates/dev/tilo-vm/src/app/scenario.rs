@@ -32,7 +32,7 @@ const INSTALLER_BOOT: Duration = Duration::from_secs(20 * 60);
 const POWER_OFF: Duration = Duration::from_secs(180);
 /// How long a cold-booted target gets to reach the greeter.
 const TARGET_BOOT: Duration = Duration::from_secs(15 * 60);
-/// Blind unlock attempts stop before the first-use UI can own keyboard focus.
+/// Bound retries even when the encrypted-root prompt remains visible.
 const UNLOCK_ATTEMPTS: u32 = 2;
 
 enum FirstBootSurface {
@@ -47,6 +47,11 @@ fn is_identity_setup(text: &str) -> bool {
             || text.contains("connect an existing identity")
             || text.contains("back up your tilo identity")
             || text.contains("your identity is ready"))
+}
+
+fn is_disk_unlock_prompt(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("unlock tilo") && text.contains("enter your disk passphrase or recovery key")
 }
 
 /// Everything one run needs to know, settled before anything boots.
@@ -1394,8 +1399,8 @@ impl App {
         false
     }
 
-    /// Recognize either sign-in or first-use identity setup. Limit blind
-    /// unlock attempts to the early boot window so they cannot type into OOBE.
+    /// Recognize either sign-in or first-use identity setup. Type the disk
+    /// secret only after observing the encrypted-root prompt on this poll.
     fn unlock_to_first_boot(
         &mut self,
         plan: &Plan,
@@ -1403,8 +1408,8 @@ impl App {
         secret: &crate::scenario::Secret,
     ) -> Result<FirstBootSurface, CliError> {
         let deadline = after(TARGET_BOOT);
-        let first_attempt = after(Duration::from_secs(20));
         let mut typed = 0_u32;
+        let mut next_unlock = Instant::now();
         while Instant::now() < deadline {
             if let Ok(state) = console.state()
                 && state.get("app").and_then(Value::as_str) == Some("greeter")
@@ -1412,6 +1417,7 @@ impl App {
                 self.receipt.set("unlock_attempts", typed);
                 return Ok(FirstBootSurface::Greeter(state));
             }
+            let mut unlock_prompt = false;
             if let Ok(shot) = self
                 .runner
                 .output(&plan.vm(&["shot", "first-boot-observe"]))
@@ -1426,6 +1432,7 @@ impl App {
                     && ocr.status.success()
                 {
                     let text = String::from_utf8_lossy(&ocr.stdout).into_owned();
+                    unlock_prompt = is_disk_unlock_prompt(&text);
                     if is_identity_setup(&text) {
                         let screenshot = plan.out.join("first-boot-identity-setup.png");
                         std::fs::copy(&source, &screenshot)
@@ -1446,14 +1453,15 @@ impl App {
                     plan,
                 ));
             }
-            if Instant::now() >= first_attempt && typed < UNLOCK_ATTEMPTS {
+            if unlock_prompt && typed < UNLOCK_ATTEMPTS && Instant::now() >= next_unlock {
                 piped(plan, &["type", "-"], secret.expose())?;
                 let _ = self.runner.output(&plan.vm(&["keys", "ret"]));
                 typed = typed.saturating_add(1);
-                std::thread::sleep(Duration::from_secs(15));
-            } else {
-                std::thread::sleep(Duration::from_secs(5));
+                next_unlock = after(Duration::from_secs(15));
             }
+            // Keep observing startup while the retry delay elapses: a fast
+            // successful unlock should not incur a fixed fifteen-second wait.
+            std::thread::sleep(Duration::from_secs(1));
         }
         Err(failed(
             "first-boot",
@@ -1548,6 +1556,21 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_secret_requires_the_visible_encrypted_root_prompt() {
+        assert!(super::is_disk_unlock_prompt(
+            "Unlock Tilo\n\nEnter your disk passphrase or recovery key"
+        ));
+        assert!(!super::is_disk_unlock_prompt("Tilo\nStarting services"));
+        assert!(!super::is_disk_unlock_prompt(
+            "Welcome back to Tilo\nxaver\nEnter your passcode to open your desktop."
+        ));
+        assert!(!super::is_disk_unlock_prompt(
+            "Tilo identity setup\nBack up your Tilo identity\nRecovery key"
+        ));
+        assert!(!super::is_disk_unlock_prompt("Unlock Tilo"));
+    }
+
     #[test]
     fn first_boot_ocr_accepts_identity_setup_but_not_a_login_prompt() {
         assert!(super::is_identity_setup(

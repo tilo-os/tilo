@@ -39,7 +39,9 @@ class BridgeContract(unittest.TestCase):
                 self.assertIn(label, backend)
                 self.assertLess(backend.index(label), backend.index(publication))
 
-        handoff = backend.index('cp -a "$HANDOFF_SRC/etc/." "$DEPLOY_ETC/"')
+        handoff = backend.index(
+            'python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/etc" "$DEPLOY_ETC"'
+        )
         wifi_label = backend.index(
             'label_installed_tilo_path "$DEPLOY_ETC/NetworkManager/system-connections/tilo-setup.nmconnection" '
             '/etc/NetworkManager/system-connections/tilo-setup.nmconnection'
