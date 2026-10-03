@@ -11,7 +11,7 @@
 //! - This is a stand-alone demo. There is no real CRDT under it — we
 //!   hand the picker a `ConflictKind::PickOne` with two `Alternative`
 //!   instances and observe the `PickerOutcome` callbacks in stderr.
-//! - The banner shows "Kanban move — 2 conflicts in this doc". Click
+//! - The banner shows "Kanban move: 2 conflicts". Click
 //!   `[Review]` to see the picker pick path; click `[Dismiss]` to fire
 //!   the dismiss callback.
 //! - The picker emits one of the four `PickerOutcome` variants
