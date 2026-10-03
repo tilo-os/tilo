@@ -13486,14 +13486,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "udev",
- "wayland-client",
- "wayland-cursor",
- "wayland-egl",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-server",
- "winit",
  "xkbcommon",
 ]
 
@@ -18702,16 +18698,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wayland-egl"
-version = "0.32.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a2c9ef35f3b2e11d5709d8e75dc1e7e064fd8eec5d705d56073fafca85de854"
-dependencies = [
- "wayland-backend",
- "wayland-sys",
-]
-
-[[package]]
 name = "wayland-protocols"
 version = "0.32.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19676,13 +19662,6 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
-
-[[package]]
-name = "winit"
-version = "0.30.13"
-dependencies = [
- "tilo-winit",
-]
 
 [[package]]
 name = "winnow"
