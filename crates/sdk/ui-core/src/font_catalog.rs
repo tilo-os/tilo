@@ -20,29 +20,88 @@ mod windows;
 #[cfg(all(target_os = "android", feature = "native"))]
 pub(crate) use android::android_font_system;
 
-/// Share verified font data across native Windows renderers. Each renderer
-/// keeps its own shaping caches while font bytes and discovery are reused.
-#[cfg(windows)]
-pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
-    static DATABASE: std::sync::OnceLock<Option<fontdb::Database>> = std::sync::OnceLock::new();
+/// The product catalog with the system's fonts behind it, for every native
+/// Windows and Linux process that is not handed a host font database. The
+/// catalog is verified and the system fonts discovered once per process; each
+/// renderer gets its own copy of the database, so its shaping caches stay its
+/// own while font bytes and discovery are shared. `None` when no root in
+/// [`catalog_roots`] holds a catalog this build accepts.
+#[cfg(any(windows, target_os = "linux"))]
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
+pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
+    static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
-        let installed = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
-            .filter(|root| root.is_dir());
-        let root =
-            installed.unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"));
-        match FontCatalog::product(root, locale.clone()).load() {
+        match load_first_catalog(
+            &catalog_roots(),
+            &locale,
+            fontdb::Database::load_system_fonts,
+        ) {
             Ok(font_system) => Some(font_system.into_locale_and_db().1),
-            Err(error) => {
-                tracing::error!(%error, "Windows font catalog unavailable");
+            Err(errors) => {
+                tracing::error!(?errors, "Tilo font catalog unavailable");
                 None
             }
         }
     });
-    database.as_ref().map(|db| {
-        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::TiloFallback)
-    })
+    database.as_ref().map(|db| system_over(locale, db.clone()))
+}
+
+/// Where a native process looks for the product catalog, in order: a
+/// `fonts/` directory next to the executable (an installed app bundle), the
+/// catalog the Tilo image installs, then this source tree's `assets/fonts`,
+/// so a binary run from a checkout sets text in the faces the product ships.
+#[cfg(any(windows, target_os = "linux"))]
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
+pub(crate) fn catalog_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
+        .into_iter()
+        .collect();
+    #[cfg(target_os = "linux")]
+    roots.push(PathBuf::from("/usr/share/fonts/tilo"));
+    roots.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"));
+    roots
+}
+
+/// Load the product catalog from the first of `roots` that holds one this
+/// build accepts, with `discover` adding the host's fonts behind it. A root
+/// whose manifest is from another Tilo build (an older image under a newer
+/// checkout) is passed over for the next one.
+///
+/// # Errors
+///
+/// Every root's failure, in order, when none loads.
+#[cfg(any(windows, target_os = "linux"))]
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
+pub(crate) fn load_first_catalog(
+    roots: &[PathBuf],
+    locale: &str,
+    discover: impl Fn(&mut fontdb::Database),
+) -> Result<FontSystem, Vec<FontCatalogError>> {
+    let mut errors = Vec::new();
+    for root in roots.iter().filter(|root| root.is_dir()) {
+        match FontCatalog::product(root, locale).load_with_system(&discover) {
+            Ok(font_system) => return Ok(font_system),
+            Err(error) => errors.push(error),
+        }
+    }
+    if errors.is_empty() {
+        errors.push(FontCatalogError::at(
+            roots.first().cloned().unwrap_or_default(),
+            "no font catalog directory",
+        ));
+    }
+    Err(errors)
 }
 
 /// Keep one face per family, style, weight and stretch. A system can install
@@ -206,7 +265,9 @@ impl FontCatalog {
         let mut db = bundle.db.clone();
         if self.system {
             discover(&mut db);
-            drop_duplicate_faces(&mut db);
+            // Host copies of catalog families go before duplicates are
+            // weighed: deduplication keeps the lowest path, and a system copy
+            // under /usr would otherwise displace the catalog's own face.
             let remove: Vec<_> = db
                 .faces()
                 .filter(|face| {
@@ -221,6 +282,7 @@ impl FontCatalog {
             for id in remove {
                 db.remove_face(id);
             }
+            drop_duplicate_faces(&mut db);
         }
         db.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
         db.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
