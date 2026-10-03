@@ -15,6 +15,7 @@ use super::controls::{ActionControl, Actions};
 use super::dispatch::Dispatcher;
 use super::each::Each;
 use super::live::Live;
+use super::settings::{Setting, ViewStorage};
 use super::stage::Stages;
 use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
 use super::switch::Switch;
@@ -84,6 +85,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) saved: LocalState<RecordSaveStatus>,
     pub(crate) stages: Stages,
     pub(crate) feeds: super::history::HistoryFeeds,
+    pub(crate) storage: Rc<ViewStorage>,
 }
 
 impl<R: Resource> ViewCx<R> {
@@ -95,6 +97,7 @@ impl<R: Resource> ViewCx<R> {
         published: tilo_actions::Resource,
         saved: LocalState<RecordSaveStatus>,
         stages: Stages,
+        storage: Rc<ViewStorage>,
     ) -> Self {
         // The history verbs every app answers are bindable like its own.
         let mut published = published;
@@ -115,6 +118,7 @@ impl<R: Resource> ViewCx<R> {
             saved,
             stages,
             feeds: super::history::HistoryFeeds::default(),
+            storage,
         }
     }
 }
@@ -168,6 +172,23 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// follow the resource, use a binding such as [`Self::text`].
     pub fn read<V>(&self, read: impl FnOnce(Option<&T>) -> V) -> V {
         self.live.with(|state| read((self.focus)(state)))
+    }
+
+    /// The app's typed settings of type `S`, kept current while this scope
+    /// lives. `S` declares whether they follow the person or stay on the
+    /// device ([`Scope`](ui_core::storage::Scope)).
+    pub fn settings<S>(&self) -> Setting<S>
+    where
+        S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
+    {
+        self.storage.follow(self.alive.clone())
+    }
+
+    /// The app's files, secrets and settings documents, as its host gave
+    /// them. A secret of one document item is
+    /// `cx.storage().secrets().item(purpose, id)`.
+    pub fn storage(&self) -> &ui_core::storage::AppStorage {
+        self.storage.storage()
     }
 
     /// Typed process-local view state: never persisted, shared or undone.
@@ -326,6 +347,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
+        let storage = Rc::clone(&self.storage);
         Each::new(
             self.live.clone(),
             self.dispatch.clone(),
@@ -347,6 +369,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
+                    storage: Rc::clone(&storage),
                 };
                 row(&mut cx)
             }),
@@ -410,6 +433,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
+        let storage = Rc::clone(&self.storage);
         Box::new(Switch::new(
             key.clone(),
             Box::new(move |value: &K, alive: &Rc<()>| {
@@ -426,6 +450,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
+                    storage: Rc::clone(&storage),
                 };
                 part(&mut cx, value)
             }),
@@ -438,6 +463,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         surface.attach(SurfaceCx {
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
+            storage: Rc::clone(&self.storage),
+            alive: self.alive.clone(),
         });
         surface.present(&self.live.get());
         let host = SurfaceHost::new(self.live.clone(), self.dispatch.clone(), surface);
