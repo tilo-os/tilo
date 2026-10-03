@@ -1724,7 +1724,7 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::ExternalAccounts),
         "settings.accounts",
-        "External Accounts",
+        "External accounts",
     );
     for (kind, label) in [
         ("mail", "Add email account"),
@@ -3424,7 +3424,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::MouseKeyboard),
         "settings.section",
-        "Mouse & Keyboard",
+        "Mouse & keyboard",
     );
     for (id, label, operation) in [
         (
@@ -5068,7 +5068,7 @@ fn region_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     let section = Resource::new(
         pane_resource_id(Category::RegionFormats),
         "settings.section",
-        "Region & Formats",
+        "Region & formats",
     );
     portable::attach_portable_preferences(section, Category::RegionFormats, doc, d)
 }
@@ -5077,7 +5077,7 @@ fn time_date_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::TimeDate),
         "settings.section",
-        "Time & Date",
+        "Time & date",
     );
     for (id, label, operation) in [
         (
@@ -5221,7 +5221,7 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::KeyboardShortcuts),
         "settings.section",
-        "Keyboard Shortcuts",
+        "Keyboard shortcuts",
     );
     section =
         portable::attach_portable_preferences(section, Category::KeyboardShortcuts, doc, &prefs);
@@ -5239,7 +5239,7 @@ fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::DeviceMesh),
         "settings.section",
-        "Devices & Sync",
+        "Devices & sync",
     );
     section = section.with_action(device_mesh_choice_spec(
         "role",
@@ -6902,7 +6902,7 @@ mod tests {
         seed: seeded_doc(),
         registry: registry(),
         resources: |doc| provide_resources(doc),
-        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set dark theme"],
+        palette: ["Network — Open Network", "Turn on Do not disturb", "Set dark theme"],
         replay: [
             set_dark_theme => |_| encode(&set_text_action(panes::appearance::DARK_THEME_KEY, "Dark cool")),
         ],

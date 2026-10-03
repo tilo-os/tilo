@@ -564,12 +564,25 @@ impl SettingsApp {
                 Box::new(pane)
             }
             Category::DefaultApps => {
+                #[cfg(not(feature = "thin"))]
+                let mut pane = if self.deterministic_hardware_for_shot {
+                    panes::personal_apps::PersonalAppsPane::for_shot()
+                } else {
+                    panes::personal_apps::PersonalAppsPane::new()
+                };
+                #[cfg(feature = "thin")]
                 let mut pane = panes::personal_apps::PersonalAppsPane::new();
                 if let Some(dispatcher) = &self.framework {
                     pane.bind_dispatcher(dispatcher.clone());
                 }
                 Box::new(pane)
             }
+            #[cfg(not(feature = "thin"))]
+            Category::Storage if self.deterministic_hardware_for_shot => Box::new(
+                panes::storage::StoragePane::for_shot()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Storage => Box::new(
                 panes::storage::StoragePane::new()
                     .with_command_state(&self.local_pane_command)
@@ -1893,6 +1906,19 @@ impl Widget for SettingsApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
+        // Settings has no field to find in: Ctrl+F (or Cmd+F) is the platform
+        // search over the whole app, like the launcher in the sidebar header.
+        if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && !key.repeat
+            && matches!(&key.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("f"))
+            && (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+            && let Some(dispatcher) = &self.framework
+        {
+            dispatcher.open_search(&ui::search::SearchRequest::this_app());
+            *ctx.handled = true;
+            return;
+        }
         if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
             && let Some(&shell_node) = children.first()
         {

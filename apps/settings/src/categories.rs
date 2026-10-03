@@ -495,8 +495,10 @@ impl Category {
         match self {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
-            Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
-            Category::AgentModels | Category::Appearance => Icon::Sparkles,
+            Category::DeviceMesh => Icon::CloudDownload,
+            Category::ExternalAccounts => Icon::Mail,
+            Category::AgentModels => Icon::Sparkles,
+            Category::Appearance => Icon::Sun,
             Category::Sound => Icon::Volume2,
             Category::Speakers => Icon::Music,
             Category::Displays => Icon::Monitor,
@@ -641,7 +643,7 @@ mod tests {
         // The device privacy destination does not claim workspace authority.
         assert_eq!(
             Category::Permissions.label(),
-            "Device Privacy & Security",
+            "Device privacy & security",
             "the navigation destination names its system-wide scope"
         );
         assert!(
