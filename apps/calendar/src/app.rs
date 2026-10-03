@@ -331,6 +331,8 @@ pub struct CalendarApp {
     shots_pending_popover: Option<FormPopover>,
     /// Shots-only: open the calendar dropdown once the form is bound.
     shots_pending_calendar_menu: bool,
+    /// Shots-only: open the sidebar's overflow menu once it is laid out.
+    shots_pending_sidebar_menu: bool,
 
     /// True for the hermetic `--shots` / test build: it seeds sample content
     /// and drives the offline (synthesised) `CalDAV` path. The live app leaves
@@ -627,6 +629,7 @@ impl CalendarApp {
             shots_suppress_status: false,
             shots_pending_popover: None,
             shots_pending_calendar_menu: false,
+            shots_pending_sidebar_menu: false,
             demo,
             data_path,
             saved_heads: Vec::new(),
@@ -729,6 +732,12 @@ impl CalendarApp {
                 self.task_due_picker.set_selected(self.task_due_seed());
             }
         }
+        self.dirty = true;
+    }
+
+    /// Open the sidebar's overflow menu for a screenshot.
+    pub fn shots_open_sidebar_menu(&mut self) {
+        self.shots_pending_sidebar_menu = true;
         self.dirty = true;
     }
 
@@ -2986,6 +2995,10 @@ impl CalendarApp {
 
         self.seed_choices();
         self.layout_sheet();
+        if std::mem::take(&mut self.shots_pending_sidebar_menu) && self.sidebar.visible() {
+            let anchor = self.sidebar.menu_rect(&theme);
+            self.sidebar_menu.open_at(anchor, None);
+        }
     }
 
     /// Point the timeline viewport at its new geometry, seeding the initial
