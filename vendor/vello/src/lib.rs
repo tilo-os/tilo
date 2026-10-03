@@ -1623,9 +1623,15 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 #[cfg(feature = "wgpu")]
 impl Renderer {
     /// Creates a new renderer for the specified device.
-    pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
+    pub fn new(device: &Device, mut options: RendererOptions) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
+        // The GL backend has one context, and every pipeline compile holds
+        // its lock. Worker threads only queue on that lock, and a slow driver
+        // keeps one waiting past wgpu-hal's lock timeout, which panics.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            options.num_init_threads = NonZeroUsize::new(1);
+        }
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1766,6 +1772,25 @@ impl Renderer {
     #[doc(hidden)]
     pub fn defer_bump_readback_enabled(&self) -> bool {
         !self.options.use_cpu && self.defer_bump_readback
+    }
+
+    /// Sum every tile's segments in a fixed order, so repeated renders of one
+    /// scene are bit-identical regardless of GPU scheduling. Same as
+    /// `VELLO_CANONICAL_SEGMENT_ORDER=1`; recompiles the shader set.
+    ///
+    /// # Errors
+    /// Returns an error if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self, device: &Device) -> Result<()> {
+        if self.engine.canonical_segment_order_enabled() {
+            return Ok(());
+        }
+        self.engine.enable_canonical_segment_order();
+        self.shaders = shaders::full_shaders(device, &mut self.engine, &self.options)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.engine
+            .build_shaders_if_needed(device, self.options.num_init_threads);
+        Ok(())
     }
 
     /// Override deferred synchronous bump readback for a differential oracle.

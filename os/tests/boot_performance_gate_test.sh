@@ -44,7 +44,14 @@ printf '%s\n' '[    0.100000] host kernel: start' \
   '[   14.500000] host kernel: Run /init as init process' \
   '[   20.000000] host systemd[1]: after the initrd'
 EOF
-cp "$work/dmesg" "$work/journalctl"
+cat >"$work/journalctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[    0.100000] host kernel: start' \
+  '[   14.500000] host kernel: Run /init as init process' \
+  '[   15.000000] host systemd[1]: Starting tilo-root-discover.service - Discover the root...' \
+  '[   19.000000] host systemd[1]: Finished tilo-root-discover.service - Discover the root.' \
+  '[   20.000000] host systemd[1]: after the initrd'
+EOF
 cat >"$work/systemd-analyze" <<'EOF'
 #!/usr/bin/env bash
 printf 'mock critical chain\n' >&2
@@ -79,7 +86,9 @@ grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
   TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
   >/dev/null 2>"$work/initrd-gaps.err" || true
-grep -Fq '5.500s before [   20.000000] host systemd[1]: after the initrd' "$work/initrd-gaps.err" \
+grep -Fq '4.000s before [   19.000000] host systemd[1]: Finished tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq '4.000s tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq 'initrd, longest units (4 journal entries in the phase):' "$work/initrd-gaps.err" \
   || { cat "$work/initrd-gaps.err" >&2; exit 1; }
 if grep -A1 -F 'kernel log, longest gaps' "$work/gaps.err" | grep -Fq 'after the initrd'; then
   echo 'kernel gap report reached past the initrd start' >&2

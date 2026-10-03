@@ -471,6 +471,8 @@ fn text_takes_typography_and_lines() {
         align: Some(align.into()),
         line_height: Some(1.5),
         width: None,
+        tracking: None,
+        path: None,
     };
     art.apply(ArtworkResource::DRAW.with((
         None,

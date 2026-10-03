@@ -34,6 +34,8 @@ struct StubHost {
     running_for: Arc<std::sync::atomic::AtomicUsize>,
     /// What a finished invocation produced.
     output: Arc<StdMutex<tilo_actions::ActionOutput>>,
+    /// The kind of operation the published action is.
+    kind: Arc<StdMutex<tilo_actions::OperationKind>>,
 }
 
 impl StubHost {
@@ -48,6 +50,7 @@ impl StubHost {
             .find(|descriptor| descriptor.address.action == tilo_resource::APPLY)
             .unwrap();
         descriptor.contract.confirmation = self.confirmation.clone();
+        descriptor.kind = *self.kind.lock().unwrap();
         CatalogueRow {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
@@ -879,6 +882,49 @@ fn an_action_that_produced_an_image_answers_with_it() {
             images(&reply).is_empty(),
             "without a content service nothing is read"
         );
+    });
+}
+
+/// An effect's picture (an export) is an artifact, not something to look
+/// at: the answer names its address, and `tilo_status` shows it on request.
+#[test]
+fn an_effect_answers_with_its_picture_address_not_the_picture() {
+    let host = StubHost::default();
+    *host.kind.lock().unwrap() = tilo_actions::OperationKind::Effect;
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"width":4,"height":3})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let mut server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    run(async {
+        let reply = tool(
+            &mut server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+        )
+        .await;
+        assert_eq!(images(&reply), 0, "{reply}");
+        assert!(
+            reply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("tilo.content:look")
+        );
+        let id = reply["structuredContent"]["invocation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let status = tool(&mut server, "tilo_status", json!({"invocation_id": id})).await;
+        assert_eq!(images(&status), 1, "{status}");
     });
 }
 

@@ -179,7 +179,7 @@ pub enum NetCmd {
     RoomAdmin {
         relay: EndpointAddr,
         certificate: DeviceCert,
-        command: tilo_relay::rooms::RoomCommand,
+        command: Box<tilo_relay::rooms::RoomCommand>,
         reply: std::sync::mpsc::SyncSender<Result<tilo_relay::rooms::RoomReply, String>>,
     },
     JoinWorkspace {
@@ -967,7 +967,7 @@ impl ActorState {
                 let client =
                     tilo_relay::rooms::RoomAdminClient::new(self.endpoint.clone(), certificate);
                 tokio::spawn(async move {
-                    let answer = client.send(relay, command).await;
+                    let answer = client.send(relay, *command).await;
                     let _ = reply.send(answer.map_err(|error| error.to_string()));
                 });
             }
@@ -1837,6 +1837,35 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
         self.subscribers.insert(ws, on_event);
+        self.subscribe_topic(ws).await;
+        if !self.native_routes.contains(ws)
+            && let Some(identity) = self.host_identity.as_ref()
+        {
+            let mut routes = HostRouteScheduler {
+                endpoint: &self.endpoint,
+                identity,
+                internal_tx: &self.internal_tx,
+                sessions: &self.host_sessions,
+                connecting: &mut self.connecting_hosts,
+                content_discovery_tasks: &mut self.content_discovery_tasks,
+            };
+            for (addr, expectation) in self.hosts.values().cloned() {
+                routes.schedule(
+                    ws,
+                    addr.clone(),
+                    expectation,
+                    self.action_broker
+                        .as_ref()
+                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
+                );
+            }
+        }
+    }
+
+    /// Subscribe to `ws`'s gossip topic unless a subscription is running.
+    /// A subscribe that failed, or one whose stream has closed, is retried
+    /// from the heartbeat while the workspace is still wanted.
+    async fn subscribe_topic(&mut self, ws: WorkspaceId) {
         if let std::collections::hash_map::Entry::Vacant(e) = self.topics.entry(ws) {
             let bootstrap = self.peers.keys().copied().collect();
             match self.gossip.subscribe(topic_id(ws), bootstrap).await {
@@ -1864,26 +1893,38 @@ impl ActorState {
                 Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
             }
         }
-        if !self.native_routes.contains(ws)
-            && let Some(identity) = self.host_identity.as_ref()
-        {
-            let mut routes = HostRouteScheduler {
-                endpoint: &self.endpoint,
-                identity,
-                internal_tx: &self.internal_tx,
-                sessions: &self.host_sessions,
-                connecting: &mut self.connecting_hosts,
-                content_discovery_tasks: &mut self.content_discovery_tasks,
-            };
-            for (addr, expectation) in self.hosts.values().cloned() {
-                routes.schedule(
-                    ws,
-                    addr.clone(),
-                    expectation,
-                    self.action_broker
-                        .as_ref()
-                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
-                );
+    }
+
+    /// Workspaces that are joined but have no running gossip subscription.
+    async fn resubscribe_missing_topics(&mut self) {
+        let missing: Vec<_> = self
+            .subscribers
+            .keys()
+            .copied()
+            .filter(|ws| !self.topics.contains_key(ws))
+            .collect();
+        for ws in missing {
+            self.subscribe_topic(ws).await;
+        }
+    }
+
+    /// Known direct peers are joined when they are first learned. A device
+    /// whose network came up after that attempt never appears, so ask again
+    /// on each topic until the peer is actually seen there.
+    async fn retry_direct_peers(&self) {
+        let local = self.endpoint.id();
+        for (ws, topic) in &self.topics {
+            let absent: Vec<_> = self
+                .peers
+                .keys()
+                .copied()
+                .filter(|id| *id != local && !self.peers_seen.contains_key(&(*ws, *id)))
+                .collect();
+            if absent.is_empty() {
+                continue;
+            }
+            if let Err(error) = topic.sender.join_peers(absent).await {
+                tracing::debug!(ws, %error, "direct peer join will be retried");
             }
         }
     }
@@ -2517,6 +2558,8 @@ impl ActorState {
     /// yet connected, and broadcast this device's identity + a liveness
     /// heartbeat on every joined topic.
     async fn run_heartbeat_tick(&mut self) {
+        self.resubscribe_missing_topics().await;
+        self.retry_direct_peers().await;
         self.retry_native_routes();
         let rooms: Vec<_> = self.host_sessions.keys().map(|(ws, _)| *ws).collect();
         for ws in rooms {

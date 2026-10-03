@@ -7,12 +7,12 @@ repo_root=$(git rev-parse --show-toplevel)
 script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 vello_branch=vendor-upstream/vello-0.9
-vello_base=f21d2c703175f5387315506865343c52f69b5b39
-vello_tip=108405981ee51fd9b2c3ee7ef9c3b8b1c6a9d223
+vello_base=8a3898449ae9608feeafdfa5469fff2a180f08d4
+vello_tip=851c465d7a9a005c0d3bf1c8fca696369be79776
 
 winit_branch=vendor-upstream/winit-0.30.13
-winit_base=967e2ec045e9485c10cfbd2323a4ede1a3751845
-winit_tip=b4ea19a1c6cccfe268ae2fb30f098629d926e5da
+winit_base=9b9d3bf5398c77c3ec8575c4279f01d2ddcc1d59
+winit_tip=df50cbf9351fe41c27135917005e8abf21a47c9a
 
 resolve_ref() {
     local branch=$1

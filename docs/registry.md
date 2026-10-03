@@ -510,6 +510,13 @@ already holds the bytes the publisher signed, and fetches only new versions.
 A submission it cannot collect completely stays pending and out of the staged
 batch; the others are staged, and the collector exits non-zero listing it.
 
+The store keeps each staged package once, as the payload blobs and thin form it
+serves for thin installs plus a record of the package root, and rebuilds and
+re-hashes the exact bytes on read. After every publish the signer deletes the
+staged packages, thin packages and blobs that no published, quarantined,
+pending or staged entry references, such as the versions a full entry just
+dropped. `tilo-registry-server prune-storage` does the same on demand.
+
 Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
 root seed exists only in the bootstrap/manual authorization environment. The
 serving process receives neither private key. The collector cannot forge a
@@ -519,9 +526,9 @@ or substitute content.
 
 Every successful signing also retains the exact signed JSON under
 `snapshots/<sequence>-<hash>.json` before advancing `published-snapshot.json`.
-These small immutable files are the channel history and should share the data
-directory's backup policy. Roll back catalogue contents by publishing a new,
-higher sequence from one of them:
+These immutable files are the channel history and share the data directory's
+backup policy. Roll back catalogue contents by publishing a new, higher
+sequence from one of them:
 
 ```text
 tilo-registry-server rollback-snapshot \
@@ -534,6 +541,39 @@ The command does not replay sequence 41. It signs sequence `current + 1`, links
 it to the current snapshot, uses the current publisher allowlist, and refuses
 to restore entries from a publisher that has since been removed. Client
 anti-rollback checkpoints therefore remain monotonic.
+
+### Bounded snapshot history
+
+Clients never read the history. Native and browser clients fetch only the
+current snapshot from `/entries` and keep a checkpoint of the last sequence
+and hash they accepted: they refuse a lower sequence (rollback), another
+snapshot at the same sequence (fork), and anything expired (freeze, bounded
+by the snapshot lifetime). These checks need nothing but the current
+snapshot, so pruning history cannot weaken them.
+
+The history serves the registry itself: `rollback-snapshot` restores from it,
+and its members stop the channel from signing a sequence twice. Each member
+is the whole catalogue, so the history is kept to the newest
+`SNAPSHOT_HISTORY_RETAINED` (16) members. Every signing command, the publisher
+and `prune-storage` compact it under the registry lock:
+
+- The members to prune, and the oldest one kept, must form one hash chain
+  from the previous compaction record (or the first member). A broken chain
+  stops compaction without deleting anything.
+- `snapshots/compacted.json` first records the highest pruned sequence and
+  its hash. The oldest member kept signs that hash as its predecessor, so the
+  signed chain still commits to every pruned snapshot, and the record can be
+  checked against it.
+- The registry refuses to archive or publish any sequence at or below the
+  record, and refuses to restart the channel at sequence 1 when the
+  published pointer is lost. Restore `published-snapshot.json` from a backup
+  instead.
+
+A client last synced at a sequence that has since been pruned still verifies
+the current snapshot: its sequence is higher and its signature, freshness and
+publisher checks hold on their own. A replay of any older snapshot, pruned or
+not, stays below the checkpoint and is refused. Snapshots older than the
+retained window can only be restored from backups.
 
 For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
@@ -703,7 +743,8 @@ data-dir/
     quarantined/
         <pkg-id>.json    # recoverable entries hidden from clients
     snapshots/
-        <sequence>-<hash>.json # immutable signed channel history
+        <sequence>-<hash>.json # newest signed channel history, bounded
+        compacted.json         # highest pruned sequence and its hash
     published-snapshot.json    # atomic current channel pointer
     payload-blobs/
         <blake3>         # payload blobs of reviewed packages

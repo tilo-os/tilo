@@ -45,11 +45,10 @@ pub fn main() {
         ui::launch::run_or_exit(&spec);
         return;
     }
-    ui::launch::run_or_exit(
-        &ui::framework::launch_spec::<settings::SettingsShell>().configure_app(configure),
-    );
+    ui::launch::run_or_exit(&ui::framework::launch_spec::<settings::SettingsShell>());
 }
 
+#[cfg(not(feature = "thin"))]
 fn configure(app: &mut ui::App) {
     // Sidebar filtering rebuilds the widget tree; restore its first focusable
     // field after each structural change so typing retains the caret.

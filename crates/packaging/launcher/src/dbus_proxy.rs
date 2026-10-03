@@ -1,4 +1,21 @@
-//! Filtered D-Bus proxy for sandboxed apps.
+//! Filtered D-Bus proxies for sandboxed apps.
+//!
+//! Two buses reach a graphical app, each only through its own
+//! `xdg-dbus-proxy`, and each filtered to an explicit allowlist:
+//!
+//! - **Session bus.** Portal-adjacent names when the manifest declares a
+//!   `via-host` portal, and for every graphical app exactly the two
+//!   read-only questions an accessibility client must ask
+//!   `org.a11y.Bus`: where the AT-SPI bus is (`GetAddress`) and whether
+//!   assistive technology is on (the `org.a11y.Status` properties).
+//! - **AT-SPI bus.** Flatpak's filter, verbatim: the app may embed its
+//!   accessibility root in the registry, read which events listeners want,
+//!   and notify device-event listeners. Assistive technology then calls
+//!   *into* the app; the app cannot call any other client on that bus,
+//!   so it cannot read another app's tree or synthesise its events.
+//!
+//! Without the second proxy a sandboxed app is invisible to every screen
+//! reader; without the first it never learns accessibility is enabled.
 //!
 //! Motivation. When a manifest declares a `via-host` XDG portal, the
 //! sandboxed app needs a well-defined slice of the host session bus —
@@ -44,6 +61,50 @@ pub const DEFAULT_FILTER_ARGS: &[&str] = &[
     "--talk=org.freedesktop.portal.*",
     "--talk=org.freedesktop.Notifications",
     "--talk=org.mpris.MediaPlayer2.*",
+];
+
+/// The session-bus rules every graphical app gets, and the only ones a
+/// portal-less app gets: `org.a11y.Bus.GetAddress`, reading the
+/// `org.a11y.Status` properties (`IsEnabled`, `ScreenReaderEnabled`) and
+/// their change signal, all on `/org/a11y/bus`. Not `--talk`: setting those
+/// properties, or any other method of the accessibility bus launcher, stays
+/// denied.
+pub const A11Y_STATUS_FILTER_ARGS: &[&str] = &[
+    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+];
+
+/// The session-bus filter for one launch: the bus daemon for `Hello`, the
+/// portal names when the manifest declares a `via-host` portal, and the
+/// accessibility status rules when the app has a display.
+#[must_use]
+pub fn session_filter_args(portals: bool, graphical: bool) -> Vec<&'static str> {
+    let mut args = vec!["--filter", "--see=org.freedesktop.DBus"];
+    if portals {
+        args.extend(DEFAULT_FILTER_ARGS.iter().skip(2));
+    }
+    if graphical {
+        args.extend(A11Y_STATUS_FILTER_ARGS);
+    }
+    args
+}
+
+/// The AT-SPI bus filter: Flatpak's (`flatpak_run_add_a11y_dbus_args`),
+/// verbatim. Every rule names the registry and an exact object path.
+pub const ATSPI_FILTER_ARGS: &[&str] = &[
+    "--filter",
+    "--sloppy-names",
+    "--broadcast=org.a11y.atspi.Registry=org.a11y.atspi.Registry.EventListenerRegistered@/org/a11y/atspi/registry",
+    "--broadcast=org.a11y.atspi.Registry=org.a11y.atspi.Registry.EventListenerDeregistered@/org/a11y/atspi/registry",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Socket.Embed@/org/a11y/atspi/accessible/root",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Socket.Unembed@/org/a11y/atspi/accessible/root",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Registry.GetRegisteredEvents@/org/a11y/atspi/registry",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.GetKeystrokeListeners@/org/a11y/atspi/registry/deviceeventcontroller",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.GetDeviceEventListeners@/org/a11y/atspi/registry/deviceeventcontroller",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersSync@/org/a11y/atspi/registry/deviceeventcontroller",
+    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersAsync@/org/a11y/atspi/registry/deviceeventcontroller",
 ];
 
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the
@@ -109,6 +170,50 @@ pub fn sandbox_bus_env(uid: u32) -> String {
     format!("unix:path=/run/user/{uid}/bus")
 }
 
+/// Host-side path of the per-launcher AT-SPI proxy socket.
+pub fn atspi_proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}-atspi.sock"
+    ))
+}
+
+/// In-sandbox AT-SPI bus path, where at-spi2's own launcher puts it.
+pub fn sandbox_atspi_path(uid: u32) -> PathBuf {
+    PathBuf::from(format!("/run/user/{uid}/at-spi/bus"))
+}
+
+/// In-sandbox `AT_SPI_BUS_ADDRESS`.
+pub fn sandbox_atspi_env(uid: u32) -> String {
+    format!("unix:path=/run/user/{uid}/at-spi/bus")
+}
+
+/// The host AT-SPI bus address: `AT_SPI_BUS_ADDRESS` when the session set it,
+/// else `org.a11y.Bus.GetAddress` on the session bus. `None` when the session
+/// runs no accessibility bus.
+pub fn host_atspi_address(session_bus: &str) -> Option<String> {
+    if let Ok(address) = std::env::var("AT_SPI_BUS_ADDRESS")
+        && !address.is_empty()
+    {
+        return Some(address);
+    }
+    let address: zbus::Address = session_bus.try_into().ok()?;
+    let connection = zbus::blocking::connection::Builder::address(address)
+        .ok()?
+        .build()
+        .ok()?;
+    let reply = connection
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some("org.a11y.Bus"),
+            "GetAddress",
+            &(),
+        )
+        .ok()?;
+    let address: String = reply.body().deserialize().ok()?;
+    (!address.is_empty()).then_some(address)
+}
+
 /// Errors from [`spawn_dbus_proxy`].
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -151,6 +256,21 @@ pub fn spawn_dbus_proxy(
     spawn_dbus_proxy_within(binary, bus_addr, socket_path, PROXY_READY_TIMEOUT)
 }
 
+/// [`spawn_dbus_proxy`] with an explicit filter (one of this module's
+/// allowlists, never a caller-built one).
+///
+/// # Errors
+///
+/// As [`spawn_dbus_proxy`].
+pub fn spawn_filtered_proxy(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    filter: &[&str],
+) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_proxy(binary, bus_addr, socket_path, filter, PROXY_READY_TIMEOUT)
+}
+
 /// How long a launch waits for the proxy's listener socket. The real proxy
 /// is ready in ~10ms; a launch does not stall on one that never comes up.
 pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -168,6 +288,22 @@ pub fn spawn_dbus_proxy_within(
     socket_path: &Path,
     ready_within: Duration,
 ) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_proxy(
+        binary,
+        bus_addr,
+        socket_path,
+        DEFAULT_FILTER_ARGS,
+        ready_within,
+    )
+}
+
+fn spawn_proxy(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    filter: &[&str],
+    ready_within: Duration,
+) -> Result<DBusProxyGuard, ProxyError> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ProxyError::Mkdir {
             path: parent.to_path_buf(),
@@ -180,7 +316,7 @@ pub fn spawn_dbus_proxy_within(
 
     let mut cmd = Command::new(binary);
     cmd.arg(bus_addr).arg(socket_path);
-    for arg in DEFAULT_FILTER_ARGS {
+    for arg in filter {
         cmd.arg(arg);
     }
     let child = cmd.spawn().map_err(ProxyError::Spawn)?;
@@ -282,6 +418,83 @@ impl Drop for DBusProxyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_grant_exactly_the_listed_rules() {
+        // A portal-less graphical app: the bus daemon and the accessibility
+        // status questions, nothing else.
+        assert_eq!(
+            session_filter_args(false, true),
+            [
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+                "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+            ]
+        );
+        // A portal app adds exactly the portal names.
+        assert_eq!(
+            session_filter_args(true, true),
+            [
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--talk=org.freedesktop.portal.*",
+                "--talk=org.freedesktop.Notifications",
+                "--talk=org.mpris.MediaPlayer2.*",
+                "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
+                "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
+                "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
+            ]
+        );
+        assert_eq!(session_filter_args(true, false), DEFAULT_FILTER_ARGS);
+        // No rule anywhere grants a whole name on the accessibility side, and
+        // nothing ever widens to ownership or to the raw bus.
+        for arg in session_filter_args(true, true)
+            .iter()
+            .chain(ATSPI_FILTER_ARGS)
+        {
+            assert!(!arg.starts_with("--own"), "{arg}");
+            assert!(
+                !arg.contains("org.a11y") || !arg.starts_with("--talk"),
+                "{arg}"
+            );
+        }
+        // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to
+        // the registry at an exact object path.
+        assert_eq!(&ATSPI_FILTER_ARGS[..2], ["--filter", "--sloppy-names"]);
+        assert_eq!(ATSPI_FILTER_ARGS.len(), 11);
+        for rule in &ATSPI_FILTER_ARGS[2..] {
+            assert!(
+                rule.starts_with("--call=org.a11y.atspi.Registry=org.a11y.atspi.")
+                    || rule.starts_with("--broadcast=org.a11y.atspi.Registry=org.a11y.atspi."),
+                "{rule}"
+            );
+            let path = rule
+                .rsplit_once('@')
+                .expect("every rule names an object path")
+                .1;
+            assert!(
+                path.starts_with("/org/a11y/atspi/") && !path.contains('*'),
+                "{rule}"
+            );
+            assert!(!rule.contains(".*@"), "no wildcard method: {rule}");
+        }
+        assert_eq!(
+            atspi_proxy_socket_path(1000, 7),
+            PathBuf::from("/run/user/1000/tilo/dbus-proxy/7-atspi.sock")
+        );
+        assert_eq!(
+            sandbox_atspi_path(1000),
+            PathBuf::from("/run/user/1000/at-spi/bus")
+        );
+        assert_eq!(
+            sandbox_atspi_env(1000),
+            "unix:path=/run/user/1000/at-spi/bus"
+        );
+    }
 
     #[test]
     fn proxy_paths_env_and_binary_lookup() {

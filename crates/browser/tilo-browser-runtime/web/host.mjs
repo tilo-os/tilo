@@ -80,6 +80,8 @@ export async function mountDesktop(target,options={}) {
   const presentationWaiters=new Set();
   const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;
+  // The desktop offers Invite only when the page takes it.
+  config.invite=typeof options.onInvite==='function';delete config.onInvite;
   let unsubscribeDesktopCommits;
   let liveOverlay,liveCursors,liveCarets,legacyWindows;
   // The room's live layer as this mount publishes through it (a certified
@@ -133,6 +135,7 @@ export async function mountDesktop(target,options={}) {
   function update(raw){
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
+    for(const request of state.hostRequests??[])if(request==='invite')options.onInvite?.();
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));

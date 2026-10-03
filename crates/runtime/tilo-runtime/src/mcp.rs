@@ -372,17 +372,35 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         drop(shown);
         (fresh, unchanged)
     }
+    /// Whether `target` is an effect operation, as its provider describes
+    /// it now. Asked only when an answer carries pictures.
+    async fn is_effect(&self, target: &RemoteActionTarget) -> bool {
+        let Ok(revision) = self.current_revision(&target.provider).await else {
+            return false;
+        };
+        self.ask(CatalogueQuery::resolve(target, revision))
+            .await
+            .ok()
+            .and_then(|page| page.rows.into_iter().next())
+            .and_then(|row| row.action)
+            .is_some_and(|action| action.kind == tilo_actions::OperationKind::Effect)
+    }
     /// Carry the images a succeeded `invocation` produced in `value`, under
     /// [`IMAGES`], for [`tool_result`] to show. With `again` false, a
     /// picture this session was already shown is named in `unchanged`
     /// instead: a model pays for every image it is sent, and a look at an
     /// unchanged artwork is the same picture. `tilo_status` on the earlier
     /// invocation shows it again.
+    ///
+    /// With `target`, the action that ran: an effect's pictures (an export)
+    /// are artifacts it made, not something to look at, so the answer names
+    /// them by address and only `tilo_status` shows them.
     async fn attach_images(
         &self,
         invocation: tilo_actions::InvocationId,
         value: &mut Value,
         again: bool,
+        target: Option<&RemoteActionTarget>,
     ) {
         let Some(media) = self.media.clone() else {
             return;
@@ -404,6 +422,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             return;
         };
         if hashes.is_empty() {
+            return;
+        }
+        if let Some(target) = target
+            && self.is_effect(target).await
+        {
             return;
         }
         let (hashes, unchanged) = self.not_yet_shown(hashes, invocation, again);
@@ -545,14 +568,20 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             resource_list(&rows)
         )
     }
-    /// `page` compact. An app instance's resource ids are opaque and long,
-    /// and named by handles; the workspace's (`app.<app_id>`, its permission
-    /// roles) are names that partners' provisioning and prompts spell out.
-    fn compact(&self, page: &CataloguePage, workspace: bool) -> Value {
+    /// `page` compact, describing only its first `described` rows. An app
+    /// instance's resource ids are opaque and long, and named by handles;
+    /// the workspace's (`app.<app_id>`, its permission roles) are names that
+    /// partners' provisioning and prompts spell out.
+    fn compact_first_described(
+        &self,
+        page: &CataloguePage,
+        workspace: bool,
+        described: usize,
+    ) -> Value {
         if workspace {
-            page::compact_page(page, None)
+            page::compact_first_described(page, None, described)
         } else {
-            page::compact_page(page, Some(&mut self.handles()))
+            page::compact_first_described(page, Some(&mut self.handles()), described)
         }
     }
     /// `describe` false leaves each action's description out. An `open`
@@ -587,13 +616,26 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         #[serde(deny_unknown_fields)]
         struct Batch {
             actions: Vec<crate::computer::Action>,
+            #[serde(default)]
+            app_id: Option<String>,
         }
         let Some(computer) = self.computer.clone() else {
             return tool_result(Err("Unknown tool".into()));
         };
         let batch = name == "computer_batch";
         let actions = if batch {
-            parse::<Batch>(args).map(|batch| batch.actions)
+            parse::<Batch>(args).map(|batch| {
+                let Batch {
+                    mut actions,
+                    app_id,
+                } = batch;
+                for action in &mut actions {
+                    if action.app_id.is_none() {
+                        action.app_id.clone_from(&app_id);
+                    }
+                }
+                actions
+            })
         } else {
             parse::<crate::computer::Action>(args).map(|action| vec![action])
         };
@@ -617,6 +659,17 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             id: run.id.clone(),
             label: run.label.clone(),
         })
+    }
+    /// End this connection's agent on the compositor: it releases whatever
+    /// the agent still holds and the agent's claim on its strip. Blocking
+    /// socket I/O; for a transport whose connection just closed.
+    pub fn leave_computer(&self) {
+        let (Some(computer), Some(agent)) = (self.computer.as_ref(), self.agent()) else {
+            return;
+        };
+        if let Err(error) = computer.leave(&agent) {
+            tracing::debug!(%error, "agent seat release");
+        }
     }
     /// Seat this connection's agent before it opens something through the
     /// workspace, so the window lands in the agent's strip. Best effort: an
@@ -926,13 +979,17 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if detail == Detail::Full {
             return Ok(page_json(&page));
         }
-        if !query.needle.is_empty() {
+        // The rows the needle matched are described; the rest of their
+        // resources' actions follow as signatures. A caller that set
+        // max_results asked for that many rows, not every action.
+        let matched = page.rows.len();
+        if !query.needle.is_empty() && args.max_results.is_none() {
             self.with_every_action(&query, &mut page).await?;
         }
         if workspace {
             offer_open_path(&mut page);
         }
-        let mut value = self.compact(&page, workspace);
+        let mut value = self.compact_first_described(&page, workspace, matched);
         if partial && let Some(fields) = value.as_object_mut() {
             fields.insert("partial_match".into(), Value::Bool(true));
         }
@@ -1144,7 +1201,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 let a: StatusArgs = parse(args)?;
                 let invocation = invocation_id(&a.invocation_id)?;
                 let mut value = self.status(invocation)?;
-                self.attach_images(invocation, &mut value, true).await;
+                self.attach_images(invocation, &mut value, true, None).await;
                 Ok(value)
             }
             "tilo_cancel" => {
@@ -1237,6 +1294,12 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             && let Some(fields) = answer.as_object_mut()
         {
             fields.insert("stopped".into(), json!(index));
+            if index > 0 {
+                fields.insert(
+                    "kept".into(),
+                    format!("steps 0..{index} stayed applied; undo takes them back, a group action applies all or nothing").into(),
+                );
+            }
         }
         Ok(answer)
     }
@@ -1324,7 +1387,8 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
             ran => ran?,
         };
-        self.attach_images(invocation, &mut value, false).await;
+        self.attach_images(invocation, &mut value, false, Some(&target))
+            .await;
         if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
             self.open_files.record(&path, peer);
         }
@@ -2306,9 +2370,9 @@ fn tool_definitions() -> Vec<Value> {
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     let mut tools: Vec<Value> = [
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id, directory (its resources and all their actions, so no tilo_query is needed) and, for a path, content: the document's first page as the app reads it (so no read is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range, p* schema via tilo_resolve). An app's long resource ids appear as handles such as r3 for this connection; a resource's kind or label works too. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
+        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\", described where the needle matched (an explicit max_results lists only the matches) (p? optional, p:type, a|b choices, 1..64 range, p* schema via tilo_resolve). An app's long resource ids appear as handles such as r3 for this connection; a resource's kind or label works too. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
-        ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index): batch the steps you already know, e.g. several edits and then a look, into one call. Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included. An image this session was already shown is not sent again: unchanged names the invocation that showed it",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index; earlier steps stay applied: a resource's group action is all-or-nothing): batch the steps you already know, e.g. several edits and then a look, into one call. Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included. An image this session was already shown is not sent again: unchanged names the invocation that showed it",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
         ("tilo_cancel","Stop an invocation",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
     ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect();

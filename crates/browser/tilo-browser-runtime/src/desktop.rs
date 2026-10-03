@@ -26,21 +26,30 @@ use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 
-/// Applications the page can open, in launcher order: the built-in Scratch,
-/// then every application the bundle registered from its manifests
-/// (`ui::application::registry`). The first is what a group's new-tab
-/// control opens.
+/// Applications the page can open, in launcher order: every application
+/// the bundle registered from its manifests (`ui::application::registry`),
+/// else the built-in Scratch, so a runtime without apps still opens one.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
-    let mut applications = vec![crate::scratch::definition()];
-    applications.extend(ui::application::registry::applications());
-    applications
+    let registered = ui::application::registry::applications();
+    if registered.is_empty() {
+        vec![crate::scratch::definition()]
+    } else {
+        registered
+    }
 }
 
+/// An application the page can open by id, Scratch included: windows a
+/// desktop saved before keep their application.
 pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
     applications()
         .into_iter()
+        .chain(std::iter::once(crate::scratch::definition()))
         .find(|definition| definition.app_id == app)
 }
+
+/// What a group's new-tab control opens: Notes where the bundle has it,
+/// else the first application.
+const NEW_TAB_APP: &str = "so.tilo.notes";
 
 pub(crate) fn catalogue() -> Vec<Application> {
     applications()
@@ -382,7 +391,7 @@ impl TileSource for Tiles {
     }
 
     fn new_tab(&mut self, _: &Workspace, id: TabId) -> Option<Tab> {
-        let definition = applications().into_iter().next()?;
+        let definition = application(NEW_TAB_APP).or_else(|| applications().into_iter().next())?;
         Some(app_tab(id, definition))
     }
 
@@ -643,6 +652,7 @@ pub(crate) fn mount(
     inputs: Inputs,
     store: Rc<dyn DurableStore>,
     apps: Option<&[String]>,
+    workspace_name: Option<&str>,
     notify: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
@@ -657,16 +667,20 @@ pub(crate) fn mount(
                 .iter()
                 .map(|id| application(id).ok_or_else(|| format!("unsupported application {id}")))
                 .collect::<Result<_, _>>()?,
-            // Every registered app is in the launcher; a fresh desktop opens
-            // only the first.
-            None => applications().into_iter().take(1).collect(),
+            // A fresh desktop opens no window: its empty workspace shows the
+            // launchpad, and every registered app is in search.
+            None => Vec::new(),
         };
         let mut minter = IdMinter::new(salt);
         let tabs = definitions
             .into_iter()
             .map(|definition| app_tab(minter.mint(), definition))
             .collect();
-        tilo_desktop_surface::seed_tree(&mut minter, "Workspace", tabs)
+        let name = workspace_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Workspace");
+        tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
     };
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
     let history = store

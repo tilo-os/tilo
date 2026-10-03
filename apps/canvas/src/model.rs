@@ -52,6 +52,9 @@ pub struct Layer {
     pub medium: String,
     pub opacity: f64,
     pub visible: bool,
+    /// `0..=1`: how much of the ground's tooth shows through the layer's
+    /// marks, like ink printed on paper.
+    pub texture: f64,
     /// Held still: the pointer passes through its marks to those beneath.
     pub locked: bool,
 }
@@ -86,10 +89,10 @@ pub enum Shape {
         y: f64,
         text: String,
         size: f64,
-        /// `sans`, `serif`, `mono` or a family name.
+        /// `sans`, `serif`, `mono` or a family `media` lists under fonts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font: Option<String>,
-        /// 400 regular to 700 bold.
+        /// 100 to 900; 400 regular, 700 bold, any value between.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<u16>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -103,6 +106,14 @@ pub enum Shape {
         /// Wrap width.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         width: Option<f64>,
+        /// Letter spacing in thousandths of the size: 80 opens up capitals,
+        /// negative tightens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracking: Option<f64>,
+        /// SVG path data the baseline follows instead of starting at x, y;
+        /// align sets the words at its start, middle or end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     /// A brush stroke: a smooth curve through `points`, `size` wide.
     /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
@@ -143,6 +154,9 @@ pub struct Gradient {
     /// Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`; a stop's alpha
     /// (`#ffd27a00`) fades the paint out, for a glow or mist.
     pub stops: Vec<(f64, String)>,
+    /// Radial only: where the light sits inside the circle, off its centre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focal: Option<[f64; 2]>,
 }
 
 /// How a mark is coloured and, on a painted layer, how it is painted.
@@ -194,6 +208,17 @@ pub struct Style {
     pub blend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Shadow>,
+    /// A shadow cast inside the mark from its edge; a light colour and an
+    /// offset toward the light make it a highlight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_shadow: Option<Shadow>,
+    /// `0..=1`: film grain over the mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grain: Option<f64>,
+    /// Soften the mark's edge outward over this many units: mist, glow,
+    /// shading that melts into what is under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feather: Option<f64>,
 }
 
 /// The blend modes a mark may use.
@@ -367,25 +392,48 @@ impl Artwork {
             .map_or(bounds, |clip| bounds.intersect(clip.bounds()))
     }
 
-    /// The members of group `id`, bottom to top.
+    /// The members of group `id`, bottom to top: its own marks and those of
+    /// the groups inside it (`icons` holds `icons/mail`'s).
     pub fn members(&self, id: &str) -> impl Iterator<Item = &Mark> + '_ {
         let id = id.to_owned();
-        self.marks.iter().filter(move |mark| mark.group == id)
+        self.marks
+            .iter()
+            .filter(move |mark| in_group(&mark.group, &id))
     }
 
-    /// The groups' ids, sorted.
+    /// The groups' ids, sorted, a nested group after the one it is in.
     pub fn groups(&self) -> Vec<&str> {
-        let mut groups: Vec<&str> = self
-            .marks
-            .iter()
-            .map(|mark| mark.group.as_str())
-            .filter(|group| !group.is_empty())
-            .collect();
+        let mut groups: Vec<&str> = Vec::new();
+        for mark in &self.marks {
+            let mut end = 0;
+            for part in mark.group.split('/') {
+                end += part.len();
+                if let Some(path) = mark.group.get(..end).filter(|path| !path.is_empty()) {
+                    groups.push(path);
+                }
+                end += 1;
+            }
+        }
         groups.sort_unstable();
         groups.dedup();
         groups
     }
 }
+
+/// Whether a mark in `group` belongs to group `id`: it is `id` or nested in it.
+pub fn in_group(group: &str, id: &str) -> bool {
+    !id.is_empty()
+        && group
+            .strip_prefix(id)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// A valid group id: one or more ids joined by `/`, a group in a group.
+pub fn valid_group(group: &str) -> bool {
+    group.len() <= 160 && group.split('/').all(valid_id)
+}
+
+impl Artwork {}
 
 /// A valid id: 1–48 of `a-z`, `0-9`, `-` and `_`, so an agent can name a mark
 /// (`sun`, `tree-3`) and address it later.
@@ -455,6 +503,8 @@ impl Shape {
                 align,
                 line_height,
                 width,
+                tracking,
+                path,
                 ..
             } => {
                 if !finite(&[*x, *y, *size])
@@ -477,11 +527,20 @@ impl Shape {
                     Some("a text's line_height is 0.5 to 4".into())
                 } else if width.is_some_and(|width| !finite(&[width]) || width <= 0.0) {
                     Some("a text's width must be positive".into())
-                } else if font
-                    .as_deref()
-                    .is_some_and(|font| font.trim().is_empty() || font.len() > 64)
+                } else if let Some(font) = font.as_deref().filter(|font| !crate::fonts::known(font))
                 {
-                    Some("a text's font is sans, serif, mono or a family name".into())
+                    Some(format!(
+                        "font {font:?} is not one Tilo ships; use sans, serif, mono or one of {}",
+                        crate::fonts::families().join(", ")
+                    ))
+                } else if tracking.is_some_and(|tracking| !(-300.0..=1000.0).contains(&tracking)) {
+                    Some("a text's tracking is -300 to 1000 thousandths of its size".into())
+                } else if let Some(path) = path {
+                    match BezPath::from_svg(path) {
+                        Ok(path) if path.elements().len() >= 2 => None,
+                        Ok(_) => Some("a text's path needs at least two points".into()),
+                        Err(error) => Some(format!("a text's path is not SVG path data: {error}")),
+                    }
                 } else {
                     None
                 }
@@ -636,9 +695,14 @@ impl Shape {
             }
             Self::Text { .. } => {
                 let mut moved = self.clone();
-                if let Self::Text { x, y, .. } = &mut moved {
+                if let Self::Text { x, y, path, .. } = &mut moved {
                     *x += dx;
                     *y += dy;
+                    if let Some(d) = path {
+                        let mut along = BezPath::from_svg(d).unwrap_or_default();
+                        along.apply_affine(Affine::translate((dx, dy)));
+                        *d = path_data(&along);
+                    }
                 }
                 moved
             }
@@ -853,17 +917,24 @@ impl Shape {
             align,
             line_height,
             width,
+            tracking,
+            path,
             ..
         } = self
         else {
             return None;
         };
+        if let Some(path) = path {
+            // Words along a path stay within about their size of it.
+            let along = BezPath::from_svg(path).unwrap_or_default().bounding_box();
+            return Some(along.inflate(*size * 0.5, *size));
+        }
         let advance = size
-            * if weight.unwrap_or(400) >= 600 {
+            * (if weight.unwrap_or(400) >= 600 {
                 0.6
             } else {
                 0.55
-            };
+            } + tracking.unwrap_or(0.0) / 1000.0);
         let lines: Vec<f64> = text
             .split('\n')
             .map(|line| advance * count(line.chars().count()))

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import stat
+import struct
 import sys
 
 
@@ -13,7 +14,7 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules"}
+OPTIONAL_V2 = {"boot_modules", "always_on"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -198,7 +199,7 @@ def profile_id(value):
 
 def relative_path(value):
     if not isinstance(value, str) or not value or any(
-        part in ("", ".", "..") or not re.fullmatch(r"[A-Za-z0-9_.+-]+", part)
+        part in ("", ".", "..") or not re.fullmatch(r"[A-Za-z0-9_.+,-]+", part)
         for part in value.split("/")
     ):
         raise ValueError("hardware definition path must be a safe relative path")
@@ -265,6 +266,8 @@ def validate_definition(data):
         if name in seen_modules:
             raise ValueError("hardware definition boot module names must be unique")
         seen_modules.add(name)
+    if type(data.get("always_on", False)) is not bool:
+        raise ValueError("hardware definition always_on must be a boolean")
     return data
 
 
@@ -285,6 +288,37 @@ def load_definition(name, directory=PROFILES_DIR):
     if definition["id"] != name:
         raise ValueError("hardware definition id does not match its filename")
     return definition
+
+
+def resolve_profile(root: Path, kver: str, architecture: str) -> Path | None:
+    data = read_profile(root)
+    if data is None:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", kver):
+        raise ValueError("invalid kernel version for hardware profile")
+    definition = read_definition(trusted_path(root, DEFINITION_PATH, regular=True))
+    if architecture not in ARCH_CONFIG or data["architecture"] != architecture or definition["architecture"] != architecture:
+        raise ValueError("hardware profile requires a matching native image architecture")
+    # The reviewed definition is copied into the sealed rootfs. It binds the
+    # model to this kernel's DTB without model-specific branches in the builder.
+    if definition["devicetree"] is None:
+        if data["devicetree"] is not None or data["devicetree_sha256"] is not None:
+            raise ValueError("firmware-provided device tree profile must not override a DTB")
+        return None
+    relative = Path(f"usr/lib/modules/{kver}/dtb") / definition["devicetree"]
+    if data["devicetree"] != f"/{relative.as_posix()}":
+        raise ValueError("hardware profile device tree does not match this kernel and model")
+    digest = data["devicetree_sha256"]
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("hardware profile has no valid pinned DTB SHA-256")
+    dtb = trusted_path(root, relative, regular=True)
+    payload = dtb.read_bytes()
+    if len(payload) < 40 or struct.unpack_from(">II", payload) != (0xD00DFEED, len(payload)):
+        raise ValueError("hardware profile device tree has an invalid flattened-device-tree header")
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise ValueError("hardware profile device tree does not match its pinned SHA-256")
+    return dtb
+
 
 
 def main():
@@ -319,3 +353,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

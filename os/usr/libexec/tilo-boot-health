@@ -42,6 +42,23 @@ DEADLINE="${TILO_BOOT_HEALTH_TIMEOUT:-90}"
 # build. Assessing it against a unit it does not have would fail every boot for a
 # reason that has nothing to do with health. TILO_BOOT_HEALTH_UNIT names what to
 # wait for, so a machine that is not the desktop can say what its own liveness is.
+#
+# An always-on board (os/dev/install-board-layer.sh) masks greetd; its liveness
+# is its board session for the account the disk was made with. That session
+# waits for the user manager, Wi-Fi and the first clock sync before it is
+# active, about five minutes at worst, so the board is allowed two such
+# attempts. A board with no account yet is judged by multi-user.target.
+board_marker="${TILO_BOOT_HEALTH_BOARD_MARKER:-/usr/share/tilo/board-headless-session}"
+board_wants="${TILO_BOOT_HEALTH_WANTS:-/etc/systemd/system/multi-user.target.wants}"
+if [ -z "${TILO_BOOT_HEALTH_UNIT:-}" ] && [ -f "$board_marker" ]; then
+  TILO_BOOT_HEALTH_UNIT=multi-user.target
+  for link in "$board_wants"/tilo-board-headless-session@*.service; do
+    [ -L "$link" ] || continue
+    TILO_BOOT_HEALTH_UNIT="${link##*/}"
+    DEADLINE="${TILO_BOOT_HEALTH_TIMEOUT:-660}"
+    break
+  done
+fi
 UNIT="${TILO_BOOT_HEALTH_UNIT:-greetd.service}"
 if ! systemctl cat "$UNIT" >/dev/null 2>&1; then
   log "$UNIT is not installed on this machine — using multi-user.target instead"

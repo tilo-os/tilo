@@ -22,6 +22,7 @@
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
+import {createMembership, createWorkspaces} from './membership.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -536,7 +537,35 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
  */
-export async function connectPeer({
+export async function connectPeer(options) {
+  const {identity, custody, origin, store, profile} = options;
+  if (!identity || custody) return connect(options);
+  // The device key this call opens is the peer's: it is let go when the
+  // peer is disposed or fails to connect, so the page can connect again.
+  const own = await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
+  return withCustody(own, () => connect({...options, custody: own, ...(store ? {} : {profile: profile ?? identityProfile(identity, origin)})}),
+    options.signal);
+}
+
+/** Runs `connecting` with the device key `custody`, closing it when the
+ * resulting peer is disposed, when `signal` aborts, or when connecting fails. */
+export async function withCustody(custody, connecting, signal) {
+  let peer;
+  try {
+    peer = await connecting();
+  } catch (error) {
+    custody.close();
+    throw error;
+  }
+  const dispose = peer.dispose;
+  peer.dispose = async () => {
+    try { await dispose(); } finally { custody.close(); }
+  };
+  signal?.addEventListener('abort', () => custody.close(), {once: true});
+  return peer;
+}
+
+async function connect({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
   profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
@@ -825,8 +854,18 @@ export async function connectPeer({
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
+  const membership = createMembership({rooms: request => peer.rooms(request), room, displayName});
   const certifiedPeer = {
     get host() { return host; },
+    /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
+    createInvitation: options => membership.createInvitation(options),
+    /** The room's members, waiting people and invitations, for its owner
+     * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
+     * `remove`, `cancelInvitation`. */
+    get membership() { return membership; },
+    /** The workspaces the host governs (`membership.mjs`): `list()`,
+     * `create(name)`, `enter(room)`; needs no room. */
+    workspaces: createWorkspaces({rooms: request => peer.rooms(request)}),
     getSnapshot: () => snapshot,
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
@@ -966,8 +1005,8 @@ const invitationBytes = invitation => {
 /**
  * What an invitation (its signed bytes, or them as base64/base64url) offers
  * at the host `relayUrl`: `{workspaceName, role, room, workspaceId,
- * expiresAtNs, inviter}`. `inviter` is undefined: invitations do not name
- * who sent them.
+ * expiresAtNs, inviter}`. `inviter` is `{name, userPublicKey}` as the host
+ * signed it into the invitation, or undefined when it names nobody.
  */
 export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: fetcher} = {}) {
   runtime ??= await pageRuntime();
@@ -975,7 +1014,7 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
   if (reply.kind !== 'invitation') throw new Error(reply.reason ?? 'This invitation offers nothing here');
   return {
     workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
-    expiresAtNs: reply.expiresAtNs, inviter: undefined,
+    expiresAtNs: reply.expiresAtNs, inviter: reply.inviter ?? undefined,
   };
 }
 
@@ -991,7 +1030,16 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  * `CertifiedPeer` in the room; rejects when declined or refused. A page that
  * reloads while waiting asks again under the same request.
  */
-export async function joinWorkspace({
+export async function joinWorkspace(options) {
+  const identity = options.identity ?? currentIdentity();
+  if (!identity || options.custody || !options.origin) return join({...options, identity});
+  // As connectPeer: the device key opened here is the peer's.
+  const profile = options.profile ?? identityProfile(identity, options.origin);
+  const own = await openDeviceCustody({profile, storage: idbStorage()});
+  return withCustody(own, () => join({...options, identity, profile, custody: own}), options.signal);
+}
+
+async function join({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
   runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, ...connectOptions
 }) {
@@ -1036,7 +1084,7 @@ export async function joinWorkspace({
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
   const host = JSON.parse(await runtime.hostInfo(post));
-  return connectPeer({
+  return connect({
     ...connectOptions, origin, identity, room: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
     fetch: fetcher, deviceCertificate: JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
