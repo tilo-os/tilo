@@ -2209,6 +2209,10 @@ fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
         ActionDirectoryBridgeError::InvalidRequest => ActionHostError::InvalidRequest {
             reason: "the directory request is malformed".into(),
         },
+        ActionDirectoryBridgeError::TimedOut => ActionHostError::Unavailable {
+            reason: "the app has not answered its action directory for a long time: it is hung"
+                .into(),
+        },
         other => ActionHostError::Unavailable {
             reason: format!("the action directory is {other:?}"),
         },

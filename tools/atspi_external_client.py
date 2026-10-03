@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Exercise packaged Tilo apps through the real AT-SPI D-Bus endpoint.
 
-This is deliberately an *external* client: it starts an installed package
-payload, finds that process on the accessibility bus, walks exported objects,
-and invokes an action using the public AT-SPI interfaces.  It does not import
-the UI crate or inspect an in-process AccessKit tree.
+This is deliberately an *external* client: it asks the running Tilo session
+to open an installed app the way a screen-reader user does (the compositor's
+"Open an app" palette, over AT-SPI), finds the app on the accessibility bus,
+walks exported objects, and invokes an action using the public AT-SPI
+interfaces.  The app therefore starts exactly as a user's would: through the
+launcher, inside its sandbox, attached to the session's runtime host.  The
+client does not import the UI crate or inspect an in-process AccessKit tree.
+
+``open APP_NAME`` performs only the session launch and prints the app's
+AT-SPI bus name and process id, for gates with their own checks.
 
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
@@ -23,7 +29,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 import tomllib
 from dataclasses import dataclass
@@ -34,6 +39,12 @@ PATH_RE = re.compile(r"/org/a11y/atspi/accessible/[0-9/]+")
 POLL_SECONDS = 0.05
 START_TIMEOUT_SECONDS = 20
 TREE_NODE_LIMIT = 128
+SHELL_TREE_NODE_LIMIT = 1024
+# The session's compositor owns this backend name; it identifies the shell's
+# AT-SPI connection without reading another process's /proc entry.
+SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
+OPEN_APP_ACTION = "Open an app"
+LAUNCH_TIMEOUT_SECONDS = 120
 
 
 class GateError(RuntimeError):
@@ -143,11 +154,11 @@ class AtspiClient:
             path, "org.freedesktop.DBus.Properties.Get", "org.a11y.atspi.Accessible", name,
         )
 
-    def tree(self) -> dict[str, str]:
+    def tree(self, limit: int = TREE_NODE_LIMIT) -> dict[str, str]:
         pending = [ROOT_PATH]
         seen: set[str] = set()
         result: dict[str, str] = {}
-        while pending and len(seen) < TREE_NODE_LIMIT:
+        while pending and len(seen) < limit:
             path = pending.pop(0)
             if path in seen:
                 continue
@@ -170,6 +181,13 @@ class AtspiClient:
         needle = f"'{expected}'"
         return [path for path, name in tree.items() if needle in name]
 
+    def interfaces(self, path: str) -> str:
+        return self.call(path, "org.a11y.atspi.Accessible.GetInterfaces", check=False)
+
+    def set_text(self, path: str, value: str) -> bool:
+        result = self.call(path, "org.a11y.atspi.EditableText.SetTextContents", value, check=False)
+        return "true" in result
+
     def click(self, tree: dict[str, str], expected: str) -> None:
         for path in self.named(tree, expected):
             actions = self.call(path, "org.a11y.atspi.Action.GetActions", check=False)
@@ -182,18 +200,201 @@ class AtspiClient:
         raise GateError(f"AT-SPI tree has no click-capable node named {expected!r}")
 
 
-def find_bus_for_pid(address: str, pid: int, process: subprocess.Popen[bytes]) -> str:
+def bus_pids(address: str) -> dict[str, int]:
+    """Unique AT-SPI connections and the process behind each."""
+    result: dict[str, int] = {}
+    for line in command("busctl", f"--address={address}", "list", "--no-pager", check=False).splitlines():
+        fields = line.split()
+        if len(fields) > 1 and fields[0].startswith(":") and fields[1].isdigit():
+            result[fields[0]] = int(fields[1])
+    return result
+
+
+def shell_client(address: str) -> AtspiClient:
+    output = command(
+        "busctl", "--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", SHELL_BUS_NAME,
+    )
+    pid = int(output.split()[-1])
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise GateError(f"app process exited before AT-SPI registration (status {process.returncode})")
-        output = command("busctl", f"--address={address}", "list", "--no-pager", check=False)
-        for line in output.splitlines():
-            fields = line.split()
-            if len(fields) > 1 and fields[1] == str(pid):
-                return fields[0]
+        for bus, owner in bus_pids(address).items():
+            if owner == pid:
+                return AtspiClient(address, bus)
         time.sleep(POLL_SECONDS)
-    raise GateError(f"pid {pid} did not register on the AT-SPI bus within {START_TIMEOUT_SECONDS}s")
+    raise GateError(f"the Tilo compositor (pid {pid}) is not on the AT-SPI bus")
+
+
+def shell_tree(shell: AtspiClient) -> dict[str, str]:
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        try:
+            return shell.tree(SHELL_TREE_NODE_LIMIT)
+        except GateError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(POLL_SECONDS)
+
+
+def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False) -> tuple[dict[str, str], str]:
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        tree = shell_tree(shell)
+        for path in AtspiClient.named(tree, name):
+            if editable:
+                if "org.a11y.atspi.EditableText" in shell.interfaces(path):
+                    return tree, path
+            elif "'click'" in shell.call(path, "org.a11y.atspi.Action.GetActions", check=False):
+                return tree, path
+        time.sleep(POLL_SECONDS * 4)
+    kind = "editable" if editable else "actionable"
+    names = sorted({value.strip() for value in shell_tree(shell).values() if value.strip()})
+    raise GateError(
+        f"the session exposed no {kind} {name!r} over AT-SPI; it exposed: {', '.join(names)}"
+    )
+
+
+def app_process(pid: int) -> int:
+    """The app behind an AT-SPI connection. A sandboxed app reaches the bus
+    through the launcher's filtered proxy, so the bus reports the proxy's pid;
+    the app is the launcher's descendant that is neither a proxy nor bwrap."""
+    def comm(process: int) -> str:
+        try:
+            return Path(f"/proc/{process}/comm").read_text().strip()
+        except OSError:
+            return ""
+
+    if comm(pid) != "xdg-dbus-proxy":
+        return pid
+    try:
+        launcher = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return pid
+    children: dict[int, list[int]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            parent = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(parent, []).append(int(entry.name))
+    pending = list(children.get(launcher, []))
+    while pending:
+        process = pending.pop(0)
+        if comm(process) not in ("xdg-dbus-proxy", "bwrap"):
+            return process
+        pending.extend(children.get(process, []))
+    return pid
+
+
+def process_command(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()[:160]
+    except OSError:
+        return "(exited)"
+
+
+def app_log(app_name: str) -> str:
+    """The session journal's recent lines about the launch, for a failed open."""
+    lines = command(
+        "journalctl", "--user", "-b", "--no-pager", "-o", "cat", "-n", "400", check=False,
+    ).splitlines()
+    needles = ("launch", "launcher", "file-explorer", app_name.lower(), "accesskit", "at-spi", "atspi")
+    relevant = [line for line in lines if any(n in line.lower() for n in needles)]
+    return " | ".join(relevant[-25:]) or "(nothing)"
+
+
+def is_app_connection(client: AtspiClient) -> bool:
+    """Whether a connection that appeared after the launch is an application:
+    it exports an application node. Clients such as gdbus or busctl do not.
+    The application node is named after the executable, not the display
+    name, so the launch itself is what identifies the app."""
+    try:
+        name = client.property(ROOT_PATH, "Name")
+    except GateError:
+        return False
+    return re.search(r"'[^']+'", name) is not None
+
+
+def open_in_session(address: str, app_name: str) -> tuple[str, int]:
+    """Open APP_NAME through the compositor's app palette; return its bus and pid."""
+    shell = shell_client(address)
+    before = set(bus_pids(address))
+    _, opener = wait_for_shell_node(shell, OPEN_APP_ACTION)
+    result = shell.call(opener, "org.a11y.atspi.Action.DoAction", "0")
+    if "true" not in result:
+        raise GateError(f"AT-SPI {OPEN_APP_ACTION!r} was rejected: {result.strip()}")
+    # The palette's query is an ordinary editable text field for AT.
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    while True:
+        tree = shell_tree(shell)
+        fields = [
+            path for path in tree
+            if "org.a11y.atspi.EditableText" in shell.interfaces(path)
+            and "Command palette" not in tree[path]
+        ]
+        if any(shell.set_text(path, app_name) for path in fields):
+            break
+        if time.monotonic() >= deadline:
+            raise GateError("the app palette exposed no editable query over AT-SPI")
+        time.sleep(POLL_SECONDS * 4)
+    # The palette names an app's launch row "Open <app>".
+    row_name = f"Open {app_name}"
+    tree, _ = wait_for_shell_node(shell, row_name)
+    rows = [
+        path for path in AtspiClient.named(tree, row_name)
+        if "'click'" in shell.call(path, "org.a11y.atspi.Action.GetActions", check=False)
+    ]
+    for row in rows:
+        result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0", check=False)
+        if "true" not in result:
+            continue
+        # One accepted activation launches the app; wait for it rather than
+        # launching a second copy from another row.
+        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            for bus, pid in bus_pids(address).items():
+                if bus in before:
+                    continue
+                if is_app_connection(AtspiClient(address, bus)):
+                    return bus, app_process(pid)
+            time.sleep(POLL_SECONDS * 4)
+        break
+    seen = []
+    for bus, pid in sorted(bus_pids(address).items()):
+        if bus in before:
+            continue
+        process = app_process(pid)
+        try:
+            name = AtspiClient(address, bus).property(ROOT_PATH, "Name").strip()
+        except GateError as error:
+            name = f"no application node: {error}"
+        seen.append(f"{bus} (pid {pid}, process {process} {process_command(process)}): {name}")
+    raise GateError(
+        f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
+        f"new connections: {'; '.join(seen) or 'none'}; "
+        f"its session log: {app_log(app_name)}"
+    )
+
+
+def close_app(pid: int) -> None:
+    """End the app the session opened, so the next scenario starts clean."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(POLL_SECONDS)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def wait_for_tree(client: AtspiClient, names: tuple[str, ...], scenario: Scenario) -> dict[str, str]:
@@ -215,53 +416,29 @@ def wait_for_tree(client: AtspiClient, names: tuple[str, ...], scenario: Scenari
     )
 
 
-def terminate(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    os.killpg(process.pid, signal.SIGTERM)
+def exercise(scenario: Scenario, address: str) -> None:
+    bus_name, pid = open_in_session(address, scenario.app_name)
     try:
-        process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=3)
-
-
-def exercise(scenario: Scenario, binary: Path, address: str) -> None:
-    state_dir = Path(tempfile.mkdtemp(prefix=f"tilo-atspi-{scenario.app_id.rsplit('.', 1)[-1]}-"))
-    log = state_dir / "app.log"
-    environment = os.environ | {
-        "TILO_APP_NAME": scenario.app_name,
-        "TILO_USER_HOME": str(state_dir),
-        "XDG_CONFIG_HOME": str(state_dir / "config"),
-        "XDG_CACHE_HOME": str(state_dir / "cache"),
-        "XDG_DATA_HOME": str(state_dir / "data"),
-        "XDG_STATE_HOME": str(state_dir / "state"),
-    }
-    with log.open("wb") as output:
-        process = subprocess.Popen(
-            [str(binary)], env=environment, stdout=output, stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            bus_name = find_bus_for_pid(address, process.pid, process)
-            client = AtspiClient(address, bus_name)
-            initial = wait_for_tree(client, (scenario.root, *scenario.required), scenario)
-            client.click(initial, scenario.action)
-            wait_for_tree(client, scenario.after_action, scenario)
-        except Exception as error:
-            raise GateError(f"{scenario.app_id}: {error}; app log retained at {log}") from error
-        finally:
-            terminate(process)
-    shutil.rmtree(state_dir)
+        client = AtspiClient(address, bus_name)
+        initial = wait_for_tree(client, (scenario.root, *scenario.required), scenario)
+        client.click(initial, scenario.action)
+        wait_for_tree(client, scenario.after_action, scenario)
+    except GateError as error:
+        raise GateError(f"{scenario.app_id}: {error}") from error
+    finally:
+        close_app(pid)
     print(f"AT-SPI external client passed: {scenario.app_id} ({scenario.action} action round trip)")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--payload-root", type=Path, default=Path("/usr/share/tilo-apps/pkgs"),
         help="installed app package directory containing <content-hash>.pkg/manifest.toml",
     )
+    sub = parser.add_subparsers(dest="command")
+    opener = sub.add_parser("open", help="open an installed app in the session; print its AT-SPI bus and pid")
+    opener.add_argument("app_name")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -269,8 +446,12 @@ def main() -> int:
             return 2
     try:
         address = atspi_address()
-        for scenario, binary in installed_scenarios(args.payload_root):
-            exercise(scenario, binary, address)
+        if args.command == "open":
+            bus_name, pid = open_in_session(address, args.app_name)
+            print(f"{bus_name} {pid}")
+            return 0
+        for scenario, _binary in installed_scenarios(args.payload_root):
+            exercise(scenario, address)
     except GateError as error:
         print(f"AT-SPI external-client failed: {error}", file=sys.stderr)
         return 1

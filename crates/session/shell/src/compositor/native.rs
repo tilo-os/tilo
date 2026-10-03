@@ -179,7 +179,6 @@ struct NativeRedrawReasons {
     /// motion while the shell must still repaint its own cursor.
     visible_input: bool,
     session: bool,
-    accessibility: bool,
     revision: bool,
     hidden_desktop_animation: bool,
     apps: bool,
@@ -199,7 +198,6 @@ impl NativeRedrawReasons {
             || self.backend_event
             || self.visible_input
             || self.session
-            || self.accessibility
             || self.revision
             || (!session_locked
                 && (self.hidden_desktop_animation
@@ -371,6 +369,61 @@ impl WakeTally {
 /// desktop frame visible until unrelated input happens to trigger a repaint.
 fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
+}
+
+/// Wall clock and date for the lock surface, read here rather than in its
+/// pure paint and tree builders.
+struct LockClock {
+    clock: String,
+    date: String,
+}
+
+impl LockClock {
+    fn now() -> Self {
+        let now = chrono::Local::now();
+        Self {
+            clock: now.format("%H:%M").to_string(),
+            date: now.format("%A, %B %-d").to_string(),
+        }
+    }
+
+    fn view<'a>(
+        &'a self,
+        lock: &'a LockController,
+        notification_count: usize,
+        now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+    ) -> LockView<'a> {
+        LockView {
+            password_len: lock.buffer_len(),
+            error: lock.error(),
+            clock: &self.clock,
+            date: &self.date,
+            notification_count,
+            verifying: lock.is_verifying(),
+            now_playing,
+        }
+    }
+}
+
+/// Hand AccessKit the current semantic tree. It needs a laid-out widget tree,
+/// not a presented frame: an activation or action is answered in the tick
+/// that drained it, whether or not that tick paints.
+fn publish_accessibility_tree(
+    accessibility: &mut NativeAccessibility,
+    frame_builder: &FrameBuilder,
+    outputs: &[Output],
+    lock: Option<&LockView<'_>>,
+    focus: Option<NodeId>,
+) {
+    accessibility.set_window_focus(true);
+    if let Some(view) = lock {
+        let outputs = lock_outputs(outputs, frame_builder.scene_size());
+        accessibility.update_if_active(|| {
+            lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
+        });
+    } else {
+        accessibility.update_if_active(|| frame_builder.build_a11y_tree_update(focus, 1.0));
+    }
 }
 
 /// A widget poll already ran in this tick's pump. Its deadline waking the
@@ -1863,22 +1916,24 @@ struct FrameBuilderControlState<'a> {
 impl FrameBuilderControlState<'_> {
     /// Which windows each display holds, in the order they are laid out,
     /// and which display has focus: the per-device partition as the person
-    /// sees it. Empty on a single display.
+    /// sees it. Lists every connected display, a single one included.
     fn displays_json(&self) -> Vec<serde_json::Value> {
-        if !self.fb.host().is_partitioned() {
-            return Vec::new();
-        }
         let summary = self.fb.host().display_partition_summary();
         let chrome = self.fb.chrome();
         let tree = chrome.tree();
         let partition = &tree.desktop.outputs;
+        // An unpartitioned desktop (one display, ever) lists just that one.
+        let primary = partition
+            .primary()
+            .or_else(|| summary.first().map(|(id, _)| *id));
+        let focused = partition.focused_display().or(primary);
         let displays = summary
             .into_iter()
             .map(|(id, groups)| {
                 serde_json::json!({
                     "id": id,
-                    "primary": partition.primary() == Some(id),
-                    "focused": partition.focused_display() == Some(id),
+                    "primary": primary == Some(id),
+                    "focused": focused == Some(id),
                     "groups": groups,
                 })
             })
@@ -3713,9 +3768,109 @@ struct AgentScope {
     agent: String,
     peer: crate::network::protocol::PeerId,
     strip: crate::shell::state::StripId,
-    /// What the agent sees ([`agent_viewport`]): its coordinates' origin and
-    /// its screenshots' extent.
+    /// What the agent sees ([`agent_viewport`], or the window it aimed at):
+    /// its coordinates' origin and its screenshots' extent.
     viewport: Rect,
+    /// The app id of the window the command aimed at, when it named one.
+    window: Option<String>,
+}
+
+/// Where one app's window lives in the workspace tree.
+struct WindowTarget {
+    workspace: crate::shell::state::WorkspaceId,
+    strip: crate::shell::state::StripId,
+    group: crate::shell::state::GroupId,
+    tab: u64,
+    surface: foreign::SurfaceId,
+}
+
+/// The window of `app_id` that `agent` may act in: one in its own strip
+/// first, else one in a strip no other agent works in. Refusals name what
+/// the agent can aim at instead.
+#[allow(
+    clippy::result_large_err,
+    reason = "the refusal is the wire Response the transport writes back as is, like parse_request's"
+)]
+fn agent_window(
+    fb: &FrameBuilder,
+    agents: &crate::compositor::agent_seats::AgentSeats,
+    agent: &str,
+    app_id: &str,
+) -> Result<WindowTarget, test_control::Response> {
+    let own = agents.seat(agent).and_then(|seat| seat.strip);
+    let mut open = Vec::new();
+    let mut busy = false;
+    let mut found: Option<WindowTarget> = None;
+    {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return Err(agent_refusal("no_workspace", "no active workspace"));
+        };
+        for strip in &ws.strips {
+            let owner = agents.strip_owner(strip.id).filter(|owner| *owner != agent);
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let crate::shell::state::TileContent::Foreign {
+                        app_id: tab_app,
+                        surface_id,
+                    } = &tab.tile
+                    else {
+                        continue;
+                    };
+                    if tab_app != app_id {
+                        open.push(tab_app.clone());
+                        continue;
+                    }
+                    if owner.is_some() {
+                        busy = true;
+                        continue;
+                    }
+                    let better = found
+                        .as_ref()
+                        .is_none_or(|current| own == Some(strip.id) && own != Some(current.strip));
+                    if better {
+                        found = Some(WindowTarget {
+                            workspace: ws.id,
+                            strip: strip.id,
+                            group: group.id,
+                            tab: tab.id,
+                            surface: *surface_id,
+                        });
+                    }
+                }
+            }
+        }
+        drop(tree);
+        drop(chrome);
+    }
+    found.ok_or_else(|| {
+        if busy {
+            agent_refusal(
+                "window_busy",
+                &format!("another agent works in the strip holding {app_id}'s window"),
+            )
+        } else {
+            open.sort();
+            open.dedup();
+            agent_refusal(
+                "unknown_window",
+                &format!(
+                    "no window of {app_id} is open; open windows: [{}] (or none, for the whole screen)",
+                    open.join(", ")
+                ),
+            )
+        }
+    })
+}
+
+/// The rect `target`'s window is drawn into, on screen.
+fn window_viewport(fb: &FrameBuilder, target: &WindowTarget) -> Option<Rect> {
+    let screen = agent_viewport(fb)?;
+    let rect = foreign::store()
+        .placement(target.surface)?
+        .intersect(screen);
+    (rect.width() >= 1.0 && rect.height() >= 1.0).then_some(rect)
 }
 
 impl AgentScope {
@@ -3760,6 +3915,7 @@ fn run_as_participant(
 )]
 fn seat_agent(
     agent: &test_control::Agent,
+    window: Option<&str>,
     command: &test_control::Command,
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
@@ -3770,6 +3926,9 @@ fn seat_agent(
         return Ok(None);
     }
     let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
+    let target = window
+        .map(|app_id| agent_window(fb, &ctx.agents, &agent.id, app_id))
+        .transpose()?;
     let mut strip = None;
     {
         let agents = &ctx.agents;
@@ -3787,8 +3946,17 @@ fn seat_agent(
         {
             current = Some(active);
         }
+        // Aiming at a window makes the strip holding it the agent's own.
+        if let Some(target) = &target {
+            current = Some(target.strip);
+        }
         fb.with_chrome(|chrome| {
-            chrome.set_single_strip(true);
+            // An agent seeing the whole screen sees its strip alone. One aimed
+            // at a window sees just that window, which keeps the size it has,
+            // so its app is not resized under it by the agent's arrival.
+            if target.is_none() {
+                chrome.set_single_strip(true);
+            }
             strip = chrome.agent_strip(current, claimed, &label);
         });
     }
@@ -3799,8 +3967,12 @@ fn seat_agent(
         seat.peer
     };
     fb.relayout();
-    let viewport = agent_viewport(fb)
+    let screen = agent_viewport(fb)
         .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
+    let mut viewport = target
+        .as_ref()
+        .and_then(|target| window_viewport(fb, target))
+        .unwrap_or(screen);
     let handover = ctx.agents.hand_over(
         &agent.id,
         &label,
@@ -3811,10 +3983,37 @@ fn seat_agent(
         run_as_participant(*previous, releases, fb, ctx, state);
     }
     let mut focused = false;
-    fb.with_chrome(|chrome| focused = chrome.focus_strip(strip));
+    fb.with_chrome(|chrome| {
+        focused = match &target {
+            Some(target) if !window_focused(chrome, target) => {
+                chrome.focus_tab(target.workspace, target.strip, target.group, target.tab);
+                true
+            }
+            Some(_) => false,
+            None => chrome.focus_strip(strip),
+        };
+    });
     if focused {
         fb.relayout();
         fb.reconcile_native_focus(&mut ctx.focus);
+    }
+    if let Some(target) = &target
+        && let Some(screen) = agent_viewport(fb)
+        && foreign::store()
+            .placement(target.surface)
+            .is_some_and(|rect| rect.intersect(screen) != rect)
+        && fb.host_mut().reveal_group_now(target.strip, target.group)
+    {
+        // The window runs off the screen: bring all of it into view.
+        fb.relayout();
+    }
+    if let Some(target) = &target {
+        viewport = window_viewport(fb, target).ok_or_else(|| {
+            agent_refusal(
+                "window_not_shown",
+                "the window is not on screen yet; it may still be opening, try again",
+            )
+        })?;
     }
     client_input::sync_keyboard_focus(state, fb);
     run_as_participant(peer, &handover.restore, fb, ctx, state);
@@ -3826,7 +4025,24 @@ fn seat_agent(
         peer,
         strip,
         viewport,
+        window: window.map(str::to_owned),
     }))
+}
+
+/// Whether `target`'s tab is the one shown and focused already.
+fn window_focused(chrome: &crate::shell::chrome_state::ChromeState, target: &WindowTarget) -> bool {
+    let tree = chrome.tree();
+    let desktop = &tree.desktop;
+    let focused = desktop.active == target.workspace
+        && desktop.active_strip.get(&target.workspace) == Some(&target.strip)
+        && desktop.active_group.get(&target.strip) == Some(&target.group)
+        && desktop
+            .active_workspace()
+            .and_then(|ws| ws.strips.iter().find(|s| s.id == target.strip))
+            .and_then(|s| s.window_groups.iter().find(|g| g.id == target.group))
+            .is_some_and(|g| g.active_tab == target.tab);
+    drop(tree);
+    focused
 }
 
 /// Where an agent sees and acts: the whole screen. While agents drive the
@@ -3885,6 +4101,7 @@ fn dispatch_for_agent(
                     "agent": scope.agent,
                     "strip": scope.strip.0,
                     "viewport": [v.x0, v.y0, v.width(), v.height()],
+                    "window": scope.window,
                 })),
                 Vec::new(),
             );
@@ -3920,10 +4137,15 @@ fn dispatch_for_agent(
         .iter()
         .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
     {
-        return (
-            agent_refusal("outside_viewport", "the pointer would leave the screen"),
-            Vec::new(),
-        );
+        let message = match &scope.window {
+            Some(app_id) => format!(
+                "the pointer would leave {app_id}'s window, which is {}x{} pixels from its top-left",
+                viewport.width().round(),
+                viewport.height().round()
+            ),
+            None => "the pointer would leave the screen".to_owned(),
+        };
+        return (agent_refusal("outside_viewport", &message), Vec::new());
     }
     let response = match response {
         Response::Targets(targets) => Response::Targets(
@@ -4097,6 +4319,7 @@ fn pump_test_control_conn(
                             Some(agent) if !session.is_locked() => {
                                 match seat_agent(
                                     &agent,
+                                    request.window.as_deref(),
                                     &request.command,
                                     frame_builder,
                                     ctx,
@@ -9782,7 +10005,6 @@ pub fn run() {
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
             session: session_changed || injected_redraw,
-            accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
             // A client frame callback is not a present. A configure ack or a
@@ -9950,53 +10172,31 @@ pub fn run() {
                 backend.outputs(),
                 &output_globals,
             );
-            native_accessibility.set_window_focus(true);
             if session.is_locked() {
-                let lock_outputs: Vec<LockOutput> = backend
-                    .outputs()
-                    .iter()
-                    .map(|o| LockOutput {
-                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
-                        size: (f64::from(o.size.0), f64::from(o.size.1)),
-                        scale: f64::from(o.scale),
-                    })
-                    .collect();
-                let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.scene_size();
-                    vec![LockOutput {
-                        origin: (0.0, 0.0),
-                        size: (vp.0, vp.1),
-                        scale: 1.0,
-                    }]
-                } else {
-                    lock_outputs
-                };
-                let now = chrono::Local::now();
-                let clock = now.format("%H:%M").to_string();
-                let date = now.format("%A, %B %-d").to_string();
-                let view = LockView {
-                    password_len: lock.buffer_len(),
-                    error: lock.error(),
-                    clock: &clock,
-                    date: &date,
-                    notification_count: frame_builder.chrome().notification_count(),
-                    verifying: lock.is_verifying(),
-                    now_playing: lock_player.as_ref(),
-                };
-                native_accessibility.update_if_active(|| {
-                    lock_screen::build_accessibility_tree(
-                        &lock_outputs,
-                        frame_builder.theme(),
-                        &view,
-                    )
-                });
+                let clock = LockClock::now();
+                let view = clock.view(
+                    &lock,
+                    frame_builder.chrome().notification_count(),
+                    lock_player.as_ref(),
+                );
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    Some(&view),
+                    test_control_ctx.focus,
+                );
                 if frame_builder.narrator_enabled() {
                     frame_builder.narrate(&lock_screen::narration_tree(&view));
                 }
             } else {
-                native_accessibility.update_if_active(|| {
-                    frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
-                });
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    None,
+                    test_control_ctx.focus,
+                );
                 frame_builder.note_keyboard_focus(test_control_ctx.focus);
                 frame_builder.narrate_chrome();
             }
@@ -10008,42 +10208,16 @@ pub fn run() {
             frame_builder.set_session_locked(session.is_locked());
             let mut frame_paint = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
-                // The lock overlay covers every known output, centred on each (single on
-                // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
-                let lock_outputs: Vec<LockOutput> = backend
-                    .outputs()
-                    .iter()
-                    .map(|o| LockOutput {
-                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
-                        size: (f64::from(o.size.0), f64::from(o.size.1)),
-                        scale: f64::from(o.scale),
-                    })
-                    .collect();
-                let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.scene_size();
-                    vec![LockOutput {
-                        origin: (0.0, 0.0),
-                        size: (vp.0, vp.1),
-                        scale: 1.0,
-                    }]
-                } else {
-                    lock_outputs
-                };
-                // Count-only summary on the lock screen — no bodies leak.
-                let notif_count = frame_builder.chrome().notification_count();
-                // Wall clock/date computed here (not in the pure paint) so the lock surface renders as themed compositor chrome.
-                let now = chrono::Local::now();
-                let clock = now.format("%H:%M").to_string();
-                let date = now.format("%A, %B %-d").to_string();
-                let view = LockView {
-                    password_len: lock.buffer_len(),
-                    error: lock.error(),
-                    clock: &clock,
-                    date: &date,
-                    notification_count: notif_count,
-                    verifying: lock.is_verifying(),
-                    now_playing: lock_player.as_ref(),
-                };
+                // The lock overlay covers every known output (single on winit/headless;
+                // DRM lays monitors side-by-side).
+                let lock_outputs = lock_outputs(backend.outputs(), frame_builder.scene_size());
+                let clock = LockClock::now();
+                let view = clock.view(
+                    &lock,
+                    // Count-only summary on the lock screen — no bodies leak.
+                    frame_builder.chrome().notification_count(),
+                    lock_player.as_ref(),
+                );
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
                     let tree = chrome.tree();
@@ -10476,7 +10650,7 @@ pub fn run() {
             state.client_cursor.send_frame_callbacks(
                 u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
             );
-        } else if had_backend_events {
+        } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
@@ -10488,6 +10662,25 @@ pub fn run() {
                 backend.outputs(),
                 &output_globals,
             );
+            // An assistive client waits on this tree, not on pixels: a static
+            // screen may not paint again for as long as it stays unchanged.
+            if accessibility_changed {
+                let clock = session.is_locked().then(LockClock::now);
+                let view = clock.as_ref().map(|clock| {
+                    clock.view(
+                        &lock,
+                        frame_builder.chrome().notification_count(),
+                        lock_player.as_ref(),
+                    )
+                });
+                publish_accessibility_tree(
+                    &mut native_accessibility,
+                    &frame_builder,
+                    backend.outputs(),
+                    view.as_ref(),
+                    test_control_ctx.focus,
+                );
+            }
         }
         if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
@@ -11537,10 +11730,6 @@ mod tests {
             },
             NativeRedrawReasons {
                 session: true,
-                ..NativeRedrawReasons::default()
-            },
-            NativeRedrawReasons {
-                accessibility: true,
                 ..NativeRedrawReasons::default()
             },
             NativeRedrawReasons {
@@ -13248,6 +13437,90 @@ mod tests {
         let summoned = &state.chrome_state_json()["wheel_summon"];
         assert_eq!(summoned["x"].as_f64(), Some(1180.0));
         assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    /// `chrome.displays` names what is painted: every connected display and
+    /// the groups on it, including the one display left after an unplug.
+    #[test]
+    fn state_dump_lists_the_remaining_display_after_an_unplug() {
+        use crate::compositor::backend::{combined_geometry, headless, output_geometry};
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+
+        let group = |id: u64| WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: id + 100,
+                title: format!("W{id}"),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: format!("W{id}"),
+                },
+            }],
+            active_tab: id + 100,
+            width: WindowWidth::Fraction(600),
+            maximized: false,
+        };
+        let ws_id = WorkspaceId(7);
+        let strip = StripId(77);
+        let mut ws = Workspace::new(ws_id, "Desk");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![group(1), group(2)],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+
+        let outputs = headless::output_fixture("docked-laptop").expect("fixture");
+        let mut fb = FrameBuilder::with_tree(tree, combined_geometry(&outputs));
+        fb.set_output_geometry(output_geometry(&outputs));
+        fb.relayout();
+        assert!(
+            fb.chrome_handle()
+                .borrow()
+                .tree_mut()
+                .move_group_to_display(2, 1),
+            "group 2 moves to the second display"
+        );
+        fb.relayout();
+        let displays = |fb: &FrameBuilder| {
+            FrameBuilderControlState {
+                fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            }
+            .chrome_state_json()["displays"]
+                .clone()
+        };
+        let both = displays(&fb);
+        assert_eq!(both[0]["groups"], serde_json::json!([1]), "{both:#}");
+        assert_eq!(both[1]["groups"], serde_json::json!([2]), "{both:#}");
+
+        // Unplug the second display: its group moves onto the first, and the
+        // dump says so although the desktop is no longer partitioned.
+        fb.set_output_geometry(output_geometry(&outputs[..1]));
+        fb.relayout();
+        let one = displays(&fb);
+        assert_eq!(
+            one,
+            serde_json::json!([{"id": 0, "primary": true, "focused": true, "groups": [1, 2]}]),
+            "the remaining display holds every group"
+        );
+
+        // A device that has only ever had one display carries no partition;
+        // its display still holds the whole strip.
+        let mut single = FrameBuilder::new((1600, 900));
+        single.set_output_geometry(output_geometry(&outputs[..1]));
+        single.relayout();
+        let only = displays(&single);
+        assert_eq!(only.as_array().map(Vec::len), Some(1), "{only:#}");
+        assert_eq!(only[0]["primary"], true, "{only:#}");
     }
 
     #[test]

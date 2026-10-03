@@ -47,6 +47,7 @@ suites = [
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/board_session.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",

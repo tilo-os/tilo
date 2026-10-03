@@ -192,15 +192,17 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Apply one typed action to `doc` — the document the surface's event
     /// handler received — now, attributed to the participant and labelled
-    /// after the action. One event's actions are one undo step, and an
-    /// action that continues the previous one ([`Resource::coalesces`], the
-    /// next letter of a word) joins its step.
+    /// after the action (its declared label when it names a declared one).
+    /// One event's actions are one undo step, and an action that continues
+    /// the previous one ([`Resource::coalesces`], the next letter of a word)
+    /// joins its step.
     ///
     /// # Errors
     /// Returns [`ActionError::Refused`] for a participant who may only view,
     /// and the action's own refusal; nothing is written either way.
     pub fn apply_now(&self, doc: &mut Doc, action: &R::Action) -> Result<(), ActionError> {
-        let label = ActionContext::for_action("", "", action).action_label;
+        let label = tilo_resource::action_label::<R>(action)
+            .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
         let context =
             ActionContext::for_resource(label, self.resource_id.as_ref(), R::KIND, R::LABEL);
         self.apply_now_with(doc, action, context)

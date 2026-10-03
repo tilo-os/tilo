@@ -30,7 +30,7 @@ use ui::widget::{
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::winit::window::CursorIcon;
-use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
+use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::actions::{CanvasAction, Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
 use crate::gesture::brush::BrushDraft;
@@ -39,7 +39,7 @@ use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
-use crate::render::{Options, Renderer};
+use crate::render::Options;
 use crate::resource::{ArtworkResource, ExportSvg, VIEW_TYPE, ViewOp};
 use crate::view_ops;
 
@@ -54,105 +54,7 @@ const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-scree
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
 
-/// What the pointer does on the canvas.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Tool {
-    #[default]
-    Select,
-    Brush,
-    Rect,
-    Ellipse,
-    Line,
-    Pen,
-    Text,
-    Eyedropper,
-}
-
-impl Tool {
-    pub const ALL: [Self; 8] = [
-        Self::Select,
-        Self::Brush,
-        Self::Rect,
-        Self::Ellipse,
-        Self::Line,
-        Self::Pen,
-        Self::Text,
-        Self::Eyedropper,
-    ];
-
-    /// The Fluent id of the tool's name.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Select => "canvas-tool-select",
-            Self::Brush => "canvas-tool-brush",
-            Self::Rect => "canvas-tool-rect",
-            Self::Ellipse => "canvas-tool-ellipse",
-            Self::Line => "canvas-tool-line",
-            Self::Pen => "canvas-tool-pen",
-            Self::Text => "canvas-tool-text",
-            Self::Eyedropper => "canvas-tool-eyedropper",
-        }
-    }
-
-    /// The key that picks the tool while the canvas has focus.
-    pub fn shortcut(self) -> &'static str {
-        match self {
-            Self::Select => "v",
-            Self::Brush => "b",
-            Self::Rect => "r",
-            Self::Ellipse => "e",
-            Self::Line => "l",
-            Self::Pen => "p",
-            Self::Text => "t",
-            Self::Eyedropper => "i",
-        }
-    }
-}
-
-/// The tool settings the rail and inspector share with the canvas.
-#[derive(Clone)]
-pub struct Tools {
-    pub tool: LocalState<Tool>,
-    pub colour: LocalState<Color>,
-    /// Brush size, `0..=1` of the slider's travel.
-    pub size: LocalState<f64>,
-    /// The layer new marks go on; the top layer when empty.
-    pub layer: LocalState<String>,
-}
-
-impl Default for Tools {
-    fn default() -> Self {
-        Self {
-            tool: LocalState::new(Tool::Brush),
-            // The brush starts loaded with ultramarine: a paint colour, not
-            // chrome, so it does not follow the theme.
-            colour: LocalState::new(Color::from_rgba8(0x2b, 0x3f, 0x8f, 255)), // paint
-            size: LocalState::new(0.2),
-            layer: LocalState::new(String::new()),
-        }
-    }
-}
-
-impl Tools {
-    /// The brush width in artwork units.
-    pub fn brush_size(&self) -> f64 {
-        let travel = self.size.with(|size| size.clamp(0.0, 1.0));
-        1.0 + travel * travel * 119.0
-    }
-
-    pub fn hex(&self) -> String {
-        self.colour.with(|colour| hex(*colour))
-    }
-
-    /// What the tools put down now.
-    pub fn ink(&self) -> Ink {
-        Ink {
-            colour: self.hex(),
-            width: self.brush_size(),
-            layer: Some(self.layer.with(Clone::clone)).filter(|layer| !layer.is_empty()),
-        }
-    }
-}
+pub use crate::tools::{Tool, Tools};
 
 fn hex(colour: Color) -> String {
     let rgba = colour.to_rgba8();
@@ -230,7 +132,6 @@ pub struct CanvasSurface {
     /// view follows them until the person zooms or pans.
     fitted_to: Option<(f64, f64, f64, f64)>,
     moved_by_hand: bool,
-    renderer: Renderer,
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
     tools: Tools,
@@ -273,12 +174,16 @@ impl CanvasSurface {
             art: Rc::new(Artwork::default()),
             dispatcher: None,
             read_only: false,
+            // The artboard sits in the middle of the room it is given.
             viewport: ui::widget::ViewportState::new()
                 .with_zoom_bounds(0.05, 64.0)
-                .with_padding(24.0),
+                .with_padding(24.0)
+                .with_alignment(
+                    ui::widget::SmallContentAlign::Center,
+                    ui::widget::SmallContentAlign::Center,
+                ),
             fitted_to: None,
             moved_by_hand: false,
-            renderer: Renderer::default(),
             look_text: None,
             tools,
             tool,
@@ -605,8 +510,8 @@ impl CanvasSurface {
                 None
             }
             Tool::Eyedropper => {
-                let colour = self.renderer.sample(&self.art, at);
-                self.tools.colour.set(colour);
+                let colour = self.tools.renderer.borrow_mut().sample(&self.art, at);
+                self.tools.pick(colour);
                 None
             }
         };
@@ -940,6 +845,9 @@ impl CanvasSurface {
                 }
             }
             Drag::Stroke { draft, id, ink } => {
+                let params = self
+                    .tools
+                    .stroke_params(&self.art, ink.layer.as_deref().unwrap_or_default());
                 self.dispatch(&CanvasAction::Paint(Paint {
                     layer: ink.layer,
                     strokes: vec![NewStroke {
@@ -950,7 +858,7 @@ impl CanvasSurface {
                         colour: ink.colour,
                         opacity: None,
                         wet: Some(true),
-                        params: None,
+                        params,
                         ..NewStroke::default()
                     }],
                 }));
@@ -1428,17 +1336,39 @@ impl CanvasSurface {
         let ground = part.is_none();
         let art = part.as_ref().unwrap_or(art);
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let renderer = &mut self.renderer;
-        let svg = crate::svg::export(art, ground, |layer| {
-            let options = Options {
-                layers: Some(vec![layer.id.clone()]),
-                bare: true,
-                ..Options::default()
-            };
-            view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
-                .ok()
-                .map(|picture| picture.bytes)
-        });
+        let outline_all = export.outline_text == Some(true);
+        let outlines = art
+            .marks
+            .iter()
+            .filter(|mark| match &mark.shape {
+                Shape::Text { path, .. } => outline_all || path.is_some(),
+                _ => false,
+            })
+            .map(|mark| {
+                let mut outline = ui::vello::kurbo::BezPath::new();
+                for letter in crate::render::letters(&mark.shape, text) {
+                    outline.extend(letter.path);
+                }
+                (mark.id.clone(), outline)
+            })
+            .collect();
+        let mut renderer = self.tools.renderer.borrow_mut();
+        let renderer = &mut *renderer;
+        let svg = crate::svg::export(
+            art,
+            ground,
+            |layer| {
+                let options = Options {
+                    layers: Some(vec![layer.id.clone()]),
+                    bare: true,
+                    ..Options::default()
+                };
+                view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
+                    .ok()
+                    .map(|picture| picture.bytes)
+            },
+            outlines,
+        );
         let address = crate::resource::store(svg.as_bytes())?;
         let mut value = json!({
             "format": "svg",
@@ -1458,11 +1388,11 @@ impl CanvasSurface {
     }
 
     /// The reference picture as `inspect` reports it, when there is one.
-    fn reference_info(&mut self, art: &Artwork) -> Option<Value> {
+    fn reference_info(&self, art: &Artwork) -> Option<Value> {
         let reference = art.reference.as_ref()?;
-        let frame = self.renderer.reference_frame(art);
-        let pixels = self
-            .renderer
+        let mut renderer = self.tools.renderer.borrow_mut();
+        let frame = renderer.reference_frame(art);
+        let pixels = renderer
             .reference_image(art)
             .map(|image| [image.width, image.height]);
         Some(json!({
@@ -1516,11 +1446,14 @@ impl CanvasSurface {
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         match op {
-            ViewOp::Look(look) => {
-                picture(some(view_ops::look(&mut self.renderer, text, &art, look)))
-            }
+            ViewOp::Look(look) => picture(some(view_ops::look(
+                &mut self.tools.renderer.borrow_mut(),
+                text,
+                &art,
+                look,
+            ))),
             ViewOp::Export(export) => picture(some(view_ops::export(
-                &mut self.renderer,
+                &mut self.tools.renderer.borrow_mut(),
                 text,
                 &art,
                 export,
@@ -1528,10 +1461,15 @@ impl CanvasSurface {
             ViewOp::Diff(diff) => {
                 let versions = Self::versions(doc, &art, diff)?;
                 let look = diff.look.unwrap_or(false);
-                picture(view_ops::diff(&mut self.renderer, text, &versions, look))
+                picture(view_ops::diff(
+                    &mut self.tools.renderer.borrow_mut(),
+                    text,
+                    &versions,
+                    look,
+                ))
             }
             ViewOp::Compare(compare) => picture(some(view_ops::compare(
-                &mut self.renderer,
+                &mut self.tools.renderer.borrow_mut(),
                 text,
                 &art,
                 compare,
@@ -1539,6 +1477,13 @@ impl CanvasSurface {
             ViewOp::ExportSvg(export) => self.export_svg(&art, &revision, export),
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
+                if let Some(ids) = &inspect.measure {
+                    let measured =
+                        view_ops::measure(&mut self.tools.renderer.borrow_mut(), text, &art, ids)?;
+                    if let Value::Object(fields) = &mut value {
+                        fields.insert("measured".into(), measured);
+                    }
+                }
                 stamp(&mut value);
                 if let Value::Object(fields) = &mut value
                     && shown.is_none()
@@ -1716,7 +1661,7 @@ impl CanvasSurface {
                 scene.stroke(&hair, Affine::IDENTITY, accent, None, &area);
             }
             Some(Drag::Shape { start, now }) => {
-                let colour = self.tools.colour.with(|colour| *colour);
+                let colour = self.tools.colour();
                 if self.current_tool() == Tool::Line {
                     let end = self.line_end(*start, *now);
                     let pen = Stroke::new(self.ink().width).with_caps(ui::vello::kurbo::Cap::Round);
@@ -1738,7 +1683,7 @@ impl CanvasSurface {
                 }
             }
             Some(Drag::Stroke { draft, ink, .. }) if !self.painted(ink.layer.as_deref()) => {
-                let colour = self.tools.colour.with(|colour| *colour);
+                let colour = self.tools.colour();
                 let points = draft.preview();
                 let preview = Mark {
                     id: String::new(),
@@ -1780,7 +1725,7 @@ impl CanvasSurface {
             };
             let path = pen.preview(cursor);
             if pen.contour.closed {
-                let fill = self.tools.colour.with(|colour| colour.multiply_alpha(0.35));
+                let fill = self.tools.colour().multiply_alpha(0.35);
                 scene.fill(Fill::NonZero, to_screen, fill, None, &path);
             }
             scene.stroke(
@@ -2038,11 +1983,18 @@ impl Widget for CanvasSurface {
             ..Options::default()
         };
         if let Some(shown) = self.shown() {
-            self.renderer
-                .draw(&shown, scene, to_screen, text_renderer, &options);
+            self.tools.renderer.borrow_mut().draw(
+                &shown,
+                scene,
+                to_screen,
+                text_renderer,
+                &options,
+            );
         } else {
             let art = Rc::clone(&self.art);
-            self.renderer
+            self.tools
+                .renderer
+                .borrow_mut()
                 .draw(&art, scene, to_screen, text_renderer, &options);
         }
         scene.stroke(
@@ -2251,7 +2203,12 @@ impl Widget for CanvasSurface {
         })
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        // The panels show what is selected.
+        if self.tools.selection.with(|shown| *shown != self.selection) {
+            self.tools.selection.set(self.selection.clone());
+        }
+    }
 
     fn name(&self) -> &'static str {
         "CanvasSurface"

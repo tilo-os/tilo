@@ -7,7 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
+    RestoreInput,
 };
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
@@ -50,6 +51,11 @@ pub trait ResourceApp: 'static {
     const ICON: Option<&'static str> = None;
     /// The `--shots` viewport.
     const SHOT_VIEWPORT: (u32, u32) = (1024, 720);
+    /// How the hosting window treats the app's tree.
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
+        autofocus_on_structure_change: false,
+        appearance_reconcile: false,
+    };
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -199,6 +205,15 @@ pub(crate) fn build_root<A: ResourceApp>(
     }
 }
 
+/// The decoders of every edit `A`'s document takes: its resource's actions
+/// and History's restores.
+pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
+    let mut registry = tilo_actions::ActionRegistry::new();
+    tilo_resource::group::register::<A::Resource>(&mut registry);
+    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
+    registry
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the toolkit's ComponentFactory signature passes the target owned"
@@ -221,10 +236,8 @@ fn create<A: ResourceApp>(
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let root = build_root::<A>(reader, Editing::Live(permissions));
-    let mut registry = tilo_actions::ActionRegistry::new();
-    tilo_resource::group::register::<A::Resource>(&mut registry);
-    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
-    let mut component = AppComponent::new(context, Box::new(root), registry);
+    let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
+    component.set_behaviour(A::BEHAVIOUR);
     component
         .register_document_history(super::preview::history_definition::<A>())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;

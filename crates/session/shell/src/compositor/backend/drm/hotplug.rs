@@ -16,6 +16,8 @@
 //! pointer ([`clamp_pointer_to_outputs`]) and the surviving outputs' packing
 //! ([`layout`]) need computing explicitly.
 
+use settings_store::hardware::OutputMode;
+
 use crate::compositor::backend::OutputId;
 
 use super::outputs::DrmOutputKey;
@@ -61,6 +63,42 @@ impl HotplugPlan {
     pub fn is_noop(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.remoded.is_empty()
     }
+}
+
+/// The mode a lit output is being driven at, and the configured mode it was
+/// chosen under (`None` when the configuration names none).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LiveMode {
+    pub mode: OutputMode,
+    pub intent: Option<OutputMode>,
+}
+
+/// The mode a connector that is already lit keeps across a rescan, or `None`
+/// when it should be driven at the mode configuration picks.
+///
+/// A rescan follows every hotplug edge and every display settings write, and
+/// re-probing a connector can reorder or regenerate its mode table — a
+/// virtual GPU lists its default mode first again, and some sinks re-read
+/// their EDID when a neighbour is unplugged. Re-picking from that table
+/// would re-modeset a display nobody touched. So an output keeps its current
+/// mode, while the connector still advertises it, unless something asks for
+/// another one:
+///
+/// - for the same set of monitors (`set_changed` false), a changed request
+///   applies — a mode chosen in Settings, a mirror joined, or a mirror left
+///   (which clears the request: back to the preferred mode);
+/// - when monitors came or went, only a mode the new set's remembered layout
+///   names applies. A set never arranged names none, and the survivors of a
+///   shrunk set keep what they show.
+pub fn retained_mode(
+    live: Option<LiveMode>,
+    intent: Option<OutputMode>,
+    set_changed: bool,
+    advertised: &[OutputMode],
+) -> Option<OutputMode> {
+    let live = live?;
+    let unrequested = intent == live.intent || (set_changed && intent.is_none());
+    (unrequested && advertised.contains(&live.mode)).then_some(live.mode)
 }
 
 /// Diff the live outputs against what the hardware now reports.
@@ -196,6 +234,100 @@ mod tests {
             size,
             mm: None,
         }
+    }
+
+    fn mode(width: u32, height: u32) -> OutputMode {
+        OutputMode {
+            width,
+            height,
+            refresh_mhz: 60_000,
+        }
+    }
+
+    #[test]
+    fn retained_mode_keeps_a_survivor_unless_its_request_changed() {
+        let advertised = [mode(1024, 768), mode(1920, 1080), mode(2560, 1440)];
+        let lit = LiveMode {
+            mode: mode(1920, 1080),
+            intent: None,
+        };
+        // A neighbour's unplug keeps the survivor's mode.
+        // Unplugging one virtual output re-probes the other, whose table now
+        // lists the driver's 1024x768 default first; re-picking from it
+        // re-modesets a display nobody touched.
+        assert_eq!(
+            retained_mode(Some(lit), None, false, &advertised),
+            Some(mode(1920, 1080))
+        );
+        // A connector not lit yet takes what configuration picks.
+        assert_eq!(retained_mode(None, None, false, &advertised), None);
+        // A mode chosen in Settings is applied.
+        assert_eq!(
+            retained_mode(Some(lit), Some(mode(2560, 1440)), false, &advertised),
+            None
+        );
+        // Leaving a mirror clears the request: back to the preferred mode.
+        let mirrored = LiveMode {
+            mode: mode(1024, 768),
+            intent: Some(mode(1024, 768)),
+        };
+        assert_eq!(
+            retained_mode(Some(mirrored), None, false, &advertised),
+            None
+        );
+        // An unchanged request keeps the configured mode lit.
+        assert_eq!(
+            retained_mode(Some(mirrored), Some(mode(1024, 768)), false, &advertised),
+            Some(mode(1024, 768))
+        );
+        // A mode the connector stopped offering cannot be kept.
+        assert_eq!(
+            retained_mode(Some(lit), None, false, &[mode(1024, 768)]),
+            None
+        );
+        // Refresh is part of the mode: 59.94 Hz is not 60 Hz.
+        let ntsc = OutputMode {
+            refresh_mhz: 59_940,
+            ..mode(1920, 1080)
+        };
+        assert_eq!(retained_mode(Some(lit), None, false, &[ntsc]), None);
+    }
+
+    #[test]
+    fn a_survivor_of_a_shrunk_monitor_set_keeps_its_configured_mode() {
+        // Two outputs arranged in Settings: the 1280x800 one was brought up
+        // under that remembered layout's request. Its neighbour is unplugged;
+        // the one-monitor set was never arranged, so its layout names no
+        // mode, and the re-probed table lists the driver's 1024x768 first.
+        let arranged = OutputMode {
+            refresh_mhz: 59_910,
+            ..mode(1280, 800)
+        };
+        let advertised = [mode(1024, 768), arranged];
+        let lit = LiveMode {
+            mode: arranged,
+            intent: Some(arranged),
+        };
+        assert_eq!(
+            retained_mode(Some(lit), None, true, &advertised),
+            Some(arranged),
+            "a set that names no mode leaves the survivor as it is"
+        );
+        // The rescan then records that it answers to the new set's empty
+        // request, so a later rescan of that same set keeps it too.
+        let survivor = LiveMode {
+            mode: arranged,
+            intent: None,
+        };
+        assert_eq!(
+            retained_mode(Some(survivor), None, false, &advertised),
+            Some(arranged)
+        );
+        // A layout remembered for the new set that names a mode applies.
+        assert_eq!(
+            retained_mode(Some(lit), Some(mode(1024, 768)), true, &advertised),
+            None
+        );
     }
 
     #[test]

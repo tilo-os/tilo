@@ -7441,6 +7441,7 @@ dependencies = [
  "uuid",
  "wire-frame",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -11501,6 +11502,7 @@ name = "registry-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-cli",
  "app-registry",
  "blake3",
  "bytes",
@@ -11514,6 +11516,7 @@ dependencies = [
  "hyper-util",
  "registry-client",
  "registry-types",
+ "registry-web",
  "reqwest",
  "serde",
  "serde_json",
@@ -11525,6 +11528,7 @@ dependencies = [
  "tilo-files",
  "tilo-net",
  "tilo-rt",
+ "tilo-test-env",
  "tilo-xdg-paths",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -14928,6 +14932,7 @@ dependencies = [
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -14941,6 +14946,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-browser-peer",
+ "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",

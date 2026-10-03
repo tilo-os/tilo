@@ -824,7 +824,7 @@ fn execute_owned(
                 let action = services
                     .registry
                     .decode(&encoded)
-                    .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+                    .map_err(DoorError::decoding)?;
                 if action.locus() != tilo_actions::ExecutionLocus::ClientLocal {
                     return Err(refused(
                         "legacy_document_route_unsupported",
@@ -832,7 +832,7 @@ fn execute_owned(
                     ));
                 }
                 let mut context = tilo_actions::ActionContext::for_resource(
-                    &spec.label,
+                    spec.history_label(&encoded),
                     resource.id.as_str(),
                     &resource.kind,
                     &resource.label,

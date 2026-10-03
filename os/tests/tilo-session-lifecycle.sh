@@ -185,6 +185,11 @@ if [ "${TILO_SESSION_HOLD:-0}" = 1 ]; then
   trap 'printf "desktop-term\n" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
   while :; do sleep 1; done
 fi
+if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
+  sleep 30 &
+  printf '%s\n' "$!" >"$TILO_SESSION_TEST_LOG.holder"
+  exit 9
+fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
 chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell"
@@ -216,6 +221,22 @@ tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* sta
 [ "$(stat -c %a "$flight_dir/latest.log")" = 600 ]
 [ "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600 ]
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A process that inherited the compositor's output must not keep the wrapper,
+# and so the session unit, alive after the compositor exits. Its own state
+# directory keeps this from rotating the record the checks below read.
+held_log="$tmp/held-log"
+set +e
+XDG_STATE_HOME="$tmp/held-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$held_log" TILO_SESSION_HOLD_PIPE=1 \
+  timeout 20 "$test_wrapper" --backend headless >/dev/null
+held_status=$?
+set -e
+if [ -s "$held_log.holder" ]; then
+  kill "$(cat "$held_log.holder")" 2>/dev/null || true
+fi
+[ "$held_status" = 9 ]
+tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
+  | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no$'
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE

@@ -96,6 +96,12 @@ struct Config {
     /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
     #[serde(default)]
     conservative_gpu: bool,
+    /// The page takes the desktop's invitations (`mountDesktop({onInvite})`).
+    #[serde(default)]
+    invite: bool,
+    /// The name a desktop seeded for this mount gives its workspace.
+    #[serde(default)]
+    workspace_name: Option<String>,
 }
 
 impl Config {
@@ -231,6 +237,8 @@ struct Desktop {
     live: Rc<RefCell<crate::live_view::LiveLayout>>,
     /// LIVE_V1: app+record ids keyed by desktop tab id.
     tab_records: Rc<RefCell<std::collections::BTreeMap<u64, (String, String)>>>,
+    /// What the desktop asked of the page since its last status.
+    requests: crate::shell::HostRequests,
 }
 
 impl Mount {
@@ -632,7 +640,7 @@ struct Presentation {
 
 enum Root {
     Component(Box<ui::application::AppComponent>),
-    Desktop(Box<tilo_desktop_surface::DesktopSurface>),
+    Desktop(Box<crate::shell::BrowserShell>),
 }
 
 fn present_desktop(
@@ -662,6 +670,7 @@ fn present_desktop(
         },
         dyn_store,
         config.apps.as_deref(),
+        config.workspace_name.as_deref(),
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -680,8 +689,24 @@ fn present_desktop(
         surface.set_app_notifications(inbox);
     }
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
+    let generation = format!("mount-{id}");
+    let requests = crate::shell::HostRequests::default();
+    let wake = proxy()?;
+    let shell = crate::shell::BrowserShell::new(
+        surface,
+        handle.clone(),
+        generation.clone(),
+        crate::shell::HostOffers {
+            invite: config.invite,
+            mac: config.mac,
+        },
+        Rc::clone(&requests),
+        Arc::new(move || {
+            let _ = wake.send_event(id);
+        }),
+    );
     Ok(Presentation {
-        root: Root::Desktop(Box::new(surface)),
+        root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
         checkout: None,
         images: Rc::clone(&shared.images),
@@ -689,9 +714,10 @@ fn present_desktop(
             handle,
             shared,
             persistence,
-            generation: format!("mount-{id}"),
+            generation,
             live: Rc::default(),
             tab_records: Rc::default(),
+            requests,
         }),
     })
 }
@@ -1465,6 +1491,7 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
         let mut value = value;

@@ -9,3 +9,10 @@
 !os/dev/uki.sh
 !os/dev/uki-hardware-profile.py
 !os/dev/make-boot-splash.py
+!os/dev/install-board-layer.sh
+!os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf
+!os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf
+!os/usr/lib/systemd/system/tilo-board-headless-session@.service
+!os/usr/libexec/tilo-board-session-prepare
+!os/usr/libexec/tilo-seat-session
+!os/usr/libexec/tilo-display-present

@@ -1131,12 +1131,18 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
         tracing::warn!(%error, path = %path.display(), "personal continuity directory unavailable");
         return false;
     }
+    let current = std::fs::read(path).ok();
+    // A quiet tree asks to persist the same state on every sync round. The
+    // primary already holds it, and rewriting it costs four fsyncs (file and
+    // directory, for backup and primary) on the compositor thread.
+    if current.as_deref() == Some(bytes.as_slice()) {
+        return true;
+    }
     // Establish the recovery point before replacing the primary. Refusing to
     // advance when this fails keeps the backup exactly one committed primary
     // behind (or equal on first write), which makes the reserved-counter
     // recovery rule above sound even across repeated failures.
-    let prior = std::fs::read(path)
-        .ok()
+    let prior = current
         .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
         .unwrap_or_else(|| bytes.clone());
     if let Err(error) = tilo_files::native::atomic::write_with_mode(
@@ -2782,17 +2788,17 @@ impl ShellNetwork {
         }
         let endpoint = iroh::EndpointId::from_bytes(&device)
             .map_err(|_| "device is not an enrolled device id".to_string())?;
-        let shared = self.shared_enrolled_room()?;
+        // A named workspace is sent on that room's topic: the device confines
+        // the caller to the room a request arrives on. Otherwise use the
+        // first shared room where the device is actually present.
+        let named = target
+            .provider
+            .strip_prefix("workspace:")
+            .and_then(RoomId::parse);
+        let shared = self.online_enrolled_room(endpoint, named)?;
         let topic = room_topic_id(shared);
         if !self.join_topic(topic) {
             return Err("the shared workspace is not joined".into());
-        }
-        let online = self
-            .live_room_peers
-            .lock()
-            .is_ok_and(|peers| peers.contains(&(topic, endpoint)));
-        if !online {
-            return Err("the enrolled device is not online yet".into());
         }
         let message = tilo_actions::remote::RemoteActionMessage::Invoke(
             tilo_actions::remote::InvokeRequest {
@@ -2821,7 +2827,7 @@ impl ShellNetwork {
             .find(|room| room_topic_id(*room) == topic)
     }
 
-    fn shared_enrolled_room(&self) -> Result<RoomId, String> {
+    fn enrolled_room_candidates(&self) -> Result<Vec<RoomId>, String> {
         let mut enrolled =
             personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
         // The setup session publishes its rooms under the user state
@@ -2840,10 +2846,45 @@ impl ShellNetwork {
                 .map_err(|_| "workspace state is unavailable".to_string())?;
             replica.tree.read().rooms()
         };
-        enrolled
+        Ok(enrolled
             .into_iter()
-            .find(|room| local.iter().any(|candidate| candidate == room))
-            .ok_or_else(|| "the enrolled device shares no workspace".to_string())
+            .filter(|room| local.contains(room))
+            .collect())
+    }
+
+    /// The shared room to reach `endpoint` on: `named` when given, else the
+    /// first shared room where the device is present.
+    fn online_enrolled_room(
+        &self,
+        endpoint: iroh::EndpointId,
+        named: Option<RoomId>,
+    ) -> Result<RoomId, String> {
+        let candidates = self.enrolled_room_candidates()?;
+        let live = self
+            .live_room_peers
+            .lock()
+            .map_err(|_| "workspace state is unavailable".to_string())?;
+        let online = |room: RoomId| live.contains(&(room_topic_id(room), endpoint));
+        let room = match named {
+            Some(room) if candidates.contains(&room) => room,
+            Some(_) => return Err("the enrolled device does not share that workspace".into()),
+            None => {
+                let first = candidates
+                    .first()
+                    .copied()
+                    .ok_or_else(|| "the enrolled device shares no workspace".to_string())?;
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|room| online(*room))
+                    .unwrap_or(first)
+            }
+        };
+        if online(room) {
+            Ok(room)
+        } else {
+            Err("the enrolled device is not online yet".into())
+        }
     }
 
     /// Sort one authenticated remote-action frame: requests queue for the
@@ -2986,11 +3027,17 @@ impl ShellNetwork {
 
     fn adopt_enrolled_rooms(&self) {
         let path = personal_device_peer_path().with_file_name("personal-rooms.json");
+        // Read the file before taking the tree's write lock: the frame
+        // painter reads the same tree.
+        let rooms = personal_room_ids(&path);
+        if rooms.is_empty() {
+            return;
+        }
         let Ok(replica) = self.replica.lock() else {
             return;
         };
         let mut tree = replica.tree.write();
-        for room in personal_room_ids(&path) {
+        for room in rooms {
             tree.join_enrolled_room(room);
         }
     }
@@ -3011,12 +3058,18 @@ impl ShellNetwork {
             .filter(|id| RoomId::parse(id).is_some())
             .collect::<Vec<_>>();
         drop(replica);
+        let Ok(bytes) = serde_json::to_vec(&ids) else {
+            return;
+        };
+        // Runs on every home-peer refresh; the room list rarely changes, and
+        // an unchanged rewrite still costs a file and a directory fsync.
+        if std::fs::read(&path).is_ok_and(|current| current == bytes) {
+            return;
+        }
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(bytes) = serde_json::to_vec(&ids) {
-            let _ = tilo_files::native::atomic::write(&path, &bytes);
-        }
+        let _ = tilo_files::native::atomic::write(&path, &bytes);
     }
 
     /// Attach an always-on home or hosted workspace server. The actor keeps
@@ -3040,6 +3093,15 @@ impl ShellNetwork {
     /// from the frame loop: it reads a bounded local registry, queues dials
     /// with `try_send`, and never waits for relay discovery or a connection.
     pub fn refresh_home_peer_hosts(&self) -> bool {
+        // An enrollment can deliver rooms after this session started. Adopt
+        // them and join their topics, or a request sent to this device on
+        // such a room never arrives.
+        self.adopt_enrolled_rooms();
+        let mut changed = self.join_room_topics();
+        // Direct peers are how a setup machine reaches the device it
+        // enrolled, with or without a relay. A missing or malformed relay
+        // registry must not skip them.
+        changed |= self.dial_direct_peers();
         let mut relay_workspace_ids = self
             .replica
             .lock()
@@ -3059,7 +3121,8 @@ impl ShellNetwork {
             }
             // Preserve the last known-good routing set across a partial or
             // malformed registry write. A subsequent bounded refresh retries.
-            return false;
+            self.export_personal_rooms();
+            return changed;
         };
         let desired_device_ids = desired
             .iter()
@@ -3076,7 +3139,6 @@ impl ShellNetwork {
             .map(|ids| ids.clone())
             .unwrap_or_default();
         let mut applied_ids = previous_ids.clone();
-        let mut changed = false;
         for removed in previous_ids.difference(&desired_ids).copied() {
             if self
                 .cmd_tx
@@ -3117,21 +3179,50 @@ impl ShellNetwork {
         if let Ok(mut ids) = self.registered_home_peer_ids.lock() {
             *ids = applied_ids;
         }
+        self.export_personal_rooms();
+        changed
+    }
+
+    /// Join the topic of every room in the tree. Returns whether a join was
+    /// queued.
+    fn join_room_topics(&self) -> bool {
+        let Some(rooms) = self
+            .replica
+            .lock()
+            .ok()
+            .map(|replica| replica.tree.read().rooms())
+        else {
+            return false;
+        };
+        let mut queued = false;
+        for topic in rooms.into_iter().map(room_topic_id) {
+            let new = self
+                .joined_topics
+                .lock()
+                .is_ok_and(|joined| !joined.contains(&topic));
+            queued |= new && self.join_topic(topic);
+        }
+        queued
+    }
+
+    /// Dial enrolled devices this session has not reached yet.
+    fn dial_direct_peers(&self) -> bool {
         let direct = personal_device_peer_addrs(
             &personal_device_peer_path(),
             Some(*self.local_peer_id.as_bytes()),
         );
-        if let Ok(connected) = self.dialed_direct_peers.lock() {
-            for addr in direct {
-                if connected.contains(&addr.id) {
-                    continue;
-                }
-                if self.cmd_tx.try_send(NetCmd::Connect { addr }).is_ok() {
-                    changed = true;
-                }
+        let Ok(connected) = self.dialed_direct_peers.lock() else {
+            return false;
+        };
+        let mut changed = false;
+        for addr in direct {
+            if connected.contains(&addr.id) {
+                continue;
+            }
+            if self.cmd_tx.try_send(NetCmd::Connect { addr }).is_ok() {
+                changed = true;
             }
         }
-        self.export_personal_rooms();
         changed
     }
 
@@ -6837,6 +6928,168 @@ mod tests {
             }
         }
         assert!(found, "the action must be handed to the personal transport");
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn direct_peers_are_dialed_when_the_relay_registry_is_invalid() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"not-json").unwrap();
+        let device = [0x22_u8; 32];
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.refresh_home_peer_hosts());
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(
+                |command| matches!(command, NetCmd::Connect { addr } if *addr.id.as_bytes() == device)
+            ),
+            "an invalid relay registry must not skip the enrolled device"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_room_enrolled_after_startup_is_joined() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
+        while commands.try_recv().is_ok() {}
+        let room = "22222222-2222-4222-8222-222222222222";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        assert!(net.refresh_home_peer_hosts());
+        let topic = room_topic_id(RoomId::parse(room).expect("room"));
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .any(|command| matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
+            "a room that appears after startup must be joined"
+        );
+        let _ = net.refresh_home_peer_hosts();
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .all(|command| !matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
+            "a joined room is not joined again"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_unchanged_room_export_is_not_rewritten() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let state = dir.path().join("state");
+        let export = state.join("tilo/personal-rooms.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", &state);
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
+        let published = std::fs::metadata(&export).expect("export").ino();
+        let _ = net.refresh_home_peer_hosts();
+        assert_eq!(
+            std::fs::metadata(&export).expect("export").ino(),
+            published,
+            "an unchanged room list must not be republished on every refresh"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_personal_continuity_is_not_rewritten() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        let value = |counter| PersistedPersonalContinuity {
+            counter,
+            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+        };
+        assert!(persist_personal_continuity(&path, &value(7)));
+        let written = std::fs::metadata(&path).unwrap().ino();
+        assert!(persist_personal_continuity(&path, &value(7)));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            written,
+            "the same state must not be rewritten"
+        );
+        assert!(persist_personal_continuity(&path, &value(8)));
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), written);
+        assert_eq!(load_personal_continuity(&path).counter, 8);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_enrolled_action_goes_to_the_named_room_or_the_one_the_device_is_in() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let device = [0x22_u8; 32];
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+        )
+        .unwrap();
+        let absent = "11111111-1111-4111-8111-111111111111";
+        let present = "22222222-2222-4222-8222-222222222222";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{absent}\", \"{present}\"]"),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
+        while commands.try_recv().is_ok() {}
+        let endpoint = iroh::EndpointId::from_bytes(&device).expect("endpoint");
+        let present_topic = room_topic_id(RoomId::parse(present).expect("room"));
+        net.live_room_peers
+            .lock()
+            .expect("live peers")
+            .insert((present_topic, endpoint));
+        let invoke = |provider: String| {
+            net.invoke_enrolled_device(
+                &hex::encode(device),
+                tilo_actions::remote::RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new("app.so.tilo.terminal", "open"),
+                },
+                tilo_actions::remote::InvokeArgument::None,
+            )
+        };
+        assert!(
+            invoke(format!("workspace:{absent}")).is_err(),
+            "a named room the device is not in is not silently swapped"
+        );
+        assert!(invoke("workspace:33333333-3333-4333-8333-333333333333".into()).is_err());
+        invoke(format!("workspace:{present}")).expect("named room");
+        invoke("9".into()).expect("first room the device is in");
+        let topics: Vec<u64> = std::iter::from_fn(|| commands.try_recv().ok())
+            .filter_map(|command| match command {
+                NetCmd::PublishRemoteAction { ws, .. } => Some(ws),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(topics, vec![present_topic, present_topic]);
     }
 
     #[test]

@@ -135,9 +135,10 @@ jobs:
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
 
-      # The same image predates the private session bus tests (tilo-os-search).
-      - name: Ensure private D-Bus test daemon
-        run: bash tools/ci/ensure-dbus-daemon.sh
+      # The same image predates the private session bus tests (tilo-os-search)
+      # and the launcher's bus-filter tests (xdg-dbus-proxy).
+      - name: Ensure session-bus test tools
+        run: bash tools/ci/ensure-session-bus-tools.sh
 
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.

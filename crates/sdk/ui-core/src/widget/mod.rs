@@ -1236,6 +1236,16 @@ pub trait Widget {
             .map(|parent| vec![parent])
     }
 
+    /// Whether one retained [`children`](Widget::children) entry is already
+    /// represented in this widget's own synthetic
+    /// [`accessibility`](Widget::accessibility) tree, so the bridge must not
+    /// export it a second time. A host that publishes a child's semantics
+    /// itself (to add its own controls inside the same dialog) answers `true`
+    /// for that child; assistive technology then sees one copy, not two.
+    fn accessibility_represents_child(&self, _child_index: usize) -> bool {
+        false
+    }
+
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
     /// Default `false` ("not handled") falls back to generic dispatch
     /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
@@ -2187,6 +2197,8 @@ pub use manual::{
 };
 mod row;
 pub use row::Row;
+mod list_row;
+pub use list_row::ListRow;
 mod toggle;
 pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors};
 mod stack;

@@ -20,6 +20,7 @@
 
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
+use openmls_traits::storage::StorageProvider as _;
 
 use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
 use tilo_seal::SymmetricKey;
@@ -610,6 +611,30 @@ impl ChannelGroup {
         };
         joined.record_epoch_key()?;
         Ok(joined)
+    }
+
+    /// Whether `welcome_bytes` is a Welcome for a key package `member`
+    /// minted and still holds. One that is not (an admission of a key
+    /// package this device minted before it lost its state) can never be
+    /// opened here, and needs no new request: the newer request this device
+    /// sent answers it.
+    #[must_use]
+    pub fn welcome_names(welcome_bytes: &[u8], member: &MemberKey) -> bool {
+        let Ok(message) = MlsMessageIn::tls_deserialize_exact(welcome_bytes) else {
+            return false;
+        };
+        let MlsMessageBodyIn::Welcome(welcome) = message.extract() else {
+            return false;
+        };
+        welcome.secrets().iter().any(|secrets| {
+            member
+                .provider
+                .storage()
+                .key_package::<_, KeyPackageBundle>(&secrets.new_member())
+                .ok()
+                .flatten()
+                .is_some()
+        })
     }
 
     /// Join from a Welcome and import the key history that came with it

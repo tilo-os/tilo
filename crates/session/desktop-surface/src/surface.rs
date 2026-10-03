@@ -175,6 +175,12 @@ impl DesktopHandle {
         published_selection(keyboard, &self.shared.borrow().focused_presence)
     }
 
+    /// What the surface presents beside the tree (pan, history, activity,
+    /// notifications), as last presented.
+    pub fn presentation(&self) -> Presentation {
+        self.shared.borrow().presentation.clone()
+    }
+
     pub fn snapshot(&self, generation: &str, applications: Vec<Application>) -> Snapshot {
         let shared = self.shared.borrow();
         navigation::snapshot_with(&shared.tree, generation, applications, &shared.presentation)
