@@ -327,7 +327,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         );
         let both = NoteDates {
             created: Some(1_700_000_000),
-            edited: edited_only.edited,
+            edited: Some(1_700_003_600 + 3 * 86_400),
         };
         let lines = both.labels_at(now);
         assert_eq!(lines.len(), 1, "created and edited share one line");

@@ -42,28 +42,50 @@ const OUTLINE: &str = "1. Prepare the release\n\n  Keep the explanation with its
 fn fixture_body(scenario: Option<&str>) -> Option<String> {
     match scenario {
         Some("rich_outline") => Some(OUTLINE.into()),
-        Some("quote") => Some("## A thought worth keeping\n\n> Good notes preserve the reason behind a decision, not just the decision itself.\n\nQuotes remain editable, linkable, draggable blocks—not pasted decoration.\n".into()),
+        Some("quote") => Some("## A thought worth keeping\n\n> Good notes preserve the reason behind a decision, not just the decision itself.\n\nI come back to this line whenever I write up a design review.\n".into()),
         Some("mixed_outline") => Some("# A release, step by step\n\n1. Prepare the release\n  - Check the writing experience\n    - [x] Long paragraphs wrap without clipping\n    - [ ] Review keyboard navigation\n      Keep this explanation inside the same checklist item.\n  1. Ask for a second review\n    - Read the screenshots critically\n  2. Address the findings\n2. Share the finished note\n".into()),
-        Some("external_link") => Some("# Links that behave like links\n\nExternal destinations stay editable Markdown, sync with the note, and open through the desktop portal.\n\nRead the [complete writing guide](https://example.test/writing) before publishing.\n\n> Unsafe schemes remain plain text instead of becoming executable actions.\n".into()),
-        Some("table" | "table_cell_edit") => Some("# Tables without leaving the note\n\nTrack owners and progress together.\n\n| Project | Owner | Status |\n| :--- | :--- | ---: |\n| Search | Mina | Shipped |\n| Import | Jules | In review |\n| Mobile polish | Sam | Next |\n".into()),
+        Some("external_link") => Some("# Reading before the launch\n\nThe style rules are short and worth knowing by heart.\n\nRead the [complete writing guide](https://example.test/writing) before publishing.\n\n> Plain words beat clever ones, every time.\n".into()),
+        Some("table" | "table_cell_edit") => Some("# Project status\n\nWho owns what, and where each piece stands.\n\n| Project | Owner | Status |\n| :--- | :--- | ---: |\n| Search | Mina | Shipped |\n| Import | Jules | In review |\n| Mobile polish | Sam | Next |\n".into()),
         Some("table_large" | "table_large_scrolled") => {
-            let header = (1..=10).map(|column| format!("Field {column}")).collect::<Vec<_>>().join(" | ");
+            const HEADER: [&str; 10] = [
+                "Project", "Owner", "Team", "Status", "Priority", "Quarter", "Budget", "Region", "Risk", "Next step",
+            ];
+            const PROJECTS: [&str; 16] = [
+                "Search relaunch with the new ranking, the faceted filters and the migration of every saved query",
+                "Import wizard", "Mobile polish", "Offline mode", "Billing export", "Team dashboards",
+                "Accessibility audit", "Onboarding emails", "Public API", "Calendar sync", "Dark theme",
+                "Data retention", "Single sign-on", "Release notes", "Status page", "Help centre",
+            ];
+            const OWNERS: [&str; 8] = ["Mina", "Jules", "Sam", "Priya", "Tomas", "Lena", "Omar", "Ada"];
+            const STATUS: [&str; 4] = ["Shipped", "In review", "In progress", "Planned"];
+            const PRIORITY: [&str; 3] = ["High", "Medium", "Low"];
+            const REGION: [&str; 4] = ["EU", "US", "APAC", "Global"];
+            const RISK: [&str; 3] = ["Low", "Medium", "High"];
+            const NEXT: [&str; 4] = ["Write the spec", "Review with design", "Ship to beta", "Collect feedback"];
             let separator = ["---"; 10].join(" | ");
-            let mut source = format!("# Every detail belongs in the note\n\n| {header} |\n| {separator} |\n");
-            for row in 1..=16 {
-                let cells = (1..=10)
-                    .map(|column| if row == 1 && column == 1 {
-                        "A long cell with important details that must remain readable on a narrow display".to_owned()
-                    } else {
-                        format!("Row {row}, field {column}")
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                let _ = writeln!(source, "| {cells} |");
+            let mut source = format!("# Programme overview\n\n| {} |\n| {separator} |\n", HEADER.join(" | "));
+            for (row, project) in PROJECTS.iter().enumerate() {
+                let pick = |list: &[&'static str], step: usize| {
+                    list.get((row * step + row / 2) % list.len().max(1)).copied().unwrap_or_default()
+                };
+                let budget = format!("{}k", 40 + (row * 17) % 120);
+                let cells = [
+                    (*project).to_owned(),
+                    pick(&OWNERS, 3).to_owned(),
+                    format!("Team {}", (row % 4) + 1),
+                    pick(&STATUS, 1).to_owned(),
+                    pick(&PRIORITY, 2).to_owned(),
+                    format!("Q{}", (row % 4) + 1),
+                    budget,
+                    pick(&REGION, 1).to_owned(),
+                    pick(&RISK, 2).to_owned(),
+                    pick(&NEXT, 1).to_owned(),
+                ];
+                let _ = writeln!(source, "| {} |", cells.join(" | "));
             }
             Some(source)
         }
-        Some("image" | "image_edit") => Some("# Images stay part of the note\n\nWorkspace-relative images load asynchronously without blocking typing or escaping the collaboration sandbox.\n\n![Settings external accounts](image.png)\n".into()),
+        Some("image" | "image_edit") => Some("# Roadmap sketch\n\nThe board from Tuesday's planning session, kept here so we remember why the order changed.\n\n![Roadmap board](image.png)\n".into()),
         Some("find") => Some("# Migration plan\n\nThe workspace migration keeps every linked decision close to the work.\n\n- [x] Inventory the current workspace\n- [ ] Review the migration guide\n\n> A careful migration should feel boring, reversible, and easy to verify.\n".into()),
         _ => None,
     }
@@ -212,10 +234,10 @@ fn prepare_fixture_owned(
                     .ok_or("image fixture selection missing")?;
                 let (block_id, text) = crate::doc::NotesDoc::page_block_snapshots(doc, page)
                     .into_iter()
-                    .find(|(_, text)| text == "![Settings external accounts](image.png)")
+                    .find(|(_, text)| text == "![Roadmap board](image.png)")
                     .ok_or("image fixture block missing")?;
                 let digest = blake3::hash(&bytes).to_hex().to_string();
-                let replacement = format!("![Settings external accounts](asset:{digest})");
+                let replacement = format!("![Roadmap board](asset:{digest})");
                 let action = crate::actions::add_image_asset_action(
                     page,
                     bytes,
@@ -965,7 +987,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         Some("import_success") => {
             let arguments = serde_json::json!({
                 "title": "Project brief",
-                "body": "# Project brief\n\nImported through Notes' semantic Markdown action.\n\n- [x] Preserve headings\n- [x] Preserve lists\n"
+                "body": "# Project brief\n\nOne page on what we are building and who it is for.\n\n- [x] Draft the outline\n- [x] Agree the scope\n"
             })
             .as_object()
             .cloned()
@@ -1256,7 +1278,7 @@ fn validate_capture(
                 && matches!(blocks, [heading, body] if matches!(heading.kind, BlockKind::Heading(1)) && heading.text() == "Roadmap" && matches!(body.kind, BlockKind::Paragraph) && body.text() == "Ship by Q3")
         }
         Some("quote") => {
-            matches!(blocks, [heading, quote, body] if matches!(heading.kind, BlockKind::Heading(2)) && matches!(quote.kind, BlockKind::Quote) && body.text().starts_with("Quotes remain editable"))
+            matches!(blocks, [heading, quote, body] if matches!(heading.kind, BlockKind::Heading(2)) && matches!(quote.kind, BlockKind::Quote) && body.text().starts_with("I come back to this line"))
         }
         Some("title_edit") => driver
             .expect(&SemanticExpectation::named("note_title").value("Launch checklist notes"))
@@ -1295,7 +1317,7 @@ fn validate_capture(
         Some("image" | "image_edit") => blocks.iter().any(|block| {
             block
                 .text()
-                .starts_with("![Settings external accounts](asset:")
+                .starts_with("![Roadmap board](asset:")
         }),
         Some("scrolled") => blocks.len() > 20,
         Some("drawer") => {
@@ -1347,7 +1369,7 @@ fn validate_capture(
                 matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Project brief"
             }) && blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Paragraph)
-                    && block.text() == "Imported through Notes' semantic Markdown action."
+                    && block.text() == "One page on what we are building and who it is for."
             }) && semantic_observed(driver, |node| {
                 node.name.as_deref() == Some("Notifications")
                     && node.value.as_deref() == Some("Imported Project brief")

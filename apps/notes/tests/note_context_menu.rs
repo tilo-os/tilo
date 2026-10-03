@@ -54,6 +54,38 @@ fn dispatch(app: &mut Framed<NotesApp>, modifiers: Modifiers, event: &WindowEven
     Framed::harness_mut(app).dispatch_to_root_with(event, &modifiers)
 }
 
+#[test]
+fn the_note_actions_button_opens_the_note_menu_anchored_to_itself() {
+    for width in [480, 1200] {
+        let tmp = TempDir::new().unwrap();
+        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        let state = ui::State::new();
+        let mut app = settle_layout(app, state, width, 800);
+        let button = app.note_menu_button_center_for_test();
+        assert!(
+            button.x > 0.0,
+            "the header lays the button out, width {width}"
+        );
+        Framed::harness_mut(&mut app).click_at(button.x, button.y);
+        assert!(app.note_menu_open_for_test(), "width {width}");
+        // The menu lays its rows out when it paints.
+        let _ = Framed::harness_mut(&mut app).render_rgba();
+        let (menu, anchor) = app
+            .note_menu_rects_for_test()
+            .expect("an open menu has a rect");
+        assert!(
+            menu.y0 >= anchor.y1 - 1.0 && menu.y0 <= anchor.y1 + 16.0,
+            "the menu opens just under its button: {menu:?} vs {anchor:?}"
+        );
+        assert!(
+            menu.x1 >= anchor.x1 - 1.0 && menu.x0 < anchor.x1,
+            "the menu hangs from the button's edge: {menu:?} vs {anchor:?}"
+        );
+        dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
+        assert!(!app.note_menu_open_for_test());
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single interaction test follows selection and shortcut isolation through the menu lifecycle"
