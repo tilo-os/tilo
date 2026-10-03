@@ -68,31 +68,28 @@ impl Category {
         Category::ALL.into_iter().find(|c| c.api_key() == s)
     }
 
-    /// Short human label for the seek bar legend + settings rows.
-    pub fn label(self) -> &'static str {
+    /// The catalogue key naming this kind of segment.
+    fn message_key(self) -> &'static str {
         match self {
-            Category::Sponsor => "Sponsor",
-            Category::SelfPromo => "Self-promo",
-            Category::Interaction => "Interaction reminder",
-            Category::Intro => "Intermission / intro",
-            Category::Outro => "Endcards / outro",
-            Category::Preview => "Preview / recap",
-            Category::MusicOfftopic => "Non-music section",
-            Category::Filler => "Filler tangent",
+            Category::Sponsor => "tube-segment-sponsor",
+            Category::SelfPromo => "tube-segment-selfpromo",
+            Category::Interaction => "tube-segment-interaction",
+            Category::Intro => "tube-segment-intro",
+            Category::Outro => "tube-segment-outro",
+            Category::Preview => "tube-segment-preview",
+            Category::MusicOfftopic => "tube-segment-music-offtopic",
+            Category::Filler => "tube-segment-filler",
         }
     }
 
-    pub fn blurb(self) -> &'static str {
-        match self {
-            Category::Sponsor => "Paid promotion, paid referrals and direct advertisements.",
-            Category::SelfPromo => "Unpaid/self promotion, merch, donations, charity.",
-            Category::Interaction => "\"Like and subscribe\" reminders without other content.",
-            Category::Intro => "An interval without actual content — pause, animation, intro.",
-            Category::Outro => "Credits or when the video is over — endcards and outros.",
-            Category::Preview => "Quick recap of previous episodes or a preview of what's coming.",
-            Category::MusicOfftopic => "Non-music sections in a music video — for music listening.",
-            Category::Filler => "Tangential scenes added only to lengthen the video.",
-        }
+    /// Short human label for the seek bar legend + settings rows.
+    pub fn label(self) -> String {
+        crate::i18n::t(self.message_key())
+    }
+
+    /// One sentence on what this kind of segment covers.
+    pub fn blurb(self) -> String {
+        crate::i18n::t(&format!("{}-about", self.message_key()))
     }
 
     /// The official `SponsorBlock` colour identity (RGB), kept here so the
@@ -129,12 +126,12 @@ pub enum SkipMode {
 
 impl SkipMode {
     /// Short label for the settings mode selector.
-    pub fn label(self) -> &'static str {
-        match self {
-            SkipMode::Skip => "Auto-skip",
-            SkipMode::Show => "Show",
-            SkipMode::Disabled => "Off",
-        }
+    pub fn label(self) -> String {
+        crate::i18n::t(match self {
+            SkipMode::Skip => "tube-mode-skip",
+            SkipMode::Show => "tube-mode-show",
+            SkipMode::Disabled => "tube-mode-off",
+        })
     }
 
     /// Cycle order for the settings selector: Auto-skip → Show → Off → …
