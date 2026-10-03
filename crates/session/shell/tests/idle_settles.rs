@@ -68,16 +68,13 @@ impl Desk {
     }
 
     /// Paint frames, as the loop would, until nothing asks for another.
-    /// Returns how many frames asked for a successor first.
-    fn settle(&mut self, what: &str) -> usize {
+    fn settle(&mut self, what: &str) {
         let deadline = tilo_test_env::hang_deadline();
-        let mut busy_frames = 0;
         loop {
             self.frame();
             let Some(busy) = self.busy() else {
-                return busy_frames;
+                return;
             };
-            busy_frames = busy_frames.saturating_add(1);
             assert!(
                 Instant::now() < deadline,
                 "{what}: the desktop never went idle; {busy}"
@@ -86,18 +83,23 @@ impl Desk {
         }
     }
 
-    /// Returns the frames the surface animated for while opening.
+    /// Returns whether the first frame after opening started an animation.
+    /// The demand is read at an instant taken before that frame, so a frame
+    /// slower than the animation itself still shows that it began one.
     fn open_and_close(
         &mut self,
         what: &str,
         open: impl FnOnce(&mut Self),
         close: impl FnOnce(&mut Self),
-    ) -> usize {
+    ) -> bool {
         open(self);
-        let opening = self.settle(&format!("{what} open"));
+        let before = Instant::now();
+        self.frame();
+        let animated = !self.fb.animation_owners_at(before).is_empty();
+        self.settle(&format!("{what} open"));
         close(self);
         self.settle(&format!("after closing {what}"));
-        opening
+        animated
     }
 }
 
@@ -117,10 +119,7 @@ fn every_chrome_surface_lets_the_desktop_idle() {
         |d| d.fb.with_chrome(ChromeState::open_quick_settings),
         |d| d.fb.with_chrome(|c| c.overlays.quick_settings = false),
     );
-    assert!(
-        opening > 0,
-        "Quick Settings' opening animation went unobserved"
-    );
+    assert!(opening, "Quick Settings' opening animation went unobserved");
 
     // Phase `search_idles_open_and_closed`.
     let opening = desk.open_and_close(
@@ -131,7 +130,7 @@ fn every_chrome_surface_lets_the_desktop_idle() {
         },
         |d| d.fb.host_mut().set_palette_visible(false),
     );
-    assert!(opening > 0, "Search's opening animation went unobserved");
+    assert!(opening, "Search's opening animation went unobserved");
 
     // Phase `overview_idles_open_and_closed`.
     desk.open_and_close(
