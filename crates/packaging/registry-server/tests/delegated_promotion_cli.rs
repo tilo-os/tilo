@@ -281,6 +281,13 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert!(snapshot.channel_authorization.is_some());
     assert!(storage.load_staged_promotion().unwrap().is_none());
     let live_authorization = snapshot.channel_authorization.clone().unwrap();
+    // The channel key signs the compact form too.
+    let compact = storage.load_compact_snapshot().unwrap().unwrap();
+    registry_types::verify_compact_snapshot(&compact, &owner_hex, compact.issued_at_unix).unwrap();
+    assert_eq!(
+        compact.snapshot_hash_hex,
+        registry_types::snapshot_hash(&snapshot).unwrap()
+    );
 
     // Simulate a crash after the signed snapshot and moderation state became
     // durable and the staged manifest was consumed, but before the promotion
@@ -342,6 +349,9 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     assert_eq!(snapshot.sequence, 2);
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+    let compact = storage.load_compact_snapshot().unwrap().unwrap();
+    assert_eq!(compact.sequence, 2);
+    registry_types::verify_compact_snapshot(&compact, &owner_hex, compact.issued_at_unix).unwrap();
 
     // A higher-generation root authorization revokes the old channel at the
     // serving boundary immediately, even while its certificate is unexpired.

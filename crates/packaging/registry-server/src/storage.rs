@@ -21,6 +21,10 @@
 //!         <sequence>-<hash>.json     # newest owner-signed history, bounded
 //!         compacted.json             # chain head of the pruned prefix
 //!     published-snapshot.json        # atomic current channel pointer
+//!     published-compact-snapshot.json # compact form of the current snapshot
+//!     version-indexes/
+//!         <blake3>.json              # complete signed entries the compact
+//!                                    # form names, by content
 //!     staged-artifacts/
 //!         <blake3>.root              # collected tapp, rebuilt from its thin
 //!                                    # form and payload blobs
@@ -52,8 +56,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use registry_types::{
-    ChannelAuthorization, EntryAction, EntryChangeRequest, ModerationEvent, RegistryEntry,
-    RegistryTarget, SignedRegistrySnapshot,
+    ChannelAuthorization, CompactRegistrySnapshot, EntryAction, EntryChangeRequest,
+    ModerationEvent, RegistryEntry, RegistryTarget, SignedRegistrySnapshot, VersionIndexFile,
 };
 
 use crate::allowlist::PublisherAllowlist;
@@ -116,6 +120,7 @@ impl Storage {
             "thin-packages",
             "artifacts",
             "uploads",
+            "version-indexes",
         ] {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
@@ -137,6 +142,58 @@ impl Storage {
     /// signing command, never by the HTTP serving process.
     pub fn snapshot_path(&self) -> PathBuf {
         self.root.join("published-snapshot.json")
+    }
+
+    /// Compact form of the public snapshot, signed with the same key.
+    pub fn compact_snapshot_path(&self) -> PathBuf {
+        self.root.join("published-compact-snapshot.json")
+    }
+
+    fn version_index_path(&self, blake3_hex: &str) -> Option<PathBuf> {
+        (is_hex_digest(blake3_hex) && blake3_hex == blake3_hex.to_ascii_lowercase()).then(|| {
+            self.root
+                .join("version-indexes")
+                .join(format!("{blake3_hex}.json"))
+        })
+    }
+
+    /// The compact snapshot last published, if any. It may lag the full
+    /// snapshot; callers compare its `snapshot_hash_hex`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or decoded.
+    pub fn load_compact_snapshot(&self) -> Result<Option<CompactRegistrySnapshot>, StorageError> {
+        let path = self.compact_snapshot_path();
+        if path
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > 16_777_216)
+        {
+            return Err(StorageError::Parse(
+                "published compact snapshot exceeds 16 MiB".into(),
+            ));
+        }
+        load_json(&path, "published compact snapshot")
+    }
+
+    /// The version index named `blake3_hex`, re-checked against its name.
+    ///
+    /// # Errors
+    /// Returns an error when a stored index cannot be read or no longer
+    /// matches its name.
+    pub fn load_version_index(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = self.version_index_path(blake3_hex) else {
+            return Ok(None);
+        };
+        let Some(bytes) = read_if_exists(&path, "version index")? else {
+            return Ok(None);
+        };
+        if blake3::hash(&bytes).to_hex().as_str() != blake3_hex {
+            return Err(StorageError::Parse(
+                "version index content does not match its name".into(),
+            ));
+        }
+        Ok(Some(bytes))
     }
 
     fn snapshot_transaction_path(&self) -> PathBuf {
@@ -1390,6 +1447,76 @@ impl<'a> SnapshotLock<'a> {
             atomic_write(&self.storage.snapshot_transaction_path(), &body)?;
         }
         self.complete(snapshot)
+    }
+
+    /// Publish the compact form of the current snapshot: first the version
+    /// indexes it names, then the pointer. Index files neither it nor the
+    /// compact snapshot it replaces names are removed, so a client one
+    /// snapshot behind can still fetch the indexes it was given. The caller
+    /// signs `compact` with the key that signed the current snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `compact` is not the compact form of the current
+    /// snapshot, an index does not match its name, or a write fails.
+    pub fn publish_compact(
+        &self,
+        compact: &CompactRegistrySnapshot,
+        indexes: &[VersionIndexFile],
+    ) -> Result<(), StorageError> {
+        let current = self
+            .current()?
+            .ok_or_else(|| StorageError::Parse("no current snapshot to compact".into()))?;
+        let current_hash = registry_types::snapshot_hash(&current)
+            .map_err(|error| StorageError::Encode(error.to_string()))?;
+        if compact.sequence != current.sequence || compact.snapshot_hash_hex != current_hash {
+            return Err(StorageError::Parse(
+                "compact snapshot is not the form of the current snapshot".into(),
+            ));
+        }
+        let mut keep = BTreeSet::new();
+        for named in compact.entries.iter().map(|entry| &entry.version_index) {
+            let index = indexes
+                .iter()
+                .find(|index| index.blake3_hex == named.blake3_hex)
+                .ok_or_else(|| {
+                    StorageError::Parse("compact snapshot names a missing index".into())
+                })?;
+            if blake3::hash(&index.bytes).to_hex().as_str() != index.blake3_hex
+                || index.bytes.len() as u64 != named.size_bytes
+            {
+                return Err(StorageError::Parse(
+                    "version index does not match its name".into(),
+                ));
+            }
+            let path = self
+                .storage
+                .version_index_path(&index.blake3_hex)
+                .ok_or_else(|| StorageError::Parse("invalid version index name".into()))?;
+            if !path.exists() {
+                atomic_write(&path, &index.bytes)?;
+            }
+            keep.insert(index.blake3_hex.clone());
+        }
+        if let Ok(Some(previous)) = self.storage.load_compact_snapshot() {
+            keep.extend(
+                previous
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.version_index.blake3_hex),
+            );
+        }
+        let body =
+            serde_json::to_vec(compact).map_err(|error| StorageError::Encode(error.to_string()))?;
+        atomic_write(&self.storage.compact_snapshot_path(), &body)?;
+        let dir = self.storage.root.join("version-indexes");
+        for digest in list_digests(&dir, ".json")? {
+            if !keep.contains(&digest) {
+                remove_file(&dir.join(format!("{digest}.json")))?;
+            }
+        }
+        sync_dir(&dir);
+        Ok(())
     }
 
     /// Delete the staged packages that no entry this registry holds or may

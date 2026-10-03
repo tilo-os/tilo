@@ -142,17 +142,33 @@ pub fn entry_to_app_for_channel(
     }
     // Artifact version orders releases. A later publication timestamp must
     // not make an older semantic/CalVer artifact the offered update.
-    let newest = v
-        .entry
-        .versions
-        .iter()
-        .filter(|version| {
-            !version.tapp_url.trim().is_empty()
-                && target_supported(version)
-                && channel.accepts(&version.version)
-        })
+    let newest = installable_versions(&v.entry, channel)
         .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))?;
-    let target = &newest.target;
+    app_for_version(v, newest, registry_name)
+}
+
+/// The versions of `entry` this machine can run on `channel`.
+fn installable_versions(
+    entry: &registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+) -> impl Iterator<Item = &registry_types::RegistryVersion> {
+    entry.versions.iter().filter(move |version| {
+        !version.tapp_url.trim().is_empty()
+            && target_supported(version)
+            && channel.accepts(&version.version)
+    })
+}
+
+/// The catalogue row offering exactly `version` of a verified entry.
+fn app_for_version(
+    v: &VerifiedEntry,
+    version: &registry_types::RegistryVersion,
+    registry_name: &str,
+) -> Option<CatalogueApp> {
+    if !v.trust.is_offerable() {
+        return None;
+    }
+    let target = &version.target;
     let locale = preferred_locale();
     let display_name = if v.entry.name.resolve(&locale).is_none() {
         package_store::display_name_for_package_id(&v.entry.package_id)
@@ -172,12 +188,12 @@ pub fn entry_to_app_for_channel(
             .iter()
             .find(|c| !c.trim().is_empty())
             .cloned(),
-        version: newest.version.clone(),
+        version: version.version.clone(),
         registry: registry_name.to_string(),
-        download_url: newest.tapp_url.clone(),
-        tapp_root_hash_hex: newest.tapp_root_hash_hex.clone(),
-        tapp_size_bytes: newest.tapp_size_bytes,
-        tapp_blake3_hex: newest.tapp_blake3_hex.clone(),
+        download_url: version.tapp_url.clone(),
+        tapp_root_hash_hex: version.tapp_root_hash_hex.clone(),
+        tapp_size_bytes: version.tapp_size_bytes,
+        tapp_blake3_hex: version.tapp_blake3_hex.clone(),
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: target.runtime.clone(),
@@ -188,6 +204,30 @@ pub fn entry_to_app_for_channel(
             TrustLevel::Untrusted => "untrusted".into(),
         },
     })
+}
+
+/// Every version of `package_id` the registry named `registry_name` offers
+/// this machine on its channel, newest first. Older versions come from the
+/// entry's signed version index when the registry serves compact snapshots.
+///
+/// # Errors
+///
+/// Returns an error when no enabled registry has that name, or it cannot be
+/// read, does not list the package, or fails a proof.
+pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<CatalogueApp>, String> {
+    let registries = config::load_registries();
+    let registry = registries
+        .enabled()
+        .find(|registry| registry.name == registry_name)
+        .ok_or_else(|| format!("no enabled repository is named '{registry_name}'"))?;
+    let verified =
+        client::fetch_all_versions(registry, package_id).map_err(|error| error.to_string())?;
+    let mut versions: Vec<_> = installable_versions(&verified.entry, registry.channel).collect();
+    versions.sort_by(|a, b| tilo_app_package::version::compare(&b.version, &a.version));
+    Ok(versions
+        .into_iter()
+        .filter_map(|version| app_for_version(&verified, version, registry_name))
+        .collect())
 }
 
 fn target_supported(version: &registry_types::RegistryVersion) -> bool {
@@ -495,7 +535,7 @@ mod tests {
         };
         registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
         client::classify_snapshot(
-            &snapshot,
+            &registry_types::CatalogueSnapshot::Full(snapshot),
             &hex::encode(owner.verifying_key().to_bytes()),
             15,
         )
@@ -503,6 +543,7 @@ mod tests {
             VerifiedEntry {
                 entry: e,
                 trust: TrustLevel::Untrusted,
+                version_index: None,
             },
             |mut entries| entries.remove(0),
         )
