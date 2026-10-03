@@ -78,10 +78,11 @@ impl DetachedContent {
         let mut taffy = taffy::TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         let node = content.build_layout(&mut taffy, theme, &mut nodes);
-        let bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
         // SAFETY: `nodes` describes the tree just built from `content`, which
         // the caller holds exclusively for the whole call; no pointer escapes.
         let _ = unsafe {
+            bindings.rebuild(content, &taffy, node, &nodes);
             crate::widget::compute_widget_layout(
                 &mut taffy,
                 node,

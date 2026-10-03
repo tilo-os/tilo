@@ -1079,10 +1079,6 @@ impl Widget for PresentationRoots<'_> {
     }
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "fixed View command payloads contain only serializable Rust values"
-)]
 /// The test id of [`history_button`], by which the host finds it in the
 /// app's tree.
 pub(crate) const HISTORY_BUTTON_ID: &str = "history-button";
@@ -1090,6 +1086,11 @@ pub(crate) const HISTORY_BUTTON_ID: &str = "history-button";
 /// The History button an app places in its own toolbar. It opens History
 /// exactly as the window's History button does, and while the app shows it
 /// the window draws no separate History bar above the app.
+///
+/// # Panics
+///
+/// Never: the History action is a fixed unit operation whose binding always
+/// serializes.
 #[must_use]
 #[expect(
     clippy::expect_used,
@@ -1132,6 +1133,10 @@ pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar:
     );
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixed View command payloads contain only serializable Rust values"
+)]
 fn operation(id: &str, label: &str, command: &HistoryCommand) -> ActionSpec {
     ActionSpec::operation(
         id,

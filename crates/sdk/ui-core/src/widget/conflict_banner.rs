@@ -356,7 +356,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                ("Dismiss", crate::widget::ButtonStyle::Ghost),
+                ("Dismiss", crate::widget::ButtonStyle::Neutral),
                 self.dismiss_hovered,
             );
         }

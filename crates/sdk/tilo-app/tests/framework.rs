@@ -379,8 +379,12 @@ fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
     );
     let (fill, _, _) = face.colors(&light);
     let expected = fill.to_rgba8();
-    let row = (y + h / 2.0).round() as usize;
-    let col = (x + 4.0).round() as usize;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are small non-negative pixel positions in the test window"
+    )]
+    let (row, col) = ((y + h / 2.0).round() as usize, (x + 4.0).round() as usize);
     let at = (row * width as usize + col) * 4;
     let probe = &rgba[at..at + 4];
     for (channel, (got, want)) in probe

@@ -313,9 +313,13 @@ impl<C: Widget> Popover<C> {
             }
             (w, options.items.len().max(1) as f64 * m.row)
         } else {
-            self.measure_content(tr, theme)
+            // Layout rounds the measured size to whole pixels, so text measured
+            // at its max-content width can come back a fraction short and wrap
+            // when laid out in exactly that width: give it the next pixel.
+            let (w, h) = self.measure_content(tr, theme);
+            (w + 1.0, h)
         };
-        let (w, h) = (body_w + pad * 2.0, body_h + pad * 2.0);
+        let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
         let gap = f64::from(theme.tokens.spacing.s1);
         let preferred = self.position_on(self.side, w, h, gap);
         let side = if fits(viewport, preferred, self.side) {
