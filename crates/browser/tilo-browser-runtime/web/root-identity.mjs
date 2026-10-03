@@ -384,7 +384,8 @@ async function pageRuntime() {
  * Certify another device with the unlocked root. `role` `node` (default): a
  * native node that hosts and governs the person's workspaces (relays, pins,
  * reads and owns them; admits no devices; one year). `browser`: a member
- * for 30 days. `devicePublicKey` is the device's Ed25519 key (hex or
+ * for 30 days. `session`: the session beside a node that runs the person's
+ * apps and agents, a member for a year. `devicePublicKey` is the device's Ed25519 key (hex or
  * bytes), delivered out of band; never the root's own. Takes the key alone
  * or `{devicePublicKey, identity?, runtime?, label?, role?, encoding?}`;
  * `identity` defaults to the current one, `runtime` to the page host's.
@@ -409,20 +410,31 @@ export async function certifyDevice(options) {
 /**
  * Hand a node waiting for its certificate (`tilo-relay run
  * --install-token-file`) the certificate `certifyDevice` issued for it, at
- * its HTTPS `origin`, with the install token it was provisioned with.
- * Resolves to `{device_public_key, user_public_key}`; the node then starts
- * serving as a host of this identity on the same origin.
+ * its HTTPS `origin`, with the install token it was provisioned with, and
+ * with it `sessionCertificate`, the one issued for the session beside it
+ * (see `nodeInstallInfo`). Resolves to `{device_public_key,
+ * user_public_key}`; the node then starts serving as a host of this
+ * identity on the same origin.
  */
-export async function installNodeCertificate({origin, certificate, installToken, fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+export async function installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
   if (!origin || !certificate || !installToken) throw new TypeError('origin, certificate and installToken are required');
-  // JSON, or the canonical encoding as base64 (what certifyDevice returns).
-  const json = typeof certificate !== 'string' || certificate.trimStart().startsWith('{');
+  let body, json;
+  if (sessionCertificate) {
+    // Spliced as text: a certificate's nanosecond times exceed what a
+    // JavaScript number holds exactly, and its signature covers them.
+    body = `{"certificate":${certificateJson(certificate)},"session_certificate":${certificateJson(sessionCertificate)}}`;
+    json = true;
+  } else {
+    // JSON, or the canonical encoding as base64 (what certifyDevice returns).
+    json = typeof certificate !== 'string' || certificate.trimStart().startsWith('{');
+    body = json
+      ? (typeof certificate === 'string' ? certificate : JSON.stringify(certificate))
+      : unbase64url(certificate.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+  }
   const response = await fetcher(new URL('/peer/v1/install', origin).href, {
     method: 'POST',
     headers: {'content-type': json ? 'application/json' : 'application/octet-stream', 'x-tilo-install-token': installToken},
-    body: json
-      ? (typeof certificate === 'string' ? certificate : JSON.stringify(certificate))
-      : unbase64url(certificate.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')),
+    body,
     credentials: 'omit',
   });
   const text = await response.text();
@@ -430,4 +442,59 @@ export async function installNodeCertificate({origin, certificate, installToken,
     throw new IdentityError(response.status === 403 ? 'install-token-refused' : 'install-refused', text || `node answered ${response.status}`);
   }
   return JSON.parse(text);
+}
+
+/** A certificate's JSON text, from that text or an object. */
+function certificateJson(certificate) {
+  if (typeof certificate !== 'string') return JSON.stringify(certificate);
+  if (!certificate.trimStart().startsWith('{')) throw new TypeError('both certificates go as JSON (certifyDevice with encoding: "json")');
+  JSON.parse(certificate);
+  return certificate.trim();
+}
+
+/**
+ * Ask a node waiting for its certificate at `origin`, with its install
+ * token, what it runs: resolves to `{sessionPublicKey}`, the device key of
+ * the session beside it that runs the person's apps and agents (or `null`
+ * when it runs none). The node vouches for that key with its own, which
+ * must be `devicePublicKey` (hex), the key the page got out of band; the
+ * answer is refused otherwise.
+ */
+export async function nodeInstallInfo({origin, devicePublicKey, installToken, crypto, fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+  if (!origin || !devicePublicKey || !installToken) throw new TypeError('origin, devicePublicKey and installToken are required');
+  const env = environment({crypto});
+  const response = await fetcher(new URL('/peer/v1/install', origin).href, {
+    method: 'GET',
+    headers: {'x-tilo-install-token': installToken},
+    credentials: 'omit',
+  });
+  const text = await response.text();
+  if (response.status !== 200) {
+    throw new IdentityError(response.status === 403 ? 'install-token-refused' : 'install-refused', text || `node answered ${response.status}`);
+  }
+  const info = JSON.parse(text);
+  const node = devicePublicKey.toLowerCase();
+  if (info?.device_public_key !== node) throw new IdentityError('install-refused', 'the node at this origin has another key');
+  if (!info.session) return {sessionPublicKey: null};
+  const session = unhex(info.session.device_public_key);
+  const message = new Uint8Array([...new TextEncoder().encode('tilo node session v1\0'), ...unhex(node), ...session]);
+  const key = await env.subtle.importKey('raw', unhex(node), {name: 'Ed25519'}, false, ['verify']);
+  if (session.length !== 32 || !await env.subtle.verify({name: 'Ed25519'}, key, unhex(info.session.signature), message)) {
+    throw new IdentityError('install-refused', 'the node did not vouch for its session');
+  }
+  return {sessionPublicKey: hex(session)};
+}
+
+/**
+ * Certify the node waiting at `origin` (its key `devicePublicKey`, got out
+ * of band) and the session beside it, and install both with the node's
+ * `installToken`. Takes `identity`, `label` and `runtime` as `certifyDevice`
+ * does. Resolves as `installNodeCertificate`.
+ */
+export async function installNode({origin, devicePublicKey, installToken, identity, label = 'Tilo node', runtime, fetch}) {
+  const {sessionPublicKey} = await nodeInstallInfo({origin, devicePublicKey, installToken, fetch});
+  const certify = (key, role, name) => certifyDevice({devicePublicKey: key, identity, runtime, label: name, role, encoding: 'json'});
+  const certificate = await certify(devicePublicKey, 'node', label);
+  const sessionCertificate = sessionPublicKey ? await certify(sessionPublicKey, 'session', `Apps on ${label}`) : undefined;
+  return installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch});
 }

@@ -10,15 +10,24 @@
 //! not admit devices; it is then written as a joined device's
 //! ([`tilo_user_identity::install_device_cert`]) and [`await_certificate`]
 //! returns, so the caller starts the relay on the same address.
+//!
+//! A node runs a session beside it ([`SessionDevice`]): the shell that runs
+//! the person's apps and agents, with a device key of its own. `GET` on the
+//! route names that key, signed by this device's key, and the page certifies
+//! it with the node's, as one of the person's devices: never a host, never
+//! one that admits devices. Its certificate is written to the session's
+//! file for the session to join with.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ed25519_dalek::Signer as _;
 use hyper::{Method, Request, Response, StatusCode, header};
 use tilo_relay_protocol::web::{
-    API_PREFIX, INSTALL_ROUTE, INSTALL_TOKEN_HEADER, Installed, MAX_REQUEST_BYTES,
+    API_PREFIX, INSTALL_ROUTE, INSTALL_TOKEN_HEADER, InstallCertificates, InstallInfo, Installed,
+    MAX_REQUEST_BYTES, NodeSession, node_session_message,
 };
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 use tokio::sync::{mpsc, watch};
@@ -26,8 +35,21 @@ use tokio::sync::{mpsc, watch};
 use super::{Body, WebConfig, body, reply, status, tls};
 use crate::daemon::RelayError;
 
+/// The session beside a node, certified at install with it.
+#[derive(Clone, Debug)]
+pub struct SessionDevice {
+    /// Its device key.
+    pub public_key: [u8; 32],
+    /// Where its certificate is written, in its canonical encoding.
+    pub cert_out: std::path::PathBuf,
+}
+
 struct Waiting {
     paths: IdentityPaths,
+    /// This device's key.
+    device: [u8; 32],
+    /// The session beside it, with this device's signature vouching for it.
+    session: Option<(SessionDevice, [u8; 64])>,
     token: Vec<u8>,
     allowed_origins: Vec<String>,
     installed: mpsc::Sender<DeviceCert>,
@@ -62,7 +84,30 @@ impl InstallListener {
     /// shorter than 16 characters, or when the certificate cannot be loaded
     /// or an address cannot be bound.
     pub fn bind(config: &WebConfig, paths: IdentityPaths, token: &str) -> Result<Self, RelayError> {
+        Self::bind_with_session(config, paths, token, None)
+    }
+
+    /// [`Self::bind`] for a node with `session` beside it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::bind`], and when the device key cannot be read.
+    pub fn bind_with_session(
+        config: &WebConfig,
+        paths: IdentityPaths,
+        token: &str,
+        session: Option<SessionDevice>,
+    ) -> Result<Self, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("install listener: {message}"));
+        let key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            .map_err(|error| failed(format!("device key: {error}")))?;
+        let device = key.verifying_key().to_bytes();
+        let session = session.map(|session| {
+            let signature = key
+                .sign(&node_session_message(&device, &session.public_key))
+                .to_bytes();
+            (session, signature)
+        });
         if token.trim().len() < 16 {
             return Err(failed(
                 "the install token must have at least 16 characters".into(),
@@ -87,6 +132,8 @@ impl InstallListener {
         let (close, closing) = watch::channel(false);
         let waiting = Arc::new(Waiting {
             paths,
+            device,
+            session,
             token: token.trim().as_bytes().to_vec(),
             allowed_origins: config.allowed_origins.clone(),
             installed,
@@ -148,8 +195,9 @@ pub async fn await_certificate(
     config: &WebConfig,
     paths: IdentityPaths,
     token: &str,
+    session: Option<SessionDevice>,
 ) -> Result<DeviceCert, RelayError> {
-    InstallListener::bind(config, paths, token)?
+    InstallListener::bind_with_session(config, paths, token, session)?
         .installed()
         .await
 }
@@ -246,13 +294,15 @@ async fn handle(waiting: &Waiting, request: Request<hyper::body::Incoming>) -> R
     let origin = request.headers().get(header::ORIGIN).cloned();
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())
-    } else if request.method() != Method::POST {
-        status(StatusCode::METHOD_NOT_ALLOWED, "POST only")
     } else if request.uri().path().strip_prefix(API_PREFIX) != Some(INSTALL_ROUTE) {
         status(
             StatusCode::SERVICE_UNAVAILABLE,
             "this host is waiting for its certificate",
         )
+    } else if request.method() == Method::GET {
+        info(waiting, &request)
+    } else if request.method() != Method::POST {
+        status(StatusCode::METHOD_NOT_ALLOWED, "GET or POST only")
     } else {
         install(waiting, request)
             .await
@@ -277,26 +327,103 @@ fn token_matches(token: &[u8], presented: &[u8]) -> bool {
             == 0
 }
 
-async fn install(
-    waiting: &Waiting,
-    request: Request<hyper::body::Incoming>,
-) -> Result<Response<Body>, Response<Body>> {
+fn authorized<B>(waiting: &Waiting, request: &Request<B>) -> bool {
     let presented = request
         .headers()
         .get(INSTALL_TOKEN_HEADER)
         .map(|value| value.as_bytes().to_vec())
         .unwrap_or_default();
-    if !token_matches(&waiting.token, &presented) {
-        return Err(status(StatusCode::FORBIDDEN, "wrong install token"));
+    token_matches(&waiting.token, &presented)
+}
+
+fn wrong_token() -> Response<Body> {
+    status(StatusCode::FORBIDDEN, "wrong install token")
+}
+
+fn json(value: &impl serde::Serialize) -> Response<Body> {
+    let mut response = reply(
+        StatusCode::OK,
+        serde_json::to_vec(value).unwrap_or_default(),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+/// `GET`: this device's key and the session's, vouched for.
+fn info<B>(waiting: &Waiting, request: &Request<B>) -> Response<Body> {
+    if !authorized(waiting, request) {
+        return wrong_token();
+    }
+    json(&InstallInfo {
+        device_public_key: hex::encode(waiting.device),
+        session: waiting
+            .session
+            .as_ref()
+            .map(|(session, signature)| NodeSession {
+                device_public_key: hex::encode(session.public_key),
+                signature: hex::encode(signature),
+            }),
+    })
+}
+
+/// The session's certificate in `offered`, when it may run beside the node
+/// `node` certifies: for the session's key, by the same root, verifying
+/// now, and neither a host nor a device that admits others.
+fn session_certificate(
+    waiting: &Waiting,
+    node: &DeviceCert,
+    offered: Option<DeviceCert>,
+) -> Result<Option<(DeviceCert, std::path::PathBuf)>, String> {
+    let (Some((session, _)), Some(cert)) = (&waiting.session, offered) else {
+        return Ok(None);
+    };
+    if cert.device_public_key != session.public_key {
+        return Err("the session certificate names another device".into());
+    }
+    if cert.user_public_key != node.user_public_key {
+        return Err("the session certificate is from another root".into());
+    }
+    if cert.capabilities.can_act_as_host || cert.capabilities.can_admit_devices {
+        return Err("the session certificate must not host or admit devices".into());
+    }
+    tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())
+        .map_err(|error| error.to_string())?;
+    Ok(Some((cert, session.cert_out.clone())))
+}
+
+async fn install(
+    waiting: &Waiting,
+    request: Request<hyper::body::Incoming>,
+) -> Result<Response<Body>, Response<Body>> {
+    if !authorized(waiting, &request) {
+        return Err(wrong_token());
     }
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
-    // JSON as a page's root issues it, or its canonical encoding.
-    let cert: Option<DeviceCert> = if bytes.first() == Some(&b'{') {
-        serde_json::from_slice(&bytes).ok()
+    // JSON as a page's root issues it, both certificates of a node and its
+    // session, or the canonical encoding.
+    let certs: Option<InstallCertificates> = if bytes.first() == Some(&b'{') {
+        serde_json::from_slice::<DeviceCert>(&bytes)
+            .map(|certificate| InstallCertificates {
+                certificate,
+                session_certificate: None,
+            })
+            .or_else(|_| serde_json::from_slice(&bytes))
+            .ok()
     } else {
-        tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok()
+        tilo_user_identity::canonical::from_canonical_bytes(&bytes)
+            .ok()
+            .map(|certificate| InstallCertificates {
+                certificate,
+                session_certificate: None,
+            })
     };
-    let cert = cert.ok_or_else(|| {
+    let InstallCertificates {
+        certificate: cert,
+        session_certificate: offered,
+    } = certs.ok_or_else(|| {
         status(
             StatusCode::BAD_REQUEST,
             "expected a DeviceCert as JSON or canonical bytes",
@@ -308,10 +435,16 @@ async fn install(
             "the certificate does not let this device host",
         ));
     }
+    let session = session_certificate(waiting, &cert, offered)
+        .map_err(|reason| status(StatusCode::BAD_REQUEST, &reason))?;
     let paths = waiting.paths.clone();
     let written = cert.clone();
     tokio::task::spawn_blocking(move || {
-        tilo_user_identity::install_device_cert(&paths, &written, tilo_clock::unix_now_ns())
+        tilo_user_identity::install_device_cert(&paths, &written, tilo_clock::unix_now_ns())?;
+        if let Some((session, path)) = session {
+            tilo_user_identity::persist::write_device_cert(&path, &session)?;
+        }
+        Ok::<_, tilo_user_identity::persist::PersistError>(())
     })
     .await
     .map_err(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "install failed"))?
@@ -321,15 +454,7 @@ async fn install(
         user_public_key: hex::encode(cert.user_public_key),
     };
     let _ = waiting.installed.try_send(cert);
-    let mut response = reply(
-        StatusCode::OK,
-        serde_json::to_vec(&answer).unwrap_or_default(),
-    );
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        header::HeaderValue::from_static("application/json"),
-    );
-    Ok(response)
+    Ok(json(&answer))
 }
 
 #[cfg(test)]
@@ -521,6 +646,97 @@ mod tests {
         assert!(
             tokio::net::TcpStream::connect(addr).await.is_err(),
             "stopped serving"
+        );
+    }
+
+    /// A node with a session beside it names the session's key, vouched for
+    /// by its own, and takes the session's certificate with its own: one of
+    /// the same person's devices, never a host. The session's certificate
+    /// is written for the session to join with.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_node_takes_its_sessions_certificate_with_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path().join("identity"));
+        let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
+        let own = device.verifying_key().to_bytes();
+        let session = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
+        let cert_out = dir.path().join("session/delivered.cert");
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let listener = InstallListener::bind_with_session(
+            &config(dir.path()),
+            paths.clone(),
+            TOKEN,
+            Some(SessionDevice {
+                public_key: session,
+                cert_out: cert_out.clone(),
+            }),
+        )
+        .unwrap();
+        let addr = listener.plain_addr.unwrap();
+        let token = format!("{INSTALL_TOKEN_HEADER}: {TOKEN}\r\n");
+
+        let reply = request(addr, "GET", "/peer/v1/install", "", "").await;
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        let reply = request(addr, "GET", "/peer/v1/install", &token, "").await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        let body = &reply[reply.find('{').unwrap()..=reply.rfind('}').unwrap()];
+        let info: InstallInfo = serde_json::from_str(body).unwrap();
+        assert_eq!(info.device_public_key, hex::encode(own));
+        let vouched = info.session.unwrap();
+        assert_eq!(vouched.device_public_key, hex::encode(session));
+        let signature: [u8; 64] = hex::decode(vouched.signature).unwrap().try_into().unwrap();
+        device
+            .verifying_key()
+            .verify_strict(
+                &node_session_message(&own, &session),
+                &ed25519_dalek::Signature::from_bytes(&signature),
+            )
+            .unwrap();
+
+        let node = |root: &SigningKey| {
+            serde_json::from_str::<DeviceCert>(&cert(
+                root,
+                own,
+                tilo_user_identity::cloud_enrollment::host_capabilities(),
+            ))
+            .unwrap()
+        };
+        let member = |root: &SigningKey, device: [u8; 32], capabilities| {
+            serde_json::from_str::<DeviceCert>(&cert(root, device, capabilities)).unwrap()
+        };
+        let both = |offered| {
+            serde_json::to_string(&InstallCertificates {
+                certificate: node(&root),
+                session_certificate: Some(offered),
+            })
+            .unwrap()
+        };
+        let stranger = SigningKey::from_bytes(&[8; 32]);
+        for refused in [
+            member(&root, [9; 32], DeviceCapabilities::member()),
+            member(&stranger, session, DeviceCapabilities::member()),
+            member(&root, session, DeviceCapabilities::primary()),
+            member(&root, session, DeviceCapabilities::host()),
+        ] {
+            let reply = request(addr, "POST", "/peer/v1/install", &token, both(refused)).await;
+            assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+        }
+        assert!(!paths.device_cert.exists() && !cert_out.exists());
+
+        let issued = member(&root, session, DeviceCapabilities::member());
+        let reply = request(
+            addr,
+            "POST",
+            "/peer/v1/install",
+            &token,
+            both(issued.clone()),
+        )
+        .await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert_eq!(listener.installed().await.unwrap().device_public_key, own);
+        assert_eq!(
+            tilo_user_identity::persist::read_device_cert(&cert_out).unwrap(),
+            issued
         );
     }
 }
