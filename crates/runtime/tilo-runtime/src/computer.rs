@@ -365,6 +365,7 @@ impl Turn<'_> {
                     self.chord(&chord, None)?;
                 }
             }
+            "key_down" | "key_up" => self.hold(action)?,
             "hold_key" => {
                 let combo = action
                     .text
@@ -548,6 +549,33 @@ impl Turn<'_> {
             let _ = self.send(&json!({"op":"key_up","key":key}));
         }
         result
+    }
+
+    /// Press (`key_down`) or let go of (`key_up`) a chord, held across the
+    /// steps between: modifiers first down, last up.
+    fn hold(&self, action: &Action) -> Result<(), String> {
+        let combo = action
+            .text
+            .as_deref()
+            .or(action.key.as_deref())
+            .ok_or_else(|| format!("{} needs text", action.action))?;
+        let chord = Chord::parse(combo)?;
+        let keys: Vec<&str> = chord
+            .modifiers
+            .iter()
+            .copied()
+            .chain(chord.key.as_deref())
+            .collect();
+        if action.action == "key_down" {
+            for key in keys {
+                self.send(&json!({"op":"key_down","key":key}))?;
+            }
+        } else {
+            for key in keys.into_iter().rev() {
+                self.send(&json!({"op":"key_up","key":key}))?;
+            }
+        }
+        Ok(())
     }
 
     fn chord(&self, chord: &Chord, hold: Option<Duration>) -> Result<(), String> {
@@ -869,7 +897,7 @@ pub fn tool_definitions() -> Vec<Value> {
     let action = json!({
         "type":"object",
         "properties":{
-            "action":{"type":"string","enum":["screenshot","left_click","right_click","middle_click","double_click","triple_click","mouse_move","left_click_drag","left_mouse_down","left_mouse_up","scroll","type","key","hold_key","wait","zoom","cursor_position"]},
+            "action":{"type":"string","enum":["screenshot","left_click","right_click","middle_click","double_click","triple_click","mouse_move","left_click_drag","left_mouse_down","left_mouse_up","scroll","type","key","key_down","key_up","hold_key","wait","zoom","cursor_position"]},
             "coordinate":point,
             "start_coordinate":point,
             "text":{"type":"string"},
@@ -890,7 +918,7 @@ pub fn tool_definitions() -> Vec<Value> {
     });
     let effect = json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true});
     vec![
-        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns a screenshot once the window drew its answer. For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"","inputSchema":action,"annotations":effect}),
+        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns a screenshot once the window drew its answer. For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"; key_down/key_up hold one across the next steps, as for a space-drag","inputSchema":action,"annotations":effect}),
         // Each step takes the `computer` tool's arguments; restating that
         // schema here would double what every model turn reads.
         json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise. app_id applies to every step naming none. A stroke along a path: left_mouse_down, mouse_move steps, left_mouse_up","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH},"app_id":{"type":"string"}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
