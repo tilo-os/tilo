@@ -55,50 +55,58 @@ impl BarItem {
 /// What a header toolbar offers: its commands in groups.
 pub(crate) type BarSpec = Vec<Vec<BarItem>>;
 
-/// The message list's commands.
+/// What can be done to the selected messages, in groups: triage, then
+/// read state.
+fn bulk_actions(state: &MailState) -> BarSpec {
+    let ids = state.selected_bulk_ids();
+    let all_trash = !ids.is_empty()
+        && ids.iter().all(|id| {
+            state
+                .mailbox
+                .get(*id)
+                .is_some_and(|message| message.folder == Folder::Trash)
+        });
+    let delete = if all_trash {
+        BulkAction::Purge
+    } else {
+        BulkAction::Delete
+    };
+    vec![
+        vec![
+            BarItem::button(
+                BulkAction::Archive.label(),
+                Command::Bulk(BulkAction::Archive),
+            ),
+            BarItem::button(delete.label(), Command::Bulk(delete)),
+        ],
+        vec![
+            BarItem::button(
+                BulkAction::MarkRead.label(),
+                Command::Bulk(BulkAction::MarkRead),
+            ),
+            BarItem::button(
+                BulkAction::MarkUnread.label(),
+                Command::Bulk(BulkAction::MarkUnread),
+            ),
+        ],
+    ]
+}
+
+/// The message list's commands. While several messages are selected the
+/// list keeps choosing them; what to do with them stands over the message
+/// column, or here when that column is not beside the list.
 pub(crate) fn list_bar(state: &MailState) -> BarSpec {
     if state.bulk_selecting {
-        let ids = state.selected_bulk_ids();
-        let all_trash = !ids.is_empty()
-            && ids.iter().all(|id| {
-                state
-                    .mailbox
-                    .get(*id)
-                    .is_some_and(|message| message.folder == Folder::Trash)
-            });
-        let delete = if all_trash {
-            BarItem::icon(
-                Icon::Trash2,
-                BulkAction::Purge.label(),
-                Command::Bulk(BulkAction::Purge),
-            )
-        } else {
-            BarItem::icon(
-                Icon::Trash2,
-                BulkAction::Delete.label(),
-                Command::Bulk(BulkAction::Delete),
-            )
-        };
-        return vec![
-            vec![
-                BarItem::icon(
-                    Icon::Archive,
-                    BulkAction::Archive.label(),
-                    Command::Bulk(BulkAction::Archive),
-                ),
-                delete,
-                BarItem::button(
-                    BulkAction::MarkRead.label(),
-                    Command::Bulk(BulkAction::MarkRead),
-                ),
-                BarItem::button(
-                    BulkAction::MarkUnread.label(),
-                    Command::Bulk(BulkAction::MarkUnread),
-                ),
-                BarItem::button("Select all", Command::SelectAllVisible),
-            ],
-            vec![BarItem::button("Done", Command::ToggleBulk)],
+        let choosing = vec![
+            BarItem::button("Select all", Command::SelectAllVisible),
+            BarItem::button("Done", Command::ToggleBulk),
         ];
+        if !state.narrow {
+            return vec![choosing];
+        }
+        let mut groups = bulk_actions(state);
+        groups.push(choosing);
+        return groups;
     }
     vec![vec![
         BarItem::icon(
@@ -112,11 +120,15 @@ pub(crate) fn list_bar(state: &MailState) -> BarSpec {
     ]]
 }
 
-/// The open message's commands; none while nothing is open or several
-/// messages are being selected.
+/// The open message's commands, the selection's while several messages are
+/// selected, and none while nothing is open.
 pub(crate) fn reader_bar(state: &MailState) -> BarSpec {
     if state.bulk_selecting {
-        return Vec::new();
+        return if state.narrow {
+            Vec::new()
+        } else {
+            bulk_actions(state)
+        };
     }
     let Some(message) = state.selected.and_then(|id| state.mailbox.get(id)) else {
         return Vec::new();
@@ -287,9 +299,15 @@ mod tests {
         assert_eq!(star.toggle, Some(starred));
 
         state.set_bulk_selecting(true);
-        assert!(reader_bar(&state).is_empty(), "selecting pauses the reader");
-        let bulk = list_bar(&state);
-        assert!(labels(&bulk).contains(&"Move to Trash"));
-        assert!(labels(&bulk).contains(&"Done"));
+        assert_eq!(labels(&list_bar(&state)), ["Select all", "Done"]);
+        assert!(
+            labels(&reader_bar(&state)).contains(&"Move to Trash"),
+            "the selection's actions stand over the message column"
+        );
+        state.narrow = true;
+        assert!(reader_bar(&state).is_empty());
+        let narrow = list_bar(&state);
+        assert!(labels(&narrow).contains(&"Move to Trash"));
+        assert!(labels(&narrow).contains(&"Done"));
     }
 }
