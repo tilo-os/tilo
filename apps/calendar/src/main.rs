@@ -2,9 +2,13 @@
 
 //! Calendar — thin binary entry point. All logic lives in the library.
 //!
-//! Modes (all through the standard [`ui::launch`] runner):
-//!   * default — run the live winit event loop via `ui::App` (loads the
-//!     user's persisted calendar; no sample content).
+//! Modes:
+//!   * default — the live window: [`calendar::CalendarShell`] on the
+//!     framework, over the user's calendar record (no sample content).
+//!
+//! The modes below, and a launch with an `.ics` file to import, run through
+//! the standard [`ui::launch`] runner:
+//!   * `FILE.ics` — open the calendar and offer to import the file.
 //!   * `--shots PATH [--scenario NAME]` — render one offscreen frame of the
 //!     hermetic demo build to a PNG and exit. `--scenario` names one of
 //!     [`SHOT_SCENARIOS`] (an unknown name lists them); the legacy shot flags
@@ -142,9 +146,10 @@ const TASK_PICKERS: &[&str] = &["due", "priority", "project"];
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-/// Entry point: the standard lifecycle owns argument parsing, mode validation
-/// and the live/headless paths; the screenshot pipeline below only supplies
-/// the fixture and the two-pass render.
+/// Entry point: the live window runs on the framework; captures, audits,
+/// headless drives and a file to import go through the standard lifecycle,
+/// which owns their argument parsing and mode validation; the screenshot
+/// pipeline below only supplies the fixture and the two-pass render.
 ///
 /// # Errors
 ///
@@ -153,10 +158,35 @@ extern crate runtime_dylib;
 /// PNG), or when the arguments are invalid — including a malformed shot
 /// option, which is never silently ignored.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // This spec imports an older calendar file once. The framework shell
-    // opens an empty record and would leave that history behind.
-    ui::launch::run(&launch_spec())?;
+    if wants_standalone(std::env::args().skip(1)) {
+        ui::launch::run(&launch_spec())?;
+    } else {
+        ui::framework::run::<calendar::CalendarShell>();
+    }
     Ok(())
+}
+
+/// Whether `args` ask for a mode the framework window does not run: a
+/// capture, an audit, a headless drive, or a file to import.
+fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
+    const MODES: &[&str] = &[
+        "--shots",
+        "--responsive-matrix",
+        "--native-audit",
+        "--headless-drive",
+    ];
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        if arg == "--data-dir" {
+            let _ = args.next();
+            continue;
+        }
+        let mode = arg.split_once('=').map_or(arg.as_str(), |(mode, _)| mode);
+        if MODES.contains(&mode) || !arg.starts_with('-') {
+            return true;
+        }
+    }
+    false
 }
 
 fn launch_spec() -> LaunchSpec {
@@ -551,6 +581,19 @@ fn render_shot_to_png(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_captures_audits_headless_drives_and_files_leave_the_framework_window() {
+        let standalone = |args: &[&str]| wants_standalone(args.iter().map(|&arg| arg.to_owned()));
+        assert!(!standalone(&[]), "the live window runs on the framework");
+        assert!(!standalone(&["--data-dir", "profile"]));
+        assert!(standalone(&["--shots", "out.png", "--scenario", "week"]));
+        assert!(standalone(&["--responsive-matrix=out"]));
+        assert!(standalone(&["--native-audit"]));
+        assert!(standalone(&["--headless-drive", "{}"]));
+        assert!(standalone(&["invite.ics"]));
+        assert!(standalone(&["--data-dir", "profile", "invite.ics"]));
+    }
 
     #[test]
     fn shot_scenarios_and_popover_flags_resolve_to_their_states() {
