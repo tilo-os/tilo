@@ -76,6 +76,8 @@ pub(super) struct InputRuntime {
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
     pub(super) tooltip_host: crate::widget::TooltipHost,
+    /// Pen samples on their way to the pointer events they describe.
+    pub(super) pen: crate::pen::PenInput,
 }
 
 impl InputRuntime {
@@ -87,6 +89,7 @@ impl InputRuntime {
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
+            pen: crate::pen::PenInput::default(),
         }
     }
 }
