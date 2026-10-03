@@ -195,6 +195,13 @@ inputs = [
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
+name = "no-cisco-openh264"
+# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
+# finished-rootfs gate, and the CI/developer environments that alone may carry it.
+inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
 name = "dev-feature-targets"
 # The dev features os/components.toml names, against the packages' manifests:
 # `pkg/feature` must reach the package, not a dependency of it named pkg.
