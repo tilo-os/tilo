@@ -54,7 +54,6 @@ const RECIPES = {
   'so.tilo.ebook': {files: [['epub']], steps: [{press: 'Open book', wait: 3000}], expect: 'The Tide-House'},
   'so.tilo.feeds': {network: true, steps: [{press: 'Add subscription', wait: 1000}, {type: 'https://xkcd.com/atom.xml'}, {key: 'Enter', wait: 8000}], expect: 'xkcd'},
   'so.tilo.hex-editor': {files: [['bin']], steps: [{press: 'Open file', wait: 1500}], expect: 'persist-probe.bin; 22 bytes'},
-  'so.tilo.image-editor': {files: [['png']], steps: [{at: [356, 462], wait: 3000}], absent: 'Open image \n'},
   'so.tilo.maps': {network: true, steps: [{press: 'Search places'}, {type: 'Berlin', wait: 3000}, {key: 'Enter', wait: 5000}], expect: 'Search again for'},
   'so.tilo.music': {steps: [{at: [207, 445], wait: 1500}, {type: 'PL{nonce}'}, {at: [779, 452], wait: 1500}], expect: '{nonce}'},
   'so.tilo.notes': {steps: [{at: [759, 478]}, {type: '{nonce}'}], expect: '{nonce}'},

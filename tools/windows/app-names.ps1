@@ -4,7 +4,6 @@ function Get-TiloWindowsAppName {
     switch ($Application) {
         'file-explorer' { 'Files' }
         'word-processor' { 'Word Processor' }
-        'image-editor' { 'Image Editor' }
         'hex-editor' { 'Hex Editor' }
         'code-editor' { 'Code Editor' }
         'api-tester' { 'API Tester' }
