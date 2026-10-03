@@ -5,7 +5,9 @@
 //! non-extractable `WebCrypto` Ed25519 key that signs through a JavaScript
 //! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
 //! `IndexedDB` straight into this module, which keeps it only in wasm
-//! memory. Nothing here generates or holds a user root.
+//! memory. Nothing here generates or holds a user root: a page that holds
+//! one (`web/root-identity.mjs`) lends it as a signer, the same shape as
+//! custody, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) is kept in the
 //! profile's durable store when the page names a profile
@@ -361,6 +363,72 @@ pub async fn certify_device(
     })
     .await
     .map_err(js_error)?;
+    serde_json::to_string(&Certified {
+        cert: &cert,
+        host_cert: &host_cert,
+    })
+    .map_err(js_error)
+}
+
+fn device_key(text: &str) -> Result<[u8; 32], JsError> {
+    hex::decode(text)
+        .map_err(js_error)?
+        .try_into()
+        .map_err(|_| js_error("device public key must be 32 bytes"))
+}
+
+/// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
+/// `{publicKey, sign}` from `root-identity.mjs`) as `role`: `browser` (a
+/// member, 30 days) or `node` (hosts and governs the person's workspaces,
+/// admits no devices). Resolves to the certificate JSON.
+///
+/// # Errors
+///
+/// Rejects for an unknown role, the root's own key, or a failed signature.
+#[wasm_bindgen(js_name = issueDeviceCert)]
+pub async fn issue_device_cert(
+    root: JsValue,
+    device_public_key_hex: String,
+    label: String,
+    role: String,
+) -> Result<String, JsError> {
+    let role = match role.as_str() {
+        "browser" => tilo_browser_peer::IssuedRole::Browser,
+        "node" => tilo_browser_peer::IssuedRole::Node,
+        _ => return Err(js_error("role must be browser or node")),
+    };
+    let root = PageSigner::from_js(&root)?;
+    let cert = tilo_browser_peer::issue_device_cert(
+        &root,
+        device_key(&device_public_key_hex)?,
+        &label,
+        role,
+    )
+    .await
+    .map_err(js_error)?;
+    serde_json::to_string(&cert).map_err(js_error)
+}
+
+/// Certify this page's device key (`custody`) with the user root the page
+/// holds, for the host at `post`, whose certificate must be a host of that
+/// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
+///
+/// # Errors
+///
+/// Rejects when the host is unreachable or not a host of this root.
+#[wasm_bindgen(js_name = certifyWithRoot)]
+pub async fn certify_with_root(
+    post: Function,
+    root: JsValue,
+    custody: JsValue,
+    label: String,
+) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let signer = PageSigner::from_js(&custody)?;
+    let (cert, host_cert) =
+        tilo_browser_peer::certify_with_root(&PageHttp(post), &root, &signer, &label)
+            .await
+            .map_err(js_error)?;
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
