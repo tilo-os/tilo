@@ -117,13 +117,13 @@ impl CameraApp {
             if code.is_some() {
                 self.draw_detected_overlay(scene, t, tr, theme, full);
             }
-            let hint = "Point the camera at a QR code or barcode";
+            let hint = ui::i18n!("Point the camera at a QR code or barcode");
             let local = theme.on_ground(theme.tokens.colors.media.scrim);
             let mut ctx = PaintCtx::new(scene, t, tr, &local);
-            let size = ctx.measure_role(hint, TextRole::Label, None);
+            let size = ctx.measure_role(&hint, TextRole::Label, None);
             if size.width <= layout.hint.width() {
                 ctx.text_role(
-                    hint,
+                    &hint,
                     TextRole::Label,
                     theme.tokens.colors.media.ink,
                     Point::new(
@@ -189,9 +189,13 @@ impl CameraApp {
         let group = f64::from(spacing.s6);
         let top = full.y0 + m.edge + m.bar() + m.gap;
         let bottom = full.y1 - m.edge - m.bar() - group;
-        let wide = full.width() >= f64::from(metrics.compact_breakpoint + metrics.inspector_width);
+        // The side column holds text, so it and the width that fits it grow
+        // with the text.
+        let growth = f64::from(theme.text_growth());
+        let column = f64::from(metrics.inspector_width) * growth;
+        let wide = full.width() >= f64::from(metrics.compact_breakpoint) * growth + column;
         let side = wide.then(|| {
-            let width = f64::from(metrics.inspector_width);
+            let width = column;
             Rect::new(full.x1 - m.edge - width, top, full.x1 - m.edge, bottom)
         });
         let stage_x1 = side.map_or(full.x1, |side| side.x0 - m.edge);
@@ -592,7 +596,7 @@ impl CameraApp {
         let local = on_panel(theme);
         let entries = self.scan_history();
         let now = super::now_secs();
-        let heading = "Recent scans";
+        let heading = ui::i18n!("Recent scans");
         let heading_h = f64::from(local.text(TextRole::Subheading).line_height_px());
         let header = heading_h + 2.0 * f64::from(spacing.s3);
         // Measure the rows that fit, then size the panel to them.
@@ -631,7 +635,7 @@ impl CameraApp {
         let mut ctx = PaintCtx::new(scene, t, tr, &local);
         let inset = f64::from(spacing.s4);
         ctx.text_role(
-            heading,
+            &heading,
             TextRole::Subheading,
             local.text_primary,
             Point::new(panel.x0 + inset, panel.y0 + f64::from(spacing.s3)),
