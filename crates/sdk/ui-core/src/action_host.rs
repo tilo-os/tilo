@@ -198,16 +198,19 @@ impl ActionHost {
             ),
         };
         result?;
+        // Content from outside (fetched rows, a process's output) is nobody's
+        // undo step: it opens no bracket and is left out of the open one.
+        let step = action.change_kind().is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
-            crate::bound_dispatch::report_typed_action(doc, before, after);
+            crate::bound_dispatch::report_typed_action(doc, before, after, step);
         }
-        if self.commit_before.is_none() {
+        if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
         }
         // One outside-consequence action per bracket: a later pure CRDT edit
         // in the same event must not erase a pending compensating undo.
-        if undo_via.is_some() && self.pending_undo_via.is_none() {
+        if step && undo_via.is_some() && self.pending_undo_via.is_none() {
             self.pending_undo_via = undo_via;
             self.pending_redo_via = Some(encoded.clone());
         }
@@ -247,11 +250,12 @@ impl ActionHost {
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let envelope = queue.submit(doc, action, encoded.clone())?;
+        let step = action.change_kind().is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
-            crate::bound_dispatch::report_typed_action(doc, before, after);
+            crate::bound_dispatch::report_typed_action(doc, before, after, step);
         }
-        if self.commit_before.is_none() {
+        if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
         }
         self.last_dispatched = Some(encoded);

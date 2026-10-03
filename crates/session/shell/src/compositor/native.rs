@@ -436,11 +436,17 @@ fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
 
 /// A `wl_surface.frame` on a commit that did not change the tree, the
 /// layout, or an animation is not a present. Release it on its own.
+/// A callback asked for after this tick presented is released too: the
+/// present already went out without it, so waiting for the next one stalls
+/// the client until something unrelated changes the screen, and a client
+/// waiting on that callback draws nothing that would. Only a frame this tick
+/// still owes (one held back by the cadence or a full presenter) keeps its
+/// callbacks for that present.
 /// While locked the desktop is not shown, and the callback stays until a
 /// real lock or unlock frame, as it did before idle apps stopped driving
 /// cadence.
-fn release_idle_client_callback(locked: bool, content_changed: bool) -> bool {
-    !locked && !content_changed
+fn release_idle_client_callback(locked: bool, content_changed: bool, presented: bool) -> bool {
+    !locked && (!content_changed || presented)
 }
 
 /// Whether the next park must keep the frame deadline for a pending frame.
@@ -2528,24 +2534,12 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
     })
 }
 
-/// How long a screenshot waits for the client frame an input asked for.
-/// A render-on-demand client draws nothing until its frame callback
-/// fires, and that commit arrives after the input that requested the shot.
-const CLIENT_SNAPSHOT_SETTLE: Duration = Duration::from_millis(400);
-
-/// A screenshot whose file is written once the client commits, or once
-/// [`CLIENT_SNAPSHOT_SETTLE`] runs out with no commit.
+/// A screenshot taken after input: written once the clients in it answered
+/// that input ([`crate::compositor::client_settle`]).
 struct PendingClientSnapshot {
     path: std::path::PathBuf,
     crop: Option<vello::kurbo::Rect>,
-    /// [`foreign::client_pump_epoch`] at the input. A later commit moves it.
-    epoch: u64,
-    started: Instant,
-}
-
-/// Still waiting on the client frame that input at `input_epoch` asked for.
-fn client_snapshot_still_due(input_epoch: u64, now_epoch: u64, waited: Duration) -> bool {
-    now_epoch == input_epoch && waited < CLIENT_SNAPSHOT_SETTLE
+    settle: crate::compositor::client_settle::Settle,
 }
 
 /// Per-process state the test-control wire needs to execute
@@ -2574,11 +2568,14 @@ struct TestControlCtx {
     /// While an agent's command runs, the screen region its snapshots show:
     /// its strip's viewport.
     snapshot_crop: Option<vello::kurbo::Rect>,
-    /// Pump epoch at the last injected input that reached a client. The
-    /// next snapshot waits until a commit moves it.
-    client_frame_due: Option<u64>,
-    /// Screenshot not written yet: the client has not committed the frame
-    /// the preceding input asked for.
+    /// The window an agent's command aimed at, while it runs: its
+    /// screenshots wait for that window's client alone.
+    snapshot_window: Option<foreign::SurfaceId>,
+    /// Input was injected since the last screenshot, which waits for the
+    /// clients to answer it.
+    input_since_snapshot: bool,
+    /// Screenshot not written yet: the clients in it are still answering
+    /// the preceding input.
     pending_snapshot: Option<PendingClientSnapshot>,
 }
 
@@ -2596,7 +2593,8 @@ impl TestControlCtx {
             watch_request: None,
             agents: crate::compositor::agent_seats::AgentSeats::new(),
             snapshot_crop: None,
-            client_frame_due: None,
+            snapshot_window: None,
+            input_since_snapshot: false,
             pending_snapshot: None,
         }
     }
@@ -2611,6 +2609,9 @@ impl TestControlCtx {
     /// as a backend reports physical devices: a named touch device is
     /// attached by its first contact, and every event class counts as used.
     fn note_injected_input(&mut self, action: &PlannedAction, fb: &mut FrameBuilder) {
+        if !matches!(action, PlannedAction::Snapshot { .. }) {
+            self.input_since_snapshot = true;
+        }
         let changed = match action {
             PlannedAction::Touch { device, phase, .. } => {
                 let attached = self.input.device_added(
@@ -2949,7 +2950,6 @@ fn dispatch_synth_event(
     state: &mut Option<&mut State>,
 ) {
     if to_client(state, fb, event, ctx.modifiers) {
-        ctx.client_frame_due = Some(foreign::client_pump_epoch());
         return;
     }
     if let Some(st) = state.as_deref_mut() {
@@ -3351,7 +3351,7 @@ fn execute_planned_action(
             // returned `Ok`, and crashing on a stray bad path defeats the point of a
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
-            if !defer_client_snapshot(ctx, path, state.as_deref_mut()) {
+            if !defer_client_snapshot(ctx, fb, path, state.as_deref_mut()) {
                 let drag = snapshot_drag(state.as_deref());
                 write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
             }
@@ -3470,53 +3470,63 @@ fn snapshot_drag(
     })
 }
 
-/// Hold `path` until the client commits the frame the last input asked
-/// for. Returns whether the write was deferred. A chrome-only action, or
-/// a commit that already landed, writes immediately at the call site.
+/// Hold `path` until the clients in it answered the input injected since
+/// the last screenshot. Returns whether the write was deferred; with no
+/// input since, or no client to wait for, the call site writes at once.
 fn defer_client_snapshot(
     ctx: &mut TestControlCtx,
+    fb: &mut FrameBuilder,
     path: &std::path::Path,
     state: Option<&mut State>,
 ) -> bool {
-    let Some(epoch) = ctx.client_frame_due else {
+    let Some(state) = state else {
         return false;
     };
-    if !client_snapshot_still_due(epoch, foreign::client_pump_epoch(), Duration::ZERO) {
-        ctx.client_frame_due = None;
+    if !std::mem::take(&mut ctx.input_since_snapshot) {
         return false;
     }
-    // The client is waiting on its frame callback. Releasing it here is
-    // what lets the commit this screenshot is waiting for happen at all
-    // on a headless seat that did not paint.
-    if let Some(st) = state {
-        foreign::release_frame_throttle(st);
+    // A shot still waiting is the older one: it goes out now, as it is.
+    if let Some(pending) = ctx.pending_snapshot.take() {
+        let drag = snapshot_drag(Some(state));
+        write_snapshot_png(fb, &pending.path, drag, pending.crop);
+    }
+    let surfaces = match ctx.snapshot_window {
+        Some(window) => foreign::toplevel_surface(state, window)
+            .into_iter()
+            .collect(),
+        None => foreign::shown_toplevel_surfaces(state),
+    };
+    if surfaces.is_empty() {
+        return false;
     }
     ctx.pending_snapshot = Some(PendingClientSnapshot {
         path: path.to_path_buf(),
         crop: ctx.snapshot_crop,
-        epoch,
-        started: Instant::now(),
+        settle: crate::compositor::client_settle::Settle::begin(state, &surfaces, Instant::now()),
     });
     true
 }
 
-/// Write a deferred screenshot once its client commit has landed, or the
-/// wait has run out. A shot that is still due stays pending.
-fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, state: &State) {
-    let still_due = ctx.pending_snapshot.as_ref().is_some_and(|pending| {
-        client_snapshot_still_due(
-            pending.epoch,
-            foreign::client_pump_epoch(),
-            pending.started.elapsed(),
-        )
-    });
-    if still_due {
+/// Write a deferred screenshot once its clients have answered, or the wait
+/// has run out. A shot still waiting stays pending; pings it sends go out
+/// with the loop's next client flush.
+fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, state: &mut State) {
+    use crate::compositor::client_settle::Progress;
+    let Some(pending) = ctx.pending_snapshot.as_mut() else {
         return;
+    };
+    match pending.settle.advance(state, Instant::now()) {
+        Progress::Waiting => return,
+        Progress::Settled => {}
+        Progress::TimedOut => tracing::warn!(
+            target: "tilo::test_control",
+            limit_ms = crate::compositor::client_settle::SETTLE_LIMIT.as_millis(),
+            "screenshot after input taken while a client was still answering it"
+        ),
     }
     let Some(pending) = ctx.pending_snapshot.take() else {
         return;
     };
-    ctx.client_frame_due = None;
     let drag = snapshot_drag(Some(state));
     write_snapshot_png(fb, &pending.path, drag, pending.crop);
 }
@@ -3773,6 +3783,8 @@ struct AgentScope {
     viewport: Rect,
     /// The app id of the window the command aimed at, when it named one.
     window: Option<String>,
+    /// That window's surface.
+    surface: Option<foreign::SurfaceId>,
 }
 
 /// Where one app's window lives in the workspace tree.
@@ -4026,6 +4038,7 @@ fn seat_agent(
         strip,
         viewport,
         window: window.map(str::to_owned),
+        surface: target.as_ref().map(|target| target.surface),
     }))
 }
 
@@ -4357,6 +4370,7 @@ fn pump_test_control_conn(
                 if let Some(scope) = &scope {
                     state.client_input.set_participant(Some(scope.peer));
                     ctx.snapshot_crop = Some(scope.viewport);
+                    ctx.snapshot_window = scope.surface;
                 }
                 // A planned action that could not run replaces this command's answer.
                 // Actions execute before the reply is written; first failure wins, the rest still run.
@@ -4390,6 +4404,7 @@ fn pump_test_control_conn(
                 if let Some(scope) = &scope {
                     state.client_input.set_participant(None);
                     ctx.snapshot_crop = None;
+                    ctx.snapshot_window = None;
                     note_agent_focus(state, scope.peer);
                 }
                 // Re-run layout so the next command/paint sees rects post-mutation — a
@@ -5838,6 +5853,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     net.join_at_boot();
+    net.follow_host_rooms();
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
@@ -10804,6 +10820,10 @@ pub fn run() {
         if capture_ready {
             injected_redraw_pending = true;
         }
+        // A screenshot after input waits for the clients in it to answer
+        // the input; their answers were just dispatched, and the pings it
+        // sends go out with this flush.
+        publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &mut state);
         if let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: flush_clients error: {err}");
             break;
@@ -10824,15 +10844,11 @@ pub fn run() {
             injected_redraw_pending = true;
         }
         let client_changed = foreign::client_pump_epoch() != pump_epoch;
-        // An agent's screenshot is taken before this dispatch. If the
-        // input reached a client, the PNG waits for the commit just
-        // imported — or for the settle deadline below.
-        publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &state);
         // A frame callback that arrived without a new buffer, title, or
         // configure is not a present and not another pump. Release it here,
         // on the tick that saw the commit, so the client is not left waiting
         // on FIFO and the shell does not wake itself to do the same work again.
-        if release_idle_client_callback(session.is_locked(), content_changed)
+        if release_idle_client_callback(session.is_locked(), content_changed, should_paint)
             && !client_changed
             && configured_after_dispatch == 0
             && !capture_ready
@@ -10923,12 +10939,10 @@ pub fn run() {
                 ),
                 (
                     "snapshot-settle",
-                    test_control_ctx.pending_snapshot.as_ref().map(|pending| {
-                        pending
-                            .started
-                            .checked_add(CLIENT_SNAPSHOT_SETTLE)
-                            .unwrap_or(pending.started)
-                    }),
+                    test_control_ctx
+                        .pending_snapshot
+                        .as_ref()
+                        .map(|pending| pending.settle.deadline()),
                 ),
             ],
         );
@@ -11189,17 +11203,6 @@ mod tests {
     };
 
     #[test]
-    fn a_client_snapshot_waits_for_its_commit_then_gives_up() {
-        assert!(client_snapshot_still_due(3, 3, Duration::ZERO));
-        assert!(client_snapshot_still_due(3, 3, Duration::from_millis(399)));
-        assert!(
-            !client_snapshot_still_due(3, 4, Duration::ZERO),
-            "a commit after the input is the frame the shot should show"
-        );
-        assert!(!client_snapshot_still_due(3, 3, CLIENT_SNAPSHOT_SETTLE));
-    }
-
-    #[test]
     fn dispatched_client_requests_get_a_follow_up_tick() {
         let now = Instant::now();
         let frame = now + Duration::from_millis(8);
@@ -11236,7 +11239,7 @@ mod tests {
             "a buffer or protocol change still pumps on the next tick"
         );
         assert!(
-            release_idle_client_callback(false, false),
+            release_idle_client_callback(false, false, false),
             "an unchanged desktop releases a waiting callback without presenting"
         );
         assert!(
@@ -11251,7 +11254,7 @@ mod tests {
             "answering that callback must not schedule another shell tick"
         );
         assert!(
-            !release_idle_client_callback(false, true),
+            !release_idle_client_callback(false, true, false),
             "a real change still presents, and that present releases the callback"
         );
     }
@@ -11563,15 +11566,20 @@ mod tests {
         );
         // Phase `an_idle_frame_callback_does_not_present`.
         assert!(
-            release_idle_client_callback(false, false),
+            release_idle_client_callback(false, false, false),
             "a callback with no tree, layout, or animation change is released without a frame"
         );
         assert!(
-            !release_idle_client_callback(false, true),
-            "a real change still presents, and that present releases the callback"
+            !release_idle_client_callback(false, true, false),
+            "a change whose frame is still owed presents, and that present releases the callback"
         );
         assert!(
-            !release_idle_client_callback(true, false),
+            release_idle_client_callback(false, true, true),
+            "a callback asked for after this tick's present is released now: no later \
+             present is coming for it, and the client waiting on it draws nothing until it fires"
+        );
+        assert!(
+            !release_idle_client_callback(true, false, false),
             "a locked session does not answer hidden clients with an idle release"
         );
         // Phase `available_presenter_keeps_overdue_work_immediate`.

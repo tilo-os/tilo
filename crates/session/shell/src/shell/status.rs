@@ -525,6 +525,8 @@ mod tests {
         }
     }
 
+    // The probe observes Linux task scheduling through /proc/self/task.
+    #[cfg(target_os = "linux")]
     #[test]
     fn idle_status_thread_sleeps_between_reads() {
         let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();

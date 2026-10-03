@@ -5711,6 +5711,9 @@ mod tests {
     /// animation at 5K) used to panic inside `Device::poll` and take the session to a black
     /// screen. The reset here is the driver's: every fence wait answers `DeviceError::Lost`, and
     /// wgpu-core invalidates the device and runs its lost callback as it does for a real one.
+    // This injects a Vulkan fence failure in the Linux DRM renderer.
+    // The backend-independent device-destruction tests remain available on macOS.
+    #[cfg(target_os = "linux")]
     #[test]
     fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
         const SIZE: u32 = 64;

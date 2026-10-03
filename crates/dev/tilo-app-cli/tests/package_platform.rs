@@ -9,13 +9,14 @@ use std::process::Command;
 
 /// Stands in for Cargo: resolves the app with no dependencies, records its
 /// build arguments and reports one fake executable for the requested `--bin`
-/// and `--target`.
+/// and `--target`; with `FAKE_CARGO_FAIL` set, fails after recording them.
 const FAKE_CARGO: &str = r#"#!/bin/sh
 if [ "$1" = metadata ]; then
   printf '{"packages":[],"resolve":{"root":"notes","nodes":[{"id":"notes","deps":[]}]}}\n'
   exit 0
 fi
 printf '%s\n' "$@" > "$FAKE_CARGO_ARGS"
+[ -z "${FAKE_CARGO_FAIL:-}" ] || exit 101
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest-path) manifest="$(cd "$(dirname "$2")" && pwd -P)/Cargo.toml"; shift ;;
@@ -138,6 +139,66 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
             aarch64: Some(tilo_app_package::manifest::AArch64Level::Armv8A),
         },
         "a Tilo OS package declares the one architecture it carries"
+    );
+}
+
+/// A Tilo OS package links the OS toolkit, whose media stack needs
+/// the development files of `GStreamer` where Cargo compiles. This machine lacking
+/// them does not stop the build, which `cargo` may run elsewhere; when the
+/// build fails, the error names the packages to install here.
+#[test]
+fn this_machines_libraries_are_named_only_when_the_build_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let cargo = dir.path().join("fake-cargo");
+    std::fs::write(&cargo, FAKE_CARGO).unwrap();
+    let mut permissions = std::fs::metadata(&cargo).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cargo, permissions).unwrap();
+    let created = tilo_app(
+        dir.path(),
+        &cargo,
+        &["new", "notes", "--template", "starter"],
+    );
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let app = dir.path().join("notes");
+    let package = |fail: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-app"));
+        command
+            .args(["package", "--force", "--json"])
+            .current_dir(&app)
+            .env_remove("TILO_UI_PATH")
+            .env("CARGO", &cargo)
+            .env("FAKE_CARGO_ARGS", app.join("cargo-args"))
+            .env("PKG_CONFIG", dir.path().join("no-pkg-config"));
+        if fail {
+            command.env("FAKE_CARGO_FAIL", "1");
+        }
+        command.output().expect("run tilo-app")
+    };
+
+    let built = package(false);
+    let stderr = String::from_utf8_lossy(&built.stderr);
+    let args = std::fs::read_to_string(app.join("cargo-args")).unwrap();
+    assert!(
+        args.lines().any(|arg| arg.contains("thin")),
+        "Cargo was not asked for a Tilo OS build: {args}\n{stderr}"
+    );
+    assert!(built.status.success(), "{stderr}");
+    assert!(!stderr.contains("GStreamer"), "{stderr}");
+
+    std::fs::remove_file(app.join("cargo-args")).unwrap();
+    let failed = package(true);
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success());
+    assert!(app.join("cargo-args").exists(), "Cargo never ran: {stderr}");
+    assert!(stderr.contains("links GStreamer"), "{stderr}");
+    assert!(
+        stderr.contains("sudo dnf install pkgconf-pkg-config gstreamer1-devel"),
+        "{stderr}"
     );
 }
 

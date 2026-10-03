@@ -45,6 +45,7 @@ COPY os/hardware/profiles /tilo/os/hardware/profiles
 COPY os/dev/install-board-layer.sh /tilo/os/dev/
 COPY os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf /tilo/os/usr/lib/systemd/system/sshd.service.d/
 COPY os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf /tilo/os/etc/NetworkManager/conf.d/
+COPY os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee /tilo/os/usr/lib/NetworkManager/dispatcher.d/
 COPY os/usr/lib/systemd/system/tilo-board-headless-session@.service /tilo/os/usr/lib/systemd/system/
 COPY os/usr/libexec/tilo-board-session-prepare os/usr/libexec/tilo-seat-session os/usr/libexec/tilo-display-present /tilo/os/usr/libexec/
 COPY --from=board-firmware / /tilo/os/hardware/firmware/${TILO_HARDWARE_PROFILE}/
