@@ -27,9 +27,10 @@ use crate::presence::PresenceCtx;
 use crate::search::{SearchGroup, SearchResult};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
+use crate::widget::data_table::{text_band, type_line_height};
 
 const PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64; // card inner padding
 const ROW_INSET: f64 = 8.0; // rows inset from the card edge
@@ -94,9 +95,9 @@ impl RowBands {
     /// insets. Every value floors at the pinned 1× constant.
     fn resolve(theme: &Theme) -> Self {
         let tokens = &theme.tokens;
-        let title = type_line_height(tokens.typography.scale.base);
-        let subtitle = type_line_height(tokens.typography.scale.sm);
-        let caption = type_line_height(tokens.typography.scale.xs);
+        let title = type_line_height(&tokens.typography, TextRole::Body);
+        let subtitle = type_line_height(&tokens.typography, TextRole::Caption);
+        let caption = type_line_height(&tokens.typography, TextRole::Caption);
         let pad = f64::from(tokens.spacing.s3);
         let gap = f64::from(tokens.spacing.s1);
         Self {
@@ -430,8 +431,8 @@ impl SearchResultsView {
         }
 
         let tokens = &theme.tokens;
-        let title_size = renderer_type_size(tr, tokens.typography.scale.base);
-        let sub_size = renderer_type_size(tr, tokens.typography.scale.sm);
+        let title_style = tokens.typography.style(TextRole::Body);
+        let sub_style = tokens.typography.style(TextRole::Caption);
         // Clamped to >= 0.0 above; a row's text width is a small on-screen
         // pixel span, well inside `f32`'s exact-integer range.
         #[allow(
@@ -443,19 +444,21 @@ impl SearchResultsView {
         // Title and subtitle are measured with the width they are drawn at and
         // centred as one block, so the icon (centred on the row) sits on the
         // block's centre line whether or not a subtitle is present.
-        let (_, title_h) =
-            tr.measure_weighted(&result.title, title_size, Some(text_w), TextWeight::Medium);
+        let (_, title_h) = tr.measure_style(
+            &result.title,
+            Some(text_w),
+            &title_style.clone().with_weight(TextWeight::Medium),
+        );
         let gap = f64::from(tokens.spacing.s1);
         let sub_h = result
             .subtitle
             .as_deref()
-            .map(|sub| f64::from(tr.measure(sub, sub_size, Some(text_w)).1));
+            .map(|sub| f64::from(tr.measure_style(sub, Some(text_w), &sub_style).1));
         let block_h = f64::from(title_h) + sub_h.map_or(0.0, |h| gap + h);
         let title_y = row.rect.y0 + ((row.rect.height() - block_h) / 2.0).max(0.0);
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &result.title,
-            title_size,
             if selected {
                 selected_ink
             } else {
@@ -463,7 +466,7 @@ impl SearchResultsView {
             },
             compose(transform, Affine::translate((text_x, title_y))),
             Some(text_w),
-            TextWeight::Medium,
+            &title_style.clone().with_weight(TextWeight::Medium),
         );
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
@@ -474,13 +477,13 @@ impl SearchResultsView {
             } else {
                 colors.text_dim
             };
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 sub,
-                sub_size,
                 sub_col,
                 compose(transform, Affine::translate((text_x, sy))),
                 Some(text_w),
+                &sub_style,
             );
         }
     }
@@ -492,17 +495,17 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-        let (tw, th) = tr.measure(&self.empty_text, size, None);
+        let style = theme.text(TextRole::Caption);
+        let (tw, th) = tr.measure_style(&self.empty_text, None, &style);
         let cx = self.rect.center().x - f64::from(tw) / 2.0;
         let cy = self.rect.center().y - f64::from(th) / 2.0;
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &self.empty_text,
-            size,
             theme.tokens.colors.text_dim,
             compose(transform, Affine::translate((cx, cy))),
             None,
+            &style,
         );
     }
 
@@ -537,19 +540,18 @@ impl SearchResultsView {
             0.0,
             theme.tokens.colors.surfaces.base,
         );
-        let title_size = theme.tokens.typography.scale.xs.max(10.0);
-        let body_size = theme.tokens.typography.scale.sm.max(11.0);
-        tr.draw_text_weighted(
+        let title_style = theme.text(TextRole::Subheading);
+        let body_style = theme.text(TextRole::Caption);
+        tr.draw_style(
             scene,
-            "PREVIEW",
-            title_size,
+            "Preview",
             theme.tokens.colors.text_dim,
             compose(
                 transform,
                 Affine::translate((rect.x0 + 4.0, rect.y0 + 10.0)),
             ),
             None,
-            TextWeight::Semibold,
+            &title_style,
         );
         let normalized = preview.split_whitespace().collect::<Vec<_>>().join(" ");
         let available = (rect.width() - 8.0).max(0.0);
@@ -557,17 +559,17 @@ impl SearchResultsView {
             clippy::cast_possible_truncation,
             reason = "bounded on-screen preview width"
         )]
-        let body = tr.elide_to_width(&normalized, body_size, available as f32);
-        tr.draw_text(
+        let body = tr.elide_to_width_style(&normalized, available as f32, &body_style);
+        tr.draw_style(
             scene,
             &body,
-            body_size,
             theme.tokens.colors.text_primary,
             compose(
                 transform,
                 Affine::translate((rect.x0 + 4.0, rect.y0 + 32.0)),
             ),
             None,
+            &body_style,
         );
     }
 }
@@ -654,36 +656,38 @@ impl Widget for SearchResultsView {
 
         let plan = self.plan();
         // Section headers: dim, uppercase, with a trailing count.
-        let header_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let header_style = theme.text(TextRole::Caption);
         let header_inset = f64::from(theme.tokens.spacing.s1);
         for (hrect, kind, count) in &plan.headers {
             let label = kind.to_uppercase();
             // The caption sits on the band's bottom edge, one small step above
             // its rows, by its measured line box rather than its font size.
-            let (_, label_h) =
-                text_renderer.measure_weighted(&label, header_size, None, TextWeight::Semibold);
+            let (_, label_h) = text_renderer.measure_style(
+                &label,
+                None,
+                &header_style.clone().with_weight(TextWeight::Semibold),
+            );
             let hy = hrect.y1 - f64::from(label_h) - header_inset;
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                header_size,
                 theme.tokens.colors.text_dim,
                 compose(transform, Affine::translate((hrect.x0 + header_inset, hy))),
                 None,
-                TextWeight::Semibold,
+                &header_style.clone().with_weight(TextWeight::Semibold),
             );
             let count_str = count.to_string();
-            let (cw, _) = text_renderer.measure(&count_str, header_size, None);
-            text_renderer.draw_text(
+            let (cw, _) = text_renderer.measure_style(&count_str, None, &header_style);
+            text_renderer.draw_style(
                 scene,
                 &count_str,
-                header_size,
                 theme.tokens.colors.text_dim,
                 compose(
                     transform,
                     Affine::translate((hrect.x1 - f64::from(cw) - header_inset, hy)),
                 ),
                 None,
+                &header_style,
             );
         }
         for row in &plan.rows {

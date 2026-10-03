@@ -22,10 +22,10 @@ use winit::keyboard::{Key, NamedKey};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -411,7 +411,7 @@ impl LinkPopover {
                 filter_rect.x1 - 6.0,
                 filter_rect.y1,
             ),
-            &TextStyle::new(tokens.typography.scale.sm),
+            &theme.text(TextRole::Caption),
             QueryInk::of(&tokens.colors),
         );
     }
@@ -427,17 +427,17 @@ impl LinkPopover {
         rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let font_style = tokens.typography.style(TextRole::Caption);
         if self.visible.is_empty() {
-            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let (_, hint_h) = text_renderer.measure_style("No matches", None, &font_style);
             let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 "No matches",
-                font_size,
                 tokens.colors.text_dim,
                 transform.pre_translate(Vec2::new(rect.x0 + PADDING_X, y)),
                 None,
+                &font_style,
             );
             return;
         }
@@ -473,15 +473,15 @@ impl LinkPopover {
             } else {
                 tokens.colors.text_primary
             };
-            let (_, title_h) = text_renderer.measure(&row.title, font_size, None);
+            let (_, title_h) = text_renderer.measure_style(&row.title, None, &font_style);
             let text_y = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &row.title,
-                font_size,
                 ink,
                 transform.pre_translate(Vec2::new(row_rect.x0 + PADDING_X, text_y)),
                 None,
+                &font_style,
             );
         }
     }

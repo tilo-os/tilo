@@ -1986,8 +1986,7 @@ mod tests {
             lay_out(&mut ns, 1000.0, 500.0);
             ns.mark_drawn();
             let original = ns.overview.get_rect();
-            let mut theme = Theme::dark();
-            theme.text_scale = 1.5;
+            let theme = Theme::dark().with_text_scale(1.5);
             let mut taffy = TaffyTree::new();
             let mut map = HashMap::new();
             let node = ns.build_layout(&mut taffy, &theme, &mut map);

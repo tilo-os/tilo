@@ -11,8 +11,9 @@ use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, CONTROL_PAD, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SECTION_GAP,
     SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
-    paint_control, trailing_glyph, trailing_toggle, type_size,
+    paint_control, trailing_glyph, trailing_toggle,
 };
+use ui::TextRole;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -223,16 +224,20 @@ impl QuickSettingsRoot {
     /// type scale rather than from a literal. The draw path then centres
     /// the text it actually measured inside that row, so a theme with a
     /// different type scale still paints correctly.
-    fn line_height(&self, base_px: f32) -> f64 {
-        f64::from(ui::text_render::TextStyle::new(base_px * f32v(self.text_scale)).line_height_px())
+    fn line_height(&self, role: TextRole) -> f64 {
+        f64::from(
+            ui::tokens::Typography::default()
+                .style(role)
+                .line_height_px(),
+        ) * self.text_scale
     }
-    /// Control label: `scale.sm` (HIG §9.6).
+    /// A control's label line (`Caption` in this dense panel).
     fn label_line_height(&self) -> f64 {
-        self.line_height(ui::tokens::TypeScale::default().sm)
+        self.line_height(TextRole::Caption)
     }
-    /// Control sub-line / caption: `scale.xs` (HIG §9.6).
+    /// A control's sub-line or a section caption (`Caption`).
     fn caption_line_height(&self) -> f64 {
-        self.line_height(ui::tokens::TypeScale::default().xs)
+        self.line_height(TextRole::Caption)
     }
     /// Tile: glyph, `icon_label_gap` and caption on the control padding.
     fn action_height_at(&self, layout_scale: f64) -> f64 {
@@ -258,12 +263,12 @@ impl QuickSettingsRoot {
     }
     /// Power row: label and detail on the control padding, never under the
     /// Control height.
+    /// The power row: its label and sub-line with at least `s1` above and
+    /// below, never under the Control height.
     fn power_height_at(&self, layout_scale: f64) -> f64 {
-        (ROW_HEIGHT * layout_scale).max(
-            2.0 * CONTROL_PAD * layout_scale
-                + self.label_line_height()
-                + self.caption_line_height(),
-        )
+        let inner = f64::from(ui::tokens::Spacing::BASE.s1);
+        (ROW_HEIGHT * layout_scale)
+            .max(2.0 * inner * layout_scale + self.label_line_height() + self.caption_line_height())
     }
     fn power_height(&self) -> f64 {
         self.power_height_at(self.layout_scale)
@@ -454,7 +459,7 @@ impl QuickSettingsRoot {
     fn header_height_at(&self, scale: f64) -> f64 {
         (Self::HEADER * scale)
             .max(Self::target_at(scale))
-            .max(self.line_height(ui::tokens::TypeScale::default().base))
+            .max(self.line_height(TextRole::Body))
     }
     fn sliders_height_at(&self, scale: f64) -> f64 {
         let count = self.slider_count();
@@ -753,7 +758,7 @@ impl QuickSettingsRoot {
     #[cfg(test)]
     fn header_baseline_offset(&self) -> f64 {
         self.scaled(PANEL_PAD) + self.header_height_at(self.layout_scale) / 2.0
-            - self.line_height(ui::tokens::TypeScale::default().base) / 2.0
+            - self.line_height(TextRole::Body) / 2.0
     }
     /// Edit rows as the shared drag controller sees them: Control-height
     /// rows one related step apart.
@@ -1597,18 +1602,21 @@ impl QuickSettingsRoot {
             "qs-title"
         });
         let title = title.as_str();
-        let title_size = type_size(text, theme.tokens.typography.scale.base);
+        let title_style = theme.text(TextRole::Body);
         let header = self.header_rect();
-        let (_, title_h) = text.measure_weighted(title, title_size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
+        let (_, title_h) = text.measure_style(
+            title,
+            None,
+            &title_style.clone().with_weight(TextWeight::Semibold),
+        );
+        text.draw_style(
             scene,
             title,
-            title_size,
             colors.text_primary,
             transform
                 .pre_translate((header.x0, header.center().y - f64::from(title_h) / 2.).into()),
             None,
-            TextWeight::Semibold,
+            &title_style.with_weight(TextWeight::Semibold),
         );
         if !self.edit_mode {
             let r = self.edit_rect();
@@ -1680,16 +1688,12 @@ impl QuickSettingsRoot {
             // Keep every word intact; at an unusually large text scale we
             // reduce this one caption before we truncate its meaning.
             let max_label_width = (r.width() - 2.0 * inset).max(1.);
-            let label_size = type_size(text, theme.tokens.typography.scale.xs);
-            let (unscaled_label_width, _) =
-                text.measure_weighted(label, label_size, None, TextWeight::Medium);
-            let label_size = if f64::from(unscaled_label_width) > max_label_width {
-                label_size * f32v(max_label_width / f64::from(unscaled_label_width))
-            } else {
-                label_size
-            };
-            let (label_width, label_height) =
-                text.measure_weighted(label, label_size, None, TextWeight::Medium);
+            let mut label_style = theme.text(TextRole::Label);
+            let (unscaled_label_width, _) = text.measure_style(label, None, &label_style);
+            if f64::from(unscaled_label_width) > max_label_width {
+                label_style.size *= f32v(max_label_width / f64::from(unscaled_label_width));
+            }
+            let (label_width, label_height) = text.measure_style(label, None, &label_style);
             // Glyph, `icon_label_gap`, caption: one measured block centred
             // in the tile (HIG §7), never a glyph pinned to the top edge
             // with the caption riding the bottom one.
@@ -1709,10 +1713,9 @@ impl QuickSettingsRoot {
                 color,
                 1.5,
             );
-            text.draw_text_weighted(
+            text.draw_style(
                 scene,
                 label,
-                label_size,
                 color,
                 transform.pre_translate(
                     (
@@ -1722,14 +1725,14 @@ impl QuickSettingsRoot {
                         .into(),
                 ),
                 None,
-                TextWeight::Medium,
+                &label_style,
             );
         }
         // The slider block is one Control surface holding two pointer
         // bands, each with its glyph on the leading inset of the band.
         let sliders = self.sliders_rect(self.panel);
         paint_control(scene, transform, theme, sliders, false, false);
-        let caption_size = type_size(text, theme.tokens.typography.scale.xs);
+        let caption_style = theme.text(TextRole::Caption);
         for i in 0..self.slider_count() {
             let face = self.slider_face_rect(self.panel, i);
             let available = self.slider_available(state, i);
@@ -1737,14 +1740,14 @@ impl QuickSettingsRoot {
             if self.slider_caption_height(i) > 0.0
                 && let Some(name) = self.display_names.get(i)
             {
-                text.draw_text(
+                text.draw_style(
                     scene,
                     name,
-                    caption_size,
                     colors.text_dim,
                     transform
                         .pre_translate((face.x0, face.y0 - self.slider_caption_height(i)).into()),
                     Some(f32v(face.width())),
+                    &caption_style,
                 );
             }
             ui::icons::draw_icon(
@@ -1833,46 +1836,49 @@ impl QuickSettingsRoot {
         );
         let text_x = battery.x1 + inset;
         let text_width = (chevron.x0 - self.scaled(RELATED_GAP) - text_x).max(1.0);
-        let power_label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        let power_label_style = theme.text(TextRole::Caption);
+        let detail_style = theme.text(TextRole::Caption);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let power_label = text.elide_to_width(
+        let power_label = text.elide_to_width_style(
             &state.power_profile.label(),
-            power_label_size,
             text_width as f32,
+            &power_label_style,
         );
         let battery_detail = power_detail(state);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let battery_detail = text.elide_to_width(&battery_detail, detail_size, text_width as f32);
-        let (_, power_label_h) =
-            text.measure_weighted(&power_label, power_label_size, None, TextWeight::Semibold);
-        let (_, detail_h) = text.measure(&battery_detail, detail_size, None);
+        let battery_detail =
+            text.elide_to_width_style(&battery_detail, text_width as f32, &detail_style);
+        let (_, power_label_h) = text.measure_style(
+            &power_label,
+            None,
+            &power_label_style.clone().with_weight(TextWeight::Semibold),
+        );
+        let (_, detail_h) = text.measure_style(&battery_detail, None, &detail_style);
         // Label and detail are one measured block on the row's centre line
         // (HIG §7a: measure and draw with one style; the detail follows the
         // label line, never a fixed offset the label can outgrow).
         let block_top = centred_text_top(r, f64::from(power_label_h) + f64::from(detail_h));
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &power_label,
-            power_label_size,
             colors.text_primary,
             transform.pre_translate((text_x, block_top).into()),
             None,
-            TextWeight::Semibold,
+            &power_label_style.clone().with_weight(TextWeight::Semibold),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &battery_detail,
-            detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, block_top + f64::from(power_label_h)).into()),
             None,
+            &detail_style,
         );
     }
     /// A drill-in row (Devices, Clipboard): leading glyph, label over a
@@ -1917,29 +1923,32 @@ impl QuickSettingsRoot {
         );
         let text_x = leading.x1 + inset;
         let text_width = f32v((chevron.x0 - self.scaled(RELATED_GAP) - text_x).max(1.0));
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
-        let label = text.elide_to_width(label, label_size, text_width);
-        let detail = text.elide_to_width(detail, detail_size, text_width);
-        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
-        let (_, detail_h) = text.measure(&detail, detail_size, None);
+        let label_style = theme.text(TextRole::Caption);
+        let detail_style = theme.text(TextRole::Caption);
+        let label = text.elide_to_width_style(label, text_width, &label_style);
+        let detail = text.elide_to_width_style(detail, text_width, &detail_style);
+        let (_, label_h) = text.measure_style(
+            &label,
+            None,
+            &label_style.clone().with_weight(TextWeight::Semibold),
+        );
+        let (_, detail_h) = text.measure_style(&detail, None, &detail_style);
         let block_top = centred_text_top(r, f64::from(label_h) + f64::from(detail_h));
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((text_x, block_top).into()),
             None,
-            TextWeight::Semibold,
+            &label_style.clone().with_weight(TextWeight::Semibold),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &detail,
-            detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
             None,
+            &detail_style,
         );
     }
     fn draw_control(
@@ -1981,39 +1990,43 @@ impl QuickSettingsRoot {
             },
             1.5,
         );
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let sub_size = type_size(text, theme.tokens.typography.scale.xs);
+        let label_style = theme.text(TextRole::Caption);
+        let sub_style = theme.text(TextRole::Caption);
         let text_width = (r.width() - 2.0 * inset).max(1.0);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let label = text.elide_to_width(&Self::rendered_label(c, s), label_size, text_width as f32);
+        let label =
+            text.elide_to_width_style(&Self::rendered_label(c, s), text_width as f32, &label_style);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let sub = text.elide_to_width(&Self::subline(c, s), sub_size, text_width as f32);
+        let sub = text.elide_to_width_style(&Self::subline(c, s), text_width as f32, &sub_style);
         let label_y = icon_row.y1 + self.scaled(RELATED_GAP);
-        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
+        let (_, label_h) = text.measure_style(
+            &label,
+            None,
+            &label_style.clone().with_weight(TextWeight::Semibold),
+        );
+        text.draw_style(
             scene,
             &label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((r.x0 + inset, label_y).into()),
             None,
-            TextWeight::Semibold,
+            &label_style.clone().with_weight(TextWeight::Semibold),
         );
         // The sub-line sits under the measured label rather than at a fixed
         // offset the label outgrows at large text (HIG §7a).
-        text.draw_text(
+        text.draw_style(
             scene,
             &sub,
-            sub_size,
             colors.text_dim,
             transform.pre_translate((r.x0 + inset, label_y + f64::from(label_h)).into()),
             None,
+            &sub_style,
         );
         if (matches!(c, QuickSettingsControl::Wifi) && s.radios.wifi_available)
             || matches!(
@@ -2061,12 +2074,11 @@ impl QuickSettingsRoot {
     ) {
         let colors = &theme.tokens.colors;
         let pad = self.scaled(PANEL_PAD);
-        let caption_size = type_size(text, theme.tokens.typography.scale.xs);
+        let caption_style = theme.text(TextRole::Caption);
         // Section caption on the control padding under the title band.
-        text.draw_text(
+        text.draw_style(
             scene,
             &Self::edit_help_copy(),
-            caption_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -2076,14 +2088,15 @@ impl QuickSettingsRoot {
                     .into(),
             ),
             None,
+            &caption_style,
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &t("qs-edit-active-heading"),
-            caption_size,
             colors.text_dim,
             transform.pre_translate((self.panel.x0 + pad, self.edit_section_baseline()).into()),
             None,
+            &caption_style,
         );
         let active = self.active_edit_controls(state);
         let metrics = self.edit_list_metrics(self.panel, active.len());
@@ -2213,14 +2226,14 @@ impl QuickSettingsRoot {
         let chips = self.available_chips(state);
         if !chips.is_empty() {
             let top = self.available_edit_top(state);
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &t("qs-edit-available-heading"),
-                caption_size,
                 colors.text_dim,
                 transform
                     .pre_translate((self.panel.x0 + pad, top + self.scaled(CONTROL_PAD)).into()),
                 None,
+                &caption_style,
             );
             for (i, (control, chip)) in chips.into_iter().enumerate() {
                 let label = Self::label(control);
@@ -2231,7 +2244,6 @@ impl QuickSettingsRoot {
                     theme,
                     &ButtonFace::new(chip, &label)
                         .icon(ui::icons::Icon::Plus)
-                        .text_size(caption_size)
                         .hovered(cursor.is_some_and(|point| chip.contains(point)))
                         .focused(self.keyboard_focus == Some(active.len().saturating_add(i)))
                         .accessible_name(&label),
@@ -2243,15 +2255,12 @@ impl QuickSettingsRoot {
         let edit_count = active
             .len()
             .saturating_add(self.available_edit_controls(state).len());
-        // Control labels are `scale.sm` (HIG §9.6), like the rows above.
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
         Button::paint(
             scene,
             transform,
             text,
             theme,
             &ButtonFace::new(reset, &t("qs-edit-reset"))
-                .text_size(label_size)
                 .hovered(cursor.is_some_and(|p| reset.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count))
                 .accessible_name(&t("qs-edit-reset-a11y")),
@@ -2262,7 +2271,6 @@ impl QuickSettingsRoot {
             text,
             theme,
             &ButtonFace::new(done, &t("qs-edit-done"))
-                .text_size(label_size)
                 .primary()
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
@@ -2310,26 +2318,29 @@ impl QuickSettingsRoot {
             }
         }
         let action = trailing_toggle(r, inset, self.scaled(TARGET), self.scaled(TARGET));
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
+        let label_style = theme.text(TextRole::Caption);
         let label_x = slot.x1 + inset;
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let label = text.elide_to_width(
+        let label = text.elide_to_width_style(
             &Self::label(c),
-            label_size,
             (action.x0 - self.scaled(RELATED_GAP) - label_x).max(1.0) as f32,
+            &label_style,
         );
-        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Medium);
-        text.draw_text_weighted(
+        let (_, label_h) = text.measure_style(
+            &label,
+            None,
+            &label_style.clone().with_weight(TextWeight::Medium),
+        );
+        text.draw_style(
             scene,
             &label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((label_x, centred_text_top(r, f64::from(label_h))).into()),
             None,
-            TextWeight::Medium,
+            &label_style.clone().with_weight(TextWeight::Medium),
         );
         let action_name = t(if c.required() {
             "qs-edit-required-a11y"
@@ -2340,8 +2351,7 @@ impl QuickSettingsRoot {
         });
         let action_face = ButtonFace::new(action, "")
             .hovered(cursor.is_some_and(|point| action.contains(point)))
-            .accessible_name(&action_name)
-            .text_size(type_size(text, theme.tokens.typography.scale.xs));
+            .accessible_name(&action_name);
         let action_face = if c.required() {
             action_face.ghost()
         } else {
@@ -3357,10 +3367,11 @@ mod tests {
             let available = 600.0 - 48.0 - 16.0;
             root.fit_root_layout_to_height(&state, available);
             root.panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
+            // A rect at a fractional `y` loses a few ulps of its height.
             for index in 0..2 {
-                assert!(root.slider_face_rect(root.panel, index).height() >= TARGET);
+                assert!(root.slider_face_rect(root.panel, index).height() >= TARGET - 1e-9);
             }
-            assert!(root.edit_rect().height() >= TARGET);
+            assert!(root.edit_rect().height() >= TARGET - 1e-9);
             for index in 0..QuickSettingsRoot::ACTION_COUNT {
                 assert!(root.action(index).height() >= 44.0);
             }
@@ -3427,7 +3438,7 @@ mod tests {
             }
             let header = root.header_rect();
             assert!(
-                header.height() >= root.line_height(ui::tokens::TypeScale::default().base),
+                header.height() >= root.line_height(TextRole::Body),
                 "the title band holds a base-scale title line"
             );
             assert!(
@@ -3435,7 +3446,8 @@ mod tests {
                 "the title band ends before the action tiles begin"
             );
             let power = root.power_geometry(panel, &state);
-            assert!(power.height() + eps >= 2.0 * pad + label + caption);
+            let inner = root.scaled(f64::from(ui::tokens::Spacing::BASE.s1));
+            assert!(power.height() + eps >= 2.0 * inner + label + caption);
             assert!(
                 power.y1 <= panel.y1 + f64::EPSILON,
                 "the last control ends inside the panel"

@@ -49,6 +49,8 @@ pub struct EditableLabel {
     input: TextInput,
     editing: bool,
     family: FontChoice,
+    /// The 1× size of the label's role, shared with the editing field so the
+    /// text does not shift between idle and editing.
     size: f32,
     idle_color: Option<vello::peniko::Color>,
     rect: Rect,
@@ -68,7 +70,7 @@ impl EditableLabel {
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
             family: FontChoice::SansSerif,
-            size: 16.0,
+            size: crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
             idle_color: None,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
@@ -83,16 +85,18 @@ impl EditableLabel {
         self
     }
 
+    /// Set the label in `role` (default [`crate::tokens::TextRole::Body`]),
+    /// idle and while editing.
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.size = size;
-        self.input.set_font_size(size);
+    pub fn with_text_role(mut self, role: crate::tokens::TextRole) -> Self {
+        self.set_text_role(role);
         self
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
-        self.size = size;
-        self.input.set_font_size(size);
+    /// Change the label's role; see [`Self::with_text_role`].
+    pub fn set_text_role(&mut self, role: crate::tokens::TextRole) {
+        self.size = crate::tokens::typography::stock().size(role);
+        self.input.set_text_role(role);
     }
 
     /// Hide the insertion caret beneath a modal without committing an edit.

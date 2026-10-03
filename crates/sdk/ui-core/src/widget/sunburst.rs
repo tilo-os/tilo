@@ -21,6 +21,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
@@ -498,13 +499,15 @@ impl Widget for SunburstChart {
             None,
             &Circle::new(base_center, (inner - 2.0).max(0.0)),
         );
-        let title_size = theme.tokens.typography.scale.x2l;
-        let (width, height) =
-            tr.measure_weighted(&self.center_title, title_size, None, TextWeight::Bold);
-        tr.draw_text_weighted(
+        let title_style = theme.text(TextRole::LargeTitle);
+        let (width, height) = tr.measure_style(
+            &self.center_title,
+            None,
+            &title_style.clone().with_weight(TextWeight::Bold),
+        );
+        tr.draw_style(
             scene,
             &self.center_title,
-            title_size,
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
@@ -512,17 +515,13 @@ impl Widget for SunburstChart {
                     base_center.y - f64::from(height),
                 )),
             None,
-            TextWeight::Bold,
+            &title_style.clone().with_weight(TextWeight::Bold),
         );
-        let (sub_width, _) = tr.measure(
-            &self.center_subtitle,
-            theme.tokens.typography.scale.xs,
-            None,
-        );
-        tr.draw_text(
+        let (sub_width, _) =
+            tr.measure_style(&self.center_subtitle, None, &theme.text(TextRole::Caption));
+        tr.draw_style(
             scene,
             &self.center_subtitle,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform
                 * Affine::translate((
@@ -530,6 +529,7 @@ impl Widget for SunburstChart {
                     base_center.y + 8.0,
                 )),
             None,
+            &theme.text(TextRole::Caption),
         );
         if let Some(id) = self.hovered.as_deref().filter(|_| self.style.tooltip)
             && let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id)
@@ -539,8 +539,8 @@ impl Widget for SunburstChart {
             } else {
                 format!("{}  ·  {}", format_compact(segment.value), segment.detail)
             };
-            let (pw, _) = tr.measure(&segment.path, theme.tokens.typography.scale.sm, None);
-            let (dw, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let (pw, _) = tr.measure_style(&segment.path, None, &theme.text(TextRole::Caption));
+            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
             let width = f64::from(pw.max(dw)).max(170.0) + 28.0;
             let mut x = self.pointer.x + 16.0;
             let mut y = self.pointer.y + 16.0;
@@ -558,22 +558,23 @@ impl Widget for SunburstChart {
                 None,
                 &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &segment.path,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

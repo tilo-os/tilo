@@ -36,6 +36,7 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::layers::{
     LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
+use ui::TextRole;
 
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
@@ -91,7 +92,7 @@ pub(crate) fn paint_keep_revert_band(
     focus: Option<BandFocus>,
 ) -> BandButtons {
     let colors = &theme.tokens.colors;
-    let type_scale = &theme.tokens.typography.scale;
+    let type_scale = &theme.tokens.typography;
     let radius = ui::chrome::ChromeRole::Control.radius(theme, band.height());
     scene.fill(
         Fill::NonZero,
@@ -101,22 +102,23 @@ pub(crate) fn paint_keep_revert_band(
         &RoundedRect::from_rect(band, radius),
     );
     let text_width = width_f32(band.width() - 190.0);
-    text_renderer.draw_text_weighted(
+    text_renderer.draw_style(
         scene,
         title,
-        type_scale.sm,
         colors.text_primary,
         transform.pre_translate((band.x0 + 14.0, band.y0 + 12.0).into()),
         Some(text_width),
-        TextWeight::Medium,
+        &type_scale
+            .style(TextRole::Caption)
+            .with_weight(TextWeight::Medium),
     );
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         status,
-        type_scale.xs,
         colors.text_dim,
         transform.pre_translate((band.x0 + 14.0, band.y0 + 42.0).into()),
         Some(text_width),
+        &type_scale.style(TextRole::Caption),
     );
     let BandButtons { keep, revert } = band_buttons(band);
     let keep_label = t("display-confirm-keep");
@@ -128,7 +130,6 @@ pub(crate) fn paint_keep_revert_band(
         theme,
         &ui::widget::ButtonFace::new(keep, &keep_label)
             .style(ui::widget::ButtonStyle::Primary)
-            .text_size(type_scale.sm)
             .focused(focus == Some(BandFocus::Keep)),
     );
     ui::widget::Button::paint(
@@ -137,7 +138,6 @@ pub(crate) fn paint_keep_revert_band(
         text_renderer,
         theme,
         &ui::widget::ButtonFace::new(revert, &revert_label)
-            .text_size(type_scale.sm)
             .focused(focus == Some(BandFocus::Revert)),
     );
     BandButtons { keep, revert }
@@ -577,7 +577,6 @@ impl DisplayConfirmPrompt {
                     text_renderer,
                     theme,
                     &ui::widget::ButtonFace::new(card.always_keep, label)
-                        .text_size(theme.tokens.typography.scale.sm)
                         .focused(pending.focus == Focus::AlwaysKeep),
                 );
             }

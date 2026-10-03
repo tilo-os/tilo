@@ -650,13 +650,35 @@ pub struct TextStyle {
     pub wrap_mode: TextWrapMode,
     pub hanging_punctuation: HangingPunctuation,
     pub fragmentation: Fragmentation,
+    /// What `size` is relative to, and so whether the renderer's
+    /// accessibility text scale still applies to it.
+    pub scaling: TextScaling,
+}
+
+/// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in.
+///
+/// Text must be scaled exactly once. A theme role is already resolved; a
+/// renderer-relative base size is scaled by the renderer; a document's own
+/// type is never scaled by an accessibility preference at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextScaling {
+    /// A 1× base size. The renderer multiplies it by its accessibility text
+    /// scale. [`TextStyle::new`] and the size-based renderer APIs use this.
+    #[default]
+    Renderer,
+    /// A final logical size that already includes the theme's UI and text
+    /// scale: every [`crate::theme::Theme::text`] role. Painted as given.
+    Resolved,
+    /// A document-space size that belongs to the content, not the chrome: a
+    /// zoomed canvas, a PDF stamp, a terminal grid. Painted as given and
+    /// never grown by the text scale; the content's own zoom scales it.
+    Content,
 }
 
 impl TextStyle {
-    /// Construct regular sans-serif text with the renderer's legacy leading.
-    /// The default preserves existing call-site layout; applications should
-    /// normally select an explicit theme line-height through
-    /// [`Self::with_line_height`].
+    /// Construct regular sans-serif text at a renderer-relative base size
+    /// ([`TextScaling::Renderer`]) with the renderer's legacy leading. UI
+    /// text takes a role instead: [`crate::theme::Theme::text`].
     pub fn new(size: f32) -> Self {
         Self {
             size,
@@ -673,6 +695,17 @@ impl TextStyle {
             wrap_mode: TextWrapMode::Wrap,
             hanging_punctuation: HangingPunctuation::default(),
             fragmentation: Fragmentation::default(),
+            scaling: TextScaling::Renderer,
+        }
+    }
+
+    /// Document-space text at exactly `size` ([`TextScaling::Content`]):
+    /// zoomed canvases, PDF stamps, terminal grids. The accessibility text
+    /// scale never applies; the content's zoom does, through the transform.
+    pub fn content(size: f32) -> Self {
+        Self {
+            scaling: TextScaling::Content,
+            ..Self::new(size)
         }
     }
 
@@ -1761,23 +1794,11 @@ impl TextRenderer {
         self.text_scale
     }
 
-    /// Convert a fully resolved logical-pixel style into the renderer-relative
-    /// input consumed by [`Self::measure_style`] and [`Self::draw_style`].
-    ///
-    /// Theme typography already includes the active UI and text scales. Both
-    /// size and pixel letter spacing are therefore divided by the renderer's
-    /// sanitized accessibility scale so those final values are applied once.
-    /// Legacy base-size callers should keep passing their styles directly.
-    pub fn renderer_input_style(&self, resolved: &TextStyle) -> TextStyle {
-        let scale = self.text_scale();
-        let mut style = resolved.clone();
-        style.size /= scale;
-        style.letter_spacing /= scale;
-        style
-    }
-
+    /// The style the shaper sees: only a renderer-relative style
+    /// ([`TextScaling::Renderer`]) is grown by the accessibility text scale;
+    /// resolved theme roles and document content are already final.
     fn scaled_style(&self, style: &TextStyle) -> TextStyle {
-        if (self.text_scale - 1.0).abs() <= f32::EPSILON {
+        if style.scaling != TextScaling::Renderer || (self.text_scale - 1.0).abs() <= f32::EPSILON {
             return style.clone();
         }
         let mut scaled = style.clone();
@@ -2117,14 +2138,15 @@ impl TextRenderer {
         }
     }
 
-    /// Word-wraps `text` to `max_width` and clamps to at most `max_lines`
-    /// lines, eliding the last kept line when content overflows. Draw each
-    /// returned line on its own baseline at `line_height = size * 1.25`.
-    /// `max_lines == 1` degenerates to [`Self::elide_to_width`].
+    /// Word-wraps `text` in `style` to `max_width` and clamps to at most
+    /// `max_lines` lines, eliding the last kept line when content overflows.
+    /// Draw each returned line in the same style, one
+    /// [`TextStyle::line_height_px`] apart. `max_lines == 1` degenerates to
+    /// [`Self::elide_to_width_style`].
     pub fn clamp_to_lines(
         &mut self,
         text: &str,
-        size: f32,
+        style: &TextStyle,
         max_width: f32,
         max_lines: usize,
     ) -> Vec<String> {
@@ -2132,9 +2154,9 @@ impl TextRenderer {
             return Vec::new();
         }
         if max_lines == 1 {
-            return vec![self.elide_to_width(text, size, max_width)];
+            return vec![self.elide_to_width_style(text, max_width, style)];
         }
-        let wrapped = self.wrap_lines(text, size, max_width);
+        let wrapped = self.wrap_lines(text, style, max_width);
         if wrapped.len() <= max_lines {
             return wrapped;
         }
@@ -2145,7 +2167,7 @@ impl TextRenderer {
             .unwrap_or((&wrapped, &[]));
         let mut kept: Vec<String> = head.to_vec();
         let remainder: String = tail.join(" ");
-        kept.push(self.elide_to_width(&remainder, size, max_width));
+        kept.push(self.elide_to_width_style(&remainder, max_width, style));
         kept
     }
 
@@ -2153,7 +2175,12 @@ impl TextRenderer {
     /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
     /// explicit mandatory breaks. An unbreakable segment wider than the budget
     /// stays on its own line; [`Self::clamp_to_lines`] elides it if necessary.
-    pub(crate) fn wrap_lines(&mut self, text: &str, size: f32, max_width: f32) -> Vec<String> {
+    pub(crate) fn wrap_lines(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: f32,
+    ) -> Vec<String> {
         fn collapsible_edge(character: char) -> bool {
             matches!(character, ' ' | '\t' | '\n' | '\r')
         }
@@ -2180,7 +2207,7 @@ impl TextRenderer {
                     .get(start..end)
                     .unwrap_or_default()
                     .trim_end_matches(collapsible_edge);
-                let fits = self.measure(candidate, size, None).0 <= max_width;
+                let fits = self.measure_style(candidate, None, style).0 <= max_width;
                 if fits {
                     best = Some(end);
                     if kind == LineBreakKind::Mandatory {
@@ -3545,7 +3572,7 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "東京京都大阪名古屋";
             let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
-            let lines = tr.wrap_lines(text, 14.0, two_glyphs);
+            let lines = tr.wrap_lines(text, &TextStyle::new(14.0), two_glyphs);
             assert!(lines.len() > 1, "CJK text wraps without ASCII spaces");
             assert_eq!(lines.concat(), text);
             assert!(lines.iter().all(|line| !line.is_empty()));
@@ -3556,7 +3583,7 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "10\u{a0}km away";
             let narrow = tr.measure("10", 14.0, None).0 + 1.0;
-            let lines = tr.wrap_lines(text, 14.0, narrow);
+            let lines = tr.wrap_lines(text, &TextStyle::new(14.0), narrow);
             assert_eq!(lines.first().map(String::as_str), Some("10\u{a0}km"));
             assert_eq!(lines.join(" "), text);
         }
@@ -3567,7 +3594,7 @@ mod tests {
             let text = "ทุกสองสัปดาห์";
             let first_word = &text[..9];
             let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
-            let lines = tr.wrap_lines(text, 14.0, budget);
+            let lines = tr.wrap_lines(text, &TextStyle::new(14.0), budget);
             assert_eq!(lines, vec![&text[..9], &text[9..18], &text[18..]]);
             assert_eq!(lines.concat(), text);
         }
@@ -3912,7 +3939,7 @@ mod tests {
             let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
              incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
             // Narrow width forces several wrapped lines; cap to 2.
-            let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
+            let lines = tr.clamp_to_lines(paragraph, &TextStyle::new(14.0), 120.0, 2);
             assert!(
                 lines.len() <= 2,
                 "must not exceed max_lines, got {}",
@@ -3929,8 +3956,16 @@ mod tests {
         // Case `clamp_to_lines_degenerate_cases`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
-            assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
-            let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
+            assert!(
+                tr.clamp_to_lines("anything", &TextStyle::new(14.0), 80.0, 0)
+                    .is_empty()
+            );
+            let one = tr.clamp_to_lines(
+                "a fairly long single line of text here",
+                &TextStyle::new(14.0),
+                60.0,
+                1,
+            );
             assert_eq!(one.len(), 1);
             assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
         }
@@ -3938,7 +3973,7 @@ mod tests {
         // Case `clamp_to_lines_no_overflow_keeps_all`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
-            let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
+            let lines = tr.clamp_to_lines("two words", &TextStyle::new(14.0), 1000.0, 3);
             assert_eq!(lines, vec!["two words".to_string()]);
             assert!(!lines[0].ends_with('\u{2026}'));
         }
@@ -4321,7 +4356,8 @@ mod tests {
         // Case `resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales`.
         {
             let text = "Tracked resolved text";
-            let resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+            let mut resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+            resolved.scaling = TextScaling::Resolved;
             let mut renderer = crate::font_catalog::fixture_renderer();
 
             let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
@@ -4340,10 +4376,7 @@ mod tests {
             let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
             assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
 
-            let renderer_input = renderer.renderer_input_style(&resolved);
-            assert!((renderer_input.size - 14.0).abs() < 0.001);
-            assert!((renderer_input.letter_spacing - 1.5).abs() < 0.001);
-            let resolved_at_two = renderer.measure_style(text, None, &renderer_input);
+            let resolved_at_two = renderer.measure_style(text, None, &resolved);
             assert_eq!(resolved_at_two, resolved_at_one);
 
             let mut scene_at_two = Scene::new();
@@ -4353,7 +4386,7 @@ mod tests {
                 Color::WHITE,
                 Affine::IDENTITY,
                 None,
-                &renderer_input,
+                &resolved,
             );
             let first = scene_at_one.encoding();
             let second = scene_at_two.encoding();
@@ -4381,16 +4414,21 @@ mod tests {
 
         // Case `resolved_theme_style_applies_ui_and_text_scale_once`.
         {
-            let base = crate::theme::Theme::dark().tokens.typography.scale.sm;
+            let role = crate::tokens::TextRole::Caption;
+            let base = crate::theme::Theme::dark().text(role).size;
             let theme = crate::theme::Theme::dark()
                 .with_ui_scale(1.25)
                 .with_text_scale(2.0);
-            let resolved = TextStyle::new(theme.tokens.typography.scale.sm);
+            let resolved = theme.text(role);
             let mut renderer = crate::font_catalog::fixture_renderer();
             renderer.set_text_scale(2.0);
-            let renderer_input = renderer.renderer_input_style(&resolved);
-            let (_, height) = renderer.measure_style("Scale once", None, &renderer_input);
+            let (_, height) = renderer.measure_style("Scale once", None, &resolved);
             assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
+
+            // Content text ignores the renderer's accessibility scale too.
+            let content = TextStyle::content(19.0);
+            let (_, content_height) = renderer.measure_style("Page", None, &content);
+            assert!((content_height - 19.0 * content.line_height).abs() < 0.001);
         }
     }
 }

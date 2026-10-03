@@ -9,7 +9,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::text_metrics::renderer_type_size;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 
 /// Middle of the 400-600ms comfort band: shows help promptly on a
@@ -46,13 +46,11 @@ fn px_f32(v: f64) -> f32 {
     v as f32
 }
 
-pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
-    // `text_size` is the theme-resolved size: it sizes the box in theme
-    // space and is divided back out once for the renderer's own measure.
-    let (tw, _th) =
-        text_renderer.measure(label, renderer_type_size(text_renderer, text_size), None);
+/// The chip's size for `label`: a `Caption` line plus the chip's pads.
+pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
+    let (tw, th) = text_renderer.measure_style(label, None, &theme.text(TextRole::Caption));
     let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
-    let h = (f64::from(text_size) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
+    let h = (f64::from(th) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
 }
 
@@ -124,19 +122,19 @@ pub fn draw_chip(
         theme.tokens.colors.surfaces.overlay,
     );
 
-    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let text_style = theme.text(TextRole::Caption);
     // Centre on the measured line, not the font size: the chip's box is
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.
-    let (_, label_h) = text_renderer.measure(label, text_size, None);
+    let (_, label_h) = text_renderer.measure_style(label, None, &text_style);
     let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        text_size,
         theme.tokens.colors.text_primary,
         translated(transform, rect.x0 + CHIP_PAD_X, text_y),
         None,
+        &text_style,
     );
 }
 
@@ -151,8 +149,7 @@ pub fn draw_hover_tooltip(
     label: &str,
     viewport: Rect,
 ) {
-    let text_size = theme.tokens.typography.scale.sm;
-    let size = chip_size(label, text_renderer, text_size);
+    let size = chip_size(label, text_renderer, theme);
     let rect = chip_rect(anchor, size, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
 }
@@ -312,8 +309,7 @@ impl Widget for Tooltip {
             return;
         }
 
-        let text_size = theme.tokens.typography.scale.sm;
-        let size = chip_size(&self.label, text_renderer, text_size);
+        let size = chip_size(&self.label, text_renderer, theme);
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
         let viewport = presence

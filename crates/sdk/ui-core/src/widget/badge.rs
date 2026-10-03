@@ -9,9 +9,9 @@
 //! Positioning is the caller's responsibility — `Badge` does not anchor
 //! itself to another widget.
 
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -163,12 +163,11 @@ impl Badge {
         }
         let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
         scene.fill(vello::peniko::Fill::NonZero, transform, tint, None, &shape);
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-        let (tw, th) = text_renderer.measure(label, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (tw, th) = text_renderer.measure_style(label, None, &style);
+        text_renderer.draw_style(
             scene,
             label,
-            size,
             theme.tokens.colors.ink_on_any(
                 &[tint],
                 theme.tokens.colors.text_primary,
@@ -180,6 +179,7 @@ impl Badge {
                 rect.center().y - f64::from(th) / 2.0,
             ),
             None,
+            &style,
         );
     }
 }
@@ -303,15 +303,13 @@ impl Widget for Badge {
                 cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &pill);
 
                 if let Some(label) = self.display_text() {
-                    let text_size =
-                        renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-                    let (tw, th) = text_renderer.measure(&label, text_size, None);
+                    let text_style = theme.text(TextRole::Caption);
+                    let (tw, th) = text_renderer.measure_style(&label, None, &text_style);
                     let tx = self.rect.center().x - f64::from(tw) / 2.0;
                     let ty = self.rect.center().y - f64::from(th) / 2.0;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         &mut cached,
                         &label,
-                        text_size,
                         theme.tokens.colors.ink_on_any(
                             &[bg],
                             theme.tokens.colors.text_primary,
@@ -319,6 +317,7 @@ impl Widget for Badge {
                         ),
                         translated(transform, tx, ty),
                         None,
+                        &text_style,
                     );
                 }
             }

@@ -16,6 +16,7 @@ use ui::widget::{Button, ButtonFace};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_desktop_model::{Collaborator, DesktopTree};
+use ui::TextRole;
 
 const FOOTER_H: f64 = 40.0;
 const WARNING_H: f64 = 24.0;
@@ -283,13 +284,13 @@ impl CollaboratorsOverlay {
             None,
             &card,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &crate::i18n::t("a11y-shell-people"),
-            tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
             None,
+            &tokens.typography.style(TextRole::Heading),
         );
         let live_rows = model
             .rows
@@ -298,15 +299,16 @@ impl CollaboratorsOverlay {
             .collect::<Vec<_>>();
         let here_count = live_rows.len().saturating_add(1);
         let here = crate::i18n::t_args("people-panel-here-now", &[("count", here_count.into())]);
-        let (here_width, _) = text_renderer.measure(&here, tokens.typography.scale.xs, None);
+        let (here_width, _) =
+            text_renderer.measure_style(&here, None, &tokens.typography.style(TextRole::Caption));
         let here_x = rect.x1 - 14.0 - f64::from(here_width);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &here,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((here_x, rect.y0 + 20.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let dot_colors = std::iter::once(model.own_color)
             .chain(live_rows.iter().map(|row| row.color))
@@ -333,51 +335,51 @@ impl CollaboratorsOverlay {
                 None,
                 &RoundedRect::from_rect(banner, f64::from(tokens.radii.detail)),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &crate::i18n::t("people-panel-screen-visible"),
-                tokens.typography.scale.xs,
                 colors.intent.inverted,
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
             )]
-            let detail = text_renderer.elide_to_width(
+            let detail = text_renderer.elide_to_width_style(
                 exposure,
-                tokens.typography.scale.xs,
                 (banner.width() - 16.0).max(0.0) as f32,
+                &tokens.typography.style(TextRole::Caption),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                tokens.typography.scale.xs,
                 colors.text_primary,
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 21.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
 
         if let Some(reason) = model.unavailable {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 reason,
-                tokens.typography.scale.sm,
                 colors.semantic.danger,
                 transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         if model.rows.is_empty() && model.unavailable.is_none() {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &crate::i18n::t("people-panel-only-you"),
-                tokens.typography.scale.sm,
                 colors.text_dim,
                 transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
 
@@ -1000,12 +1002,11 @@ impl CollaboratorsOverlay {
             self.roster_range.start.saturating_add(1),
             self.roster_range.end
         );
-        let (width, _) = text_renderer.measure(&label, theme.tokens.typography.scale.xs, None);
+        let (width, _) = text_renderer.measure_style(&label, None, &theme.text(TextRole::Caption));
         let y = self.previous_people.y0.max(self.next_people.y0);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate(
                 (
@@ -1015,6 +1016,7 @@ impl CollaboratorsOverlay {
                     .into(),
             ),
             None,
+            &theme.text(TextRole::Caption),
         );
         for (rect, glyph) in [(self.previous_people, "‹"), (self.next_people, "›")] {
             if rect.area() <= 0.0 {
@@ -1110,15 +1112,14 @@ impl CollaboratorsOverlay {
             clippy::cast_possible_truncation,
             reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
         )]
-        let shown = text_renderer.elide_to_width(
+        let shown = text_renderer.elide_to_width_style(
             &label,
-            theme.tokens.typography.scale.xs,
             (self.status.width() - trailing_room).max(0.0) as f32,
+            &theme.text(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &shown,
-            theme.tokens.typography.scale.xs,
             if model.own_status.is_some() {
                 colors.text_primary
             } else {
@@ -1126,10 +1127,11 @@ impl CollaboratorsOverlay {
             },
             transform.pre_translate((self.status.x0 + 24.0, self.status.y0 + 6.0).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         if model.status_editing {
             let (shown_width, _) =
-                text_renderer.measure(&shown, theme.tokens.typography.scale.xs, None);
+                text_renderer.measure_style(&shown, None, &theme.text(TextRole::Caption));
             let caret_x =
                 (self.status.x0 + 25.0 + f64::from(shown_width)).min(self.status.x1 - 28.0);
             scene.stroke(
@@ -1142,26 +1144,26 @@ impl CollaboratorsOverlay {
                     (caret_x, self.status.y0 + 19.0),
                 ),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 "↵",
-                theme.tokens.typography.scale.xs,
                 colors.intent.inverted_hover,
                 transform.pre_translate((self.status.x1 - 20.0, self.status.y0 + 5.0).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             if model.own_status_automatic {
                 "✦"
             } else {
                 "○"
             },
-            theme.tokens.typography.scale.xs,
             colors.intent.inverted,
             transform.pre_translate((self.status.x0 + 8.0, self.status.y0 + 6.0).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         for (mode, rect) in &self.status_modes {
             let active = *mode == model.status_sharing;
@@ -1181,10 +1183,9 @@ impl CollaboratorsOverlay {
                 ui::StatusSharing::ManualOnly => "people-panel-sharing-manual",
                 ui::StatusSharing::Off => "people-panel-sharing-hidden",
             });
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &text,
-                theme.tokens.typography.scale.xs,
                 if active {
                     colors.intent.on_inverted
                 } else {
@@ -1192,6 +1193,7 @@ impl CollaboratorsOverlay {
                 },
                 transform.pre_translate((rect.x0 + 8.0, rect.y0 + 5.0).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         if let Some(activity) = model.own_activity {
@@ -1204,18 +1206,18 @@ impl CollaboratorsOverlay {
                 clippy::cast_possible_truncation,
                 reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
             )]
-            let activity = text_renderer.elide_to_width(
+            let activity = text_renderer.elide_to_width_style(
                 activity,
-                theme.tokens.typography.scale.xs,
                 (self.status.width() - 20.0).max(0.0) as f32,
+                &theme.text(TextRole::Caption),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &activity,
-                theme.tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((self.status.x0 + 16.0, self.panel.y0 + 112.0).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -1399,10 +1401,10 @@ impl CollaboratorsOverlay {
             clippy::cast_possible_truncation,
             reason = "the collaborator popover is only a few hundred logical pixels wide"
         )]
-        let shown_label = text_renderer.elide_to_width(
+        let shown_label = text_renderer.elide_to_width_style(
             &row.label,
-            tokens.typography.scale.sm,
             (label_x1 - text_x).max(0.0) as f32,
+            &tokens.typography.style(TextRole::Caption),
         );
         let has_activity = row.invited || followed || row.activity.is_some() || row.role.is_some();
         let label_y = if has_activity || row.status.is_some() {
@@ -1410,10 +1412,9 @@ impl CollaboratorsOverlay {
         } else {
             row_y + 22.0
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &shown_label,
-            tokens.typography.scale.sm,
             if row.invited {
                 colors.text_dim
             } else {
@@ -1421,16 +1422,17 @@ impl CollaboratorsOverlay {
             },
             transform.pre_translate((text_x, label_y).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let agent_tag = crate::i18n::t("people-panel-agent-tag");
         if row.is_agent && !row.label.eq_ignore_ascii_case(&agent_tag) {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &agent_tag,
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((self.panel.x1 - 136.0, row_y + 9.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         let subtitle = if row.invited {
@@ -1460,18 +1462,18 @@ impl CollaboratorsOverlay {
                 clippy::cast_possible_truncation,
                 reason = "the collaborator popover is only a few hundred logical pixels wide"
             )]
-            let subtitle = text_renderer.elide_to_width(
+            let subtitle = text_renderer.elide_to_width_style(
                 &subtitle,
-                tokens.typography.scale.xs,
                 (subtitle_x1 - text_x).max(0.0) as f32,
+                &tokens.typography.style(TextRole::Caption),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &subtitle,
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((text_x, row_y + 27.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         if let Some(status) = &row.status {
@@ -1486,19 +1488,19 @@ impl CollaboratorsOverlay {
                 clippy::cast_possible_truncation,
                 reason = "the collaborator popover is only a few hundred logical pixels wide"
             )]
-            let shown = text_renderer.elide_to_width(
+            let shown = text_renderer.elide_to_width_style(
                 &line,
-                tokens.typography.scale.xs,
                 (status_x1 - text_x).max(0.0) as f32,
+                &tokens.typography.style(TextRole::Caption),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &shown,
-                tokens.typography.scale.xs,
                 colors.intent.inverted,
                 transform
                     .pre_translate((text_x, row_y + if has_activity { 45.0 } else { 29.0 }).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         if row.followable {
@@ -1514,7 +1516,7 @@ impl CollaboratorsOverlay {
             });
             let face = ButtonFace::new(action, &label)
                 .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
-                .text_size(tokens.typography.scale.base)
+                .control_size(ui::widget::ControlSize::Large)
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -1533,9 +1535,6 @@ impl CollaboratorsOverlay {
         if self.invite.area() > 0.0 {
             // Control role (HIG §9.1): pressable bodies take `radii.control`.
             let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
-            // The pass paints with the renderer reset to 1× (see `draw`), so
-            // each face is handed the theme-scaled label size explicitly.
-            let label_size = tokens.typography.scale.base;
             let invite_label = crate::i18n::t("people-panel-invite");
             let join_label = crate::i18n::t("people-panel-join");
             Button::paint(
@@ -1546,7 +1545,6 @@ impl CollaboratorsOverlay {
                 &ButtonFace::new(self.invite, &invite_label)
                     .primary()
                     .radius(radius)
-                    .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -1556,7 +1554,6 @@ impl CollaboratorsOverlay {
                 theme,
                 &ButtonFace::new(self.join, &join_label)
                     .radius(radius)
-                    .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }
@@ -1584,13 +1581,12 @@ impl CollaboratorsOverlay {
             ui::chrome::ChromeRole::Control.radius(theme, self.activity.height()),
             colors.lift(0.35),
         );
-        let size = tokens.typography.scale.sm;
+        let style = tokens.typography.style(TextRole::Caption);
         let title = crate::i18n::t("a11y-shell-workspace-activity");
-        let (_, height) = text_renderer.measure(&title, size, None);
-        text_renderer.draw_text(
+        let (_, height) = text_renderer.measure_style(&title, None, &style);
+        text_renderer.draw_style(
             scene,
             &title,
-            size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -1600,12 +1596,12 @@ impl CollaboratorsOverlay {
                     .into(),
             ),
             None,
+            &style,
         );
-        let (width, height) = text_renderer.measure("\u{203a}", size, None);
-        text_renderer.draw_text(
+        let (width, height) = text_renderer.measure_style("\u{203a}", None, &style);
+        text_renderer.draw_style(
             scene,
             "\u{203a}",
-            size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -1615,6 +1611,7 @@ impl CollaboratorsOverlay {
                     .into(),
             ),
             None,
+            &style,
         );
     }
 }

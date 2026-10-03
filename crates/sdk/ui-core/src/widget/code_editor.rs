@@ -173,6 +173,7 @@ impl CodeEditor {
             .multiline(true)
             .with_kind(TextInputKind::Code)
             .with_mono()
+            .with_text_role(crate::tokens::TextRole::Code)
             .with_plain_chrome()
             .with_gutter(true)
             .with_current_line_highlight(true)
@@ -214,12 +215,6 @@ impl CodeEditor {
     #[must_use]
     pub fn with_current_line_highlight(mut self, on: bool) -> Self {
         self.inner.set_current_line_highlight(on);
-        self
-    }
-
-    #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.inner.set_font_size(size);
         self
     }
 
@@ -1235,7 +1230,7 @@ mod tests {
                 .shaped_font_size_for_test()
                 .expect("large shaped font");
             assert!(
-                (f64::from(large_height) - editor.inner().content_height()).abs() < 0.1,
+                (f64::from(large_height) - editor.inner().content_height().ceil()).abs() < 0.1,
                 "wrapper measure and draw must share the 2x paragraph height"
             );
 
@@ -1254,7 +1249,7 @@ mod tests {
                 .shaped_font_size_for_test()
                 .expect("normal shaped font");
             assert!(
-                (f64::from(normal_height) - editor.inner().content_height()).abs() < 0.1,
+                (f64::from(normal_height) - editor.inner().content_height().ceil()).abs() < 0.1,
                 "wrapper measure and draw must share the restored 1x paragraph height"
             );
             assert!(large_height > normal_height * 1.8);

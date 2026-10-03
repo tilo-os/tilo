@@ -5,6 +5,7 @@
 
 use std::fs;
 
+use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::icons::Icon;
 use tilo_ui::theme::Theme;
@@ -75,7 +76,7 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
             .with_gap(14.0)
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new("title").with_size(24.0)))
+                    .push(Box::new(Text::new("title").with_role(TextRole::LargeTitle)))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(Button::new(
                         "btn_save",
