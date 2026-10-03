@@ -56,6 +56,10 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
+/// Version of the frame [`authenticate_shell_ui_bind`] writes and the
+/// compositor's shell-ui service reads first. Both sides name this constant;
+/// the messages that follow carry their own version.
+pub const SHELL_UI_HANDSHAKE_VERSION: u16 = 1;
 /// The session shell's own file choosers, for sessions without a desktop
 /// portal (`tilo_dialogs::shell`). Not declared by manifests: every app
 /// launched into a room is handed a connection naming itself and the room.
@@ -245,7 +249,7 @@ pub fn authenticate_shell_ui_bind(
         })?;
     let mut stream = UnixStream::from(owned);
     let mut frame = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
+        "protocol": SHELL_UI_HANDSHAKE_VERSION,
         "app_id": app_id,
     }))
     .map_err(|error| ServiceError::OpenFailed {
@@ -1067,7 +1071,7 @@ mod tests {
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
             let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-            assert_eq!(handshake["protocol"], 1);
+            assert_eq!(handshake["protocol"], SHELL_UI_HANDSHAKE_VERSION);
             assert_eq!(handshake["app_id"], "so.tilo.chat");
         }
     }
