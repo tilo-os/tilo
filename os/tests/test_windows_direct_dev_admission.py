@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -55,6 +56,21 @@ def fixture(directory):
 
 
 class AdmissionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # CI's shallow PR checkout may omit this separately published immutable
+        # assembly branch. Fetch only missing reviewed objects; the admission
+        # validator still refuses unavailable or mismatched objects and bytes.
+        repository = Path(__file__).resolve().parents[2]
+        revisions = {*admission.PROFILE_FIX_PAIR, *admission.SEALED_FIX_PAIR}
+        for revision in sorted(revisions):
+            result = subprocess.run(['git', '-C', str(repository), 'cat-file', '-e',
+                                     revision + '^{commit}'], capture_output=True)
+            if result.returncode:
+                subprocess.run(['git', '-C', str(repository), 'fetch', '--no-tags',
+                                '--depth=1', 'origin', revision],
+                               capture_output=True, check=True, timeout=60)
+
     def test_execute_never_trusts_development_receipt_without_fresh_admission(self):
         copy = admission.module('dev_copy_entry', 'copy-windows-direct-final-install.py')
         with tempfile.TemporaryDirectory() as directory:
