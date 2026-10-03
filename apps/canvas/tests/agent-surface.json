@@ -191,7 +191,10 @@
                     "save-medium",
                     "remove-medium",
                     "align",
-                    "set-reference"
+                    "set-reference",
+                    "select",
+                    "use-selection",
+                    "combine"
                   ]
                 }
               },
@@ -265,6 +268,41 @@
         "ty": "text",
         "required": true,
         "description": "The name",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "combine",
+    "resource_kind": "canvas.artwork",
+    "label": "Combine shapes",
+    "description": "Combine shapes into one path mark, in the bottom one's place and style.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": false
+      },
+      {
+        "name": "op",
+        "ty": "text",
+        "required": true,
+        "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
+        "schema": {
+          "type": "string",
+          "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
+        },
         "nullable": false
       }
     ]
@@ -942,7 +980,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Cut to this mark's shape (opacity 0 hides that mark)."
+                "description": "Cut to this mark's shape (opacity 0 hides that mark), or `selection`."
               },
               "transform": {
                 "type": [
@@ -1075,6 +1113,48 @@
             "null"
           ],
           "description": "`0..=1`: let the ground's tooth show through the layer's marks."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mask",
+        "ty": "text",
+        "required": false,
+        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides."
+        },
+        "nullable": true
+      },
+      {
+        "name": "invert",
+        "ty": "boolean",
+        "required": false,
+        "description": "Invert the mask.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Invert the mask."
+        },
+        "nullable": true
+      },
+      {
+        "name": "clip",
+        "ty": "boolean",
+        "required": false,
+        "description": "Clip to the layer below.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Clip to the layer below."
         },
         "nullable": true
       }
@@ -1958,7 +2038,10 @@
                       "remove-medium",
                       "align",
                       "set-reference",
-                      "import-svg"
+                      "import-svg",
+                      "select",
+                      "use-selection",
+                      "combine"
                     ]
                   },
                   "args": {
@@ -2011,7 +2094,10 @@
                                   "save-medium",
                                   "remove-medium",
                                   "align",
-                                  "set-reference"
+                                  "set-reference",
+                                  "select",
+                                  "use-selection",
+                                  "combine"
                                 ]
                               }
                             }
@@ -2485,7 +2571,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette."
+                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette. Or `selection`."
               }
             },
             "additionalProperties": false,
@@ -2730,6 +2816,209 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "select",
+    "resource_kind": "canvas.artwork",
+    "label": "Select area",
+    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "rect",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, w, h]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, w, h]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "ellipse",
+        "ty": "array",
+        "required": false,
+        "description": "In `[x, y, w, h]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "In `[x, y, w, h]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "points",
+        "ty": "array",
+        "required": false,
+        "description": "Lasso `[[x, y], …]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Lasso `[[x, y], …]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "d",
+        "ty": "text",
+        "required": false,
+        "description": "SVG path data.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "SVG path data."
+        },
+        "nullable": true
+      },
+      {
+        "name": "marks",
+        "ty": "array",
+        "required": false,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": true
+      },
+      {
+        "name": "at",
+        "ty": "array",
+        "required": false,
+        "description": "Magic wand `[x, y]`: like colour touching it.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Magic wand `[x, y]`: like colour touching it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": false,
+        "description": "`#rrggbb`, everywhere.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`#rrggbb`, everywhere."
+        },
+        "nullable": true
+      },
+      {
+        "name": "tolerance",
+        "ty": "number",
+        "required": false,
+        "description": "0..1, default 0.15.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "0..1, default 0.15."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "required": false,
+        "description": "`replace`, `add`, `subtract`, `intersect` or `none`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`replace`, `add`, `subtract`, `intersect` or `none`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "feather",
+        "ty": "number",
+        "required": false,
+        "description": "Units.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units."
+        },
+        "nullable": true
+      },
+      {
+        "name": "grow",
+        "ty": "number",
+        "required": false,
+        "description": "Units; negative shrinks.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units; negative shrinks."
+        },
+        "nullable": true
+      },
+      {
+        "name": "invert",
+        "ty": "boolean",
+        "required": false,
+        "description": "invert",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
@@ -2911,6 +3200,81 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "use-selection",
+    "resource_kind": "canvas.artwork",
+    "label": "Use selection",
+    "description": "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "do",
+        "ty": "text",
+        "required": true,
+        "description": "`fill`, `stroke`, `mask` or `clear`.",
+        "schema": {
+          "type": "string",
+          "description": "`fill`, `stroke`, `mask` or `clear`."
+        },
+        "nullable": false
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "layer",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": false,
+        "description": "colour",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "width",
+        "ty": "number",
+        "required": false,
+        "description": "Stroke width (2).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Stroke width (2)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "id",
+        "ty": "text",
+        "required": false,
+        "description": "The new mark's.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The new mark's."
+        },
         "nullable": true
       }
     ]

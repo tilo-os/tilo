@@ -1064,6 +1064,15 @@ impl ActorState {
             Some(NetCmd::Publish { ws, msg }) => {
                 remember_governance(&mut self.governance, ws, &msg);
                 if self.native_routes.contains(ws)
+                    && matches!(&msg, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
+                {
+                    // A sealed write in a room whose records are sealed
+                    // channels: the governor never admits it, the relay
+                    // retains it for the record's channel members.
+                    self.publish_sealed_native(ws, &msg);
+                    return true;
+                }
+                if self.native_routes.contains(ws)
                     && matches!(
                         &msg,
                         NeighbourMsg::AppDocument { .. }
@@ -2681,6 +2690,18 @@ impl ActorState {
         else {
             return;
         };
+        self.hold_backlog(ws, channel, kind, bytes);
+    }
+
+    /// Keep one message for room `ws`'s host until its session is up, the
+    /// oldest dropped past the room's bounds.
+    fn hold_backlog(
+        &mut self,
+        ws: WorkspaceId,
+        channel: [u8; 32],
+        kind: Retention,
+        bytes: Vec<u8>,
+    ) {
         let backlog = self.host_backlog.entry(ws).or_default();
         backlog.bytes = backlog.bytes.saturating_add(bytes.len());
         backlog.entries.push_back((channel, kind, bytes));

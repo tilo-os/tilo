@@ -40,7 +40,6 @@
 "apps/firewall/src/resource.rs" = 2
 "apps/git-client/src/resource.rs" = 2
 "apps/hex-editor/src/resource.rs" = 1
-"apps/image-editor/src/resource.rs" = 1
 "apps/imager/src/resource.rs" = 2
 "apps/logs/src/resource.rs" = 2
 "apps/mail/src/resource.rs" = 2
@@ -100,8 +99,6 @@
 "apps/git-client/src/main.rs" = 2
 "apps/hex-editor/src/lib.rs" = 2
 "apps/hex-editor/src/main.rs" = 2
-"apps/image-editor/src/lib.rs" = 2
-"apps/image-editor/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
 "apps/logs/src/main.rs" = 2
 "apps/mail/src/main.rs" = 2
@@ -161,7 +158,6 @@
 "apps/containers/src/framework_history.rs" = 1
 "apps/db-client/src/doc.rs" = 1
 "apps/diffmerge/src/framework_history.rs" = 1
-"apps/image-editor/src/doc.rs" = 1
 "apps/maps/src/app/interaction.rs" = 1
 "apps/maps/src/offline_panel.rs" = 1
 "apps/music/src/doc.rs" = 1

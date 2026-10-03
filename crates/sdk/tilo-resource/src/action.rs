@@ -28,6 +28,14 @@ pub struct ActionCx {
     seed: [u8; 32],
     minted: u64,
     now_ms: i64,
+    author: Option<String>,
+}
+
+/// Who invoked the action applying now, as its envelope pinned it.
+fn invoking_author() -> Option<String> {
+    tilo_actions::invoking_context()
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.actor)
 }
 
 impl ActionCx {
@@ -43,6 +51,7 @@ impl ActionCx {
             seed: seed(doc, b"tilo-resource/action-seed/v1", payload),
             minted: 0,
             now_ms,
+            author: invoking_author(),
         }
     }
 
@@ -71,6 +80,7 @@ impl ActionCx {
             seed: *hasher.finalize().as_bytes(),
             minted: 0,
             now_ms: 0,
+            author: invoking_author(),
         }
     }
 
@@ -89,6 +99,15 @@ impl ActionCx {
     /// read once on the origin.
     pub fn now_ms(&self) -> i64 {
         self.now_ms
+    }
+
+    /// Who the action is by: the person or agent that invoked it, the same
+    /// id that participant's own views read as `me`. Pinned with the action
+    /// like its time, so every replica reads the same author; the payload
+    /// need not carry it. `None` for an action applied with no invoker
+    /// (an edit written straight into a document outside the host).
+    pub fn author(&self) -> Option<&str> {
+        self.author.as_deref()
     }
 }
 
@@ -189,8 +208,10 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         RiskLevel::Low
     }
 
-    /// Whether the operation changes the record's content or is housekeeping
-    /// about it. `#[resource]` generates it from `#[action(housekeeping)]`.
+    /// What the operation is to the people sharing the record: content,
+    /// housekeeping about it, or content from outside that is nobody's undo
+    /// step. `#[resource]` generates it from `#[action(housekeeping)]` and
+    /// `#[action(external)]`.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         tilo_actions::ChangeKind::Content
     }

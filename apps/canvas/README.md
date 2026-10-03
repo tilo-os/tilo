@@ -21,6 +21,8 @@ everything an agent, a script or a screen reader does:
 | `edit-marks` | recolour, move, scale, rotate or re-layer marks by id |
 | `remove-marks`, `arrange` | remove, restack |
 | `add-layer`, `edit-layer`, `remove-layer` | layers and their media |
+| `select`, `use-selection` | an area: shapes, lasso, marks, magic wand, colour; fill, outline, mask, clear |
+| `combine` | shapes united, subtracted, intersected or excluded into one path |
 | `set-artwork` | title, size, ground texture and colour |
 | `save-medium`, `remove-medium` | media presets saved in the artwork |
 | `look` | a PNG of the artwork or a region, with an optional coordinate grid |
@@ -35,6 +37,21 @@ carry film `grain`, an `inner_shadow` (a light one is a highlight) and a
 area and centre of mass) and each letter's box, for balancing icons and
 type by eye. Groups nest (`icons/mail`), and SVG export and import keep
 them, their shadows and text set along a path.
+
+The selection is an area kept with the artwork, like the reference: it
+syncs and undoes, and is never drawn into it. Rectangles, ellipses, lassos,
+path data and marks' shapes select it; the magic wand and colour find it in
+the artwork as the window shows it, every layer kind alike, and resolve to
+plain geometry where the action is authored, so every replica applies the
+same area. Shift adds, Alt subtracts, both intersect; grow, feather and
+invert refine it. What is made of it is ordinary data: a fill or outline is a
+path mark, paint kept inside it is cut to a mark of its shape
+(`clip: "selection"`, and the brush does it while there is a selection), and
+`mask`/`clear` draw white or black into the layer's mask. A mask is a layer of
+grey marks (`<layer>-mask`) the layer is shown through, so brushes, shapes and
+selections all edit it; it inverts, switches off and goes with its layer. A
+layer can clip to the one below. `combine` keeps curves exact: where the
+result's edges lie on the original outlines they are those curves again.
 
 Refusals name the mistake and the valid choices (the layers that exist, the
 pigments of the layer's palette), so an agent can correct itself from the

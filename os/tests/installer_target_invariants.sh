@@ -153,7 +153,7 @@ if grep -Fq 'root_gib=$(((image_bytes * 3 + gib - 1) / gib))' "$builder" \
    && grep -Fq -- '--root-min "${root_gib}G"' "$builder" \
    && grep -Fq 'TILO_INSTALLER_WORK_DISK=' "$repo_root/os/dev/_common.sh" \
    && grep -Fq "qemu-img create -f qcow2 -F qcow2 -b '\$disk' '\$work_disk'" "$repo_root/os/dev/vm.sh" \
-   && grep -Fq -- '-drive file=$work_disk,format=qcow2,if=virtio' "$repo_root/os/dev/vm.sh"; then
+   && grep -Fq '$(virtio_disk "$work_disk" tilo-installer-medium tilo-installer-medium)' "$repo_root/os/dev/vm.sh"; then
   ok "live media is capacity-sized and VM cycles preserve the release artifact"
 else
   bad "live-media capacity or pristine-artifact VM isolation regressed"

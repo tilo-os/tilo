@@ -546,7 +546,17 @@ impl State {
     }
 
     /// Forward a scroll event to the surface the pointer is focused on.
-    pub fn forward_client_pointer_axis(&mut self, delta: MouseScrollDelta) -> bool {
+    ///
+    /// `wl_pointer.axis_stop` ends a finger scroll on that axis, so it goes
+    /// out once, when the fingers lift (`phase` ended). Sent with every
+    /// event for the axis that did not move, it told toolkits each wheel
+    /// notch was the end of a gesture: winit reported it as an ended
+    /// scroll, which a scroll view takes for a fling release and ignores.
+    pub fn forward_client_pointer_axis(
+        &mut self,
+        delta: MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+    ) -> bool {
         if self.client_input.pointer_focus.is_none() {
             return false;
         }
@@ -573,11 +583,13 @@ impl State {
                 frame = frame.v120(Axis::Vertical, v120);
             }
         }
-        if h == 0.0 {
-            frame = frame.stop(Axis::Horizontal);
-        }
-        if v == 0.0 {
-            frame = frame.stop(Axis::Vertical);
+        if v120.is_none()
+            && matches!(
+                phase,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+            )
+        {
+            frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -1059,24 +1071,94 @@ pub fn sync_pointer_image(
 /// `zwp_tablet_tool_v2`; for anything else — other apps, shell chrome, the
 /// lock screen — the pen stands in for the pointer, and the returned events
 /// go through the ordinary pointer path.
+///
+/// Over a tablet-aware client the pen still is the pointer as far as the
+/// desktop goes: the cursor follows it, touching down focuses and raises the
+/// window as a click does (and closes a popup it lands outside of), and a
+/// stroke stays with the window it started in until the tip lifts, as a held
+/// button keeps the pointer with its client.
 pub fn route_tablet_event(
     state: &mut State,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     input: &crate::compositor::backend::TabletInput,
     session_locked: bool,
 ) -> Vec<crate::compositor::backend::BackendEvent> {
-    let target = (!session_locked && !chrome_captures_input(fb))
+    use crate::compositor::backend::TabletPhase;
+    let usable = !session_locked && !chrome_captures_input(fb);
+    let under = usable
         .then(|| surface_at(state, fb, input.position))
-        .flatten()
-        .filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id));
-    state.forward_tablet(input, target);
+        .flatten();
+    let target = match state.tablet_clients.stroke.filter(|_| usable) {
+        Some((held, origin)) => Some(match under {
+            Some((surface_id, now)) if surface_id == held => (held, now),
+            _ => (held, origin),
+        }),
+        None => under.filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id)),
+    };
+    let mut input = std::borrow::Cow::Borrowed(input);
+    if target.is_some() && input.phase != TabletPhase::ProximityOut {
+        state.client_input.cursor = Some(input.position);
+        fb.host_mut()
+            .note_pointer(vello::kurbo::Point::new(input.position.0, input.position.1));
+        if input.phase == TabletPhase::TipDown && state.tablet_clients.stroke.is_none() {
+            let hit = current_pointer_target(state, fb, false);
+            if state.dismiss_popup_grab_outside(hit.map(|hit| hit.surface_id)) {
+                // Like a click outside a popup, the touch only closes it.
+                input.to_mut().phase = TabletPhase::Motion;
+            } else {
+                state.tablet_clients.stroke = target;
+                if let Some(hit) = hit {
+                    focus_pressed(state, fb, hit);
+                }
+            }
+        }
+    }
+    state.forward_tablet(&input, target);
+    if !usable || matches!(input.phase, TabletPhase::TipUp | TabletPhase::ProximityOut) {
+        state.tablet_clients.stroke = None;
+    }
     if target.is_some() {
         return Vec::new();
     }
-    crate::compositor::tablet::tablet_pointer_events(input)
+    crate::compositor::tablet::tablet_pointer_events(&input)
         .into_iter()
         .map(crate::compositor::backend::BackendEvent::Input)
         .collect()
+}
+
+/// Click-to-focus: raise the pressed window group so the keyboard follows
+/// the pointer, or the pen, into the client.
+fn focus_pressed(state: &mut State, fb: &mut FrameBuilder, h: TileHit) {
+    if state.is_output_presentation_surface(h.surface_id) {
+        // Audience focus is explicit and never mutates the
+        // presenter's workspace selection.
+        state.focus_output_presentation_surface(h.surface_id);
+        sync_keyboard_focus(state, fb);
+    } else {
+        state.clear_output_presentation_focus();
+    }
+    let overlay_focus = state.is_floating_toplevel(h.surface_id)
+        || state.is_transient_surface(h.surface_id)
+        || fb
+            .fullscreen_surface_rect()
+            .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
+    if overlay_focus && state.osk_surface != Some(h.surface_id) {
+        state.set_client_keyboard_focus(Some(h.surface_id));
+    }
+    // Tapping the keyboard must keep the editable field's
+    // keyboard focus. Pointer focus moves to the OSK, but
+    // raising/focusing it would deactivate the very
+    // text-input session the tap is meant to feed.
+    if !state.is_output_presentation_surface(h.surface_id)
+        && state.osk_surface != Some(h.surface_id)
+        && !state.is_floating_toplevel(h.surface_id)
+        && !state.is_transient_surface(h.surface_id)
+    {
+        if raise_group(fb, h.strip, h.group) {
+            state.client_input.focus_persistence_pending = true;
+        }
+        sync_keyboard_focus(state, fb);
+    }
 }
 
 /// Route one tablet pad event. Pads follow keyboard focus: a focused client
@@ -1235,7 +1317,9 @@ pub fn route_input(
             button,
             ..
         } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
-        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, *modifiers),
+        WindowEvent::MouseWheel { delta, phase, .. } => {
+            route_mouse_wheel(state, fb, *delta, *phase, *modifiers)
+        }
         WindowEvent::KeyboardInput { .. } => {
             route_keyboard_input(state, fb, chrome_captures_input(fb), event, *modifiers)
         }
@@ -1345,38 +1429,8 @@ fn route_mouse_input(
                     None => PointerOwner::Chrome,
                 });
             }
-            // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
             if let Some(h) = hit {
-                if state.is_output_presentation_surface(h.surface_id) {
-                    // Audience focus is explicit and never mutates the
-                    // presenter's workspace selection.
-                    state.focus_output_presentation_surface(h.surface_id);
-                    sync_keyboard_focus(state, fb);
-                } else {
-                    state.clear_output_presentation_focus();
-                }
-                let overlay_focus = state.is_floating_toplevel(h.surface_id)
-                    || state.is_transient_surface(h.surface_id)
-                    || fb
-                        .fullscreen_surface_rect()
-                        .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
-                if overlay_focus && state.osk_surface != Some(h.surface_id) {
-                    state.set_client_keyboard_focus(Some(h.surface_id));
-                }
-                // Tapping the keyboard must keep the editable field's
-                // keyboard focus. Pointer focus moves to the OSK, but
-                // raising/focusing it would deactivate the very
-                // text-input session the tap is meant to feed.
-                if !state.is_output_presentation_surface(h.surface_id)
-                    && state.osk_surface != Some(h.surface_id)
-                    && !state.is_floating_toplevel(h.surface_id)
-                    && !state.is_transient_surface(h.surface_id)
-                {
-                    if raise_group(fb, h.strip, h.group) {
-                        state.client_input.focus_persistence_pending = true;
-                    }
-                    sync_keyboard_focus(state, fb);
-                }
+                focus_pressed(state, fb, h);
             }
         }
         state.client_input.buttons_down = state.client_input.buttons_down.saturating_add(1);
@@ -1452,6 +1506,7 @@ fn route_mouse_wheel(
     state: &mut State,
     fb: &mut FrameBuilder,
     delta: MouseScrollDelta,
+    phase: winit::event::TouchPhase,
     modifiers: Modifiers,
 ) -> bool {
     let mods = modifiers.state();
@@ -1488,7 +1543,7 @@ fn route_mouse_wheel(
         return true;
     }
     if state.client_input.pointer_focus.is_some() {
-        state.forward_client_pointer_axis(delta)
+        state.forward_client_pointer_axis(delta, phase)
     } else {
         false
     }
