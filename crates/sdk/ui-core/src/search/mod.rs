@@ -40,7 +40,7 @@ mod provider;
 mod query;
 pub mod rank;
 mod registry;
-mod request;
+pub(crate) mod request;
 mod row;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -55,8 +55,6 @@ pub use provider::{
 pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use request::{SEARCH_OPERATION, SEARCH_RESOURCE};
 pub use request::{
     ScopeDecl, SearchOpener, SearchRequest, SearchRequestScope, open_search_binding,
     open_search_invocation, scope_contains, search_button,

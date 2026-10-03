@@ -12,7 +12,7 @@ use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, 
 use super::edit::EDIT_RESOURCE;
 use crate::i18n::I18nManager;
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
-use crate::search::SEARCH_RESOURCE;
+use crate::search::request::SEARCH_RESOURCE;
 use crate::standalone_history_host::{HISTORY_RESOURCE, encode_entry};
 use crate::widget::HistoryEntryId;
 

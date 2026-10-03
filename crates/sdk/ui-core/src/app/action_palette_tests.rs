@@ -400,10 +400,11 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             assert!(
                 !app.collect_resources()
                     .iter()
-                    .any(|resource| resource.id.as_str() == crate::search::SEARCH_RESOURCE),
+                    .any(|resource| resource.id.as_str() == crate::search::request::SEARCH_RESOURCE),
                 "host Search never becomes an application/broker resource"
             );
-            let address = tilo_actions::ActionAddress::new(crate::search::SEARCH_RESOURCE, "open");
+            let address =
+                tilo_actions::ActionAddress::new(crate::search::request::SEARCH_RESOURCE, "open");
             assert!(
                 app.invoke_resource_action(
                     ResourceInvocation::new(&address, "same-local-name").broker_admitted(true)

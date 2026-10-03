@@ -1425,7 +1425,10 @@ mod tests {
             .into_iter()
             .map(|resource| resource.id.as_str().to_owned())
             .collect();
-        assert_eq!(ids, [HISTORY_RESOURCE, crate::search::SEARCH_RESOURCE]);
+        assert_eq!(
+            ids,
+            [HISTORY_RESOURCE, crate::search::request::SEARCH_RESOURCE]
+        );
 
         let mut app = Text::new("app");
         let mut tree = TaffyTree::new();
