@@ -44,6 +44,14 @@ pub trait Images: Send + Sync {
     }
 }
 
+/// OCI references (`host/repo[:tag]`, comma-separated) to fetch images no
+/// local store holds from. A relay sets it for its members' supervisors; a
+/// device ships its images and leaves it unset.
+pub const IMAGE_SOURCES_ENV: &str = "TILO_USH_IMAGE_SOURCES";
+
+/// Where images fetched from [`IMAGE_SOURCES_ENV`] are cached.
+pub const IMAGE_CACHE_ENV: &str = "TILO_USH_IMAGE_CACHE";
+
 /// The device's package store: system stores first, then the user's, with
 /// the store's own trust deciding which images are admitted, and the shelf
 /// the user's devices share their builds on.
@@ -87,7 +95,11 @@ impl StoreImages {
         if let Some(key) = device_publisher() {
             trust = trust.with_publisher(key);
         }
-        let images = Self::new(store.with_trust(trust));
+        let mut store = store.with_trust(trust);
+        if let Some(fetcher) = oci_fetcher_from_env()? {
+            store = store.with_fetcher(fetcher);
+        }
+        let images = Self::new(store);
         Ok(match xdg_paths::workspace_root() {
             Some(synced) => {
                 images.with_shelf(package_store::ImageShelf::at(synced.join(SHELF_DIR)))
@@ -130,6 +142,26 @@ impl ToolBuilder for SharedBuilds {
         }
         Ok(id)
     }
+}
+
+/// The OCI fetcher [`IMAGE_SOURCES_ENV`] and [`IMAGE_CACHE_ENV`] describe.
+fn oci_fetcher_from_env() -> Result<Option<tilo_oci_images::OciImages>, String> {
+    let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV) else {
+        return Ok(None);
+    };
+    let sources = sources
+        .to_string_lossy()
+        .split(',')
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .map(tilo_oci_images::OciSource::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("{IMAGE_SOURCES_ENV}: {e}"))?;
+    let cache = std::env::var_os(IMAGE_CACHE_ENV)
+        .map(PathBuf::from)
+        .filter(|cache| cache.is_absolute())
+        .ok_or_else(|| format!("{IMAGE_SOURCES_ENV} needs an absolute {IMAGE_CACHE_ENV}"))?;
+    Ok((!sources.is_empty()).then(|| tilo_oci_images::OciImages::new(sources, cache)))
 }
 
 impl Images for StoreImages {
