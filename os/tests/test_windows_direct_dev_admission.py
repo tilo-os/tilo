@@ -212,6 +212,27 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'input closure differs'):
                 admission.assembly_compatibility(generic, board)
 
+    def test_sealed_ci_uki_compatibility_binds_exact_helpers_and_all_diffs(self):
+        generic, board = admission.SEALED_FIX_PAIR
+        record = admission.assembly_compatibility(generic, board)
+        self.assertEqual(record['kind'], 'sealed-ci-uki-projection-fix')
+        self.assertEqual(record['runtime_file_sha256'], admission.SEALED_FIX_BLOBS)
+        self.assertEqual(record['file_diff_sha256'], admission.SEALED_FIX_DIFFS)
+        for revisions in ((board, generic), (generic, 'e' * 40)):
+            with self.assertRaisesRegex(ValueError, 'unreviewed assembly identities'):
+                admission.assembly_compatibility(*revisions)
+        with patch.object(admission, 'SEALED_FIX_BLOBS', {
+                path: {revision: '0' * 64 for revision in pins}
+                for path, pins in admission.SEALED_FIX_BLOBS.items()}):
+            with self.assertRaisesRegex(ValueError, 'helper bytes differ'):
+                admission.assembly_compatibility(generic, board)
+        with patch.object(admission, 'SEALED_FIX_DIFFS', {}):
+            with self.assertRaisesRegex(ValueError, 'assembly diffs differ'):
+                admission.assembly_compatibility(generic, board)
+        with patch.object(admission, 'PROFILE_FIX_CHANGED', {'os/Containerfile'}):
+            with self.assertRaisesRegex(ValueError, 'input closure differs'):
+                admission.assembly_compatibility(generic, board)
+
     def test_pagefile_is_only_a_shrink_gate(self):
         common = admission.module('common_gate', 'windows-direct-common.py')
         state = {'volume_status': 1, 'protection_status': 0, 'encryption_percentage': 100,
