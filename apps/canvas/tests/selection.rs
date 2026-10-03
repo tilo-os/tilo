@@ -182,7 +182,7 @@ fn a_selection_is_made_of_shapes_and_refined() {
     select(
         &mut art,
         Select {
-            none: Some(true),
+            mode: Some("none".into()),
             ..Select::default()
         },
     );

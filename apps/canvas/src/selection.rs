@@ -29,55 +29,43 @@ const INK: &str = "#1d1b19"; // a paint colour of the artwork, not chrome
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Select {
-    /// A rectangle `[x, y, width, height]`.
+    /// `[x, y, w, h]`.
     pub rect: Option<[f64; 4]>,
-    /// The ellipse inside `[x, y, width, height]`.
+    /// In `[x, y, w, h]`.
     pub ellipse: Option<[f64; 4]>,
-    /// A lasso: `[[x, y], …]` around the area, closed back to its start.
+    /// Lasso `[[x, y], …]`.
     pub points: Option<Vec<[f64; 2]>>,
     /// SVG path data.
     pub d: Option<String>,
-    /// The shapes of these marks or groups.
+    /// Marks or groups.
     pub marks: Option<Vec<String>>,
-    /// Magic wand: the colour at `[x, y]` as the artwork shows it, and all
-    /// the like colour touching it.
+    /// Magic wand `[x, y]`: like colour touching it.
     pub at: Option<[f64; 2]>,
-    /// Every part showing this colour, `#rrggbb`.
+    /// `#rrggbb`, everywhere.
     pub colour: Option<String>,
-    /// With at or colour: how far a colour may differ, 0..1 (default 0.15).
+    /// 0..1, default 0.15.
     pub tolerance: Option<f64>,
-    /// With at: also like colour that does not touch.
-    pub everywhere: Option<bool>,
-    /// With at or colour: see only these layers.
-    pub layers: Option<Vec<String>>,
-    /// `replace` (default), `add`, `subtract` or `intersect` with the
-    /// current selection.
+    /// `replace`, `add`, `subtract`, `intersect` or `none`.
     pub mode: Option<String>,
-    /// Soften the edge over this many units.
+    /// Units.
     pub feather: Option<f64>,
-    /// Grow by this many units; negative shrinks.
+    /// Units; negative shrinks.
     pub grow: Option<f64>,
-    /// Then select what is not selected.
     pub invert: Option<bool>,
-    /// Select nothing.
-    pub none: Option<bool>,
 }
 
 /// Make something of the selection.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UseSelection {
-    /// `fill` it with colour, `stroke` its outline, `mask` the layer to it,
-    /// `clear` it from the layer (through the layer's mask).
+    /// `fill`, `stroke`, `mask` or `clear`.
     #[serde(rename = "do")]
     pub what: String,
-    /// The layer (default the top one).
     pub layer: Option<String>,
-    /// `#rrggbb[aa]` or `pigment:<name>`.
     pub colour: Option<String>,
-    /// stroke: outline width in units (default 2).
+    /// Stroke width (2).
     pub width: Option<f64>,
-    /// The new mark's id.
+    /// The new mark's.
     pub id: Option<String>,
 }
 
@@ -87,8 +75,7 @@ pub struct UseSelection {
 pub struct Combine {
     /// Marks or groups.
     pub ids: Vec<String>,
-    /// `union`, `subtract` (the bottom one less the rest), `intersect` or
-    /// `exclude` (where an odd number overlap).
+    /// `union`, `subtract` (from the bottom one), `intersect` or `exclude`.
     pub op: String,
 }
 
@@ -212,7 +199,7 @@ impl Select {
                 "at and colour are found in the artwork as the window shows it: use the select action itself, not apply",
             ));
         }
-        if self.none == Some(true) {
+        if self.mode.as_deref() == Some("none") {
             doc::write_selection(doc, None)?;
             return Ok(());
         }
@@ -223,7 +210,7 @@ impl Select {
             && self.feather.is_none()
         {
             return Err(refuse(
-                "give rect, ellipse, points, d, marks, at or colour to select; grow, feather or invert to change the selection; or none",
+                "give rect, ellipse, points, d, marks, at or colour to select; grow, feather or invert to change the selection; or mode none",
             ));
         }
         for (value, what) in [(self.feather, "feather"), (self.grow, "grow")] {
@@ -245,7 +232,7 @@ impl Select {
             (Some(shapes), "intersect") => had.combine(&shapes, Op::Intersect),
             (Some(_), other) => {
                 return Err(refuse(format!(
-                    "mode {other:?} must be replace, add, subtract or intersect"
+                    "mode {other:?} must be replace, add, subtract, intersect or none"
                 )));
             }
         };

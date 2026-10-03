@@ -609,17 +609,17 @@ fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
             crate::author::resolve(&mut select)?;
             Ok(CanvasAction::Select(Box::new(select)))
         })
-        .describe("Select an area to work on: rect, ellipse, lasso points, path d, marks' shapes, or by colour (at: magic wand, colour: everywhere); add, subtract or intersect; grow, feather, invert. use-selection then fills, outlines, masks or clears it; paint and draw with clip: \"selection\" stay inside it. Bucket fill: select at, then use-selection fill. inspect and look show it."),
+        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it"),
         decl::<crate::selection::UseSelection>(
             "use-selection",
             "Use selection",
-            "Make the selection a fill or outline mark on a layer, mask the layer to it (mask) or hide it there (clear). Masks are layers of grey marks (<layer>-mask) you can paint and draw on; edit-layer inverts or removes them.",
+            "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
             CanvasAction::UseSelection,
         ),
         decl::<crate::selection::Combine>(
             "combine",
             "Combine shapes",
-            "Combine shapes into one path mark in one step, in place of the bottom one and in its style: union, subtract, intersect or exclude. Outlines and brush strokes count as the area of their ink.",
+            "Combine shapes into one path mark, in the bottom one's place and style.",
             CanvasAction::Combine,
         ),
     ]
