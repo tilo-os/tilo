@@ -96,17 +96,18 @@ NEW_KERN2 = {
 
 # Sides whose Latin source tucks a neighbour in further than their ink
 # allows: a round bowl with an ascender (б, ф, the italic д drawn as a
-# mirrored 6) or a bowl over a foot that runs out (я Я). Their kerning takes
-# the Latin source's value, but in the band of heights where that part
-# sits, no less than keeps, against every Cyrillic letter and every
-# punctuation mark or figure on the other side, `share` of the white that
-# neighbour keeps in the same band from a Latin reference glyph at
-# Instrument's own kerning (`ref`: h, a straight ascender on the left; l on
-# the right; x and X, a diagonal foot); and nowhere less than FLOOR_MIN
-# units. So under Т's bar б's flag keeps about half the white h's ascender
-# keeps, while its bowl still tucks in like o; К keeps as much white from
-# я's foot as from x's. Measured on the outlines construct.py writes
-# (ink.py), in every master.
+# mirrored 6), a bowl or arm over a foot that runs out (я Я ж) or a tail
+# (Қ қ). Their kerning takes the Latin source's value, but in the band of
+# heights where that part sits, no less than keeps, against every Cyrillic
+# letter and every punctuation mark or figure on the other side, `share` of
+# the white that neighbour keeps in the same band from a Latin reference
+# glyph at Instrument's own kerning (`ref`: h, a straight ascender on the
+# left; l on the right; x and X, a diagonal foot; K and k for the tails);
+# white wider than between two n's needs no holding off; and nowhere less
+# than FLOOR_MIN units. So under Т's bar б's flag keeps about half the white
+# h's ascender keeps, while its bowl still tucks in like o; К keeps four
+# fifths of the white from я's foot that it keeps from x's. Measured on the
+# outlines construct.py writes (ink.py), in every master.
 #   group: (reference glyph, share, band bottom, band top)
 FLOOR2 = {"KO_be-cy": ("h", 0.55, 500, 800), "KO_de-cy": ("h", 0.55, 500, 800),
           "KO_ef-cy": ("h", 0.55, 520, 800),
