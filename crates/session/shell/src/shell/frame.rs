@@ -542,7 +542,7 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=light|high-contrast|dark` and
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
     /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
     /// a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
@@ -558,15 +558,10 @@ impl FrameBuilder {
         if requested_theme.is_none() && requested_scale.is_none() {
             return None;
         }
-        let theme = match requested_theme
+        let theme = requested_theme
             .as_deref()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("light") => Theme::light(),
-            Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
-            _ => Theme::dark(),
-        };
+            .and_then(|name| Theme::named(name.trim()))
+            .unwrap_or_else(Theme::dark);
         Some(if let Some(scale) = requested_scale {
             theme.with_text_scale(scale)
         } else {
