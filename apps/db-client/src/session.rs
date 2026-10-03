@@ -170,12 +170,12 @@ impl Session {
 
         // Two example remotes, disconnected (no password, gated on a real
         // server). They demonstrate the sidebar's multi-engine roster.
-        let mut pg = ConnectionProfile::new("Analytics · prod", Engine::Postgres);
+        let mut pg = ConnectionProfile::new("Production analytics", Engine::Postgres);
         pg.host = "db.internal".into();
         pg.database = "analytics".into();
         pg.user = "reader".into();
         s.connections.push(pg);
-        let mut my = ConnectionProfile::new("Shop · staging", Engine::MySql);
+        let mut my = ConnectionProfile::new("Staging shop", Engine::MySql);
         my.host = "mysql.staging".into();
         my.database = "shop".into();
         my.user = "app".into();
