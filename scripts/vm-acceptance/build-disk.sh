@@ -15,6 +15,8 @@
 #   TILO_DISK_OCI       an OCI layout already built from <commit> on the builder: skip the
 #                       image build and write the disk from it
 #   RPMS_REF, KERNEL_RPMS_REF   optional overrides; build-image.sh resolves both otherwise
+#   TILO_DISK_KEEP      disks this script built to keep next to <out.qcow2>, newest first
+#                       (default 3; `all` keeps every one); see prune_disks.py
 #
 # Nothing is compiled here: the OS image is built by `$TILO_DISK_CARGO run -p tilo-vm --
 # image build`, the disk by os/dev/build-image.sh on the builder, and only the qcow2 is copied.
@@ -99,7 +101,7 @@ if [ "${1:-}" = "--seed-self-test" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
-[ $# -eq 2 ] || { sed -n '2,18p' "$0"; exit 2; }
+[ $# -eq 2 ] || { sed -n '2,20p' "$0"; exit 2; }
 : "${TILO_DISK_BUILDER:?set TILO_DISK_BUILDER to the ssh destination of the builder}"
 : "${TILO_DISK_SCRATCH:?set TILO_DISK_SCRATCH to a scratch directory on the builder}"
 : "${TILO_DISK_MIRRORS:?set TILO_DISK_MIRRORS to the glob of worktree mirrors on the builder}"
@@ -189,3 +191,7 @@ with open(out + ".provenance.json", "w") as f:
     json.dump(record, f, indent=2)
 print(f"wrote {out}.provenance.json")
 PY
+
+# Each disk costs its full ~15 GiB, so older ones go once this one is complete.
+python3 "$(dirname -- "$0")/prune_disks.py" --protect "$out" "$(dirname -- "$out")" ||
+  echo "prune: failed; older disks next to $out were left in place" >&2
