@@ -267,9 +267,7 @@ mod tests {
                 .origin(),
             "diagnostics" => vello::kurbo::Point::new(
                 0.,
-                p.diagnostics
-                    .history_test_row_rect(p.diagnostics.diags().len() - 3)
-                    .y0,
+                p.diagnostics.row_rect(p.diagnostics.diags().len() - 3).y0,
             ),
             _ => p.pane.history_test_point(2, 495.),
         }
@@ -325,7 +323,7 @@ mod tests {
             if page == "diagnostics" {
                 let row_h = p
                     .diagnostics
-                    .history_test_row_rect(p.diagnostics.diags().len() - 3)
+                    .row_rect(p.diagnostics.diags().len() - 3)
                     .height();
                 for (scene, row) in [(end_scene, end.y), (reversed_scene, reversed.y)] {
                     assert!(

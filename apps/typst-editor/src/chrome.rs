@@ -203,7 +203,7 @@ impl Chrome {
             );
             self.picker_for.0 = names.iter().map(|name| (*name).to_string()).collect();
         }
-        if self.picker_for.1 != current || self.picker.selected() != current.to_string() {
+        if self.picker_for.1 != current || self.picker.selected().parse() != Ok(current) {
             self.picker.set_selected(current.to_string());
             self.picker_for.1 = current;
         }
