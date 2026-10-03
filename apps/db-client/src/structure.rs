@@ -1,437 +1,254 @@
-//! The "Structure" tab: renders a table's columns, primary/foreign keys and
-//! indexes as three stacked panels. Read-only inspection — the kind of view
-//! you reach for to remember a column's type or check a constraint.
+//! The Structure tab: a table's columns, keys and indexes as three tables in
+//! one scrolling page. Read-only inspection, the view you reach for to
+//! remember a column's type or check a constraint.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use std::rc::Rc;
 
-use crate::model::TableInfo;
-use crate::theme_ext::ThemeExt;
-use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextStyle};
-use ui::theme::Theme;
+use ui::TextRole;
+use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use ui::widget::{Column, Decorator, Element, Scrollable, Section, Text, Widget};
 
-/// 1× band heights; the painted bands are [`Bands`], which equal these until
-/// the text scale outgrows them.
-const ROW_H: f64 = 26.0;
-const HEADER_H: f64 = 28.0;
-/// Fractional text sizes painted in the panels (whole-number sizes — the
-/// 16 px table title, 11 px panel titles, 10 px chip glyphs — stay inline).
-const HEADING_FONT: f32 = 11.5;
-const CELL_FONT: f32 = 12.5;
+use crate::model::{RelationKind, TableInfo};
 
-/// Band heights measured from the renderer the tab paints with, so 2× text
-/// gets 2× rows instead of 31 px glyphs overprinting 26 px rows. Every row,
-/// header and title band reads this one snapshot. `Default` is the tab's 1×
-/// layout: 26/28 px rows and headers, a 30 px title band, an 18 px panel-title
-/// band and 18 px between panels; a 12.5 px cell (15.6 px) keeps 5 px either
-/// side and an 11.5 px heading (14.4 px) keeps 6 px.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Bands {
-    row_h: f64,
-    header_h: f64,
-    title_band: f64,
-    panel_title_band: f64,
-    panel_gap: f64,
+#[derive(Clone)]
+struct ColumnRow {
+    name: String,
+    declared: String,
+    nullable: &'static str,
+    key: &'static str,
+    default: Option<String>,
 }
 
-impl Default for Bands {
+#[derive(Clone)]
+struct KeyRow {
+    constraint: &'static str,
+    column: String,
+    references: Option<String>,
+}
+
+#[derive(Clone)]
+struct IndexRow {
+    name: String,
+    unique: &'static str,
+    columns: String,
+}
+
+fn table<Row: Clone + 'static>(
+    name: &str,
+    columns: Vec<ColumnDef<Row>>,
+    rows: Vec<Row>,
+) -> DataTable<Row> {
+    let mut table = DataTable::new(columns)
+        .with_id(name)
+        .with_accessible_name(name);
+    table.set_rows(rows);
+    table
+}
+
+fn columns_table(info: &TableInfo) -> DataTable<ColumnRow> {
+    let rows = info
+        .columns
+        .iter()
+        .map(|column| ColumnRow {
+            name: column.name.clone(),
+            declared: column.decl_type.clone(),
+            nullable: if column.not_null || column.primary_key {
+                "No"
+            } else {
+                "Yes"
+            },
+            key: if column.primary_key { "Primary" } else { "" },
+            default: column.default.clone(),
+        })
+        .collect();
+    table(
+        "db.structure.columns",
+        vec![
+            ColumnDef::new("name", "Name", ColumnWidth::Flex(2.0))
+                .with_text(|row: &ColumnRow| row.name.clone()),
+            ColumnDef::new("type", "Type", ColumnWidth::Flex(2.0))
+                .with_kind(ui::text_render::TextKind::Identifier)
+                .with_text(|row: &ColumnRow| row.declared.clone()),
+            ColumnDef::new("nullable", "Nullable", ColumnWidth::Flex(1.0))
+                .with_text(|row: &ColumnRow| row.nullable.to_owned()),
+            ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0))
+                .with_text(|row: &ColumnRow| row.key.to_owned()),
+            ColumnDef::new("default", "Default", ColumnWidth::Flex(2.0))
+                .with_kind(ui::text_render::TextKind::Code)
+                .with_optional_text(|row: &ColumnRow| row.default.clone(), "None"),
+        ],
+        rows,
+    )
+}
+
+fn keys_table(info: &TableInfo) -> Option<DataTable<KeyRow>> {
+    let mut rows: Vec<KeyRow> = info
+        .primary_keys()
+        .into_iter()
+        .map(|column| KeyRow {
+            constraint: "Primary key",
+            column: column.name.clone(),
+            references: None,
+        })
+        .collect();
+    rows.extend(info.foreign_keys.iter().map(|key| KeyRow {
+        constraint: "Foreign key",
+        column: key.column.clone(),
+        references: Some(format!("{}.{}", key.ref_table, key.ref_column)),
+    }));
+    (!rows.is_empty()).then(|| {
+        table(
+            "db.structure.keys",
+            vec![
+                ColumnDef::new("constraint", "Constraint", ColumnWidth::Flex(2.0))
+                    .with_text(|row: &KeyRow| row.constraint.to_owned()),
+                ColumnDef::new("column", "Column", ColumnWidth::Flex(2.0))
+                    .with_text(|row: &KeyRow| row.column.clone()),
+                ColumnDef::new("references", "References", ColumnWidth::Flex(3.0))
+                    .with_kind(ui::text_render::TextKind::Identifier)
+                    .with_optional_text(|row: &KeyRow| row.references.clone(), "None"),
+            ],
+            rows,
+        )
+    })
+}
+
+fn indexes_table(info: &TableInfo) -> Option<DataTable<IndexRow>> {
+    let rows: Vec<IndexRow> = info
+        .indexes
+        .iter()
+        .map(|index| IndexRow {
+            name: index.name.clone(),
+            unique: if index.unique { "Yes" } else { "No" },
+            columns: index.columns.join(", "),
+        })
+        .collect();
+    (!rows.is_empty()).then(|| {
+        table(
+            "db.structure.indexes",
+            vec![
+                ColumnDef::new("name", "Index", ColumnWidth::Flex(3.0))
+                    .with_text(|row: &IndexRow| row.name.clone()),
+                ColumnDef::new("unique", "Unique", ColumnWidth::Flex(1.0))
+                    .with_text(|row: &IndexRow| row.unique.to_owned()),
+                ColumnDef::new("columns", "Columns", ColumnWidth::Flex(3.0))
+                    .with_text(|row: &IndexRow| row.columns.clone()),
+            ],
+            rows,
+        )
+    })
+}
+
+/// "Table with 6 columns and 347 rows" / "View with 6 columns".
+fn summary(info: &TableInfo) -> String {
+    let kind = match info.kind {
+        RelationKind::Table => "Table",
+        RelationKind::View => "View",
+    };
+    let columns = info.columns.len();
+    let columns = if columns == 1 {
+        "1 column".to_owned()
+    } else {
+        format!("{columns} columns")
+    };
+    match info.row_count {
+        Some(1) => format!("{kind} with {columns} and 1 row"),
+        Some(rows) => format!("{kind} with {columns} and {rows} rows"),
+        None => format!("{kind} with {columns}"),
+    }
+}
+
+fn page(info: &TableInfo) -> Element {
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .push(Box::new(
+            Text::new(&info.name)
+                .with_role(TextRole::Title)
+                .with_kind(ui::text_render::TextKind::Identifier),
+        ))
+        .push(Box::new(
+            Text::new(&summary(info))
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ))
+        .push(Box::new(Section::titled(
+            "Columns",
+            vec![Box::new(columns_table(info))],
+        )));
+    if let Some(keys) = keys_table(info) {
+        column = column.push(Box::new(Section::titled("Keys", vec![Box::new(keys)])));
+    }
+    if let Some(indexes) = indexes_table(info) {
+        column = column.push(Box::new(Section::titled(
+            "Indexes",
+            vec![Box::new(indexes)],
+        )));
+    }
+    Box::new(
+        Scrollable::new_vertical()
+            .with_child(Box::new(column))
+            .fill_parent_height(),
+    )
+}
+
+/// The page for the selected table. It is rebuilt when the table changes.
+pub struct StructureView {
+    content: Element,
+    shown: Option<Rc<TableInfo>>,
+    structure_dirty: bool,
+}
+
+impl StructureView {
+    pub fn new() -> Self {
+        Self {
+            content: Box::new(Text::new("")),
+            shown: None,
+            structure_dirty: false,
+        }
+    }
+
+    /// Show `table`, or nothing when it is `None`.
+    pub fn show(&mut self, table: Option<&Rc<TableInfo>>) {
+        let same = match (&self.shown, table) {
+            (Some(shown), Some(next)) => Rc::ptr_eq(shown, next),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.shown = table.cloned();
+        self.content = match table {
+            Some(info) => page(info),
+            None => Box::new(Text::new("")),
+        };
+        self.structure_dirty = true;
+    }
+}
+
+impl Default for StructureView {
     fn default() -> Self {
-        Self {
-            row_h: ROW_H,
-            header_h: HEADER_H,
-            title_band: 30.0,
-            panel_title_band: 18.0,
-            panel_gap: 18.0,
-        }
+        Self::new()
     }
 }
 
-impl Bands {
-    fn measure(tr: &mut TextRenderer) -> Self {
-        let one = Self::default();
-        let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Ag", size, None).1);
-        let cell_h = line(tr, CELL_FONT);
-        let heading_h = line(tr, HEADING_FONT);
-        let title_h = line(tr, 16.0);
-        let panel_title_h = line(tr, 11.0);
-        Self {
-            row_h: (cell_h + 2.0 * 5.0).max(one.row_h),
-            header_h: (heading_h + 2.0 * 6.0).max(one.header_h),
-            title_band: (title_h + 10.0).max(one.title_band),
-            panel_title_band: (panel_title_h + 4.0).max(one.panel_title_band),
-            panel_gap: one.panel_gap,
-        }
-    }
-}
+impl Decorator for StructureView {
+    type Inner = dyn Widget;
 
-pub fn draw_structure(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    table: &TableInfo,
-) {
-    let m = Bands::measure(tr);
-    let mut y = area.y0;
-
-    // Title row.
-    let title = format!(
-        "{}   ({} columns{})",
-        table.name,
-        table.columns.len(),
-        table
-            .row_count
-            .map(|c| format!(", {c} rows"))
-            .unwrap_or_default()
-    );
-    tr.draw_text(
-        scene,
-        &title,
-        16.0,
-        theme.text_primary,
-        t * Affine::translate((area.x0 + 4.0, y)),
-        None,
-    );
-    y += m.title_band;
-
-    y = draw_columns_panel(scene, t, tr, theme, area, y, table, &m);
-    y += m.panel_gap;
-
-    if !table.foreign_keys.is_empty() || !table.primary_keys().is_empty() {
-        y = draw_keys_panel(scene, t, tr, theme, area, y, table, &m);
-        y += m.panel_gap;
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
     }
 
-    if !table.indexes.is_empty() {
-        draw_indexes_panel(scene, t, tr, theme, area, y, table, &m);
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
     }
-}
 
-#[expect(
-    clippy::similar_names,
-    reason = "`chip_x0`/`chip_y0` are the chip's origin coordinates"
-)]
-fn draw_columns_panel(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    y: f64,
-    table: &TableInfo,
-    m: &Bands,
-) -> f64 {
-    let p = theme.db();
-    let cols = [
-        ("Name", area.x0),
-        ("Type", area.x0 + 200.0),
-        ("Null", area.x0 + 360.0),
-        ("Key", area.x0 + 430.0),
-        ("Default", area.x0 + 510.0),
-    ];
-    let mut y = panel_header(
-        &mut PaintCtx::new(scene, t, tr, theme),
-        area,
-        y,
-        "COLUMNS",
-        &cols,
-        m,
-    );
-    let type_x = cols[1].1;
-
-    for (i, col) in table.columns.iter().enumerate() {
-        let row = Rect::new(area.x0, y, area.x1, y + m.row_h);
-        if i % 2 == 1 {
-            scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
-        }
-        // Type icon chip (one `s4` square), centred on the row; its glyph
-        // centred on the chip.
-        let chip_side = f64::from(theme.tokens.spacing.s4);
-        let chip_y0 = y + (m.row_h - chip_side) / 2.0;
-        let chip_x0 = type_x - 22.0;
-        let chip = Rect::new(chip_x0, chip_y0, chip_x0 + chip_side, chip_y0 + chip_side)
-            .to_rounded_rect(4.0);
-        let chip_color = theme.type_color(col.class);
-        scene.fill(Fill::NonZero, t, chip_color, None, &chip);
-        let icon = col.class.icon();
-        let (iw, ih) = tr.measure(icon, 10.0, None);
-        tr.draw_text(
-            scene,
-            icon,
-            10.0,
-            theme.tokens.colors.on_surface(chip_color).ink,
-            t * Affine::translate((
-                chip_x0 + (chip_side - f64::from(iw)) / 2.0,
-                chip_y0 + (chip_side - f64::from(ih)) / 2.0,
-            )),
-            None,
-        );
-
-        cell(scene, t, tr, theme.text_primary, &col.name, cols[0].1, y, m);
-        cell(
-            scene,
-            t,
-            tr,
-            theme.text_dim,
-            &col.decl_type,
-            cols[1].1,
-            y,
-            m,
-        );
-        cell(
-            scene,
-            t,
-            tr,
-            if col.not_null {
-                theme.tokens.colors.semantic.danger
-            } else {
-                theme.text_dim
-            },
-            if col.not_null { "NOT NULL" } else { "nullable" },
-            cols[2].1,
-            y,
-            m,
-        );
-        if col.primary_key {
-            cell(
-                scene,
-                t,
-                tr,
-                theme.tokens.colors.semantic.warning,
-                "PK",
-                cols[3].1,
-                y,
-                m,
-            );
-        }
-        if let Some(d) = &col.default {
-            cell(scene, t, tr, theme.text_dim, d, cols[4].1, y, m);
-        }
-        y += m.row_h;
+    fn take_structure_dirty(&mut self) -> bool {
+        let rebuilt = std::mem::take(&mut self.structure_dirty);
+        self.content.take_structure_dirty() || rebuilt
     }
-    y
-}
 
-fn draw_keys_panel(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    y: f64,
-    table: &TableInfo,
-    m: &Bands,
-) -> f64 {
-    let p = theme.db();
-    let kx = [
-        ("Constraint", area.x0),
-        ("Column", area.x0 + 220.0),
-        ("References", area.x0 + 360.0),
-    ];
-    let mut y = panel_header(
-        &mut PaintCtx::new(scene, t, tr, theme),
-        area,
-        y,
-        "KEYS",
-        &kx,
-        m,
-    );
-
-    for col in table.primary_keys() {
-        let row = Rect::new(area.x0, y, area.x1, y + m.row_h);
-        scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
-        cell(
-            scene,
-            t,
-            tr,
-            theme.tokens.colors.semantic.warning,
-            "PRIMARY KEY",
-            kx[0].1,
-            y,
-            m,
-        );
-        cell(scene, t, tr, theme.text_primary, &col.name, kx[1].1, y, m);
-        cell(scene, t, tr, theme.text_dim, "—", kx[2].1, y, m);
-        y += m.row_h;
-    }
-    for fk in &table.foreign_keys {
-        cell(
-            scene,
-            t,
-            tr,
-            theme.tokens.colors.semantic.info,
-            "FOREIGN KEY",
-            kx[0].1,
-            y,
-            m,
-        );
-        cell(scene, t, tr, theme.text_primary, &fk.column, kx[1].1, y, m);
-        cell(
-            scene,
-            t,
-            tr,
-            theme.text_dim,
-            &format!("{}.{}", fk.ref_table, fk.ref_column),
-            kx[2].1,
-            y,
-            m,
-        );
-        y += m.row_h;
-    }
-    y
-}
-
-fn draw_indexes_panel(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    y: f64,
-    table: &TableInfo,
-    m: &Bands,
-) {
-    let p = theme.db();
-    let ix = [
-        ("Index", area.x0),
-        ("Unique", area.x0 + 240.0),
-        ("Columns", area.x0 + 330.0),
-    ];
-    let mut y = panel_header(
-        &mut PaintCtx::new(scene, t, tr, theme),
-        area,
-        y,
-        "INDEXES",
-        &ix,
-        m,
-    );
-    for (i, idx) in table.indexes.iter().enumerate() {
-        let row = Rect::new(area.x0, y, area.x1, y + m.row_h);
-        if i % 2 == 1 {
-            scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
-        }
-        cell(scene, t, tr, theme.text_primary, &idx.name, ix[0].1, y, m);
-        cell(
-            scene,
-            t,
-            tr,
-            if idx.unique {
-                theme.tokens.colors.semantic.success
-            } else {
-                theme.text_dim
-            },
-            if idx.unique { "UNIQUE" } else { "—" },
-            ix[1].1,
-            y,
-            m,
-        );
-        cell(
-            scene,
-            t,
-            tr,
-            theme.text_dim,
-            &idx.columns.join(", "),
-            ix[2].1,
-            y,
-            m,
-        );
-        y += m.row_h;
-    }
-}
-
-/// The panel's title and column-heading band across `area`, starting at
-/// `y`. Returns the Y position beneath its rule.
-fn panel_header(
-    ctx: &mut PaintCtx<'_>,
-    area: Rect,
-    mut y: f64,
-    title: &str,
-    columns: &[(&str, f64)],
-    m: &Bands,
-) -> f64 {
-    let theme = ctx.theme;
-    let p = theme.db();
-    ctx.text(
-        title,
-        &TextStyle::new(11.0),
-        theme.text_dim,
-        Point::new(area.x0, y),
-        None,
-    );
-    y += m.panel_title_band;
-    ctx.fill_rect(Rect::new(area.x0, y, area.x1, y + m.header_h), p.header_bg);
-    let heading = TextStyle::new(HEADING_FONT);
-    for (h, x) in columns {
-        // Centre each heading on the band from its measured line height so
-        // the header row and the cells below share one alignment rule.
-        let (_, hh) = ctx.text.measure(h, HEADING_FONT, None);
-        ctx.text(
-            h,
-            &heading,
-            theme.text_primary,
-            Point::new(x + 6.0, y + (m.header_h - f64::from(hh)) / 2.0),
-            None,
-        );
-    }
-    y += m.header_h;
-    ctx.scene.stroke(
-        &Stroke::new(1.0),
-        ctx.transform,
-        theme.border_standard,
-        None,
-        &Line::new(Point::new(area.x0, y), Point::new(area.x1, y)),
-    );
-    y
-}
-
-fn cell(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    color: Color,
-    text: &str,
-    x: f64,
-    y: f64,
-    m: &Bands,
-) {
-    let (_, th) = tr.measure(text, CELL_FONT, None);
-    tr.draw_text(
-        scene,
-        text,
-        CELL_FONT,
-        color,
-        t * Affine::translate((x + 6.0, y + (m.row_h - f64::from(th)) / 2.0)),
-        None,
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The measured bands reproduce the 1× constants exactly and grow with
-    /// the cell text at 2×, so rows never sit on a pitch their glyphs exceed.
-    #[test]
-    fn bands_match_the_constants_at_1x_and_follow_the_text_scale() {
-        let mut tr = TextRenderer::new();
-        let one = Bands::measure(&mut tr);
-        assert_eq!(
-            (
-                one.row_h,
-                one.header_h,
-                one.title_band,
-                one.panel_title_band
-            ),
-            (ROW_H, HEADER_H, 30.0, 18.0)
-        );
-
-        tr.set_text_scale(2.0);
-        let two = Bands::measure(&mut tr);
-        let (_, cell_h) = tr.measure("Ag", CELL_FONT, None);
-        assert!(two.row_h >= f64::from(cell_h) + 2.0 * 5.0 && two.row_h > one.row_h);
-        assert!(two.header_h > one.header_h && two.title_band > one.title_band);
+    fn name(&self) -> &'static str {
+        "StructureView"
     }
 }
