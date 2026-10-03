@@ -3,9 +3,6 @@
 /fonts/
 # Upstream Instrument Sans checkout used by import_upstream.py and verify_upstream.py.
 /.upstream/
-# Working proofs. Only the sheets written with `proof.py --final` and the
-# merged family's final and review sheets are tracked.
-/proofs/*
-!/proofs/sheets/
-!/proofs/final/
+# Proof sheets are generated from the sources with proof.py and never tracked.
+/proofs/
 __pycache__/

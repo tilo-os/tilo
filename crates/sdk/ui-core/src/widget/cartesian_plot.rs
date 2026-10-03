@@ -1535,6 +1535,17 @@ impl CartesianPlot {
                     .collect();
             }
         }
+        if axis.scale == AxisScale::Linear {
+            // Round numbers inside the domain, not the domain cut in equal
+            // parts: an axis reads 0, 10, 20, never 0, 11.5, 23.
+            let values = crate::charts::nice_ticks(domain.min, domain.max, usize::from(count));
+            if values.len() >= 2 {
+                return values
+                    .into_iter()
+                    .map(|value| AxisTick::new(value, format_axis_value(value, axis.label_format)))
+                    .collect();
+            }
+        }
         (0..count)
             .map(|index| {
                 let fraction = f64::from(index) / f64::from(count - 1);

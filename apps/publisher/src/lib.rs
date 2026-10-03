@@ -13,8 +13,10 @@ pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
 
+/// Install the catalog once per process, before the first view reads it.
 fn install_catalog() {
-    locales::install();
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(locales::install);
 }
 
 use std::sync::mpsc::Sender;
@@ -27,6 +29,7 @@ use ui::tilo_actions::{
     OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
 };
 use ui::widget::resource_actions::OPERATION_TYPE;
+use ui::widget::{Actions as ButtonGroup, BannerKind, ButtonRole, Field, Form, FormSection};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -53,7 +56,7 @@ impl Default for Publisher {
     }
 }
 
-#[resource(kind = "so.tilo.publisher.profile", label = "Publisher")]
+#[resource(kind = "so.tilo.publisher.profile", label = "App Publisher")]
 impl Publisher {
     /// Change the registry to publish to.
     #[action]
@@ -97,8 +100,11 @@ impl Publisher {
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyState {
     Missing,
-    Present { public: String },
-    Unreadable(String),
+    Present {
+        public: String,
+    },
+    /// A file is there but is not a publisher key.
+    Unreadable,
 }
 
 impl KeyState {
@@ -108,33 +114,66 @@ impl KeyState {
                 public: key::public_hex(&key),
             },
             Ok(None) => Self::Missing,
-            Err(error) => Self::Unreadable(format!("{error:#}")),
+            Err(_) => Self::Unreadable,
         }
     }
 }
 
-/// The outcome of the last operation, as a catalog message and its argument.
+/// The outcome of the last operation, as the banner that reports it: a
+/// severity, a headline and the detail that explains it.
 #[derive(Clone, Debug, PartialEq)]
 struct Notice {
-    message: &'static str,
-    detail: String,
-    error: bool,
+    kind: BannerKind,
+    title: String,
+    message: Option<String>,
+}
+
+/// A catalog message.
+fn say(key: &str) -> String {
+    ui::i18n::I18nManager::format(key, &[])
 }
 
 impl Notice {
-    fn info(message: &'static str, detail: impl Into<String>) -> Self {
+    fn new(kind: BannerKind, key: &str) -> Self {
         Self {
-            message,
-            detail: detail.into(),
-            error: false,
+            kind,
+            title: say(key),
+            message: None,
         }
     }
 
+    /// An outcome worth knowing, with nothing to explain.
+    fn info(key: &str) -> Self {
+        Self::new(BannerKind::Info, key)
+    }
+
+    /// An operation that went through.
+    fn success(key: &str) -> Self {
+        Self::new(BannerKind::Success, key)
+    }
+
+    /// What the person needs to know to go on: a catalog message.
+    fn explained(mut self, key: &str) -> Self {
+        self.message = Some(say(key));
+        self
+    }
+
+    /// What the registry or the machine answered, as it said it.
+    fn detailed(mut self, detail: impl Into<String>) -> Self {
+        self.message = Some(detail.into());
+        self
+    }
+
+    /// Why an operation failed.
     fn error(detail: impl Into<String>) -> Self {
-        Self {
-            message: "publisher-failed",
-            detail: detail.into(),
-            error: true,
+        Self::new(BannerKind::Error, "publisher-failed-title").detailed(detail)
+    }
+
+    fn banner(&self) -> Banner {
+        let banner = Banner::new(self.kind, self.title.clone());
+        match &self.message {
+            Some(message) => banner.with_message(message.clone()),
+            None => banner,
         }
     }
 }
@@ -145,6 +184,48 @@ struct Pane {
     key: KeyState,
     busy: bool,
     notice: Option<Notice>,
+}
+
+impl Pane {
+    fn new(key: KeyState) -> Self {
+        Self {
+            key,
+            busy: false,
+            notice: None,
+        }
+    }
+
+    /// Whether there is a key to apply and check with.
+    fn has_key(&self) -> bool {
+        matches!(self.key, KeyState::Present { .. })
+    }
+}
+
+/// What each scenario of `--shots --scenario NAME` shows of the key and the
+/// last outcome; the claims it stages are in [`App::scenario`].
+fn staged(scenario: Option<&str>) -> Pane {
+    const PUBLIC: &str = "c3f1a7d2e94b58601fa2d7c9be3048d5a6e1b27f9c4d8350e6a1f72b9d04c8e3";
+    let present = KeyState::Present {
+        public: PUBLIC.to_owned(),
+    };
+    let mut pane = Pane::new(present);
+    match scenario {
+        Some("no-key") => pane.key = KeyState::Missing,
+        Some("unreadable") => pane.key = KeyState::Unreadable,
+        Some("applied") => {
+            pane.notice = Some(
+                Notice::info("publisher-status").detailed("pending (lovelace.dev, codeberg:ada)"),
+            );
+        }
+        Some("failed") => {
+            pane.notice = Some(Notice::error(
+                "could not reach https://apps.tilo.so: connection timed out",
+            ));
+        }
+        Some("copied") => pane.notice = Some(Notice::success("publisher-proof-copied")),
+        _ => {}
+    }
+    pane
 }
 
 const OPERATIONS: [(&str, &str); 5] = [
@@ -251,19 +332,19 @@ fn local(op: &str) -> Result<Notice, String> {
     match op {
         "create-key" => {
             let path = key::default_path().ok_or("no configuration directory")?;
-            let key = key::create(&path).map_err(|error| format!("{error:#}"))?;
-            Ok(Notice::info("publisher-key-created", key::public_hex(&key)))
+            key::create(&path).map_err(|error| format!("{error:#}"))?;
+            Ok(Notice::success("publisher-key-created").explained("publisher-key-created-detail"))
         }
         "copy-proof" => {
             let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
-            let proof = proof_token(&key::public_hex(&key));
-            ui::text_selection::clipboard_copy(&proof);
-            Ok(Notice::info("publisher-proof-copied", proof))
+            ui::text_selection::clipboard_copy(&proof_token(&key::public_hex(&key)));
+            Ok(Notice::success("publisher-proof-copied"))
         }
         "copy-secret" => {
             let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
             ui::text_selection::clipboard_copy(&hex::encode(key.to_bytes()));
-            Ok(Notice::info("publisher-secret-copied", String::new()))
+            Ok(Notice::success("publisher-secret-copied")
+                .explained("publisher-secret-copied-detail"))
         }
         other => Err(format!("unknown operation {other:?}")),
     }
@@ -283,68 +364,139 @@ struct Bindings {
     create: tilo_actions::ActionBinding<()>,
     copy_proof: tilo_actions::ActionBinding<()>,
     copy_secret: tilo_actions::ActionBinding<()>,
+    apply: tilo_actions::ActionBinding<()>,
     check_status: tilo_actions::ActionBinding<()>,
 }
 
-fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
-    let mut column = Column::new().with_no_padding().push(Box::new(
-        Text::new("publisher-key-heading").with_role(TextRole::Heading),
-    ));
-    match &pane.key {
+/// A value to read, copy or paste elsewhere: what it is, the value itself,
+/// and, when it needs one, how to use it.
+fn value_group(label: &str, value: &str, id: &str, help: Option<&'static str>) -> Box<Column> {
+    let mut group = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(0.0)
+        .push(Box::new(Text::new(label).with_role(TextRole::Label)))
+        .push(Box::new(
+            Text::new("publisher-verbatim")
+                .with_arg("text", value.to_owned())
+                .with_role(TextRole::Code)
+                .with_id(id),
+        ));
+    if let Some(help) = help {
+        group = group.push(Box::new(
+            Text::new(help).with_role(TextRole::Caption).dimmed(),
+        ));
+    }
+    Box::new(group)
+}
+
+/// The key section's body: what the key is and what you can do with it, how
+/// to make one, or what is wrong with the file that should be one.
+fn key_body(key: &KeyState, bindings: &Bindings) -> Element {
+    let mut column = Column::new().with_no_padding().with_intrinsic_height();
+    match key {
         KeyState::Missing => {
             column = column
                 .push(Box::new(Text::new("publisher-no-key")))
-                .push(Box::new(
+                .push(Box::new(ui::row![
                     Button::new("create-key", "publisher-create-key", None)
-                        .on_action(bindings.create.clone()),
-                ));
+                        .on_action(bindings.create.clone())
+                ]));
         }
         KeyState::Present { public } => {
             column = column
-                .push(Box::new(Text::new("publisher-public-key-label")))
-                .push(Box::new(
-                    Text::new("publisher-verbatim")
-                        .with_arg("text", public.clone())
-                        .with_role(TextRole::Code)
-                        .with_id("public-key"),
+                .push(value_group(
+                    "publisher-public-key-label",
+                    public,
+                    "public-key",
+                    None,
                 ))
-                .push(Box::new(Text::new("publisher-proof-label")))
-                .push(Box::new(
-                    Text::new("publisher-verbatim")
-                        .with_arg("text", proof_token(public))
-                        .with_role(TextRole::Code)
-                        .with_id("proof-line"),
+                .push(value_group(
+                    "publisher-proof-label",
+                    &proof_token(public),
+                    "proof-line",
+                    Some("publisher-proof-help"),
                 ))
                 .push(Box::new(ui::row![
                     Button::new("copy-proof", "publisher-copy-proof", None)
                         .on_action(bindings.copy_proof.clone()),
                     Button::new("copy-secret", "publisher-copy-secret", None)
                         .on_action(bindings.copy_secret.clone()),
-                    Button::new("check-status", "publisher-check-status", None)
-                        .on_action(bindings.check_status.clone()),
                 ]));
         }
-        KeyState::Unreadable(reason) => {
-            column = column.push(Box::new(Banner::error(reason.clone())));
+        KeyState::Unreadable => {
+            column = column.push(Box::new(
+                Banner::error(say("publisher-key-unreadable-title"))
+                    .with_message(say("publisher-key-unreadable")),
+            ));
         }
     }
+    Box::new(column)
+}
+
+/// The namespaces to claim and the registry to claim them from.
+fn namespaces_section(cx: &ViewCx<Publisher>) -> FormSection {
+    let registry = cx
+        .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
+        .with_id("registry-input");
+    let domain = cx
+        .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
+        .with_id("domain-input")
+        .with_placeholder("publisher-domain-placeholder");
+    let forge = cx
+        .input(
+            |profile| profile.forge_account.clone(),
+            Publisher::SET_FORGE_ACCOUNT,
+        )
+        .with_id("forge-input")
+        .with_placeholder("publisher-forge-placeholder");
+    let contact = cx
+        .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
+        .with_id("contact-input")
+        .with_placeholder("publisher-contact-placeholder");
+    FormSection::new("publisher-namespace-heading")
+        .field(Field::new("publisher-domain-label", domain).with_help("publisher-domain-help"))
+        .field(Field::new("publisher-forge-label", forge).with_help("publisher-forge-help"))
+        .field(Field::new("publisher-contact-label", contact).with_help("publisher-contact-help"))
+        .field(Field::new("publisher-registry-label", registry))
+}
+
+/// What the last operation did, if one is under way or has finished, above the
+/// two buttons that start an application. Pinned under the scrolling form, so
+/// the outcome and the action it came from are always in view and showing it
+/// moves nothing above.
+fn footer(pane: &Pane, bindings: &Bindings) -> Element {
+    let mut column = Column::new().with_no_padding().with_intrinsic_height();
     if pane.busy {
         column = column.push(Box::new(Spinner::new()));
     }
     if let Some(notice) = &pane.notice {
-        if notice.error {
-            column = column.push(Box::new(Banner::error(ui::i18n::I18nManager::format(
-                "publisher-failed-title",
-                &[],
-            ))));
-        }
-        column = column.push(Box::new(
-            Text::new(notice.message)
-                .with_arg("detail", notice.detail.clone())
-                .with_id("notice"),
-        ));
+        column = column.push(Box::new(notice.banner()));
     }
-    Box::new(column)
+    let usable = pane.has_key();
+    let apply = Button::new("apply", "publisher-apply", None)
+        .role(ButtonRole::Primary)
+        .with_enabled(usable)
+        .on_action(bindings.apply.clone());
+    let check = Button::new("check-status", "publisher-check-status", None)
+        .with_enabled(usable)
+        .on_action(bindings.check_status.clone());
+    Box::new(column.push(Box::new(ButtonGroup::new(apply).secondary(check))))
+}
+
+/// The most the pinned outcome and actions may take of the window. The footer
+/// sits in a viewport of its own so that it keeps the same scrollbar gutter as
+/// the form above it and lines up with it; it scrolls only in a window too
+/// short to show it.
+const FOOTER_MAX_HEIGHT: f32 = 4096.0;
+
+/// The readable measure the form and its pinned actions share.
+fn readable(child: Element) -> Element {
+    Box::new(
+        Container::new()
+            .with_centered_max_width(720.0)
+            .with_child(child),
+    )
 }
 
 /// The app: the key on this machine, and an application for namespaces.
@@ -354,6 +506,24 @@ impl ResourceApp for App {
     type Resource = Publisher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+
+    fn scenarios() -> &'static [&'static str] {
+        &["no-key", "unreadable", "applied", "failed", "copied"]
+    }
+
+    /// A capture never reads this machine's key file or settings: the claims
+    /// are filled in here, the key and the last outcome in [`staged`].
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
+        if name == Some("no-key") {
+            return Vec::new();
+        }
+        vec![
+            Publisher::SET_DOMAIN.with("lovelace.dev".into()),
+            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()),
+            Publisher::SET_CONTACT.with("ada@lovelace.dev".into()),
+        ]
+    }
 
     #[expect(
         clippy::expect_used,
@@ -361,25 +531,6 @@ impl ResourceApp for App {
     )]
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
         crate::install_catalog();
-        let registry = cx
-            .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
-            .with_id("registry-input");
-        let domain = cx
-            .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
-            .with_id("domain-input")
-            .with_placeholder("publisher-domain-placeholder");
-        let forge = cx
-            .input(
-                |profile| profile.forge_account.clone(),
-                Publisher::SET_FORGE_ACCOUNT,
-            )
-            .with_id("forge-input")
-            .with_placeholder("publisher-forge-placeholder");
-        let contact = cx
-            .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
-            .with_id("contact-input")
-            .with_placeholder("publisher-contact-placeholder");
-
         let resource = key_resource();
         let bind = |id: &str| {
             tilo_actions::ActionBinding::unit_for(&resource, id)
@@ -389,30 +540,41 @@ impl ResourceApp for App {
             create: bind("create-key"),
             copy_proof: bind("copy-proof"),
             copy_secret: bind("copy-secret"),
+            apply: bind("apply"),
             check_status: bind("check-status"),
         };
-        let apply_button = Button::new("apply", "publisher-apply", None).on_action(bind("apply"));
 
-        let task = LatestTask::new(Pane {
-            key: KeyState::load(),
-            busy: false,
-            notice: None,
-        });
+        let task = LatestTask::new(Pane::new(KeyState::load()));
         let pane = task.state();
-        let key = ModelView::from_state_by(&pane, Clone::clone, move |pane| {
-            key_section(pane, &bindings)
-        });
+        let staged_pane = pane.clone();
+        cx.on_stage(move |scenario| staged_pane.set(staged(scenario)));
+        let key_bindings = bindings.clone();
+        let key = ModelView::from_state_by(
+            &pane,
+            |pane| pane.key.clone(),
+            move |pane| key_body(&pane.key, &key_bindings),
+        );
+        let footer =
+            ModelView::from_state_by(&pane, Clone::clone, move |pane| footer(pane, &bindings));
 
-        let root = Box::new(ui::column![
-            key,
-            Text::new("publisher-namespace-heading").with_role(TextRole::Heading),
-            Text::new("publisher-namespace-help"),
-            labeled_field("publisher-domain-label", domain),
-            labeled_field("publisher-forge-label", forge),
-            labeled_field("publisher-contact-label", contact),
-            labeled_field("publisher-registry-label", registry),
-            apply_button,
-        ]);
+        let form = Form::new()
+            .section(FormSection::new("publisher-key-heading").content(Box::new(key)))
+            .section(namespaces_section(cx));
+        let root = Box::new(
+            Column::new()
+                .with_no_padding()
+                .push(Box::new(
+                    Scrollable::new_vertical()
+                        .fill_parent_height()
+                        .with_child(readable(Box::new(form))),
+                ))
+                .push(Box::new(
+                    Scrollable::new_vertical()
+                        .without_sequential_focus()
+                        .with_max_height(FOOTER_MAX_HEIGHT)
+                        .with_child(readable(Box::new(footer))),
+                )),
+        );
         let live = cx.live().clone();
         ui::widget::resource_actions::background(root, resource, move |payload| {
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -420,7 +582,7 @@ impl ResourceApp for App {
                 .ok()
                 .and_then(|value| value.get("op")?.as_str().map(str::to_owned))
                 .unwrap_or_default();
-            if op == "apply" || op == "check-status" {
+            if matches!(op.as_str(), "apply" | "check-status") {
                 let profile = live.with(Clone::clone);
                 let current = pane.get();
                 let completion = task.begin(Pane {
@@ -430,11 +592,12 @@ impl ResourceApp for App {
                 });
                 std::thread::spawn(move || {
                     let result = if op == "apply" {
-                        apply(&profile).map(|status| Notice::info("publisher-status", status))
+                        apply(&profile)
+                            .map(|status| Notice::info("publisher-status").detailed(status))
                     } else {
                         check_status(&profile.registry).map(|status| match status {
-                            Some(status) => Notice::info("publisher-status", status),
-                            None => Notice::info("publisher-no-application", String::new()),
+                            Some(status) => Notice::info("publisher-status").detailed(status),
+                            None => Notice::info("publisher-no-application"),
                         })
                     };
                     finish(&sender, &result);
