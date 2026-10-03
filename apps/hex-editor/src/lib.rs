@@ -7,10 +7,11 @@
 //! The UI is a classic hex view — offset gutter, hex byte columns, and an
 //! ASCII column with a cursor synced across both — plus a data inspector
 //! that interprets the bytes at the cursor as every common scalar type,
-//! search (hex pattern or text), and goto-offset.
+//! find (a hex pattern or text), and go to offset.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! `app_root()` builds the widget for a launch that names a file; the
+//! framework app ([`HexEditorShell`]) hosts the same view for every other
+//! launch, including `--shots`.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -51,34 +52,18 @@ use ui::widget::Widget;
 pub use model::HexModel;
 pub use view::HexView;
 
-/// Build and return the app's root widget tree.
+/// Build and return the app's root widget tree for a launch that names a
+/// file to open.
 ///
-/// Honours a single optional positional argument: a path to open. Otherwise:
-/// `--shots` opens the bundled sample buffer so the headless screenshot shows
-/// real structured data; the live app with no file opens the honest empty
-/// state — it never fabricates a buffer.
+/// Honours a single optional positional argument: a path to open. Otherwise
+/// the live app with no file opens the honest empty state — it never
+/// fabricates a buffer. (The bundled sample is only ever a screenshot
+/// scenario of the framework app.)
 pub fn app_root() -> Box<dyn Widget> {
     if let Some(path) = file_arg() {
         return Box::new(app::view_for_path(std::path::Path::new(&path)));
     }
-    let shots_mode = std::env::args().any(|a| a == "--shots" || a.starts_with("--shots="));
-    // A `--shots`-only hook to capture the empty state deterministically.
-    let want_empty = std::env::var("TILO_HEX_DEMO").as_deref() == Ok("empty");
-    let view = if shots_mode && !want_empty {
-        // Arm the transient floating status bubble so the single headless frame
-        // captures the floating cursor read-out chip (it otherwise appears on a
-        // change / hover and fades, so a still frame would miss it).
-        let mut v = app::sample_view();
-        match std::env::var("TILO_HEX_DEMO").as_deref() {
-            Ok("search") => v.arm_search_for_shots(),
-            Ok("error") => v.arm_error_for_shots(),
-            _ => v.arm_status_bubble_for_shots(),
-        }
-        v
-    } else {
-        HexView::empty()
-    };
-    Box::new(view)
+    Box::new(HexView::empty())
 }
 
 /// The app as every host mounts it: the live root and its actions.
