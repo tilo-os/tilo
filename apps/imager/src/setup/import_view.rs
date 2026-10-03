@@ -16,10 +16,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
-use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Text, Widget};
+use ui::widget::{
+    Button, ButtonRole, Card, Column, Container, Row, Scrollable, Section, Text, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
@@ -37,7 +38,7 @@ use super::migration_worker::{
 use super::view::system_folder_reason;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use super::{page, stack};
-use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
+use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SIBLING};
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -206,6 +207,9 @@ impl ImportApp {
             .path()
             .canonicalize()
             .map_err(|error| error.to_string())?;
+        SHOT_PATH_ALIAS.with(|alias| {
+            *alias.borrow_mut() = Some((base.clone(), PathBuf::from("/home/ada")));
+        });
         let source = base.join("Documents");
         let destination_parent = base.join("Tilo files");
         std::fs::create_dir(&source).map_err(|error| error.to_string())?;
@@ -1772,9 +1776,14 @@ impl ImportApp {
                     if let Some(operation) = self.operations.get_mut(*index) {
                         operation.apply_progress(&progress);
                         self.status = format!(
-                            "Verified {} across {} file(s).",
+                            "Verified {} in {} {}.",
                             ui::format::bytes_si(progress.verified_bytes),
-                            progress.verified_files
+                            progress.verified_files,
+                            if progress.verified_files == 1 {
+                                "file"
+                            } else {
+                                "files"
+                            }
                         );
                     }
                 }
@@ -2003,26 +2012,21 @@ impl ImportApp {
 
     fn button(&self, id: &str, label: &str, command: ImportCommand) -> Button {
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label, None)
-            .fit_content(40.0)
-            .on_effect(move || sink.borrow_mut().push(command))
+        Button::new(id, label, None).on_effect(move || sink.borrow_mut().push(command))
     }
 
-    fn selection_card(&self) -> Card {
-        let source = self.source.as_ref().map_or_else(
-            || "No source selected".to_string(),
-            |path| path.display().to_string(),
-        );
+    fn selection_card(&self) -> Section {
+        let source = self
+            .source
+            .as_ref()
+            .map_or_else(|| "No source selected".to_string(), |path| shown_path(path));
         let destination = self.destination_parent.as_ref().map_or_else(
             || "No destination selected".to_string(),
             |parent| {
                 self.source
                     .as_ref()
                     .and_then(|source| source.file_name())
-                    .map_or_else(
-                        || parent.display().to_string(),
-                        |name| parent.join(name).display().to_string(),
-                    )
+                    .map_or_else(|| shown_path(parent), |name| shown_path(&parent.join(name)))
             },
         );
         let mut body = Column::new()
@@ -2047,16 +2051,16 @@ impl ImportApp {
         }
         body = body.push(Box::new(
             self.button("import.review", "Review copy", ImportCommand::PrepareReview)
-                .primary()
+                .role(ButtonRole::Primary)
                 .with_enabled(self.can_prepare_review()),
         ));
-        Card::titled(
+        Section::titled(
             if self.operations.is_empty() {
                 "Copy a folder"
             } else {
                 "Copy another folder"
             },
-            Box::new(body),
+            vec![Box::new(body)],
         )
     }
 
@@ -2065,7 +2069,7 @@ impl ImportApp {
             *details = page
                 .issues
                 .iter()
-                .map(|(p, reason)| format!("Needs attention: {} — {reason}", p.display()))
+                .map(|(p, reason)| format!("Needs attention: {}: {reason}", p.display()))
                 .collect::<Vec<_>>()
                 .join("\n");
             for limitation in operation.metadata_limitations() {
@@ -2144,7 +2148,7 @@ impl ImportApp {
                     "Start copy",
                     ImportCommand::Start(index),
                 )
-                .primary()
+                .role(ButtonRole::Primary)
                 .with_enabled(self.can_start_copy(index)),
             ),
             OperationState::Running
@@ -2182,13 +2186,15 @@ impl ImportApp {
         if has_actions {
             body = body.push(Box::new(actions));
         }
-        Card::titled(
-            format!(
-                "Folder import · {}",
-                operation_state_label(operation.state())
-            ),
-            Box::new(body),
-        )
+        let folder = operation
+            .source()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| operation_state_label(operation.state()).to_string());
+        Card::new(Box::new(body)).with_title(folder)
     }
 
     fn can_start_continued_batch(&self) -> bool {
@@ -2238,7 +2244,7 @@ impl ImportApp {
         ))
     }
 
-    fn continuation_card(&self, c: &Continuation) -> Card {
+    fn continuation_card(&self, c: &Continuation) -> Section {
         let mut body = Column::new().with_no_padding().with_intrinsic_height()
             .push(Box::new(Text::new("Saved Desktop folder choices. Complete identity setup in Tilo, then review each actual destination. Originals stay unchanged; local Copy does not enable sync or sharing.").with_id("import.continuation.explanation")));
         if !self.identity_ready {
@@ -2255,20 +2261,15 @@ impl ImportApp {
         // a second edged card inside the first (HIG §7).
         let mut folders = stack().with_gap(GROUP);
         for (index, f) in c.folders.iter().enumerate() {
-            let source = f.source().map_or_else(|e| e, |p| p.display().to_string());
+            let source = f.source().map_or_else(|e| e, |p| shown_path(&p));
             let destination = f.destination().map_or_else(
                 |e| e,
-                |p| {
-                    p.map_or_else(
-                        || "Destination pending review".into(),
-                        |p| p.display().to_string(),
-                    )
-                },
+                |p| p.map_or_else(|| "Destination pending review".into(), |p| shown_path(&p)),
             );
             let mode = match f.mode {
                 ChoiceMode::Copy => "One-time Copy",
-                ChoiceMode::Later => "Decide later — retained in Add folders",
-                ChoiceMode::Connected => "Connected — unavailable; no sync or copy started",
+                ChoiceMode::Later => "Decide later, kept in Add folders",
+                ChoiceMode::Connected => "Connected is unavailable. Nothing was synced or copied.",
             };
             let can_review = self
                 .operations
@@ -2335,7 +2336,7 @@ impl ImportApp {
                         "Copy reviewed folders",
                         ImportCommand::StartBatch,
                     )
-                    .primary()
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.can_start_continued_batch()),
                 ))
                 .push(Box::new(
@@ -2351,7 +2352,7 @@ impl ImportApp {
                     ),
                 )),
         ));
-        Card::titled("Continue your Desktop setup", Box::new(body))
+        Section::titled("Continue your Desktop setup", vec![Box::new(body)])
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -2371,9 +2372,9 @@ impl ImportApp {
         // sibling step.
         let mut body = page(header);
         if let Err(error) = durable_copy_available() {
-            body = body.push(Box::new(Card::titled(
+            body = body.push(Box::new(Section::titled(
                 "Folder copying unavailable",
-                Box::new(Text::new(&error).with_live(Politeness::Assertive)),
+                vec![Box::new(Text::new(&error).with_live(Politeness::Assertive))],
             )));
         }
         if let Some(c) = &self.continuation {
@@ -2401,43 +2402,67 @@ impl ImportApp {
         let content = Scrollable::new_vertical()
             .fill_parent_height()
             .always_visible()
-            .with_content_gutter(SCROLLBAR_GUTTER)
             .with_child(Box::new(body));
-        let status = Card::new(Box::new(Text::new(&self.status).with_live(
-            if self.status_is_error {
-                Politeness::Assertive
-            } else {
-                Politeness::Polite
-            },
-        )));
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
+            .with_vertical_padding(PAGE_GUTTER)
+            .with_gap(SIBLING)
+            .push(Box::new(content));
+        if !self.status.is_empty() {
+            column = column.push(super::beside_scroll(super::view::status_line(
+                &self.status,
+                self.status_is_error,
+            )));
+        }
         Box::new(
-            Container::new().filling().with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-                    .with_vertical_padding(PAGE_GUTTER)
-                    .with_gap(SIBLING)
-                    .push(Box::new(content))
-                    .push(Box::new(status)),
-            )),
+            Container::new()
+                .filling()
+                .with_centered_max_width(super::readable_page_width())
+                .with_child(Box::new(column)),
         )
     }
+}
+
+thread_local! {
+    /// A screenshot fixture runs real copies in a disposable directory; its
+    /// pages show that directory as the home folder it stands for.
+    static SHOT_PATH_ALIAS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A path as the page shows it.
+fn shown_path(path: &Path) -> String {
+    SHOT_PATH_ALIAS.with(|alias| {
+        alias
+            .borrow()
+            .as_ref()
+            .and_then(|(from, to)| path.strip_prefix(from).ok().map(|rest| to.join(rest)))
+            .unwrap_or_else(|| path.to_path_buf())
+            .display()
+            .to_string()
+    })
 }
 
 fn operation_text(operation: &OperationRecord) -> (String, String) {
     let source = operation.source().map_or_else(
         |error| format!("unavailable ({error})"),
-        |path| path.display().to_string(),
+        |path| shown_path(&path),
     );
     let destination = operation.destination().map_or_else(
         |error| format!("unavailable ({error})"),
-        |path| path.display().to_string(),
+        |path| shown_path(&path),
     );
     let mut summary = format!(
-        "{source} → {destination}\n{}\nCopied and checked: {} across {} file(s)",
+        "{source} to {destination}\n{}\nCopied and checked: {} in {} {}",
         state_summary(operation.state()),
         ui::format::bytes_si(operation.verified_bytes()),
-        operation.verified_file_count()
+        operation.verified_file_count(),
+        if operation.verified_file_count() == 1 {
+            "file"
+        } else {
+            "files"
+        }
     );
     if operation.state() == OperationState::Running
         && let Ok(Some(path)) = operation.current_relative_path()
@@ -2470,7 +2495,7 @@ fn operation_text(operation: &OperationRecord) -> (String, String) {
             path.display().to_string()
         };
         let prefix = if details.is_empty() { "" } else { "\n" };
-        let _ = write!(details, "{prefix}Needs attention: {shown} — {reason}");
+        let _ = write!(details, "{prefix}Needs attention: {shown}: {reason}");
     }
     for limitation in operation.metadata_limitations() {
         let prefix = if details.is_empty() { "" } else { "\n" };
@@ -2878,13 +2903,6 @@ impl Widget for ImportApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
         if let Some(composed) = &mut self.composed {
             composed.draw(scene, transform, text_renderer, theme, presence);
         }
