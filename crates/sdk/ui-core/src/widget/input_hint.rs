@@ -16,9 +16,9 @@ use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamil
 use crate::paint::PaintCtx;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
 
 /// Height of a painted hint row; hosts that centre a hint in their own band
@@ -29,7 +29,7 @@ const CAP_PAD_X: f64 = 6.0;
 const MIN_CAP_WIDTH: f64 = 22.0;
 
 fn token_height(theme: &Theme) -> f64 {
-    HEIGHT.max(f64::from(theme.tokens.typography.scale.sm) + 8.0)
+    HEIGHT.max(f64::from(theme.tokens.typography.size(TextRole::Caption)) + 8.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -461,11 +461,11 @@ impl InputHint {
 
 fn paint_separator(ctx: &mut PaintCtx<'_>, origin: Point, label: &str) -> f64 {
     let (text_renderer, theme) = (&mut *ctx.text, ctx.theme);
-    let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-    let (width, height) = text_renderer.measure(label, size, None);
+    let style = theme.text(TextRole::Caption);
+    let (width, height) = text_renderer.measure_style(label, None, &style);
     ctx.text(
         label,
-        &TextStyle::new(size),
+        &style.clone(),
         theme.tokens.colors.text_dim,
         Point::new(
             origin.x,
@@ -515,8 +515,8 @@ fn token_rects(
     tokens
         .iter()
         .map(|(label, shape)| {
-            let size = token_text_size(label, theme, text_renderer);
-            let (text_width, _) = text_renderer.measure(label, size, None);
+            let style = token_text_style(theme);
+            let (text_width, _) = text_renderer.measure_style(label, None, &style);
             let width = match shape {
                 HintShape::RoundButton => (f64::from(text_width) + CAP_PAD_X).max(height),
                 HintShape::Keycap | HintShape::Gesture => {
@@ -541,11 +541,11 @@ fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape
     // Keycap body is a lift off the ground with an edge derived from it
     // (HIG §9.2, §9.5) — ramp slots were one fixed grey per theme.
     crate::surface::card(ctx.scene, ctx.transform, rect, radius, colors.lift(1.0));
-    let size = token_text_size(label, theme, ctx.text);
-    let (tw, th) = ctx.text.measure(label, size, None);
+    let style = token_text_style(theme);
+    let (tw, th) = ctx.text.measure_style(label, None, &style);
     ctx.text(
         label,
-        &TextStyle::new(size).with_weight(TextWeight::Semibold),
+        &style.clone().with_weight(TextWeight::Semibold),
         colors.text_primary,
         Point::new(
             rect.center().x - f64::from(tw) / 2.0,
@@ -555,15 +555,8 @@ fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape
     );
 }
 
-fn token_text_size(label: &str, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
-    renderer_type_size(
-        text_renderer,
-        if matches!(label, "←" | "→" | "↑" | "↓" | "×" | "○" | "□" | "△") {
-            theme.tokens.typography.scale.sm
-        } else {
-            theme.tokens.typography.scale.xs
-        },
-    )
+fn token_text_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption)
 }
 
 impl Widget for InputHint {

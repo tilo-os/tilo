@@ -7,8 +7,9 @@
 use std::borrow::Cow;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::button::ButtonInteract;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -28,7 +29,6 @@ pub struct DisclosureHeaderFace<'a> {
 /// Disclosure labels are interactive section controls, not tertiary
 /// metadata. Keep them at the standard control-label size so apps do not
 /// need to hand-tune typography to make the affordance discoverable.
-const TEXT_SIZE: f32 = 13.0;
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -152,44 +152,46 @@ impl<'a> DisclosureHeaderFace<'a> {
         self.paint_indicator(scene, transform, theme);
 
         let label_x = self.rect.x0 + 18.0;
-        let (_, label_h) = text_renderer.measure_weighted(
+        let (_, label_h) = text_renderer.measure_style(
             self.label.as_ref(),
-            TEXT_SIZE,
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Label).strong(),
         );
         let label_y = self.rect.center().y - f64::from(label_h) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             self.label.as_ref(),
-            TEXT_SIZE,
             colors.text_dim,
             transform.pre_translate(Vec2::new(label_x, label_y)),
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Label).strong(),
         );
 
         if self.expanded || self.interact.disabled {
             return;
         }
         let Some(summary) = &self.summary else { return };
-        let (label_w, _) = text_renderer.measure_weighted(
+        let (label_w, _) = text_renderer.measure_style(
             self.label.as_ref(),
-            TEXT_SIZE,
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Label).strong(),
         );
         let available = px((self.rect.x1 - label_x - f64::from(label_w) - 16.0).max(0.0));
-        let shown = text_renderer.elide_to_width(summary.as_ref(), TEXT_SIZE, available);
-        let (summary_w, summary_h) = text_renderer.measure(&shown, TEXT_SIZE, None);
+        let shown = text_renderer.elide_to_width_style(
+            summary.as_ref(),
+            available,
+            &theme.text(TextRole::Label),
+        );
+        let (summary_w, summary_h) =
+            text_renderer.measure_style(&shown, None, &theme.text(TextRole::Label));
         let summary_y = self.rect.center().y - f64::from(summary_h) / 2.0;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &shown,
-            TEXT_SIZE,
             colors.intent.inverted,
             transform.pre_translate(Vec2::new(self.rect.x1 - f64::from(summary_w), summary_y)),
             None,
+            &theme.text(TextRole::Label),
         );
     }
 

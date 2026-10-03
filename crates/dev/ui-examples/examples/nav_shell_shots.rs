@@ -26,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
@@ -56,7 +57,7 @@ fn panel(
                 ))
                 .push(Box::new(
                     Text::new(title)
-                        .with_size(20.0)
+                        .with_role(TextRole::Title)
                         .with_color(theme.text_primary),
                 )),
         ));
@@ -67,13 +68,13 @@ fn panel(
         let mut row_col = Column::new().with_intrinsic_height();
         row_col = row_col.push(Box::new(
             Text::new(primary)
-                .with_size(15.0)
+                .with_role(TextRole::Body)
                 .with_color(theme.text_primary),
         ));
         if !secondary.is_empty() {
             row_col = row_col.push(Box::new(
                 Text::new(secondary)
-                    .with_size(12.0)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.text_dim),
             ));
         }

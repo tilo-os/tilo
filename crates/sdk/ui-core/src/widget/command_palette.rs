@@ -23,7 +23,7 @@ use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::centered_text_top;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
@@ -348,8 +348,8 @@ impl CommandEntry {
 /// paths, where the head (root) and tail (own folder) both carry more
 /// information than the middle. Trailing-ellipsis case is
 /// [`TextRenderer::elide_to_width`].
-fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 || f64::from(tr.measure(text, size, None).0) <= max_w {
+fn elide_middle(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64) -> String {
+    if max_w <= 0.0 || f64::from(tr.measure_style(text, None, style).0) <= max_w {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -367,7 +367,7 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> Str
         let candidate: String = head_chars.iter().collect::<String>()
             + "\u{2026}"
             + &tail_chars.iter().collect::<String>();
-        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
+        if f64::from(tr.measure_style(&candidate, None, style).0) <= max_w {
             return candidate;
         }
     }
@@ -1243,26 +1243,26 @@ impl CommandPalette {
         layout: &InputRowLayout,
     ) {
         let colors = &theme.tokens.colors;
-        let text_size = theme.tokens.typography.scale.base;
+        let text_style = theme.text(TextRole::Body);
         let mut tx = layout.input_rect.x0;
         let style = theme.tokens.typography.style(TextRole::Body);
         if let Some(arg) = &mut self.arg_state {
             if !arg.prompt.is_empty() {
                 let heading = format!("{}:  ", arg.prompt);
                 // Centre the heading on its measured line box, not the font size.
-                let (hw, hh) = text_renderer.measure(&heading, text_size, None);
+                let (hw, hh) = text_renderer.measure_style(&heading, None, &text_style);
                 let text_y = centered_text_top(
                     layout.input_rect.y0,
                     layout.input_rect.height(),
                     f64::from(hh),
                 );
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &heading,
-                    text_size,
                     colors.text_dim,
                     transform.pre_translate(Vec2::new(tx, text_y)),
                     None,
+                    &text_style,
                 );
                 tx += f64::from(hw);
             }
@@ -1315,7 +1315,7 @@ impl CommandPalette {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let chip_text_style = theme.text(TextRole::Caption);
 
         let active = FilterChipLook {
             body: theme.tokens.colors.intent.inverted,
@@ -1338,7 +1338,7 @@ impl CommandPalette {
             (SearchScope::Workspace, "WORKSPACE"),
             (SearchScope::All, "ALL"),
         ] {
-            let (w, _) = ctx.text.measure(label, chip_text_size, None);
+            let (w, _) = ctx.text.measure_style(label, None, &chip_text_style);
             let chip_w = f64::from(w) + 16.0;
             let chip = Self::chip_rect(strip, x, chip_w);
             let look = if self.search_filter.scope == scope {
@@ -1346,12 +1346,12 @@ impl CommandPalette {
             } else {
                 idle
             };
-            Self::draw_chip(&mut ctx, chip, label, chip_text_size, look);
+            Self::draw_chip(&mut ctx, chip, label, &chip_text_style, look);
             x += chip_w + 6.0;
         }
 
         let ft_label = "FULL TEXT";
-        let (ft_w, _) = ctx.text.measure(ft_label, chip_text_size, None);
+        let (ft_w, _) = ctx.text.measure_style(ft_label, None, &chip_text_style);
         let ft_chip_w = f64::from(ft_w) + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
@@ -1367,7 +1367,7 @@ impl CommandPalette {
             &mut ctx,
             ft_chip,
             ft_label,
-            chip_text_size,
+            &chip_text_style,
             if ft_on { ft_active } else { idle },
         );
 
@@ -1376,7 +1376,7 @@ impl CommandPalette {
         let max_x = ft_chip.x0 - 8.0;
         for ft in Filetype::ALL {
             let label = ft.label();
-            let (w, _) = ctx.text.measure(label, chip_text_size, None);
+            let (w, _) = ctx.text.measure_style(label, None, &chip_text_style);
             let chip_w = f64::from(w) + 16.0;
             if fx + chip_w > max_x {
                 break;
@@ -1387,7 +1387,7 @@ impl CommandPalette {
             } else {
                 idle
             };
-            Self::draw_chip(&mut ctx, chip, label, chip_text_size, look);
+            Self::draw_chip(&mut ctx, chip, label, &chip_text_style, look);
             fx += chip_w + 6.0;
         }
     }
@@ -1396,7 +1396,7 @@ impl CommandPalette {
         ctx: &mut PaintCtx<'_>,
         chip: Rect,
         label: &str,
-        text_size: f32,
+        text_style: &TextStyle,
         look: FilterChipLook,
     ) {
         let PaintCtx {
@@ -1424,16 +1424,16 @@ impl CommandPalette {
                 &crate::surface::edge_outline(chip, radius),
             );
         }
-        let (w, h) = text_renderer.measure(label, text_size, None);
+        let (w, h) = text_renderer.measure_style(label, None, text_style);
         let tx = f64::midpoint(chip.x0, chip.x1) - f64::from(w) / 2.0;
         let ty = f64::midpoint(chip.y0, chip.y1) - f64::from(h) / 2.0;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            text_size,
             look.text,
             transform.pre_translate(Vec2::new(tx, ty)),
             None,
+            text_style,
         );
     }
 
@@ -1466,7 +1466,7 @@ impl CommandPalette {
         // base-relative lift that reads as a well on a darker ground.
         let chip_edge = crate::surface::edge_on(ground);
 
-        let size = (theme.tokens.typography.scale.xs).max(9.0);
+        let style = theme.text(TextRole::Caption);
         let dim = colors.text_dim;
         let cy = f64::midpoint(footer.y0, footer.y1);
         let chip_h = (footer.height() - 12.0).max(13.0);
@@ -1482,7 +1482,7 @@ impl CommandPalette {
             ("Esc", crate::i18n!("palette-hint-close")),
         ];
         for (key, label) in &hints {
-            let (kw, kh) = text_renderer.measure(key, size, None);
+            let (kw, kh) = text_renderer.measure_style(key, None, &style);
             let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             scene.stroke(
@@ -1492,26 +1492,26 @@ impl CommandPalette {
                 None,
                 &crate::surface::edge_outline(chip_rect, 4.0),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 key,
-                size,
                 dim,
                 transform.pre_translate(Vec2::new(
                     chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
                     chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
                 )),
                 None,
+                &style,
             );
             x = chip_rect.x1 + 4.0;
-            let (lw, lh) = text_renderer.measure(label, size, None);
-            text_renderer.draw_text(
+            let (lw, lh) = text_renderer.measure_style(label, None, &style);
+            text_renderer.draw_style(
                 scene,
                 label,
-                size,
                 dim,
                 transform.pre_translate(Vec2::new(x, cy - f64::from(lh) / 2.0)),
                 None,
+                &style,
             );
             x += f64::from(lw) + 12.0;
         }
@@ -1519,17 +1519,17 @@ impl CommandPalette {
         let n = self.result_total();
         if n > 0 {
             let right = crate::i18n!("palette-result-count", "count" => n);
-            let (sw, sh) = text_renderer.measure(&right, size, None);
-            text_renderer.draw_text(
+            let (sw, sh) = text_renderer.measure_style(&right, None, &style);
+            text_renderer.draw_style(
                 scene,
                 &right,
-                size,
                 dim,
                 transform.pre_translate(Vec2::new(
                     footer.x1 - f64::from(sw) - 6.0,
                     cy - f64::from(sh) / 2.0,
                 )),
                 None,
+                &style,
             );
         }
     }
@@ -1543,7 +1543,10 @@ impl CommandPalette {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let header_size = (theme.tokens.typography.scale.xs).max(9.0);
+        // Section headers are sentence case, a `Subheading` in the
+        // secondary ink; the count beside one is a tabular caption.
+        let header_style = theme.text(TextRole::Subheading);
+        let count_style = theme.text(TextRole::Caption).numeric();
         let rh = self.row_height();
         let x0 = self.rect.x0 + PADDING;
         let x1 = self.rect.x1 - PADDING;
@@ -1556,26 +1559,26 @@ impl CommandPalette {
         for row in window {
             match row {
                 VisualRow::Header { label, total } => {
-                    let (_, height) = text_renderer.measure(label, header_size, None);
+                    let (_, height) = text_renderer.measure_style(label, None, &header_style);
                     let hy = y + (HEADER_HEIGHT * self.text_scale - f64::from(height)) / 2.0;
-                    let upper = label.to_uppercase();
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
-                        &upper,
-                        header_size,
+                        label,
                         colors.text_dim,
                         transform.pre_translate(Vec2::new(x0 + 12.0, hy)),
                         None,
+                        &header_style,
                     );
                     let count = total.to_string();
-                    let (cw, _) = text_renderer.measure(&count, header_size, None);
-                    text_renderer.draw_text(
+                    let (cw, ch) = text_renderer.measure_style(&count, None, &count_style);
+                    let cy = y + (HEADER_HEIGHT * self.text_scale - f64::from(ch)) / 2.0;
+                    text_renderer.draw_style(
                         scene,
                         &count,
-                        header_size,
                         colors.text_dim,
-                        transform.pre_translate(Vec2::new(x1 - 12.0 - f64::from(cw), hy)),
+                        transform.pre_translate(Vec2::new(x1 - 12.0 - f64::from(cw), cy)),
                         None,
+                        &count_style,
                     );
                     y += HEADER_HEIGHT * self.text_scale;
                 }
@@ -1708,12 +1711,12 @@ impl CommandPalette {
             theme,
         } = ctx.reborrow();
         let colors = &theme.tokens.colors;
-        let (label_size, _) = Self::row_text_sizes(theme);
+        let (label_style, _) = Self::row_text_styles(theme);
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
         if let Some(badge) = &entry.badge {
-            let badge_size = label_size - 2.0;
-            let (text_w, text_h) = text_renderer.measure(badge, badge_size, None);
+            let badge_style = theme.text(TextRole::Caption);
+            let (text_w, text_h) = text_renderer.measure_style(badge, None, &badge_style);
             let pill_w = f64::from(text_w) + 16.0;
             let pill_h = f64::from(text_h) + 8.0;
             let cy = f64::midpoint(row.y0, row.y1);
@@ -1740,13 +1743,13 @@ impl CommandPalette {
                 colors.intent.inverted,
                 SMALL_TEXT_MIN_CONTRAST,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 badge,
-                badge_size,
                 ink,
                 transform.pre_translate(Vec2::new(pill.x0 + 8.0, cy - f64::from(text_h) / 2.0)),
                 None,
+                &badge_style,
             );
             pill.x0 - 8.0
         } else if let Some(labels) = entry.keycap_labels(self.platform) {
@@ -1771,22 +1774,22 @@ impl CommandPalette {
             chip.x0 - 8.0
         } else if entry.argument.is_some() {
             let cue = "\u{2192}"; // →
-            let (hw, hh) = text_renderer.measure(cue, label_size, None);
+            let (hw, hh) = text_renderer.measure_style(cue, None, &label_style);
             let color = if selected {
                 colors.text_primary
             } else {
                 colors.text_dim
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 cue,
-                label_size,
                 color,
                 transform.pre_translate(Vec2::new(
                     row.x1 - f64::from(hw) - 14.0,
                     f64::midpoint(row.y0, row.y1) - f64::from(hh) / 2.0,
                 )),
                 None,
+                &label_style,
             );
             row.x1 - f64::from(hw) - 22.0
         } else {
@@ -1794,10 +1797,9 @@ impl CommandPalette {
         }
     }
 
-    /// Type sizes of a result row's title and of its description line.
-    fn row_text_sizes(theme: &Theme) -> (f32, f32) {
-        let scale = &theme.tokens.typography.scale;
-        (scale.sm, scale.xs.max(10.0))
+    /// The roles of a result row's title and of its description line.
+    fn row_text_styles(theme: &Theme) -> (TextStyle, TextStyle) {
+        (theme.text(TextRole::Body), theme.text(TextRole::Caption))
     }
 
     fn draw_one_row(
@@ -1814,7 +1816,7 @@ impl CommandPalette {
             theme,
         } = ctx.reborrow();
         let colors = &theme.tokens.colors;
-        let (label_size, desc_size) = Self::row_text_sizes(theme);
+        let (label_style, desc_style) = Self::row_text_styles(theme);
         let row_ground = Self::row_ground(theme, selected);
         // Needs contrast against the selection wash: take the nearest
         // legible step from the theme's dim tone rather than promoting it
@@ -1850,40 +1852,40 @@ impl CommandPalette {
         let avail = (text_right - text_x).max(0.0);
 
         if let Some(desc) = &entry.description {
-            let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
-            let sub = elide_middle(text_renderer, desc, desc_size, avail);
-            let (_, label_height) = text_renderer.measure(&label, label_size, None);
-            let (_, desc_height) = text_renderer.measure(&sub, desc_size, None);
+            let label = text_renderer.elide_to_width_style(&entry.label, px(avail), &label_style);
+            let sub = elide_middle(text_renderer, desc, &desc_style, avail);
+            let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
+            let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
             let gap = 3.0 * f64::from(theme.text_scale);
             let block = f64::from(label_height + desc_height) + gap;
             let ly = row.y0 + (row.height() - block) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 colors.text_primary,
                 transform.pre_translate(Vec2::new(text_x, ly)),
                 None,
+                &label_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &sub,
-                desc_size,
                 subtitle_ink,
                 transform.pre_translate(Vec2::new(text_x, ly + f64::from(label_height) + gap)),
                 None,
+                &desc_style,
             );
         } else {
-            let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
-            let (_, height) = text_renderer.measure(&label, label_size, None);
+            let label = text_renderer.elide_to_width_style(&entry.label, px(avail), &label_style);
+            let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 colors.text_primary,
                 transform.pre_translate(Vec2::new(text_x, ly)),
                 None,
+                &label_style,
             );
         }
     }
@@ -1919,32 +1921,33 @@ impl CommandPalette {
             colors.text_dim.with_alpha_factor(0.55),
             1.5,
         );
-        let title_size = theme.tokens.typography.scale.sm;
+        let title_style = theme.text(TextRole::Caption);
         let title = self.empty_results_title();
-        let title = text_renderer.elide_to_width(&title, title_size, px(self.rect.width() - 48.0));
-        let (tw, title_height) = text_renderer.measure(&title, title_size, None);
-        text_renderer.draw_text(
+        let title =
+            text_renderer.elide_to_width_style(&title, px(self.rect.width() - 48.0), &title_style);
+        let (tw, title_height) = text_renderer.measure_style(&title, None, &title_style);
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             transform.pre_translate(Vec2::new(cx - f64::from(tw) / 2.0, cy)),
             None,
+            &title_style,
         );
-        let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
+        let hint_style = theme.text(TextRole::Caption);
         let hint = crate::i18n!("palette-no-results-hint");
         let hint = hint.as_str();
-        let (hw, _) = text_renderer.measure(hint, hint_size, None);
-        text_renderer.draw_text(
+        let (hw, _) = text_renderer.measure_style(hint, None, &hint_style);
+        text_renderer.draw_style(
             scene,
             hint,
-            hint_size,
             colors.text_dim,
             transform.pre_translate(Vec2::new(
                 cx - f64::from(hw) / 2.0,
                 cy + f64::from(title_height) + 6.0,
             )),
             None,
+            &hint_style,
         );
     }
 
@@ -2638,10 +2641,16 @@ mod tests {
             p.set_rect(Rect::new(16.0, 96.0, 784.0, 96.0 + height));
             let mut tr = TextRenderer::new();
             tr.set_text_scale(2.0);
-            let (_, label_h) =
-                tr.measure("Open Files", theme.tokens.typography.scale.sm / 2.0, None);
-            let (_, desc_h) =
-                tr.measure("Opens beside", theme.tokens.typography.scale.xs / 2.0, None);
+            let (_, label_h) = tr.measure(
+                "Open Files",
+                theme.tokens.typography.size(TextRole::Caption) / 2.0,
+                None,
+            );
+            let (_, desc_h) = tr.measure(
+                "Opens beside",
+                theme.tokens.typography.size(TextRole::Caption) / 2.0,
+                None,
+            );
             assert!(p.row_height() >= f64::from(label_h + desc_h) + 6.0);
             let mut scene = Scene::new();
             p.draw(
@@ -2654,12 +2663,11 @@ mod tests {
             let runs = &scene.encoding().resources.glyph_runs;
             assert!(
                 runs.iter()
-                    .all(|run| run.font_size <= theme.tokens.typography.scale.base)
+                    .all(|run| run.font_size <= theme.tokens.typography.size(TextRole::Body))
             );
-            assert!(
-                runs.iter()
-                    .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01)
-            );
+            assert!(runs.iter().any(|run| {
+                (run.font_size - theme.tokens.typography.size(TextRole::Caption)).abs() < 0.01
+            }));
             assert!(p.row_rect(1).unwrap().y1 <= p.footer_rect().y0);
             tr.set_text_scale(1.0); // palette paint's already-scaled theme space
             let mut rows_scene = Scene::new();

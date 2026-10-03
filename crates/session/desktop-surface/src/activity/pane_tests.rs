@@ -2443,7 +2443,7 @@ mod tests {
         }));
     }
 
-    /// The header band equals the authored 76 px at 100 % and grows with the
+    /// The header band equals the authored 80 px at 100 % and grows with the
     /// text scale so the title, subtitle and "Latest" lines have their own
     /// room; every row under it moves down with it, and a `draw` at a new
     /// scale lays the sheet out again before placing anything.

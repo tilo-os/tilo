@@ -17,9 +17,9 @@ use winit::event::WindowEvent;
 
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
 /// Live parent-window context supplied before a native view is shown.
@@ -454,13 +454,13 @@ impl Widget for NativeView {
             reason = "the native fallback width is bounded by the on-screen widget rectangle"
         )]
         let max_width = (self.rect.width() - 24.0).max(0.0) as f32;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.rect.x0 + 12.0, self.rect.y0 + 12.0).into()),
             Some(max_width),
+            &theme.text(TextRole::Caption),
         );
     }
 

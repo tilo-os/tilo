@@ -36,6 +36,7 @@ use crate::shell::projection::{
     DisplayResolutionLimit, ProjectionBackend, ProjectionController, ProjectionMode,
     ProjectionProtocol, ProjectionStatus,
 };
+use ui::TextRole;
 
 const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
@@ -1066,7 +1067,7 @@ impl ProjectionOverlay {
     ) {
         let r = self.sheet_rect();
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
 
         self.draw_header(scene, transform, text_renderer, theme, r);
         self.draw_layout_rows(scene, transform, text_renderer, theme);
@@ -1088,14 +1089,15 @@ impl ProjectionOverlay {
         }
 
         let footer = t("wireless-protocols");
-        let (fw, _) = text_renderer.measure(&footer, type_scale.xs, None);
-        text_renderer.draw_text(
+        let (fw, _) =
+            text_renderer.measure_style(&footer, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &footer,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
     }
 
@@ -1109,7 +1111,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, r.height());
         let card = RoundedRect::from_rect(r, radius);
         ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
@@ -1129,22 +1131,21 @@ impl ProjectionOverlay {
             &card,
         );
 
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("display-sheet-title"),
-            type_scale.xl,
             colors.text_primary,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 18.0).into()),
             None,
-            TextWeight::Semibold,
+            &type_scale.style(TextRole::Title),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("display-sheet-subtitle"),
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
             Some(f64_to_f32_lossy(r.width() - 88.0)),
+            &type_scale.style(TextRole::Caption),
         );
 
         self.close_rect = Rect::new(r.x1 - 48.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 48.0);
@@ -1168,7 +1169,7 @@ impl ProjectionOverlay {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         // Control role (HIG §9.1/§9.3): the highlighted layout is a lift with
         // the tier's hairline, never an accent wash (the accent means live
         // state, §9.4); idle rows rest on the lift floor with an edge
@@ -1211,10 +1212,9 @@ impl ProjectionOverlay {
             draw_layout_pictogram(scene, transform, pictogram, mode, theme, enabled);
             let text_x = pictogram.x1 + 14.0;
             let text_w = f64_to_f32_lossy(row.x1 - text_x - 44.0);
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t(layout_title_key(mode)),
-                type_scale.sm,
                 if enabled {
                     colors.text_primary
                 } else {
@@ -1222,7 +1222,9 @@ impl ProjectionOverlay {
                 },
                 transform.pre_translate((text_x, row.y0 + 8.0).into()),
                 Some(text_w),
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let detail = if enabled {
                 t(layout_detail_key(mode))
@@ -1231,16 +1233,20 @@ impl ProjectionOverlay {
                     .plan_error(mode)
                     .map_or_else(|| t(layout_detail_key(mode)), |e| t(unavailable_key(&e)))
             };
-            let detail = text_renderer.elide_to_width(&detail, type_scale.xs, text_w);
-            text_renderer.draw_text(
+            let detail = text_renderer.elide_to_width_style(
+                &detail,
+                text_w,
+                &type_scale.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                type_scale.xs,
                 colors
                     .text_dim
                     .with_alpha_factor(if enabled { 1.0 } else { 0.62 }),
                 transform.pre_translate((text_x, row.y0 + 29.0).into()),
                 None,
+                &type_scale.style(TextRole::Caption),
             );
             if active == Some(mode) {
                 ui::icons::draw_icon(
@@ -1273,7 +1279,7 @@ impl ProjectionOverlay {
         self.keep_rect = Rect::ZERO;
         self.revert_rect = Rect::ZERO;
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.confirm_top();
         let band = Rect::new(
             r.x0 + 16.0,
@@ -1304,13 +1310,13 @@ impl ProjectionOverlay {
             self.revert_rect = buttons.revert;
         } else if let Some(reason) = self.displays.rejection() {
             let message = t_args("display-rejected", &[("reason", ArgValue::Text(reason))]);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &message,
-                type_scale.xs,
                 colors.semantic.danger,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
                 Some(f64_to_f32_lossy(band.width() - 8.0)),
+                &type_scale.style(TextRole::Caption),
             );
         }
     }
@@ -1325,16 +1331,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let heading_y = self.wireless_top();
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("wireless-heading"),
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.x0 + 20.0, heading_y).into()),
             None,
-            TextWeight::Semibold,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         self.refresh_rect = Rect::new(r.x1 - 48.0, heading_y - 8.0, r.x1 - 12.0, heading_y + 28.0);
         ui::icons::draw_icon(
@@ -1357,7 +1364,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 32.0;
         self.audio_rect = Rect::new(r.x0 + 20.0, top, r.x1 - 62.0, top + 38.0);
         ui::icons::draw_icon(
@@ -1372,13 +1379,13 @@ impl ProjectionOverlay {
             colors.text_dim,
             1.5,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("wireless-share-audio"),
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.x0 + 52.0, top + 10.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
         let toggle = Rect::new(r.x1 - 58.0, top + 6.0, r.x1 - 20.0, top + 28.0);
         // The shared switch (HIG §9.9): track, knob and their palette come
@@ -1401,16 +1408,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 76.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("wireless-stream"),
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, top + 10.0).into()),
             None,
-            TextWeight::Medium,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let x0 = r.x0 + 76.0;
         let fps = f64::from(self.controller.options.stream_policy.max_fps);
@@ -1460,11 +1468,11 @@ impl ProjectionOverlay {
                 None,
                 &ui::surface::edge_outline(chip, radius),
             );
-            let (label_w, label_h) = text_renderer.measure(label, type_scale.xs, None);
-            text_renderer.draw_text_weighted(
+            let (label_w, label_h) =
+                text_renderer.measure_style(label, None, &type_scale.style(TextRole::Caption));
+            text_renderer.draw_style(
                 scene,
                 label,
-                type_scale.xs,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1474,7 +1482,9 @@ impl ProjectionOverlay {
                         .into(),
                 ),
                 None,
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             chip_x += width + 6.0;
         }
@@ -1492,30 +1502,31 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         if self.airplay_selected() {
             let top = self.wireless_top() + 120.0;
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("wireless-credential-label"),
-                type_scale.xs,
                 colors.text_primary,
                 transform.pre_translate((r.x0 + 20.0, top).into()),
                 None,
-                TextWeight::Semibold,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
             self.credential_rect = Rect::new(r.x0 + 20.0, top + 21.0, r.x1 - 20.0, top + 63.0);
             self.credential_input
                 .apply_layout_external(self.credential_rect);
             self.credential_input
                 .draw(scene, transform, text_renderer, theme, presence);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t("wireless-credential-hint"),
-                type_scale.xs,
                 colors.text_dim,
                 transform.pre_translate((r.x0 + 20.0, top + 71.0).into()),
                 Some(f64_to_f32_lossy(r.width() - 40.0)),
+                &type_scale.style(TextRole::Caption),
             );
         } else {
             self.credential_rect = Rect::ZERO;
@@ -1534,7 +1545,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let (message, detail) = match &self.controller.status {
             ProjectionStatus::Scanning => (t("wireless-scanning"), t("wireless-scanning-detail")),
             ProjectionStatus::Error(error) => (t("wireless-scan-failed"), error.clone()),
@@ -1550,29 +1561,32 @@ impl ProjectionOverlay {
             colors.text_dim,
             1.5,
         );
-        let (mw, _) = text_renderer.measure(&message, type_scale.sm, None);
-        text_renderer.draw_text_weighted(
+        let (mw, _) =
+            text_renderer.measure_style(&message, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &message,
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.center().x - f64::from(mw) / 2.0, top + 40.0).into()),
             None,
-            TextWeight::Medium,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
-        let detail = text_renderer.elide_to_width(
+        let detail = text_renderer.elide_to_width_style(
             &detail,
-            type_scale.xs,
             f64_to_f32_lossy(r.width() - 56.0),
+            &type_scale.style(TextRole::Caption),
         );
-        let (dw, _) = text_renderer.measure(&detail, type_scale.xs, None);
-        text_renderer.draw_text(
+        let (dw, _) =
+            text_renderer.measure_style(&detail, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &detail,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.center().x - f64::from(dw) / 2.0, top + 64.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
     }
 
@@ -1587,7 +1601,7 @@ impl ProjectionOverlay {
         max_rows: usize,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         // Control role: the selected device is a lift (HIG §9.3); every row
         // carries an edge derived from its fill (§9.5).
         let floor = colors.lift(0.35);
@@ -1635,19 +1649,20 @@ impl ProjectionOverlay {
                 },
                 1.5,
             );
-            let name = text_renderer.elide_to_width(
+            let name = text_renderer.elide_to_width_style(
                 &device.name,
-                type_scale.sm,
                 f64_to_f32_lossy(row.width() - 142.0),
+                &type_scale.style(TextRole::Caption),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &name,
-                type_scale.sm,
                 colors.text_primary,
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let sub = if connected {
                 t("wireless-connected")
@@ -1658,10 +1673,9 @@ impl ProjectionOverlay {
             } else {
                 format!("{} · {}", device.protocol.label(), device.detail)
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &sub,
-                type_scale.xs,
                 if connected {
                     colors.semantic.success
                 } else {
@@ -1669,6 +1683,7 @@ impl ProjectionOverlay {
                 },
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 142.0)),
+                &type_scale.style(TextRole::Caption),
             );
             Self::draw_device_action(
                 scene,
@@ -1712,7 +1727,6 @@ impl ProjectionOverlay {
                 } else {
                     ui::widget::ButtonStyle::Neutral
                 })
-                .text_size(theme.tokens.typography.scale.xs)
                 .disabled(connecting),
         );
     }

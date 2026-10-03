@@ -20,6 +20,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
@@ -461,14 +462,13 @@ impl Widget for RadarChart {
             self.pointer = point;
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         let grid = Color::from_rgba8(
@@ -499,11 +499,11 @@ impl Widget for RadarChart {
             );
             if let Some(spec) = self.axes.get(axis) {
                 let label_point = Self::polar(center, radius + 20.0, self.angle(axis));
-                let (width, _) = tr.measure(&spec.label, theme.tokens.typography.scale.xs, None);
-                tr.draw_text(
+                let (width, _) =
+                    tr.measure_style(&spec.label, None, &theme.text(TextRole::Caption));
+                tr.draw_style(
                     scene,
                     &spec.label,
-                    theme.tokens.typography.scale.xs,
                     theme.tokens.colors.text_dim,
                     transform
                         * Affine::translate((
@@ -511,6 +511,7 @@ impl Widget for RadarChart {
                             label_point.y - 6.0,
                         )),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
@@ -596,10 +597,9 @@ impl Widget for RadarChart {
                     None,
                     &Circle::new((x + 4.0, y + 6.0), 4.0),
                 );
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &series.name,
-                    theme.tokens.typography.scale.xs,
                     if visible {
                         theme.tokens.colors.text_dim
                     } else {
@@ -612,6 +612,7 @@ impl Widget for RadarChart {
                     },
                     transform * Affine::translate((x + 14.0, y)),
                     Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
+                    &theme.text(TextRole::Caption),
                 );
                 self.legend_hits.push((series.id.clone(), item));
             }
@@ -625,7 +626,7 @@ impl Widget for RadarChart {
             let value = series.values.get(hovered.axis).copied().unwrap_or_default();
             let title = format!("{} · {}", series.name, axis.label);
             let detail = format!("{value:.2} of {:.2}", axis.max);
-            let (tw, _) = tr.measure(&title, theme.tokens.typography.scale.sm, None);
+            let (tw, _) = tr.measure_style(&title, None, &theme.text(TextRole::Caption));
             let width = f64::from(tw).max(150.0) + 28.0;
             let mut x = self.pointer.x + 16.0;
             let mut y = self.pointer.y + 16.0;
@@ -643,22 +644,23 @@ impl Widget for RadarChart {
                 None,
                 &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

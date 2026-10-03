@@ -471,6 +471,12 @@ scope = { inputs = [
 ], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
 [[cargo]]
+package = "ui-examples"
+# Gallery shots render with the toolkit's checked-in typography fixture fonts.
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["crates/dev/ui-examples/examples/gallery_shots.rs"]
+
+[[cargo]]
 package = "tilo-app-package"
 inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
 readers = [

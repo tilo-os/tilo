@@ -21,9 +21,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
@@ -542,7 +542,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
@@ -550,42 +550,42 @@ impl DatePicker {
         let header_label = format!("{month_name} {y}");
         // Every line in the picker is centred on its *measured* height; the
         // font size alone sat the 12 px labels 1.5 px low in each band.
-        let (label_w, label_h) = text_renderer.measure(&header_label, text_size, None);
+        let (label_w, label_h) = text_renderer.measure_style(&header_label, None, &text_style);
         let label_x = self.rect.center().x - f64::from(label_w) / 2.0;
         let label_y = centered_text_top(self.rect.y0, HEADER_HEIGHT, f64::from(label_h));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &header_label,
-            text_size,
             text_color,
             transform.pre_translate(Vec2::new(label_x, label_y)),
             None,
+            &text_style,
         );
 
         // Drawn as text glyphs so we don't need a vector path.
-        let (lw, lh) = text_renderer.measure("\u{2039}", text_size, None);
-        let (rw, rh) = text_renderer.measure("\u{203A}", text_size, None);
-        text_renderer.draw_text(
+        let (lw, lh) = text_renderer.measure_style("\u{2039}", None, &text_style);
+        let (rw, rh) = text_renderer.measure_style("\u{203A}", None, &text_style);
+        text_renderer.draw_style(
             scene,
             "\u{2039}",
-            text_size,
             text_color,
             transform.pre_translate(Vec2::new(
                 self.prev_button_rect.center().x - f64::from(lw) / 2.0,
                 centered_text_top(self.prev_button_rect.y0, HEADER_HEIGHT, f64::from(lh)),
             )),
             None,
+            &text_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             "\u{203A}",
-            text_size,
             text_color,
             transform.pre_translate(Vec2::new(
                 self.next_button_rect.center().x - f64::from(rw) / 2.0,
                 centered_text_top(self.next_button_rect.y0, HEADER_HEIGHT, f64::from(rh)),
             )),
             None,
+            &text_style,
         );
     }
 
@@ -599,22 +599,22 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let dim_color = tokens.colors.text_dim;
 
         let cell_w = self.rect.width() / grid_f64(GRID_COLS);
         let weekday_band_y0 = self.rect.y0 + HEADER_HEIGHT;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
-            let (lw, lh) = text_renderer.measure(label, text_size, None);
+            let (lw, lh) = text_renderer.measure_style(label, None, &text_style);
             let weekday_y = centered_text_top(weekday_band_y0, WEEKDAY_HEIGHT, f64::from(lh));
             let cx = self.rect.x0 + grid_f64(col) * cell_w + cell_w / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                text_size,
                 dim_color,
                 transform.pre_translate(Vec2::new(cx - f64::from(lw) / 2.0, weekday_y)),
                 None,
+                &text_style,
             );
         }
     }
@@ -629,7 +629,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
@@ -687,16 +687,16 @@ impl DatePicker {
             } else {
                 dim_color
             };
-            let (tw, th) = text_renderer.measure(&day_str, text_size, None);
+            let (tw, th) = text_renderer.measure_style(&day_str, None, &text_style);
             let tx = cell_rect.center().x - f64::from(tw) / 2.0;
             let ty = centered_text_top(cell_rect.y0, cell_rect.height(), f64::from(th));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &day_str,
-                text_size,
                 color,
                 transform.pre_translate(Vec2::new(tx, ty)),
                 None,
+                &text_style,
             );
         }
     }
@@ -860,7 +860,7 @@ mod tests {
                 &theme,
                 &PresenceCtx::default(),
             );
-            let size = theme.tokens.typography.scale.sm;
+            let style = theme.text(TextRole::Caption);
             // Draw order: header label, ‹, ›, seven weekday labels, then day cells.
             let header_band = (rect.y0, HEADER_HEIGHT);
             let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
@@ -882,7 +882,7 @@ mod tests {
                     &scene,
                     index,
                     text,
-                    size,
+                    &style,
                     band_y0,
                     band_h,
                     &mut tr,

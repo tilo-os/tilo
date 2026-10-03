@@ -436,9 +436,9 @@ pub(super) struct NotificationLayer {
     pub open_app: Option<String>,
     rect: Rect,
     cursor: Option<Point>,
-    /// The caption and label sizes the centre paints with, captured from the
+    /// The caption and label line boxes the centre lays out with, captured from the
     /// theme each paint so input between paints measures the same type.
-    type_px: (f32, f32),
+    type_lines: (f64, f64),
     drawn_revision: Cell<Option<u64>>,
     /// Input changed what the layer shows; its layout (one full-size leaf)
     /// never changes, so this only asks for a repaint.
@@ -447,7 +447,6 @@ pub(super) struct NotificationLayer {
 
 impl NotificationLayer {
     pub fn new(notifications: DesktopNotifications) -> Self {
-        let scale = &ui::Theme::dark().tokens.typography.scale;
         Self {
             notifications,
             inbox: None,
@@ -456,7 +455,7 @@ impl NotificationLayer {
             open_app: None,
             rect: Rect::ZERO,
             cursor: None,
-            type_px: (scale.xs, scale.sm),
+            type_lines: CenterLayout::type_lines(&ui::Theme::dark()),
             drawn_revision: Cell::new(None),
             dirty: true,
         }
@@ -489,12 +488,12 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
-        let wanted = center.preferred_height(&self.notifications.log(), self.type_px);
+        let wanted = center.preferred_height(&self.notifications.log(), self.type_lines);
         let height = wanted.min(r.y1 - PANEL_INSET - y0).max(0.0);
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
             Rect::new(x1 - width, y0, x1, y0 + height),
-            self.type_px,
+            self.type_lines,
         ))
     }
 
@@ -637,8 +636,7 @@ impl Widget for NotificationLayer {
         theme: &ui::Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        let scale = &theme.tokens.typography.scale;
-        self.type_px = (scale.xs, scale.sm);
+        self.type_lines = CenterLayout::type_lines(theme);
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);

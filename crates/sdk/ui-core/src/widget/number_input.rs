@@ -389,7 +389,11 @@ impl NumberInput {
         display: &str,
         text: &mut TextRenderer,
     ) -> f32 {
-        let (value_width, _) = text.measure(display, super::text_input::FONT_SIZE, None);
+        let (value_width, _) = text.measure(
+            display,
+            crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
+            None,
+        );
         minimum
             .width
             .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
@@ -975,7 +979,11 @@ mod tests {
                 assert!(number.rect.width() >= DEFAULT_WIDTH * f64::from(scale));
                 assert_eq!(number.rect.height(), DEFAULT_HEIGHT * f64::from(scale));
                 assert!(number.rect.width() <= 292.0, "starter narrow control width");
-                let (value_width, value_height) = text.measure(number.field.value(), 16.0, None);
+                let (value_width, value_height) = text.measure(
+                    number.field.value(),
+                    crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
+                    None,
+                );
                 assert!(
                     f64::from(value_width) + 2.0 * number.field.text_padding_x(&theme)
                         <= number.field_rect.width(),
@@ -1083,7 +1091,11 @@ mod tests {
                 .with_suffix("px");
             let preferred = input.preferred_width(&theme, &mut text);
 
-            let (widest, _) = text.measure("1000.00 px", super::super::text_input::FONT_SIZE, None);
+            let (widest, _) = text.measure(
+                "1000.00 px",
+                crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
+                None,
+            );
             let padding = px_f32(input.field.text_padding_x(&theme));
             let height = px_f32(DEFAULT_HEIGHT.max(f64::from(input.interaction.minimum_target())));
             let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));

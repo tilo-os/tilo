@@ -33,9 +33,9 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
@@ -133,14 +133,6 @@ fn px(v: f64) -> f32 {
     v as f32
 }
 
-/// Converts a size from the theme's already-scaled typography tokens back to
-/// the renderer's input space. `TextRenderer` applies its own accessibility
-/// scale while shaping and measuring, so passing a scaled token through
-/// unchanged would apply the preference twice.
-fn renderer_font_size(theme_size: f32, renderer_scale: f32) -> f32 {
-    theme_size / renderer_scale.max(f32::EPSILON)
-}
-
 pub struct Autocomplete {
     id: String,
     /// The real editable field — owns caret / selection / clipboard / IME.
@@ -208,9 +200,10 @@ impl Autocomplete {
         self
     }
 
+    /// Set the field's text in `role` (default [`TextRole::Body`]).
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.input.set_font_size(size);
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.input.set_text_role(role);
         self
     }
 
@@ -511,13 +504,12 @@ impl Autocomplete {
         } else {
             tokens.colors.text_dim
         };
-        let text_size =
-            renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
-        let detail_size =
-            renderer_font_size(tokens.typography.scale.sm, text_renderer.text_scale());
-        let rendered_text_height = f64::from(text_renderer.measure(&s.label, text_size, None).1);
+        let text_style = tokens.typography.style(TextRole::Body);
+        let detail_style = tokens.typography.style(TextRole::Caption);
+        let rendered_text_height =
+            f64::from(text_renderer.measure_style(&s.label, None, &text_style).1);
         let rendered_detail_height = s.detail.as_ref().map_or(0.0, |detail| {
-            f64::from(text_renderer.measure(detail, detail_size, None).1)
+            f64::from(text_renderer.measure_style(detail, None, &detail_style).1)
         });
         let large_text = self.text_scale >= 1.5;
         let icon_px = ICON_PX * self.text_scale.min(1.5);
@@ -546,18 +538,17 @@ impl Autocomplete {
         // Right-aligned detail first, so we can bound the label width.
         let mut label_x1 = row.x1 - ROW_PAD_X;
         if let Some(detail) = &s.detail {
-            let (dw, _) = text_renderer.measure(detail, detail_size, None);
+            let (dw, _) = text_renderer.measure_style(detail, None, &detail_style);
             let detail_width = px((row.x1 - ROW_PAD_X - x).max(0.0));
             let dx = if large_text {
                 x
             } else {
                 row.x1 - ROW_PAD_X - f64::from(dw)
             };
-            let detail = text_renderer.elide_to_width(detail, detail_size, detail_width);
-            text_renderer.draw_text(
+            let detail = text_renderer.elide_to_width_style(detail, detail_width, &detail_style);
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                detail_size,
                 dim_color,
                 transform.pre_translate(Vec2::new(
                     dx,
@@ -568,20 +559,21 @@ impl Autocomplete {
                     },
                 )),
                 None,
+                &detail_style,
             );
             if !large_text {
                 label_x1 = dx - 8.0;
             }
         }
         let label_width = px((label_x1 - x).max(0.0));
-        let label = text_renderer.elide_to_width(&s.label, text_size, label_width);
-        text_renderer.draw_text(
+        let label = text_renderer.elide_to_width_style(&s.label, label_width, &text_style);
+        text_renderer.draw_style(
             scene,
             &label,
-            text_size,
             text_color,
             transform.pre_translate(Vec2::new(x, ty)),
             None,
+            &text_style,
         );
     }
 }
@@ -719,20 +711,20 @@ impl Widget for Autocomplete {
             &crate::surface::edge_outline(panel, f64::from(tokens.radii.control)),
         );
 
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
+        let text_style = tokens.typography.style(TextRole::Body);
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
             if let Some(status) = &self.status {
-                let (_, status_h) = text_renderer.measure(status, text_size, None);
+                let (_, status_h) = text_renderer.measure_style(status, None, &text_style);
                 let ty = panel.y0 + (panel.height() - f64::from(status_h)) / 2.0;
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     status,
-                    text_size,
                     tokens.colors.text_dim,
                     transform.pre_translate(Vec2::new(panel.x0 + ROW_PAD_X + 4.0, ty)),
                     Some(px((panel.width() - 2.0 * (ROW_PAD_X + 4.0)).max(0.0))),
+                    &text_style,
                 );
             }
             return;
@@ -1371,25 +1363,9 @@ mod tests {
             assert_eq!(ac.row_at(second.center()), Some(1));
         }
 
-        fn scaled_theme_font_is_normalized_before_scaled_text_rendering() {
-            let normal = Theme::dark();
-            let large = Theme::dark().with_text_scale(2.0);
-
-            assert_eq!(
-                renderer_font_size(large.tokens.typography.scale.base, large.text_scale),
-                normal.tokens.typography.scale.base,
-                "theme and renderer must not both apply the accessibility text scale"
-            );
-            assert_eq!(
-                renderer_font_size(large.tokens.typography.scale.sm, large.text_scale),
-                normal.tokens.typography.scale.sm,
-            );
-        }
-
         set_suggestions_supports_reactive_hosts();
         status_line_keeps_the_dropdown_open_with_no_rows();
         reactive_suggestions_after_open_replace_the_status_line();
         large_text_scales_dropdown_rows_and_hit_geometry_together();
-        scaled_theme_font_is_normalized_before_scaled_text_rendering();
     }
 }

@@ -1,7 +1,41 @@
 schema = 1
-catalog_id = "tilo-fonts-fedora44-2026-09-12-v2"
-product_bytes = 43817716
-fixture_bytes = 44697512
+catalog_id = "tilo-fonts-fedora44-instrument-sans-2026-10-03"
+product_bytes = 44214180
+fixture_bytes = 45093976
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "InstrumentSans[wdth,wght].ttf"
+bytes = 194336
+sha256 = "b24f1812584816958afcf22e22d08e44318c5e51651e25d2438efdde389b33b1"
+source_url = "https://github.com/google/fonts/blob/2fc9491da70cf3e1bafd3c3da49244c5a496e9d5/ofl/instrumentsans/InstrumentSans[wdth,wght].ttf"
+source_metadata = "Instrument Sans; Regular; PS `InstrumentSans-Regular`; v1.000; axes in native order `wdth` 75/100/100, `wght` 400/400/700"
+reserved_aliases = ["Instrument Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Instrument-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Instrument Sans"
+post_script_name = "InstrumentSans-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "InstrumentSans-Italic[wdth,wght].ttf"
+bytes = 202128
+sha256 = "a74203cc5066a3b2f8de1a7b0887ef897773c2319dc86c911f8e85350cde0d07"
+source_url = "https://github.com/google/fonts/blob/2fc9491da70cf3e1bafd3c3da49244c5a496e9d5/ofl/instrumentsans/InstrumentSans-Italic[wdth,wght].ttf"
+source_metadata = "Instrument Sans; Italic; PS `InstrumentSans-Italic`; v1.000; axes in native order `wdth` 75/100/100, `wght` 400/400/700"
+reserved_aliases = ["Instrument Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Instrument-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Instrument Sans"
+post_script_name = "InstrumentSans-Italic"
+style = "italic"
 
 [[font]]
 scope = "product"
@@ -361,6 +395,11 @@ source_in_license_scratch = "licenses/adwaita-fonts-50.0/LICENSE"
 sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
 
 [[license]]
+file = "LICENSES/Instrument-Sans-OFL.txt"
+source_url = "https://github.com/google/fonts/blob/2fc9491da70cf3e1bafd3c3da49244c5a496e9d5/ofl/instrumentsans/OFL.txt"
+sha256 = "9e27a72ed30eb49a08678f6a5d6ed98ec7ba5368f541637ee0683ec9134ef966"
+
+[[license]]
 file = "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
 source_in_license_scratch = "licenses/../font-name-notices.txt"
-sha256 = "f3cbba1d449827c0a7c7d47d9cabb9e87a81a03136fb0bb1bf20df3744548374"
+sha256 = "9d1c681af41a74086ccd0ae3ccdad5d9d7508693b4aa02a4569b30e26b879e05"

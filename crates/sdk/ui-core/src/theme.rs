@@ -271,9 +271,9 @@ pub struct Theme {
     /// Floating chrome draws its material opaque instead of over the blurred
     /// backdrop (`crate::floating_surface::Material`). Default `false`.
     pub reduce_transparency: bool,
-    /// `1.0` = default. Baked into `tokens.typography.scale`/
-    /// `font_size_base` by [`Theme::with_text_scale`]; kept here too so a
-    /// widget can scale a size it computes itself.
+    /// `1.0` = default. Baked into every [`Theme::text`] role by
+    /// [`Theme::with_text_scale`]; kept here too so a widget can scale a
+    /// size it computes itself.
     pub text_scale: f32,
     /// The "make everything bigger" knob — spacing, radii, and type scale
     /// together, distinct from [`Theme::text_scale`] (type only). Baked in
@@ -641,17 +641,7 @@ impl Theme {
     }
 
     fn multiply_type_sizes(&mut self, factor: f32) {
-        let scale = &mut self.tokens.typography.scale;
-        scale.xs *= factor;
-        scale.sm *= factor;
-        scale.base *= factor;
-        scale.lg *= factor;
-        scale.xl *= factor;
-        scale.x2l *= factor;
-        scale.x3l *= factor;
-        scale.x4l *= factor;
-
-        self.tokens.font_size_base *= factor;
+        self.tokens.typography.scale = self.tokens.typography.scale.scaled(factor);
     }
 
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
@@ -910,15 +900,11 @@ mod tests {
         // Case `text_scale_multiplies_every_type_size`.
         {
             let base = Theme::dark();
-            let base_sm = base.tokens.typography.scale.sm;
-            let base_base = base.tokens.typography.scale.base;
-            let base_font = base.tokens.font_size_base;
-
             let scaled = Theme::dark().with_text_scale(1.5);
             assert_eq!(scaled.text_scale, 1.5);
-            assert!((scaled.tokens.typography.scale.sm - base_sm * 1.5).abs() < 1e-4);
-            assert!((scaled.tokens.typography.scale.base - base_base * 1.5).abs() < 1e-4);
-            assert!((scaled.tokens.font_size_base - base_font * 1.5).abs() < 1e-4);
+            for role in crate::tokens::TextRole::ALL {
+                assert!((scaled.text(role).size - base.text(role).size * 1.5).abs() < 1e-4);
+            }
         }
 
         // Case `text_scale_is_clamped_to_a_sane_range`.
@@ -932,7 +918,7 @@ mod tests {
             let base = Theme::dark();
             let bs = base.tokens.spacing.s3;
             let r = base.tokens.radii.clone();
-            let bt = base.tokens.typography.scale.base;
+            let bt = base.text(crate::tokens::TextRole::Body).size;
 
             let scaled = Theme::dark().with_ui_scale(1.5);
             assert_eq!(scaled.ui_scale, 1.5);
@@ -948,7 +934,7 @@ mod tests {
                 assert!((got - want * 1.5).abs() < 1e-4, "{name} grows");
             }
             assert_eq!(s.full, r.full, "radii.full is a sentinel, not scaled");
-            assert!((scaled.tokens.typography.scale.base - bt * 1.5).abs() < 1e-4);
+            assert!((scaled.text(crate::tokens::TextRole::Body).size - bt * 1.5).abs() < 1e-4);
             assert!((scaled.padding_standard - bs * 1.5).abs() < 1e-4);
             assert!((scaled.radius_standard - f64::from(r.control) * 1.5).abs() < 1e-4);
         }
@@ -962,10 +948,13 @@ mod tests {
         // Case `ui_scale_and_text_scale_compose_on_type`.
         {
             let base = Theme::dark();
-            let base_type = base.tokens.typography.scale.base;
+            let base_type = base.text(crate::tokens::TextRole::Body).size;
             let base_gap = base.tokens.spacing.s3;
             let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
-            assert!((composed.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-3);
+            assert!(
+                (composed.text(crate::tokens::TextRole::Body).size - base_type * 1.25 * 1.2).abs()
+                    < 1e-3
+            );
             assert!((composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3);
         }
 

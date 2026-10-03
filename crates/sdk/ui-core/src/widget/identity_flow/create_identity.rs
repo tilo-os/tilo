@@ -423,7 +423,7 @@ impl CreateIdentityScreen {
         self.body_height = body.height();
         // The widget takes the whole row (the body clip trims its paint);
         // its pointer target is the part inside the visible body.
-        place_field(&mut self.name, resolved.plan.input, text_renderer, theme);
+        place_field(&mut self.name, resolved.plan.input);
         self.input_rect = BodyScroll::visible(body, resolved.plan.input);
         self.tile_rects = resolved
             .plan
