@@ -222,6 +222,56 @@ fn text_run_node_id(parent: AkNodeId) -> AkNodeId {
     AkNodeId(TEXT_RUN_ID_BASE | parent.0)
 }
 
+/// The key under which a synthetic node's own text run hangs below it. A
+/// synthetic id is a hash with every bit significant, so the widget scheme of
+/// or-ing a marker bit could alias another node; the run is instead hashed
+/// like a child, under a key no ordinal or semantic key reaches.
+const SYNTHETIC_TEXT_RUN_KEY: u64 = u64::MAX;
+
+fn synthetic_text_run_node_id(parent: AkNodeId) -> AkNodeId {
+    synthetic_node_id(parent, SYNTHETIC_TEXT_RUN_KEY)
+}
+
+/// The text run that gives an editable node its AT-SPI Text and EditableText
+/// interfaces: the value as one run, and the caret/selection as positions in
+/// it. A protected (password) node never carries its value here.
+fn text_run_for(
+    ak: &mut AkNode,
+    access: &AccessNode,
+    run_id: AkNodeId,
+    bounds: Option<vello::kurbo::Rect>,
+    scale: f64,
+) -> Option<AkNode> {
+    if access.state.protected {
+        return None;
+    }
+    let (Some(value), Some(selection)) = (&access.value, access.text_selection) else {
+        return None;
+    };
+    let mut run = AkNode::new(AkRole::TextRun);
+    run.set_value(value.clone());
+    run.set_character_lengths(accessible_character_lengths(value));
+    if let Some(rect) = bounds.filter(|rect| rect.width() > 0.0 || rect.height() > 0.0) {
+        run.set_bounds(AkRect::new(
+            rect.x0 * scale,
+            rect.y0 * scale,
+            rect.x1 * scale,
+            rect.y1 * scale,
+        ));
+    }
+    ak.set_text_selection(AkTextSelection {
+        anchor: AkTextPosition {
+            node: run_id,
+            character_index: byte_to_grapheme_index(value, selection.anchor),
+        },
+        focus: AkTextPosition {
+            node: run_id,
+            character_index: byte_to_grapheme_index(value, selection.focus),
+        },
+    });
+    Some(run)
+}
+
 /// Derive a synthetic node's stable id from its parent's id and its own key.
 ///
 /// Chaining through the parent means the id encodes the whole path from the
@@ -441,7 +491,11 @@ fn find_synthetic_path(
         let id = synthetic_node_id(parent_id, key);
         keys.push(key);
         ordinals.push(ordinal);
-        if id == wanted {
+        if id == wanted
+            || (child.value.is_some()
+                && child.text_selection.is_some()
+                && synthetic_text_run_node_id(id) == wanted)
+        {
             semantic_target.clone_from(&child.action_target);
             return true;
         }
@@ -914,34 +968,14 @@ impl TreeWalk<'_> {
                     &mut my_children,
                 );
             }
-            if !access_node.state.protected
-                && let (Some(value), Some(selection)) =
-                    (&access_node.value, access_node.text_selection)
-            {
-                let run_id = text_run_node_id(id);
-                let mut run = AkNode::new(AkRole::TextRun);
-                run.set_value(value.clone());
-                run.set_character_lengths(accessible_character_lengths(value));
-                let rect = w.get_rect();
-                if rect.width() > 0.0 || rect.height() > 0.0 {
-                    let scale = self.scale;
-                    run.set_bounds(AkRect::new(
-                        rect.x0 * scale,
-                        rect.y0 * scale,
-                        rect.x1 * scale,
-                        rect.y1 * scale,
-                    ));
-                }
-                ak.set_text_selection(AkTextSelection {
-                    anchor: AkTextPosition {
-                        node: run_id,
-                        character_index: byte_to_grapheme_index(value, selection.anchor),
-                    },
-                    focus: AkTextPosition {
-                        node: run_id,
-                        character_index: byte_to_grapheme_index(value, selection.focus),
-                    },
-                });
+            let run_id = text_run_node_id(id);
+            if let Some(run) = text_run_for(
+                &mut ak,
+                &access_node,
+                run_id,
+                Some(w.get_rect()),
+                self.scale,
+            ) {
                 my_children.insert(0, run_id);
                 self.nodes.push((run_id, run));
             }
@@ -1025,6 +1059,15 @@ impl TreeWalk<'_> {
             for child in direct {
                 self.visit::<BOUND>(child, &mut my_children);
             }
+        }
+        let run_id = synthetic_text_run_node_id(id);
+        let run_bounds = access
+            .bounds
+            .map(crate::a11y::AccessBounds::to_rect)
+            .or_else(|| owner.synthetic_accessibility_rect(ordinal_path));
+        if let Some(run) = text_run_for(&mut ak, access, run_id, run_bounds, self.scale) {
+            my_children.insert(0, run_id);
+            self.nodes.push((run_id, run));
         }
         ak.set_children(my_children);
 
@@ -2593,6 +2636,61 @@ mod tests {
             let orphan = label_id(&update, "orphan");
             assert!(is_synthetic_id(orphan));
             assert_eq!(resolve_node_id(&root, &empty_map, orphan), None);
+        }
+
+        // Case `a_synthetic_text_field_exports_its_run_and_resolves_it_to_its_owner`.
+        {
+            // A query field drawn by its owner (a palette) has no widget of its
+            // own. It still needs a text run, or AT-SPI exposes no Text and no
+            // EditableText and a screen reader cannot type into it.
+            let mut root =
+                TestWidget::new(Some(AccessNode::new(Role::Dialog).with_children(vec![
+                    AccessNode::new(Role::TextInput)
+                        .with_name("query")
+                        .with_action_target("palette:query")
+                        .with_value("fi")
+                        .with_text_selection(2, 2),
+                ])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let owner = taffy_id_of(&node_map, Role::Dialog);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+
+            let field_id = label_id(&update, "query");
+            let field = &update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == field_id)
+                .expect("the field is exported")
+                .1;
+            assert!(field.supports_action(AkAction::SetValue));
+            let run_id = field.children()[0];
+            let (_, run) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == run_id)
+                .expect("the run is exported");
+            assert_eq!(run.role(), AkRole::TextRun);
+            assert_eq!(run.value(), Some("fi"));
+            assert_eq!(
+                field
+                    .text_selection()
+                    .map(|s| (s.anchor.node, s.focus.character_index)),
+                Some((run_id, 2)),
+            );
+            assert_ne!(run_id, field_id);
+            // The run resolves to the field itself, so its verbs reach the
+            // field's semantic target.
+            assert_eq!(
+                resolve_node_id(&root, &node_map, run_id),
+                resolve_node_id(&root, &node_map, field_id),
+            );
+            assert!(matches!(
+                resolve_node_id(&root, &node_map, run_id),
+                Some(A11yTarget::Synthetic { owner: o, ref ordinal_path, ref semantic_target, .. })
+                    if o == owner
+                        && ordinal_path == &[0]
+                        && semantic_target.as_deref() == Some("palette:query")
+            ));
         }
 
         // Case `a_text_run_resolves_to_the_field_that_owns_it`.
