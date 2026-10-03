@@ -155,6 +155,18 @@ impl ImageTrust {
         &self.publishers
     }
 
+    /// Admit `meta` into a writable store: an image whose manifest is sound
+    /// and whose signature verifies, from a publisher that is trusted or
+    /// attested and not revoked. Returns the attestor id, empty when a
+    /// trusted publisher signed it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the image is refused.
+    pub fn check(&self, meta: &PackageMeta) -> Result<String, MaterializeError> {
+        self.admit(meta, false)
+    }
+
     /// Admit `meta`: an image whose signature verifies, from a publisher not
     /// revoked, and — unless `placed` says it came from a system store —
     /// trusted or attested.
