@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="l.ss13" format="2">
-  <advance width="294"/>
-  <anchor x="119" y="0" name="bottom"/>
+  <advance width="301"/>
+  <anchor x="136" y="0" name="bottom"/>
   <anchor x="146" y="370" name="center"/>
   <anchor x="227" y="720" name="top"/>
   <anchor x="337" y="720" name="topright"/>

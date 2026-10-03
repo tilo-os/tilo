@@ -700,6 +700,7 @@
     <array>
       <string>zero</string>
       <string>nine</string>
+      <string>zero.zero</string>
     </array>
     <key>public.kern2.KO_A</key>
     <array>
@@ -992,6 +993,8 @@
       <string>f_l</string>
       <string>f_f_i.ss01</string>
       <string>f_i.ss01</string>
+      <string>f_l.ss13</string>
+      <string>f_f_l.ss13</string>
     </array>
     <key>public.kern2.KO_five</key>
     <array>
@@ -1275,6 +1278,7 @@
     <array>
       <string>zero</string>
       <string>six</string>
+      <string>zero.zero</string>
     </array>
   </dict>
 </plist>

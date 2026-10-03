@@ -196,17 +196,48 @@ unambiguous: usernames, user-submitted identifiers, passwords, codes.
 `1`, `|` and `!` keep their upstream forms: the flagged `1`, the long thin bar
 and the dotted `!` already differ from both new forms. The lookups run after
 `liga` and `ss01`, so `fl` becomes `f_l.ss13` and `Ï` with round dots becomes
-`Idieresis.ss01.ss13`. A new precomposed `I` or `l` (for example `Itilde`,
-`Ihookabove`, `Idotbelow`, `ldot`) needs its own `.ss13` composite and a line in
-`il.fea`; so would Cyrillic `І Ї Ӏ` and Greek `Ι` if they should follow.
+`Idieresis.ss01.ss13`. All four features are in `aalt`, so glyph palettes reach
+the alternates.
 
-Kerning: `I.ss13` and its accented forms are `public.kern1.KO_I.ss13` /
-`public.kern2.KO_I.ss13` (plus `IJ.ss13` on the left), `l.ss13`, its accented forms,
-`lslash.ss13` and the tailed ligatures are `public.kern1.KO_l.ss13`; their left
-sides are the plain stems' (no pairs). `lcaron.ss13` and the accented `l`s join the
-upstream groups of their default forms. The few pairs: the serifs against
-`E F L T Z 7`, the tail against shapes that open toward it (`T V W Y 7 1 \`,
-quotes, dashes, guillemets).
+Every new precomposed `I` or `l` needs its `.ss13` composite, a line in `il.fea`
+and a place in the kern groups below, in the same change that adds it; otherwise
+`ss13` silently leaves a plain stem in an identifier. Pending, as those letters
+land: Vietnamese `Ĩ Ỉ Ị` (`Itilde.ss13`, `Ihookabove.ss13`, `Idotbelow.ss13`, plus
+`itilde`/`ihookabove` in the lowercase-i accent kerning below); Cyrillic `І Ї Ӏ`
+and Greek `Ι Ϊ Ί` (decide per script whether the serif form follows; a bare stem
+next to a serif Latin `I` is ambiguous again). `I.ss13` carries `topleft` for
+the Greek tonos, placed as far from the serif as upstream's `I` places it from
+its stem.
+
+Spacing and kerning. `I.ss13`'s sidebearings come from its serifs; the condensed
+masters are 15 (Regular) and 10 (Bold) units wider per side than first drawn so
+`II` and `AIA` keep Instrument's Z+Z / H+A rhythm. `l.ss13` keeps `l`'s left
+sidebearing and takes the right sidebearing Instrument's `t` keeps after its
+tail. Groups: `public.kern1.KO_I.ss13` / `public.kern2.KO_I.ss13` (with
+`IJ.ss13` on the left side); `public.kern1.KO_l.ss13` for `l.ss13`, its accented
+forms, `lslash.ss13` and the tailed ligatures; `f_l.ss13` and `f_f_l.ss13` stay in
+`public.kern2.KO_f` and `zero.zero` in both `KO_zero` groups (with copies of
+`zero`'s glyph-level pairs), so the alternates keep every upstream pair.
+`lcaron.ss13` joins `KO_dcaron`, with its own pair against the serif I.
+
+The pairs were measured, not guessed: at each of the eight masters the ink gap
+was taken from the shaped font and set to these clearances:
+
+- serif I against anything: at least 40 units, or the plain `I`'s gap where
+  that is already smaller (cap accent meeting cap accent). This opens the
+  lowercase-i accents `ì í î ï ī` (on both sides) and the apostrophe carons
+  `ď ľ ť ř` (45), which otherwise fuse with the top serif into `Γ`/`Π` shapes;
+- tail or baseline bar against the bottom serif (`t I`, `ť I`, `I J`): Instrument's
+  `L Z` gap; `l I` (the pair the feature exists for) and `ľ I`: the larger of
+  `L Z` and `Z Z`; `I I`: `Z Z`;
+- `l.ss13` against everything: never tighter than Instrument's `t`; against top
+  and middle shapes (`T V W Y 7 1 \`, quotes, dashes, guillemets, `·`) it keeps
+  half of its extra width over `l`;
+- serif I next to rounds and open diagonals (`O C Q`, `v w y`, `r`): about a third
+  of the white its inset stem adds over `H` is taken back.
+
+The italic masters were measured on their own outlines; because the italics
+are the uprights slanted, the gaps (and so most values) come out the same.
 
 ## Anchors
 

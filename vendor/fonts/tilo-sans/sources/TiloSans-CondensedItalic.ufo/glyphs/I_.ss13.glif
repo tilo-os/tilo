@@ -1,23 +1,24 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="I.ss13" format="2">
-  <advance width="270"/>
-  <anchor x="76" y="0" name="bottom"/>
-  <anchor x="141" y="0" name="ogonek"/>
-  <anchor x="242" y="720" name="top"/>
+  <advance width="300"/>
+  <anchor x="91" y="0" name="bottom"/>
+  <anchor x="156" y="0" name="ogonek"/>
+  <anchor x="257" y="720" name="top"/>
+  <anchor x="102" y="720" name="topleft"/>
   <outline>
     <contour>
-      <point x="-29" y="0" type="line"/>
-      <point x="181" y="0" type="line"/>
-      <point x="195" y="60" type="line"/>
-      <point x="125" y="60" type="line"/>
-      <point x="264" y="660" type="line"/>
-      <point x="334" y="660" type="line"/>
-      <point x="347" y="720" type="line"/>
-      <point x="137" y="720" type="line"/>
-      <point x="124" y="660" type="line"/>
-      <point x="194" y="660" type="line"/>
-      <point x="55" y="60" type="line"/>
-      <point x="-15" y="60" type="line"/>
+      <point x="-14" y="0" type="line"/>
+      <point x="196" y="0" type="line"/>
+      <point x="210" y="60" type="line"/>
+      <point x="140" y="60" type="line"/>
+      <point x="279" y="660" type="line"/>
+      <point x="349" y="660" type="line"/>
+      <point x="362" y="720" type="line"/>
+      <point x="152" y="720" type="line"/>
+      <point x="139" y="660" type="line"/>
+      <point x="209" y="660" type="line"/>
+      <point x="70" y="60" type="line"/>
+      <point x="0" y="60" type="line"/>
     </contour>
   </outline>
 </glyph>
