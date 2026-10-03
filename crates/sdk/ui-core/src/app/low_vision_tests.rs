@@ -307,3 +307,49 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     assert!(a.reduce_motion());
     assert_eq!(a.theme.name, "High contrast light");
 }
+
+#[test]
+fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
+    use crate::color_compat::ColorCompat as _;
+    use crate::theme::WindowAppearance;
+    use crate::tokens::PresenceHue;
+
+    let mut a = app();
+    a.set_theme(Theme::light());
+    let neutral = a.theme.tokens.colors.surfaces.content;
+    assert!(
+        neutral.r() == neutral.g() && neutral.g() == neutral.b(),
+        "a window nobody told is neutral"
+    );
+
+    let told = WindowAppearance {
+        workspace_hue: Some(40.0),
+        your_colour: Some(PresenceHue::Violet),
+    };
+    let message = crate::floating_surface::FloatingSurfaceHostMessage::appearance(&told);
+    assert!(a.set_window_appearance(message.window_appearance().unwrap()));
+    assert!(!a.set_window_appearance(told), "the same appearance again");
+    assert_eq!(a.window_appearance(), told);
+    assert_eq!(a.theme.document.palette.hue, Some(40.0));
+    assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
+    assert_eq!(
+        a.theme.border_focus,
+        a.theme.tokens.colors.presence.hue(PresenceHue::Violet),
+        "focus ring, caret and selection follow"
+    );
+    assert_ne!(a.theme.tokens.colors.surfaces.content, neutral);
+
+    // A settings change rebuilds from the base theme and keeps the window's.
+    a.set_theme(Theme::light());
+    assert_eq!(a.theme.document.palette.hue, Some(40.0));
+    a.toggle_high_contrast();
+    assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
+    a.toggle_high_contrast();
+
+    // Moving to a neutral workspace takes the temperature away again.
+    a.set_window_appearance(WindowAppearance {
+        workspace_hue: None,
+        your_colour: Some(PresenceHue::Violet),
+    });
+    assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
+}

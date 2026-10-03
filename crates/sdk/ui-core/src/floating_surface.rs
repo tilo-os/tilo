@@ -86,11 +86,12 @@ pub fn paint_material(
     crate::backdrop::fill(scene, transform, shape, material, theme);
 }
 
-/// Version of the app ↔ shell floating-surface lifecycle wire contract.
-/// Geometry is encoded as plain logical-pixel arrays rather than renderer
-/// types so sandbox services, Wayland protocol shims, and test transports can
-/// all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
+/// Version of the app ↔ shell wire contract on the shell-ui channel:
+/// floating-surface lifecycle and the window's appearance. Geometry is
+/// encoded as plain logical-pixel arrays rather than renderer types so
+/// sandbox services, Wayland protocol shims, and test transports can all
+/// carry the same messages.
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 5;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
@@ -260,6 +261,136 @@ pub enum FloatingSurfaceHostMessage {
     Closed {
         id: String,
     },
+    /// Where and for whom the app's window is shown
+    /// ([`crate::theme::WindowAppearance`]): the temperature of the
+    /// workspace holding it and the person's colour. Sent when the app
+    /// connects and again whenever either changes — a workspace switch, a
+    /// new wallpaper, a window moved to another workspace, a colour chosen
+    /// in Settings.
+    Appearance {
+        /// OKLCH degrees; absent while the workspace has no temperature.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_hue: Option<f32>,
+        /// A presence hue by its stored name (`PresenceHue::id`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        your_colour: Option<String>,
+    },
+}
+
+impl FloatingSurfaceHostMessage {
+    /// The message that tells a window `appearance`.
+    #[must_use]
+    pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
+        Self::Appearance {
+            workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
+            your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
+        }
+    }
+
+    /// What an [`Self::Appearance`] message says, `None` for any other. A
+    /// colour this build does not name, or a hue that is not a number,
+    /// counts as unsaid.
+    #[must_use]
+    pub fn window_appearance(&self) -> Option<crate::theme::WindowAppearance> {
+        let Self::Appearance {
+            workspace_hue,
+            your_colour,
+        } = self
+        else {
+            return None;
+        };
+        Some(crate::theme::WindowAppearance {
+            workspace_hue: workspace_hue
+                .filter(|hue| hue.is_finite())
+                .map(|hue| hue.rem_euclid(360.0)),
+            your_colour: your_colour
+                .as_deref()
+                .and_then(crate::tokens::PresenceHue::from_id),
+        })
+    }
+}
+
+/// Wakes the app's event loop when the shell has written to an idle
+/// connection: one wake, then nothing until the app has read
+/// ([`Self::rearm`]), so unread bytes never spin it.
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
+struct ReadableWake {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    rearm: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
+impl ReadableWake {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+    fn spawn(stream: &UnixStream, wake: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd as _;
+        use std::sync::atomic::Ordering;
+        // Its own descriptor for the same socket: closing the client's never
+        // leaves this thread polling a number the process reused.
+        let watched = stream.try_clone()?;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (rearm, armed) = std::sync::mpsc::channel::<()>();
+        let stopped = std::sync::Arc::clone(&stop);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the watcher waits on the shell's socket for the connection's lifetime; \
+                      a pool thread would be held as long"
+        )]
+        std::thread::Builder::new()
+            .name("tilo-shell-ui-wake".into())
+            .spawn(move || {
+                loop {
+                    if stopped.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let mut readable = libc::pollfd {
+                        fd: watched.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let timeout = libc::c_int::try_from(Self::POLL.as_millis()).unwrap_or(500);
+                    // SAFETY: one valid pollfd for a descriptor this thread owns.
+                    let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
+                    if ready < 0 {
+                        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        return;
+                    }
+                    if ready == 0 {
+                        continue;
+                    }
+                    wake();
+                    if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                        return;
+                    }
+                    loop {
+                        match armed.recv_timeout(Self::POLL) {
+                            Ok(()) => break,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                if !stopped.load(Ordering::Acquire) => {}
+                            Err(_) => return,
+                        }
+                    }
+                    while armed.try_recv().is_ok() {}
+                }
+            })?;
+        Ok(Self { stop, rearm })
+    }
+
+    /// The app read what was there; wake it for the next arrival.
+    fn rearm(&self) {
+        let _ = self.rearm.send(());
+    }
+}
+
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
+impl Drop for ReadableWake {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Non-blocking app-side connection to the session shell. The launcher hands
@@ -274,6 +405,8 @@ pub struct FloatingSurfaceServiceClient {
     outgoing: VecDeque<Vec<u8>>,
     outgoing_offset: usize,
     outgoing_bytes: usize,
+    #[cfg(any(test, feature = "local-daemons"))]
+    readable: Option<ReadableWake>,
 }
 
 #[cfg(unix)]
@@ -286,7 +419,23 @@ impl FloatingSurfaceServiceClient {
         // The inherited service descriptor belongs to this one client. Lift
         // it exactly once; dropping the client closes it cleanly.
         let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-        Self::from_stream(UnixStream::from(owned)).ok()
+        // The shell writes unprompted (a workspace switch changes the
+        // window's appearance), so an idle app must wake to read it.
+        let wake = crate::wake::WakeHandle::new();
+        Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok()
+    }
+
+    /// [`Self::from_stream`], calling `wake` whenever the shell has written
+    /// something the app has not read yet.
+    #[cfg(any(test, feature = "local-daemons"))]
+    fn from_stream_waking(
+        stream: UnixStream,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let readable = ReadableWake::spawn(&stream, wake)?;
+        let mut client = Self::from_stream(stream)?;
+        client.readable = Some(readable);
+        Ok(client)
     }
 
     /// Without the local daemons there is no inherited session service.
@@ -304,6 +453,7 @@ impl FloatingSurfaceServiceClient {
             outgoing: VecDeque::new(),
             outgoing_offset: 0,
             outgoing_bytes: 0,
+            readable: None,
         })
     }
 
@@ -364,6 +514,10 @@ impl FloatingSurfaceServiceClient {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(format!("read floating-surface service: {error}")),
             }
+        }
+        #[cfg(any(test, feature = "local-daemons"))]
+        if let Some(readable) = &self.readable {
+            readable.rearm();
         }
 
         let mut messages = Vec::new();
@@ -1816,5 +1970,89 @@ mod tests {
             });
             assert_eq!(received, vec![inbound]);
         }
+    }
+
+    #[test]
+    fn a_window_appearance_round_trips_and_unknown_values_are_unsaid() {
+        use crate::theme::WindowAppearance;
+        use crate::tokens::PresenceHue;
+
+        let told = WindowAppearance {
+            workspace_hue: Some(40.0),
+            your_colour: Some(PresenceHue::Violet),
+        };
+        let message = FloatingSurfaceHostMessage::appearance(&told);
+        let wire = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"type": "appearance", "workspace_hue": 40.0, "your_colour": "violet"})
+        );
+        let back: FloatingSurfaceHostMessage = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.window_appearance(), Some(told));
+
+        let neutral: FloatingSurfaceHostMessage =
+            serde_json::from_value(serde_json::json!({"type": "appearance"})).unwrap();
+        assert_eq!(
+            neutral.window_appearance(),
+            Some(WindowAppearance::default()),
+            "no temperature and no colour said"
+        );
+        let unknown: FloatingSurfaceHostMessage = serde_json::from_value(
+            serde_json::json!({"type": "appearance", "workspace_hue": 400.0, "your_colour": "chartreuse"}),
+        )
+        .unwrap();
+        assert_eq!(
+            unknown.window_appearance(),
+            Some(WindowAppearance {
+                workspace_hue: Some(40.0),
+                your_colour: None,
+            })
+        );
+        assert_eq!(
+            FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_client_wakes_once_per_arrival() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        let mut client = FloatingSurfaceServiceClient::from_stream_waking(app_side, move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+        let send = |shell_side: &mut UnixStream| {
+            let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
+                &crate::theme::WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: None,
+                },
+            ))
+            .unwrap();
+            bytes.push(b'\n');
+            shell_side.write_all(&bytes).unwrap();
+        };
+        send(&mut shell_side);
+        tilo_test_env::wait_until("the shell's write wakes the app", || {
+            wakes.load(Ordering::SeqCst) >= 1
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "unread bytes wake the app once, not in a loop"
+        );
+        assert_eq!(client.pump().unwrap().len(), 1);
+        send(&mut shell_side);
+        tilo_test_env::wait_until("the next arrival wakes it again", || {
+            wakes.load(Ordering::SeqCst) >= 2
+        });
+        assert_eq!(client.pump().unwrap().len(), 1);
     }
 }
