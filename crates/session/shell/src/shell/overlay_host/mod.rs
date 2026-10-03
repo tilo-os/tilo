@@ -6387,6 +6387,23 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Pan `strip` at once, without easing, so `group` is wholly on screen,
+    /// and keep it framed there. For an agent acting in one window: it sees
+    /// and aims at the whole window on this command, not after an animation.
+    /// `false` when the strip has no row or the group was already in view.
+    pub fn reveal_group_now(&mut self, strip: StripId, group: u64) -> bool {
+        let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
+            return false;
+        };
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &mut GroupRow = unsafe { &mut *ptr };
+        let moved = row.scroll_group_into_view(group);
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.keep_clicked_group_in_place(strip, group);
+        }
+        moved
+    }
+
     /// Move the focused group one slot while preserving its contents and
     /// active tab. This is the keyboard twin of dragging its tab-bar ground.
     pub fn reorder_focused_group(&mut self, direction: i32) -> bool {
