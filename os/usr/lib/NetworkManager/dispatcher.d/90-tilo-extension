@@ -1,0 +1,38 @@
+#!/bin/sh
+# Install an extension the moment the device is online, when the owner opted
+# in while it was offline (during setup, in the installer, or in Settings).
+# NetworkManager runs this as root on network events, so nothing polls: a
+# connection coming up, or connectivity reaching the internet, starts one
+# refresh. The helper checks connectivity again itself and keeps waiting if
+# there is still no internet.
+#
+# It does nothing unless some extension is opted in and not installed yet; an
+# installed one is refreshed by its boot/daily timer and the update check.
+# See /usr/share/tilo/system-extensions/README.md.
+
+STATE_DIR=/var/lib/tilo/extensions
+SEED_DIR=/etc/tilo/extensions/opt-in
+CATALOGUE=/usr/share/tilo/system-extensions/sysext.d
+
+case "$2" in
+  up) ;;
+  connectivity-change) [ "${CONNECTIVITY_STATE:-}" = FULL ] || exit 0 ;;
+  *) exit 0 ;;
+esac
+
+pending=0
+for entry in "$CATALOGUE"/*.json; do
+  [ -e "$entry" ] || continue
+  id=${entry##*/}
+  id=${id%.json}
+  if [ ! -e "$STATE_DIR/$id/enabled" ]; then
+    # The installer's opt-in counts until the helper adopts it (once).
+    [ -e "$SEED_DIR/$id" ] && [ ! -e "$STATE_DIR/$id/installer-seed-adopted" ] || continue
+  fi
+  # <id>.json is the helper's own world-readable report (json.dump, indent 2).
+  grep -q '"state": "installed"' "$STATE_DIR/$id.json" 2>/dev/null && continue
+  pending=1
+done
+
+[ "$pending" = 1 ] || exit 0
+exec systemctl start --no-block tilo-extension@refresh:all.service

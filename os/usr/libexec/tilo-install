@@ -18,11 +18,12 @@
 #                                     disk passphrase on stdin line 2
 #                                     (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
-#     --codecs                        the owner opted in to the additional codecs
-#                                     pack: record it for the installed system,
-#                                     which downloads the pack from RPM Fusion and
-#                                     Cisco once it is online (nothing is fetched
-#                                     here; see /usr/share/doc/tilo/codec-pack.md)
+#     --extension ID                  the owner turned on the Tilo extension ID
+#                                     (e.g. media-codecs; repeatable): record it
+#                                     for the installed system, which downloads
+#                                     it from its publishers once it is online
+#                                     (nothing is fetched here; see
+#                                     /usr/share/tilo/system-extensions/README.md)
 #     --alongside --root-partition P --efi-partition P
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
@@ -314,7 +315,7 @@ KEYVARIANT_VAL=""    # xkb variant (empty → none)
 ENCRYPT=1            # Native Tilo is always installed into a LUKS2 root.
 WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
-WANT_CODECS=0        # --codecs → seed the codec-pack opt-in for first boot
+EXTENSIONS=""        # --extension ID → seed that extension's opt-in for first boot
 ALONGSIDE=0
 GUIDED_ALONGSIDE=0
 PREFLIGHT_ALONGSIDE=0
@@ -364,7 +365,17 @@ while [ $# -gt 0 ]; do
     --encrypt) ENCRYPT=1; shift ;;
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
-    --codecs) WANT_CODECS=1; shift ;;
+    --extension)
+      case "${2:-}" in
+        [a-z0-9]*) ;;
+        *) die "--extension needs an extension id" ;;
+      esac
+      case "${2}" in
+        *[!a-z0-9-]*) die "invalid extension id: ${2}" ;;
+      esac
+      [ -f "/usr/share/tilo/system-extensions/sysext.d/${2}.json" ] \
+        || die "this image has no extension ${2}"
+      EXTENSIONS="$EXTENSIONS ${2}"; shift 2 ;;
     --alongside) ALONGSIDE=1; shift ;;
     --preflight-alongside) ALONGSIDE=1; PREFLIGHT_ALONGSIDE=1; shift ;;
     --guided-alongside) ALONGSIDE=1; GUIDED_ALONGSIDE=1; shift ;;
@@ -1710,19 +1721,21 @@ if [ "$ALONGSIDE" -eq 1 ] && [ "$ENCRYPT" -eq 1 ] \
     || die "VM installed image identity proof failed"
 fi
 
-# The owner's explicit opt-in to the additional codecs pack. Only the choice is
-# recorded; the installed system downloads the packages itself, directly from
-# RPM Fusion and Cisco, once it is online. tilo-codec-pack adopts this seed once
-# into /var/lib/tilo/codec-pack/enabled, so removing the pack later sticks.
-if [ "$WANT_CODECS" -eq 1 ]; then
-  step "Recording the choice to install additional media codecs"
-  CODECS_SEED="$DEPLOY_ETC/tilo/codec-pack-opt-in"
-  CODECS_TMP="$(mktemp "$DEPLOY_ETC/tilo/.codec-pack-opt-in.XXXXXX")"
-  printf 'owner opted in during installation\n' > "$CODECS_TMP"
-  chmod 0644 "$CODECS_TMP"
-  mv -f "$CODECS_TMP" "$CODECS_SEED"
-  log "  wrote $CODECS_SEED (installed on first boot once online)"
-fi
+# The owner's explicit opt-in to Tilo extensions (the media codecs, say). Only
+# the choice is recorded; the installed system downloads the extension itself,
+# from its publishers, once it is online. tilo-extension adopts each seed once
+# into /var/lib/tilo/extensions/<id>/enabled, so removing it later sticks.
+for EXTENSION_ID in $EXTENSIONS; do
+  step "Recording the choice to turn on $EXTENSION_ID"
+  SEED_DIR="$DEPLOY_ETC/tilo/extensions/opt-in"
+  mkdir -p "$SEED_DIR"
+  chmod 0755 "$DEPLOY_ETC/tilo/extensions" "$SEED_DIR"
+  SEED_TMP="$(mktemp "$SEED_DIR/.$EXTENSION_ID.XXXXXX")"
+  printf 'owner opted in during installation\n' > "$SEED_TMP"
+  chmod 0644 "$SEED_TMP"
+  mv -f "$SEED_TMP" "$SEED_DIR/$EXTENSION_ID"
+  log "  wrote $SEED_DIR/$EXTENSION_ID (installed on first boot once online)"
+done
 
 if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]; then
   step "Copying Wi-Fi and identity from the setup machine"
