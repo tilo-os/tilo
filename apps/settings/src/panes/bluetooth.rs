@@ -11,7 +11,7 @@
 use ui::i18n::ArgValue;
 
 use crate::i18n::{t, t_args};
-use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card_with_action, item_row, rows, setting_row, value_row};
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use tilo_bluez::{DeviceInfo, PairOutcome};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -365,26 +365,25 @@ impl BluetoothPane {
             None => status,
         }
     }
-    fn device_top_row(&self, d: &DeviceInfo) -> Row {
+    fn device_actions(&self, d: &DeviceInfo) -> Vec<Button> {
         let (primary, action) = self.device_primary_action(d);
         let details = t(if self.expanded.as_deref() == Some(&d.path) {
             "settings-bluetooth-less"
         } else {
             "settings-bluetooth-details"
         });
-        Row::new()
-            .push(Box::new(Text::new(&d.name)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Button::new(
+        vec![
+            Button::new(
                 &format!("settings.bluetooth.{action}.{}", token(&d.path)),
                 &primary,
                 Some(&key(&d.path, action)),
-            )))
-            .push(Box::new(Button::new(
+            ),
+            Button::new(
                 &format!("settings.bluetooth.details.{}", token(&d.path)),
                 &details,
                 Some(&key(&d.path, "details")),
-            )))
+            ),
+        ]
     }
     fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<El> {
         let mut block: Vec<El> = Vec::new();
@@ -436,18 +435,19 @@ impl BluetoothPane {
         block
     }
     fn device_row(&self, d: &DeviceInfo) -> El {
-        let top = self.device_top_row(d);
-        let status = Self::device_status_line(d);
-        let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
+        let summary = item_row(
+            &d.name,
+            Vec::new(),
+            &[Self::device_status_line(d)],
+            self.device_actions(d),
+        );
         if self.expanded.as_deref() == Some(&d.path) {
+            let mut block: Vec<El> = vec![summary];
             block.extend(self.device_detail_rows(d));
+            rows(block)
+        } else {
+            summary
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(rows(block)),
-        )
     }
     fn device_rows(&self) -> Vec<El> {
         let mut out: Vec<El> = self.devices.iter().map(|d| self.device_row(d)).collect();

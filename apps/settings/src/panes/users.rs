@@ -15,7 +15,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use runtime_identity::{IdentitySummary, KeyProtection};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, ButtonRole, Row, Spacer, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -23,7 +23,8 @@ use zeroize::Zeroizing;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
+    El, StatusTone, caption, card, card_with_action, field_row, item_row, rows,
+    semantic_status_pill,
 };
 
 const ADD_KEY: &str = "settings.users.add";
@@ -383,9 +384,9 @@ impl UsersPane {
         card(
             &t("settings-users-add-form-title"),
             rows(vec![
-                setting_row(&t("settings-users-full-name"), Box::new(full)),
-                setting_row(&t("settings-users-username"), Box::new(user)),
-                setting_row(&t("settings-users-password"), Box::new(password)),
+                field_row(&t("settings-users-full-name"), Box::new(full)),
+                field_row(&t("settings-users-username"), Box::new(user)),
+                field_row(&t("settings-users-password"), Box::new(password)),
                 caption(&t("settings-users-password-note")),
                 Box::new(buttons),
             ]),
@@ -398,7 +399,7 @@ impl UsersPane {
         let remove_key = format!("settings.users.remove.{}", user.username);
         let confirm_key = format!("settings.users.confirm_remove.{}", user.username);
         let keep_key = format!("settings.users.confirm_remove_keep.{}", user.username);
-        let mut actions = Row::new().push(Box::new(Spacer::new()));
+        let mut actions: Vec<Button> = Vec::new();
         if !user.current {
             let role_action = if user.admin {
                 t("settings-users-make-standard")
@@ -410,77 +411,58 @@ impl UsersPane {
             } else {
                 t("settings-users-enable-autologin")
             };
-            actions = actions
-                .push(Box::new(Button::new(
-                    &role_key,
-                    &role_action,
-                    Some(&role_key),
-                )))
-                .push(Box::new(Button::new(
-                    &auto_key,
-                    &auto_action,
-                    Some(&auto_key),
-                )));
-            actions = if self.confirm_remove_user.as_deref() == Some(user.username.as_str()) {
-                actions
-                    .push(Box::new(Button::new(
-                        &keep_key,
-                        &t("settings-users-remove-keep-files"),
-                        Some(&keep_key),
-                    )))
-                    .push(Box::new(Button::new(
+            actions.push(Button::new(&role_key, &role_action, Some(&role_key)));
+            actions.push(Button::new(&auto_key, &auto_action, Some(&auto_key)));
+            if self.confirm_remove_user.as_deref() == Some(user.username.as_str()) {
+                actions.push(Button::new(
+                    &keep_key,
+                    &t("settings-users-remove-keep-files"),
+                    Some(&keep_key),
+                ));
+                actions.push(
+                    Button::new(
                         &confirm_key,
                         &t("settings-users-remove-account-and-files"),
                         Some(&confirm_key),
-                    )))
+                    )
+                    .role(ButtonRole::Destructive),
+                );
             } else {
-                actions.push(Box::new(Button::new(
-                    &remove_key,
-                    &t("settings-users-remove-ellipsis"),
-                    Some(&remove_key),
-                )))
-            };
+                actions.push(
+                    Button::new(
+                        &remove_key,
+                        &t("settings-users-remove-ellipsis"),
+                        Some(&remove_key),
+                    )
+                    .role(ButtonRole::Destructive),
+                );
+            }
         }
         let role = if user.admin {
             t("settings-users-role-administrator")
         } else {
             t("settings-users-role-standard")
         };
-        let you = if user.current {
-            t("settings-users-signed-in")
+        let detail = if user.current {
+            t_args(
+                "settings-users-signed-in-as",
+                &[("username", user.username.as_str().into())],
+            )
         } else {
-            String::new()
+            user.username.clone()
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(Text::new(&user.full_name)))
-                        .push(Box::new(Spacer::new()))
-                        .push(semantic_status_pill(
-                            &role,
-                            if user.admin {
-                                StatusTone::Success
-                            } else {
-                                StatusTone::Neutral
-                            },
-                        )),
-                ))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "settings-users-uid-line",
-                        &[
-                            ("username", user.username.as_str().into()),
-                            ("uid", user.uid.into()),
-                            ("you", you.as_str().into()),
-                        ],
-                    ))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-                ))
-                .push(Box::new(actions)),
+        item_row(
+            &user.full_name,
+            vec![semantic_status_pill(
+                &role,
+                if user.admin {
+                    StatusTone::Success
+                } else {
+                    StatusTone::Neutral
+                },
+            )],
+            &[detail],
+            actions,
         )
     }
 
@@ -494,67 +476,51 @@ impl UsersPane {
         } else {
             &id.display_name
         };
-        let key = hex::encode(&id.public_key[..4]);
         let status = if id.active {
             t("settings-users-identity-active")
         } else {
             t("settings-users-identity-available")
         };
-        let mut top = Row::new()
-            .push(Box::new(Text::new(name)))
-            .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(
+        let mut actions: Vec<Button> = Vec::new();
+        if !id.active {
+            actions.push(Button::new(
+                &activate,
+                &t("settings-users-identity-use"),
+                Some(&activate),
+            ));
+            actions.push(
+                if self.confirm_remove_identity.as_deref() == Some(id.id.as_str()) {
+                    Button::new(
+                        &confirm,
+                        &t("settings-users-identity-remove"),
+                        Some(&confirm),
+                    )
+                    .role(ButtonRole::Destructive)
+                } else {
+                    Button::new(&remove, &t("settings-users-remove-ellipsis"), Some(&remove))
+                        .role(ButtonRole::Destructive)
+                },
+            );
+        }
+        if id.protection == KeyProtection::LegacyPlaintext {
+            actions.push(Button::new(
+                &protect,
+                &t("settings-users-identity-protect"),
+                Some(&protect),
+            ));
+        }
+        item_row(
+            name,
+            vec![semantic_status_pill(
                 &status,
                 if id.active {
                     StatusTone::Success
                 } else {
                     StatusTone::Neutral
                 },
-            ));
-        if !id.active {
-            top = top.push(Box::new(Button::new(
-                &activate,
-                &t("settings-users-identity-use"),
-                Some(&activate),
-            )));
-            top = if self.confirm_remove_identity.as_deref() == Some(id.id.as_str()) {
-                top.push(Box::new(Button::new(
-                    &confirm,
-                    &t("settings-users-identity-remove"),
-                    Some(&confirm),
-                )))
-            } else {
-                top.push(Box::new(Button::new(
-                    &remove,
-                    &t("settings-users-remove-ellipsis"),
-                    Some(&remove),
-                )))
-            };
-        }
-        if id.protection == KeyProtection::LegacyPlaintext {
-            top = top.push(Box::new(Button::new(
-                &protect,
-                &t("settings-users-identity-protect"),
-                Some(&protect),
-            )));
-        }
-        let protection = protection_label(id.protection);
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "settings-users-identity-detail",
-                        &[
-                            ("key", key.as_str().into()),
-                            ("protection", protection.as_str().into()),
-                        ],
-                    ))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-                )),
+            )],
+            &[protection_label(id.protection)],
+            actions,
         )
     }
 

@@ -17,7 +17,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, Widget};
+use ui::widget::{ActionEmitter, BadgeFace, ChipStyle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -308,8 +308,8 @@ impl DisplayArrangement {
             ui::chrome::SelectionState::new(display.primary, dragging, false),
             ground,
         );
-        let fill = if display.movable {
-            colors.lift_on(ground, if dragging { 1.0 } else { 0.5 })
+        let fill = if dragging {
+            colors.lift_on(ground, 1.0)
         } else {
             ground
         };
@@ -336,7 +336,11 @@ impl DisplayArrangement {
             &label_style,
         );
         let (lw, lh) = text_renderer.measure_style(&label, None, &label_style);
-        let block = f64::from(nh) + f64::from(lh);
+        let primary = t("display-primary-marker");
+        let badge_w = BadgeFace::intrinsic_width(&primary, text_renderer, theme);
+        let badge_h = BadgeFace::height(theme);
+        let block =
+            f64::from(nh) + f64::from(lh) + if display.primary { unit + badge_h } else { 0.0 };
         let top = rect.center().y - block / 2.0;
         let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
         ctx.text(
@@ -354,21 +358,19 @@ impl DisplayArrangement {
             None,
         );
         if display.primary {
-            // Primary marker: a small bar along the top edge, the place the
-            // top bar lives on that display.
-            let bar = Rect::new(
-                rect.x0 + 2.0 * unit,
-                rect.y0 + unit,
-                rect.x1 - 2.0 * unit,
-                rect.y0 + 1.5 * unit,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.intent.inverted,
-                None,
-                &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.detail)),
-            );
+            // The primary display says so under its name.
+            let y = top + f64::from(nh) + f64::from(lh) + unit;
+            BadgeFace::new(
+                Rect::new(
+                    rect.center().x - badge_w / 2.0,
+                    y,
+                    rect.center().x + badge_w / 2.0,
+                    y + badge_h,
+                ),
+                &primary,
+            )
+            .style(ChipStyle::Neutral)
+            .paint(scene, transform, text_renderer, theme);
         }
     }
 }
@@ -421,11 +423,12 @@ impl Widget for DisplayArrangement {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.control);
-        let ground = colors.surfaces.raised;
+        // The desk is a well a step below the content ground; the displays on
+        // it are raised, so they read in the light and dark themes alike.
         scene.fill(
             Fill::NonZero,
             transform,
-            ground,
+            colors.surfaces.sidebar,
             None,
             &RoundedRect::from_rect(self.rect, radius),
         );

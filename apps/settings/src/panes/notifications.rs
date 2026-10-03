@@ -34,10 +34,7 @@ use winit::event::WindowEvent;
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::i18n::t;
 use crate::prefs::{NotificationPrefs, SystemPrefs};
-use crate::widgets::{
-    El, StatusTone, caption, card, choice_row, rows, semantic_status_pill, setting_row_described,
-    value_row,
-};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
 pub const BANNERS_KEY: &str = "notifications.show_banners";
@@ -265,6 +262,8 @@ pub struct NotificationsPane {
     /// override; only a value that differs from what the pane last saw is.
     app_toggles: HashMap<String, bool>,
     needs_seed: bool,
+    /// Whether the device can play notification sounds at all.
+    sounds_available: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     /// Framework-owned action dispatch: brackets the undo boundary (bubbled up by
@@ -308,7 +307,9 @@ impl NotificationsPane {
             name: name.to_string(),
         })
         .collect();
-        Self::with_prefs_and_apps(NotificationPrefs::default(), apps)
+        let mut pane = Self::with_prefs_and_apps(NotificationPrefs::default(), apps);
+        pane.sounds_available = true;
+        pane
     }
 
     fn with_prefs_and_apps(prefs: NotificationPrefs, apps: Vec<InstalledNotificationApp>) -> Self {
@@ -326,6 +327,10 @@ impl NotificationsPane {
             mute_labels,
             app_toggles: HashMap::new(),
             needs_seed: true,
+            sounds_available: !matches!(
+                media::event_sound::sound_backend(),
+                media::event_sound::SoundBackend::Unavailable
+            ),
             composed: None,
             rect: Rect::ZERO,
             actions: crate::resource::ActionSink::default(),
@@ -425,18 +430,6 @@ impl NotificationsPane {
         &self.prefs
     }
 
-    /// A one-word delivery status, so the effect of the toggles reads at a
-    /// glance without re-parsing every row.
-    fn status(&self) -> (String, StatusTone) {
-        if self.prefs.do_not_disturb {
-            (t("notif-status-silenced"), StatusTone::Neutral)
-        } else if !self.prefs.show_banners {
-            (t("notif-status-banners-off"), StatusTone::Warning)
-        } else {
-            (t("notif-status-active"), StatusTone::Success)
-        }
-    }
-
     fn toggle(id: &str, canonical: &str) -> El {
         // The toggle writes the scratch (edit-intent) key; `sync` turns that
         // edit into an action on the canonical key. The palette dispatches the
@@ -447,41 +440,14 @@ impl NotificationsPane {
     fn build_composition(&self) -> Box<dyn Widget> {
         let app_cards = self.build_app_cards();
         let mut cards = vec![
-            self.build_dnd_card(),
             self.build_focus_card(),
             Self::build_banners_card(),
-            Self::build_delivery_card(),
+            self.build_delivery_card(),
         ];
         cards.extend(Self::build_apps_card(app_cards.is_empty()));
         cards.extend(app_cards);
         cards.push(Self::build_priority_contacts_card());
         crate::widgets::cards(cards)
-    }
-
-    fn build_dnd_card(&self) -> Box<dyn Widget> {
-        let (status_label, status_tone) = self.status();
-
-        // A label-left / status-pill-right row, so the combined effect of the
-        // toggles is legible at the top of the pane.
-        let status_row: El = Box::new(
-            ui::widget::Row::new()
-                .push(Box::new(ui::widget::Text::new(&t("notif-delivery"))))
-                .push(Box::new(ui::widget::Spacer::new()))
-                .push(semantic_status_pill(&status_label, status_tone)),
-        );
-
-        // Master Do Not Disturb, with the visible delivery-status pill.
-        card(
-            &t("notif-dnd-title"),
-            rows(vec![
-                status_row,
-                setting_row_described(
-                    &t("notif-dnd"),
-                    &t("notif-dnd-desc"),
-                    Self::toggle("notifications.dnd", DND_KEY),
-                ),
-            ]),
-        )
     }
 
     fn build_banners_card() -> Box<dyn Widget> {
@@ -502,10 +468,11 @@ impl NotificationsPane {
         )
     }
 
-    fn build_delivery_card() -> Box<dyn Widget> {
-        let sounds_value = match media::event_sound::sound_backend() {
-            media::event_sound::SoundBackend::PipeWire => t("notif-sounds-pipewire"),
-            media::event_sound::SoundBackend::Unavailable => t("notif-sounds-missing"),
+    fn build_delivery_card(&self) -> Box<dyn Widget> {
+        let sounds_desc = if self.sounds_available {
+            t("notif-play-sounds-desc")
+        } else {
+            t("notif-sounds-missing")
         };
         card(
             &t("notif-delivery-title"),
@@ -515,10 +482,9 @@ impl NotificationsPane {
                     &t("notif-lock-screen-desc"),
                     Self::toggle("notifications.lock_screen", LOCK_SCREEN_KEY),
                 ),
-                value_row(&t("notif-sounds"), &sounds_value),
                 setting_row_described(
                     &t("notif-play-sounds"),
-                    &t("notif-play-sounds-desc"),
+                    &sounds_desc,
                     Self::toggle("notifications.sounds", SOUNDS_KEY),
                 ),
                 setting_row_described(
@@ -538,6 +504,11 @@ impl NotificationsPane {
         card(
             &t("notif-focus-title"),
             rows(vec![
+                setting_row_described(
+                    &t("notif-dnd"),
+                    &t("notif-dnd-desc"),
+                    Self::toggle("notifications.dnd", DND_KEY),
+                ),
                 setting_row_described(
                     &t("notif-focus-enabled"),
                     &t("notif-focus-enabled-desc"),
@@ -586,7 +557,6 @@ impl NotificationsPane {
             app_cards.push(card(
                 &app.name,
                 rows(vec![
-                    value_row(&t("notif-app-verified"), &app.id),
                     setting_row_described(
                         &t("notif-app-banners"),
                         &t("notif-app-banners-desc"),
@@ -1136,22 +1106,6 @@ mod tests {
                 SystemPrefs::load().notifications.do_not_disturb,
                 "persisted"
             );
-        }
-
-        // Case `status_reflects_the_toggle_combination`.
-        {
-            let active = NotificationsPane::with_prefs(NotificationPrefs::default());
-            assert_eq!(active.status().0, "Active");
-            let silenced = NotificationsPane::with_prefs(NotificationPrefs {
-                do_not_disturb: true,
-                ..NotificationPrefs::default()
-            });
-            assert_eq!(silenced.status().0, "Silenced");
-            let banners_off = NotificationsPane::with_prefs(NotificationPrefs {
-                show_banners: false,
-                ..NotificationPrefs::default()
-            });
-            assert_eq!(banners_off.status().0, "Banners off");
         }
 
         // Case `builds_layout`.

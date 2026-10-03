@@ -175,74 +175,57 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
     // Case `described_row_caption_hugs_its_label_not_the_next_row`.
     {
         let config = crate::support::ScratchConfig::new();
-        let sp = spacing();
-        let app = config.app().with_category(Category::Appearance);
+        let app = config.app().with_category(Category::Accessibility);
         let app = lay_out(app, WIDE);
         let label = first_named(&*app, "High contrast");
         let caption = first_named(&*app, "Maximise contrast for low-vision comfort");
-        let next_label = first_named(&*app, "Reduce transparency");
+        let next_label = first_named(&*app, "Reduce motion");
         let toggles = by_widget_name(&*app, "Toggle");
+        let block_centre = f64::midpoint(label.y0, caption.y1);
         let row_toggle = toggles
             .iter()
-            .find(|t| t.y0 <= label.center().y && label.center().y <= t.y1)
+            .find(|t| t.y0 <= block_centre && block_centre <= t.y1)
             .copied()
             .expect("the High contrast row carries a toggle");
-        let next_toggle = toggles
-            .iter()
-            .find(|t| t.y0 <= next_label.center().y && next_label.center().y <= t.y1)
-            .copied()
-            .expect("the Reduce transparency row carries a toggle");
-        // The toggle is the tallest thing in the row, so its edges are the row's.
-        close(
-            caption.y0 - row_toggle.y1,
-            f64::from(sp.s1),
-            "caption below its row",
+        // The caption is part of its label's block, not a line of its own.
+        assert!(
+            caption.y0 - label.y1 < f64::from(spacing().s1) + 1.0,
+            "the caption hugs its label: {label:?} then {caption:?}"
         );
-        close(
-            next_toggle.y0 - caption.y1,
-            f64::from(settings::widgets::ROW_GAP),
-            "next row below the caption",
+        // The next row starts a full row gap below the caption.
+        assert!(
+            next_label.y0 - caption.y1 >= f64::from(settings::widgets::ROW_GAP) - 0.5,
+            "the next row is a row gap below the caption"
         );
         assert!(
-            next_toggle.y0 - caption.y1 > caption.y0 - row_toggle.y1,
+            next_label.y0 - caption.y1 > caption.y0 - label.y1,
             "the caption must belong to its label, not float towards the next row"
         );
-        // Label and toggle share one centre line.
-        close(
-            label.center().y,
+        // The toggle is centred on the label and its caption together.
+        same_centre_line(
+            block_centre,
             row_toggle.center().y,
-            "label vs toggle centre",
+            "label block vs toggle centre",
         );
     }
 
-    // Case `hero_places_title_beside_its_icon_with_a_caption_gap`.
+    // Case `hero_places_title_beside_its_icon`.
     {
-        let sp = spacing();
         let hero = FrameHarness::new(
             ui::State::new(),
-            settings::widgets::hero(ui::icons::Icon::Monitor, "Device name", "Tilo 1.0"),
+            settings::widgets::hero(ui::icons::Icon::Monitor, "Device name"),
             (600, 200),
         );
         let icon = by_widget_name(hero.root_widget(), "IconWidget")[0];
         let title = first_named(hero.root_widget(), "Device name");
-        let subtitle = first_named(hero.root_widget(), "Tilo 1.0");
         assert!(
             title.x0 >= icon.x1,
             "title {title:?} must sit beside the icon {icon:?}, not wrap beneath it"
         );
-        close(
-            subtitle.x0,
-            title.x0,
-            "subtitle shares the title's left edge",
-        );
-        close(
-            subtitle.y0 - title.y1,
-            f64::from(sp.s1),
-            "title to subtitle",
-        );
-        assert!(
-            title.y0 < icon.y1 && subtitle.y1 > icon.y0,
-            "text block {title:?}/{subtitle:?} overlaps the icon band {icon:?}"
+        same_centre_line(
+            title.center().y,
+            icon.center().y,
+            "title vs icon centre line",
         );
     }
 }

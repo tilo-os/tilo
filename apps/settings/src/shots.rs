@@ -12,9 +12,10 @@
 //! - `<slug>-narrow`: that pane's content screen in a phone-sized window;
 //! - `nav-narrow`: the narrow category list, the screen a collapse returns
 //!   to;
-//! - `network-wifi`, `sound-apps`, `accounts-populated`, `accounts-form`:
-//!   a populated Wi-Fi scan, per-application audio routing, and the external
-//!   accounts inventory with and without its add form.
+//! - `network-wifi`, `sound-apps`, `accounts-populated`, `accounts-form`,
+//!   `speakers-layout`: a populated Wi-Fi scan, per-application audio routing,
+//!   the external accounts inventory with and without its add form, and the
+//!   room layout step of setting up speakers.
 
 use ui::widget::Widget;
 
@@ -58,6 +59,7 @@ pub const SCENARIOS: &[&str] = &[
     "sound-apps",
     "accounts-populated",
     "accounts-form",
+    "speakers-layout",
 ];
 
 /// A fixture a scenario puts in place of the live pane.
@@ -71,6 +73,8 @@ pub enum Demo {
     AccountsPopulated,
     /// The accounts inventory with the add form open.
     AccountsForm,
+    /// Placing the speakers of a new set around the room.
+    SpeakersLayout,
 }
 
 /// What a named scenario asks the app to show.
@@ -128,6 +132,11 @@ impl Scenario {
                 demo: Some(Demo::AccountsPopulated),
                 ..plain
             },
+            "speakers-layout" => Self {
+                category: Category::Speakers,
+                demo: Some(Demo::SpeakersLayout),
+                ..plain
+            },
             "accounts-form" => Self {
                 category: Category::ExternalAccounts,
                 demo: Some(Demo::AccountsForm),
@@ -146,56 +155,12 @@ pub fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
     name.ends_with("-narrow").then_some(NARROW_SHOTS_VIEWPORT)
 }
 
-/// A `NetworkPane` populated with a deterministic scan list, a connected
-/// wired link, and a secure network's password prompt pre-expanded — the
-/// state the connect flow reaches after clicking "Connect" on a locked
-/// network. Used by the `netdemo` capture.
-pub(crate) fn network_demo_pane() -> Box<dyn Widget> {
-    use os_actions::{WifiNetworkInfo, WiredInfo};
-    let nets = vec![
-        WifiNetworkInfo {
-            ssid: "Home_Network".into(),
-            signal: 4,
-            secure: true,
-            security: os_actions::WifiSecurity::Wpa3,
-            connected: true,
-        },
-        WifiNetworkInfo {
-            ssid: "Cafe_Guest".into(),
-            signal: 3,
-            secure: false,
-            security: os_actions::WifiSecurity::Open,
-            connected: false,
-        },
-        WifiNetworkInfo {
-            ssid: "Office_5G".into(),
-            signal: 2,
-            secure: true,
-            security: os_actions::WifiSecurity::Wpa2,
-            connected: false,
-        },
-    ];
-    let pane = crate::panes::network::NetworkPane::new_demo(nets)
-        .with_wired(WiredInfo {
-            connected: true,
-            device: Some("enp3s0".into()),
-            speed: Some("1000 Mb/s".into()),
-            ipv4: Some("192.168.1.42".into()),
-        })
-        .with_expanded("Office_5G");
-    Box::new(pane)
-}
-
-/// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output
-/// devices (Speakers + Headphones), and per-application streams — the music app
-/// routed to the Headphones while the browser stays on the Speakers, plus a
-/// meeting app on the microphone — so the still proves the per-application
-/// routing surface (a picker, volume, and mute per app). Sample data lives only
-/// behind `--shots`; the live pane enumerates the real graph.
-pub(crate) fn audio_demo_pane() -> Box<dyn Widget> {
-    use crate::panes::audio::{AudioDevice, AudioDevices, AudioPane, RealDevice, RealInput};
-    use media::audio::{AudioDevice as GDevice, AudioGraph, AudioStream, NoopGraphControl};
-    use std::sync::Arc;
+/// The `PipeWire` graph of the capture machine: two output devices, the
+/// music app routed to the headphones while the browser follows the
+/// speakers, and a meeting app on the microphone. The sound pane and the
+/// published resources both read it.
+pub(crate) fn audio_graph() -> media::audio::AudioGraph {
+    use media::audio::{AudioDevice as GDevice, AudioGraph, AudioStream};
 
     let sink = |id, serial, name: &str, def| GDevice {
         id,
@@ -218,7 +183,7 @@ pub(crate) fn audio_demo_pane() -> Box<dyn Widget> {
         volume: Some(vol),
         muted: Some(mute),
     };
-    let graph = AudioGraph {
+    AudioGraph {
         sinks: vec![
             sink(51, 51, "Speakers", true),
             sink(91, 269, "Headphones", false),
@@ -241,7 +206,177 @@ pub(crate) fn audio_demo_pane() -> Box<dyn Widget> {
             false,
         )],
         hardware: vec![],
+    }
+}
+
+/// The outputs the compositor publishes on the capture machine: the laptop's
+/// own panel and a monitor on a `DisplayPort` connector, side by side.
+pub(crate) fn display_snapshot() -> settings_store::hardware::DisplayHardwareSnapshot {
+    use settings_store::hardware::{
+        DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+        OutputDescriptor, OutputMode,
     };
+
+    let mode = |width, height, refresh_mhz| OutputMode {
+        width,
+        height,
+        refresh_mhz,
+    };
+    let output = |connector: &str,
+                  builtin: bool,
+                  modes: Vec<OutputMode>,
+                  monitor: Option<MonitorIdentity>| DisplayOutputSnapshot {
+        descriptor: OutputDescriptor {
+            connector: connector.into(),
+            connector_label: connector.into(),
+            modes: modes.clone(),
+            hdr: false,
+            vrr: false,
+            color_profiles: Vec::new(),
+            monitor,
+        },
+        current_mode: modes
+            .first()
+            .copied()
+            .unwrap_or_else(|| mode(1920, 1080, 60_000)),
+        scale: 1.0,
+        builtin,
+        sink_hdr: false,
+        hdr_unavailable_reason: None,
+        sink_vrr: false,
+        vrr_unavailable_reason: None,
+        color_profile_labels: std::collections::BTreeMap::new(),
+    };
+    DisplayHardwareSnapshot {
+        generated_unix_ms: 0,
+        backend: "capture".into(),
+        publisher_pid: 0,
+        publisher_start_ticks: 0,
+        outputs: vec![
+            output(
+                "eDP-1",
+                true,
+                vec![
+                    mode(1920, 1080, 60_000),
+                    mode(1600, 900, 60_000),
+                    mode(1280, 720, 60_000),
+                ],
+                None,
+            ),
+            output(
+                "DP-2",
+                false,
+                vec![
+                    mode(2560, 1440, 59_950),
+                    mode(1920, 1080, 60_000),
+                    mode(1680, 1050, 59_950),
+                ],
+                Some(MonitorIdentity {
+                    make: "Dell".into(),
+                    model: "DELL U2720Q".into(),
+                    serial: "7XKQ3H2".into(),
+                    physical_size_mm: Some((597, 336)),
+                }),
+            ),
+        ],
+        layout: vec![
+            LiveOutputPlacement {
+                connector: "eDP-1".into(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            LiveOutputPlacement {
+                connector: "DP-2".into(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+        ],
+    }
+}
+
+/// The battery's charge-limit control on the capture machine.
+pub(crate) fn charge_capability() -> os_actions::ChargeCapCapability {
+    os_actions::ChargeCapCapability {
+        backend: os_actions::ChargeCapBackend::PowerSupply,
+        current: 80,
+        choices: vec![60, 70, 80, 90, 100],
+        supports_start_threshold: false,
+    }
+}
+
+/// The accounts of `directory`, as the shared store holds them, for the
+/// resources published beside the pane that lists them.
+pub(crate) fn account_inventory(
+    directory: &crate::accounts::AccountDirectory,
+) -> Vec<accounts::Account> {
+    crate::accounts::AccountKind::ALL
+        .into_iter()
+        .flat_map(|kind| directory.views_of(kind))
+        .map(|view| {
+            let mut account =
+                accounts::Account::new(accounts::AccountId::from(view.id), view.kind.type_id());
+            account.display_name = view.label;
+            account
+        })
+        .collect()
+}
+
+/// A `NetworkPane` populated with a deterministic scan list, a connected
+/// wired link, and a secure network's password prompt pre-expanded — the
+/// state the connect flow reaches after clicking "Connect" on a locked
+/// network. Used by the `netdemo` capture.
+pub(crate) fn network_demo_pane() -> Box<dyn Widget> {
+    use os_actions::{WifiNetworkInfo, WiredInfo};
+    let nets = vec![
+        WifiNetworkInfo {
+            ssid: "Home".into(),
+            signal: 4,
+            secure: true,
+            security: os_actions::WifiSecurity::Wpa3,
+            connected: true,
+        },
+        WifiNetworkInfo {
+            ssid: "Cafe Guest".into(),
+            signal: 3,
+            secure: false,
+            security: os_actions::WifiSecurity::Open,
+            connected: false,
+        },
+        WifiNetworkInfo {
+            ssid: "Office 5G".into(),
+            signal: 2,
+            secure: true,
+            security: os_actions::WifiSecurity::Wpa2,
+            connected: false,
+        },
+    ];
+    let pane = crate::panes::network::NetworkPane::new_demo(nets)
+        .with_wired(WiredInfo {
+            connected: true,
+            device: Some("enp3s0".into()),
+            speed: Some("1000 Mb/s".into()),
+            ipv4: Some("192.168.1.42".into()),
+        })
+        .with_expanded("Office 5G");
+    Box::new(pane)
+}
+
+/// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output
+/// devices (Speakers + Headphones), and per-application streams — the music app
+/// routed to the Headphones while the browser stays on the Speakers, plus a
+/// meeting app on the microphone — so the still proves the per-application
+/// routing surface (a picker, volume, and mute per app). Sample data lives only
+/// behind `--shots`; the live pane enumerates the real graph.
+pub(crate) fn audio_demo_pane() -> Box<dyn Widget> {
+    use crate::panes::audio::{AudioDevice, AudioDevices, AudioPane, RealDevice, RealInput};
+    use media::audio::NoopGraphControl;
+    use std::sync::Arc;
+
+    let graph = audio_graph();
     // The device pickers read the local device view; give it the same two sinks
     // so the output-device chooser is shown alongside the per-app rows.
     let devices = AudioDevices {

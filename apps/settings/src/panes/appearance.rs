@@ -430,6 +430,17 @@ impl AppearancePane {
                     &light_current,
                 ),
             ),
+            setting_row_described(
+                &t("settings-appearance-reduce-transparency"),
+                &t("settings-appearance-reduce-transparency-desc"),
+                Box::new(
+                    Toggle::new(
+                        "settings.appearance.reduce_transparency",
+                        "appearance.reduce_transparency.edit",
+                    )
+                    .with_id("appearance.reduce_transparency"),
+                ),
+            ),
         ];
         let theme_card = card(&t("settings-appearance-theme-card"), rows(theme_rows));
 
@@ -495,50 +506,11 @@ impl AppearancePane {
             ]),
         );
 
-        let access_card = card(
-            &t("settings-appearance-access-card"),
-            rows(vec![
-                setting_row_described(
-                    &t("settings-appearance-high-contrast"),
-                    &t("settings-appearance-high-contrast-desc"),
-                    Box::new(
-                        Toggle::new(
-                            "settings.appearance.high_contrast",
-                            "appearance.high_contrast.edit",
-                        )
-                        .with_id("appearance.high_contrast"),
-                    ),
-                ),
-                setting_row_described(
-                    &t("settings-appearance-reduce-transparency"),
-                    &t("settings-appearance-reduce-transparency-desc"),
-                    Box::new(
-                        Toggle::new(
-                            "settings.appearance.reduce_transparency",
-                            "appearance.reduce_transparency.edit",
-                        )
-                        .with_id("appearance.reduce_transparency"),
-                    ),
-                ),
-                setting_row_described(
-                    &t("settings-appearance-reduce-motion"),
-                    &t("settings-appearance-reduce-motion-desc"),
-                    Box::new(
-                        Toggle::new(
-                            "settings.appearance.reduce_motion",
-                            "appearance.reduce_motion.edit",
-                        )
-                        .with_id("appearance.reduce_motion"),
-                    ),
-                ),
-            ]),
-        );
-
         let mut sections = vec![theme_card];
         if self.prefs.mode == "automatic" {
             sections.push(self.schedule_card());
         }
-        sections.extend([colour_card, size_card, access_card, self.wallpaper_card()]);
+        sections.extend([colour_card, size_card, self.wallpaper_card()]);
         crate::widgets::cards(sections)
     }
 

@@ -16,7 +16,7 @@ use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
 use crate::i18n::{t, t_args};
-use crate::widgets::{caption, card, choice_row, rows};
+use crate::widgets::{El, caption, card, choice_row, rows};
 use ui::i18n::ArgValue;
 
 pub struct PersonalAppsPane {
@@ -121,6 +121,7 @@ impl PersonalAppsPane {
     fn build_composition(&self) -> Box<dyn Widget> {
         let resources = self.resources();
         let mut file_rows = Vec::new();
+        let mut link_rows = Vec::new();
         for resource in &resources {
             let apps = self.apps_for(resource);
             if apps.is_empty() {
@@ -144,13 +145,37 @@ impl PersonalAppsPane {
             let picker = Dropdown::new(options, &picker_path)
                 .with_id(&format!("personal-default.{}", resource.as_str()))
                 .with_placeholder(&current);
-            file_rows.push(choice_row(&label, Box::new(picker)));
+            let row = (label.clone(), choice_row(&label, Box::new(picker)));
+            if resource.scheme_name().is_some() {
+                link_rows.push(row);
+            } else {
+                file_rows.push(row);
+            }
         }
-        let body = if file_rows.is_empty() {
-            rows(vec![caption(&t("settings-personal-apps-empty"))])
-        } else {
-            rows(file_rows)
+        let sorted = |mut list: Vec<(String, El)>| -> Vec<El> {
+            list.sort_by(|a, b| a.0.cmp(&b.0));
+            list.into_iter().map(|(_, row)| row).collect()
         };
+        let (file_rows, link_rows) = (sorted(file_rows), sorted(link_rows));
+        let mut sections: Vec<El> = Vec::new();
+        if !file_rows.is_empty() {
+            sections.push(card(
+                &t("settings-personal-apps-files-title"),
+                rows(file_rows),
+            ));
+        }
+        if !link_rows.is_empty() {
+            sections.push(card(
+                &t("settings-personal-apps-links-title"),
+                rows(link_rows),
+            ));
+        }
+        if sections.is_empty() {
+            sections.push(card(
+                &t("settings-personal-apps-files-title"),
+                rows(vec![caption(&t("settings-personal-apps-empty"))]),
+            ));
+        }
         let workspace_rules: Box<dyn Widget> = Box::new(
             Row::new().push(Box::new(
                 Button::new(
@@ -165,10 +190,8 @@ impl PersonalAppsPane {
                 }),
             )),
         );
-        crate::widgets::cards(vec![
-            card(&t("settings-personal-apps-files-title"), body),
-            workspace_rules,
-        ])
+        sections.push(workspace_rules);
+        crate::widgets::cards(sections)
     }
 
     fn draft_key(canonical: &str) -> String {
@@ -502,17 +525,14 @@ mod tests {
     }
     #[test]
     fn personal_apps_copy_comes_from_the_catalogue() {
-        assert_eq!(
-            t("settings-personal-apps-files-title"),
-            "Open files and links with"
-        );
+        assert_eq!(t("settings-personal-apps-files-title"), "Open files with");
         assert_eq!(
             PersonalAppsPane::resource_label(&ResourceKind::extension("pdf").unwrap()),
-            ".pdf files"
+            "PDF documents"
         );
         assert_eq!(
             PersonalAppsPane::resource_label(&ResourceKind::scheme("https").unwrap()),
-            "https: links"
+            "Secure web links"
         );
     }
 

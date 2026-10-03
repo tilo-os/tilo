@@ -33,7 +33,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -41,8 +41,8 @@ use winit::event::WindowEvent;
 use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
-    value_row,
+    El, StatusTone, caption, card, card_with_action, field_row, item_row, rows,
+    semantic_status_pill, setting_row, value_row,
 };
 
 mod cloud_signin;
@@ -601,6 +601,9 @@ impl AccountsPane {
     pub(crate) fn with_open_form_for_shot(mut self, kind: AccountKind) -> Self {
         if kind.signs_in() {
             self.open_sign_in(kind, None);
+            if let Some(flow) = &self.sign_in {
+                flow.prefill("Home Nextcloud", "https://cloud.example.com");
+            }
         } else {
             self.form_kind = Some(kind);
             self.form_account_id = None;
@@ -901,42 +904,32 @@ impl AccountsPane {
             runtime.map(|status| status.health),
         );
 
-        // Keep identity and health together; maintenance actions get their own
-        // row so narrow layouts remain legible and touch targets never crush
-        // the connection summary.
-        let mut top = Row::new()
-            .push(Box::new(Text::new(&view.label)))
-            .push(Box::new(Spacer::new()));
+        // Identity and health sit together over the connection summary;
+        // maintenance actions get their own line under the text so narrow
+        // layouts stay legible and touch targets never crush the summary.
+        let mut marks: Vec<El> = Vec::new();
         if view.kind.best_effort() {
-            top = top.push(semantic_status_pill(
+            marks.push(semantic_status_pill(
                 &t("accounts-best-effort"),
                 StatusTone::Neutral,
             ));
         }
-        let top = top.push(semantic_status_pill(&status, status_tone));
+        marks.push(semantic_status_pill(&status, status_tone));
 
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(top))
-            .push(Box::new(
-                Text::new(&view.summary)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ));
+        let mut details = vec![view.summary.clone()];
+        let mut buttons: Vec<Button> = Vec::new();
         if !self.is_sample {
             if let Some(status) = runtime {
                 let when = status
                     .last_success_unix
                     .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
-                let sync_line = match status.message.as_deref() {
+                details.push(match status.message.as_deref() {
                     Some(message) => t_args(
                         "accounts-sync-when-msg",
                         &[("when", when.as_str().into()), ("message", message.into())],
                     ),
                     None => t_args("accounts-sync-when", &[("when", when.into())]),
-                };
-                column = column.push(caption(&sync_line));
+                });
             }
             let account_resource = format!("settings.account:{}", view.id);
             let needs_sign_in = runtime.is_some_and(|status| {
@@ -965,11 +958,9 @@ impl AccountsPane {
                     op,
                     destructive,
                 )
-                .control_size(ui::widget::ControlSize::Small)
             };
-            let mut actions = Row::new();
             if !view.kind.is_cloud_storage() {
-                actions = actions.push(Box::new(button(
+                buttons.push(button(
                     "edit",
                     &edit,
                     "edit",
@@ -978,46 +969,43 @@ impl AccountsPane {
                         id: view.id.clone(),
                     },
                     false,
-                )));
-            }
-            let actions = actions
-                .push(Box::new(button(
-                    "reauth",
-                    &reauth_label,
-                    "reauthenticate",
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Reauthenticate {
-                        id: view.id.clone(),
-                    },
-                    false,
-                )))
-                .push(Box::new(button(
-                    "test",
-                    &check,
-                    "test",
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::Test {
-                        id: view.id.clone(),
-                    },
-                    false,
-                )))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    button(
-                        "remove",
-                        &remove,
-                        "remove",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::Remove {
-                            id: view.id.clone(),
-                        },
-                        true,
-                    )
-                    .role(ui::widget::ButtonRole::Destructive),
                 ));
-            column = column.push(Box::new(actions));
+            }
+            buttons.push(button(
+                "reauth",
+                &reauth_label,
+                "reauthenticate",
+                tilo_actions::OperationKind::View,
+                crate::actions::AccountOperation::Reauthenticate {
+                    id: view.id.clone(),
+                },
+                false,
+            ));
+            buttons.push(button(
+                "test",
+                &check,
+                "test",
+                tilo_actions::OperationKind::Effect,
+                crate::actions::AccountOperation::Test {
+                    id: view.id.clone(),
+                },
+                false,
+            ));
+            buttons.push(
+                button(
+                    "remove",
+                    &remove,
+                    "remove",
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::AccountOperation::Remove {
+                        id: view.id.clone(),
+                    },
+                    true,
+                )
+                .role(ui::widget::ButtonRole::Destructive),
+            );
         }
-        Box::new(column)
+        item_row(&view.label, marks, &details, buttons)
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -1125,16 +1113,16 @@ impl AccountsPane {
             &title,
             rows({
                 let mut fields = vec![
-                    setting_row(&display_name, Box::new(name)),
-                    setting_row(&identity_name, Box::new(identity)),
+                    field_row(&display_name, Box::new(name)),
+                    field_row(&identity_name, Box::new(identity)),
                 ];
                 if kind == AccountKind::Mail {
-                    fields.push(setting_row(&login_name, Box::new(user)));
+                    fields.push(field_row(&login_name, Box::new(user)));
                 } else {
-                    fields.push(setting_row(&server_label, Box::new(server)));
+                    fields.push(field_row(&server_label, Box::new(server)));
                 }
                 if kind != AccountKind::Nextcloud {
-                    fields.push(setting_row(&password_label, Box::new(password)));
+                    fields.push(field_row(&password_label, Box::new(password)));
                 }
                 if let Some(error) = &self.form_error {
                     fields.push(caption(&t_args(
@@ -1160,7 +1148,7 @@ impl AccountsPane {
             .with_placeholder(&password_label);
         let mut fields = vec![
             value_row(&t("accounts-reauth-account"), id),
-            setting_row(&t("accounts-reauth-credential"), Box::new(password)),
+            field_row(&t("accounts-reauth-credential"), Box::new(password)),
         ];
         if let Some(error) = &self.reauth_error {
             fields.push(caption(&t_args(

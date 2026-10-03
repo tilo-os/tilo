@@ -54,6 +54,7 @@ use tilo_actions::{
 };
 
 use crate::categories::Category;
+use crate::facts::DeviceFacts;
 use crate::prefs::SystemPrefs;
 
 mod portable;
@@ -1443,13 +1444,14 @@ fn document_section_resource(
 pub(crate) fn live_device_resources(
     doc: &AutoCommit,
     account_inventory: &[accounts::Account],
+    facts: DeviceFacts,
 ) -> Vec<Resource> {
     let prefs = SystemPrefs::load();
     let mut extras: Vec<Resource> = Category::ALL
         .iter()
         .copied()
         .filter(|category| !is_document_door_category(*category))
-        .map(|category| section_resource(category, doc, &prefs, account_inventory))
+        .map(|category| section_resource(category, doc, &prefs, account_inventory, facts))
         .collect();
     extras.extend(notification_app_resources(doc, &prefs));
     extras
@@ -1465,12 +1467,13 @@ pub(crate) fn live_device_resources(
 /// `SettingsAction` door; device-local sections and live inventories are merged
 /// into the same root so the palette shape stays one tree.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    provide_resources_with_accounts(doc, &[])
+    provide_resources_with_accounts(doc, &[], DeviceFacts::LIVE)
 }
 
-pub fn provide_resources_with_accounts(
+pub(crate) fn provide_resources_with_accounts(
     doc: &AutoCommit,
     account_inventory: &[accounts::Account],
+    facts: DeviceFacts,
 ) -> Vec<Resource> {
     let state = crate::resource::SettingsState::from_doc(doc);
     let mut root = ui::tilo_resource::publish::<crate::resource::Settings>(
@@ -1500,7 +1503,13 @@ pub fn provide_resources_with_accounts(
         if let Some(section) = published.remove(&id) {
             root = root.with_child(section);
         } else {
-            root = root.with_child(section_resource(category, doc, &prefs, account_inventory));
+            root = root.with_child(section_resource(
+                category,
+                doc,
+                &prefs,
+                account_inventory,
+                facts,
+            ));
         }
     }
     vec![root]
@@ -1511,14 +1520,15 @@ fn section_resource(
     doc: &AutoCommit,
     prefs: &SystemPrefs,
     account_inventory: &[accounts::Account],
+    facts: DeviceFacts,
 ) -> Resource {
     let mut pane = match category {
         Category::Network => network_section(doc),
         Category::Bluetooth => bluetooth_section(doc),
-        Category::Sound => sound_section(doc),
-        Category::Displays => displays_section(doc, prefs),
+        Category::Sound => sound_section(doc, facts),
+        Category::Displays => displays_section(doc, prefs, facts),
         Category::MouseKeyboard => input_section(doc, prefs),
-        Category::Power => power_section(doc, prefs),
+        Category::Power => power_section(doc, prefs, facts),
         Category::Appearance => appearance_section(doc, prefs),
         Category::Accessibility => accessibility_section(doc, prefs),
         Category::Notifications => notifications_section(doc, prefs),
@@ -1896,7 +1906,7 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     clippy::too_many_lines,
     reason = "resource tree mirrors Sound hierarchy"
 )]
-fn sound_section(doc: &AutoCommit) -> Resource {
+fn sound_section(doc: &AutoCommit, facts: DeviceFacts) -> Resource {
     let _ = doc;
     let mut sec = Resource::new("settings.section:sound", "settings.section", "Sound");
     sec = sec.with_action(local_bool_spec(
@@ -1999,7 +2009,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             sec = sec.with_action(action);
         }
     }
-    let graph = media::audio::enumerate();
+    let graph = facts.audio_graph();
     if !graph.sinks.is_empty() {
         let choices = graph
             .sinks
@@ -2378,7 +2388,11 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
 }
 
 pub fn audio_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
-    tilo_actions::ActionBinding::unit_for(&sound_section(&AutoCommit::new()), action_id).ok()
+    tilo_actions::ActionBinding::unit_for(
+        &sound_section(&AutoCommit::new(), DeviceFacts::LIVE),
+        action_id,
+    )
+    .ok()
 }
 
 pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
@@ -2624,7 +2638,11 @@ pub fn audio_stream_bool_binding(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+pub(crate) fn displays_section(
+    _doc: &AutoCommit,
+    _d: &SystemPrefs,
+    facts: DeviceFacts,
+) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
@@ -2716,7 +2734,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
     ));
     // Output topology is supplied by the compositor's live, PID-validated
     // snapshot.  Do not turn an absent/stale snapshot into invented monitors.
-    if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
+    if let Some(snapshot) = facts.display_snapshot() {
         let output_labels: Vec<_> = snapshot
             .outputs
             .iter()
@@ -2863,7 +2881,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
                 .modes
                 .iter()
                 .take(MAX_DYNAMIC_CHOICES)
-                .map(|mode| mode.label())
+                .map(|mode| crate::panes::display::mode_label(*mode))
                 .collect();
             let operation_connector = connector.clone();
             resource = resource.with_action(local_choice_spec(
@@ -3172,7 +3190,11 @@ pub fn display_scale_binding() -> Option<tilo_actions::ActionBinding<String>> {
 }
 
 pub fn display_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
-    let resource = displays_section(&AutoCommit::new(), &SystemPrefs::default());
+    let resource = displays_section(
+        &AutoCommit::new(),
+        &SystemPrefs::default(),
+        DeviceFacts::LIVE,
+    );
     tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
@@ -3954,7 +3976,7 @@ pub fn tablet_text_binding(
     clippy::too_many_lines,
     reason = "the ordered resource declaration mirrors the Power hierarchy"
 )]
-fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+fn power_section(_doc: &AutoCommit, _d: &SystemPrefs, facts: DeviceFacts) -> Resource {
     let mut sec = Resource::new("settings.section:power", "settings.section", "Power");
     sec = sec.with_action(local_bool_spec(
         "auto_suspend",
@@ -4079,7 +4101,7 @@ fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             },
         ));
     }
-    if let Some(capability) = os_actions::charge_capability() {
+    if let Some(capability) = facts.charge_capability() {
         sec = sec.with_action(charge_cap_spec(&capability.choices, capability.current));
     }
     sec
@@ -4117,13 +4139,21 @@ fn charge_cap_spec(choices: &[u32], fallback: u32) -> ActionSpec {
 
 pub fn power_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     bool_binding_for(
-        &power_section(&AutoCommit::new(), &SystemPrefs::default()),
+        &power_section(
+            &AutoCommit::new(),
+            &SystemPrefs::default(),
+            DeviceFacts::LIVE,
+        ),
         action_id,
     )
 }
 
 pub fn power_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
-    let resource = power_section(&AutoCommit::new(), &SystemPrefs::default());
+    let resource = power_section(
+        &AutoCommit::new(),
+        &SystemPrefs::default(),
+        DeviceFacts::LIVE,
+    );
     let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
     tilo_actions::ActionBinding::new(&resource, spec, |choice| {
         serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
@@ -5626,7 +5656,7 @@ pub fn device_mesh_workspace_binding(
 // Inherent resource publication (was ResourceProvider)
 impl crate::SettingsApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources_with_accounts(doc, self.account_resource_inventory())
+        provide_resources_with_accounts(doc, self.account_resource_inventory(), self.device_facts())
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -5658,7 +5688,13 @@ impl crate::SettingsApp {
         let category = category_for_resource_id(id)?;
         let prefs = SystemPrefs::load();
         find_resource(
-            section_resource(category, doc, &prefs, self.account_resource_inventory()),
+            section_resource(
+                category,
+                doc,
+                &prefs,
+                self.account_resource_inventory(),
+                self.device_facts(),
+            ),
             id,
         )
     }
@@ -5958,7 +5994,8 @@ mod tests {
         {
             let mut account = accounts::Account::new("stable-account", "nextcloud");
             account.display_name = "Work cloud".into();
-            let resources = provide_resources_with_accounts(&AutoCommit::new(), &[account]);
+            let resources =
+                provide_resources_with_accounts(&AutoCommit::new(), &[account], DeviceFacts::LIVE);
             let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
             let account = accounts
                 .children

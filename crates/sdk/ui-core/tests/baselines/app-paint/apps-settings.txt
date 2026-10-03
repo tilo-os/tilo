@@ -2,6 +2,6 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/settings/src/actions/portable.rs glyph_icon 1
-apps/settings/src/panes/display_arrangement.rs raw_paint 4
+apps/settings/src/panes/display_arrangement.rs raw_paint 3
 apps/settings/src/panes/speakers.rs raw_paint 5
 apps/settings/src/panes/time_date.rs raw_paint 5
