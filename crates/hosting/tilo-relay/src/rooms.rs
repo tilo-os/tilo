@@ -18,6 +18,7 @@
 mod admin;
 mod collaboration;
 mod pages;
+mod stewardship;
 #[cfg(test)]
 mod tests;
 mod voice;
@@ -80,11 +81,37 @@ struct RoomRecord {
     collaboration: collaboration::CollaborationState,
 }
 
+/// The devices governance lets read a room's channels.
+fn readers(access: &GovernedAccess) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+    access
+        .member_devices
+        .iter()
+        .map(|device| collab_types::Ed25519PublicKey::from_bytes(*device))
+        .collect()
+}
+
+/// The stewards of `room`'s channels, under `dir`, when `authority` (this
+/// relay) may own workspaces.
+fn stewardship(
+    dir: &Path,
+    room: &str,
+    authority: &DeviceCert,
+    key: &SigningKey,
+) -> Option<stewardship::Stewardship> {
+    authority
+        .capabilities
+        .can_own_workspaces
+        .then(|| stewardship::Stewardship::new(room, dir.join(format!("{room}.channels")), key))
+}
+
 /// A room this relay governs.
 struct GovernedRoom {
     record: RoomRecord,
     peer: StatePeer,
     path: PathBuf,
+    /// Its channels' stewards, when this relay is a node that may own
+    /// workspaces ([`stewardship`]).
+    stewardship: Option<stewardship::Stewardship>,
 }
 
 impl RoomRecord {
@@ -138,6 +165,7 @@ impl GovernedRoom {
         };
         let this = Self {
             path: dir.join(format!("{room}.room")),
+            stewardship: stewardship(dir, &room, authority, key),
             record,
             peer,
         };
@@ -145,7 +173,7 @@ impl GovernedRoom {
         Ok(this)
     }
 
-    fn open(path: PathBuf, authority: &DeviceCert) -> Result<Self, String> {
+    fn open(path: PathBuf, authority: &DeviceCert, key: &SigningKey) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
         let record: RoomRecord = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         if record.version != RECORD_VERSION {
@@ -170,7 +198,15 @@ impl GovernedRoom {
         if !peer.has_governance() {
             return Err("restored room has no governance".into());
         }
-        Ok(Self { record, peer, path })
+        let stewardship = path
+            .parent()
+            .and_then(|dir| stewardship(dir, &record.room, authority, key));
+        Ok(Self {
+            record,
+            peer,
+            path,
+            stewardship,
+        })
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -431,7 +467,7 @@ impl Rooms {
             if path.extension().is_none_or(|extension| extension != "room") {
                 continue;
             }
-            let room = GovernedRoom::open(path.clone(), &host.cert)
+            let room = GovernedRoom::open(path.clone(), &host.cert, &host.key)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             rooms.insert(room.room().to_owned(), Arc::new(AsyncMutex::new(room)));
         }
@@ -642,6 +678,23 @@ impl Rooms {
         let Ok(message) = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body) else {
             return Ok(());
         };
+        match message {
+            tilo_peer_state::NeighbourMsg::MlsAccessRequest {
+                room: named,
+                request,
+                ..
+            } if named == room => return self.steward_request(room, author, *request).await,
+            tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+                room: named, ack, ..
+            } if named == room => {
+                let governed = self.room(room).await.map_err(|error| error.to_string())?;
+                if let Some(stewardship) = governed.lock().await.stewardship.as_mut() {
+                    stewardship.acknowledge(author, &ack);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         let tilo_peer_state::NeighbourMsg::AppDocument {
             app_id,
             record_id,
@@ -659,9 +712,9 @@ impl Rooms {
             return Ok(());
         }
         if envelope.encryption.is_some() {
-            return Err(format!(
-                "{app_id} wrote a sealed record the room cannot create"
-            ));
+            // Only the record's channel members read it: the relay retains
+            // the sealed write, and the governor keeps no copy.
+            return Ok(());
         }
         let now = SystemTime::now();
         let (role, ..) = room.peer().permissions(author, now)?;
@@ -699,6 +752,56 @@ impl Rooms {
         self.settle(&mut room).await
     }
 
+    /// Take in `author`'s request for a channel of `room`: its steward
+    /// admits the device when governance lets it read the room.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked until its channel change is published"
+    )]
+    async fn steward_request(
+        &self,
+        room: &str,
+        author: [u8; 32],
+        request: collab_types::MlsAccessRequestV1,
+    ) -> Result<(), String> {
+        let governed = self.room(room).await.map_err(|error| error.to_string())?;
+        let mut governed = governed.lock().await;
+        let workspace_id = governed.workspace_id();
+        let readers = readers(&governed.peer().governed_access(SystemTime::now())?);
+        let Some(stewardship) = governed.stewardship.as_mut() else {
+            return Ok(());
+        };
+        let messages = stewardship.request(author, request, &readers)?;
+        self.publish_channel_governance(workspace_id, messages)
+            .await
+    }
+
+    /// Retain channel governance messages as this relay's own.
+    async fn publish_channel_governance(
+        &self,
+        workspace_id: u64,
+        messages: Vec<tilo_peer_state::NeighbourMsg>,
+    ) -> Result<(), String> {
+        for message in messages {
+            let (channel, retention) = neighbour_wire::retention(&message, false)
+                .ok_or("channel governance has no retention channel")?;
+            let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+            self.inner
+                .host
+                .records
+                .commit(
+                    workspace_id,
+                    crate::room_records::HostCommit {
+                        body,
+                        channel,
+                        checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+                    },
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Replay every record write the relay retains for `room` into the
     /// governor's copy.
     async fn recall(&self, room: &mut GovernedRoom) -> Result<(), String> {
@@ -726,6 +829,7 @@ impl Rooms {
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let host = &self.inner.host;
         let access: GovernedAccess = room.peer().governed_access(SystemTime::now())?;
+        let readers = readers(&access);
         host.access
             .replace(room.workspace_id(), true, access)
             .await
@@ -748,6 +852,11 @@ impl Rooms {
             room.record.published = room.record.published.saturating_add(1);
         }
         room.persist()?;
+        if let Some(stewardship) = room.stewardship.as_mut() {
+            let messages = stewardship.reconcile_all(&readers)?;
+            self.publish_channel_governance(room.workspace_id(), messages)
+                .await?;
+        }
         self.observe_calls(room);
         Ok(())
     }
