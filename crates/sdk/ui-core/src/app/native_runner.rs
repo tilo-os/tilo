@@ -587,6 +587,11 @@ impl AppHandler {
         event: WindowEvent,
     ) {
         let _entry = self.app.enter_wake_scope();
+        // A pen's sample is no event of its own: widgets read it while they
+        // handle the pointer event it precedes.
+        let Some(_pen) = self.app.input.pen.route(&event) else {
+            return;
+        };
         if render_probe_event(&event) {
             let auxiliary_event = self
                 .floating_windows

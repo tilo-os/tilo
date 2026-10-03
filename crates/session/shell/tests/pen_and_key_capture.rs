@@ -16,7 +16,8 @@ use std::sync::Arc;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{
-    wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, event_created_child};
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
@@ -44,6 +45,7 @@ use shell::compositor::tablet_pad::{DialSteps, dial_events};
 enum Wire {
     ToolAdded,
     ProximityIn,
+    ProximityOut,
     Pressure(u32),
     Tilt(f64, f64),
     Down,
@@ -252,6 +254,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for Client {
     ) {
         match event {
             zwp_tablet_tool_v2::Event::ProximityIn { .. } => state.wire.push(Wire::ProximityIn),
+            zwp_tablet_tool_v2::Event::ProximityOut => state.wire.push(Wire::ProximityOut),
             zwp_tablet_tool_v2::Event::Pressure { pressure } => {
                 state.wire.push(Wire::Pressure(pressure));
             }
@@ -345,6 +348,9 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
     }
 }
 
+wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
+wayland_client::delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
+wayland_client::delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 wayland_client::delegate_noop!(Client: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(Client: ignore wl_seat::WlSeat);
@@ -456,6 +462,39 @@ impl Harness {
         (surface, id)
     }
 
+    /// Give `surface` a first buffer, so it is mapped and can take focus.
+    fn map(&mut self, surface: &wl_surface::WlSurface) {
+        use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
+        // 64×64 ARGB.
+        let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
+        let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
+        // SAFETY: a null-terminated name and a valid flag word are the whole
+        // contract of `memfd_create`.
+        let raw = unsafe { libc::memfd_create(c"tilo-pen-capture".as_ptr(), 0) };
+        assert!(
+            raw >= 0,
+            "memfd_create: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: `memfd_create` just handed us this descriptor.
+        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+        file.set_len(len as u64).expect("size the shm pool");
+        let qh = self.queue.handle();
+        let pool = shm.create_pool(
+            file.as_fd(),
+            i32::try_from(len).expect("pool size"),
+            &qh,
+            (),
+        );
+        let buffer =
+            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width, height);
+        surface.commit();
+        self.pump();
+        let _ = self.fb.paint_settled();
+    }
+
     /// The centre of the app's tile, where a pen lands on it.
     fn centre_of(&self, surface_id: u64) -> (f64, f64) {
         let chrome = self.fb.chrome();
@@ -513,7 +552,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     // Before the app asks for a tablet seat the pen is a pointer to it.
     let fallback = shell::compositor::client_input::route_tablet_event(
         &mut h.state,
-        &h.fb,
+        &mut h.fb,
         &pen(TabletPhase::TipDown, centre),
         false,
     );
@@ -546,7 +585,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     ] {
         let routed = shell::compositor::client_input::route_tablet_event(
             &mut h.state,
-            &h.fb,
+            &mut h.fb,
             &pen(phase, centre),
             false,
         );
@@ -572,7 +611,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     // settings remapped it, reaches the app as a tool button.
     let routed = shell::compositor::client_input::route_tablet_event(
         &mut h.state,
-        &h.fb,
+        &mut h.fb,
         &pen(
             TabletPhase::Button {
                 button: 0x14b,
@@ -595,7 +634,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     // app, and the app sees none of it.
     let locked = shell::compositor::client_input::route_tablet_event(
         &mut h.state,
-        &h.fb,
+        &mut h.fb,
         &pen(TabletPhase::TipDown, centre),
         true,
     );
@@ -617,6 +656,132 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
             .iter()
             .any(|w| matches!(w, Wire::Down | Wire::Button(..))),
         "{wire:?}"
+    );
+}
+
+#[test]
+fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_stroke() {
+    let mut h = Harness::new();
+    let (surface, app) = h.open("org.example.Draw");
+    h.map(&surface);
+    let centre = h.centre_of(app);
+    let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let _tablet_seat = manager.get_tablet_seat(&seat, &h.queue.handle(), ());
+    h.pump();
+    h.state.set_client_keyboard_focus(None);
+    h.client.wire.clear();
+    let route = |h: &mut Harness, phase, at| {
+        let routed = shell::compositor::client_input::route_tablet_event(
+            &mut h.state,
+            &mut h.fb,
+            &pen(phase, at),
+            false,
+        );
+        h.pump();
+        routed
+    };
+
+    assert!(route(&mut h, TabletPhase::ProximityIn, centre).is_empty());
+    assert_eq!(
+        h.state.client_input.pointer_position(),
+        Some(centre),
+        "the cursor is drawn where the pen hovers"
+    );
+    assert_eq!(
+        h.state.client_input.keyboard_focus(),
+        None,
+        "hovering focuses nothing"
+    );
+
+    assert!(route(&mut h, TabletPhase::TipDown, centre).is_empty());
+    assert_eq!(
+        h.state.client_input.keyboard_focus(),
+        Some(app),
+        "touching down focuses the window, as a click does"
+    );
+
+    // Off the window's edge mid-stroke, the stroke stays with the app.
+    let outside = (-100.0, -100.0);
+    assert!(route(&mut h, TabletPhase::Motion, outside).is_empty());
+    assert!(route(&mut h, TabletPhase::TipUp, outside).is_empty());
+    assert!(h.client.wire.contains(&Wire::Up), "{:?}", h.client.wire);
+    assert!(
+        !h.client.wire.contains(&Wire::ProximityOut),
+        "{:?}",
+        h.client.wire
+    );
+
+    // Lifted, the pen over nothing leaves the app.
+    let _ = route(&mut h, TabletPhase::Motion, outside);
+    let wire = std::mem::take(&mut h.client.wire);
+    drop(h);
+    assert!(wire.ends_with(&[Wire::ProximityOut]), "{wire:?}");
+}
+
+#[test]
+fn an_app_that_declines_the_pad_keeps_the_pads_own_mapping() {
+    let mut h = Harness::new();
+    let (_surface, app) = h.open("org.example.Pens");
+    let centre = h.centre_of(app);
+    let qh = h.queue.handle();
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _pointer = seat.get_pointer(&qh, ());
+    let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
+    let _tablet_seat = manager.get_tablet_seat(&seat, &qh, ());
+    h.pump();
+    h.state.set_client_keyboard_focus(Some(app));
+    h.state.add_tablet_pad(test_pad());
+    h.pump();
+    assert!(h.client.wire.contains(&Wire::PadAdded));
+    // The app takes pens but not pads.
+    for pad in h.client.pads.drain(..) {
+        pad.destroy();
+    }
+    h.pump();
+    h.client.wire.clear();
+
+    let no_mods = winit::event::Modifiers::default();
+    let _ = shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut h.fb,
+        &WindowEvent::CursorMoved {
+            // SAFETY: an inert device id, as the input adapters use.
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
+        },
+        &no_mods,
+    );
+    let config = TabletConfig::default();
+    let mut steps = DialSteps::default();
+    let mut turned = Vec::new();
+    for angle in [10.0, 40.0] {
+        turned = shell::compositor::client_input::route_pad_event(
+            &mut h.state,
+            &h.fb,
+            pad_event(
+                &mut steps,
+                &config,
+                ring(Some(angle)),
+                Some((PadDial::Ring(0), Some(angle))),
+            ),
+            false,
+        );
+        h.pump();
+    }
+    let wire = std::mem::take(&mut h.client.wire);
+    drop(h);
+    assert!(
+        matches!(
+            turned.as_slice(),
+            [BackendEvent::Input(WindowEvent::MouseWheel { .. })]
+        ),
+        "the ring scrolls, as in an app without tablet support: {turned:?}"
+    );
+    assert!(
+        !wire.contains(&Wire::PadAdded),
+        "a declined pad is not announced again: {wire:?}"
     );
 }
 
