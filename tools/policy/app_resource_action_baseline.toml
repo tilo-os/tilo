@@ -100,7 +100,6 @@
 "apps/git-client/src/main.rs" = 2
 "apps/hex-editor/src/lib.rs" = 2
 "apps/hex-editor/src/main.rs" = 2
-"apps/image-editor/src/lib.rs" = 2
 "apps/image-editor/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
 "apps/logs/src/main.rs" = 2
