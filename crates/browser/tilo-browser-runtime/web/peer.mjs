@@ -21,6 +21,7 @@
  */
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
+import {openChannelVault} from './channel-vault.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -516,6 +517,9 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.device         device namespace of `profile`
  * @param options.store          `{get, put, delete}` for public peer state;
  *                               defaults to the profile's storage
+ * @param options.vaultStorage   `{get, put}` for the profile's wrapped channel
+ *                               vault (`channel-vault.mjs`); defaults to the
+ *                               device custody's IndexedDB
  * @param options.displayName    the person's name for history and presence
  * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec)
  * @param options.fetch          defaults to `globalThis.fetch`
@@ -534,7 +538,7 @@ export function createLiveLayer(peer, runtime, room, {
  */
 export async function connectPeer({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
-  profile, device = 'tilo-browser-device', displayName = '',
+  profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {},
 }) {
@@ -559,6 +563,10 @@ export async function connectPeer({
     storage = await surface.openProfileStorage(profile, device);
     store ??= profileStore(runtime, profile, device);
   }
+  // Seals the channel state the runtime keeps in the profile's storage.
+  const channelVault = storage
+    ? await openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()})
+    : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -739,6 +747,7 @@ export async function connectPeer({
       storage ? undefined : (record ?? undefined),
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       post,
+      channelVault,
     );
     peer.subscribe(publish);
     if (room) {

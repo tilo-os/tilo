@@ -140,6 +140,10 @@ struct DurablePeerStore {
     key: durable_store::StorageKey,
     /// Channel membership and the edits held for it, beside the record.
     channels_key: durable_store::StorageKey,
+    /// Seals the member state in `channels_key`. The page keeps it wrapped
+    /// by a non-extractable `WebCrypto` key (`channel-vault.mjs`), never in
+    /// this store.
+    channel_vault: [u8; 32],
 }
 
 thread_local! {
@@ -147,7 +151,11 @@ thread_local! {
 }
 
 impl DurablePeerStore {
-    fn open(namespace: &str, user_public_key: &[u8; 32]) -> Result<Self, JsError> {
+    fn open(
+        namespace: &str,
+        user_public_key: &[u8; 32],
+        channel_vault: [u8; 32],
+    ) -> Result<Self, JsError> {
         #[derive(Deserialize)]
         struct Namespace {
             profile: String,
@@ -168,6 +176,7 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.channels", hex::encode(user_public_key)),
             ),
+            channel_vault,
         })
     }
 }
@@ -203,6 +212,10 @@ impl PeerStore for DurablePeerStore {
             )
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    fn channel_vault(&self) -> Option<[u8; 32]> {
+        Some(self.channel_vault)
     }
 }
 
@@ -1251,11 +1264,13 @@ impl WasmPeer {
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
     /// it. `post(path, session, body)` reaches the host origin.
+    /// `channelVault` (32 bytes, from `channel-vault.mjs`) seals the
+    /// profile's channel state at rest; a peer with a namespace needs it.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed configuration, custody object or namespace,
-    /// or neither a namespace nor a save callback.
+    /// Throws for a malformed configuration, custody object, namespace or
+    /// channel vault, or neither a namespace nor a save callback.
     #[allow(
         clippy::arc_with_non_send_sync,
         reason = "the session takes shared handles; in the page they stay on its one thread"
@@ -1271,6 +1286,7 @@ impl WasmPeer {
         record: Option<Vec<u8>>,
         save: Option<Function>,
         post: Function,
+        channel_vault: Option<Vec<u8>>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
         let signer = PageSigner::from_js(custody)?;
@@ -1279,7 +1295,12 @@ impl WasmPeer {
         }
         let mut profile_store = None;
         let store: Arc<dyn PeerStore> = if let Some(namespace) = namespace {
-            let durable = DurablePeerStore::open(&namespace, &config.cert.user_public_key)?;
+            let channel_vault: [u8; 32] = channel_vault
+                .as_deref()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
+            let durable =
+                DurablePeerStore::open(&namespace, &config.cert.user_public_key, channel_vault)?;
             profile_store = Some(Rc::clone(&durable.store));
             Arc::new(durable)
         } else {
