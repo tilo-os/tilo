@@ -5,7 +5,11 @@
 //!
 //!   * `GET {base_url}/registry` — informational metadata, accepted only
 //!     when it names the already-pinned owner key.
-//!   * `GET {base_url}/entries`  — an owner-signed catalogue snapshot.
+//!   * `GET {base_url}/entries?format=compact` — an owner-signed catalogue
+//!     snapshot. A registry that has a compact form answers with it: per
+//!     entry only the newest versions, and the hash of a version index
+//!     (`GET {base_url}/indexes/<blake3>.json`) holding the rest. Any other
+//!     registry answers with the full snapshot; both verify the same way.
 //!
 //! Every fetched entry is signature-checked against its own declared
 //! publisher pubkey via [`registry_types::verify_entry_signature`]. A
@@ -22,7 +26,7 @@
 use std::io::Read as _;
 use std::time::Duration;
 
-use registry_types::{RegistryEntry, RegistryHandshake, SignedRegistrySnapshot};
+use registry_types::{CatalogueSnapshot, RegistryEntry, RegistryHandshake, VersionIndexRef};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -61,6 +65,10 @@ pub enum RegistryError {
     OwnerMismatch,
     #[error("registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
     UnsafeEndpoint,
+    #[error("{0} is not in the registry")]
+    NotListed(String),
+    #[error("registry version index proof failed: {0}")]
+    VersionIndex(#[from] registry_types::VersionIndexError),
 }
 
 /// Trust classification for a fetched entry.
@@ -92,6 +100,10 @@ impl TrustLevel {
 pub struct VerifiedEntry {
     pub entry: RegistryEntry,
     pub trust: TrustLevel,
+    /// Where the complete version list lives when the snapshot was compact
+    /// and `entry` holds only the newest versions; `None` when `entry`
+    /// already holds every version.
+    pub version_index: Option<VersionIndexRef>,
 }
 
 /// Last accepted proof for one pinned registry identity.
@@ -154,49 +166,90 @@ pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, Registr
     classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)
 }
 
-/// Fetch and verify the complete owner-signed snapshot while advancing the
-/// durable anti-rollback checkpoint.
+/// Fetch and verify the owner-signed snapshot, compact when the registry
+/// offers it, while advancing the durable anti-rollback checkpoint.
 ///
 /// # Errors
 ///
 /// Returns an error if the endpoint is unsafe, the response fails or exceeds
 /// the size limit, any proof check fails, or the snapshot would roll back or
 /// fork the durable checkpoint.
-pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<SignedRegistrySnapshot, RegistryError> {
-    let url = registry_url(reg, "entries")?;
+pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, RegistryError> {
+    let mut url = registry_url(reg, "entries")?;
+    url.set_query(Some("format=compact"));
+    let bytes = fetch_bounded(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot")?;
+    let snapshot =
+        CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    let now = tilo_clock::unix_now();
+    let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
+    persist_checkpoint(reg, &snapshot)?;
+    Ok(snapshot)
+}
+
+/// Every retained version of `package_id`: from a freshly verified snapshot,
+/// and when that snapshot is compact, from the version index it signs.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`fetch_snapshot`], when the
+/// package is not listed, or when the version index cannot be fetched or is
+/// not the one the snapshot signs.
+pub fn fetch_all_versions(
+    reg: &RegistryConfig,
+    package_id: &str,
+) -> Result<VerifiedEntry, RegistryError> {
+    let snapshot = fetch_snapshot(reg)?;
+    let listed = snapshot
+        .entries()
+        .into_iter()
+        .find(|listed| listed.entry.package_id == package_id)
+        .ok_or_else(|| RegistryError::NotListed(package_id.to_string()))?;
+    let entry = match snapshot.compact_entry(package_id) {
+        None => listed.entry.clone(),
+        Some(compact) => {
+            let index = &compact.version_index;
+            let url = registry_url(reg, &format!("indexes/{}.json", index.blake3_hex))?;
+            let bytes = fetch_bounded(&url, index.size_bytes, "version index")?;
+            registry_types::verify_version_index(compact, &bytes)?
+        }
+    };
+    Ok(VerifiedEntry {
+        entry,
+        trust: TrustLevel::PublisherSigned,
+        version_index: None,
+    })
+}
+
+/// GET `url`, refusing a body over `limit` bytes or an empty one.
+fn fetch_bounded(url: &reqwest::Url, limit: u64, what: &str) -> Result<Vec<u8>, RegistryError> {
     let c = client()?;
     let response = c
-        .get(url)
+        .get(url.clone())
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| RegistryError::Http(e.to_string()))?;
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_INDEX_RESPONSE_BYTES)
+        .is_some_and(|length| length > limit)
     {
-        return Err(RegistryError::Decode(
-            "snapshot response is too large".into(),
-        ));
+        return Err(RegistryError::Decode(format!(
+            "{what} response is too large"
+        )));
     }
     let mut bytes = Vec::new();
     response
-        .take(MAX_INDEX_RESPONSE_BYTES.saturating_add(1))
+        .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|e| RegistryError::Http(e.to_string()))?;
     if bytes.is_empty() {
         return Err(RegistryError::Empty);
     }
-    if bytes.len() as u64 > MAX_INDEX_RESPONSE_BYTES {
-        return Err(RegistryError::Decode(
-            "snapshot response is too large".into(),
-        ));
+    if bytes.len() as u64 > limit {
+        return Err(RegistryError::Decode(format!(
+            "{what} response is too large"
+        )));
     }
-    let snapshot: SignedRegistrySnapshot =
-        serde_json::from_slice(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
-    let now = tilo_clock::unix_now();
-    let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
-    persist_checkpoint(reg, &snapshot)?;
-    Ok(snapshot)
+    Ok(bytes)
 }
 
 fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, RegistryError> {
@@ -225,21 +278,21 @@ fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, Regi
 /// the snapshot fails its owner signature, publisher authorization,
 /// freshness, bounds, or publisher-signature checks.
 pub fn classify_snapshot(
-    snapshot: &SignedRegistrySnapshot,
+    snapshot: &CatalogueSnapshot,
     owner_pubkey_hex: &str,
     now_unix: u64,
 ) -> Result<Vec<VerifiedEntry>, RegistryError> {
     if owner_pubkey_hex.is_empty() || owner_pubkey_hex == placeholder_owner_pubkey() {
         return Err(registry_types::SnapshotError::OwnerKey.into());
     }
-    registry_types::verify_snapshot(snapshot, owner_pubkey_hex, now_unix)?;
+    snapshot.verify(owner_pubkey_hex, now_unix)?;
     Ok(snapshot
-        .entries
-        .iter()
-        .cloned()
-        .map(|entry| VerifiedEntry {
-            entry,
+        .entries()
+        .into_iter()
+        .map(|listed| VerifiedEntry {
+            entry: listed.entry.clone(),
             trust: TrustLevel::PublisherSigned,
+            version_index: listed.version_index.cloned(),
         })
         .collect())
 }
@@ -258,25 +311,27 @@ fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
 
 fn persist_checkpoint(
     reg: &RegistryConfig,
-    snapshot: &SignedRegistrySnapshot,
+    snapshot: &CatalogueSnapshot,
 ) -> Result<(), RegistryError> {
     let Some(path) = checkpoint_path(reg) else {
         return Ok(());
     };
-    let hash = registry_types::snapshot_hash(snapshot)?;
+    // Both forms of one snapshot share this identity, so switching form is
+    // neither a rollback nor a fork.
+    let hash = snapshot.checkpoint_hash()?;
     #[cfg(unix)]
     let _lock = checkpoint_lock(&path)?;
     match std::fs::read(&path) {
         Ok(bytes) => {
             let old: SnapshotCheckpoint = serde_json::from_slice(&bytes)
                 .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
-            validate_checkpoint(&old, snapshot.sequence, &hash)?;
+            validate_checkpoint(&old, snapshot.sequence(), &hash)?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(RegistryError::Checkpoint(error.to_string())),
     }
     let checkpoint = SnapshotCheckpoint {
-        sequence: snapshot.sequence,
+        sequence: snapshot.sequence(),
         snapshot_hash_hex: hash,
     };
     let bytes = serde_json::to_vec(&checkpoint)
@@ -354,9 +409,9 @@ mod tests {
         entry
     }
 
-    fn snapshot(owner: &SigningKey) -> SignedRegistrySnapshot {
+    fn snapshot(owner: &SigningKey) -> CatalogueSnapshot {
         let entry = signed_entry();
-        let mut snapshot = SignedRegistrySnapshot {
+        let mut snapshot = registry_types::SignedRegistrySnapshot {
             protocol: registry_types::SNAPSHOT_PROTOCOL,
             sequence: 1,
             issued_at_unix: 100,
@@ -372,7 +427,7 @@ mod tests {
             channel_authorization: None,
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
-        snapshot
+        CatalogueSnapshot::Full(snapshot)
     }
 
     #[test]
@@ -391,8 +446,11 @@ mod tests {
             assert!(out[0].trust.is_offerable());
 
             assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
-            let mut tampered = snapshot;
+            let CatalogueSnapshot::Full(mut tampered) = snapshot else {
+                unreachable!("the fixture is a full snapshot")
+            };
             tampered.entries[0].name = "hijacked".into();
+            let tampered = CatalogueSnapshot::Full(tampered);
             assert!(
                 classify_snapshot(
                     &tampered,

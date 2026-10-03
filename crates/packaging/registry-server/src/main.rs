@@ -787,6 +787,12 @@ fn cmd_sign_delegated_snapshot(
         candidate.issued_at_unix,
     )?;
     writer.publish(&candidate)?;
+    publish_compact(
+        &writer,
+        &candidate,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
     writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&candidate)?);
@@ -976,6 +982,12 @@ fn cmd_publish_staged_first_party(
         &allowlist,
     )?;
     writer.publish(&journal.candidate_snapshot)?;
+    publish_compact(
+        &writer,
+        &journal.candidate_snapshot,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
     moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
     let pruned = writer.prune_unreferenced()?;
     let history = writer.compact_history()?;
@@ -1187,6 +1199,7 @@ fn cmd_sign_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
     writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
@@ -1268,9 +1281,25 @@ fn cmd_rollback_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
     writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+/// Sign and publish the compact form of the snapshot just published, with
+/// the key that signed it.
+fn publish_compact(
+    writer: &registry_server::storage::SnapshotLock<'_>,
+    snapshot: &SignedRegistrySnapshot,
+    key: &ed25519_dalek::SigningKey,
+    owner_pubkey_hex: &str,
+) -> anyhow::Result<()> {
+    let (mut compact, indexes) = registry_types::compact_snapshot(snapshot)?;
+    registry_types::sign_compact_snapshot(&mut compact, key)?;
+    registry_types::verify_compact_snapshot(&compact, owner_pubkey_hex, compact.issued_at_unix)?;
+    writer.publish_compact(&compact, &indexes)?;
     Ok(())
 }
 

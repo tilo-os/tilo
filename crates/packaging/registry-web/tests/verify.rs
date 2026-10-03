@@ -314,30 +314,42 @@ fn selection_takes_the_newest_version_the_host_runs() {
         native,
     ];
     let bytes = snapshot_bytes(1, "", vec![entry("so.tilo.ebook", versions)]);
-    let snapshot = verify_snapshot(&bytes, &owner_hex(), None, NOW).unwrap();
-    let pick = |runtime, features: &[&str]| {
-        snapshot
-            .select("so.tilo.ebook", &Host { features, runtime })
-            .map(|selection| selection.version)
-    };
-    assert_eq!(pick(Some(ABI), DEFAULT_WASM_FEATURES).unwrap(), "1.2.0");
-    assert_eq!(
-        pick(Some(OTHER_ABI), DEFAULT_WASM_FEATURES).unwrap(),
-        "1.10.0"
-    );
-    assert_eq!(pick(None, DEFAULT_WASM_FEATURES).unwrap(), "1.10.0");
-    assert_eq!(
-        pick(Some(ABI), &["mutable-globals", "simd128"]).unwrap(),
-        "2.0.0"
-    );
-    assert!(matches!(
-        pick(Some(ABI), &[]),
-        Err(VerifyError::NoCompatibleVersion { .. })
-    ));
-    assert_eq!(
-        snapshot.select("so.tilo.missing", &host(None)).unwrap_err(),
-        VerifyError::NotListed("so.tilo.missing".into())
-    );
+    // The compact form keeps only the newest version per target, yet every
+    // host selects exactly what it selects from the full snapshot.
+    for bytes in [compact_bytes(&bytes), bytes] {
+        let snapshot = verify_snapshot(&bytes, &owner_hex(), None, NOW).unwrap();
+        let pick = |runtime, features: &[&str]| {
+            snapshot
+                .select("so.tilo.ebook", &Host { features, runtime })
+                .map(|selection| selection.version)
+        };
+        assert_eq!(pick(Some(ABI), DEFAULT_WASM_FEATURES).unwrap(), "1.2.0");
+        assert_eq!(
+            pick(Some(OTHER_ABI), DEFAULT_WASM_FEATURES).unwrap(),
+            "1.10.0"
+        );
+        assert_eq!(pick(None, DEFAULT_WASM_FEATURES).unwrap(), "1.10.0");
+        assert_eq!(
+            pick(Some(ABI), &["mutable-globals", "simd128"]).unwrap(),
+            "2.0.0"
+        );
+        assert!(matches!(
+            pick(Some(ABI), &[]),
+            Err(VerifyError::NoCompatibleVersion { .. })
+        ));
+        assert_eq!(
+            snapshot.select("so.tilo.missing", &host(None)).unwrap_err(),
+            VerifyError::NotListed("so.tilo.missing".into())
+        );
+    }
+}
+
+/// The compact form of a full snapshot, signed by the same owner.
+fn compact_bytes(full: &[u8]) -> Vec<u8> {
+    let full: SignedRegistrySnapshot = serde_json::from_slice(full).unwrap();
+    let (mut compact, _) = registry_types::compact_snapshot(&full).unwrap();
+    registry_types::sign_compact_snapshot(&mut compact, &owner()).unwrap();
+    serde_json::to_vec(&compact).unwrap()
 }
 
 #[test]
@@ -364,6 +376,21 @@ fn the_checkpoint_refuses_rollback_and_forks() {
         verify_snapshot(&fork, &owner_hex(), Some(advanced.checkpoint()), NOW),
         Err(VerifyError::Rollback { .. })
     ));
+    // Both forms of one snapshot share its checkpoint; the compact form of a
+    // replayed or forked snapshot is refused like the full one.
+    verify_snapshot(
+        &compact_bytes(&second),
+        &owner_hex(),
+        Some(advanced.checkpoint()),
+        NOW,
+    )
+    .unwrap();
+    for refused in [compact_bytes(&first), compact_bytes(&fork)] {
+        assert!(matches!(
+            verify_snapshot(&refused, &owner_hex(), Some(advanced.checkpoint()), NOW),
+            Err(VerifyError::Rollback { .. })
+        ));
+    }
     assert!(matches!(
         Checkpoint::from_json(b"{\"sequence\":\"one\"}"),
         Err(VerifyError::Checkpoint(_))
