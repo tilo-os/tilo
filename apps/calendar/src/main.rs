@@ -105,6 +105,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "sync_syncing",
     "sync_conflict",
     "collapsed_sidebar",
+    "sidebar_menu",
     "narrow_drawer",
     "narrow_editor",
 ];
@@ -213,6 +214,7 @@ struct ShotState {
     sync_state: Option<String>,
     flap: bool,
     collapse: bool,
+    sidebar_menu: bool,
     scroll_hour: Option<f64>,
     narrow: bool,
     resize_from: Option<(u32, u32)>,
@@ -261,6 +263,10 @@ impl ShotState {
             "collapsed_sidebar" => {
                 s.calendar_screen = true;
                 s.collapse = true;
+            }
+            "sidebar_menu" => {
+                s.calendar_screen = true;
+                s.sidebar_menu = true;
             }
             "narrow_drawer" => {
                 s.calendar_screen = true;
@@ -406,6 +412,9 @@ impl ShotState {
         }
         if self.collapse {
             app.shots_collapse_sidebar();
+        }
+        if self.sidebar_menu {
+            app.shots_open_sidebar_menu();
         }
         if self.sheet_scroll_end {
             app.shots_scroll_detail_to_end();
