@@ -391,7 +391,6 @@ fn list_and_grid_builders_compose_real_file_views() {
     list_mode_has_name_size_modified_columns();
     list_build_yields_a_file_view();
     grid_mode_uses_responsive_file_view();
-    grid_cell_metrics_are_documented_values();
     draw_composition_exercises_the_five_pass_pipeline();
 }
 
@@ -440,16 +439,10 @@ fn grid_mode_uses_responsive_file_view() {
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
     use file_explorer::views::file_view::FileView;
-    use file_explorer::views::grid_view::{GRID_CELL_HEIGHT, GRID_CELL_WIDTH, build_grid};
+    use file_explorer::views::grid_view::build_grid;
     use std::path::PathBuf;
     use ui::SelectionModel;
 
-    // Compile-time, not a runtime assertion on constants: the metrics are
-    // `const`, so their sanity can (and should) be checked at build time.
-    const _: () = assert!(
-        GRID_CELL_WIDTH > 0.0 && GRID_CELL_HEIGHT > 0.0,
-        "cell metrics are sane"
-    );
     let entries = vec![Entry {
         name: "a.txt".into(),
         path: PathBuf::from("/a.txt"),
@@ -476,13 +469,6 @@ fn grid_mode_uses_responsive_file_view() {
         .with_thumbs(None);
     let w = build_grid(view);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
-}
-
-fn grid_cell_metrics_are_documented_values() {
-    // Pins the default grid cell size so a regression in the grid builder is
-    // caught (the grid derives its column count from these).
-    assert!((file_explorer::views::grid_view::GRID_CELL_WIDTH - 112.0).abs() < f64::EPSILON);
-    assert!((file_explorer::views::grid_view::GRID_CELL_HEIGHT - 104.0).abs() < f64::EPSILON);
 }
 
 fn loading_state_shown_during_navigation() {

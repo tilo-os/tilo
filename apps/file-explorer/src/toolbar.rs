@@ -74,6 +74,9 @@ struct Context {
     /// Set by [`ToolbarHandle::begin_path_edit`]; the toolbar acts on it at
     /// its next sync.
     edit_requested: bool,
+    /// Room the shell keeps at the band's leading edge for its own controls
+    /// (the sidebar toggle or Back, when they sit in this column's header).
+    leading_inset: f32,
 }
 
 /// What the toolbar publishes for the app: its controls' rects after layout.
@@ -85,6 +88,8 @@ struct Published {
     area: Cell<Rect>,
     editing: Cell<bool>,
     compact: Cell<bool>,
+    /// The inset changed: the toolbar is rebuilt with it at the next frame.
+    inset_changed: Cell<bool>,
 }
 
 struct Shared {
@@ -181,6 +186,21 @@ impl ToolbarHandle {
         self.0.published.compact.get()
     }
 
+    /// Keep `inset` clear at the toolbar's leading edge, for the shell's
+    /// toggle or Back button when it sits in this column's header.
+    pub fn set_leading_inset(&self, inset: f64) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "an inset is a few dozen logical pixels; f32 holds it exactly enough"
+        )]
+        let inset = inset.max(0.0) as f32;
+        let mut context = self.0.context.borrow_mut();
+        if (context.leading_inset - inset).abs() > 0.5 {
+            context.leading_inset = inset;
+            self.0.published.inset_changed.set(true);
+        }
+    }
+
     /// Whether a compact overflow should offer Forward navigation.
     pub fn can_go_forward(&self) -> bool {
         self.0.context.borrow().nav.forward
@@ -217,6 +237,7 @@ impl FileToolbar {
                 home: None,
                 workspace_roots: Vec::new(),
                 edit_requested: false,
+                leading_inset: 0.0,
             }),
             published: Published::default(),
         });
@@ -341,7 +362,7 @@ impl FileToolbar {
                 Button::new("files.archive.extract", &extract_label, None).with_icon(Icon::Download)
             };
             out.push(Box::new(button.on_effect(move || {
-                push(&sink, FileCommand::ExtractCurrentArchive)
+                push(&sink, FileCommand::ExtractCurrentArchive);
             })));
         }
 
@@ -449,6 +470,12 @@ impl Widget for FileToolbar {
             gap: Size {
                 width: LengthPercentage::length(sp.s2),
                 height: LengthPercentage::length(0.0),
+            },
+            padding: taffy::Rect {
+                left: LengthPercentage::length(self.shared.context.borrow().leading_inset),
+                right: LengthPercentage::length(0.0),
+                top: LengthPercentage::length(0.0),
+                bottom: LengthPercentage::length(0.0),
             },
             size: Size {
                 width: Dimension::percent(1.0),
@@ -608,7 +635,8 @@ impl Widget for FileToolbar {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty) || self.path_bar.take_structure_dirty()
+        let inset = self.shared.published.inset_changed.take();
+        std::mem::take(&mut self.structure_dirty) || inset || self.path_bar.take_structure_dirty()
     }
 
     fn name(&self) -> &'static str {

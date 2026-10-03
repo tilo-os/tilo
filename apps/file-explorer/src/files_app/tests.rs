@@ -4111,7 +4111,6 @@ mod responsive_body_tests {
     //! to make room for the list of places. Drives the real production path
     //! (`build_layout` → `apply_layout` at a size, then `handle_event`).
     use super::*;
-    use std::collections::HashMap;
     use taffy::prelude::*;
     use ui::theme::Theme;
 

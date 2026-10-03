@@ -69,12 +69,6 @@ pub struct ThumbCtx {
 /// Extra rows/cells painted around the clipped viewport to keep a partially
 /// visible boundary item alive through scroll settling.
 const VISIBLE_RANGE_OVERDRAW_ROWS: usize = 1;
-/// A two-column compact grid stays useful at phone width even when the user
-/// has increased item zoom.  Below this many tile widths of room, one roomy
-/// tile is the more honest accessible layout; at or above it, two 44px-plus
-/// targets are preferable to wasting most of the pane with a single centred
-/// item.
-const COMPACT_GRID_MIN_CELLS: f64 = 1.18;
 /// When a large-zoom tile is compacted to retain two columns, trim blank
 /// vertical space before shrinking previews or labels. This keeps the tap
 /// target comfortably above 44px while avoiding the old ~190px row cadence.
@@ -127,7 +121,7 @@ impl Geo {
             size_col: s(sp.s6) * 4.0,
             modified_col: s(sp.s6) * 7.0,
             col_gap: s(sp.s3),
-            cell_w: s(sp.s4) * 7.0,
+            cell_w: s(sp.s4) * 8.0,
             cell_h: s(sp.s12) * 2.0 + s(sp.s2),
             grid_icon: s(sp.s12),
             grid_gap: s(sp.s4),
@@ -245,8 +239,11 @@ pub struct FileView {
 }
 
 /// Pointer travel (logical px) past which a held directory press becomes a
-/// drag rather than a click.
-pub const DRAG_THRESHOLD: f64 = 6.0;
+/// drag rather than a click: one `s1` step, the toolkit's own drag threshold.
+#[must_use]
+pub fn drag_threshold() -> f64 {
+    f64::from(ui::tokens::spacing::Spacing::BASE.s1)
+}
 
 impl FileView {
     pub fn new(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Self {
@@ -365,9 +362,11 @@ impl FileView {
         let gap = self.grid_gap();
         let inner = (width - 2.0 * self.pad_x()).max(0.0);
         let compact_w = ((inner - gap) / 2.0).max(0.0);
-        let width = if desired_w * 2.0 + gap > inner
-            && compact_w >= self.geo.cell_w * COMPACT_GRID_MIN_CELLS
-        {
+        // A two-column compact grid stays useful at phone width even when the
+        // user has increased item zoom: below one base tile of width per
+        // column, one roomy tile is the more honest accessible layout; at or
+        // above it, two 44px-plus targets beat a single centred item.
+        let width = if desired_w * 2.0 + gap > inner && compact_w >= self.geo.cell_w {
             compact_w
         } else {
             desired_w
@@ -434,7 +433,9 @@ impl FileView {
         if stride <= 0.0 {
             return 1;
         }
-        (((inner + self.grid_gap()) / stride).floor() as usize).max(1)
+        // The compact tile width is derived from this very sum, so the quotient
+        // is exactly a whole number up to rounding: never lose a column to it.
+        ((((inner + self.grid_gap()) / stride) + 1e-9).floor() as usize).max(1)
     }
 
     fn grid_rows(&self, columns: usize) -> usize {
@@ -639,10 +640,10 @@ impl FileView {
     /// cutoff made a 390 px window waste most of a large-text row on a `—`
     /// size placeholder and truncate the filename.
     fn show_size(&self) -> bool {
-        self.rect.width() > self.geo.cell_w * 3.0 * self.scale * self.text_scale
+        self.rect.width() > self.geo.cell_w * 2.625 * self.scale * self.text_scale
     }
     fn show_modified(&self) -> bool {
-        self.rect.width() > self.geo.cell_w * 5.0 * self.scale * self.text_scale
+        self.rect.width() > self.geo.cell_w * 4.375 * self.scale * self.text_scale
     }
     /// Whether list column `i` (0 name, 1 size, 2 modified) is currently shown.
     fn col_visible(&self, i: usize) -> bool {
@@ -761,9 +762,8 @@ impl FileView {
 
     /// Paint the (possibly pinned) column header: the column labels, the
     /// active sort indicator and one hairline under the band. The band stands
-    /// on the content ground, so rows scrolling beneath it are covered by a
-    /// fill of that same ground. Drawn *after* the rows so it always
-    /// composites on top.
+    /// on the content ground; rows are clipped below it, so none scrolls
+    /// beneath the labels.
     fn draw_list_header(
         &self,
         scene: &mut Scene,
@@ -781,14 +781,6 @@ impl FileView {
         // rhythm at every text scale.
         let (_, line) = tr.measure_style("Ag", None, &style);
         let ty = Self::centered_line_top(top, header_h, line);
-        let band = Rect::new(self.rect.x0, top, self.rect.x1, top + header_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.content,
-            None,
-            &band,
-        );
         // Column labels + a sort indicator on the active column. Hidden
         // (collapsed) columns are skipped.
         for (i, col) in LIST_COLUMNS.iter().enumerate() {
@@ -846,7 +838,26 @@ impl FileView {
         theme: &Theme,
         vp: Option<Rect>,
     ) {
+        // A folder with nothing in it has no columns to name: the window shows
+        // its empty state instead.
+        if self.entries.is_empty() {
+            return;
+        }
         let range = self.visible_range(vp);
+        // Rows stand below the (possibly pinned) header band, never under it.
+        let body = Rect::new(
+            self.rect.x0,
+            self.header_top(vp) + self.header_h(),
+            self.rect.x1,
+            self.rect.y1,
+        );
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &body,
+        );
         for (offset, entry) in self
             .entries
             .get(range.clone())
@@ -860,8 +871,7 @@ impl FileView {
             }
             self.draw_list_row(scene, transform, tr, theme, i, entry);
         }
-        // Header last so it composites above the rows (and stays put while
-        // they scroll beneath the pinned band).
+        scene.pop_layer();
         self.draw_list_header(scene, transform, tr, theme, vp);
     }
 
@@ -1540,7 +1550,7 @@ impl Widget for FileView {
                 // carries the row(s) and, on release, moves them onto a folder
                 // (or pins a folder to the sidebar).
                 if let Some((start, path, is_dir)) = self.pressed_row.clone()
-                    && pt.distance(start) > DRAG_THRESHOLD
+                    && pt.distance(start) > drag_threshold()
                 {
                     push(&self.sink, FileCommand::BeginDrag { path, is_dir });
                     self.pressed_row = None;
@@ -1902,8 +1912,8 @@ fn draw_availability_badge(
 fn cull(vp: Option<Rect>, r: Rect) -> bool {
     match vp {
         Some(v) => {
-            const MARGIN: f64 = 4.0;
-            r.y1 < v.y0 - MARGIN || r.y0 > v.y1 + MARGIN
+            let margin = f64::from(ui::tokens::spacing::Spacing::BASE.s1);
+            r.y1 < v.y0 - margin || r.y0 > v.y1 + margin
         }
         None => false,
     }
@@ -2035,10 +2045,6 @@ mod tests {
         apply_layout_publishes_folder_rows_as_drop_targets();
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "measurement scenario checks every scroll layout step in sequence"
-    )]
     fn scroll_layout_reuses_real_file_view_measurement() {
         use ui::launch::ShotFrame;
         use ui::widget::Scrollable;
