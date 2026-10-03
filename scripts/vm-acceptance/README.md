@@ -66,7 +66,7 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, room activity, workspace history |
-| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several, R03 RSS/PSS, R04 frame work p50/p95/p99 during interactions; the renderer is recorded |
+| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several, R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS, R04 frame work p50/p95/p99 during interactions; the renderer is recorded |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug, B07 GNOME keyboard import (host-desktop installs only, so unobservable in a VM) |
 
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the

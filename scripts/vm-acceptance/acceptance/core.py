@@ -309,3 +309,86 @@ def save_thumb(src: Path, dst: Path, width: int = 1600) -> Path:
         img = img.resize((width, int(img.height * width / img.width)))
     img.save(dst)
     return dst
+
+
+# -- processes, the app each belongs to, and its cgroup --------------------------
+
+# Read as root: the compositor is not dumpable. One line per process with its parent,
+# owner, RSS, anonymous RSS, cgroup and, for `tilo-launcher`, the `--app-id` it runs;
+# then one line per cgroup seen with memory.current and the memory.stat anon/file split.
+PROCESSES = r'''
+cgs=""
+for d in /proc/[0-9]*; do
+  st=$(awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2} /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2}
+            END {if (r) print p, u, r, a+0}' $d/status 2>/dev/null)
+  [ -n "$st" ] || continue
+  comm=$(tr ' \t' '__' 2>/dev/null < $d/comm)
+  cg=$(sed -n "s/^0:://p" 2>/dev/null < $d/cgroup)
+  app=""
+  [ "$comm" = tilo-launcher ] && \
+    app=$(tr '\0' '\n' 2>/dev/null < $d/cmdline | awk 'p {print; exit} $0 == "--app-id" {p = 1}')
+  set -- $st
+  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" "$3" "$4" "${app:--}" "$cg"
+  cgs="$cgs$cg
+"
+done
+printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do
+  f="/sys/fs/cgroup$cg"
+  if [ -r "$f/memory.current" ]; then
+    printf 'C\t%s\t%s\t%s\n' "$cg" "$(cat "$f/memory.current")" \
+      "$(awk '$1 == "anon" {a=$2} $1 == "file" {f=$2} END {print a+0 "\t" f+0}' "$f/memory.stat")"
+  else
+    printf 'C\t%s\t-\t-\t-\n' "$cg"
+  fi
+done
+awk '/MemTotal|MemAvailable/ {print "M", $1, $2}' /proc/meminfo
+'''
+
+
+def _mb(kib_or_bytes: str, unit: int) -> float | None:
+    return None if kib_or_bytes == "-" else round(int(kib_or_bytes) * unit / 2**20, 1)
+
+
+def parse_processes(text: str) -> dict:
+    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb": {...}}.
+
+    Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
+    so an app is its launcher's whole process tree, whatever its processes are called."""
+    procs, cgroups, mem = {}, {}, {}
+    for line in text.splitlines():
+        f = line.split("\t")
+        if f[0] == "P" and len(f) == 9 and f[1].isdigit():
+            procs[int(f[1])] = {"pid": int(f[1]), "ppid": int(f[2]), "uid": int(f[3]), "comm": f[4],
+                                "rss_mb": _mb(f[5], 1024), "anon_rss_mb": _mb(f[6], 1024),
+                                "launches": None if f[7] == "-" else f[7], "cgroup": f[8]}
+        elif f[0] == "C" and len(f) == 5:
+            cgroups[f[1]] = {"memory_mb": _mb(f[2], 1), "anon_mb": _mb(f[3], 1), "file_mb": _mb(f[4], 1)}
+        elif line.startswith("M "):
+            _, key, kib = line.split()[:3]
+            mem[key.rstrip(":")] = int(kib) // 1024
+    for p in procs.values():
+        cur, seen = p, set()
+        while cur and cur["launches"] is None and cur["pid"] not in seen:
+            seen.add(cur["pid"])
+            cur = procs.get(cur["ppid"])
+        p["app"] = cur["launches"] if cur else None
+    return {"procs": procs, "cgroups": cgroups, "meminfo_mb": mem}
+
+
+def processes(ctx) -> dict:
+    return parse_processes(ctx.vm.root_exec(PROCESSES))
+
+
+def app_cgroup(table: dict, app_id: str) -> dict:
+    """Where `app_id`'s processes are accounted: its cgroups, and whether they hold the app alone.
+
+    A cgroup that also holds a process outside the app's launcher tree (the compositor, a
+    session service, another app) is shared: its memory is not this app's."""
+    mine = [p for p in table["procs"].values() if p["app"] == app_id]
+    paths = sorted({p["cgroup"] for p in mine})
+    strangers = {path: sorted({p["comm"] for p in table["procs"].values()
+                               if p["cgroup"] == path and p["app"] != app_id})
+                 for path in paths}
+    return {"pids": sorted(p["pid"] for p in mine), "cgroups": paths,
+            "shared_with": {k: v for k, v in strangers.items() if v},
+            "anon_rss_mb": round(sum(p["anon_rss_mb"] or 0 for p in mine), 1)}
