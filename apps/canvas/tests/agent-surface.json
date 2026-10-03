@@ -1035,6 +1035,72 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "checkpoint",
+    "resource_kind": "canvas.artwork",
+    "label": "Checkpoint",
+    "description": "Name the current version, to restore or compare with later.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "name",
+        "ty": "text",
+        "required": true,
+        "description": "The name",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "diff",
+    "resource_kind": "canvas.artwork",
+    "label": "Compare versions",
+    "description": "Compare two versions: marks and layers added, removed or changed by id, the changed region, and with look a before|after picture of it.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "from",
+        "ty": "text",
+        "required": true,
+        "description": "The earlier version: a change id from history or a checkpoint name.",
+        "schema": {
+          "type": "string",
+          "description": "The earlier version: a change id from history or a checkpoint name."
+        },
+        "nullable": false
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "required": false,
+        "description": "The later version (default now).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The later version (default now)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "look",
+        "ty": "boolean",
+        "required": false,
+        "description": "Also a picture of the changed region: before left, after right.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Also a picture of the changed region: before left, after right."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
@@ -3664,24 +3730,15 @@
     "resource": "canvas.artwork",
     "action": "history",
     "resource_kind": "canvas.artwork",
-    "label": "Artwork history",
-    "description": "List the artwork's versions, oldest first: each change's action, the agent run or person it belongs to, and when.",
+    "label": "History",
+    "description": "List the versions, oldest first: change id, action and its arguments, run, author, time, undone, checkpoints.",
     "operation": "View",
     "params": [
       {
         "name": "last",
         "ty": "integer",
         "required": false,
-        "description": "The most recent versions to list, 1 to 500 (default 100).",
-        "schema": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 4294967295,
-          "description": "The most recent versions to list, 1 to 500 (default 100)."
-        },
+        "description": "How many recent versions (default 50)",
         "nullable": true
       }
     ]
@@ -3740,6 +3797,20 @@
           "minimum": 0,
           "maximum": 4294967295,
           "description": "How many of the newest matching marks to list, 1 to 400 (default 100)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "required": false,
+        "description": "A past version: a change id from history or a checkpoint name.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A past version: a change id from history or a checkpoint name."
         },
         "nullable": true
       }
@@ -3830,6 +3901,20 @@
             "type": "string"
           },
           "description": "Show only these layers."
+        },
+        "nullable": true
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "required": false,
+        "description": "A past version: a change id from history or a checkpoint name.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A past version: a change id from history or a checkpoint name."
         },
         "nullable": true
       }
@@ -3942,6 +4027,23 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "redo",
+    "resource_kind": "canvas.artwork",
+    "label": "Redo",
+    "description": "Bring back what your last undo took back.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "steps",
+        "ty": "integer",
+        "required": false,
+        "description": "How many undos, newest first",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "remove-layer",
     "resource_kind": "canvas.artwork",
     "label": "Remove layer",
@@ -4030,6 +4132,43 @@
         "ty": "number",
         "required": false,
         "description": "Pixels per point, 0.5 to 2 (default 1)",
+        "nullable": true
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "required": false,
+        "description": "A past version: change id from history, or checkpoint name",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "restore",
+    "resource_kind": "canvas.artwork",
+    "label": "Restore version",
+    "description": "Bring the document back to a version as a new change, or only the items named by ids.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "version",
+        "ty": "text",
+        "required": true,
+        "description": "A change id from history, or a checkpoint name",
+        "nullable": false
+      },
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": false,
+        "description": "Only these item ids",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "nullable": true
       }
     ]
@@ -4193,6 +4332,30 @@
           ],
           "description": "Ground colour, `#rrggbb`."
         },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "undo",
+    "resource_kind": "canvas.artwork",
+    "label": "Undo",
+    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "steps",
+        "ty": "integer",
+        "required": false,
+        "description": "How many steps, newest first",
+        "nullable": true
+      },
+      {
+        "name": "run",
+        "ty": "text",
+        "required": false,
+        "description": "An agent run id from history",
         "nullable": true
       }
     ]

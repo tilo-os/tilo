@@ -232,6 +232,28 @@ impl ActionContext {
         self
     }
 
+    /// Record what the action was given, summarised from its encoded payload
+    /// ([`args_summary`]), as the [`ARGS_FACET`] facet: history then says
+    /// what each step did, not only which action it was.
+    #[must_use]
+    pub fn with_args_from_payload(mut self, payload: &[u8]) -> Self {
+        if self.facets.iter().any(|facet| facet.key == ARGS_FACET) {
+            return self;
+        }
+        if let Some(summary) = args_summary(payload) {
+            self.facets.push(ActionFacet::new(ARGS_FACET, summary));
+        }
+        self
+    }
+
+    /// The arguments summary [`Self::with_args_from_payload`] recorded.
+    pub fn args(&self) -> Option<&str> {
+        self.facets
+            .iter()
+            .find(|facet| facet.key == ARGS_FACET)
+            .map(|facet| facet.value.as_str())
+    }
+
     /// Whether the change this context describes is housekeeping, not content.
     pub fn is_housekeeping(&self) -> bool {
         self.change == ChangeKind::Housekeeping
@@ -270,6 +292,121 @@ impl ActionContext {
             (Some(action), None) => Some(action.to_string()),
             (None, Some(resource)) => Some(resource.to_string()),
             (None, None) => None,
+        }
+    }
+}
+
+/// The facet key of an action's arguments summary.
+pub const ARGS_FACET: &str = "args";
+
+/// Longest arguments summary kept in a change message.
+pub const MAX_ARGS_SUMMARY: usize = 160;
+
+/// A short, readable summary of an encoded action payload: the value inside
+/// a single-variant wrapper, strings cut short, nested arrays counted rather
+/// than listed. `None` for a payload that is not JSON or says nothing.
+pub fn args_summary(payload: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let mut value = arguments_of(&value).clone();
+    // An internally tagged action names itself beside its arguments.
+    if let serde_json::Value::Object(fields) = &mut value
+        && fields.len() > 1
+        && fields
+            .get("action")
+            .is_some_and(serde_json::Value::is_string)
+    {
+        fields.remove("action");
+    }
+    let value = &value;
+    if value.is_null() || value.as_object().is_some_and(serde_json::Map::is_empty) {
+        return None;
+    }
+    let mut out = String::new();
+    brief(value, 0, &mut out);
+    if out.chars().count() > MAX_ARGS_SUMMARY {
+        out = out.chars().take(MAX_ARGS_SUMMARY).collect::<String>() + "…";
+    }
+    Some(out)
+}
+
+/// The arguments inside an encoded action's envelopes: a stamped
+/// operation's `op` (beside its `at` time), then an adjacently tagged
+/// operation's `args` (beside its `action` name) or an externally tagged
+/// variant's fields.
+fn arguments_of(value: &serde_json::Value) -> &serde_json::Value {
+    let serde_json::Value::Object(fields) = value else {
+        return value;
+    };
+    let mut keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    match keys.as_slice() {
+        ["at", "op"] => fields.get("op").map_or(value, arguments_of),
+        ["action", "args"] => fields.get("args").unwrap_or(value),
+        [_] => fields
+            .values()
+            .next()
+            .filter(|fields| fields.is_object())
+            .unwrap_or(value),
+        _ => value,
+    }
+}
+
+fn brief(value: &serde_json::Value, depth: usize, out: &mut String) {
+    use std::fmt::Write as _;
+    match value {
+        serde_json::Value::String(text) => {
+            let cut: String = text.chars().take(32).collect();
+            let ellipsis = if cut.len() < text.len() { "…" } else { "" };
+            let _ = write!(out, "{:?}", format!("{cut}{ellipsis}"));
+        }
+        serde_json::Value::Array(items) => {
+            // Nested, a short list still says what it holds when its items
+            // are plain values or name themselves by id.
+            let named: Option<Vec<&serde_json::Value>> = items
+                .iter()
+                .map(|item| match item {
+                    serde_json::Value::Object(fields) => {
+                        fields.get("id").filter(|id| id.is_string())
+                    }
+                    serde_json::Value::Array(_) => None,
+                    plain => (depth == 0 || !plain.is_null()).then_some(plain),
+                })
+                .collect();
+            let listed = match named {
+                Some(named) if items.len() <= 4 && depth > 0 => named,
+                _ if items.len() <= 4 && depth == 0 => items.iter().collect(),
+                _ => {
+                    let _ = write!(out, "[{} items]", items.len());
+                    return;
+                }
+            };
+            out.push('[');
+            for (at, item) in listed.into_iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                brief(item, depth.saturating_add(1), out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(fields) if depth > 1 => {
+            let _ = write!(out, "{{{} fields}}", fields.len());
+        }
+        serde_json::Value::Object(fields) => {
+            out.push('{');
+            let mut first = true;
+            for (key, field) in fields.iter().filter(|(_, field)| !field.is_null()) {
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+                let _ = write!(out, "{key}:");
+                brief(field, depth.saturating_add(1), out);
+            }
+            out.push('}');
+        }
+        other => {
+            let _ = write!(out, "{other}");
         }
     }
 }
@@ -484,6 +621,40 @@ impl ActionFacet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_summary_says_what_an_action_was_given_in_brief() {
+        let payload = br#"{"Paint":{"layer":"sky","strokes":[{"points":[[1,2],[3,4]]},{"points":[]}],"note":null}}"#;
+        assert_eq!(
+            args_summary(payload).as_deref(),
+            Some(r#"{layer:"sky",strokes:[2 items]}"#)
+        );
+        let long = format!(r#"{{"Rename":{{"title":"{}"}}}}"#, "x".repeat(400));
+        let summary = args_summary(long.as_bytes()).unwrap();
+        assert!(summary.chars().count() <= MAX_ARGS_SUMMARY + 1, "{summary}");
+        assert_eq!(args_summary(b"\"Clear\""), Some("\"Clear\"".into()));
+        assert_eq!(args_summary(b"{\"Clear\":{}}"), None);
+        assert_eq!(args_summary(b"not json"), None);
+        let named = br#"{"Draw":{"marks":[{"id":"sun","shape":{}},{"id":"sky"}],"ids":["a","b"]}}"#;
+        assert_eq!(
+            args_summary(named).as_deref(),
+            Some(r#"{marks:["sun","sky"],ids:["a","b"]}"#)
+        );
+        let tagged = br#"{"op":{"action":"draw","marks":[{"id":"blot"}]},"at":17}"#;
+        assert_eq!(args_summary(tagged).as_deref(), Some(r#"{marks:["blot"]}"#));
+        let stamped = br#"{"op":{"action":"add","args":{"text":"milk"}},"at":17}"#;
+        assert_eq!(args_summary(stamped).as_deref(), Some(r#"{text:"milk"}"#));
+
+        let context = ActionContext::for_resource("Paint", "r", "k", "l")
+            .with_args_from_payload(payload)
+            .with_args_from_payload(b"{\"Other\":1}");
+        assert_eq!(context.args(), args_summary(payload).as_deref());
+        let message = context.change_message().unwrap();
+        assert_eq!(
+            ActionContext::from_change_message(&message).unwrap().args(),
+            context.args()
+        );
+    }
 
     #[test]
     fn absent_invoker_keeps_change_message_bytes() {
