@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::icons::Icon;
+use tilo_ui::text_render::TextKind;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
@@ -75,8 +76,10 @@ fn properties() -> Element {
     Box::new(Section::titled(
         "Contact",
         vec![Box::new(PropertyList::new(vec![
-            Property::new("Email", "ada.lovelace@example.org").copyable(),
-            Property::new("Phone", "+44 20 7946 0958").numeric(),
+            Property::new("Email", "ada.lovelace@example.org")
+                .with_kind(TextKind::Identifier)
+                .copyable(),
+            Property::new("Phone", "+44 20 7946 0958").with_kind(TextKind::Numeric),
             Property::new("Address", "12 St James's Square, London SW1Y 4JH"),
             Property::new("Birthday", "10 December 1815"),
         ]))],
@@ -233,11 +236,11 @@ fn table() -> Element {
             .sortable(true)
             .with_text(|p: &Proc| p.name.to_owned()),
         ColumnDef::new("cpu", "CPU %", ColumnWidth::Flex(1.0))
-            .numeric()
+            .with_kind(TextKind::Numeric)
             .sortable(true)
             .with_text(|p: &Proc| format!("{:.1}", p.cpu)),
         ColumnDef::new("mem", "Memory", ColumnWidth::Flex(1.0))
-            .numeric()
+            .with_kind(TextKind::Numeric)
             .with_optional_text(|p: &Proc| p.memory.map(|m| format!("{m} MB")), "NULL"),
     ])
     .selectable(true)

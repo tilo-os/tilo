@@ -2,16 +2,19 @@
 
 The manifest records each file's source (an installed Fedora 44 binary path
 and package NEVR, or an immutable upstream URL), complete SHA-256 values,
-metadata, and exact license mappings. These files were copied without
-modification. Product and fixture scope are independent of whether a font
-happens to be installed on a host. The 17 product fonts total 44,214,180
+metadata, and exact license mappings. Every file was copied without
+modification except the two script-fallback subsets, which
+`tools/font-fallback-subsets.py` derives reproducibly from pinned upstream
+files (below). Product and fixture scope are independent of whether a font
+happens to be installed on a host. The 21 product fonts total 44,606,380
 bytes; Adwaita adds 879,796 fixture bytes.
 
 ## Instrument Sans (UI face)
 
-Instrument Sans is the system UI face; Noto Sans stays in the catalog as the
-fallback for the Greek, Cyrillic and Vietnamese text Instrument Sans does not
-cover, and as the face of the PDF helper. Fedora 44 does not package
+Instrument Sans is the system UI face. Greek and Cyrillic fall back to faces
+matched to it (below); Noto Sans stays in the catalog as the fallback for
+Vietnamese and for italic Greek and Cyrillic, and as the face of the PDF
+helper. Fedora 44 does not package
 Instrument Sans, so its files come from the Google Fonts repository, which
 publishes the upstream release unmodified:
 
@@ -38,6 +41,69 @@ by rendering the same screen in each at the type roles' sizes on the vello
 renderer: it is the most refined at 20-34 px, compact and clear at 12-14 px,
 has tabular figures and a 400-700 weight axis covering every role weight,
 carries no Reserved Font Name, and is 396 KB for both styles.
+
+## Matched script fallbacks (Onest, Geologica)
+
+Instrument Sans has no Greek or Cyrillic. Set in Noto Sans, those scripts sit
+on a taller x-height with different shapes than the Latin around them, so the
+toolkit sets them in faces chosen to match Instrument Sans instead, sized to
+its x-height and weight-mapped to its stems (`docs/typography.md`, Script
+fallbacks):
+
+| file | bytes | SHA-256 | built from |
+|---|---:|---|---|
+| `Onest-Cyrillic[wght].ttf` | 80696 | `efc3cf7b09f5bb11880ece503a7df2f5d6c2bf3177f2bd88dca5e709aeb10895` | `ofl/onest/Onest[wght].ttf` (193056 bytes, `966c5c29b4755da84b6854d5c21dd4eaa2420225d0e9874de602de176d4a9f31`) |
+| `Geologica-Greek[wght].ttf` | 73036 | `12678d2e4e09df7856cc3f66dbcbea1c94f1ca4c93e2d7993e86cba7f41edeb9` | `ofl/geologica/Geologica[CRSV,SHRP,slnt,wght].ttf` (348640 bytes, `9124d9e88ac6c11d761f35241713a51d68e2c4ebedce0edaca834717a00959ec`) |
+| `LICENSES/Onest-OFL.txt` (upstream `OFL.txt`) | 4384 | `071195d8806e226faeee60259c28ca67b458227af5195a73f5cfcab06e3003bc` | |
+| `LICENSES/Geologica-OFL.txt` (upstream `OFL.txt`) | 4400 | `778186245840aea0e60bec6a46e7fb1442e0cd78e41afeadffcd3e8824b379e0` | |
+
+The upstream files come from `google/fonts` commit
+`9710da1eacb3be272583c3224dcb70f9da6eadbb`. Their `METADATA.pb` names the
+sources: Onest from `https://github.com/simpals/onest` commit
+`8739b1910618a15335e4cc48842052d0ee739ade` (release 2.001,
+`fonts/variable/Onest[wght].ttf`), Geologica from
+`https://github.com/googlefonts/geologica` commit
+`685f38d7c9e86b0c8530204c97ddcaf6558dd17b`
+(`fonts/variable/Geologica[CRSV,SHRP,slnt,wght].ttf`).
+
+`tools/font-fallback-subsets.py` fetches both, checks their SHA-256, and keeps
+only the script each serves plus the space, punctuation, digits, combining
+marks, general punctuation and currency signs its runs need (Onest: Cyrillic
+and its supplements and extensions; Geologica: Greek and Greek Extended). It
+pins Geologica's `CRSV`, `SHRP` and `slnt` axes at 0 (the plain upright
+design) and keeps the `wght` axis of both; all layout features, the name table
+and the upstream `head` timestamp are kept, so a rerun reproduces the bytes
+(`--check` verifies the checkout).
+
+License review of the modification: both fonts are OFL 1.1 and their `OFL.txt`
+and embedded copyright notices (`Copyright 2021 The Onest Project Authors`,
+`Copyright 2020 The Geologica Project Authors`) declare no Reserved Font Name,
+so a modified version may keep its name (OFL condition 3 does not apply). The
+subsets are distributed under the OFL with the unmodified license text and
+copyright notices (conditions 2 and 5); their name-ID 0, 13 and 14 records are
+appended to `LICENSES/FONT-COPYRIGHT-NOTICES.txt`. Neither is sold by itself
+(condition 1).
+
+## Atkinson Hyperlegible Next (Hyperlegible UI face)
+
+The built-in "Hyperlegible" UI face a theme or the accessibility layer can
+choose, copied unmodified from `google/fonts` commit
+`9710da1eacb3be272583c3224dcb70f9da6eadbb`
+(`ofl/atkinsonhyperlegiblenext/`), whose `METADATA.pb` names the source
+`https://github.com/googlefonts/atkinson-hyperlegible-next` commit
+`7925f50f649b3813257faf2f4c0b381011f434f1`:
+
+| file | bytes | SHA-256 |
+|---|---:|---|
+| `AtkinsonHyperlegibleNext[wght].ttf` | 114552 | `5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745` |
+| `AtkinsonHyperlegibleNext-Italic[wght].ttf` | 123916 | `ce9cffed32742ad2d9238c561a93220385e5934cdc02b8eb4097a50efa957dc6` |
+| `LICENSES/Atkinson-Hyperlegible-Next-OFL.txt` (upstream `OFL.txt`) | 4431 | `aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030` |
+
+Both embed `Copyright 2020-2024 The Atkinson Hyperlegible Next Project
+Authors` and an OFL 1.1 notice with no Reserved Font Name; their name-ID 0, 13
+and 14 records are appended to `LICENSES/FONT-COPYRIGHT-NOTICES.txt`. It
+covers Latin only; Greek and Cyrillic take the same matched fallbacks, sized
+to its own x-height.
 
 The current Fedora rendering does not reproduce all historical Tilo typography
 PNGs. This catalog identifies a reviewed product input; it does not claim those
