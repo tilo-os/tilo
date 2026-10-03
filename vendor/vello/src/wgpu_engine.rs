@@ -532,8 +532,10 @@ struct WgpuShader {
     pipeline: PipelineState,
     bind_group_layout: BindGroupLayout,
     /// The layout's entries, so [`WgpuEngine::dispatch_empty`] can bind stand-in resources.
+    #[cfg(not(target_arch = "wasm32"))]
     entries: Vec<wgpu::BindGroupLayoutEntry>,
     /// Length of the WGSL source, a proxy for how long a driver takes to compile it.
+    #[cfg(not(target_arch = "wasm32"))]
     source_len: usize,
 }
 
@@ -1893,7 +1895,9 @@ impl WgpuEngine {
             wgpu: Some(WgpuShader {
                 pipeline: PipelineState::Render(pipeline),
                 bind_group_layout,
+                #[cfg(not(target_arch = "wasm32"))]
                 entries,
+                #[cfg(not(target_arch = "wasm32"))]
                 source_len: 0,
             }),
             cpu: None,
@@ -2969,6 +2973,7 @@ impl WgpuEngine {
         entries: Vec<wgpu::BindGroupLayoutEntry>,
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
+        #[cfg(not(target_arch = "wasm32"))]
         let source_len = wgsl.len();
         // SAFETY: We only call this with trusted shaders (written by Vello developers)
         let shader_module = unsafe {
@@ -3004,13 +3009,16 @@ impl WgpuEngine {
         WgpuShader {
             pipeline: PipelineState::Compute(pipeline),
             bind_group_layout,
+            #[cfg(not(target_arch = "wasm32"))]
             entries,
+            #[cfg(not(target_arch = "wasm32"))]
             source_len,
         }
     }
 
     /// The compute shaders [`Self::dispatch_empty`] can run, largest source first, so that
     /// workers taking them in turn finish the longest compilations early.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn precompile_order(&self) -> Vec<usize> {
         let mut order: Vec<(usize, usize)> = self
             .shaders
