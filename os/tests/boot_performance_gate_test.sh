@@ -488,7 +488,7 @@ fi
 dropin="$repo/os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf"
 { grep -Fxq 'ConditionNeedsUpdate=' "$dropin" \
     && grep -Fxq 'ConditionFileNotEmpty=|!/etc/ld.so.cache' "$dropin" \
-    && grep -Fq 'COPY os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf ' "$repo/os/Containerfile" \
+    && grep -Fq 'install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf' "$repo/os/Containerfile" \
     && grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile"; } || {
   echo 'first boot of a deployment regenerates the linker cache on the login critical chain' >&2
   exit 1
