@@ -346,7 +346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 let face_name = face.name().to_ascii_lowercase();
                 let out = dir.join(format!("{stem}-{page_name}-{face_name}-{theme_name}.png"));
-                harness.render_window_png(&out);
+                harness.render_png(&out);
                 println!("{}", out.display());
             }
         }
