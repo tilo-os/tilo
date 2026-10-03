@@ -80,11 +80,23 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn save_channels(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
+    /// The key channel state is sealed under at rest, kept apart from that
+    /// state: in the page, wrapped by a non-extractable `WebCrypto` key. A
+    /// store without one seals channel state under a key of the session's
+    /// own, so stored state does not open in the next session.
+    fn channel_vault(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 /// An in-memory [`PeerStore`] for native peers and tests.
-#[derive(Default)]
-pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>, Mutex<Option<Vec<u8>>>);
+pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>, Mutex<Option<Vec<u8>>>, [u8; 32]);
+
+impl Default for MemoryPeerStore {
+    fn default() -> Self {
+        Self(Mutex::default(), Mutex::default(), rand::random())
+    }
+}
 
 impl PeerStore for MemoryPeerStore {
     fn load(&self) -> Option<PeerRecord> {
@@ -115,6 +127,10 @@ impl PeerStore for MemoryPeerStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes.to_vec());
         Ok(())
+    }
+
+    fn channel_vault(&self) -> Option<[u8; 32]> {
+        Some(self.2)
     }
 }
 
