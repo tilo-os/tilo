@@ -21,14 +21,16 @@
 //! renderer; [`crate::widget::OskWidget`] routes events to it and draws it.
 
 use emoji::{Catalogue, Recents, SkinTone};
+use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
 use ui::widget::{SearchField, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::i18n;
@@ -37,8 +39,9 @@ use crate::i18n;
 pub const EMOJI_SUGGESTIONS: usize = 2;
 /// Search results listed at most.
 const SEARCH_RESULTS: usize = 64;
-/// Emoji glyph size relative to its cell.
-const GLYPH_SCALE: f64 = 0.55;
+/// Emoji glyph size relative to its cell. Emoji are content: the size follows
+/// the cell, not the text scale.
+const GLYPH_CONTENT_PX_RATIO: f64 = 0.55;
 
 /// Which face of the panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +99,10 @@ pub struct PanelBands {
     pub tab_height: f64,
     /// Height of a section heading in the grid.
     pub heading_height: f64,
+    /// Inset of the search field and the grid's headings from their band.
+    pub inset: f64,
+    /// The size an emoji group's tab glyph is drawn at.
+    pub tab_glyph: f64,
 }
 
 impl PanelBands {
@@ -105,6 +112,8 @@ impl PanelBands {
         self.min_cell = f64::from(spacing.s12);
         self.tab_height = f64::from(metrics.bar_height);
         self.heading_height = f64::from(spacing.s6);
+        self.inset = f64::from(spacing.s2);
+        self.tab_glyph = f64::from(metrics.icon_md);
         self
     }
 }
@@ -384,7 +393,7 @@ impl EmojiPanel {
             row_height,
             ..
         } = self.bands;
-        self.search_rect = suggestion.inset(-4.0);
+        self.search_rect = suggestion.inset(-self.bands.inset / 2.0);
         let tab_h = self.bands.tab_height.min(keys.height() * 0.25);
         let bottom_h = row_height.min(keys.height() * 0.3).max(0.0);
         let groups = self.catalogue.groups().len().max(1);
@@ -412,8 +421,10 @@ impl EmojiPanel {
         self.scroll = self.scroll.clamp(0.0, max);
         let mut y = self.grid.y0 - self.scroll;
         for section in sections {
-            self.headings
-                .push((section.heading, Point::new(self.grid.x0 + 8.0, y)));
+            self.headings.push((
+                section.heading,
+                Point::new(self.grid.x0 + self.bands.inset, y),
+            ));
             y += self.bands.heading_height;
             let rows = section.emoji.len().div_ceil(cols) as f64;
             for (i, text) in section.emoji.into_iter().enumerate() {
@@ -434,7 +445,7 @@ impl EmojiPanel {
             suggestion,
             ..
         } = self.bands;
-        self.search_rect = suggestion.inset(-4.0);
+        self.search_rect = suggestion.inset(-self.bands.inset / 2.0);
         let side = toolbar.height();
         self.end_search_rect = Rect::new(toolbar.x0, toolbar.y0, toolbar.x0 + side, toolbar.y1);
         let cell = side.max(1.0);
@@ -573,26 +584,9 @@ impl EmojiPanel {
         match self.mode {
             PanelMode::Closed => return,
             PanelMode::Browse => {
-                let body = self.bands.suggestion.union(self.bands.keys);
-                scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &body);
                 self.search
                     .draw(scene, transform, text_renderer, theme, presence);
-                let icons: Vec<&str> = self
-                    .catalogue
-                    .groups()
-                    .iter()
-                    .map(emoji::Group::icon)
-                    .collect();
-                ToggleGroup::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &SegmentedFace::new(&self.tab_rects, &icons, self.group)
-                        .style(SegmentedStyle::Underline)
-                        .text_size(18.0)
-                        .weight(TextWeight::Regular),
-                );
+                self.draw_tabs(scene, transform, text_renderer, theme);
                 scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
@@ -600,25 +594,31 @@ impl EmojiPanel {
                     transform,
                     &self.grid,
                 );
-                for (heading, at) in &self.headings {
-                    text_renderer.draw_text(
-                        scene,
-                        heading,
-                        12.0,
-                        colors.text_dim,
-                        transform * Affine::translate((at.x, at.y + 4.0)),
-                        None,
-                    );
+                {
+                    let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+                    for (heading, at) in &self.headings {
+                        let band =
+                            Rect::new(at.x, at.y, self.grid.x1, at.y + self.bands.heading_height);
+                        ctx.text_role_in_band(
+                            heading,
+                            TextRole::Subheading,
+                            colors.text_dim,
+                            at.x,
+                            band,
+                            None,
+                        );
+                    }
                 }
                 for (text, rect) in &self.cells {
                     let pressed = self.pressed.as_ref() == Some(&PanelHit::Emoji(text.clone()));
                     draw_emoji(scene, transform, text_renderer, theme, *rect, text, pressed);
                 }
                 scene.pop_layer();
+                let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
                 crate::presentation::draw_cell(
-                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    &mut ctx,
                     self.letters_rect,
-                    crate::presentation::CellFace::new(None, &i18n::t("osk-emoji-letters"), 0.30),
+                    crate::presentation::CellFace::new(None, &i18n::t("osk-emoji-letters")),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Letters),
                         tone: crate::presentation::CellTone::Modifier,
@@ -626,7 +626,7 @@ impl EmojiPanel {
                     },
                 );
                 crate::presentation::draw_cell(
-                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    &mut ctx,
                     self.delete_rect,
                     crate::presentation::CellFace::Icon(ui::icons::Icon::Delete),
                     crate::presentation::CellState {
@@ -637,35 +637,27 @@ impl EmojiPanel {
                 );
             }
             PanelMode::Search => {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.base,
-                    None,
-                    &self.bands.toolbar.union(self.bands.suggestion),
-                );
                 self.search
                     .draw(scene, transform, text_renderer, theme, presence);
+                let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
                 crate::presentation::draw_cell(
-                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    &mut ctx,
                     self.end_search_rect,
                     crate::presentation::CellFace::Icon(ui::icons::Icon::ArrowLeft),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::EndSearch),
+                        tone: crate::presentation::CellTone::Flat,
                         ..Default::default()
                     },
                 );
                 if self.strip.is_empty() && !self.search.value().trim().is_empty() {
                     let hint = i18n::t("osk-emoji-no-results");
-                    let (_, h) = text_renderer.measure(&hint, 14.0, None);
-                    let x = self.end_search_rect.x1 + 12.0;
-                    let y = self.bands.toolbar.center().y - f64::from(h) * 0.5;
-                    text_renderer.draw_text(
-                        scene,
+                    ctx.text_role_in_band(
                         &hint,
-                        14.0,
+                        TextRole::Caption,
                         colors.text_dim,
-                        transform * Affine::translate((x, y)),
+                        self.end_search_rect.x1 + self.bands.inset,
+                        self.bands.toolbar,
                         None,
                     );
                 }
@@ -676,33 +668,54 @@ impl EmojiPanel {
             }
         }
         if !self.tone_cells.is_empty() {
-            let radius = f64::from(theme.tokens.radii.md);
+            let radius = f64::from(theme.tokens.radii.panel);
             ui::surface::shadow(
                 scene,
                 transform,
                 self.tone_rect,
                 radius,
-                &theme.tokens.elevation.e2,
+                &theme.tokens.elevation.floating,
             );
-            let shape = RoundedRect::from_rect(self.tone_rect, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.raised,
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::panel_border(theme),
-                None,
-                &shape,
-            );
+            ui::surface::panel(scene, transform, self.tone_rect, radius, theme);
             for (text, rect) in &self.tone_cells {
                 let pressed = self.pressed.as_ref() == Some(&PanelHit::Tone(text.clone()));
                 draw_emoji(scene, transform, text_renderer, theme, *rect, text, pressed);
             }
+        }
+    }
+
+    /// The group tabs: the toolkit's underline tab strip, each tab marked by
+    /// its group's emoji (content, drawn at the icon size).
+    fn draw_tabs(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let blanks: Vec<&str> = self.tab_rects.iter().map(|_| "").collect();
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(&self.tab_rects, &blanks, self.group).style(SegmentedStyle::Tabs),
+        );
+        let style = TextStyle::content(self.bands.tab_glyph as f32);
+        for (group, rect) in self.catalogue.groups().iter().zip(&self.tab_rects) {
+            let icon = group.icon();
+            let (w, h) = text_renderer.measure_style(icon, None, &style);
+            let origin = Point::new(
+                rect.center().x - f64::from(w) * 0.5,
+                rect.center().y - f64::from(h) * 0.5,
+            );
+            PaintCtx::new(scene, transform, text_renderer, theme).text(
+                icon,
+                &style,
+                theme.tokens.colors.text_primary,
+                origin,
+                None,
+            );
         }
     }
 
@@ -861,22 +874,24 @@ fn draw_emoji(
     text: &str,
     pressed: bool,
 ) {
+    let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
     if pressed {
-        let shape = RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, transform, theme.bg_active, None, &shape);
+        let grow = f64::from(theme.tokens.spacing.s1) / 2.0;
+        let radius = f64::from(theme.tokens.radii.control);
+        ctx.fill_round(
+            rect.inset(-grow),
+            radius,
+            theme.tokens.colors.intent.selection,
+        );
     }
-    let size = (rect.height().min(rect.width()) * GLYPH_SCALE).clamp(14.0, 40.0) as f32;
-    let (w, h) = text_renderer.measure(text, size, None);
-    let x = rect.center().x - f64::from(w) * 0.5;
-    let y = rect.center().y - f64::from(h) * 0.5;
-    text_renderer.draw_text(
-        scene,
-        text,
-        size,
-        theme.tokens.colors.text_primary,
-        transform * Affine::translate((x, y)),
-        None,
+    let size = (rect.height().min(rect.width()) * GLYPH_CONTENT_PX_RATIO) as f32;
+    let style = TextStyle::content(size.max(theme.text(TextRole::Label).size));
+    let (w, h) = ctx.text.measure_style(text, None, &style);
+    let origin = Point::new(
+        rect.center().x - f64::from(w) * 0.5,
+        rect.center().y - f64::from(h) * 0.5,
     );
+    ctx.text(text, &style, theme.tokens.colors.text_primary, origin, None);
 }
 
 #[cfg(test)]
