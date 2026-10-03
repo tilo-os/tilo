@@ -5,38 +5,67 @@ Tilo text has one central rule: measurement and painting must use the same
 italic state, and family. Passing one value through the whole layout pipeline
 prevents wrapping, clipping, and baseline drift.
 
-The product font policy is deterministic: Noto Sans is the UI face, Noto Serif
-is the reading serif, and Noto Sans Mono is the code face. The renderer pins
-all three generic families to those names, while the OS image includes Noto
-fallbacks for symbols, emoji, CJK, Arabic, Hebrew, Devanagari, Bengali, and
-Thai. Application code should use semantic roles or generic `FontChoice`
-variants rather than repeating these family names.
+The product font policy is deterministic: Instrument Sans is the UI face,
+Noto Serif is the reading serif, and Noto Sans Mono is the code face. The
+renderer pins all three generic families to those names. Noto Sans is the
+first fallback, so Greek, Cyrillic and Vietnamese text in the UI is set in
+Noto Sans; the OS image adds Noto fallbacks for symbols, emoji, CJK, Arabic,
+Hebrew, Devanagari, Bengali, and Thai. Application code names a role, never a
+family or a size.
+
+## Roles
+
+Every piece of UI text is one of ten roles. A role is what the text *is*; the
+theme decides how it looks. Sizes derive from one base (Body = base, 14 px at
+the default text scale), so the text-scale setting changes every role at once.
+
+| Role | Size / weight / leading | Use |
+|---|---|---|
+| `Display` | 34 / 600 / 1.15 | One hero number or name per screen at most |
+| `LargeTitle` | 26 / 600 / 1.2 | Top of a content page |
+| `Title` | 20 / 600 / 1.25 | Detail title (a message subject, a contact name) |
+| `Heading` | 16 / 600 / 1.3 | Section heading |
+| `Subheading` | 14 / 600 / 1.35 | Group label inside a section, list section header |
+| `Body` | 14 / 400 / 1.45 | Default text, list rows, inputs, menus |
+| `Label` | 13 / 500 / 1.3 | Control labels, row titles in dense lists |
+| `Caption` | 12 / 400 / 1.35 | Secondary line, timestamps, metadata |
+| `Reading` | 16 / 400 / 1.6, serif | Long-form documents and books |
+| `Code` | 13 / 400 / 1.5, mono | Code and terminal |
+
+There is no all-caps or letter-spaced role. Section headers are sentence case
+in `Subheading` (inside a section) or `Heading` (a section of a page).
+
+Three modifiers keep the role and change one property:
+
+- `.strong()` raises the weight one step (Regular/Medium to Semibold,
+  Semibold to Bold) for emphasis inside a role, e.g. a selected row or an
+  unread sender.
+- `.numeric()` selects tabular lining figures, for any number that changes in
+  place or lines up in a column (counters, clocks, sizes, table cells).
+- `with_italic(true)` sets the role in the italic of its family.
 
 ## Application text
 
-Prefer a semantic role from the active theme:
-
 ```rust
-use ui::tokens::TextRole;
+use ui::TextRole;
 use ui::widget::Text;
 
-let body = Text::new("A readable paragraph").with_role(TextRole::Body);
-let heading = Text::new("Documents").with_role(TextRole::Heading);
+let title = Text::new("Documents").with_role(TextRole::Heading);
+let row = Text::new("Quarterly report").with_role(TextRole::Body).strong();
+let count = Text::new("2,481").with_role(TextRole::Display).numeric();
 ```
 
-The available roles are `Caption`, `Label`, `Body`, `Reading`, `Title`,
-`Heading`, `Display`, and `Code`. Roles resolve size, leading, weight, style,
-and family together. A retained `Text` resolves its role again during layout,
-so changing the active theme or text/UI scale updates it without rebuilding
-the application widget tree. Hyphenation, OpenType, alignment, wrapping, and
-fragmentation modifiers compose with a role. An explicit core typography
-modifier such as `with_size`, `with_weight`, `with_font_family`, or
-`with_style` opts out of live role styling and keeps that text custom without
-discarding its semantic intent.
+A retained `Text` resolves its role against the active theme during layout and
+paint, so changing the theme or the text/UI scale updates it without
+rebuilding the widget tree. Modifiers (`strong`, `numeric`, `with_weight`,
+`with_italic`, `with_font_family`, `with_line_height`, hyphenation, OpenType,
+alignment, wrapping and fragmentation) are layered over the role and survive
+that re-resolution; nothing opts a `Text` out of its role.
 
-`Title` and `Display` expose level-1 headings to accessibility tools;
-`Heading` exposes level 2. Nested sections can retain the visual role while
-setting their document outline explicitly:
+`LargeTitle` and `Title` expose level-1 headings to accessibility tools,
+`Heading` level 2 and `Subheading` level 3; `Display` is a figure, not a
+heading. Nested sections can keep the visual role while setting their
+document outline explicitly:
 
 ```rust
 let subsection = Text::new("Keyboard shortcuts")
@@ -44,27 +73,19 @@ let subsection = Text::new("Keyboard shortcuts")
     .with_heading_level(3);
 ```
 
-Body, label, caption, reading, and code roles remain static text. This makes
-screen-reader heading navigation match the visible hierarchy by default.
+Text whose size is a property of the *content* rather than of the UI, such as
+a slide's own font size, a canvas sticky note at document scale or a
+document's own heading, uses `with_content_size(px)`: the role keeps its
+weight, leading and family, the size is the content's own, and the renderer
+leaves it unscaled by the text-scale setting (the content's zoom applies
+instead). A `TextStyle` built with `TextStyle::content(px)` is the same for
+custom painting.
 
-Use an explicit style only when text has a specific typographic requirement that
-does not match a role:
-
-```rust
-use ui::{FontChoice, TextStyle, TextWeight};
-
-let pull_quote = Text::new("Make the important thing unmistakable.")
-    .with_style(
-        TextStyle::new(22.0)
-            .with_line_height(1.35)
-            .with_weight(TextWeight::Semibold)
-            .with_italic(true)
-            .with_family(FontChoice::Serif),
-    );
-```
-
-`Text::with_size` and `TextRenderer::draw_text` remain available for existing
-code. New code should prefer complete styles.
+Text widgets take a role the same way: `TextInput`, `Autocomplete`,
+`EditableLabel`, `Link`, `RichTextLine` and `RichTextEditor` have
+`with_text_role`, controls that show a label take a `ControlSize`
+(`Small` and `Regular` labels are `Label`, `Large` is `Body`), and
+`CodeEditor` is `Code`.
 
 Every application crate is kept behind this public boundary by
 `tools/policy/check_app_text_contract.py`, which runs in the fast lint workflow and
@@ -126,24 +147,58 @@ configured widow or orphan minimum.
 
 ## Custom-painted surfaces
 
-Custom widgets must reuse the exact same style for both calls:
+A custom painter asks the theme for the role and uses that one style for both
+measuring and painting. `PaintCtx` has helpers that do exactly that:
 
 ```rust
-let style = theme.tokens.typography.style(TextRole::Label);
-let size = text_renderer.measure_style(label, Some(width), &style);
-text_renderer.draw_style(
-    scene,
-    label,
-    color,
-    transform,
-    Some(width),
-    &style,
-);
+// Paint a label, its line box's top-left at `origin`.
+ctx.text_role(label, TextRole::Label, color, origin, Some(width));
+// Its size, for layout.
+let size = ctx.measure_role(label, TextRole::Label, Some(width));
+// One line's height in a role, for row and band geometry.
+let line = ctx.line_box(TextRole::Body);
+// Vertically centred in a band (a row, a chip, a button).
+ctx.text_role_in_band(label, TextRole::Label, color, x, band, None);
 ```
 
-Do not independently reconstruct font size, leading, weight, or family in the
-draw path. `TextRenderer` caches measurement and shaped glyph geometry using
-the complete style.
+When the style needs a modifier, resolve it once and pass it to both calls:
+
+```rust
+let style = theme.text(TextRole::Body).strong();
+let (w, h) = text_renderer.measure_style(label, Some(width), &style);
+text_renderer.draw_style(scene, label, color, transform, Some(width), &style);
+```
+
+`theme.text(role)` is already scaled by the text and UI scale; the renderer
+does not scale it again. Never construct a `TextStyle::new(px)` for UI text,
+never divide or multiply a size by `text_scale()`, and never reconstruct size,
+leading, weight or family separately in the draw path. `TextRenderer` caches
+measurement and shaped glyph geometry using the complete style.
+
+## Migrating literal sizes
+
+Code that still sets text by pixel size maps to roles by what the text is.
+The size is only a hint; decide by use when they disagree.
+
+| Literal size or pattern | Role |
+|---|---|
+| 12 px and below: metadata, timestamps, hints, badges | `Caption` |
+| 13 px button, tab, chip, segment, toggle text, dense row titles | `Label` (or the control's `ControlSize`) |
+| 13-14 px rows, inputs, menu items, plain text | `Body` |
+| 14-15 px semibold group label or list section header | `Subheading` |
+| Uppercase or letter-spaced section label | sentence-case `Subheading` (inside a section) or `Heading` |
+| 16-18 px section, card or group titles | `Heading` |
+| 20-22 px | `Title` |
+| 26-28 px | `LargeTitle` |
+| 34 px, or a large numeral (stat, clock) | `Display` (`.numeric()` for figures) |
+| Bold or semibold emphasis inside any of the above | the same role `.strong()` |
+| Numbers in columns or that change in place | the row's role `.numeric()` |
+| Monospace text | `Code` |
+| Long-form documents | `Reading` |
+| Size that belongs to the document or canvas | `with_content_size(px)` / `TextStyle::content(px)` |
+
+The exact API changes for code written against the old size-based calls are
+in the Typography section of `docs/ui-migration.md`.
 
 ## Editing contract
 
