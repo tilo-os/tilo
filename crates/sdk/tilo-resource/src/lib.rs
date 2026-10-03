@@ -125,7 +125,7 @@ pub use action::{
 };
 pub use collection::{Collection, Id};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
-pub use effect::{Effect, EffectDecl, NoEffect};
+pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
