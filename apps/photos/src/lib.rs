@@ -496,7 +496,7 @@ pub fn seed_scenario(
                     crate::model::Album {
                         id: "photos.album:new-home".into(),
                         name: "New home".into(),
-                        photo_ids: Vec::new(),
+                        photo_ids: travel.iter().skip(4).take(2).cloned().collect(),
                     },
                 ]);
             }

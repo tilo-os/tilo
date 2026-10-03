@@ -36,20 +36,19 @@ use vello::peniko::ImageData;
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::animation::{Animated, Curve, Transition};
-use ui::chrome::fill_scrim;
-use ui::icons::{Icon, draw_icon};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::surface;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::Spacing;
 use ui::widget::{
-    Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
-    DateIndexedScrollbar, EmptyState, EmptyStateContent, ImageViewer, ModalAction, ModalFrame,
-    ModalHit, ModalLayout, ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace,
-    TextInput, TextInputKind, ToggleGroup, Widget,
+    Button, ButtonFace, ButtonRole, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
+    DateIndexedScrollbar, EmptyState, EmptyStateContent, ImageViewer, ModalAction, ModalHit,
+    ModalLayout, ModalSpec, ProgressBar, PropertyListFace, PropertyRow, ScrollMetrics, TextInput,
+    TextInputKind, Widget,
 };
+use ui::widget::{ListRowFace, MediaCardFace, SegmentedFace, StatTileFace, ToggleGroup};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::doc::PhotosDoc;
@@ -58,98 +57,16 @@ use crate::pixels::{self, Rgba};
 use crate::strings::tr;
 use crate::timeline_projection::{TimelineGeometry, TimelinePhoto, TimelineProjection};
 
-/// Toolbar height, and the status bar's. Both are chrome around the canvas,
-/// which takes everything left over.
-const BAR_H: f32 = 48.0;
-const PAD: f32 = Spacing::BASE.s3;
+mod chrome;
 
-/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
-)]
-const fn step(px: f32) -> f64 {
-    px as f64
-}
-
-/// The photo-details sheet on one rhythm (HIG §7b): `s4` sheet padding,
-/// title ↔ subtitle `s2` (related rows), subtitle ↔ first field `s6` (the
-/// next group), label ↔ its input `s1`, field ↔ field `s2`, body ↔ footer
-/// `s2`. The line boxes are measured, so a wrapped 200% subtitle pushes the
-/// fields down instead of under "Folder", and the field list scrolls beneath
-/// the pinned footer when the viewport caps the sheet.
-const SHEET_INSET: f64 = step(Spacing::BASE.s4);
-const SHEET_TOP_PAD: f64 = step(Spacing::BASE.s4);
-const SHEET_TITLE_GAP: f64 = step(Spacing::BASE.s2);
-const SHEET_SUBTITLE_GAP: f64 = step(Spacing::BASE.s6);
-const SHEET_LABEL_GAP: f64 = step(Spacing::BASE.s1);
-const SHEET_INPUT_H: f64 = 38.0;
-const SHEET_FIELD_GAP: f64 = step(Spacing::BASE.s2);
-const SHEET_BODY_FOOTER_GAP: f64 = step(Spacing::BASE.s2);
-/// Library shelf rhythm: chips beside each other are siblings (`s2` on the
-/// dense shelf), the album chip row keeps `s3` above the filter chips, the
-/// filter row keeps `s2` above the grid, and the phone's album actions keep
-/// `s2` below the filters and above the grid.
-const LIB_CHIP_GAP: f64 = step(Spacing::BASE.s2);
-const LIB_ROW_GAP: f64 = step(Spacing::BASE.s3);
-const LIB_ROW_GAP_TIGHT: f64 = step(Spacing::BASE.s2);
-
-/// The rest face of a neutral control that sits on `ground`: one control
-/// hairline (`HAIRLINE_ALPHA`) composited over that ground, so the face is a
-/// measured lift off whatever it is painted on — on a `raised` card footer or
-/// sheet, where `Colors::lift(1.0)` would resolve to the ground itself and
-/// the face would vanish into it. Its edge then derives from this face via
-/// [`surface::card`].
-const SHEET_BUTTON_H: f64 = 44.0;
 const RETAINED_CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
-/// Button height. Deliberately shorter than the bar so the controls sit in
-/// the strip rather than filling it edge to edge.
-const BTN_H: f32 = 34.0;
-
-/// The shared `Button` face paints its label at this renderer-relative size
-/// (`Button::measure`), and the renderer applies the accessibility text scale
-/// plus the default `TextStyle` line height. The toolbar capsules and the
-/// status band keep their authored 1× heights until that measured line no
-/// longer fits, then grow just enough to contain it — so 200% labels stop
-/// colliding with the capsule edge while 1× density is untouched.
-/// (Alignment review 2026-09-16; kept local to this file because the toolbar
-/// is sized in `build_layout`, which sees the theme but no renderer.)
-const BUTTON_LABEL_SIZE: f32 = 14.0;
-const STATUS_TEXT_SIZE: f32 = 13.0;
-const BTN_PAD_Y: f32 = 8.0;
-const STATUS_PAD_Y: f32 = 4.0;
-
-/// Line height the renderer will give `size` at `text_scale` — the default
-/// `TextStyle` leading on the scaled size, not a local copy of that factor.
-fn line_h(size: f32, text_scale: f32) -> f32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a line height in logical px fits f32 exactly as the renderer reports it"
-    )]
-    let line = ui::text_metrics::line_height_px(size, text_scale) as f32;
-    line
-}
-
-/// Toolbar capsule height at `text_scale`: the authored [`BTN_H`] at 1×.
-fn btn_h(text_scale: f32) -> f32 {
-    BTN_H.max(line_h(BUTTON_LABEL_SIZE, text_scale) + 2.0 * BTN_PAD_Y)
-}
-
-/// Status band height at `text_scale`: the authored `BAR_H * 0.6` at 1×, and
-/// tall enough to contain the filename line at any scale (plan task 19).
-fn status_h(text_scale: f32) -> f32 {
-    (BAR_H * 0.6).max(line_h(STATUS_TEXT_SIZE, text_scale) + 2.0 * STATUS_PAD_Y)
-}
-
 /// A library card's action row: Details on the left, remove and favourite on
-/// the right, all inset [`CARD_ACTION_EDGE_INSET`] from the card's edges.
+/// the right, inside the card's lower edge.
 ///
 /// This is the *one* description of that row. `draw_library` paints these
 /// rects, `handle_event` hit-tests them, `accessibility_tree` exports them and
-/// `library_card_action_rects` hands them to tests — four call sites that used
-/// to carry their own copies of the arithmetic (and the right-hand cluster ran
-/// flush to `card.x1`, 5 px from the edge against Details' 12).
+/// `library_card_action_rects` hands them to tests.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CardActions {
     details: Rect,
@@ -157,58 +74,21 @@ struct CardActions {
     favorite: Rect,
 }
 
-const CARD_ACTION_EDGE_INSET: f64 = 8.0;
-const CARD_ACTION_ROW_H: f64 = 44.0;
-const CARD_ACTION_CONTROL_W: f64 = 44.0;
-
-fn card_action_controls(card: Rect) -> CardActions {
-    let action_y = card.y1 - CARD_ACTION_ROW_H;
-    let favorite = Rect::new(
-        card.x1 - CARD_ACTION_EDGE_INSET - CARD_ACTION_CONTROL_W,
-        action_y,
-        card.x1 - CARD_ACTION_EDGE_INSET,
-        card.y1,
-    );
-    let remove = Rect::new(
-        favorite.x0 - CARD_ACTION_CONTROL_W,
-        action_y,
-        favorite.x0,
-        card.y1,
-    );
-    let details = Rect::new(
-        card.x0 + CARD_ACTION_EDGE_INSET,
-        action_y,
-        (card.x0 + 108.0).min(remove.x0),
-        card.y1,
-    );
+/// The three hover actions of a timeline photograph, each a pointer target
+/// inset `s2` from the photograph's lower edge.
+fn card_action_controls(card: Rect, theme: &Theme) -> CardActions {
+    let inset = f64::from(theme.tokens.spacing.s2);
+    let side = f64::from(theme.tokens.metrics.min_pointer_target);
+    let y0 = card.y1 - inset - side;
+    let favorite = Rect::new(card.x1 - inset - side, y0, card.x1 - inset, y0 + side);
+    let remove = Rect::new(favorite.x0 - side, y0, favorite.x0, y0 + side);
+    let details = Rect::new(card.x0 + inset, y0, card.x0 + inset + side, y0 + side);
     CardActions {
         details,
         remove,
         favorite,
     }
 }
-
-/// Per-character label width used to size a button in `build_layout`, which
-/// gets a [`Theme`] but no [`TextRenderer`] to shape text with.
-///
-/// An **upper bound**, not an average. The shared [`ui::widget::Toolbar`]
-/// estimates 7.0 for the same job, which is too tight for this one: at 14 px
-/// Medium, "Open" shapes to 36.5 px — 9.13 a character — so a 7.0 budget left
-/// the label 8.5 px wider than the button drawn around it, and `Button::paint`
-/// centres the cluster, so it spilled out of both ends onto its neighbours.
-/// `toolbar_labels_fit_inside_the_buttons_they_are_sized_for` in
-/// `tests/end_to_end.rs` shapes the real glyphs and holds this bound.
-pub const APPROX_CHAR_W: f32 = 10.0;
-
-/// Glyph box, and the gap to a label beside it. `Button::paint` derives the
-/// icon from the button height as `(h - 14).clamp(12, 22)`, which at
-/// [`BTN_H`] is exactly this.
-const ICON_W: f32 = BTN_H - 14.0;
-const ICON_GAP: f32 = 6.0;
-/// Padding either side of an icon-and-label cluster.
-const LABEL_PAD_X: f32 = 12.0;
-/// Gap between adjacent buttons.
-const BTN_GAP: f32 = 6.0;
 
 /// Coarse, bundled coastlines for the private/offline Places overview. These
 /// are intentionally only continental silhouettes: they add orientation but
@@ -286,19 +166,11 @@ const OFFLINE_WORLD_LANDMASSES: &[&[(f64, f64)]] = &[
         (-63.0, -180.0),
     ],
 ];
-/// Horizontal room a group separator occupies, rule included.
-const SEP_W: f32 = 17.0;
-
-/// Breathing room between the photograph and the chrome above and below it.
-/// Without it a contain-fit image whose limiting axis is the height butts
-/// straight against the toolbar rule and looks wedged under it.
-const CANVAS_INSET: f32 = 10.0;
-
 /// Library previews are recognition aids, never an alternate full-resolution
 /// image cache. At most four in flight on the shared preview pipeline's single
 /// worker keeps a hostile library from occupying a core or retaining unbounded
 /// decoded pixels.
-const THUMBNAIL_SIZE: thumbnail::ThumbSize = thumbnail::ThumbSize::new(320, 180);
+const THUMBNAIL_SIZE: thumbnail::ThumbSize = thumbnail::ThumbSize::new(480, 480);
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
 const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
 /// A receipt must not retain an unbounded directory's diagnostics. The total
@@ -314,134 +186,20 @@ const LIBRARY_PAGE_SIZE: usize = 24;
 /// than a prettier name for truncation.
 const COLLECTION_PAGE_SIZE: usize = 4;
 
-/// A four-column shelf is only useful while each photograph remains a
-/// recognisable, comfortably targetable card. At tablet widths a two-column
-/// shelf works well; below this a single card preserves independent Details,
-/// favourite, and removal targets at the 44px touch minimum.
-const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
+/// Target heights of a timeline row at each density step, in lines of body
+/// text so they grow with the text scale: spacious (0) to compact (4).
+const TIMELINE_ROW_LINES: [f64; 5] = [15.0, 11.5, 9.0, 7.0, 5.5];
 
-const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
-/// The full masthead needs room for destinations, density and selection.
-/// Tablets retain photo density but use the compact masthead below this width.
-const LIBRARY_DESKTOP_MASTHEAD_MIN_W: f64 = 960.0;
-/// Presentation-only density for the chronological library.  It is deliberately
-/// pure: a pinch and the visible +/- buttons must land on the same geometry.
-/// The lower bound protects the 44 px card actions; the upper bound keeps a
-/// photograph recognisable rather than turning the timeline into a file list.
-pub fn timeline_column_count(width: f64, density: u8, large_text: bool) -> usize {
-    if large_text && width < 620.0 {
-        return 1;
-    }
-    let base = if width < LIBRARY_ONE_COLUMN_MAX_W {
-        1
-    } else if width < 720.0 {
-        2
-    } else if width < 1_080.0 {
-        3
-    } else {
-        4
-    };
-    let density = usize::from(density.min(4));
-    let maximum = if large_text || width < LIBRARY_TWO_COLUMN_MAX_W {
-        // A phone and compact tablet need real card footers, not a density
-        // mode that turns the timeline into horizontally clipped glyphs.
-        // Pinch/zoom still adjusts the spaciousness of the same one/two
-        // columns through row geometry and preserves the scroll anchor.
-        2
-    } else if width >= 1_440.0 {
-        6
-    } else {
-        5
-    };
-    (base + density).min(maximum).max(1)
-}
-
-/// Bounded virtual window for a row of a long chronological collection.
-/// Keeping this independent of painting prevents a large library from being
-/// accidentally decoded or exposed to accessibility as one giant surface.
-pub fn timeline_virtual_range(
-    total: usize,
-    first_row: usize,
-    rows: usize,
-    columns: usize,
-) -> std::ops::Range<usize> {
-    let columns = columns.max(1);
-    let start = first_row.saturating_mul(columns).min(total);
-    let end = start
-        .saturating_add(rows.saturating_add(2).saturating_mul(columns))
-        .min(total);
-    start..end
-}
-
-/// Measured rows for the compact library masthead.  Compact and 200% text
-/// share this source of truth so the count, selection affordance, density,
-/// collection rail, and first date never occupy the same vertical space.
-///
-/// Text is painted on a baseline, so the row bounds deliberately include a
-/// little extra leading rather than treating the baseline as the row's top.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CompactHeaderGeometry {
-    title_y: f64,
-    count_y: f64,
-    controls: Rect,
-    albums_y: f64,
-    album_actions: Rect,
-    timeline_y: f64,
-}
-
-fn compact_library_header_geometry(
-    bounds: Rect,
-    large_text: bool,
-    has_albums: bool,
-) -> CompactHeaderGeometry {
-    let top = bounds.y0 + f64::from(PAD);
-    if large_text {
-        let controls_y = top + 68.0;
-        let albums_y = controls_y + 56.0;
-        let actions_y = albums_y + if has_albums { 54.0 } else { 0.0 } + 10.0;
-        let album_actions = Rect::new(
-            bounds.x0 + f64::from(PAD),
-            actions_y,
-            bounds.x1 - f64::from(PAD),
-            actions_y + 44.0,
-        );
-        CompactHeaderGeometry {
-            title_y: top,
-            // Keep this deliberately short at 200%; a wrapped count makes
-            // the next explicit controls row impossible to reason about.
-            count_y: top + 34.0,
-            controls: Rect::new(
-                bounds.x0 + f64::from(PAD),
-                controls_y,
-                bounds.x0 + f64::from(PAD) + 142.0,
-                controls_y + 44.0,
-            ),
-            albums_y,
-            album_actions,
-            timeline_y: album_actions.y1 + 10.0,
-        }
-    } else {
-        // A compact library still needs one quiet line of context beneath its
-        // title.  Without it, the icon-only density controls read as an
-        // unrelated toolbar and a small library has no indication that its
-        // chronology is complete.  Give the count its own baseline rather
-        // than squeezing it into the title/control row.
-        let count_y = top + 26.0;
-        let albums_y = top + 50.0;
-        CompactHeaderGeometry {
-            title_y: top,
-            count_y,
-            controls: Rect::new(
-                bounds.x1 - 118.0,
-                bounds.y0 + 8.0,
-                bounds.x1 - f64::from(PAD),
-                bounds.y0 + 44.0,
-            ),
-            albums_y,
-            album_actions: Rect::ZERO,
-            timeline_y: albums_y + if has_albums { 38.0 } else { 0.0 } + 8.0,
-        }
-    }
+/// The target height of a justified timeline row at `density` under
+/// `theme`. Rows that fill the width are scaled from it; the photographs keep
+/// their own aspect ratios.
+fn timeline_row_height(theme: &Theme, density: u8) -> f64 {
+    let line = f64::from(theme.text(ui::TextRole::Body).line_height_px());
+    let lines = TIMELINE_ROW_LINES
+        .get(usize::from(density))
+        .copied()
+        .unwrap_or(9.0);
+    (line * lines).round()
 }
 
 struct ThumbnailResult {
@@ -663,7 +421,7 @@ fn thumbnail_request(image: &OpenImage, content: &ContentStore) -> thumbnail::Th
     }
 }
 
-/// One toolbar affordance. Buttons post their intent here rather than
+/// One header command. Commands post their intent here rather than
 /// mutating the document from inside a closure, because the document is not
 /// reachable from a `FnMut()` — it arrives in `handle_event`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -677,18 +435,17 @@ enum Hit {
     Copy,
     Share,
     Save,
-    More,
+    Select,
+    NewAlbum,
+    EditAlbum,
+    Smaller,
+    Larger,
+    PlacesList,
+    PlacesZoomIn,
+    PlacesZoomOut,
+    Selection(SelectionHit),
+    Search,
 }
-
-/// Order is stable for both the compact popup's keyboard traversal and its
-/// semantic menu. The commands themselves remain the normal toolbar actions.
-const COMPACT_MORE_ENTRIES: [Hit; 5] = [
-    Hit::CropToView,
-    Hit::Reset,
-    Hit::Copy,
-    Hit::Share,
-    Hit::Save,
-];
 
 /// Controls inside the in-grid album editor. They are intentionally a small
 /// local presentation state machine; every durable outcome is still one
@@ -696,9 +453,6 @@ const COMPACT_MORE_ENTRIES: [Hit; 5] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AlbumEditorHit {
     New,
-    Edit,
-    PreviousPage,
-    NextPage,
     Save,
     Cancel,
     Delete,
@@ -750,12 +504,6 @@ enum SelectionHit {
     Done,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TimelineHit {
-    ZoomOut,
-    ZoomIn,
-}
-
 /// The library's three primary browse destinations. This is presentation-only
 /// and deliberately separated from durable albums/metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -774,14 +522,6 @@ struct PlaceItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PlacesHit {
-    Timeline,
-    Albums,
-    People,
-    Places,
-    Analysis,
-    ToggleList,
-    ZoomIn,
-    ZoomOut,
     /// A canonical place key, never a representative photo id.  A marker is
     /// a collection affordance and must not silently choose one photo from it.
     Place(String),
@@ -840,6 +580,35 @@ struct PeopleControl {
     label: String,
     bounds: Rect,
     button: Button,
+    /// The control's width as last measured in paint; the next layout
+    /// places it with this.
+    width: f64,
+}
+
+impl PeopleControl {
+    /// A person or a suggestion is opened by its card, not by a button.
+    fn is_card(&self) -> bool {
+        matches!(
+            self.intent,
+            PeopleIntent::OpenApproved(_) | PeopleIntent::OpenSuggestion(_)
+        )
+    }
+}
+
+/// Where the People surface's text and photographs land, computed with its
+/// controls so paint and hit-testing agree.
+#[derive(Clone, Debug, Default)]
+struct PeopleLayout {
+    recognition_heading: Option<Point>,
+    recognition_text: Rect,
+    people_heading: Option<Point>,
+    people_empty: Option<Rect>,
+    suggestions_heading: Option<Point>,
+    suggestions_empty: Option<Rect>,
+    detail_photos: Vec<Rect>,
+    detail_title: Option<Point>,
+    detail_text: Rect,
+    name_label: Option<Point>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -860,17 +629,9 @@ const SELECTION_ALBUMS_PER_PAGE: usize = 6;
 #[derive(Clone)]
 struct LibraryItem {
     id: String,
-    thumbnail_key: String,
     name: String,
     favorite: bool,
     captured_at: String,
-}
-
-/// Presentation-only geometry for a stable justified row.
-#[derive(Clone, Copy, Debug)]
-struct TimelineItemLayout {
-    width: f64,
-    height: f64,
 }
 
 #[derive(Clone)]
@@ -886,23 +647,6 @@ struct MetadataFilterCard {
     bounds: Rect,
 }
 
-/// How a toolbar item presents itself.
-///
-/// An [`Face::IconOnly`] button is not a mute one: the label rides along as
-/// the tooltip, which [`ui::widget::Button`] also adopts as the accessible
-/// name, so the glyph stays reachable by pointer-dwell and by screen reader.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Face {
-    /// Glyph and words together.
-    Labelled,
-    /// A deliberately wide labelled overflow trigger used only for the
-    /// large-text compact toolbar.  It keeps the word “More” visible instead
-    /// of asking a pointer user to infer a horizontal-ellipsis glyph.
-    LargeOverflow,
-    /// Glyph alone.
-    IconOnly,
-}
-
 /// What the canvas can honestly render right now. A shared document can name
 /// an image before this device has received its content, so "no pixels yet"
 /// is distinct from both an empty library and corrupt local bytes.
@@ -913,175 +657,6 @@ enum CanvasState {
     Loading,
     Error,
     Ready,
-}
-
-/// A slot in the toolbar strip, in painting order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Slot {
-    /// Index into [`PhotosApp::buttons`].
-    Item(usize),
-    /// A hairline dividing two groups.
-    Separator,
-    /// Greedy gap: soaks the leftover width so what follows sits hard right.
-    Spacer,
-}
-
-/// The toolbar, in order: what opens a file, what adjusts it, what gets the
-/// result out.
-///
-/// The four adjusters are glyph-only at every width. They are the operations
-/// whose icons are unambiguous, and spelling all seven out is what pushed the
-/// strip to a fixed 912 px — wider than a half-tiled window, which silently
-/// clipped Save off the right-hand edge.
-///
-/// Crop and Save reuse the closest shared semantic glyphs (`Scissors` and
-/// `Download`). Rotation uses distinct clockwise/counter-clockwise glyphs so
-/// icon-only compact controls remain distinguishable without a tooltip.
-const TOOLBAR: &[(Hit, &str, Icon, Face)] = &[
-    (Hit::Open, "photos-open", Icon::Folder, Face::Labelled),
-    (Hit::Library, "photos-library", Icon::Image, Face::Labelled),
-    (
-        Hit::RotateLeft,
-        "photos-rotate-left",
-        Icon::RotateCcw,
-        Face::IconOnly,
-    ),
-    (
-        Hit::RotateRight,
-        "photos-rotate-right",
-        Icon::RotateCw,
-        Face::IconOnly,
-    ),
-    (
-        Hit::CropToView,
-        "photos-crop",
-        Icon::Scissors,
-        Face::IconOnly,
-    ),
-    (Hit::Reset, "photos-reset", Icon::Refresh, Face::IconOnly),
-    (Hit::Copy, "photos-copy", Icon::Copy, Face::Labelled),
-    (Hit::Share, "photos-share", Icon::Send, Face::Labelled),
-    (Hit::Save, "photos-save", Icon::Download, Face::Labelled),
-    (
-        Hit::More,
-        "photos-more",
-        Icon::MoreHorizontal,
-        Face::Labelled,
-    ),
-];
-
-/// The strip's shape: Open, a rule, the adjusters, then everything that gets
-/// the photograph out, pushed to the trailing edge.
-const SLOTS: &[Slot] = &[
-    Slot::Item(0),
-    Slot::Item(1),
-    Slot::Separator,
-    Slot::Item(2),
-    Slot::Item(3),
-    Slot::Item(4),
-    Slot::Item(5),
-    Slot::Spacer,
-    Slot::Item(6),
-    Slot::Item(7),
-    Slot::Item(8),
-];
-
-/// Phone chrome keeps the two navigation verbs and the two fast rotations
-/// visible; less-frequent destructive/export operations live in an explicit
-/// labeled More menu rather than becoming an indistinguishable icon run.
-const COMPACT_SLOTS: &[Slot] = &[
-    Slot::Item(0),
-    Slot::Item(1),
-    // At phone width the labelled Library and More controls already create
-    // the useful groups; dropping the extra rule buys a real 24 px safety
-    // margin, so neither edge control is clipped at 390 px.
-    Slot::Item(2),
-    Slot::Item(3),
-    Slot::Spacer,
-    Slot::Item(9),
-];
-
-/// Width a button needs to show `face` with `label`.
-/// Width of one toolbar item whose capsule is `btn_h` tall ([`btn_h`] at the
-/// current text scale; [`BTN_H`] at 1×). An icon-only item is square.
-fn item_width(face: Face, label: &str, btn_h: f32) -> f32 {
-    match face {
-        Face::IconOnly => btn_h,
-        Face::Labelled => {
-            let text = label.chars().count() as f32 * APPROX_CHAR_W;
-            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(btn_h)
-        }
-        // The normal estimate is calibrated for 100% text.  At the supported
-        // 200% screenshot scale the overflow label needs a real word-sized
-        // slot, while every other command is represented by an accessible
-        // icon in the compact menu.
-        Face::LargeOverflow => {
-            let text = label.chars().count() as f32 * APPROX_CHAR_W * 2.0;
-            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(btn_h)
-        }
-    }
-}
-
-/// Width the whole strip needs, `faces` giving each item's presentation.
-///
-/// Exposed so a test can assert the strip fits a window rather than
-/// discovering it does not by finding Save missing from a screenshot.
-pub fn toolbar_width(faces: &[Face]) -> f32 {
-    toolbar_width_at(faces, BTN_H)
-}
-
-/// [`toolbar_width`] for capsules `btn_h` tall — the height `refit_toolbar`
-/// builds the buttons with, so the fit decision uses the same widths the strip
-/// will actually lay out at the theme's text scale.
-fn toolbar_width_at(faces: &[Face], btn_h: f32) -> f32 {
-    let mut w = PAD * 2.0;
-    for (i, slot) in SLOTS.iter().enumerate() {
-        if i > 0 {
-            w += BTN_GAP;
-        }
-        w += match *slot {
-            // Unreachable: `faces` and `TOOLBAR` are always built the same
-            // length, one entry per `SLOTS::Item` index.
-            Slot::Item(n) => match (faces.get(n), TOOLBAR.get(n)) {
-                (Some(&face), Some(item)) => item_width(face, &tr(item.1), btn_h),
-                _ => 0.0,
-            },
-            Slot::Separator => SEP_W,
-            Slot::Spacer => 0.0,
-        };
-    }
-    w
-}
-
-/// Each item's presentation at a given strip width, for capsules `btn_h` tall.
-///
-/// The labelled items give up their words rather than the strip giving up an
-/// item: a control that has shrunk to its glyph is still reachable, one that
-/// has fallen off the edge is not.
-fn faces_for_width(width: f32, btn_h: f32) -> Vec<Face> {
-    let roomy: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
-    // Width 0 is the first frame, before a layout has happened. Assume room;
-    // the next frame corrects it with a real measurement.
-    if width <= 0.0 || toolbar_width_at(&roomy, btn_h) <= width {
-        return roomy;
-    }
-    if width < 600.0 {
-        return TOOLBAR
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                // Open keeps its tooltip and accessible name when compact;
-                // spending that width on the explicit More label is the
-                // clearer trade on a 390 px phone.
-                if index == 9 || (width >= 380.0 && index == 1) {
-                    Face::Labelled
-                } else {
-                    Face::IconOnly
-                }
-            })
-            .collect();
-    }
-    TOOLBAR.iter().map(|_| Face::IconOnly).collect()
 }
 
 /// Authored content observed by local transient work, excluding operational metadata.
@@ -1122,25 +697,12 @@ struct Rendered {
 #[derive(Clone, Debug)]
 struct ViewerDetails {
     name: String,
-    dimensions: String,
-    edited: bool,
-    favorite: bool,
     description: Option<String>,
     captured_at: Option<String>,
     place: Option<String>,
     people: Vec<String>,
     tags: Vec<String>,
     folder: Option<String>,
-}
-
-fn viewer_copy(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let clipped: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{clipped}…")
-    } else {
-        clipped
-    }
 }
 
 #[allow(
@@ -1168,31 +730,21 @@ pub struct PhotosApp {
     /// Bounded presentation projection for the open-view information card.
     /// It is refreshed from the document and never written back from paint.
     viewer_details: Option<ViewerDetails>,
-    buttons: Vec<(Hit, Button)>,
+    /// The sidebar, the header row and the status bar.
+    chrome: chrome::Chrome,
+    /// The theme of the last layout, for geometry read outside a paint
+    /// (hit-testing and accessibility bounds).
+    layout_theme: Theme,
     pending: Rc<Cell<Option<Hit>>>,
-    /// Where the last export went, or why it failed. Shown in the status line
-    /// so an action is never silent.
+    /// Where the last export went, or why it failed. Shown once in the status
+    /// bubble so an action is never silent.
     notice: Option<String>,
-    /// The status line, recomputed in `sync` — `draw` has no document.
-    status: String,
+    status_bubble: ui::StatusBubble,
+    /// The empty state's one action, where it was painted.
+    empty_action_rect: Option<Rect>,
     rect: Rect,
-    toolbar_rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
-    /// Where each group rule landed, filled in by `apply_layout` so `draw`
-    /// paints them without re-deriving the strip's geometry.
-    separator_rects: Vec<Rect>,
-    /// Presentation of each toolbar item at the width last laid out.
-    faces: Vec<Face>,
-    /// Kept local: text preference changes presentation, never document
-    /// contents or another collaborator's toolbar.
-    large_text_toolbar: bool,
-    /// Capsule height the toolbar was last built for ([`btn_h`] at the
-    /// theme's text scale). A change rebuilds the strip like a face change.
-    toolbar_btn_h: f32,
-    compact_more_open: bool,
-    compact_more_focus: usize,
-    compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
     /// The chooser that delivers chosen files' contents, where files have no
@@ -1250,6 +802,7 @@ pub struct PhotosApp {
     people_delete_confirm: bool,
     people_name_input: TextInput,
     people_name_bounds: Rect,
+    people_layout: PeopleLayout,
     people_controls: Vec<PeopleControl>,
     people_control_signature: String,
     people_pending: Rc<RefCell<Option<PeopleIntent>>>,
@@ -1269,19 +822,15 @@ pub struct PhotosApp {
     /// assistive technology should receive in one update.
     library_items: Vec<LibraryItem>,
     library_total: usize,
-    /// A local query over the current library projection.  The intelligence
-    /// owner can extend this predicate with OCR and descriptions without
-    /// changing the shared `SearchField` interaction contract.
-    library_search: SearchField,
-    library_query: String,
-    /// Incremental results from the retained full-text catalogue. A broad
-    /// query advances by one bounded candidate page per sync; paint and
-    /// filtering never scan or normalize the whole corpus.
-    library_query_indexed: String,
-    library_query_generation: u64,
-    library_query_cursor: Option<ui::search::SearchCursor>,
-    library_query_matches: HashSet<String>,
-    library_query_complete: bool,
+    /// Every photograph in the shared library, whatever the view filters.
+    library_photo_count: usize,
+    /// A screenshot scenario to seed into the document on the next sync, and
+    /// where its generated photographs go.
+    staged_scenario: Option<(String, std::path::PathBuf)>,
+    /// Set when the viewer is replaced. The layout tree points at it, so the
+    /// frame that built it must be rebuilt before anything measures through
+    /// the old pointer.
+    structure_dirty: bool,
     library_destination: LibraryDestination,
     places_list_mode: bool,
     places_viewport: crate::places::MapViewport,
@@ -1342,14 +891,6 @@ pub struct PhotosApp {
     /// are local navigation only; their stable semantic targets let keyboard
     /// and assistive-technology users reach the same bounded slice.
     library_page_hits: Vec<(bool, bool, Rect)>,
-    timeline_density_hits: Vec<(TimelineHit, Rect)>,
-    timeline_density_buttons: Vec<(TimelineHit, Button)>,
-    timeline_density_pending: Rc<Cell<Option<TimelineHit>>>,
-    /// Retained shared controls over the bespoke timeline surface.  The
-    /// date/photo canvas owns its rhythm; header actions still use toolkit
-    /// button states, focus treatment, and accessible names.
-    library_select_button: Button,
-    library_album_buttons: Vec<(AlbumEditorHit, Button)>,
     /// Number of visual density steps, from spacious (0) to compact (4).
     /// This remains local UI state: collaborators should never change a
     /// person's preferred thumbnail size.
@@ -1382,8 +923,6 @@ pub struct PhotosApp {
     album_editor_hits: Vec<(AlbumEditorHit, Rect)>,
     /// Shared, retained controls for moving through the local library shelf
     /// while selecting album membership. They never write the document.
-    album_page_buttons: Vec<(AlbumEditorHit, Button)>,
-    album_page_pending: Rc<Cell<Option<AlbumEditorHit>>>,
     metadata_editor: bool,
     metadata_editor_ids: Vec<String>,
     metadata_folder_input: TextInput,
@@ -1992,14 +1531,6 @@ impl PhotosApp {
         }
     }
 
-    fn toolbar_slots(&self) -> &'static [Slot] {
-        if self.large_text_toolbar || (self.rect.width() > 0.0 && self.rect.width() < 600.0) {
-            COMPACT_SLOTS
-        } else {
-            SLOTS
-        }
-    }
-
     /// An app whose content store lives in memory with it: tests and offscreen
     /// shots. The runtime uses [`Self::new_persistent`].
     pub fn new() -> Self {
@@ -2026,21 +1557,16 @@ impl PhotosApp {
         // tests and offscreen shots must not write the user's cache.
         let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
-        let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
         let metadata_editor_pending: Rc<Cell<Option<MetadataEditorHit>>> = Rc::new(Cell::new(None));
-        let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
         let collection_page_pending: Rc<Cell<Option<CollectionPageHit>>> = Rc::new(Cell::new(None));
         let people_pending = Rc::new(RefCell::new(None));
         let library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>> =
             Rc::new(Cell::new(None));
         let directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>> =
             Rc::new(Cell::new(None));
-        let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
-        let mut buttons = Vec::new();
-        for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
-            // 1× capsules; the first `build_layout` refits them to the theme.
-            buttons.push((*hit, build_button(*hit, key, *icon, *face, BTN_H, &pending)));
-        }
+        let chrome = chrome::Chrome::new(&pending);
+        let search_provider = crate::search::PhotosSearchProvider::empty();
+        search_provider.set_content(content.clone());
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
             actions: crate::resource::ActionSink::default(),
@@ -2055,21 +1581,15 @@ impl PhotosApp {
             rendered: None,
             viewer: None,
             viewer_details: None,
-            buttons,
+            chrome,
+            layout_theme: Theme::dark(),
             pending,
             notice: None,
-            status: String::new(),
+            status_bubble: ui::StatusBubble::new(),
+            empty_action_rect: None,
             rect: Rect::ZERO,
-            toolbar_rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
-            separator_rects: Vec::new(),
-            faces,
-            large_text_toolbar: false,
-            toolbar_btn_h: BTN_H,
-            compact_more_open: false,
-            compact_more_focus: 0,
-            compact_more_hits: Vec::new(),
             picker: None,
             contents_picker: None,
             directory_picker: None,
@@ -2115,26 +1635,21 @@ impl PhotosApp {
                 .with_enter_submits(true)
                 .with_placeholder("Name this person"),
             people_name_bounds: Rect::ZERO,
+            people_layout: PeopleLayout::default(),
             people_controls: Vec::new(),
             people_control_signature: String::new(),
             people_pending,
             canvas_state: CanvasState::Empty,
-            search_provider: crate::search::PhotosSearchProvider::empty(),
+            search_provider,
             search_heads: Vec::new(),
             search_refresh_error: None,
             #[cfg(test)]
             force_search_refresh_error: false,
             library_items: Vec::new(),
             library_total: 0,
-            library_search: SearchField::new()
-                .with_id("photos-library-search")
-                .with_placeholder("Search photos, people, places, text"),
-            library_query: String::new(),
-            library_query_indexed: String::new(),
-            library_query_generation: 0,
-            library_query_cursor: None,
-            library_query_matches: HashSet::new(),
-            library_query_complete: true,
+            library_photo_count: 0,
+            staged_scenario: None,
+            structure_dirty: false,
             library_destination: LibraryDestination::Timeline,
             places_list_mode: false,
             places_viewport: crate::places::MapViewport::default(),
@@ -2168,11 +1683,6 @@ impl PhotosApp {
             library_tags: Vec::new(),
             metadata_filter_cards: Vec::new(),
             library_page_hits: Vec::new(),
-            timeline_density_hits: Vec::new(),
-            timeline_density_buttons: build_timeline_density_buttons(&timeline_density_pending),
-            timeline_density_pending,
-            library_select_button: build_library_header_button("photos-library-select", "Select"),
-            library_album_buttons: build_library_album_buttons(),
             timeline_density: 1,
             timeline_scroll_y: 0.0,
             timeline_projection: TimelineProjection::default(),
@@ -2194,8 +1704,6 @@ impl PhotosApp {
             album_editor_focus: 0,
             album_editor_rect: Rect::ZERO,
             album_editor_hits: Vec::new(),
-            album_page_buttons: build_album_page_buttons(&album_page_pending),
-            album_page_pending,
             metadata_editor: false,
             metadata_editor_ids: Vec::new(),
             metadata_folder_input: TextInput::local()
@@ -2257,51 +1765,6 @@ impl PhotosApp {
         }
     }
 
-    /// Rebuild the strip for `width` if the room available has changed which
-    /// items can afford their labels.
-    ///
-    /// Rebuilding rather than relabelling in place because a `Button` owns its
-    /// label for its lifetime. The cost lands only on a resize that crosses
-    /// the threshold, and it carries the enabled state across so a rebuild
-    /// never re-enables a control the document says is unavailable.
-    fn refit_toolbar(&mut self, width: f32, btn_h: f32) {
-        let want = if self.large_text_toolbar {
-            TOOLBAR
-                .iter()
-                .enumerate()
-                .map(|(index, _)| {
-                    if index == 9 {
-                        Face::LargeOverflow
-                    } else {
-                        Face::IconOnly
-                    }
-                })
-                .collect()
-        } else {
-            faces_for_width(width, btn_h)
-        };
-        // Both heights come from the same pure `btn_h()` on the theme's scale,
-        // so exact comparison is the honest one.
-        #[allow(
-            clippy::float_cmp,
-            reason = "outputs of one pure function on one input"
-        )]
-        if want == self.faces && btn_h == self.toolbar_btn_h {
-            return;
-        }
-        let enabled: Vec<bool> = self.buttons.iter().map(|(_, b)| b.is_enabled()).collect();
-        self.buttons.clear();
-        for (((hit, key, icon, _), face), was_enabled) in
-            TOOLBAR.iter().zip(want.iter()).zip(enabled)
-        {
-            let mut button = build_button(*hit, key, *icon, *face, btn_h, &self.pending);
-            button.set_enabled(was_enabled);
-            self.buttons.push((*hit, button));
-        }
-        self.faces = want;
-        self.toolbar_btn_h = btn_h;
-    }
-
     /// Import `path` through the canonical durable action. The decoded source
     /// path remains only in this process; the action writes portable metadata
     /// and the staged content hash into the shared document.
@@ -2336,7 +1799,7 @@ impl PhotosApp {
                 self.original = Some((path.to_string(), img));
                 self.original_identity = Some(decode_key(&open.clone().portable()));
                 self.rendered = None;
-                self.viewer = None;
+                self.close_viewer();
                 self.original_decode_failed = None;
                 self.commit_library_action(
                     doc,
@@ -2375,36 +1838,46 @@ impl PhotosApp {
         self.canvas_rect
     }
 
-    /// The toolbar's rect.
+    /// The header row's rect.
     pub fn toolbar_rect(&self) -> Rect {
-        self.toolbar_rect
+        self.chrome.header
     }
 
-    /// The status line's rect.
+    /// The status bar's rect; zero height when it has nothing to show.
     pub fn status_rect(&self) -> Rect {
         self.status_rect
     }
 
-    /// Every toolbar control as `(accessible name, rect)`, in strip order.
-    ///
-    /// Exposed so a test can assert that each control is actually within the
-    /// window. `canvas_rect` staying inside the frame says nothing about the
-    /// strip above it, which is how a fixed-width toolbar came to push Save
-    /// off the right-hand edge of any window narrower than 912 px while every
-    /// geometry assertion still passed.
+    /// Every control of the header row as `(accessible name, rect)`, in
+    /// order: the back button while a photograph is open, the commands the
+    /// toolbar shows (and its More button when some moved there) and the
+    /// search launcher.
     pub fn toolbar_item_rects(&self) -> Vec<(String, Rect)> {
-        // Unreachable: `self.buttons` is always built one entry per `TOOLBAR`
-        // item, so every index here has a matching `TOOLBAR` entry.
-        self.buttons
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                self.toolbar_slots()
-                    .iter()
-                    .any(|slot| matches!(slot, Slot::Item(item) if *item == *index))
-            })
-            .filter_map(|(i, (_, b))| TOOLBAR.get(i).map(|item| (tr(item.1), b.get_rect())))
-            .collect()
+        let mut items = Vec::new();
+        if !self.library_mode {
+            items.push((tr("photos-library"), self.chrome.back.get_rect()));
+        }
+        if let Some(toolbar) = self.chrome.toolbar.accessibility() {
+            for node in toolbar.children {
+                if !matches!(node.role, Role::Button | Role::ToggleButton) {
+                    continue;
+                }
+                items.push((
+                    node.name.unwrap_or_default(),
+                    node.bounds
+                        .map_or(Rect::ZERO, ui::a11y::AccessBounds::to_rect),
+                ));
+            }
+        }
+        items.push((
+            self.chrome
+                .search
+                .accessibility()
+                .and_then(|node| node.name)
+                .unwrap_or_default(),
+            self.chrome.search.get_rect(),
+        ));
+        items
     }
 
     /// Measured library-card geometry for screenshot and interaction
@@ -2420,15 +1893,20 @@ impl PhotosApp {
                     .any(|(candidate, _)| candidate == id)
             })
             .map(|(_, card, _)| {
-                let actions = card_action_controls(*card);
+                let actions = card_action_controls(*card, &self.layout_theme);
                 (*card, actions.details, actions.remove, actions.favorite)
             })
             .collect()
     }
 
-    /// The status line as it currently reads.
-    pub fn status(&self) -> &str {
-        &self.status
+    /// The status bar as it currently reads.
+    pub fn status(&self) -> String {
+        [&self.chrome.status_left, &self.chrome.status_right]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Whether a photograph is loaded and rendered.
@@ -2498,7 +1976,8 @@ impl PhotosApp {
             })
             .collect();
         let signature = format!(
-            "{:?}|{}|{}|{}|{}|{:?}|{:?}",
+            "{}|{:?}|{}|{}|{}|{}|{:?}|{:?}",
+            self.people_page_size(),
             self.people_selection,
             self.people_merge_mode,
             self.people_show_hidden,
@@ -2517,18 +1996,23 @@ impl PhotosApp {
         self.people_controls.clear();
         let pending = Rc::clone(&self.people_pending);
         let recognition_enabled = self.people_controller.privacy().recognition_enabled;
+        let page_size = self.people_page_size();
         let mut push = |intent: PeopleIntent, label: String, primary: bool, danger: bool| {
-            let visible_label = match &intent {
-                PeopleIntent::OpenApproved(_) => "View photos",
-                PeopleIntent::OpenSuggestion(_) => "Review",
-                _ => label.as_str(),
-            };
             let button = Button::new(
                 &format!("photos-people-control-{}", self.people_controls.len()),
-                visible_label,
+                if matches!(intent, PeopleIntent::Back) {
+                    "People"
+                } else {
+                    label.as_str()
+                },
                 None,
             )
             .with_accessible_name(&label);
+            let button = if matches!(intent, PeopleIntent::Back) {
+                button.with_icon(Icon::ChevronLeft)
+            } else {
+                button
+            };
             let mut button = if matches!(
                 &intent,
                 PeopleIntent::Back
@@ -2546,40 +2030,40 @@ impl PhotosApp {
                 let queued = intent.clone();
                 let pending = Rc::clone(&pending);
                 button.on_effect(move || *pending.borrow_mut() = Some(queued.clone()))
-            }
-            .fill_width(44.0);
-            if primary || matches!(&intent, PeopleIntent::OpenSuggestion(_)) {
-                button = button.primary();
-            } else if danger {
-                button = button.danger();
-            } else if matches!(
-                &intent,
-                PeopleIntent::Back | PeopleIntent::ToggleHidden | PeopleIntent::DeleteLocalData
-            ) {
-                button = button.ghost();
+            };
+            if primary {
+                button = button.role(ButtonRole::Primary);
+            } else if danger
+                || matches!(
+                    &intent,
+                    PeopleIntent::DeleteLocalData | PeopleIntent::RejectSuggestion
+                )
+            {
+                button = button.role(ButtonRole::Destructive);
+            } else if matches!(&intent, PeopleIntent::Back | PeopleIntent::ToggleHidden) {
+                button = button.role(ButtonRole::Plain);
             }
             if matches!(intent, PeopleIntent::Scan) && !recognition_enabled {
                 button = button.with_enabled(false);
             }
+            let width = label.chars().count() as f64 * 8.0 + 32.0;
             self.people_controls.push(PeopleControl {
                 intent,
                 label,
                 bounds: Rect::ZERO,
                 button,
+                width,
             });
         };
 
-        push(
-            PeopleIntent::Back,
-            if self.people_selection.is_some() {
-                "Back to People"
-            } else {
-                "Back to Library"
-            }
-            .to_owned(),
-            false,
-            false,
-        );
+        if self.people_selection.is_some() {
+            push(
+                PeopleIntent::Back,
+                "Back to People".to_owned(),
+                false,
+                false,
+            );
+        }
         if self.people_selection.is_none() {
             let recognition_on = self.people_controller.privacy().recognition_enabled;
             push(
@@ -2608,20 +2092,14 @@ impl PhotosApp {
                     false,
                 );
             }
-            let page_size = if self.canvas_rect.width() < 760.0 {
-                2
-            } else {
-                8
-            };
             let start = self.people_review_page.saturating_mul(page_size);
             for person in self.people_approved.iter().skip(start).take(page_size) {
                 push(
                     PeopleIntent::OpenApproved(person.label.clone()),
                     format!(
-                        "{}  ·  {} photo{}",
+                        "{}, {}",
                         person.label,
-                        person.count(),
-                        if person.count() == 1 { "" } else { "s" }
+                        chrome::count_label(person.count(), "photo", "photos")
                     ),
                     false,
                     false,
@@ -2643,13 +2121,13 @@ impl PhotosApp {
                 })
                 .collect();
             for (id, name, count, hidden) in visible_clusters {
-                let state = if hidden { "hidden" } else { "review" };
+                let state = if hidden { "hidden" } else { "to review" };
                 push(
                     PeopleIntent::OpenSuggestion(id),
                     format!(
-                        "{}  ·  {count} photo{}  ·  {state}",
-                        name.unwrap_or_else(|| "Unnamed suggestion".to_owned()),
-                        if count == 1 { "" } else { "s" }
+                        "{}, {}, {state}",
+                        name.unwrap_or_else(|| "Suggested person".to_owned()),
+                        chrome::count_label(count, "photo", "photos")
                     ),
                     false,
                     false,
@@ -2660,7 +2138,7 @@ impl PhotosApp {
                 if self.people_show_hidden {
                     "Hide dismissed suggestions"
                 } else {
-                    "Review hidden suggestions"
+                    "Show hidden suggestions"
                 }
                 .to_owned(),
                 false,
@@ -2692,7 +2170,7 @@ impl PhotosApp {
                     PeopleIntent::DeleteLocalData
                 },
                 if self.people_delete_confirm {
-                    "Confirm deleting local face data"
+                    "Delete face data on this device"
                 } else {
                     "Delete local face data"
                 }
@@ -2746,7 +2224,7 @@ impl PhotosApp {
                                     cluster
                                         .display_name
                                         .clone()
-                                        .unwrap_or_else(|| "Unnamed suggestion".to_owned()),
+                                        .unwrap_or_else(|| "Suggested person".to_owned()),
                                 )
                             })
                             .collect();
@@ -2987,6 +2465,20 @@ impl PhotosApp {
         self.people_control_signature.clear();
     }
 
+    /// Drop the open photograph's viewer. The layout tree points at it, so
+    /// dropping one that existed asks for a fresh tree.
+    fn close_viewer(&mut self) {
+        if self.viewer.take().is_some() {
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Pose the app for a screenshot scenario: the document is seeded on
+    /// the next sync, when the capture's document is at hand.
+    pub fn stage_scenario(&mut self, scenario: &str, dir: &std::path::Path) {
+        self.staged_scenario = Some((scenario.to_owned(), dir.to_path_buf()));
+    }
+
     /// Reveal the bounded library grid.  Kept public for the deterministic
     /// offscreen gallery; ordinary interaction reaches it through the same
     /// toolbar button and semantic action as a user.
@@ -3082,13 +2574,8 @@ impl PhotosApp {
                     },
                 }
             }));
-        let width = (self.canvas_rect.width() - f64::from(PAD * 2.0) - 18.0).max(44.0);
-        self.timeline_projection.set_geometry(TimelineGeometry {
-            width,
-            target_height: 168.0,
-            gap: 16.0,
-            compact: self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W,
-        });
+        let geometry = self.timeline_geometry(&self.layout_theme.clone());
+        self.timeline_projection.set_geometry(geometry);
         self.timeline_scroll_y = self
             .timeline_projection
             .day_offset(target_day, self.timeline_viewport_height)
@@ -3833,7 +3320,10 @@ impl PhotosApp {
             self.metadata_place_input.set_text("");
             self.metadata_latitude_input.set_text("");
             self.metadata_longitude_input.set_text("");
-            self.metadata_location_map = crate::places::MapViewport::default();
+            self.metadata_location_map = crate::places::MapViewport {
+                zoom: crate::places::MIN_ZOOM,
+                ..crate::places::MapViewport::default()
+            };
             self.metadata_location_from_map = false;
         }
         for (input, mixed, ordinary) in [
@@ -4242,7 +3732,7 @@ impl PhotosApp {
     /// must stay available while the sheet is open: otherwise a phone-sized
     /// sheet can leave most of a large library impossible to include.
     fn library_page_step(&self) -> usize {
-        if self.large_text_toolbar && self.canvas_rect.width() < 620.0 {
+        if self.layout_theme.text_scale > 1.25 && self.canvas_rect.width() < 620.0 {
             if self.album_editor { 2 } else { 1 }
         } else {
             LIBRARY_PAGE_SIZE
@@ -4401,24 +3891,10 @@ impl PhotosApp {
         if !self.album_editor {
             return false;
         }
-        for (_, button) in &mut self.album_page_buttons {
-            let mut sink = None;
-            button.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    focus_target: &mut sink,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-        }
-        if let Some(hit) = self.album_page_pending.take() {
-            match hit {
-                AlbumEditorHit::PreviousPage => self.page_library(false),
-                AlbumEditorHit::NextPage => self.page_library(true),
-                _ => {}
-            }
-            *ctx.handled = true;
-            return true;
+        // The timeline beside the editor keeps scrolling: choosing photos
+        // means finding them.
+        if matches!(event, winit::event::WindowEvent::MouseWheel { .. }) {
+            return false;
         }
         let mut sink = None;
         self.album_name_input.handle_event(
@@ -4433,12 +3909,12 @@ impl PhotosApp {
         {
             match &key.logical_key {
                 Key::Named(NamedKey::PageDown) => {
-                    self.page_library(true);
+                    self.scroll_timeline_rows(3.0);
                     *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::PageUp) => {
-                    self.page_library(false);
+                    self.scroll_timeline_rows(-3.0);
                     *ctx.handled = true;
                     return true;
                 }
@@ -4524,7 +4000,7 @@ impl PhotosApp {
                         self.notice = Some("Press Delete album? again to keep photographs and delete only the album".to_owned());
                     }
                     AlbumEditorHit::ConfirmDelete => self.delete_active_album(ctx.state),
-                    _ => {}
+                    AlbumEditorHit::New => {}
                 }
                 *ctx.handled = true;
                 return true;
@@ -5049,12 +4525,9 @@ impl PhotosApp {
                 _ => false,
             }
         });
-        let (width, height) = open.edited_size(&edits);
+        let _ = edits;
         ViewerDetails {
             name: open.name.clone(),
-            dimensions: format!("{width} × {height}"),
-            edited: !edits.is_identity(),
-            favorite: photo.as_ref().is_some_and(|photo| photo.favorite),
             description: photo
                 .as_ref()
                 .and_then(|photo| photo.analysis.as_ref())
@@ -5083,7 +4556,7 @@ impl PhotosApp {
     fn refresh(&mut self, doc: &AutoCommit) {
         let Some(open) = PhotosDoc::image(doc) else {
             self.rendered = None;
-            self.viewer = None;
+            self.close_viewer();
             self.viewer_details = None;
             self.original = None;
             self.canvas_state = if self.notice.is_some() {
@@ -5104,7 +4577,7 @@ impl PhotosApp {
             if self.original_decode_failed.as_deref() == Some(&key) {
                 self.original = None;
                 self.rendered = None;
-                self.viewer = None;
+                self.close_viewer();
                 self.canvas_state = CanvasState::Error;
                 return;
             }
@@ -5116,7 +4589,7 @@ impl PhotosApp {
             } else {
                 self.original = None;
                 self.rendered = None;
-                self.viewer = None;
+                self.close_viewer();
                 if bytes.is_some() {
                     self.original_decode_failed = Some(key);
                     self.canvas_state = CanvasState::Error;
@@ -5146,6 +4619,7 @@ impl PhotosApp {
         // exactly what was framed, so showing it at zoom 1 is showing what was
         // asked for.
         self.viewer = Some(ImageViewer::new(image));
+        self.structure_dirty = true;
         self.canvas_state = CanvasState::Ready;
         self.rendered = Some(Rendered {
             identity,
@@ -5200,91 +4674,30 @@ impl PhotosApp {
                 let _ =
                     self.perform_effect(crate::actions::PhotosOperation::Save { path: None }, doc);
             }
-            Hit::More => {
-                self.compact_more_open = !self.compact_more_open;
-                self.compact_more_focus = 0;
+            Hit::Select => {
+                if self.selection_mode {
+                    self.finish_selection();
+                } else {
+                    self.begin_selection();
+                }
             }
+            Hit::NewAlbum => self.begin_new_album(doc),
+            Hit::EditAlbum => self.begin_edit_album(doc),
+            Hit::Smaller => {
+                self.adjust_timeline_density(true);
+            }
+            Hit::Larger => {
+                self.adjust_timeline_density(false);
+            }
+            Hit::PlacesList => self.places_list_mode = !self.places_list_mode,
+            Hit::PlacesZoomIn => self.zoom_places_by(1.0),
+            Hit::PlacesZoomOut => self.zoom_places_by(-1.0),
+            Hit::Selection(hit) => self.handle_selection_hit(hit, doc),
+            Hit::Search => self
+                .chrome
+                .search_opener
+                .open(ui::search::SearchRequest::this_app()),
         }
-    }
-
-    /// Synthetic semantics are necessary because Photos composes its toolbar
-    /// directly into the root layout instead of exposing it through
-    /// [`Widget::children`]. Keep the target based on the stable toolbar key,
-    /// not its visual index: the narrow layout changes labels, but an assistive
-    /// technology holding "Rotate right" must keep reaching that action.
-    fn toolbar_semantics(&self) -> AccessNode {
-        let visible: std::collections::HashSet<_> = self
-            .toolbar_slots()
-            .iter()
-            .filter_map(|slot| match slot {
-                Slot::Item(index) => Some(*index),
-                _ => None,
-            })
-            .collect();
-        let mut children: Vec<_> = self
-            .buttons
-            .iter()
-            .zip(TOOLBAR)
-            .enumerate()
-            .filter(|(index, _)| visible.contains(index))
-            .map(|(_, ((_, button), (_, key, _, _)))| {
-                AccessNode::new(Role::Button)
-                    .with_name(tr(key))
-                    .with_state(AccessState {
-                        focusable: button.is_focusable(),
-                        focused: button.is_focused(),
-                        disabled: !button.is_enabled(),
-                        ..Default::default()
-                    })
-                    .with_bounds(button.get_rect())
-                    .with_action_target(format!("photos:toolbar:{key}"))
-            })
-            .collect();
-        if self.compact_more_open && self.toolbar_slots() == COMPACT_SLOTS {
-            let menu_children = [
-                ("photos-crop", "photos-crop"),
-                ("photos-reset", "photos-reset"),
-                ("photos-copy", "photos-copy"),
-                ("photos-share", "photos-share"),
-                ("photos-save", "photos-save"),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(index, (target_key, label_key))| {
-                let menu_hit = COMPACT_MORE_ENTRIES.get(index).copied();
-                let disabled = TOOLBAR
-                    .iter()
-                    .position(|(_, key, _, _)| *key == target_key)
-                    .and_then(|index| self.buttons.get(index))
-                    .is_none_or(|(_, button)| !button.is_enabled());
-                AccessNode::new(Role::MenuItem)
-                    .with_name(tr(label_key))
-                    .with_state(AccessState {
-                        focusable: !disabled,
-                        focused: index == self.compact_more_focus,
-                        disabled,
-                        ..Default::default()
-                    })
-                    .with_bounds(
-                        self.compact_more_hits
-                            .iter()
-                            .find(|(hit, _)| Some(*hit) == menu_hit)
-                            .map_or(Rect::ZERO, |(_, bounds)| *bounds),
-                    )
-                    .with_action_target(format!("photos:toolbar:{target_key}"))
-            })
-            .collect();
-            children.push(
-                AccessNode::new(Role::Menu)
-                    .with_name(tr("photos-more"))
-                    .with_children(menu_children),
-            );
-        }
-        AccessNode::new(Role::Toolbar)
-            .with_name(tr("photos-tools"))
-            .with_bounds(self.toolbar_rect)
-            .with_hashed_key("photos:toolbar")
-            .with_children(children)
     }
 
     /// The canvas has no intrinsic source name — it is raw pixel data — so the
@@ -5342,55 +4755,11 @@ impl PhotosApp {
             }
             if !shared.is_empty() {
                 image_description.push_str(". ");
-                image_description.push_str(&tr("photos-shared-details"));
-                image_description.push_str(": ");
                 image_description.push_str(&shared.join(". "));
             }
         }
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
-            cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
-                let (name, target) = match hit {
-                    PlacesHit::Timeline => ("Timeline", "photos:library:timeline"),
-                    PlacesHit::Albums => ("Albums", "photos:library:albums"),
-                    PlacesHit::People => ("People", "photos:library:people"),
-                    PlacesHit::Places => ("Places", "photos:library:places"),
-                    PlacesHit::Analysis => ("Photo analysis", "photos:library:analysis"),
-                    PlacesHit::ToggleList
-                    | PlacesHit::ZoomIn
-                    | PlacesHit::ZoomOut
-                    | PlacesHit::Place(_)
-                    | PlacesHit::Photo(_) => return None,
-                };
-                Some(
-                    AccessNode::new(Role::RadioButton)
-                        .with_name(name)
-                        .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            checked: Some(match hit {
-                                PlacesHit::Timeline => {
-                                    self.library_destination == LibraryDestination::Timeline
-                                }
-                                PlacesHit::Albums => {
-                                    self.library_destination == LibraryDestination::Albums
-                                }
-                                PlacesHit::People => {
-                                    self.library_destination == LibraryDestination::People
-                                }
-                                PlacesHit::Places => {
-                                    self.library_destination == LibraryDestination::Places
-                                }
-                                PlacesHit::Analysis => {
-                                    self.library_destination == LibraryDestination::Analysis
-                                }
-                                _ => false,
-                            }),
-                            ..Default::default()
-                        })
-                        .with_action_target(target),
-                )
-            }));
             if self.library_destination == LibraryDestination::Analysis {
                 cards.extend(
                     self.library_analysis_buttons
@@ -5525,7 +4894,11 @@ impl PhotosApp {
                         .map(|(index, control)| {
                             AccessNode::new(Role::Button)
                                 .with_name(control.label.clone())
-                                .with_bounds(control.button.get_rect())
+                                .with_bounds(if control.is_card() {
+                                    control.bounds
+                                } else {
+                                    control.button.get_rect()
+                                })
                                 .with_state(AccessState {
                                     focusable: control.button.is_focusable(),
                                     focused: control.button.is_focused(),
@@ -5542,23 +4915,8 @@ impl PhotosApp {
                     .with_hashed_key("photos:people")
                     .with_children(cards)
             } else if self.library_destination == LibraryDestination::Places {
-                cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
+                cards.extend(self.places_hits.iter().map(|(hit, bounds)| {
                     let (name, target) = match hit {
-                        PlacesHit::Timeline
-                        | PlacesHit::Albums
-                        | PlacesHit::People
-                        | PlacesHit::Places
-                        | PlacesHit::Analysis => return None,
-                        PlacesHit::ToggleList => (
-                            if self.places_list_mode {
-                                "Show map"
-                            } else {
-                                "Show list"
-                            },
-                            "photos:places:toggle-list".to_owned(),
-                        ),
-                        PlacesHit::ZoomIn => ("Zoom in", "photos:places:zoom-in".to_owned()),
-                        PlacesHit::ZoomOut => ("Zoom out", "photos:places:zoom-out".to_owned()),
                         PlacesHit::Place(key) => {
                             ("Open place collection", format!("photos:places:open:{key}"))
                         }
@@ -5566,16 +4924,14 @@ impl PhotosApp {
                             ("Open photograph", format!("photos:places:photo:{id}"))
                         }
                     };
-                    Some(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
-                            .with_action_target(target),
-                    )
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        })
+                        .with_action_target(target)
                 }));
                 // These semantic controls intentionally share the same pure
                 // camera operation as keyboard arrows and pointer drag. They
@@ -5658,7 +5014,7 @@ impl PhotosApp {
                                     .with_action_target(open_target)
                             }];
                             if !self.album_editor && !self.selection_mode {
-                                let actions = card_action_controls(*bounds);
+                                let actions = card_action_controls(*bounds, &self.layout_theme);
                                 let favorite_target = format!("photos:library-favorite:{id}");
                                 children.push(
                                     AccessNode::new(Role::ToggleButton)
@@ -5780,29 +5136,6 @@ impl PhotosApp {
                             collection_page_access_node(*hit, *bounds, *enabled)
                         }),
                 );
-                for (hit, bounds) in &self.timeline_density_hits {
-                    let (name, target) = match hit {
-                        TimelineHit::ZoomOut => {
-                            ("Show fewer photographs", "photos:timeline:density-out")
-                        }
-                        TimelineHit::ZoomIn => {
-                            ("Show more photographs", "photos:timeline:density-in")
-                        }
-                    };
-                    cards.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_description(
-                                "Changes how many photographs appear in each timeline row",
-                            )
-                            .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
-                            .with_action_target(target),
-                    );
-                }
                 for (forward, enabled, bounds) in &self.library_page_hits {
                     cards.push(
                         AccessNode::new(Role::Button)
@@ -6077,31 +5410,6 @@ impl PhotosApp {
                             })
                             .with_hashed_key("photos:album-editor:name"),
                     );
-                    for (hit, button) in &self.album_page_buttons {
-                        let (name, target) = match hit {
-                            AlbumEditorHit::PreviousPage => (
-                                "Show previous photographs",
-                                "photos:album-editor:previous-page",
-                            ),
-                            AlbumEditorHit::NextPage => {
-                                ("Show next photographs", "photos:album-editor:next-page")
-                            }
-                            _ => continue,
-                        };
-                        cards.push(
-                            AccessNode::new(Role::Button)
-                                .with_name(name)
-                                .with_description(self.library_page_label())
-                                .with_bounds(button.get_rect())
-                                .with_state(AccessState {
-                                    focusable: button.is_enabled(),
-                                    focused: button.is_focused(),
-                                    disabled: !button.is_enabled(),
-                                    ..Default::default()
-                                })
-                                .with_action_target(target),
-                        );
-                    }
                     for (hit, bounds) in &self.album_editor_hits {
                         let (name, target) = match hit {
                             AlbumEditorHit::Save => ("Save album", "photos:album-editor:save"),
@@ -6115,10 +5423,7 @@ impl PhotosApp {
                                 "Confirm deleting album",
                                 "photos:album-editor:confirm-delete",
                             ),
-                            AlbumEditorHit::New
-                            | AlbumEditorHit::Edit
-                            | AlbumEditorHit::PreviousPage
-                            | AlbumEditorHit::NextPage => continue,
+                            AlbumEditorHit::New => continue,
                         };
                         cards.push(
                             AccessNode::new(Role::Button)
@@ -6135,9 +5440,6 @@ impl PhotosApp {
                     for (hit, bounds) in &self.album_editor_hits {
                         let (name, target) = match hit {
                             AlbumEditorHit::New => ("New album", "photos:album-editor:new"),
-                            AlbumEditorHit::Edit => {
-                                ("Edit selected album", "photos:album-editor:edit")
-                            }
                             _ => continue,
                         };
                         cards.push(
@@ -6182,14 +5484,14 @@ impl PhotosApp {
                 .with_bounds(self.canvas_rect)
                 .with_hashed_key("photos:canvas")
         };
-        let mut children = vec![self.toolbar_semantics(), canvas];
-        if !self.status.is_empty() {
+        let mut children = vec![canvas];
+        children.extend(self.chrome_semantics());
+        if let Some(notice) = self.notice.as_deref() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(self.status.clone())
+                    .with_name(notice)
                     .with_live(Politeness::Polite)
-                    .with_bounds(self.status_rect)
-                    .with_hashed_key("photos:status"),
+                    .with_hashed_key("photos:notice"),
             );
         }
         if let Some(job) = self.directory_import.as_ref() {
@@ -6359,45 +5661,6 @@ impl PhotosApp {
             .with_bounds(self.rect)
             .with_semantic_key("photos")
             .with_children(children)
-    }
-
-    /// Dispatch a toolbar action requested by assistive technology through the
-    /// identical `drain_pending` path used by pointer and keyboard activation.
-    fn perform_toolbar_semantic_action(
-        &mut self,
-        target: &str,
-        action: &AccessAction,
-        doc: &mut AutoCommit,
-    ) -> bool {
-        let Some(key) = target.strip_prefix("photos:toolbar:") else {
-            return false;
-        };
-        let Some((index, (hit, _, _, _))) = TOOLBAR
-            .iter()
-            .enumerate()
-            .find(|(_, (_, toolbar_key, _, _))| *toolbar_key == key)
-        else {
-            return false;
-        };
-        match action {
-            AccessAction::Focus => {
-                for (_, button) in &mut self.buttons {
-                    button.set_focus(false);
-                }
-                if let Some((_, button)) = self.buttons.get_mut(index) {
-                    button.set_focus(true);
-                }
-                true
-            }
-            AccessAction::Activate
-                if self.buttons.get(index).is_some_and(|(_, b)| b.is_enabled()) =>
-            {
-                self.pending.set(Some(*hit));
-                self.drain_pending(doc);
-                true
-            }
-            _ => false,
-        }
     }
 
     fn perform_directory_semantic_action(&mut self, target: &str, action: &AccessAction) -> bool {
@@ -6746,8 +6009,6 @@ impl PhotosApp {
             match command {
                 "new" => self.begin_new_album(doc),
                 "edit" => self.begin_edit_album(doc),
-                "previous-page" if self.can_page_library(false) => self.page_library(false),
-                "next-page" if self.can_page_library(true) => self.page_library(true),
                 "save" => self.save_album_editor(doc),
                 "cancel" => self.cancel_album_editor(),
                 "delete" => self.album_delete_confirm = true,
@@ -7275,7 +6536,7 @@ impl PhotosApp {
                 "reindex"
             };
             let message = format!(
-                "Folder {noun} finished: {} imported · {} refreshed · {} unchanged · {} issue{}",
+                "Folder {noun} finished: {} imported, {} refreshed, {} unchanged, {} issue{}",
                 job.imported,
                 job.refreshed,
                 job.unchanged,
@@ -7340,7 +6601,7 @@ impl PhotosApp {
             self.resource_invocation = None;
         } else if let Some(job) = self.directory_import.as_ref() {
             self.notice = Some(format!(
-                "{} folder: {} found · {} imported · {} refreshed · {} issue{}",
+                "{} folder: {} found, {} imported, {} refreshed, {} issue{}",
                 if job.mode == DirectoryImportMode::Import {
                     "Importing"
                 } else {
@@ -7496,79 +6757,35 @@ impl PhotosApp {
         }
     }
 
-    /// Which toolbar buttons are usable right now. Everything but Open needs
-    /// an image; Reset additionally needs something to undo.
-    fn enabled(hit: Hit, has_image: bool, edited: bool) -> bool {
-        match hit {
-            Hit::Open | Hit::Library => true,
-            Hit::Reset => has_image && edited,
-            _ => has_image,
+    /// The photograph's shared details as label/value rows: when and where
+    /// it was taken, who and what is in it. The name and size are already
+    /// in the header and the status bar.
+    fn viewer_detail_rows(details: &ViewerDetails) -> Vec<(String, String)> {
+        let mut rows = Vec::new();
+        if let Some(description) = details.description.as_deref() {
+            rows.push((tr("photos-description"), description.to_owned()));
         }
+        if let Some(captured_at) = details.captured_at.as_deref() {
+            rows.push((tr("photos-captured"), captured_label(captured_at)));
+        }
+        if let Some(place) = details.place.as_deref() {
+            rows.push((tr("photos-place"), place.to_owned()));
+        }
+        if !details.people.is_empty() {
+            rows.push((tr("photos-people"), details.people.join(", ")));
+        }
+        if !details.tags.is_empty() {
+            rows.push((tr("photos-tags"), details.tags.join(", ")));
+        }
+        if let Some(folder) = details.folder.as_deref() {
+            rows.push((tr("photos-folder"), folder.to_owned()));
+        }
+        rows
     }
 
-    /// The status line: the file, its edited size, and any notice.
-    fn status_text(&self, doc: &AutoCommit) -> String {
-        if self.library_mode {
-            let mut s = match self.library_destination {
-                LibraryDestination::Timeline => format!("{} photographs", self.library_total),
-                LibraryDestination::Albums => {
-                    format!("Albums  ·  {} collections", self.library_albums.len())
-                }
-                LibraryDestination::People => {
-                    format!("People  ·  {} photographs", self.library_total)
-                }
-                LibraryDestination::Places => {
-                    format!("Places  ·  {} photographs", self.library_total)
-                }
-                LibraryDestination::Analysis => {
-                    let (searchable, ready, awaiting) = self.library_analysis_coverage;
-                    format!(
-                        "Photo analysis  ·  {searchable} searchable  ·  {ready} ready  ·  {awaiting} awaiting local bytes"
-                    )
-                }
-            };
-            for detail in self.notice.iter().chain(self.search_refresh_error.iter()) {
-                s.push_str("  ·  ");
-                s.push_str(detail);
-            }
-            return s;
-        }
-        let Some(open) = PhotosDoc::image(doc) else {
-            return self
-                .notice
-                .iter()
-                .chain(self.search_refresh_error.iter())
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("  ·  ");
-        };
-        let edits = PhotosDoc::edits(doc);
-        let (w, h) = open.edited_size(&edits);
-        let mut s = format!("{}  ·  {w} × {h}", open.name);
-        if !edits.is_identity() {
-            s.push_str("  ·  ");
-            s.push_str(&tr("photos-edited"));
-        }
-        if let Some(n) = &self.notice {
-            s.push_str("  ·  ");
-            s.push_str(n);
-        }
-        if let Some(error) = &self.search_refresh_error {
-            s.push_str("  ·  ");
-            s.push_str(error);
-        }
-        s
-    }
-
-    /// Paint a quiet information card over the viewer rather than giving the
-    /// photograph a competing permanent sidebar.  The card uses only the
-    /// portable, explicitly shared library record, so a collaborator sees
-    /// the same description, people, and place without this surface ever
-    /// reading device-local EXIF or paths.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the viewer details card keeps its responsive geometry and painted rows together"
-    )]
+    /// Show the photograph's shared details on the floating material over
+    /// the picture itself, inside the bounds the picture is drawn in. Chrome
+    /// over media is a floating panel; the picture keeps everything else.
     fn draw_viewer_details(
         &self,
         scene: &mut Scene,
@@ -7576,176 +6793,55 @@ impl PhotosApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        use vello::peniko::Fill;
-
-        let Some(details) = self.viewer_details.as_ref() else {
+        let (Some(details), Some(viewer), Some(rendered)) = (
+            self.viewer_details.as_ref(),
+            self.viewer.as_ref(),
+            self.rendered.as_ref(),
+        ) else {
             return;
         };
-        // On short windows, preserving a usable, contain-fit photograph is
-        // more valuable than placing a card over most of it. The full shared
-        // detail is still present in the image accessibility description.
-        if self.canvas_rect.width() < 340.0 || self.canvas_rect.height() < 300.0 {
+        let rows = Self::viewer_detail_rows(details);
+        if rows.is_empty() {
             return;
         }
-        let compact = self.canvas_rect.width() < 720.0 || theme.text_scale > 1.25;
-        let horizontal_inset = if compact { 14.0 } else { 20.0 };
-        let card_width = if compact {
-            self.canvas_rect.width() - horizontal_inset * 2.0
-        } else {
-            self.canvas_rect.width().min(460.0)
+        let Some(image) = displayed_image_rect(
+            viewer,
+            f64::from(rendered.rgba.w),
+            f64::from(rendered.rgba.h),
+        ) else {
+            return;
         };
-        let has_caption = details.description.is_some();
-        let card_height = if compact {
-            if has_caption { 138.0 } else { 112.0 }
-        } else if has_caption {
-            148.0
-        } else {
-            120.0
-        };
-        let card = Rect::new(
-            self.canvas_rect.x0 + horizontal_inset,
-            self.canvas_rect.y1 - card_height - horizontal_inset,
-            self.canvas_rect.x0 + horizontal_inset + card_width,
-            self.canvas_rect.y1 - horizontal_inset,
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let width =
+            (image.width() - 2.0 * inset).min(f64::from(theme.tokens.metrics.panel_width_list));
+        // A picture too small to hold the panel keeps all its pixels; the
+        // details stay in its accessibility description.
+        if width < f64::from(theme.tokens.metrics.panel_width_utility) * 0.75 {
+            return;
+        }
+        let property_rows: Vec<PropertyRow<'_>> = rows
+            .iter()
+            .map(|(label, value)| PropertyRow::new(label, value))
+            .collect();
+        let face = PropertyListFace::new(&property_rows);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let body_h = face.height(text_renderer, &ink, width - 2.0 * pad);
+        let height = body_h + 2.0 * pad;
+        if height > image.height() - 2.0 * inset {
+            return;
+        }
+        let panel = Rect::new(
+            image.x0 + inset,
+            image.y1 - inset - height,
+            image.x0 + inset + width,
+            image.y1 - inset,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.window_card.with_alpha(0.94),
-            None,
-            &RoundedRect::from_rect(card, theme.radius_standard),
+        ui::widget::floating_surface::paint(scene, transform, panel, theme);
+        face.paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, &ink),
+            panel.inset(-pad),
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(card, theme.radius_standard),
-        );
-
-        let icon = Rect::new(
-            card.x0 + 14.0,
-            card.y0 + 14.0,
-            card.x0 + 34.0,
-            card.y0 + 34.0,
-        );
-        draw_icon(
-            scene,
-            transform,
-            icon,
-            Icon::Image,
-            theme.accent_primary,
-            1.4,
-        );
-        let title_right = if details.favorite {
-            card.x1 - 38.0
-        } else {
-            card.x1 - 14.0
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            &viewer_copy(&details.name, if compact { 34 } else { 52 }),
-            16.0,
-            theme.text_primary,
-            transform * Affine::translate((card.x0 + 42.0, card.y0 + 13.0)),
-            Some((title_right - card.x0 - 42.0) as f32),
-            TextWeight::Semibold,
-        );
-        if details.favorite {
-            draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    card.x1 - 30.0,
-                    card.y0 + 14.0,
-                    card.x1 - 14.0,
-                    card.y0 + 30.0,
-                ),
-                Icon::Star,
-                theme.accent_primary,
-                1.6,
-            );
-        }
-        let state = if details.edited {
-            format!("{} · {}", details.dimensions, tr("photos-edited"))
-        } else {
-            format!("{} · {}", details.dimensions, tr("photos-shared-details"))
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            &state,
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((card.x0 + 42.0, card.y0 + 37.0)),
-            Some((card.x1 - card.x0 - 56.0) as f32),
-            TextWeight::Regular,
-        );
-
-        let mut y = card.y0 + 62.0;
-        if let Some(description) = details.description.as_deref() {
-            text_renderer.draw_text_weighted(
-                scene,
-                &viewer_copy(description, if compact { 76 } else { 108 }),
-                13.0,
-                theme.text_primary,
-                transform * Affine::translate((card.x0 + 14.0, y)),
-                Some((card.width() - 28.0) as f32),
-                TextWeight::Regular,
-            );
-            y += 24.0;
-        }
-        let mut context = Vec::new();
-        if let Some(captured_at) = details.captured_at.as_deref() {
-            context.push(format!("{}: {captured_at}", tr("photos-captured")));
-        }
-        if let Some(place) = details.place.as_deref() {
-            context.push(format!("{}: {place}", tr("photos-place")));
-        }
-        if context.is_empty() {
-            context.push(tr("photos-no-shared-context"));
-        }
-        text_renderer.draw_text_weighted(
-            scene,
-            &viewer_copy(&context.join(" · "), if compact { 56 } else { 76 }),
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((card.x0 + 14.0, y)),
-            Some((card.width() - 28.0) as f32),
-            TextWeight::Regular,
-        );
-        y += 21.0;
-        let mut labels = Vec::new();
-        if !details.people.is_empty() {
-            labels.push(format!(
-                "{}: {}",
-                tr("photos-people"),
-                details.people.join(", ")
-            ));
-        }
-        if !details.tags.is_empty() {
-            labels.push(
-                details
-                    .tags
-                    .iter()
-                    .map(|tag| format!("#{tag}"))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
-        }
-        if let Some(folder) = details.folder.as_deref() {
-            labels.push(format!("{}: {folder}", tr("photos-folder")));
-        }
-        if !labels.is_empty() && y < card.y1 - 10.0 {
-            text_renderer.draw_text_weighted(
-                scene,
-                &viewer_copy(&labels.join(" · "), if compact { 56 } else { 78 }),
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((card.x0 + 14.0, y)),
-                Some((card.width() - 28.0) as f32),
-                TextWeight::Regular,
-            );
-        }
     }
 
     fn refresh_search_provider(
@@ -7759,35 +6855,6 @@ impl PhotosApp {
         self.search_provider.sync(doc)
     }
 
-    fn advance_library_query(&mut self) {
-        let query = self.library_query.trim().to_owned();
-        let generation = self.search_provider.generation();
-        if query.is_empty() {
-            self.library_query_indexed.clear();
-            self.library_query_generation = generation;
-            self.library_query_cursor = None;
-            self.library_query_matches.clear();
-            self.library_query_complete = true;
-            return;
-        }
-        if self.library_query_indexed != query || self.library_query_generation != generation {
-            self.library_query_indexed.clone_from(&query);
-            self.library_query_generation = generation;
-            self.library_query_cursor = None;
-            self.library_query_matches.clear();
-            self.library_query_complete = false;
-        }
-        if self.library_query_complete {
-            return;
-        }
-        let (ids, next, _inspected) = self
-            .search_provider
-            .photo_matches_page(&query, self.library_query_cursor.as_ref());
-        self.library_query_matches.extend(ids);
-        self.library_query_cursor = next;
-        self.library_query_complete = self.library_query_cursor.is_none();
-    }
-
     fn empty_state_text(&self) -> (String, String) {
         match self.canvas_state {
             CanvasState::Loading => (tr("photos-loading-title"), tr("photos-loading-body")),
@@ -7798,12 +6865,10 @@ impl PhotosApp {
         }
     }
 
-    /// The shared empty-state composition is ideal at normal reading sizes,
-    /// but its single centred title/body runs cannot reflow inside a 390 px
-    /// viewport once text reaches 200%. Keep that exceptional presentation
-    /// local while retaining the same copy, icon, colors and semantics.
+    /// Nothing to show in the content column: the shared empty state, with
+    /// one action to open a photograph where that is the way forward.
     fn draw_empty_state(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -7811,379 +6876,252 @@ impl PhotosApp {
         title: &str,
         body: &str,
     ) {
-        if theme.text_scale <= 1.25 || self.canvas_rect.width() >= 620.0 {
-            EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                self.canvas_rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::Image),
-                    title,
-                    message: Some(body),
-                    action_label: None,
-                },
-                Point::ZERO,
-            );
-            return;
-        }
-
-        let bounds = self.canvas_rect;
-        let content_w = (bounds.width() - 48.0).max(120.0);
-        let title_size = 16.0;
-        let body_size = 11.0;
-        let title_lines = wrap_words(title, 19);
-        let body_lines = wrap_words(body, 28);
-        let scale = f64::from(theme.text_scale);
-        let title_step = 21.0 * scale;
-        let body_step = 15.0 * scale;
-        let icon_r = 29.0;
-        let content_h = icon_r * 2.0
-            + 26.0
-            + title_step * title_lines.len() as f64
-            + 12.0
-            + body_step * body_lines.len() as f64;
-        let top = bounds.y0 + ((bounds.height() - content_h) * 0.42).max(24.0);
-        let icon_center = Point::new(bounds.center().x, top + icon_r);
-        let icon_plate = Circle::new(icon_center, icon_r);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &icon_plate,
+        let action = tr("photos-open-photo");
+        let offer_open = matches!(self.canvas_state, CanvasState::Empty | CanvasState::Error)
+            || self.library_mode;
+        self.empty_action_rect = EmptyState::paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            self.canvas_rect,
+            &EmptyStateContent {
+                icon: Some(Icon::Image),
+                illustration: None,
+                title,
+                message: Some(body),
+                action_label: offer_open.then_some(action.as_str()),
+                error: self.canvas_state == CanvasState::Error && !self.library_mode,
+            },
+            self.pointer,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &icon_plate,
-        );
-        draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(icon_center, (24.0, 24.0)),
-            Icon::Image,
-            theme.tokens.colors.accent[6],
-            1.5,
-        );
-
-        let mut y = top + icon_r * 2.0 + 26.0;
-        for line in title_lines {
-            draw_centered_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                &line,
-                &TextStyle::new(title_size).with_weight(TextWeight::Medium),
-                theme.text_primary,
-                Point::new(bounds.center().x, y),
-                content_w,
-            );
-            y += title_step;
-        }
-        y += 12.0;
-        for line in body_lines {
-            draw_centered_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                &line,
-                &TextStyle::new(body_size),
-                theme.text_dim,
-                Point::new(bounds.center().x, y),
-                content_w,
-            );
-            y += body_step;
-        }
     }
 
-    /// Lay out the toolbar strip: one taffy node per [`SLOTS`] entry (a
-    /// button, a separator rule, or the greedy spacer), wrapped in the bar
-    /// row itself. Split out of `build_layout` to keep that dispatch under
-    /// the line-count limit.
-    #[allow(
-        clippy::unwrap_used,
-        reason = "these taffy nodes are freshly built with fixed, valid styles"
-    )]
-    fn build_toolbar_node(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut bar_children = Vec::new();
-        for slot in self.toolbar_slots() {
-            let node = match *slot {
-                Slot::Item(n) => match self.buttons.get_mut(n) {
-                    Some((_, button)) => button.build_layout(taffy, theme, node_map),
-                    // Unreachable: SLOTS only ever indexes within self.buttons.
-                    None => taffy.new_leaf(Style::default()).unwrap(),
-                },
-                Slot::Separator => taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: Dimension::length(SEP_W),
-                            height: Dimension::length(self.toolbar_btn_h * 0.6),
-                        },
-                        flex_shrink: 0.0,
-                        ..Default::default()
-                    })
-                    .unwrap(),
-                // Soaks the residual width so the export group sits hard
-                // right instead of leaving a third of the strip bare.
-                Slot::Spacer => taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: Dimension::length(0.0),
-                            height: Dimension::length(0.0),
-                        },
-                        flex_grow: 1.0,
-                        flex_shrink: 1.0,
-                        ..Default::default()
-                    })
-                    .unwrap(),
-            };
-            bar_children.push(node);
-        }
-        taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        // `bar_h` at the scale the capsules were built for:
-                        // the authored BAR_H at 1×.
-                        height: Dimension::length(self.toolbar_btn_h + (BAR_H - BTN_H)),
-                    },
-                    flex_shrink: 0.0,
-                    align_items: Some(AlignItems::Center),
-                    gap: Size {
-                        width: LengthPercentage::length(BTN_GAP),
-                        height: LengthPercentage::length(0.0),
-                    },
-                    padding: taffy::Rect {
-                        left: LengthPercentage::length(PAD),
-                        right: LengthPercentage::length(PAD),
-                        top: LengthPercentage::length(0.0),
-                        bottom: LengthPercentage::length(0.0),
-                    },
-                    ..Default::default()
-                },
-                &bar_children,
-            )
-            .unwrap()
+    /// One line of `role` under `theme`.
+    fn line_of(theme: &Theme, role: ui::TextRole) -> f64 {
+        f64::from(theme.text(role).line_height_px())
     }
 
+    /// The side and gap of the People surface's cards at `width`.
+    fn people_grid(theme: &Theme, width: f64) -> (usize, f64, f64) {
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        let extent = ui::widget::MediaSize::Small.extent(theme);
+        let columns = ui::widget::card_columns(width, extent, gap).max(1);
+        (
+            columns,
+            ui::widget::card_column_width(width, columns, gap),
+            gap,
+        )
+    }
+
+    /// How many people or suggestions one page of the People surface shows:
+    /// one row of cards in its lane at the width last laid out.
+    fn people_page_size(&self) -> usize {
+        let theme = &self.layout_theme;
+        let width = self.content_frame(theme).width();
+        let extent = ui::widget::MediaSize::Small.extent(theme);
+        let group = f64::from(theme.tokens.spacing.rhythm.group);
+        let lane = if width >= 2.0 * extent + group {
+            (width - group) / 2.0
+        } else {
+            width
+        };
+        Self::people_grid(theme, lane).0
+    }
+
+    /// Place the People surface: the recognition section, the people you
+    /// named, the suggestions to review and the footer actions in the
+    /// overview; the photographs, the name field and the decisions in a
+    /// person's detail. Controls are placed with their measured widths, so
+    /// paint and hit-testing read the same rects.
     #[expect(
         clippy::too_many_lines,
-        reason = "People control geometry for every responsive band is computed in one place so hit targets stay consistent"
+        reason = "the overview and the detail are laid out in one pass so hit targets and paint agree"
     )]
-    fn layout_people_controls(&mut self) {
-        let bounds = self.canvas_rect;
-        let pad = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
-        let content = Rect::new(
-            bounds.x0 + pad,
-            bounds.y0 + 18.0,
-            bounds.x1 - pad,
-            bounds.y1 - 18.0,
+    fn layout_people_controls(&mut self, theme: &Theme) {
+        let frame = self.content_frame(theme);
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let (related, sibling, group) = (
+            f64::from(rhythm.related),
+            f64::from(rhythm.sibling),
+            f64::from(rhythm.group),
         );
-        let wide = content.width() >= 760.0;
-        let overview = self.people_selection.is_none();
-        // Keep the navigation and recognition card in separate vertical
-        // bands.  The former implementation put the card *over* the
-        // segmented navigation, leaving a very confusing invisible route
-        // control in the People overview.
-        let recognition_top = content.y0 + 118.0;
-        let recognition_bottom = recognition_top + if wide { 86.0 } else { 122.0 };
-        let body_y = if overview {
-            recognition_bottom + 30.0
-        } else {
-            content.y0 + 124.0
-        };
-        let mut action_row = 0usize;
-        let approved_count = self
-            .people_controls
-            .iter()
-            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
-            .count();
-        let people_lane_w = if overview && wide {
-            (content.width() * 0.67).max(420.0)
-        } else {
-            content.width()
-        };
-        let columns = if overview && wide {
-            if people_lane_w >= 760.0 { 3 } else { 2 }
-        } else if wide {
-            3
-        } else {
-            1
-        };
-        let gap = 12.0;
-        let card_width = if wide {
-            (people_lane_w - gap * (columns - 1) as f64) / columns as f64
-        } else {
-            content.width()
-        };
+        let heading = Self::line_of(theme, ui::TextRole::Heading);
+        let body = Self::line_of(theme, ui::TextRole::Body);
+        let caption = Self::line_of(theme, ui::TextRole::Caption);
+        let control_h = ui::widget::ControlSize::Regular.height(theme);
+        let mut layout = PeopleLayout::default();
         self.people_name_bounds = Rect::ZERO;
-        if self.people_selection.is_some() && !self.people_merge_mode {
-            let form_x = if wide {
-                content.x0 + content.width() * 0.52
-            } else {
-                content.x0
-            };
-            self.people_name_bounds = Rect::new(
-                form_x,
-                body_y + if wide { 116.0 } else { 338.0 },
-                content.x1,
-                body_y + if wide { 160.0 } else { 382.0 },
-            );
-        }
-        let mut approved_index = 0usize;
-        let mut suggestion_index = 0usize;
         for control in &mut self.people_controls {
-            control.bounds = match &control.intent {
-                PeopleIntent::Back => Rect::new(
-                    content.x1 - 152.0_f64.min(content.width()),
-                    content.y0,
-                    content.x1,
-                    content.y0 + 44.0,
-                ),
-                PeopleIntent::ToggleRecognition if !wide => Rect::new(
-                    content.x0 + 12.0,
-                    recognition_top + 64.0,
-                    content.x0 + (content.width() - 8.0) * 0.5,
-                    recognition_top + 108.0,
-                ),
-                PeopleIntent::ToggleRecognition => Rect::new(
-                    content.x1 - 356.0,
-                    recognition_top + 21.0,
-                    content.x1 - 182.0,
-                    recognition_top + 65.0,
-                ),
-                PeopleIntent::Scan | PeopleIntent::CancelScan if !wide => Rect::new(
-                    content.x0 + (content.width() + 8.0) * 0.5,
-                    recognition_top + 64.0,
-                    content.x1 - 12.0,
-                    recognition_top + 108.0,
-                ),
-                PeopleIntent::Scan | PeopleIntent::CancelScan => Rect::new(
-                    content.x1 - 170.0,
-                    recognition_top + 21.0,
-                    content.x1,
-                    recognition_top + 65.0,
-                ),
-                PeopleIntent::OpenApproved(_) => {
-                    let index = approved_index;
-                    approved_index += 1;
-                    if wide {
-                        let row = index / columns;
-                        let column = index % columns;
-                        let x = content.x0 + column as f64 * (card_width + gap);
-                        let y = body_y + 34.0 + row as f64 * 236.0;
-                        Rect::new(x + 12.0, y + 176.0, x + card_width - 12.0, y + 220.0)
-                    } else {
-                        let y = body_y + 34.0 + index as f64 * 92.0;
-                        Rect::new(content.x1 - 122.0, y + 20.0, content.x1 - 12.0, y + 64.0)
-                    }
-                }
-                PeopleIntent::OpenSuggestion(_) => {
-                    let index = suggestion_index;
-                    suggestion_index += 1;
-                    if overview && wide {
-                        let lane_x = content.x0 + people_lane_w + 20.0;
-                        let y = body_y + 34.0 + index as f64 * 164.0;
-                        Rect::new(lane_x + 108.0, y + 92.0, content.x1 - 12.0, y + 136.0)
-                    } else {
-                        let approved_rows = approved_count.div_ceil(columns);
-                        let section_y = if wide {
-                            body_y + 42.0 + approved_rows as f64 * 236.0
-                        } else {
-                            body_y + 42.0 + approved_count as f64 * 92.0
-                        };
-                        if wide {
-                            let row = index / columns;
-                            let column = index % columns;
-                            let x = content.x0 + column as f64 * (card_width + gap);
-                            let y = section_y + 36.0 + row as f64 * 236.0;
-                            Rect::new(x + 12.0, y + 176.0, x + card_width - 12.0, y + 220.0)
-                        } else {
-                            let y = section_y + 36.0 + index as f64 * 92.0;
-                            Rect::new(content.x1 - 122.0, y + 20.0, content.x1 - 12.0, y + 64.0)
-                        }
-                    }
-                }
-                PeopleIntent::BrowseApproved
-                | PeopleIntent::SaveName
-                | PeopleIntent::BeginMerge
-                | PeopleIntent::ApproveSuggestion
-                | PeopleIntent::RejectSuggestion
-                | PeopleIntent::HideSuggestion
-                | PeopleIntent::RestoreSuggestion => {
-                    let row = action_row;
-                    action_row += 1;
-                    let x = if wide {
-                        content.x0 + content.width() * 0.52
-                    } else {
-                        content.x0
-                    };
-                    Rect::new(
-                        x,
-                        body_y + if wide { 176.0 } else { 392.0 } + row as f64 * 52.0,
-                        content.x1,
-                        body_y + if wide { 220.0 } else { 436.0 } + row as f64 * 52.0,
-                    )
-                }
-                PeopleIntent::MergeApprovedInto(_) | PeopleIntent::MergeSuggestionWith(_) => {
-                    let row = action_row;
-                    action_row += 1;
-                    Rect::new(
-                        content.x0 + if wide { content.width() * 0.52 } else { 0.0 },
-                        body_y + if wide { 176.0 } else { 392.0 } + row as f64 * 52.0,
-                        content.x1,
-                        body_y + if wide { 220.0 } else { 436.0 } + row as f64 * 52.0,
-                    )
-                }
-                PeopleIntent::ToggleHidden if !wide => Rect::new(
-                    content.x0,
-                    content.y1 - 96.0,
-                    content.x0 + (content.width() - 8.0) * 0.5,
-                    content.y1 - 52.0,
-                ),
-                PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData if !wide => {
-                    Rect::new(
-                        content.x0 + (content.width() + 8.0) * 0.5,
-                        content.y1 - 96.0,
-                        content.x1,
-                        content.y1 - 52.0,
-                    )
-                }
-                PeopleIntent::Page(forward) if !wide => {
-                    let half = (content.width() - 8.0) * 0.5;
-                    let x = if *forward {
-                        content.x0 + half + 8.0
-                    } else {
-                        content.x0
-                    };
-                    Rect::new(x, content.y1 - 44.0, x + half, content.y1)
-                }
-                PeopleIntent::ToggleHidden => Rect::new(
-                    content.x0,
-                    content.y1 - 44.0,
-                    content.x0 + 210.0,
-                    content.y1,
-                ),
-                PeopleIntent::Page(forward) => {
-                    let half = 96.0;
-                    let x = if *forward {
-                        content.x0 + 316.0
-                    } else {
-                        content.x0 + 216.0
-                    };
-                    Rect::new(x, content.y1 - 96.0, x + half, content.y1 - 52.0)
-                }
-                PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData => Rect::new(
-                    content.x1 - 210.0,
-                    content.y1 - 44.0,
-                    content.x1,
-                    content.y1,
-                ),
-            };
+            control.bounds = Rect::ZERO;
         }
+
+        if self.people_selection.is_none() {
+            let mut y = frame.y0;
+            layout.recognition_heading = Some(Point::new(frame.x0, y));
+            y += heading + related;
+            layout.recognition_text = Rect::new(frame.x0, y, frame.x1, y + body);
+            y += body + sibling;
+            let mut x = frame.x0;
+            for control in &mut self.people_controls {
+                if matches!(
+                    control.intent,
+                    PeopleIntent::ToggleRecognition | PeopleIntent::Scan | PeopleIntent::CancelScan
+                ) {
+                    control.bounds = Rect::new(x, y, x + control.width, y + control_h);
+                    x = control.bounds.x1 + related;
+                }
+            }
+            y += control_h + group;
+
+            // People and suggestions side by side where two lanes of cards
+            // fit, one above the other where they do not.
+            let extent = ui::widget::MediaSize::Small.extent(theme);
+            let side_by_side = frame.width() >= 2.0 * extent + group;
+            let lanes = if side_by_side {
+                let mid = frame.x0 + (frame.width() - group) / 2.0;
+                [(frame.x0, mid), (mid + group, frame.x1)]
+            } else {
+                [(frame.x0, frame.x1), (frame.x0, frame.x1)]
+            };
+            let lanes_top = y;
+            let mut lanes_bottom = y;
+            // A page is one row of cards; in a short window the cards shrink
+            // so that row still ends above the footer.
+            let label_h = related + body + 2.0 * caption;
+            let fit_side = (frame.y1 - control_h - group - lanes_top - heading - related - label_h)
+                .max(f64::from(theme.tokens.metrics.min_pointer_target));
+            for ((approved, is_member), (x0, x1)) in [
+                (true, PeopleIntent::OpenApproved(String::new())),
+                (false, PeopleIntent::OpenSuggestion(String::new())),
+            ]
+            .into_iter()
+            .zip(lanes)
+            {
+                if side_by_side {
+                    y = lanes_top;
+                }
+                let (columns, side, gap) = Self::people_grid(theme, x1 - x0);
+                let side = side.min(fit_side);
+                let card_h = side + label_h;
+                let at = Point::new(x0, y);
+                if approved {
+                    layout.people_heading = Some(at);
+                } else {
+                    layout.suggestions_heading = Some(at);
+                }
+                y += heading + related;
+                let mut index = 0usize;
+                for control in &mut self.people_controls {
+                    if std::mem::discriminant(&control.intent) != std::mem::discriminant(&is_member)
+                    {
+                        continue;
+                    }
+                    let column = index % columns;
+                    let row = index / columns;
+                    let x = x0 + column as f64 * (side + gap);
+                    let top = y + row as f64 * (card_h + group);
+                    control.bounds = Rect::new(x, top, x + side, top + card_h);
+                    index += 1;
+                }
+                if index == 0 {
+                    let empty = Rect::new(x0, y, x1, y + 2.0 * body);
+                    if approved {
+                        layout.people_empty = Some(empty);
+                    } else {
+                        layout.suggestions_empty = Some(empty);
+                    }
+                    y += 2.0 * body + group;
+                } else {
+                    let rows = index.div_ceil(columns);
+                    y += rows as f64 * (card_h + group);
+                }
+                lanes_bottom = lanes_bottom.max(y);
+            }
+            y = lanes_bottom;
+
+            // The footer: what to show and paging leading, deleting trailing.
+            let footer_y = (frame.y1 - control_h).max(y);
+            let mut x = frame.x0;
+            let mut trailing = frame.x1;
+            for control in &mut self.people_controls {
+                match control.intent {
+                    PeopleIntent::ToggleHidden | PeopleIntent::Page(_) => {
+                        control.bounds =
+                            Rect::new(x, footer_y, x + control.width, footer_y + control_h);
+                        x = control.bounds.x1 + related;
+                    }
+                    PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData => {
+                        control.bounds = Rect::new(
+                            trailing - control.width,
+                            footer_y,
+                            trailing,
+                            footer_y + control_h,
+                        );
+                        trailing = control.bounds.x0 - related;
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            let mut y = frame.y0;
+            for control in &mut self.people_controls {
+                if matches!(control.intent, PeopleIntent::Back) {
+                    control.bounds =
+                        Rect::new(frame.x0, y, frame.x0 + control.width, y + control_h);
+                }
+            }
+            y += control_h + group;
+            let gap = f64::from(rhythm.related);
+            let side = ((frame.width() - 3.0 * gap) / 4.0)
+                .min(ui::widget::MediaSize::Small.extent(theme))
+                .max(1.0);
+            layout.detail_photos = (0..4)
+                .map(|index| {
+                    let x = frame.x0 + f64::from(index) * (side + gap);
+                    Rect::new(x, y, x + side, y + side)
+                })
+                .filter(|rect| rect.x1 <= frame.x1 + 0.5)
+                .collect();
+            y += side + group;
+            layout.detail_title = Some(Point::new(frame.x0, y));
+            y += Self::line_of(theme, ui::TextRole::Title) + f64::from(rhythm.tight);
+            layout.detail_text = Rect::new(frame.x0, y, frame.x1, y + 2.0 * body);
+            y += 2.0 * body + group;
+            let hidden = matches!(
+                &self.people_selection,
+                Some(PeopleSelection::Suggestion(id))
+                    if self
+                        .people_controller
+                        .cluster(id)
+                        .is_none_or(|cluster| cluster.hidden || cluster.rejected)
+            );
+            if !self.people_merge_mode && !hidden {
+                layout.name_label = Some(Point::new(frame.x0, y));
+                y += Self::line_of(theme, ui::TextRole::Label) + f64::from(rhythm.tight);
+                let field_w = frame
+                    .width()
+                    .min(f64::from(theme.tokens.metrics.panel_width_list));
+                self.people_name_bounds = Rect::new(frame.x0, y, frame.x0 + field_w, y + control_h);
+                y += control_h + sibling;
+            }
+            let mut x = frame.x0;
+            for control in &mut self.people_controls {
+                if matches!(control.intent, PeopleIntent::Back) {
+                    continue;
+                }
+                if self.people_merge_mode {
+                    control.bounds =
+                        Rect::new(frame.x0, y, frame.x0 + control.width, y + control_h);
+                    y += control_h + related;
+                } else {
+                    if x > frame.x0 && x + control.width > frame.x1 {
+                        x = frame.x0;
+                        y += control_h + related;
+                    }
+                    control.bounds = Rect::new(x, y, x + control.width, y + control_h);
+                    x = control.bounds.x1 + related;
+                }
+            }
+        }
+        self.people_layout = layout;
     }
 
     /// Lay out the canvas: the `ImageViewer` if a photograph is open, else a
@@ -8210,7 +7148,7 @@ impl PhotosApp {
         let people_surface = self.library_mode
             && (self.library_destination == LibraryDestination::People || self.people_mode);
         let canvas = if people_surface {
-            self.layout_people_controls();
+            self.layout_people_controls(theme);
             let mut children = Vec::new();
             let show_name = self.people_selection.is_some() && !self.people_merge_mode;
             if show_name {
@@ -8241,7 +7179,18 @@ impl PhotosApp {
             }
             for control in &mut self.people_controls {
                 let node = control.button.build_layout(taffy, theme, node_map);
-                let rect = control.bounds;
+                // A card opens by itself; its button carries only the
+                // control's name and action, at no size.
+                let rect = if control.is_card() {
+                    Rect::new(
+                        self.canvas_rect.x0,
+                        self.canvas_rect.y0,
+                        self.canvas_rect.x0,
+                        self.canvas_rect.y0,
+                    )
+                } else {
+                    control.bounds
+                };
                 let _ = taffy.set_style(
                     node,
                     Style {
@@ -8293,6 +7242,9 @@ impl PhotosApp {
                     .unwrap(),
             }
         };
+        // The photograph is media: it takes the whole content column, and
+        // the library surfaces lay out their own gutters.
+        let inset = 0.0;
         taffy
             .set_style(
                 canvas,
@@ -8309,10 +7261,10 @@ impl PhotosApp {
                     flex_shrink: 1.0,
                     flex_basis: Dimension::length(0.0),
                     margin: taffy::Rect {
-                        left: LengthPercentageAuto::length(0.0),
-                        right: LengthPercentageAuto::length(0.0),
-                        top: LengthPercentageAuto::length(CANVAS_INSET),
-                        bottom: LengthPercentageAuto::length(CANVAS_INSET),
+                        left: LengthPercentageAuto::length(inset),
+                        right: LengthPercentageAuto::length(inset),
+                        top: LengthPercentageAuto::length(inset),
+                        bottom: LengthPercentageAuto::length(inset),
                     },
                     ..Default::default()
                 },
@@ -8321,64 +7273,28 @@ impl PhotosApp {
         canvas
     }
 
-    /// Lay out the status band: zero height with nothing to say (reserving
-    /// the band anyway would leave a rule and a strip of empty chrome under
-    /// an empty state, which reads as a control that failed to draw), else a
-    /// fixed band. Split out of `build_layout` to keep that dispatch under
-    /// the line-count limit.
+    /// Lay out the status bar's band: zero height with nothing to say (a band
+    /// kept anyway would leave a rule and a strip of empty chrome under an
+    /// empty state), else `status_bar::height`.
     #[allow(
         clippy::unwrap_used,
         reason = "this taffy node is freshly built with a fixed, valid style"
     )]
-    fn build_status_node(&self, taffy: &mut TaffyTree<()>, text_scale: f32) -> NodeId {
+    fn build_status_node(&self, taffy: &mut TaffyTree<()>, theme: &Theme) -> NodeId {
+        let height = if self.has_status() {
+            ui::chrome::status_bar::height(theme)
+        } else {
+            0.0
+        };
         taffy
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(if self.status.is_empty() {
-                        0.0
-                    } else {
-                        status_h(text_scale)
-                    }),
+                    height: Dimension::length(height as f32),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
             })
-            .unwrap()
-    }
-
-    #[allow(clippy::unwrap_used, reason = "fresh layout node with fixed size")]
-    fn build_library_search_node(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.library_search
-            .set_placeholder(if theme.text_scale > 1.25 {
-                "Search photos"
-            } else {
-                "Search photos, people, places, text"
-            });
-        let field = self.library_search.build_layout(taffy, theme, node_map);
-        taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(if self.library_mode { 46.0 } else { 0.0 }),
-                    },
-                    padding: taffy::Rect {
-                        left: LengthPercentage::length(PAD),
-                        right: LengthPercentage::length(PAD),
-                        top: LengthPercentage::length(if self.library_mode { 4.0 } else { 0.0 }),
-                        bottom: LengthPercentage::length(if self.library_mode { 4.0 } else { 0.0 }),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &[field],
-            )
             .unwrap()
     }
 
@@ -8393,56 +7309,110 @@ impl PhotosApp {
     ) {
         let theme = ctx.theme;
         self.collection_page_hits.clear();
-        let page_size = if matches!(previous, CollectionPageHit::AlbumsPrevious)
-            && self.library_destination == LibraryDestination::Albums
-            && self.canvas_rect.width() >= 700.0
-        {
-            8
-        } else {
-            COLLECTION_PAGE_SIZE
-        };
+        let page_size = self.collection_page_size(previous);
         let pages = total.max(1).div_ceil(page_size);
         if pages <= 1 {
             return;
         }
         let previous_enabled = page > 0;
         let next_enabled = page + 1 < pages;
-        let button_w = 88.0;
-        let label_w = 104.0;
-        let previous_rect = Rect::new(bounds.x0, bounds.y0, bounds.x0 + button_w, bounds.y1);
-        let next_rect = Rect::new(bounds.x1 - button_w, bounds.y0, bounds.x1, bounds.y1);
         let presence = PresenceCtx::empty();
-        for (hit, rect, enabled) in [
-            (previous, previous_rect, previous_enabled),
-            (next, next_rect, next_enabled),
-        ] {
+        let height = ui::widget::ControlSize::Regular.height(theme);
+        let label = format!("Page {} of {pages}", page + 1);
+        let label_w = ctx.measure_role(&label, ui::TextRole::Caption, None).width;
+        let gap = f64::from(theme.tokens.spacing.s3);
+        let mut x = bounds.x1;
+        let y0 = bounds.y0 + (bounds.height() - height) / 2.0;
+        let mut rects = Vec::new();
+        for (hit, enabled) in [(next, next_enabled), (previous, previous_enabled)] {
             if let Some((_, button)) = self
                 .collection_page_buttons
                 .iter_mut()
                 .find(|(candidate, _)| *candidate == hit)
             {
+                let label = if hit == previous { "Previous" } else { "Next" };
+                let width = ButtonFace::new(Rect::ZERO, label).intrinsic_width(ctx.text, theme);
+                let rect = Rect::new(x - width, y0, x, y0 + height);
+                x = rect.x0 - gap;
                 button.set_enabled(enabled);
                 button.apply_layout_external(rect);
                 button.draw(ctx.scene, ctx.transform, ctx.text, theme, &presence);
+                rects.push((hit, rect, enabled));
+                if hit == next {
+                    x -= label_w + gap;
+                }
             }
-            self.collection_page_hits.push((hit, rect, enabled));
         }
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            &format!("Page {} of {pages}", page + 1),
-            12.0,
-            theme.text_dim,
-            ctx.transform
-                * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
-            Some(label_w as f32),
-            TextWeight::Regular,
-        );
+        if let Some((_, next_rect, _)) = rects.first() {
+            ctx.text_role_in_band(
+                &label,
+                ui::TextRole::Caption,
+                theme.text_dim,
+                next_rect.x0 - gap - label_w,
+                Rect::new(bounds.x0, y0, bounds.x1, y0 + height),
+                None,
+            );
+        }
+        self.collection_page_hits.extend(rects);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the import status banner keeps its progress, actions and exact hit geometry together"
-    )]
+    /// How many albums, people or places one collection page shows.
+    fn collection_page_size(&self, previous: CollectionPageHit) -> usize {
+        if matches!(previous, CollectionPageHit::AlbumsPrevious)
+            && self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        }
+    }
+
+    /// The title and the one-line summary of the folder import in flight or
+    /// just finished, if any.
+    fn directory_import_summary(&self) -> Option<(String, String, usize, bool)> {
+        let plural = |count: usize, one: &str, many: &str| {
+            if count == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{count} {many}")
+            }
+        };
+        if let Some(job) = self.directory_import.as_ref() {
+            let title = if job.mode == DirectoryImportMode::Import {
+                "Importing photo folder"
+            } else {
+                "Reindexing photo folder"
+            };
+            let mut summary = format!("{} of {} imported", job.imported, job.discovered);
+            if !job.failures.is_empty() {
+                summary.push_str(", ");
+                summary.push_str(&plural(job.failures.len(), "issue", "issues"));
+            }
+            return Some((title.to_owned(), summary, job.failures.len(), true));
+        }
+        let receipt = self.directory_import_receipt.as_ref()?;
+        let title = match (receipt.cancelled, receipt.mode) {
+            (true, _) => "Import stopped",
+            (false, DirectoryImportMode::Reindex) => "Reindex complete",
+            (false, DirectoryImportMode::Import) => "Import complete",
+        };
+        let mut summary = format!(
+            "{} found: {} imported, {} refreshed, {} unchanged",
+            receipt.discovered, receipt.imported, receipt.refreshed, receipt.unchanged
+        );
+        if receipt.failure_count > 0 {
+            summary.push_str(", ");
+            summary.push_str(&plural(receipt.failure_count, "issue", "issues"));
+        }
+        if receipt.limit_reached {
+            summary.push_str(". The folder limit was reached");
+        }
+        Some((title.to_owned(), summary, receipt.failure_count, false))
+    }
+
+    /// The folder import's progress or result, on the floating material at
+    /// the bottom-trailing corner of the content, with its actions.
     fn draw_directory_import_status(
         &mut self,
         scene: &mut Scene,
@@ -8450,158 +7420,99 @@ impl PhotosApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        use vello::peniko::Fill;
-        let (title, summary, issue_count, active) =
-            if let Some(job) = self.directory_import.as_ref() {
-                (
-                    if job.mode == DirectoryImportMode::Import {
-                        "Importing photo folder"
-                    } else {
-                        "Reindexing photo folder"
-                    }
-                    .to_owned(),
-                    format!(
-                        "{} found · {} imported · {} refreshed · {} issue{}",
-                        job.discovered,
-                        job.imported,
-                        job.refreshed,
-                        job.failures.len(),
-                        if job.failures.len() == 1 { "" } else { "s" }
-                    ),
-                    job.failures.len(),
-                    true,
-                )
-            } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
-                let noun = if receipt.mode == DirectoryImportMode::Reindex {
-                    "Reindex complete"
-                } else {
-                    "Import complete"
-                };
-                (
-                    noun.to_owned(),
-                    format!(
-                        "{} found · {} imported · {} refreshed · {} unchanged · {} issue{}{}{}",
-                        receipt.discovered,
-                        receipt.imported,
-                        receipt.refreshed,
-                        receipt.unchanged,
-                        receipt.failure_count,
-                        if receipt.failure_count == 1 { "" } else { "s" },
-                        if receipt.cancelled {
-                            " · cancelled"
-                        } else {
-                            ""
-                        },
-                        if receipt.limit_reached {
-                            " · folder limit reached"
-                        } else {
-                            ""
-                        },
-                    ),
-                    receipt.failure_count,
-                    false,
-                )
-            } else {
-                self.directory_import_details_layout = None;
-                return;
-            };
-        let compact = self.canvas_rect.width() < 620.0;
-        let height = if compact { 142.0 } else { 98.0 };
-        let bounds = Rect::new(
-            self.canvas_rect.x0 + 16.0,
-            (self.canvas_rect.y1 - height - 12.0).max(self.canvas_rect.y0 + 8.0),
-            self.canvas_rect.x1 - 16.0,
-            self.canvas_rect.y1 - 12.0,
+        let Some((title, summary, issue_count, active)) = self.directory_import_summary() else {
+            for (_, button) in &mut self.directory_import_buttons {
+                button.set_enabled(false);
+                button.apply_layout_external(Rect::ZERO);
+            }
+            return;
+        };
+        let spacing = &theme.tokens.spacing;
+        let pad = f64::from(spacing.s4);
+        let gap = f64::from(spacing.s2);
+        let outer = f64::from(spacing.s4);
+        let width = (self.canvas_rect.width() - 2.0 * outer)
+            .min(f64::from(theme.tokens.metrics.panel_width_list) * 1.2);
+        let inner_w = width - 2.0 * pad;
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &ink);
+        let title_style = ink.text(ui::TextRole::Body).strong();
+        let title_h = f64::from(
+            ctx.text
+                .measure_style(&title, Some(inner_w as f32), &title_style)
+                .1,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(bounds, 10.0),
+        let summary_h = ctx
+            .measure_role(&summary, ui::TextRole::Caption, Some(inner_w as f32))
+            .height;
+        let progress_h = if active {
+            f64::from(theme.tokens.radii.detail) * 2.0 + gap
+        } else {
+            0.0
+        };
+        let button_h = ui::widget::ControlSize::Regular.height(theme);
+        let height =
+            pad + title_h + f64::from(spacing.s1) + summary_h + progress_h + gap + button_h + pad;
+        let panel = Rect::new(
+            self.canvas_rect.x1 - outer - width,
+            self.canvas_rect.y1 - outer - height,
+            self.canvas_rect.x1 - outer,
+            self.canvas_rect.y1 - outer,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(bounds, 10.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
+        ui::widget::floating_surface::paint(ctx.scene, transform, panel, theme);
+        let mut y = panel.y0 + pad;
+        ctx.text(
             &title,
-            14.0,
-            theme.text_primary,
-            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 15.0)),
-            Some((bounds.width() - if compact { 32.0 } else { 260.0 }) as f32),
-            TextWeight::Semibold,
+            &title_style,
+            ink.text_primary,
+            Point::new(panel.x0 + pad, y),
+            Some(inner_w as f32),
         );
-        text_renderer.draw_text_weighted(
-            scene,
+        y += title_h + f64::from(spacing.s1);
+        ctx.text_role(
             &summary,
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 41.0)),
-            Some((bounds.width() - if compact { 32.0 } else { 260.0 }) as f32),
-            TextWeight::Regular,
+            ui::TextRole::Caption,
+            ink.text_dim,
+            Point::new(panel.x0 + pad, y),
+            Some(inner_w as f32),
         );
-
+        y += summary_h + gap;
         if active {
-            let progress_right = if compact {
-                bounds.x1 - 16.0
-            } else {
-                bounds.x1 - 244.0
-            };
-            self.directory_import_progress
-                .apply_layout_external(Rect::new(
-                    bounds.x0 + 16.0,
-                    bounds.y0 + 68.0,
-                    progress_right,
-                    bounds.y0 + 76.0,
-                ));
+            let bar = Rect::new(
+                panel.x0 + pad,
+                y,
+                panel.x1 - pad,
+                y + f64::from(theme.tokens.radii.detail) * 2.0,
+            );
+            self.directory_import_progress.apply_layout_external(bar);
             self.directory_import_progress.draw(
-                scene,
+                ctx.scene,
                 transform,
-                text_renderer,
-                theme,
+                ctx.text,
+                &ink,
                 &PresenceCtx::empty(),
             );
         }
-
         let visible = |hit| match hit {
             DirectoryStatusHit::Stop => active,
             DirectoryStatusHit::Details => issue_count > 0,
             DirectoryStatusHit::Dismiss => !active,
         };
-        let mut shown = self
-            .directory_import_buttons
-            .iter()
-            .filter(|(hit, _)| visible(*hit))
-            .count();
-        let button_y = if compact {
-            bounds.y1 - 50.0
-        } else {
-            bounds.y0 + 29.0
-        };
-        let mut button_x = if compact {
-            bounds.x0 + 16.0
-        } else {
-            bounds.x1 - 16.0 - shown as f64 * 104.0 - shown.saturating_sub(1) as f64 * 8.0
-        };
-        for (hit, button) in &mut self.directory_import_buttons {
+        let mut x = panel.x1 - pad;
+        let y0 = panel.y1 - pad - button_h;
+        for (hit, button) in self.directory_import_buttons.iter_mut().rev() {
             if visible(*hit) {
-                let rect = Rect::new(button_x, button_y, button_x + 104.0, button_y + 40.0);
+                let label = match hit {
+                    DirectoryStatusHit::Stop => "Stop",
+                    DirectoryStatusHit::Details => "Details",
+                    DirectoryStatusHit::Dismiss => "Dismiss",
+                };
+                let width = ButtonFace::new(Rect::ZERO, label).intrinsic_width(ctx.text, &ink);
+                let rect = Rect::new(x - width, y0, x, y0 + button_h);
+                x = rect.x0 - gap;
                 button.set_enabled(true);
                 button.apply_layout_external(rect);
-                button.draw(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &PresenceCtx::empty(),
-                );
-                button_x += 112.0;
-                shown = shown.saturating_sub(1);
+                button.draw(ctx.scene, transform, ctx.text, &ink, &PresenceCtx::empty());
             } else {
                 button.set_enabled(false);
                 button.apply_layout_external(Rect::ZERO);
@@ -8609,9 +7520,11 @@ impl PhotosApp {
         }
     }
 
+    /// The folder import's issues, one page at a time, in a modal sheet over
+    /// the window. Painted in the top layer.
     #[expect(
         clippy::too_many_lines,
-        reason = "the import-issues modal keeps layout, paging, paint and hit geometry together so they cannot drift"
+        reason = "the sheet measures, lays out and paints its rows and actions in one pass"
     )]
     fn draw_directory_import_details(
         &mut self,
@@ -8619,15 +7532,16 @@ impl PhotosApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         if !self.directory_import_details_open {
             self.directory_import_details_layout = None;
             return;
         }
         let (failures, failure_count) = if let Some(job) = self.directory_import.as_ref() {
-            (&job.failures[..], job.failures.len())
+            (job.failures.clone(), job.failures.len())
         } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
-            (&receipt.failures[..], receipt.failure_count)
+            (receipt.failures.clone(), receipt.failure_count)
         } else {
             self.directory_import_details_open = false;
             self.directory_import_details_layout = None;
@@ -8644,6 +7558,61 @@ impl PhotosApp {
             .directory_import_details_page
             .min(pages.saturating_sub(1));
         let page = self.directory_import_details_page;
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        let max_width = f64::from(theme.tokens.metrics.panel_width_sheet);
+        let body_w = ui::widget::modal_dialog::body_width(window, max_width, theme);
+        let rows: Vec<(String, String, &'static str)> = failures
+            .iter()
+            .take(retained)
+            .skip(page * DIRECTORY_FAILURES_PER_PAGE)
+            .take(DIRECTORY_FAILURES_PER_PAGE)
+            .map(|failure| {
+                (
+                    failure
+                        .source
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Unavailable item")
+                        .to_owned(),
+                    failure.message.clone(),
+                    if failure.retryable {
+                        "Can retry"
+                    } else {
+                        "Needs a change"
+                    },
+                )
+            })
+            .collect();
+        let not_retained = failure_count.saturating_sub(retained);
+        let overview = if not_retained == 0 {
+            format!("Page {} of {pages}", page + 1)
+        } else {
+            format!(
+                "Showing {retained} of {failure_count} issues, page {} of {pages}",
+                page + 1
+            )
+        };
+        let overview_h = PaintCtx::new(scene, transform, text_renderer, theme)
+            .measure_role(&overview, ui::TextRole::Caption, Some(body_w as f32))
+            .height;
+        let faces: Vec<ListRowFace<'_>> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, (name, message, meta))| {
+                let face = ListRowFace::new(name).secondary(message).meta(meta);
+                if index + 1 < rows.len() {
+                    face.separator(false)
+                } else {
+                    face
+                }
+            })
+            .collect();
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let list_h: f64 = faces
+            .iter()
+            .map(|face| face.height(text_renderer, theme))
+            .sum();
+        let body_h = overview_h + gap + list_h;
         let actions = [
             ModalAction::secondary("Previous").enabled(page > 0),
             ModalAction::secondary("Next").enabled(page + 1 < pages),
@@ -8651,10 +7620,10 @@ impl PhotosApp {
         ];
         let base_spec = ModalSpec::new("Folder import issues")
             .actions(&actions)
-            .body_height(282.0)
-            .max_width(620.0)
+            .body_height(body_h)
+            .max_width(max_width)
             .dismiss_on_scrim(true);
-        let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
+        let layout = ui::widget::modal_dialog::layout(window, &base_spec, text_renderer, theme);
         let hovered = |index: usize| {
             layout
                 .actions
@@ -8672,170 +7641,76 @@ impl PhotosApp {
         ];
         let spec = ModalSpec::new("Folder import issues")
             .actions(&actions)
-            .body_height(282.0)
-            .max_width(620.0)
+            .body_height(body_h)
+            .max_width(max_width)
             .dismiss_on_scrim(true)
             .close_hovered(layout.close.is_some_and(|rect| rect.contains(self.pointer)));
-        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
-        let (ink, dim) = ModalFrame::ink(theme);
-        let not_retained = failure_count.saturating_sub(retained);
-        let overview = if not_retained == 0 {
-            format!(
-                "{failure_count} issue{} · page {} of {pages}",
-                if failure_count == 1 { "" } else { "s" },
-                page + 1
-            )
-        } else {
-            format!(
-                "{failure_count} issues · {retained} details retained · {not_retained} additional"
-            )
-        };
-        text_renderer.draw_text_weighted(
+        ui::widget::modal_dialog::paint_backdrop(
             scene,
-            &overview,
-            12.0,
-            dim,
-            transform * Affine::translate((layout.body.x0, layout.body.y0 + 2.0)),
-            Some(layout.body.width() as f32),
-            TextWeight::Regular,
+            transform,
+            text_renderer,
+            theme,
+            &layout,
+            &spec,
         );
-        let list = Rect::new(
-            layout.body.x0,
-            layout.body.y0 + 26.0,
-            layout.body.x1,
-            layout.body.y1,
-        );
+        let sheet = theme.on_ground(ui::chrome::panel_ground(theme));
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
-            &list,
+            &layout.body,
         );
-        for (row, failure) in failures
-            .iter()
-            .take(retained)
-            .skip(page * DIRECTORY_FAILURES_PER_PAGE)
-            .take(DIRECTORY_FAILURES_PER_PAGE)
-            .enumerate()
-        {
-            let y = list.y0 + row as f64 * 58.0;
-            let name = failure
-                .source
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Unavailable item");
-            text_renderer.draw_text_weighted(
-                scene,
-                name,
-                13.0,
-                ink,
-                transform * Affine::translate((list.x0, y + 5.0)),
-                Some((list.width() - 118.0) as f32),
-                TextWeight::Semibold,
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &sheet);
+        ctx.text_role(
+            &overview,
+            ui::TextRole::Caption,
+            sheet.text_dim,
+            Point::new(layout.body.x0, layout.body.y0),
+            Some(layout.body.width() as f32),
+        );
+        let mut y = layout.body.y0 + overview_h + gap;
+        for face in &faces {
+            let h = face.height(ctx.text, &sheet);
+            face.paint(
+                &mut ctx,
+                Rect::new(layout.body.x0, y, layout.body.x1, y + h),
             );
-            text_renderer.draw_text_weighted(
-                scene,
-                if failure.retryable {
-                    "Can retry"
-                } else {
-                    "Needs a change"
-                },
-                11.0,
-                if failure.retryable {
-                    theme.accent_primary
-                } else {
-                    dim
-                },
-                transform * Affine::translate((list.x1 - 104.0, y + 6.0)),
-                Some(104.0),
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &failure.message,
-                11.0,
-                dim,
-                transform * Affine::translate((list.x0, y + 28.0)),
-                Some(list.width() as f32),
-                TextWeight::Regular,
-            );
-            if row + 1 < DIRECTORY_FAILURES_PER_PAGE {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(list.x0, y + 54.0, list.x1, y + 55.0),
-                );
-            }
+            y += h;
         }
         scene.pop_layer();
-        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
-        self.directory_import_details_layout = Some(layout);
-    }
-
-    /// Paint the shared library destination control over a canvas-owned
-    /// header. `ToggleGroup::paint` keeps the interaction language identical
-    /// to retained segmented controls while this app preserves its bounded
-    /// custom timeline/map hit testing.
-    fn draw_library_navigation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        bounds: Rect,
-    ) {
-        let labels = ["Timeline", "Albums", "People", "Places", "Analyze"];
-        let intents = [
-            PlacesHit::Timeline,
-            PlacesHit::Albums,
-            PlacesHit::People,
-            PlacesHit::Places,
-            PlacesHit::Analysis,
-        ];
-        let selected = match self.library_destination {
-            LibraryDestination::Timeline => 0,
-            LibraryDestination::Albums => 1,
-            LibraryDestination::People => 2,
-            LibraryDestination::Places => 3,
-            LibraryDestination::Analysis => 4,
-        };
-        let segment_width = bounds.width() / labels.len() as f64;
-        let segments: Vec<_> = (0..labels.len())
-            .map(|index| {
-                Rect::new(
-                    bounds.x0 + segment_width * index as f64,
-                    bounds.y0,
-                    if index + 1 == labels.len() {
-                        bounds.x1
-                    } else {
-                        bounds.x0 + segment_width * (index + 1) as f64
-                    },
-                    bounds.y1,
-                )
-            })
-            .collect();
-        ToggleGroup::paint(
+        ui::widget::modal_dialog::paint_actions(
             scene,
             transform,
             text_renderer,
             theme,
-            &SegmentedFace::new(&segments, &labels, selected)
-                .pill()
-                .radius(8.0)
-                .text_size(12.0),
+            &layout,
+            &spec,
         );
-        self.places_hits.extend(intents.into_iter().zip(segments));
+        self.directory_import_details_layout = Some(layout);
     }
 
-    /// First-class album overview. Album cards are a bounded projection over
-    /// canonical album resources; their covers reuse the asynchronous
-    /// thumbnail cache and never decode originals during paint.
+    /// The content column inside its gutters: the page edge of every library
+    /// surface.
+    fn content_frame(&self, theme: &Theme) -> Rect {
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let side = f64::from(rhythm.group);
+        let top = f64::from(rhythm.section);
+        let bounds = self.canvas_rect;
+        Rect::new(
+            bounds.x0 + side,
+            bounds.y0 + top,
+            (bounds.x1 - side).max(bounds.x0 + side),
+            (bounds.y1 - top).max(bounds.y0 + top),
+        )
+    }
+
+    /// The album overview: one media card per album, its cover the first
+    /// photograph in it, in a grid that reflows with the width. Covers come
+    /// from the bounded thumbnail cache; originals are never decoded here.
     #[expect(
         clippy::too_many_lines,
-        reason = "the album overview keeps responsive grid geometry, bounded cover paint and hit targets together"
+        reason = "the album grid lays out its rows, covers and pager in one pass"
     )]
     fn draw_albums(
         &mut self,
@@ -8845,8 +7720,6 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use vello::peniko::Fill;
-
         self.library_cards.clear();
         self.library_details_cards.clear();
         self.metadata_filter_cards.clear();
@@ -8856,545 +7729,119 @@ impl PhotosApp {
         self.album_editor_hits.clear();
         self.collection_page_hits.clear();
 
-        let bounds = self.canvas_rect;
-        let compact = bounds.width() < 700.0 || theme.text_scale > 1.25;
-        let inset = if compact { 16.0 } else { 28.0 };
-        let content = Rect::new(
-            bounds.x0 + inset,
-            bounds.y0 + 16.0,
-            bounds.x1 - inset,
-            bounds.y1 - 16.0,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Albums",
-            if compact { 23.0 } else { 28.0 },
-            theme.text_primary,
-            transform * Affine::translate((content.x0, content.y0)),
-            Some(180.0),
-            TextWeight::Semibold,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &format!(
-                "{} album{} · shared and available on every device",
-                self.library_albums.len(),
-                if self.library_albums.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ),
-            13.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0, content.y0 + 35.0)),
-            Some((content.width() - 220.0).max(120.0) as f32),
-            TextWeight::Regular,
-        );
-
-        let nav_y = if compact {
-            content.y0 + 64.0
-        } else {
-            content.y0
-        };
-        let nav_w = if compact {
-            content.width()
-        } else {
-            content.width().min(450.0)
-        };
-        let nav_x = if compact {
-            content.x0
-        } else {
-            content.x1 - nav_w
-        };
-        self.draw_library_navigation(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(nav_x, nav_y, nav_x + nav_w, nav_y + 40.0),
-        );
-
-        let actions_y = nav_y + if compact { 54.0 } else { 58.0 };
-        for (hit, rect, enabled) in [
-            (
-                AlbumEditorHit::New,
-                Rect::new(content.x0, actions_y, content.x0 + 118.0, actions_y + 44.0),
-                true,
-            ),
-            (
-                AlbumEditorHit::Edit,
-                Rect::new(
-                    content.x0 + 126.0,
-                    actions_y,
-                    content.x0 + 252.0,
-                    actions_y + 44.0,
-                ),
-                self.active_album.is_some(),
-            ),
-        ] {
-            if hit == AlbumEditorHit::Edit && !enabled {
-                continue;
-            }
-            if let Some((_, button)) = self
-                .library_album_buttons
-                .iter_mut()
-                .find(|(candidate, _)| *candidate == hit)
-            {
-                button.set_enabled(enabled);
-                button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, presence);
-            }
-            if enabled {
-                self.album_editor_hits.push((hit, rect));
-            }
-        }
-
-        let grid_y = actions_y + 62.0;
+        let content = self.content_frame(theme);
         if self.library_albums.is_empty() {
-            let empty = Rect::new(content.x0, grid_y, content.x1, content.y1);
-            draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    empty.center().x - 28.0,
-                    empty.y0 + 44.0,
-                    empty.center().x + 28.0,
-                    empty.y0 + 100.0,
-                ),
-                Icon::Image,
-                theme.text_dim,
-                1.5,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                "Bring related moments together",
-                20.0,
-                theme.text_primary,
-                transform * Affine::translate((empty.x0, empty.y0 + 118.0)),
-                Some(empty.width() as f32),
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                "Create an album, then select photographs to add them. Albums preserve shared membership and history.",
-                14.0,
-                theme.text_dim,
-                transform * Affine::translate((empty.x0, empty.y0 + 151.0)),
-                Some(empty.width() as f32),
-                TextWeight::Regular,
+            let title = tr("photos-albums-empty-title");
+            let body = tr("photos-albums-empty-body");
+            let action = tr("photos-new-album");
+            self.album_editor_hits.extend(
+                EmptyState::paint(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    self.canvas_rect,
+                    &EmptyStateContent {
+                        icon: Some(Icon::GalleryVerticalEnd),
+                        illustration: None,
+                        title: &title,
+                        message: Some(&body),
+                        action_label: Some(&action),
+                        error: false,
+                    },
+                    self.pointer,
+                )
+                .map(|rect| (AlbumEditorHit::New, rect)),
             );
             self.draw_album_editor(scene, transform, text_renderer, theme, presence);
             return;
         }
 
-        let columns = if content.width() >= 1080.0 {
-            4
-        } else if content.width() >= 720.0 {
-            3
-        } else if content.width() >= 430.0 {
-            2
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let column_gap = f64::from(rhythm.section);
+        let row_gap = f64::from(rhythm.group);
+        let extent = ui::widget::MediaSize::Regular.extent(theme);
+        let columns = ui::widget::card_columns(content.width(), extent, column_gap).max(1);
+        let card_w = ui::widget::card_column_width(content.width(), columns, column_gap);
+        let page_size = self.collection_page_size(CollectionPageHit::AlbumsPrevious);
+        let pages = self.library_albums.len().div_ceil(page_size).max(1);
+        let pager_h = if pages > 1 {
+            ui::widget::ControlSize::Regular.height(theme) + row_gap
         } else {
-            1
+            0.0
         };
-        let gap = if compact { 12.0 } else { 18.0 };
-        let card_w = (content.width() - gap * (columns - 1) as f64) / columns as f64;
-        let card_h = if columns == 1 { 188.0 } else { 220.0 };
-        let album_page_size = if compact { COLLECTION_PAGE_SIZE } else { 8 };
-        let start = self.albums_page * album_page_size;
-        for (index, (id, name, count)) in self
+        let start = self.albums_page * page_size;
+        let shown: Vec<(String, String, usize)> = self
             .library_albums
             .iter()
             .skip(start)
-            .take(album_page_size)
-            .enumerate()
-        {
-            let row = index / columns;
-            let column = index % columns;
-            let card = Rect::new(
-                content.x0 + column as f64 * (card_w + gap),
-                grid_y + row as f64 * (card_h + gap),
-                content.x0 + column as f64 * (card_w + gap) + card_w,
-                grid_y + row as f64 * (card_h + gap) + card_h,
-            );
-            if card.y0 >= content.y1 {
+            .take(page_size)
+            .cloned()
+            .collect();
+        let metas: Vec<String> = shown
+            .iter()
+            .map(|(_, _, count)| chrome::count_label(*count, "photo", "photos"))
+            .collect();
+        let mut y = content.y0;
+        let mut placed = Vec::new();
+        for (row_index, row) in shown.chunks(columns).enumerate() {
+            let faces: Vec<MediaCardFace<'_>> = row
+                .iter()
+                .enumerate()
+                .map(|(column, (id, name, _))| {
+                    let index = row_index * columns + column;
+                    let cover = self
+                        .library_album_covers
+                        .get(id)
+                        .and_then(|covers| covers.first())
+                        .and_then(|cover| self.thumbnail_for(cover));
+                    let art = cover.map_or(ui::widget::MediaArt::Placeholder, |image| {
+                        ui::widget::MediaArt::Image(image)
+                    });
+                    MediaCardFace::new(art)
+                        .aspect(ui::widget::MediaAspect::Square)
+                        .title(name)
+                        .meta(metas.get(index).map_or("", String::as_str))
+                })
+                .collect();
+            let text_h = faces
+                .iter()
+                .map(|face| face.text_height(text_renderer, theme, card_w))
+                .fold(0.0, f64::max);
+            let card_h = card_w + text_h;
+            if y + card_h > content.y1 - pager_h && row_index > 0 {
                 break;
             }
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if card.contains(self.pointer) {
-                    theme.bg_hover
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &RoundedRect::from_rect(card, 12.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &RoundedRect::from_rect(card, 12.0),
-            );
-            let preview = Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x1 - 8.0, card.y1 - 60.0);
-            let covers = self
-                .library_album_covers
-                .get(id)
-                .cloned()
-                .unwrap_or_default();
-            if covers.is_empty() {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &RoundedRect::from_rect(preview, 8.0),
+            for (column, (face, (id, _, _))) in faces.into_iter().zip(row).enumerate() {
+                let x = content.x0 + column as f64 * (card_w + column_gap);
+                let card = Rect::new(x, y, x + card_w, y + card_h);
+                let face = face.interaction(ui::widget::Interaction {
+                    hovered: card.contains(self.pointer),
+                    ..Default::default()
+                });
+                face.paint(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    card,
                 );
-                draw_icon(
-                    scene,
-                    transform,
-                    preview.inflate(-preview.width() * 0.35, -preview.height() * 0.28),
-                    Icon::Image,
-                    theme.text_dim,
-                    1.5,
-                );
-            } else {
-                let mosaic_columns = if covers.len() == 1 { 1 } else { 2 };
-                let mosaic_rows = covers.len().div_ceil(mosaic_columns);
-                // A slim gutter makes an album cover read as a collection of
-                // moments rather than one accidentally sliced photograph.
-                // Keep the raised preview underneath so the gutter inherits
-                // the system surface rather than a hard-coded colour.
-                let mosaic_gap = 3.0;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &RoundedRect::from_rect(preview, 8.0),
-                );
-                for (cover_index, cover_id) in covers.iter().enumerate() {
-                    let col = cover_index % mosaic_columns;
-                    let row = cover_index / mosaic_columns;
-                    let cell = Rect::new(
-                        preview.x0 + preview.width() * col as f64 / mosaic_columns as f64,
-                        preview.y0 + preview.height() * row as f64 / mosaic_rows as f64,
-                        preview.x0 + preview.width() * (col + 1) as f64 / mosaic_columns as f64,
-                        preview.y0 + preview.height() * (row + 1) as f64 / mosaic_rows as f64,
-                    );
-                    let tile = Rect::new(
-                        cell.x0 + if col == 0 { 0.0 } else { mosaic_gap * 0.5 },
-                        cell.y0 + if row == 0 { 0.0 } else { mosaic_gap * 0.5 },
-                        cell.x1
-                            - if col + 1 == mosaic_columns {
-                                0.0
-                            } else {
-                                mosaic_gap * 0.5
-                            },
-                        cell.y1
-                            - if row + 1 == mosaic_rows {
-                                0.0
-                            } else {
-                                mosaic_gap * 0.5
-                            },
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.tokens.colors.neutral[2],
-                        None,
-                        &tile,
-                    );
-                    if let Some(image) = self.library_thumbnails.get(cover_id) {
-                        let scale = (tile.width() / f64::from(image.width))
-                            .max(tile.height() / f64::from(image.height));
-                        let drawn_w = f64::from(image.width) * scale;
-                        let drawn_h = f64::from(image.height) * scale;
-                        scene.push_layer(
-                            Fill::NonZero,
-                            vello::peniko::BlendMode::default(),
-                            1.0,
-                            transform,
-                            &tile,
-                        );
-                        scene.draw_image(
-                            image,
-                            transform
-                                * Affine::translate((
-                                    tile.center().x - drawn_w * 0.5,
-                                    tile.center().y - drawn_h * 0.5,
-                                ))
-                                * Affine::scale(scale),
-                        );
-                        scene.pop_layer();
-                    } else {
-                        let icon_size = tile.width().min(tile.height()).min(36.0);
-                        draw_icon(
-                            scene,
-                            transform,
-                            Rect::new(
-                                tile.center().x - icon_size * 0.5,
-                                tile.center().y - icon_size * 0.5,
-                                tile.center().x + icon_size * 0.5,
-                                tile.center().y + icon_size * 0.5,
-                            ),
-                            Icon::Image,
-                            theme.text_dim,
-                            1.25,
-                        );
-                    }
-                }
+                placed.push((Some(id.clone()), card));
             }
-            text_renderer.draw_text_weighted(
-                scene,
-                name,
-                15.0,
-                theme.text_primary,
-                transform * Affine::translate((card.x0 + 14.0, card.y1 - 45.0)),
-                Some((card.width() - 78.0) as f32),
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &format!("{count} photo{}", if *count == 1 { "" } else { "s" }),
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((card.x0 + 14.0, card.y1 - 23.0)),
-                Some((card.width() - 78.0) as f32),
-                TextWeight::Regular,
-            );
-            let edit = Rect::new(
-                card.x1 - 54.0,
-                card.y1 - 50.0,
-                card.x1 - 10.0,
-                card.y1 - 6.0,
-            );
-            // Keep the secondary card operation on the shared button face:
-            // hover and focus feedback must agree with People, Places, and
-            // the metadata inspector even though card activation itself is
-            // handled by this bounded gallery surface.
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(edit, "")
-                    .style(ButtonStyle::Ghost)
-                    .icon(Icon::Pencil)
-                    .radius(10.0)
-                    .hovered(edit.contains(self.pointer))
-                    .accessible_name("Edit album"),
-            );
-            self.album_edit_cards.push((id.clone(), edit));
-            self.album_cards.push((Some(id.clone()), card));
+            y += card_h + row_gap;
         }
-        self.draw_collection_pager(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            Rect::new(content.x1 - 292.0, actions_y, content.x1, actions_y + 44.0),
-            self.albums_page,
-            self.library_albums.len(),
-            CollectionPageHit::AlbumsPrevious,
-            CollectionPageHit::AlbumsNext,
-        );
+        self.album_cards.extend(placed);
+        if pages > 1 {
+            let band_h = ui::widget::ControlSize::Regular.height(theme);
+            self.draw_collection_pager(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                Rect::new(content.x0, content.y1 - band_h, content.x1, content.y1),
+                self.albums_page,
+                self.library_albums.len(),
+                CollectionPageHit::AlbumsPrevious,
+                CollectionPageHit::AlbumsNext,
+            );
+        }
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Paint a small, cropped cover mosaic without decoding or retaining any
-    /// image beyond the bounded thumbnail cache.  A group of photographs is
-    /// much more legible than a generic avatar, particularly when a person
-    /// has not been named yet.
-    fn draw_people_mosaic(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        photo_ids: &[String],
-    ) {
-        use vello::peniko::Fill;
-
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.neutral[2],
-            None,
-            &RoundedRect::from_rect(rect, 10.0),
-        );
-        if photo_ids.is_empty() {
-            draw_icon(
-                scene,
-                transform,
-                rect.inflate(-rect.width() * 0.35, -rect.height() * 0.35),
-                Icon::Users,
-                theme.text_dim,
-                1.5,
-            );
-            return;
-        }
-        let count = photo_ids.len().min(4);
-        let columns = if count == 1 { 1 } else { 2 };
-        let rows = count.div_ceil(columns);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &RoundedRect::from_rect(rect, 10.0),
-        );
-        for (index, photo_id) in photo_ids.iter().take(count).enumerate() {
-            let column = index % columns;
-            let row = index / columns;
-            let tile = Rect::new(
-                rect.x0 + rect.width() * column as f64 / columns as f64,
-                rect.y0 + rect.height() * row as f64 / rows as f64,
-                rect.x0 + rect.width() * (column + 1) as f64 / columns as f64,
-                rect.y0 + rect.height() * (row + 1) as f64 / rows as f64,
-            );
-            if let Some(image) = self.library_thumbnails.get(photo_id) {
-                let scale = (tile.width() / f64::from(image.width))
-                    .max(tile.height() / f64::from(image.height));
-                let drawn_w = f64::from(image.width) * scale;
-                let drawn_h = f64::from(image.height) * scale;
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &tile,
-                );
-                scene.draw_image(
-                    image,
-                    transform
-                        * Affine::translate((
-                            tile.center().x - drawn_w * 0.5,
-                            tile.center().y - drawn_h * 0.5,
-                        ))
-                        * Affine::scale(scale),
-                );
-                scene.pop_layer();
-            } else {
-                draw_icon(
-                    scene,
-                    transform,
-                    tile.inflate(-tile.width() * 0.36, -tile.height() * 0.30),
-                    Icon::Image,
-                    theme.text_dim,
-                    1.25,
-                );
-            }
-        }
-        scene.pop_layer();
-    }
-
-    fn draw_people_card(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        card: Rect,
-        title: &str,
-        subtitle: &str,
-        photo_ids: &[String],
-        private: bool,
-        compact: bool,
-    ) {
-        use vello::peniko::Fill;
-        let theme = ctx.theme;
-
-        let hovered = card.contains(self.pointer);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            if hovered {
-                theme.bg_hover
-            } else {
-                theme.tokens.colors.surfaces.window_card
-            },
-            None,
-            &RoundedRect::from_rect(card, 12.0),
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(card, 12.0),
-        );
-        let (mosaic, copy_x, title_y, subtitle_y, copy_w) = if compact {
-            (
-                Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 94.0, card.y1 - 8.0),
-                card.x0 + 108.0,
-                card.y0 + 17.0,
-                card.y0 + 42.0,
-                (card.x1 - card.x0 - 130.0).max(72.0),
-            )
-        } else {
-            (
-                Rect::new(
-                    card.x0 + 10.0,
-                    card.y0 + 10.0,
-                    card.x1 - 10.0,
-                    card.y0 + 118.0,
-                ),
-                card.x0 + 14.0,
-                card.y0 + 132.0,
-                card.y0 + 156.0,
-                card.width() - 28.0,
-            )
-        };
-        self.draw_people_mosaic(ctx.scene, ctx.transform, theme, mosaic, photo_ids);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            title,
-            if compact { 15.0 } else { 16.0 },
-            theme.text_primary,
-            ctx.transform * Affine::translate((copy_x, title_y)),
-            Some(copy_w as f32),
-            TextWeight::Semibold,
-        );
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            subtitle,
-            12.0,
-            theme.text_dim,
-            ctx.transform * Affine::translate((copy_x, subtitle_y)),
-            Some(copy_w as f32),
-            TextWeight::Regular,
-        );
-        if private {
-            let private_x = if compact { copy_x } else { card.x0 + 14.0 };
-            let private_y = if compact {
-                card.y0 + 64.0
-            } else {
-                card.y0 + 180.0
-            };
-            draw_icon(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(private_x, private_y, private_x + 14.0, private_y + 14.0),
-                Icon::Shield,
-                theme.text_dim,
-                1.2,
-            );
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                "Private on this device",
-                11.0,
-                theme.text_dim,
-                ctx.transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
-                Some((card.x1 - private_x - 28.0) as f32),
-                TextWeight::Medium,
-            );
-        }
-    }
-
-    /// A deliberately calm People home: approved shared identities are a
-    /// collection, while local face work is a private review queue. It never
-    /// paints a made-up suggestion when no signed face model is installed.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the People home keeps overview, review queue and detail geometry together with their hit targets"
-    )]
+    /// The People surface: who you named and what this device suggests, as
+    /// media cards; one person's photographs and decisions in the detail.
+    /// It never paints a made-up suggestion when no face model is installed.
     fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -9402,57 +7849,58 @@ impl PhotosApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        use vello::peniko::Fill;
-
         self.library_cards.clear();
         self.library_details_cards.clear();
         self.metadata_filter_cards.clear();
-        let bounds = self.canvas_rect;
-        let inset = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
-        let content = Rect::new(
-            bounds.x0 + inset,
-            bounds.y0 + 18.0,
-            bounds.x1 - inset,
-            bounds.y1 - 18.0,
+        // Measure every control for the next layout.
+        for control in &mut self.people_controls {
+            if control.is_card() {
+                continue;
+            }
+            let label = if matches!(control.intent, PeopleIntent::Back) {
+                "People"
+            } else {
+                control.label.as_str()
+            };
+            let face = ButtonFace::new(Rect::ZERO, label);
+            let face = if matches!(control.intent, PeopleIntent::Back) {
+                face.icon(Icon::ChevronLeft)
+            } else {
+                face
+            };
+            control.width = face.intrinsic_width(text_renderer, theme);
+        }
+        let layout = self.people_layout.clone();
+        let frame = self.content_frame(theme);
+        // What does not fit stays inside the content column.
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.canvas_rect,
         );
-        let wide = content.width() >= 760.0;
-        let nav = Rect::new(
-            content.x0,
-            content.y0 + 62.0,
-            content.x1.min(content.x0 + 520.0),
-            content.y0 + 102.0,
-        );
-        let recognition_top = content.y0 + 118.0;
-        let recognition = Rect::new(
-            content.x0,
-            recognition_top,
-            content.x1,
-            recognition_top + if wide { 86.0 } else { 122.0 },
-        );
+        self.paint_people(scene, transform, text_renderer, theme, &layout, frame);
+        scene.pop_layer();
+    }
 
-        text_renderer.draw_text_weighted(
-            scene,
-            "People",
-            if wide { 30.0 } else { 26.0 },
-            theme.text_primary,
-            transform * Affine::translate((content.x0, content.y0)),
-            Some((content.width() - 164.0).max(160.0) as f32),
-            TextWeight::Semibold,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Your people, with private suggestions kept on this device until you choose to share a name.",
-            13.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0, content.y0 + 37.0)),
-            Some((content.width() - 164.0).max(180.0) as f32),
-            TextWeight::Regular,
-        );
-        self.draw_library_navigation(scene, transform, text_renderer, theme, nav);
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the People overview and detail paint from one shared layout"
+    )]
+    fn paint_people(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &PeopleLayout,
+        frame: Rect,
+    ) {
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
 
         if let Some(selection) = self.people_selection.clone() {
-            let body_y = content.y0 + 124.0;
-            let (title, subtitle, photo_ids, private, hidden) = match &selection {
+            let (title, summary, photo_ids, private, hidden) = match &selection {
                 PeopleSelection::Approved(name) => {
                     let ids = self
                         .people_approved
@@ -9462,9 +7910,8 @@ impl PhotosApp {
                     (
                         name.clone(),
                         format!(
-                            "{} shared photograph{}",
-                            ids.len(),
-                            if ids.len() == 1 { "" } else { "s" }
+                            "{}, shared with everyone in this library.",
+                            chrome::count_label(ids.len(), "photo", "photos")
                         ),
                         ids,
                         false,
@@ -9475,7 +7922,7 @@ impl PhotosApp {
                     || {
                         (
                             "Suggestion unavailable".to_owned(),
-                            "This local suggestion is no longer available.".to_owned(),
+                            "This suggestion is no longer on this device.".to_owned(),
                             Vec::new(),
                             true,
                             true,
@@ -9488,10 +7935,8 @@ impl PhotosApp {
                                 .clone()
                                 .unwrap_or_else(|| "Who is this?".to_owned()),
                             format!(
-                                "{} · {} photograph{}",
-                                cluster.origin.label(),
-                                cluster.photos.len(),
-                                if cluster.photos.len() == 1 { "" } else { "s" }
+                                "{} suggested on this device. Nothing is shared until you approve a name.",
+                                chrome::count_label(cluster.photos.len(), "photo", "photos")
                             ),
                             cluster.visible_photo_ids(),
                             true,
@@ -9500,394 +7945,221 @@ impl PhotosApp {
                     },
                 ),
             };
-            let panel = Rect::new(content.x0, body_y, content.x1, content.y1);
             let reveal = if theme.reduce_motion {
                 1.0_f32
             } else {
                 self.people_detail_transition.value(ui::time::now())
             };
-            scene.push_layer(
-                Fill::NonZero,
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 reveal,
                 transform,
-                &RoundedRect::from_rect(panel, 14.0),
+                &self.canvas_rect,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.window_card,
-                None,
-                &RoundedRect::from_rect(panel, 14.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &RoundedRect::from_rect(panel, 14.0),
-            );
-            let (mosaic, copy_x) = if wide {
-                (
-                    Rect::new(
-                        panel.x0 + 18.0,
-                        panel.y0 + 18.0,
-                        panel.x0 + panel.width() * 0.47,
-                        panel.y0 + 254.0,
-                    ),
-                    panel.x0 + panel.width() * 0.52,
-                )
-            } else {
-                (
-                    Rect::new(
-                        panel.x0 + 14.0,
-                        panel.y0 + 14.0,
-                        panel.x1 - 14.0,
-                        panel.y0 + 180.0,
-                    ),
-                    panel.x0 + 16.0,
-                )
-            };
-            self.draw_people_mosaic(scene, transform, theme, mosaic, &photo_ids);
-            let copy_y = if wide {
-                panel.y0 + 24.0
-            } else {
-                panel.y0 + 202.0
-            };
-            if private {
-                let badge = Rect::new(copy_x, copy_y, copy_x + 22.0, copy_y + 22.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &RoundedRect::from_rect(badge, 6.0),
+            for (rect, photo_id) in layout.detail_photos.iter().zip(photo_ids.iter()) {
+                let art = self.thumbnail_for(photo_id).map_or(
+                    ui::widget::MediaArt::Placeholder,
+                    ui::widget::MediaArt::Image,
                 );
-                draw_icon(
-                    scene,
-                    transform,
-                    badge.inflate(-5.0, -5.0),
-                    Icon::Shield,
-                    theme.text_dim,
-                    1.2,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    "PRIVATE SUGGESTION",
-                    11.0,
-                    theme.text_dim,
-                    transform * Affine::translate((copy_x + 30.0, copy_y + 3.0)),
-                    Some((panel.x1 - copy_x - 44.0) as f32),
-                    TextWeight::Semibold,
-                );
+                MediaCardFace::new(art)
+                    .aspect(ui::widget::MediaAspect::Square)
+                    .paint(&mut ctx, *rect);
             }
-            let title_y = copy_y + if private { 40.0 } else { 0.0 };
-            text_renderer.draw_text_weighted(
-                scene,
-                if self.people_merge_mode {
-                    "Combine people"
-                } else {
-                    &title
-                },
-                24.0,
-                theme.text_primary,
-                transform * Affine::translate((copy_x, title_y)),
-                Some((panel.x1 - copy_x - 20.0) as f32),
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                if self.people_merge_mode {
-                    "Choose another person or suggestion to combine with this one. Nothing is shared until you approve a named suggestion."
-                } else if hidden {
-                    "This suggestion is hidden on this device. You can return it to the review queue."
-                } else {
-                    &subtitle
-                },
-                13.0,
-                theme.text_dim,
-                transform * Affine::translate((copy_x, title_y + 36.0)),
-                Some((panel.x1 - copy_x - 20.0) as f32),
-                TextWeight::Regular,
-            );
-            if !self.people_merge_mode && !hidden {
-                text_renderer.draw_text_weighted(
-                    scene,
+            if let Some(at) = layout.detail_title {
+                let title = if self.people_merge_mode {
                     if private {
-                        "Name this person"
+                        "Combine with another suggestion"
                     } else {
-                        "Display name"
-                    },
-                    12.0,
-                    theme.text_dim,
-                    transform * Affine::translate((copy_x, title_y + 82.0)),
-                    Some((panel.x1 - copy_x - 20.0) as f32),
-                    TextWeight::Medium,
-                );
-                if wide {
-                    text_renderer.draw_text_weighted(
-                        scene,
-                        if private {
-                            "Approving adds only this name and these photo memberships to the shared library."
-                        } else {
-                            "This name and its photo memberships are shared with your collaborators."
-                        },
-                        12.0,
-                        theme.text_dim,
-                        transform * Affine::translate((copy_x, panel.y1 - 42.0)),
-                        Some((panel.x1 - copy_x - 20.0) as f32),
-                        TextWeight::Regular,
-                    );
+                        "Merge with another person"
+                    }
+                } else {
+                    title.as_str()
+                };
+                let width = (frame.width()) as f32;
+                let style = theme.text(ui::TextRole::Title);
+                let shown = ctx.text.elide_to_width_style(title, width, &style);
+                ctx.text(&shown, &style, theme.text_primary, at, None);
+                if private && !self.people_merge_mode {
+                    let label = "Only on this device";
+                    let title_w = f64::from(ctx.text.measure_style(&shown, None, &style).0);
+                    let badge_w = ui::widget::BadgeFace::intrinsic_width(label, ctx.text, theme);
+                    let badge_h = ui::widget::BadgeFace::height(theme);
+                    let line = Self::line_of(theme, ui::TextRole::Title);
+                    let x = at.x + title_w + f64::from(theme.tokens.spacing.rhythm.sibling);
+                    let y = at.y + (line - badge_h) / 2.0;
+                    if x + badge_w <= frame.x1 {
+                        ui::widget::BadgeFace::new(
+                            Rect::new(x, y, x + badge_w, y + badge_h),
+                            label,
+                        )
+                        .paint(ctx.scene, transform, ctx.text, theme);
+                    }
                 }
             }
-            scene.pop_layer();
+            let text = if self.people_merge_mode {
+                "Nothing is shared until you approve a named suggestion."
+            } else if hidden {
+                "This suggestion is hidden on this device. You can return it to the review queue."
+            } else {
+                summary.as_str()
+            };
+            ctx.text_role(
+                text,
+                ui::TextRole::Body,
+                theme.text_dim,
+                Point::new(layout.detail_text.x0, layout.detail_text.y0),
+                Some(layout.detail_text.width() as f32),
+            );
+            if let Some(at) = layout.name_label {
+                ctx.text_role("Name", ui::TextRole::Label, theme.text_dim, at, None);
+            }
+            ctx.scene.pop_layer();
             return;
         }
 
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.window_card,
-            None,
-            &RoundedRect::from_rect(recognition, 12.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(recognition, 12.0),
-        );
-        let shield = Rect::new(
-            recognition.x0 + 16.0,
-            recognition.y0 + 18.0,
-            recognition.x0 + 52.0,
-            recognition.y0 + 54.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(shield, 10.0),
-        );
-        draw_icon(
-            scene,
-            transform,
-            shield.inflate(-9.0, -9.0),
-            Icon::Shield,
-            theme.text_primary,
-            1.4,
-        );
-        let recognition_copy_x = recognition.x0 + 64.0;
-        text_renderer.draw_text_weighted(
-            scene,
-            "On-device recognition",
-            15.0,
-            theme.text_primary,
-            transform * Affine::translate((recognition_copy_x, recognition.y0 + 16.0)),
-            Some(if wide {
-                300.0
-            } else {
-                (recognition.width() - 80.0) as f32
-            }),
-            TextWeight::Semibold,
-        );
+        if let Some(at) = layout.recognition_heading {
+            ctx.text_role(
+                "On-device recognition",
+                ui::TextRole::Heading,
+                theme.text_primary,
+                at,
+                None,
+            );
+        }
         let scan_state = match self.people_scan_progress.status.as_str() {
-            "running" => "Scanning locally. Suggestions will appear here for review.",
+            "running" => "Scanning on this device. Suggestions appear below for review.",
             "error" => self
                 .people_scan_progress
                 .last_error
                 .as_deref()
-                .unwrap_or("The last local scan could not finish."),
-            "cancelled" => "Scanning is paused. Start again to continue from the next local batch.",
-            _ => self.people_controller.capability().summary(),
+                .unwrap_or("The last scan on this device could not finish."),
+            "cancelled" => "Scanning is paused. Scan again to continue with the next photos.",
+            _ => match self.people_controller.capability() {
+                crate::people::FaceCapability::DisabledByOwner => {
+                    "Recognition is off. Turn it on to get private suggestions from this device."
+                }
+                crate::people::FaceCapability::NoVerifiedFaceModel => {
+                    "Recognition is on, but this device has no verified face model yet."
+                }
+                crate::people::FaceCapability::Ready { .. } => {
+                    "Suggestions stay on this device until you approve a name."
+                }
+            },
         };
-        text_renderer.draw_text_weighted(
-            scene,
+        let text_rect = layout.recognition_text;
+        let shown = ctx.text.elide_to_width_style(
             scan_state,
-            12.0,
+            text_rect.width() as f32,
+            &theme.text(ui::TextRole::Body),
+        );
+        ctx.text_role(
+            &shown,
+            ui::TextRole::Body,
             theme.text_dim,
-            transform * Affine::translate((recognition_copy_x, recognition.y0 + 42.0)),
-            Some(if wide {
-                (recognition.width() - 450.0).max(220.0) as f32
-            } else {
-                (recognition.width() - 80.0) as f32
-            }),
-            TextWeight::Regular,
+            Point::new(text_rect.x0, text_rect.y0),
+            None,
         );
-        let body_y = recognition.y1 + 30.0;
-        let people_lane_w = if wide {
-            (content.width() * 0.67).max(420.0)
-        } else {
-            content.width()
-        };
-        let review_x = if wide {
-            content.x0 + people_lane_w + 20.0
-        } else {
-            content.x0
-        };
-        let review_w = if wide {
-            content.x1 - review_x
-        } else {
-            content.width()
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            "People you’ve named",
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, body_y)),
-            Some(people_lane_w as f32),
-            TextWeight::Semibold,
-        );
-        if wide {
-            text_renderer.draw_text_weighted(
-                scene,
-                "Review queue",
-                18.0,
+
+        if let Some(at) = layout.people_heading {
+            ctx.text_role(
+                "People",
+                ui::TextRole::Heading,
                 theme.text_primary,
-                transform * Affine::translate((review_x, body_y)),
-                Some(review_w as f32),
-                TextWeight::Semibold,
+                at,
+                None,
             );
         }
-        let approved_controls: Vec<_> = self
-            .people_controls
-            .iter()
-            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
-            .collect();
-        if approved_controls.is_empty() {
-            text_renderer.draw_text_weighted(
-                scene,
-                "People you approve will be shared here as searchable collections.",
-                13.0,
+        if let Some(empty) = layout.people_empty {
+            ctx.text_role(
+                "People you name appear here for everyone in this library.",
+                ui::TextRole::Body,
                 theme.text_dim,
-                transform * Affine::translate((content.x0, body_y + 34.0)),
-                Some(people_lane_w as f32),
-                TextWeight::Regular,
+                Point::new(empty.x0, empty.y0),
+                Some(empty.width() as f32),
             );
         }
-        for control in approved_controls {
-            let PeopleIntent::OpenApproved(name) = &control.intent else {
-                continue;
-            };
-            let person = self
-                .people_approved
-                .iter()
-                .find(|person| &person.label == name);
-            let count = person.map_or(0, crate::people::SharedPerson::count);
-            let photo_ids = person.map_or_else(Vec::new, |person| person.photo_ids.clone());
-            let card = if wide {
-                Rect::new(
-                    control.bounds.x0 - 12.0,
-                    control.bounds.y0 - 176.0,
-                    control.bounds.x1 + 12.0,
-                    control.bounds.y1 + 8.0,
-                )
-            } else {
-                Rect::new(
-                    content.x0,
-                    control.bounds.y0 - 20.0,
-                    content.x1,
-                    control.bounds.y1 + 20.0,
-                )
-            };
-            self.draw_people_card(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                card,
-                name,
-                &format!(
-                    "{count} photograph{} · shared",
-                    if count == 1 { "" } else { "s" }
-                ),
-                &photo_ids,
-                false,
-                !wide,
-            );
-        }
-        if !wide {
-            let approved_count = self
-                .people_controls
-                .iter()
-                .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
-                .count();
-            text_renderer.draw_text_weighted(
-                scene,
-                "Suggestions to review",
-                18.0,
+        if let Some(at) = layout.suggestions_heading {
+            ctx.text_role(
+                "Suggestions",
+                ui::TextRole::Heading,
                 theme.text_primary,
-                transform
-                    * Affine::translate((content.x0, body_y + 42.0 + approved_count as f64 * 92.0)),
-                Some(content.width() as f32),
-                TextWeight::Semibold,
+                at,
+                None,
             );
         }
-        let suggestion_controls: Vec<_> = self
-            .people_controls
-            .iter()
-            .filter(|control| matches!(control.intent, PeopleIntent::OpenSuggestion(_)))
-            .collect();
-        if suggestion_controls.is_empty() {
-            text_renderer.draw_text_weighted(
-                scene,
-                match self.people_controller.capability() {
-                    crate::people::FaceCapability::DisabledByOwner => "Turn on recognition when you want private suggestions from this device.",
-                    crate::people::FaceCapability::NoVerifiedFaceModel => "Recognition is on, but this device does not have a verified local face model yet.",
-                    crate::people::FaceCapability::Ready { .. } => "No suggestions are waiting for review.",
-                },
-                13.0,
+        if let Some(empty) = layout.suggestions_empty {
+            ctx.text_role(
+                "No suggestions are waiting for review.",
+                ui::TextRole::Body,
                 theme.text_dim,
-                transform * Affine::translate((review_x, body_y + 34.0)),
-                Some(review_w as f32),
-                TextWeight::Regular,
+                Point::new(empty.x0, empty.y0),
+                Some(empty.width() as f32),
             );
         }
-        for control in suggestion_controls {
-            let PeopleIntent::OpenSuggestion(id) = &control.intent else {
-                continue;
+        for control in &self.people_controls {
+            let (name, count_line, private_line, photo_ids) = match &control.intent {
+                PeopleIntent::OpenApproved(name) => {
+                    let person = self
+                        .people_approved
+                        .iter()
+                        .find(|person| &person.label == name);
+                    (
+                        name.clone(),
+                        chrome::count_label(
+                            person.map_or(0, crate::people::SharedPerson::count),
+                            "photo",
+                            "photos",
+                        ),
+                        None,
+                        person.map_or_else(Vec::new, |person| person.photo_ids.clone()),
+                    )
+                }
+                PeopleIntent::OpenSuggestion(id) => {
+                    let Some(cluster) = self.people_controller.cluster(id) else {
+                        continue;
+                    };
+                    (
+                        cluster
+                            .display_name
+                            .clone()
+                            .unwrap_or_else(|| "Suggested person".to_owned()),
+                        chrome::count_label(cluster.photos.len(), "photo", "photos"),
+                        Some("Only on this device"),
+                        cluster.visible_photo_ids(),
+                    )
+                }
+                _ => continue,
             };
-            let Some(cluster) = self.people_controller.cluster(id) else {
-                continue;
-            };
-            let card = if wide {
-                Rect::new(
-                    review_x,
-                    control.bounds.y0 - 92.0,
-                    content.x1,
-                    control.bounds.y1 + 16.0,
-                )
-            } else {
-                Rect::new(
-                    content.x0,
-                    control.bounds.y0 - 20.0,
-                    content.x1,
-                    control.bounds.y1 + 20.0,
-                )
-            };
-            self.draw_people_card(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                card,
-                cluster
-                    .display_name
-                    .as_deref()
-                    .unwrap_or("Suggested person"),
-                &format!(
-                    "{} photograph{} · {}",
-                    cluster.photos.len(),
-                    if cluster.photos.len() == 1 { "" } else { "s" },
-                    cluster.origin.label()
-                ),
-                &cluster.visible_photo_ids(),
-                true,
-                true,
-            );
+            let art = photo_ids
+                .first()
+                .and_then(|id| self.thumbnail_for(id))
+                .map_or(
+                    ui::widget::MediaArt::Placeholder,
+                    ui::widget::MediaArt::Image,
+                );
+            let mut face = MediaCardFace::new(art)
+                .aspect(ui::widget::MediaAspect::Square)
+                .title(&name)
+                .meta(&count_line)
+                .interaction(ui::widget::Interaction {
+                    hovered: control.bounds.contains(self.pointer),
+                    focused: control.button.is_focused(),
+                    ..Default::default()
+                });
+            if let Some(line) = private_line {
+                face = face.meta(line);
+            }
+            face.paint(&mut ctx, control.bounds);
         }
     }
 
+    /// Photo analysis: how much of the library is searchable, the run in
+    /// progress and its controls, the local model, and the photographs that
+    /// failed. Pixels stay on this device; the compact results are shared.
     #[expect(
         clippy::too_many_lines,
-        reason = "the library-analysis surface keeps progress, controls, failure paging and hit geometry together"
+        reason = "the analysis page lays out its stats, run, model and failures in one pass"
     )]
     fn draw_library_analysis(
         &mut self,
@@ -9897,7 +8169,7 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use vello::peniko::Fill;
+        use crate::library_analysis::LibraryAnalysisPhase;
 
         self.library_cards.clear();
         self.library_details_cards.clear();
@@ -9905,406 +8177,250 @@ impl PhotosApp {
         self.places_hits.clear();
         self.library_analysis_failure_hits.clear();
 
-        let compact = self.canvas_rect.width() < 700.0 || theme.text_scale > 1.25;
-        let inset = if compact { 16.0 } else { 30.0 };
-        let content = Rect::new(
-            self.canvas_rect.x0 + inset,
-            self.canvas_rect.y0 + 16.0,
-            self.canvas_rect.x1 - inset,
-            self.canvas_rect.y1 - 16.0,
+        let frame = self.content_frame(theme);
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let (related, sibling, group) = (
+            f64::from(rhythm.related),
+            f64::from(rhythm.sibling),
+            f64::from(rhythm.group),
         );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Photo analysis",
-            if compact { 23.0 } else { 28.0 },
-            theme.text_primary,
-            transform * Affine::translate((content.x0, content.y0)),
-            Some(content.width() as f32),
-            TextWeight::Semibold,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Search inside your photographs without sending pixels away.",
-            14.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0, content.y0 + 36.0)),
-            Some(content.width() as f32),
-            TextWeight::Regular,
-        );
-        self.draw_library_navigation(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(
-                content.x0,
-                content.y0 + 58.0,
-                if compact {
-                    content.x1
-                } else {
-                    (content.x0 + 450.0).min(content.x1)
-                },
-                content.y0 + 98.0,
-            ),
-        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        let mut y = frame.y0;
 
-        let card_y = content.y0 + 116.0;
-        let card_h = if compact { 174.0 } else { 142.0 };
-        let status_card = RoundedRect::from_rect(
-            Rect::new(content.x0, card_y, content.x1, card_y + card_h),
-            12.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.window_card,
-            None,
-            &status_card,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &status_card,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent[6],
-            None,
-            &RoundedRect::from_rect(
-                Rect::new(
-                    content.x0,
-                    card_y + 10.0,
-                    content.x0 + 3.0,
-                    card_y + card_h - 10.0,
-                ),
-                2.0,
-            ),
-        );
+        // What is searchable now, ready, and waiting for its bytes.
+        let (analyzed, available, awaiting) = self.library_analysis_coverage;
+        let values = [
+            analyzed.to_string(),
+            available.to_string(),
+            awaiting.to_string(),
+        ];
+        let tiles = [
+            StatTileFace::new("Searchable", &values[0]),
+            StatTileFace::new("Ready to analyze", &values[1]),
+            StatTileFace::new("Waiting for photos", &values[2]),
+        ];
+        let tile_min = f64::from(theme.tokens.metrics.panel_width_utility) * 0.5;
+        let columns = ui::widget::card_columns(frame.width(), tile_min, sibling).clamp(1, 3);
+        let tile_w = ui::widget::card_column_width(frame.width(), columns, sibling);
+        let tile_h = tiles
+            .iter()
+            .map(|tile| tile.height(ctx.text, theme))
+            .fold(0.0, f64::max);
+        for (index, tile) in tiles.iter().enumerate() {
+            let column = index % columns;
+            let row = index / columns;
+            let x = frame.x0 + column as f64 * (tile_w + sibling);
+            let top = y + row as f64 * (tile_h + sibling);
+            tile.paint(&mut ctx, Rect::new(x, top, x + tile_w, top + tile_h));
+        }
+        y += 3usize.div_ceil(columns) as f64 * (tile_h + sibling) - sibling + group;
 
-        let (model_title, model_detail) = self.library_analysis_capability.as_ref().map_or_else(
-            || {
-                (
-                    "Local model unavailable".to_owned(),
-                    "Install and start a verified local vision model in Settings.".to_owned(),
-                )
-            },
-            |capability| {
-                let revision = capability.revision.chars().take(10).collect::<String>();
-                (
-                    capability.model_label.clone(),
-                    format!("Verified local model · revision {revision}"),
-                )
-            },
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &model_title,
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0 + 18.0, card_y + 16.0)),
-            Some(if compact {
-                (content.width() - 36.0) as f32
-            } else {
-                (content.width() * 0.42) as f32
-            }),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &model_detail,
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0 + 18.0, card_y + 42.0)),
-            Some(if compact {
-                (content.width() - 36.0) as f32
-            } else {
-                (content.width() * 0.42) as f32
-            }),
-            TextWeight::Regular,
-        );
-
+        // The run.
         let phase = self.library_analysis.phase;
         let phase_label = match phase {
-            crate::library_analysis::LibraryAnalysisPhase::Idle => "Ready",
-            crate::library_analysis::LibraryAnalysisPhase::Running => "Analyzing locally",
-            crate::library_analysis::LibraryAnalysisPhase::Paused => "Paused",
-            crate::library_analysis::LibraryAnalysisPhase::Complete => "Finished",
+            LibraryAnalysisPhase::Idle => "Search inside your photos",
+            LibraryAnalysisPhase::Running => "Analyzing on this device",
+            LibraryAnalysisPhase::Paused => "Paused",
+            LibraryAnalysisPhase::Complete => "Finished",
         };
-        let (analyzed, available, awaiting) = self.library_analysis_coverage;
-        let summary = if phase == crate::library_analysis::LibraryAnalysisPhase::Idle {
-            format!(
-                "{analyzed} searchable · {available} ready to analyze · {awaiting} awaiting local bytes"
-            )
+        ctx.text_role(
+            phase_label,
+            ui::TextRole::Heading,
+            theme.text_primary,
+            Point::new(frame.x0, y),
+            None,
+        );
+        y += Self::line_of(theme, ui::TextRole::Heading) + f64::from(rhythm.tight);
+        let summary = if phase == LibraryAnalysisPhase::Idle {
+            "Find photos by the text, scenes, objects and pets in them. Original pixels stay on this device."
+                .to_owned()
         } else {
             format!(
-                "{} of {} finished · {} succeeded · {} failed",
+                "{} of {} finished, {} failed",
                 self.library_analysis.completed,
                 self.library_analysis.total,
-                self.library_analysis.succeeded,
                 self.library_analysis.failed
             )
         };
-        text_renderer.draw_text_weighted(
-            scene,
-            phase_label,
-            13.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0 + 18.0, card_y + 72.0)),
-            Some(180.0),
-            TextWeight::Semibold,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
+        let summary_h = ctx
+            .measure_role(&summary, ui::TextRole::Body, Some(frame.width() as f32))
+            .height;
+        ctx.text_role(
             &summary,
-            12.0,
+            ui::TextRole::Body,
             theme.text_dim,
-            transform * Affine::translate((content.x0 + 18.0, card_y + 94.0)),
-            Some((content.width() - 36.0) as f32),
-            TextWeight::Regular,
+            Point::new(frame.x0, y),
+            Some(frame.width() as f32),
         );
-        if !compact {
-            for (index, (value, label)) in [
-                (analyzed, "Searchable"),
-                (available, "Ready"),
-                (awaiting, "Waiting"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let x = content.x0 + content.width() * (0.49 + index as f64 * 0.17);
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &value.to_string(),
-                    24.0,
-                    theme.text_primary,
-                    transform * Affine::translate((x, card_y + 34.0)),
-                    Some((content.width() * 0.13) as f32),
-                    TextWeight::Semibold,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    11.0,
+        y += summary_h + sibling;
+        if phase == LibraryAnalysisPhase::Idle {
+            self.library_analysis_progress
+                .apply_layout_external(Rect::ZERO);
+        } else {
+            self.library_analysis_progress
+                .set_progress(self.library_analysis.progress() as f32);
+            let bar_h = f64::from(theme.tokens.radii.detail) * 2.0;
+            self.library_analysis_progress
+                .apply_layout_external(Rect::new(frame.x0, y, frame.x1, y + bar_h));
+            self.library_analysis_progress
+                .draw(ctx.scene, transform, ctx.text, theme, presence);
+            y += bar_h + related;
+            if let Some(name) = self.library_analysis.current_name.as_deref() {
+                ctx.text_role(
+                    name,
+                    ui::TextRole::Caption,
                     theme.text_dim,
-                    transform * Affine::translate((x, card_y + 68.0)),
-                    Some((content.width() * 0.13) as f32),
-                    TextWeight::Medium,
+                    Point::new(frame.x0, y),
+                    Some(frame.width() as f32),
                 );
+                y += Self::line_of(theme, ui::TextRole::Caption);
             }
+            y += related;
         }
-        self.library_analysis_progress
-            .set_progress(self.library_analysis.progress() as f32);
-        let progress_y = card_y + if compact { 124.0 } else { 116.0 };
-        self.library_analysis_progress
-            .apply_layout_external(Rect::new(
-                content.x0 + 18.0,
-                progress_y,
-                content.x1 - 18.0,
-                progress_y + 8.0,
-            ));
-        self.library_analysis_progress
-            .draw(scene, transform, text_renderer, theme, presence);
-        if let Some(name) = self.library_analysis.current_name.as_deref() {
-            text_renderer.draw_text_weighted(
-                scene,
-                &format!("Now: {name}"),
-                11.0,
-                theme.text_dim,
-                transform * Affine::translate((content.x0 + 18.0, progress_y + 17.0)),
-                Some((content.width() - 36.0) as f32),
-                TextWeight::Regular,
-            );
-        }
-
-        let controls_y = card_y + card_h + 14.0;
         let visible_hit = match phase {
-            crate::library_analysis::LibraryAnalysisPhase::Running => LibraryAnalysisHit::Pause,
-            crate::library_analysis::LibraryAnalysisPhase::Paused => LibraryAnalysisHit::Resume,
+            LibraryAnalysisPhase::Running => LibraryAnalysisHit::Pause,
+            LibraryAnalysisPhase::Paused => LibraryAnalysisHit::Resume,
             _ => LibraryAnalysisHit::Start,
         };
-        let primary_w = if compact { content.width() } else { 250.0 };
+        let button_h = ui::widget::ControlSize::Regular.height(theme);
+        let mut x = frame.x0;
         for (hit, button) in &mut self.library_analysis_buttons {
             let visible = *hit == visible_hit
                 || (*hit == LibraryAnalysisHit::RetryFailures
                     && self.library_analysis.has_failures()
-                    && phase != crate::library_analysis::LibraryAnalysisPhase::Running);
+                    && phase != LibraryAnalysisPhase::Running);
             button.set_enabled(match *hit {
                 LibraryAnalysisHit::Start => {
                     self.library_analysis_capability.is_some() && available > 0
                 }
-                LibraryAnalysisHit::Pause => {
-                    phase == crate::library_analysis::LibraryAnalysisPhase::Running
-                }
-                LibraryAnalysisHit::Resume => {
-                    phase == crate::library_analysis::LibraryAnalysisPhase::Paused
-                }
+                LibraryAnalysisHit::Pause => phase == LibraryAnalysisPhase::Running,
+                LibraryAnalysisHit::Resume => phase == LibraryAnalysisPhase::Paused,
                 LibraryAnalysisHit::RetryFailures => self.library_analysis.has_failures(),
             });
-            let x = if *hit == LibraryAnalysisHit::RetryFailures {
-                content.x0 + primary_w + 10.0
-            } else {
-                content.x0
-            };
-            let width = if compact { content.width() } else { 250.0 };
-            let y = if compact && *hit == LibraryAnalysisHit::RetryFailures {
-                controls_y + 54.0
-            } else {
-                controls_y
-            };
             if visible {
-                button.apply_layout_external(Rect::new(x, y, x + width, y + 44.0));
-                button.draw(scene, transform, text_renderer, theme, presence);
+                let label = match hit {
+                    LibraryAnalysisHit::Start => "Analyze photos",
+                    LibraryAnalysisHit::Pause => "Pause after this photo",
+                    LibraryAnalysisHit::Resume => "Resume",
+                    LibraryAnalysisHit::RetryFailures => "Retry failed photos",
+                };
+                let icon = match hit {
+                    LibraryAnalysisHit::Start => Icon::Sparkles,
+                    LibraryAnalysisHit::Pause => Icon::Pause,
+                    LibraryAnalysisHit::Resume => Icon::Play,
+                    LibraryAnalysisHit::RetryFailures => Icon::Refresh,
+                };
+                let width = ButtonFace::new(Rect::ZERO, label)
+                    .icon(icon)
+                    .intrinsic_width(ctx.text, theme);
+                button.apply_layout_external(Rect::new(x, y, x + width, y + button_h));
+                button.draw(ctx.scene, transform, ctx.text, theme, presence);
+                x += width + related;
             } else {
                 button.apply_layout_external(Rect::ZERO);
             }
         }
+        y += button_h + group;
 
-        let info_y = controls_y
-            + if compact && self.library_analysis.has_failures() {
-                116.0
-            } else {
-                66.0
-            };
-        text_renderer.draw_text_weighted(
-            scene,
-            "What becomes searchable",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, info_y)),
-            Some(content.width() as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Descriptions, visible text, objects, and pets. Original pixels stay on this device. The compact result and its model provenance are shared with this photo library so collaborators and system search see the same truth.",
-            13.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0, info_y + 28.0)),
-            Some(content.width() as f32),
-            TextWeight::Regular,
-        );
-        let capability_cards_y = info_y + if compact { 92.0 } else { 66.0 };
-        let capability_columns = if compact { 2 } else { 4 };
-        let capability_gap = 10.0;
-        let capability_w = (content.width() - capability_gap * (capability_columns - 1) as f64)
-            / capability_columns as f64;
-        for (index, (title, detail, icon)) in [
-            ("Visible text", "Full-text OCR", Icon::Search),
-            ("Scenes", "Descriptions + objects", Icon::Sparkles),
-            ("Pets", "Separate pet facets", Icon::Star),
-            ("People", "Private review in People", Icon::Users),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let column = index % capability_columns;
-            let row = index / capability_columns;
-            let x = content.x0 + column as f64 * (capability_w + capability_gap);
-            let y = capability_cards_y + row as f64 * 70.0;
-            let card = RoundedRect::from_rect(Rect::new(x, y, x + capability_w, y + 60.0), 9.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.window_card,
-                None,
-                &card,
+        // The model that does the work.
+        let model_rows: Vec<(String, String)> =
+            self.library_analysis_capability.as_ref().map_or_else(
+                || {
+                    vec![(
+                        "Model".to_owned(),
+                        "No verified local vision model is installed. Add one in Settings."
+                            .to_owned(),
+                    )]
+                },
+                |capability| {
+                    vec![
+                        ("Model".to_owned(), capability.model_label.clone()),
+                        (
+                            "Revision".to_owned(),
+                            capability.revision.chars().take(10).collect(),
+                        ),
+                    ]
+                },
             );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &card,
-            );
-            draw_icon(
-                scene,
-                transform,
-                Rect::new(x + 14.0, y + 20.0, x + 32.0, y + 38.0),
-                icon,
-                theme.tokens.colors.accent[6],
-                1.5,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                title,
-                13.0,
-                theme.text_primary,
-                transform * Affine::translate((x + 48.0, y + 10.0)),
-                Some((capability_w - 60.0) as f32),
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                detail,
-                11.0,
-                theme.text_dim,
-                transform * Affine::translate((x + 48.0, y + 33.0)),
-                Some((capability_w - 60.0) as f32),
-                TextWeight::Regular,
+        let rows: Vec<PropertyRow<'_>> = model_rows
+            .iter()
+            .map(|(label, value)| {
+                let row = PropertyRow::new(label, value);
+                if label == "Revision" {
+                    row.with_kind(ui::TextKind::Identifier)
+                } else {
+                    row
+                }
+            })
+            .collect();
+        let list = PropertyListFace::new(&rows);
+        let list_w = frame
+            .width()
+            .min(f64::from(theme.tokens.metrics.panel_width_sheet));
+        let list_h = list.height(ctx.text, theme, list_w);
+        if y + list_h <= frame.y1 {
+            list.paint(
+                &mut ctx,
+                Rect::new(frame.x0, y, frame.x0 + list_w, y + list_h),
             );
         }
+        y += list_h + group;
 
-        let capability_rows = 4usize.div_ceil(capability_columns);
-        let failure_y = capability_cards_y + capability_rows as f64 * 70.0 + 12.0;
-        if self.library_analysis.has_failures() {
-            text_renderer.draw_text_weighted(
-                scene,
+        // Photographs the model could not read.
+        if self.library_analysis.has_failures() && y < frame.y1 {
+            ctx.text_role(
                 "Needs attention",
-                17.0,
+                ui::TextRole::Heading,
                 theme.text_primary,
-                transform * Affine::translate((content.x0, failure_y)),
-                Some(content.width() as f32),
-                TextWeight::Medium,
+                Point::new(frame.x0, y),
+                None,
             );
-            for (index, failure) in self.library_analysis.failures().rev().take(4).enumerate() {
-                let y = failure_y + 30.0 + index as f64 * 46.0;
-                let row = Rect::new(content.x0, y, content.x1, y + 40.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &row,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.semantic.danger,
-                    None,
-                    &Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &failure.name,
-                    13.0,
-                    theme.text_primary,
-                    transform * Affine::translate((row.x0 + 12.0, row.y0 + 6.0)),
-                    Some((row.width() * 0.38) as f32),
-                    TextWeight::Medium,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &failure.message,
-                    12.0,
-                    theme.text_dim,
-                    transform * Affine::translate((row.x0 + row.width() * 0.42, row.y0 + 7.0)),
-                    Some((row.width() * 0.55) as f32),
-                    TextWeight::Regular,
-                );
+            y += Self::line_of(theme, ui::TextRole::Heading) + related;
+            let failures: Vec<_> = self
+                .library_analysis
+                .failures()
+                .rev()
+                .take(4)
+                .map(|failure| {
+                    (
+                        failure.photo_id.clone(),
+                        failure.name.clone(),
+                        failure.message.clone(),
+                    )
+                })
+                .collect();
+            for (index, (photo_id, name, message)) in failures.iter().enumerate() {
+                let mut face = ListRowFace::new(name)
+                    .secondary(message)
+                    .status(ui::widget::RowStatus::Error)
+                    .disclosure();
+                if index + 1 < failures.len() {
+                    face = face.separator(false);
+                }
+                let h = face.height(ctx.text, theme);
+                if y + h > frame.y1 {
+                    break;
+                }
+                let row = Rect::new(frame.x0, y, frame.x1, y + h);
+                let face = face.interaction(ui::widget::Interaction {
+                    hovered: row.contains(self.pointer),
+                    ..Default::default()
+                });
+                face.paint(&mut ctx, row);
                 self.library_analysis_failure_hits
-                    .push((failure.photo_id.clone(), row));
+                    .push((photo_id.clone(), row));
+                y += h;
             }
         }
     }
 
-    /// Render the visible part of the library; the remainder stays reachable
-    /// through cursor-paged search and canonical resources.
+    /// The timeline: the photographs of each capture day in justified rows
+    /// at their own aspect ratios under the day's heading, scrolled by the
+    /// date index at the trailing edge. Only the rows in view are
+    /// materialised; the rest stay reachable through search and resources.
     #[expect(
         clippy::too_many_lines,
-        reason = "the library paint keeps masthead, grid/timeline geometry and bounded materialisation together"
+        reason = "the timeline lays out, paints and records the hit targets of the rows in view in one pass"
     )]
     fn draw_library(
         &mut self,
@@ -10316,646 +8432,49 @@ impl PhotosApp {
     ) {
         use vello::peniko::Fill;
 
-        let chip_radius = f64::from(theme.tokens.radii.sm);
         self.library_cards.clear();
         self.album_cards.clear();
         self.metadata_filter_cards.clear();
         self.library_page_hits.clear();
-        self.timeline_density_hits.clear();
         self.library_details_cards.clear();
         self.places_hits.clear();
         self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            let (title, body) = if !self.library_query.trim().is_empty()
-                && !self.library_query_complete
-            {
-                (
-                    "Searching photographs…".to_owned(),
-                    "Matching names, people, places, recognized text, and image descriptions locally."
-                        .to_owned(),
-                )
-            } else if self.library_query.trim().is_empty() {
+            let (title, body) = if self.timeline_unfiltered() {
                 (
                     tr("photos-library-empty-title"),
                     tr("photos-library-empty-body"),
                 )
+            } else if self.active_album.is_some() {
+                (
+                    tr("photos-album-empty-title"),
+                    tr("photos-album-empty-body"),
+                )
+            } else if self.active_favorites {
+                (
+                    tr("photos-favorites-empty-title"),
+                    tr("photos-favorites-empty-body"),
+                )
             } else {
                 (
-                    "No matching photographs".to_owned(),
-                    "Try a different name, person, place, tag, or text phrase.".to_owned(),
+                    tr("photos-filter-empty-title"),
+                    tr("photos-filter-empty-body"),
                 )
             };
             self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
-            // Empty collections are useful before the first import too; keep
-            // the same New album affordance available rather than stranding
-            // the user behind an empty-state dead end.
             self.draw_album_editor(scene, transform, text_renderer, theme, presence);
             return;
         }
-        let mut bounds = self.canvas_rect;
-        // On a desktop the details sheet is a persistent side panel, not a
-        // transient popover. Give it an actual layout lane so filters, cards,
-        // and destructive controls never continue underneath an opaque sheet
-        // and emerge as clipped half-targets at its edge.
-        if self.metadata_editor && theme.text_scale <= 1.25 && bounds.width() >= 720.0 {
-            bounds.x1 = (bounds.x1 - 560.0).max(bounds.x0);
-        }
-        // Enlarged text needs its own density rule. Five desktop cards leave
-        // only a few words of metadata per card at 200%, which makes labels
-        // overlap their independent destructive controls.
-        let large_text = theme.text_scale > 1.25;
-        let columns = timeline_column_count(bounds.width(), self.timeline_density, large_text);
-        let gap = if columns <= 2 { 8.0 } else { 16.0 };
-        let card_w =
-            ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
-                / columns as f64)
-                .max(1.0);
-        let desktop_library = !large_text && bounds.width() >= LIBRARY_DESKTOP_MASTHEAD_MIN_W;
-        // Compact library navigation is photo-first. Collections remain
-        // canonical/searchable, while their dense chip rail moves out of the
-        // small viewport instead of pushing the first date below the fold.
-        let album_h = if desktop_library {
-            // Album creation/editing shares this secondary collection rail;
-            // reserving it even for an empty library keeps those controls out
-            // of the primary destination masthead and avoids first-use layout
-            // shifts when the first album appears.
-            52.0
-        } else {
-            0.0
-        };
-        let compact_header = compact_library_header_geometry(bounds, large_text, album_h > 0.0);
-        let masthead = Rect::new(
-            bounds.x0 + f64::from(PAD),
-            bounds.y0 + 8.0,
-            bounds.x1 - f64::from(PAD),
-            bounds.y0 + 64.0,
-        );
-        // The library header is a quiet reading order, not a boxed dashboard.
-        // Photographs start immediately below it and remain the visual anchor.
-        let heading_y = if desktop_library {
-            masthead.y0 + 15.0
-        } else {
-            compact_header.title_y
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            &tr("photos-library"),
-            if desktop_library { 24.0 } else { 18.0 },
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    if desktop_library {
-                        masthead.x0 + 16.0
-                    } else {
-                        bounds.x0 + f64::from(PAD)
-                    },
-                    heading_y,
-                )),
-            Some((bounds.width() - f64::from(PAD * 2.0)) as f32),
-            TextWeight::Medium,
-        );
-        // First-class destinations use the same stable local navigation
-        // target rather than turning People/Places into a search suggestion.
-        if desktop_library {
-            self.draw_library_navigation(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(
-                    masthead.x0 + 224.0,
-                    masthead.y0 + 12.0,
-                    masthead.x1 - 224.0,
-                    masthead.y0 + 48.0,
-                ),
-            );
-        }
-        let count = if !self.library_query.trim().is_empty() && !self.library_query_complete {
-            format!("{} matches so far · searching locally", self.library_total)
-        } else if desktop_library {
-            format!("{} photographs · shared library", self.library_total)
-        } else {
-            format!("{} photos", self.library_total)
-        };
-        let count_width = if desktop_library { 260.0 } else { 180.0 };
-        text_renderer.draw_text_weighted(
-            scene,
-            &count,
-            13.0,
-            theme.text_dim,
-            transform
-                * Affine::translate((
-                    if desktop_library {
-                        masthead.x0 + 16.0
-                    } else {
-                        bounds.x0 + f64::from(PAD)
-                    },
-                    if desktop_library {
-                        heading_y + 32.0
-                    } else {
-                        compact_header.count_y
-                    },
-                )),
-            Some(count_width as f32),
-            TextWeight::Regular,
-        );
-        // Density is a first-class browsing affordance, not a hidden gesture.
-        // The two small controls are intentionally next to the count so they
-        // remain discoverable on a touch display and at 200% text.
-        let density_y = if desktop_library {
-            masthead.y0 + 16.0
-        } else {
-            compact_header.controls.y0
-        };
-        let density_x = if desktop_library {
-            bounds.x1 - f64::from(PAD) - 96.0
-        } else if large_text {
-            compact_header.controls.x1 + 8.0
-        } else {
-            // Keep the two density controls immediately before Select on a
-            // compact masthead. They previously occupied the exact same rect
-            // and painted a second control underneath it.
-            compact_header.controls.x0 - 104.0
-        };
-        for (hit, rect, enabled) in [
-            (
-                TimelineHit::ZoomOut,
-                Rect::new(density_x, density_y, density_x + 44.0, density_y + 44.0),
-                self.timeline_density > 0,
-            ),
-            (
-                TimelineHit::ZoomIn,
-                Rect::new(
-                    density_x + 52.0,
-                    density_y,
-                    density_x + 96.0,
-                    density_y + 44.0,
-                ),
-                self.timeline_density < 4,
-            ),
-        ] {
-            if let Some((_, button)) = self
-                .timeline_density_buttons
-                .iter_mut()
-                .find(|(candidate, _)| *candidate == hit)
-            {
-                button.set_enabled(enabled);
-                button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, presence);
-            }
-            if enabled {
-                self.timeline_density_hits.push((hit, rect));
-            }
-        }
-        if desktop_library && !self.library_albums.is_empty() {
-            let mut x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
-            let y = if desktop_library {
-                masthead.y1 + 13.0
-            } else {
-                compact_header.albums_y
-            };
-            if desktop_library {
-                text_renderer.draw_text_weighted(
-                    scene,
-                    "ALBUMS",
-                    10.0,
-                    theme.text_dim,
-                    transform * Affine::translate((bounds.x0 + f64::from(PAD), y + 7.0)),
-                    Some(54.0),
-                    TextWeight::Medium,
-                );
-            }
-            let mut albums = vec![(
-                None,
-                if large_text {
-                    "All".to_owned()
-                } else {
-                    format!("All photos ({})", self.library_total)
-                },
-            )];
-            albums.extend(
-                self.library_albums
-                    .iter()
-                    .skip(self.albums_page * COLLECTION_PAGE_SIZE)
-                    .take(COLLECTION_PAGE_SIZE)
-                    .map(|(id, name, count)| {
-                        (
-                            Some(id.clone()),
-                            if large_text {
-                                compact_label(name, 12)
-                            } else {
-                                format!("{name} ({count})")
-                            },
-                        )
-                    }),
-            );
-            let album_pages = self
-                .library_albums
-                .len()
-                .max(1)
-                .div_ceil(COLLECTION_PAGE_SIZE);
-            let album_chip_limit =
-                bounds.x1 - f64::from(PAD) - 232.0 - if album_pages > 1 { 308.0 } else { 0.0 };
-            for (album_id, label) in albums {
-                let width = if large_text {
-                    (label.chars().count() as f64 * 13.0 + 22.0).clamp(64.0, 190.0)
-                } else {
-                    (label.chars().count() as f64 * 7.2 + 18.0).min(150.0)
-                };
-                if x + width > album_chip_limit {
-                    break;
-                }
-                let chip = Rect::new(x, y, x + width, y + if large_text { 44.0 } else { 26.0 });
-                let selected = album_id == self.active_album;
-                // A quiet chip is a small card: raised fill plus derived edge;
-                // the album in force carries the accent (HIG §9.4/§9.5 "Chip
-                // quiet: selected accent, no edge") with ink chosen against it.
-                let ink = if selected {
-                    let fill = theme.tokens.colors.accent[6];
-                    surface::pill(scene, transform, chip, fill, None, Some(chip_radius));
-                    theme.on_surface(fill).ink
-                } else {
-                    surface::card(
-                        scene,
-                        transform,
-                        chip,
-                        chip_radius,
-                        theme.tokens.colors.surfaces.raised,
-                    );
-                    theme.text_primary
-                };
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &label,
-                    12.0,
-                    ink,
-                    transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 6.0)),
-                    Some((width - 16.0) as f32),
-                    TextWeight::Regular,
-                );
-                self.album_cards.push((album_id, chip));
-                x += width + LIB_CHIP_GAP;
-            }
-            self.draw_collection_pager(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                Rect::new(
-                    bounds.x1 - f64::from(PAD) - 292.0,
-                    y - 7.0,
-                    bounds.x1 - f64::from(PAD),
-                    y + 33.0,
-                ),
-                self.albums_page,
-                self.library_albums.len(),
-                CollectionPageHit::AlbumsPrevious,
-                CollectionPageHit::AlbumsNext,
-            );
-        }
-        // Metadata filters are deliberately in the shelf rather than hidden
-        // behind global search: folders and people are an everyday browse
-        // route.  The six-per-kind cap keeps this compact; every other label
-        // remains available through the canonical resource/search surface.
-        let header_h = if desktop_library {
-            56.0
-        } else {
-            (compact_header.timeline_y - heading_y - album_h).max(0.0)
-        };
-        let filter_y = heading_y + header_h + album_h;
-        let mut filter_x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
-        // Paging remains for the album editor's bounded membership draft;
-        // the normal timeline itself scrolls continuously by chronological row.
-        let desktop_pager =
-            self.album_editor && desktop_library && self.library_total > columns.saturating_mul(2);
-        let filter_x1 = bounds.x1 - f64::from(PAD) - if desktop_pager { 192.0 } else { 0.0 };
-        let compact_filters = columns <= 2;
-        let mut filters = vec![(
-            None,
-            None,
-            None,
-            false,
-            if compact_filters {
-                "All".to_owned()
-            } else {
-                "All metadata".to_owned()
-            },
-        )];
-        if large_text {
-            // Search and collections are the compact navigation model at
-            // 200%; do not add a third row of metadata chips.
-        } else if compact_filters {
-            // A phone has one shelf row. Show one folder *and* one explicit
-            // people label rather than filling it with folders and hiding the
-            // privacy-controlled people route.
-            if let Some((folder, count)) = self.library_folders.first() {
-                filters.push((
-                    Some(folder.clone()),
-                    None,
-                    None,
-                    false,
-                    format!("{} ({count})", compact_label(folder, 8)),
-                ));
-            }
-            if let Some((person, count)) = self.library_people.first() {
-                filters.push((
-                    None,
-                    Some(person.clone()),
-                    None,
-                    false,
-                    format!("{} ({count})", compact_label(person, 8)),
-                ));
-            }
-        }
-        if self.library_favorite_count > 0 {
-            filters.insert(
-                1,
-                (
-                    None,
-                    None,
-                    None,
-                    true,
-                    format!("Favorites ({})", self.library_favorite_count),
-                ),
-            );
-        }
-        for (folder, person, tag, favorites, label) in filters {
-            // On desktop, collections live in the album rail and the date
-            // rhythm does the browsing work.  This avoids a second dashboard
-            // row of metadata chips above every photograph.
-            if desktop_library || large_text || compact_filters {
-                break;
-            }
-            let width = if large_text {
-                (label.chars().count() as f64 * 13.0 + 22.0).clamp(64.0, 200.0)
-            } else {
-                (label.chars().count() as f64 * 6.6 + 18.0).clamp(
-                    if compact_filters { 54.0 } else { 92.0 },
-                    if compact_filters { 110.0 } else { 196.0 },
-                )
-            };
-            if filter_x + width > filter_x1 {
-                break;
-            }
-            let chip_h = if large_text { 44.0 } else { 28.0 };
-            let chip = Rect::new(filter_x, filter_y, filter_x + width, filter_y + chip_h);
-            let selected = folder.as_ref() == self.active_folder.as_ref()
-                && person.as_ref() == self.active_person.as_ref()
-                && tag.as_ref() == self.active_tag.as_ref()
-                && self.active_favorites == favorites
-                && self.active_album.is_none();
-            if selected {
-                // Accent means live (HIG §9.4): the filter in force carries
-                // the accent fill and needs no edge against it.
-                surface::pill(
-                    scene,
-                    transform,
-                    chip,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    Some(chip_radius),
-                );
-            } else {
-                surface::card(
-                    scene,
-                    transform,
-                    chip,
-                    chip_radius,
-                    theme.tokens.colors.surfaces.raised,
-                );
-            }
-            text_renderer.draw_text_weighted(
-                scene,
-                &label,
-                12.0,
-                theme.text_primary,
-                transform
-                    * Affine::translate((
-                        chip.x0 + 8.0,
-                        chip.y0 + if large_text { 10.0 } else { 7.0 },
-                    )),
-                Some((width - 16.0) as f32),
-                TextWeight::Medium,
-            );
-            self.metadata_filter_cards.push(MetadataFilterCard {
-                folder,
-                person,
-                tag,
-                favorites,
-                bounds: chip,
-            });
-            filter_x += width + 8.0;
-        }
-        if desktop_pager {
-            let previous = Rect::new(
-                filter_x1 + 8.0,
-                filter_y - 8.0,
-                filter_x1 + 92.0,
-                filter_y + 36.0,
-            );
-            let next = Rect::new(
-                previous.x1 + 8.0,
-                filter_y - 8.0,
-                previous.x1 + 92.0,
-                filter_y + 36.0,
-            );
-            for (forward, rect, label) in [(false, previous, "Previous"), (true, next, "Next")] {
-                let enabled = self.can_page_library(forward);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if enabled {
-                        theme.tokens.colors.surfaces.raised
-                    } else {
-                        theme.tokens.colors.neutral[2]
-                    },
-                    None,
-                    &rect,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &rect,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    11.0,
-                    if enabled {
-                        theme.text_primary
-                    } else {
-                        theme.text_dim
-                    },
-                    transform * Affine::translate((rect.x0 + 9.0, rect.y0 + 13.0)),
-                    Some((rect.width() - 18.0) as f32),
-                    TextWeight::Medium,
-                );
-                self.library_page_hits.push((forward, enabled, rect));
-            }
-        }
-        // Compact album actions now occupy the header's title lane (and the
-        // enlarged-text variant has its own measured row). Do not preserve
-        // the old beneath-the-chips reservation: it was an invisible 54px
-        // gutter that made a one-day timeline look prematurely finished.
-        let compact_album_actions_h = 0.0;
-        let filter_h = if desktop_library || large_text {
-            0.0
-        } else {
-            34.0
-        };
-        let pager_h = if large_text
-            && bounds.width() < 620.0
-            && self.album_editor
-            && self.library_total > 1
-        {
-            52.0
-        } else {
-            0.0
-        };
-        let pager_y = heading_y + header_h + album_h + filter_h + compact_album_actions_h;
-        if pager_h > 0.0 {
-            let previous = Rect::new(
-                bounds.x0 + f64::from(PAD),
-                pager_y + 4.0,
-                bounds.x0 + f64::from(PAD) + 116.0,
-                pager_y + 46.0,
-            );
-            let next = Rect::new(
-                bounds.x1 - f64::from(PAD) - 88.0,
-                pager_y + 4.0,
-                bounds.x1 - f64::from(PAD),
-                pager_y + 46.0,
-            );
-            for (forward, rect, label) in [(false, previous, "Previous"), (true, next, "Next")] {
-                let enabled = self.can_page_library(forward);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if enabled {
-                        theme.tokens.colors.surfaces.raised
-                    } else {
-                        theme.tokens.colors.neutral[2]
-                    },
-                    None,
-                    &rect,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    12.0,
-                    if enabled {
-                        theme.text_primary
-                    } else {
-                        theme.text_dim
-                    },
-                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 10.0)),
-                    Some((rect.width() - 20.0) as f32),
-                    TextWeight::Medium,
-                );
-                self.library_page_hits.push((forward, enabled, rect));
-            }
-            text_renderer.draw_text_weighted(
-                scene,
-                &format!("{} / {}", self.library_offset + 1, self.library_total),
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((previous.x1 + 10.0, pager_y + 14.0)),
-                Some((next.x0 - previous.x1 - 20.0).max(1.0) as f32),
-                TextWeight::Medium,
-            );
-        }
-        // Selection owns an explicit action shelf above the cards. On a
-        // narrow or enlarged-text window it becomes two comfortable rows
-        // instead of compressing five actions into an unreadable strip.
-        let selection_h = if self.selection_mode {
-            // Selection is a compact contextual task bar, not a second
-            // dashboard. Narrow and 200% layouts keep the count, one safe
-            // contextual action, and Done in the same 44px-target row.
-            52.0
-        } else {
-            0.0
-        };
-        let selection_y = pager_y + pager_h;
-        let selection_band =
-            Rect::new(bounds.x0, selection_y, bounds.x1, selection_y + selection_h);
-        self.draw_selection_controls(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            bounds,
-            masthead,
-            selection_band,
-            desktop_library,
-            compact_header.controls,
-            presence,
-        );
-        let top = selection_y + selection_h;
-        // The worker preserves source aspect ratio. A 3:2 shelf avoids the
-        // oversized letterbox trays the old 16:10 geometry produced.
-        let default_preview_h = (card_w * 0.667).clamp(
-            76.0,
-            if large_text && self.metadata_editor {
-                // The sheet owns the right side; retain one complete, bounded
-                // background card without making its action row fall below
-                // the viewport.
-                300.0
-            } else if large_text {
-                // At 200% a wide two-column card would otherwise derive a
-                // ~470 px preview from its width and leave no complete row
-                // below the enlarged browse controls. Keep a generous,
-                // aspect-preserving tray while ensuring the actions remain
-                // reachable in an ordinary 900 px desktop window.
-                if bounds.width() < 620.0 { 220.0 } else { 320.0 }
-            } else if columns == 1 {
-                320.0
-            } else if desktop_library {
-                // Two complete desktop rows are more useful than one large
-                // row above a blank canvas. The card remains comfortably
-                // wide at this three-column breakpoint.
-                168.0
-            } else {
-                178.0
-            },
-        );
-        // The footer has two text lines and an honest 44px action row. Keep
-        // it roomy instead of letting desktop density turn controls into
-        // loose glyphs or make metadata collide with a filename.
-        // Cards are photographs in every responsive mode.  A compact screen
-        // opens a card directly or enters selection; it never trades half a
-        // tile for a filename and three permanent action buttons.
-        let viewport_height = (bounds.y1 - top - f64::from(PAD)).max(0.0);
+        let frame = self.content_frame(theme);
+        let index_w = ui::widget::date_indexed_scrollbar::DEFAULT_TRACK_WIDTH;
+        let top = frame.y0;
+        let viewport_height = (self.canvas_rect.y1 - top).max(0.0);
         self.timeline_viewport_height = viewport_height;
-        let timeline_left = bounds.x0 + f64::from(PAD);
-        let timeline_width = bounds.x1 - f64::from(PAD) - 18.0 - timeline_left;
-        // Header controls need their compact arrangement well before the
-        // photographs need to collapse to a single column. Keeping those
-        // breakpoints independent gives tablets and narrow desktop strips a
-        // useful, expressive chronology instead of two enormous image rows.
-        let single_column_timeline = timeline_width < 520.0;
-        // At 200% text, retain two genuinely readable photographs rather
-        // than either stretching one tile across the whole desktop or
-        // squeezing a justified row into three narrow targets.
-        let timeline_layout_width = if large_text && !single_column_timeline {
-            timeline_width.min(1_216.0)
-        } else {
-            timeline_width
-        };
-        let timeline_target_height = if large_text && !single_column_timeline {
-            410.0
-        } else {
-            default_preview_h
-        };
+        let timeline_left = frame.x0;
+        let geometry = self.timeline_geometry(theme);
+        let timeline_width = geometry.width;
         let anchor = self.timeline_projection.anchor_at(self.timeline_scroll_y);
-        let geometry_changed = self.timeline_projection.set_geometry(TimelineGeometry {
-            width: timeline_layout_width.max(44.0),
-            target_height: timeline_target_height,
-            gap,
-            compact: single_column_timeline,
-        });
+        let geometry_changed = self.timeline_projection.set_geometry(geometry);
         if geometry_changed
             && let Some(anchor) = anchor.as_ref()
             && let Some(restored) = self
@@ -10989,376 +8508,97 @@ impl PhotosApp {
                 )
             })
             .collect();
-        self.timeline_index.set_rect(Rect::new(
-            bounds.x1 - f64::from(PAD) - ui::widget::date_indexed_scrollbar::DEFAULT_TRACK_WIDTH,
-            top + 4.0,
-            bounds.x1 - f64::from(PAD),
-            bounds.y1 - f64::from(PAD),
-        ));
+        self.timeline_index
+            .set_rect(Rect::new(frame.x1 - index_w, top, frame.x1, frame.y1));
         let visible_days = self
             .timeline_projection
             .visible_days(self.timeline_scroll_y, viewport_height);
-        // Visible geometry can move beyond the queued thumbnail window before
-        // the next sync. Resolve identities from the full authored snapshot.
         let photo_images: HashMap<_, _> = self
             .observed_content
             .iter()
             .flat_map(|content| &content.library.photos)
             .map(|photo| (photo.id.as_str(), &photo.image))
             .collect();
-        let visible_items: Vec<_> = if large_text && self.metadata_editor {
-            Vec::new()
-        } else {
-            self.timeline_projection
-                .visible_photos(self.timeline_scroll_y, viewport_height)
-                .into_iter()
-                .filter_map(|entry| {
-                    let image = photo_images.get(entry.photo.id.as_str())?;
-                    Some((
-                        LibraryItem {
-                            id: entry.photo.id.clone(),
-                            thumbnail_key: thumbnail_key(image),
-                            name: entry.photo.name.clone(),
-                            favorite: entry.photo.favorite,
-                            captured_at: entry.photo.day.clone(),
-                        },
-                        TimelineItemLayout {
-                            width: entry.width,
-                            height: entry.height,
-                        },
+        let visible_items: Vec<_> = self
+            .timeline_projection
+            .visible_photos(self.timeline_scroll_y, viewport_height)
+            .into_iter()
+            .filter_map(|entry| {
+                let image = photo_images.get(entry.photo.id.as_str())?;
+                Some((
+                    entry.photo.id.clone(),
+                    thumbnail_key(image),
+                    entry.photo.favorite,
+                    Rect::new(
                         timeline_left + entry.x,
                         top + entry.y,
-                    ))
-                })
-                .collect()
-        };
-        // Clip the moving content to the measured canvas region so a fast
-        // scroll can never paint over the search/header or status bar.
-        let timeline_clip = Rect::new(bounds.x0, top, bounds.x1, bounds.y1);
+                        timeline_left + entry.x + entry.width,
+                        top + entry.y + entry.height,
+                    ),
+                ))
+            })
+            .collect();
+        // The moving content is clipped to its region, so a fast scroll
+        // never paints over the header row or the status bar.
+        let clip = Rect::new(
+            self.canvas_rect.x0,
+            top,
+            self.canvas_rect.x1,
+            self.canvas_rect.y1,
+        );
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
-            &timeline_clip,
+            &clip,
         );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         for day in visible_days {
             let heading_y = top + day.y;
-            let day_rule = Rect::new(
-                timeline_left,
-                heading_y + 24.0,
-                bounds.x1 - f64::from(PAD) - 18.0,
-                heading_y + 25.0,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text_role(
                 &timeline_date_label(&day.key),
-                if large_text { 15.0 } else { 13.0 },
+                ui::TextRole::Subheading,
                 theme.text_primary,
-                transform * Affine::translate((day_rule.x0, heading_y + 4.0)),
-                Some(day_rule.width() as f32),
-                TextWeight::Medium,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
+                Point::new(timeline_left, heading_y),
+                Some(timeline_width as f32),
             );
         }
-        for (item, item_layout, projected_x, projected_y) in &visible_items {
-            let id = &item.id;
-            let name = &item.name;
-            let favorite = item.favorite;
-            // The desktop timeline reserves no artificial 3:2 tray.  Its
-            // width stays predictable for scrolling while every item's
-            // height is derived from document-owned intrinsic dimensions.
-            // This is stable before pixels hydrate, so decoded images never
-            // reflow the chronology under a user's pointer.
-            let card_w = item_layout.width;
-            let item_preview_h = item_layout.height;
-            let item_card_h = item_preview_h;
-            // A 200% or phone canvas may have room for the beginning of only
-            // one tall portrait. Paint that first card (the clip protects the
-            // masthead) so a chronological view never degenerates into an
-            // empty canvas plus a misleading continuation card.
-            let x = *projected_x;
-            let y = *projected_y;
-            let card = Rect::new(x, y, x + card_w, y + item_card_h);
-            let preview = Rect::new(x, y, x + card_w, y + item_preview_h);
-            let card_fully_visible = card.y0 >= top && card.y1 <= bounds.y1;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if card.contains(self.pointer) {
-                    theme.tokens.colors.neutral[3]
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &card,
+        let picking = self.selection_mode || self.album_editor;
+        for (id, key, favorite, card) in &visible_items {
+            let image = self.library_thumbnails.get(key);
+            let art = image.map_or(
+                ui::widget::MediaArt::Placeholder,
+                ui::widget::MediaArt::Image,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.neutral[2],
-                None,
-                &preview,
-            );
-            if let Some(image) = self.library_thumbnails.get(&item.thumbnail_key) {
-                let scale = (preview.width() / f64::from(image.width))
-                    .min(preview.height() / f64::from(image.height));
-                let drawn_w = f64::from(image.width) * scale;
-                let drawn_h = f64::from(image.height) * scale;
-                let image_transform = transform
-                    * Affine::translate((
-                        preview.x0 + (preview.width() - drawn_w) * 0.5,
-                        preview.y0 + (preview.height() - drawn_h) * 0.5,
-                    ))
-                    * Affine::scale(scale);
-                scene.draw_image(image, image_transform);
-            } else {
-                // Hydration is real asynchronous work. A reserved-aspect
-                // skeleton tells the difference between "arriving" and an
-                // unavailable source without fabricating a thumbnail or
-                // covering the gallery in a repeated generic image glyph.
-                let unavailable = self.thumbnail_unavailable.contains(&item.thumbnail_key);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if unavailable {
-                        theme.tokens.colors.neutral[3]
-                    } else {
-                        theme.tokens.colors.neutral[2]
-                    },
-                    None,
-                    &preview,
-                );
-                let line_w = (preview.width() * 0.34).clamp(36.0, 112.0);
-                let line = Rect::new(
-                    preview.center().x - line_w * 0.5,
-                    preview.center().y - 2.0,
-                    preview.center().x + line_w * 0.5,
-                    preview.center().y + 2.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if unavailable {
-                        theme.text_dim
-                    } else {
-                        theme.border_standard
-                    },
-                    None,
-                    &line,
-                );
-                if unavailable {
-                    let icon_rect = Rect::from_center_size(
-                        Point::new(preview.center().x, preview.center().y - 22.0),
-                        (18.0, 18.0),
-                    );
-                    draw_icon(
-                        scene,
-                        transform,
-                        icon_rect,
-                        Icon::Image,
-                        theme.text_dim,
-                        1.5,
-                    );
+            let hovered = card.contains(self.pointer) && clip.contains(self.pointer);
+            let chosen = (self.selection_mode && self.selected_photo_ids.contains(id))
+                || (self.album_editor && self.album_editor_members.contains(id));
+            MediaCardFace::new(art)
+                .aspect(ui::widget::MediaAspect::Ratio(
+                    card.width() / card.height().max(1.0),
+                ))
+                .interaction(ui::widget::Interaction {
+                    hovered: hovered && !picking,
+                    ..Default::default()
+                })
+                .paint(&mut ctx, *card);
+            let fully_visible = card.y0 >= top && card.y1 <= self.canvas_rect.y1;
+            if picking {
+                Self::paint_pick_mark(&mut ctx, *card, chosen, hovered);
+            } else if hovered && fully_visible {
+                self.paint_card_actions(&mut ctx, id, *card, *favorite);
+            }
+            if fully_visible {
+                if !picking {
+                    let actions = card_action_controls(*card, theme);
+                    self.library_details_cards
+                        .push((id.clone(), actions.details));
                 }
-            }
-            let actions = card_action_controls(card);
-            let action_y = actions.details.y0;
-            let control_w = CARD_ACTION_CONTROL_W;
-            let details = actions.details;
-            let remove = actions.remove;
-            let star = actions.favorite;
-            // Both text rows are explicitly constrained to this card. The
-            // action row owns the bottom 44px, so no title can collide with a
-            // neighboring column or a control.
-            let display_name = compact_label(
-                name,
-                ((card_w - 18.0) / if large_text { 16.0 } else { 8.0 })
-                    .floor()
-                    .max(8.0) as usize,
-            );
-            if card_fully_visible && desktop_library && !self.album_editor && !self.selection_mode {
-                if card.contains(self.pointer) {
-                    // Desktop controls are deliberately transient: the
-                    // photograph remains the dominant surface until someone
-                    // intends to act on it.
-                    if desktop_library {
-                        let overlay = Rect::new(card.x0, action_y, card.x1, card.y1);
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            theme.tokens.colors.neutral[0].with_alpha(0.78),
-                            None,
-                            &overlay,
-                        );
-                        text_renderer.draw_text_weighted(
-                            scene,
-                            &display_name,
-                            12.0,
-                            theme.text_primary,
-                            transform * Affine::translate((card.x0 + 10.0, action_y + 16.0)),
-                            Some((card.width() - control_w * 3.0 - 18.0).max(1.0) as f32),
-                            TextWeight::Medium,
-                        );
-                    }
-                    for (target, active) in [
-                        (details, details.contains(self.pointer)),
-                        (remove, remove.contains(self.pointer)),
-                        (star, star.contains(self.pointer)),
-                    ] {
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            if active {
-                                theme.bg_hover
-                            } else {
-                                theme.tokens.colors.neutral[3]
-                            },
-                            None,
-                            &Rect::new(
-                                target.x0 + 4.0,
-                                target.y0 + 4.0,
-                                target.x1 - 4.0,
-                                target.y1 - 4.0,
-                            ),
-                        );
-                    }
-                    draw_icon(
-                        scene,
-                        transform,
-                        Rect::new(
-                            details.center().x - 8.0,
-                            details.y0 + 16.0,
-                            details.center().x + 8.0,
-                            details.y0 + 32.0,
-                        ),
-                        Icon::Pencil,
-                        theme.tokens.colors.accent[6],
-                        1.5,
-                    );
-                    let confirmed = self.library_remove_confirm.as_deref() == Some(id);
-                    draw_icon(
-                        scene,
-                        transform,
-                        Rect::from_center_size(remove.center(), (16.0, 16.0)),
-                        if confirmed { Icon::Check } else { Icon::Trash2 },
-                        if confirmed {
-                            theme.tokens.colors.semantic.danger
-                        } else {
-                            theme.text_dim
-                        },
-                        1.5,
-                    );
-                    draw_icon(
-                        scene,
-                        transform,
-                        Rect::from_center_size(star.center(), (17.0, 17.0)),
-                        Icon::Star,
-                        if favorite {
-                            theme.tokens.colors.accent[6]
-                        } else {
-                            theme.text_dim
-                        },
-                        1.5,
-                    );
-                }
-                self.library_details_cards.push((id.clone(), details));
-            } else if card_fully_visible
-                && !self.album_editor
-                && !self.selection_mode
-                && card.width() >= 148.0
-            {
-                // Touch and enlarged-text layouts cannot depend on hover.
-                // Keep the image dominant while providing an honest 44px
-                // action shelf on tiles wide enough to contain all controls.
-                let overlay = Rect::new(card.x0, action_y, card.x1, card.y1);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.neutral[0].with_alpha(0.82),
-                    None,
-                    &overlay,
-                );
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::from_center_size(details.center(), (16.0, 16.0)),
-                    Icon::Pencil,
-                    theme.tokens.colors.accent[6],
-                    1.5,
-                );
-                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::from_center_size(remove.center(), (16.0, 16.0)),
-                    if confirmed { Icon::Check } else { Icon::Trash2 },
-                    if confirmed {
-                        theme.tokens.colors.semantic.danger
-                    } else {
-                        theme.text_dim
-                    },
-                    1.5,
-                );
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::from_center_size(star.center(), (17.0, 17.0)),
-                    Icon::Star,
-                    if favorite {
-                        theme.tokens.colors.accent[6]
-                    } else {
-                        theme.text_dim
-                    },
-                    1.5,
-                );
-                self.library_details_cards.push((id.clone(), details));
-            }
-            if self.album_editor && self.album_editor_members.contains(id) {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Rect::new(card.x0, card.y0, card.x1, card.y0 + 3.0),
-                );
-            }
-            if self.selection_mode && self.selected_photo_ids.contains(id) {
-                scene.stroke(
-                    &Stroke::new(3.0),
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &card,
-                );
-                let badge = Point::new(card.x1 - 24.0, card.y0 + 24.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Circle::new(badge, 15.0),
-                );
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::from_center_size(badge, (18.0, 18.0)),
-                    Icon::Check,
-                    theme.tokens.colors.surfaces.base,
-                    2.0,
-                );
-            }
-            if card_fully_visible {
-                self.library_cards.push((id.clone(), card, favorite));
+                self.library_cards.push((id.clone(), *card, *favorite));
             }
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
         if !self.album_editor && !self.metadata_editor && !self.selection_album_chooser {
             self.timeline_index.paint(
                 scene,
@@ -11371,15 +8611,142 @@ impl PhotosApp {
         }
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
-        self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, bounds);
     }
 
-    /// Render the location library as an offline-first map or an equivalent
-    /// list. The map is a reference-grid substrate, not a disguised online
-    /// tile service: opening Places never sends coordinates off-device.
+    /// The timeline's row geometry in the content column under `theme`: the
+    /// width beside the date index, the row height for the density, the
+    /// tight gap between photographs and the height of a day's heading.
+    fn timeline_geometry(&self, theme: &Theme) -> TimelineGeometry {
+        let frame = self.content_frame(theme);
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let index_w = ui::widget::date_indexed_scrollbar::DEFAULT_TRACK_WIDTH;
+        TimelineGeometry {
+            width: (frame.width() - index_w - f64::from(rhythm.related)).max(1.0),
+            target_height: timeline_row_height(theme, self.timeline_density),
+            gap: f64::from(rhythm.tight),
+            header_height: Self::line_of(theme, ui::TextRole::Subheading)
+                + f64::from(rhythm.related),
+            day_gap: f64::from(rhythm.group),
+        }
+    }
+
+    /// While photographs are being chosen, each shows whether it is in:
+    /// a check on the inverted fill when chosen, an empty ring otherwise.
+    fn paint_pick_mark(ctx: &mut PaintCtx<'_>, card: Rect, chosen: bool, hovered: bool) {
+        use vello::peniko::Fill;
+        let theme = ctx.theme;
+        let colors = &theme.tokens.colors;
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let side = f64::from(theme.tokens.metrics.icon_lg);
+        let mark = Rect::new(
+            card.x1 - inset - side,
+            card.y0 + inset,
+            card.x1 - inset,
+            card.y0 + inset + side,
+        );
+        let disc = Circle::new(mark.center(), side / 2.0);
+        if chosen {
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                colors.intent.inverted,
+                None,
+                &disc,
+            );
+            Icon::Check.draw(
+                ctx.scene,
+                ctx.transform,
+                mark.inset(-f64::from(theme.tokens.spacing.s1)),
+                colors.intent.on_inverted,
+            );
+        } else {
+            ui::floating_surface::paint_material(
+                ctx.scene,
+                ctx.transform,
+                &disc,
+                ui::floating_surface::Material::Floating,
+                theme,
+            );
+            if hovered {
+                ui::widget::paint_focus_ring(ctx.scene, ctx.transform, mark, side / 2.0, theme);
+            }
+        }
+    }
+
+    /// The hover actions of a photograph: details at the leading corner,
+    /// favourite and remove at the trailing one, each on the floating
+    /// material over the picture.
+    fn paint_card_actions(&self, ctx: &mut PaintCtx<'_>, id: &str, card: Rect, favorite: bool) {
+        let theme = ctx.theme;
+        let actions = card_action_controls(card, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let confirming = self.library_remove_confirm.as_deref() == Some(id);
+        let radius = f64::from(theme.tokens.radii.control);
+        for group in [actions.details, actions.remove.union(actions.favorite)] {
+            ui::floating_surface::paint_material(
+                ctx.scene,
+                ctx.transform,
+                &RoundedRect::from_rect(group, radius),
+                ui::floating_surface::Material::Floating,
+                theme,
+            );
+        }
+        let buttons = [
+            (
+                actions.details,
+                Icon::Pencil,
+                tr("photos-edit-details"),
+                ButtonRole::Plain,
+            ),
+            (
+                actions.remove,
+                if confirming {
+                    Icon::Check
+                } else {
+                    Icon::Trash2
+                },
+                if confirming {
+                    tr("photos-confirm-remove")
+                } else {
+                    tr("photos-remove")
+                },
+                if confirming {
+                    ButtonRole::Destructive
+                } else {
+                    ButtonRole::Plain
+                },
+            ),
+            (
+                actions.favorite,
+                Icon::Star,
+                if favorite {
+                    tr("photos-unfavorite")
+                } else {
+                    tr("photos-favorite")
+                },
+                ButtonRole::Plain,
+            ),
+        ];
+        for (rect, icon, name, role) in &buttons {
+            Button::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                &ink,
+                &ButtonFace::icon_only(*rect, *icon, name)
+                    .role(*role)
+                    .hovered(rect.contains(self.pointer)),
+            );
+        }
+    }
+
+    /// The places of the library on an offline map, with the list of places
+    /// beside it on a wide window, or the located photographs as a list. The
+    /// map is a bundled low-detail land silhouette, never a tile service:
+    /// opening Places sends no coordinate off this device.
     #[expect(
         clippy::too_many_lines,
-        reason = "the Places map and its equivalent list share one geometry pass so hit targets and paint agree"
+        reason = "the map, its markers and their hit targets share one geometry pass"
     )]
     fn draw_places(
         &mut self,
@@ -11392,174 +8759,48 @@ impl PhotosApp {
         use vello::peniko::Fill;
         self.places_hits.clear();
         self.collection_page_hits.clear();
-        let bounds = Rect::new(
-            self.canvas_rect.x0 + 10.0,
-            self.canvas_rect.y0 + 10.0,
-            self.canvas_rect.x1 - 10.0,
-            self.canvas_rect.y1 - 10.0,
-        );
-        let compact = bounds.width() < 760.0 || theme.text_scale > 1.25;
-        // Build the location projection once per frame. The heading, marker
-        // layer, and desktop rail all describe the same canonical collections
-        // without cloning or regrouping library photographs during paint.
         let place_clusters =
             crate::places::clusters(self.places_items.iter().map(|item| &item.photo));
-        let heading_h = if compact { 86.0 } else { 68.0 };
-        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + heading_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &heading,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &heading,
-        );
-        let open_place = self.places_open_key.as_ref().and_then(|key| {
-            self.places_items.iter().find_map(|item| {
-                item.photo.location.as_ref().and_then(|location| {
-                    (location.place_key() == *key).then(|| location.display_name())
-                })
-            })
-        });
-        let visible_place_count = self
-            .places_items
-            .iter()
-            .filter(|item| {
-                self.places_open_key.as_ref().is_none_or(|key| {
-                    item.photo
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| location.place_key() == *key)
-                })
-            })
-            .count();
-        text_renderer.draw_text_weighted(
-            scene,
-            open_place.as_deref().unwrap_or("Places"),
-            if compact { 23.0 } else { 25.0 },
-            theme.text_primary,
-            transform * Affine::translate((heading.x0 + 16.0, heading.y0 + 14.0)),
-            Some(if compact { 210.0 } else { 290.0 }),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &format!(
-                "{} photographs · {} named place{}{}",
-                visible_place_count,
-                place_clusters.len(),
-                if place_clusters.len() == 1 { "" } else { "s" },
-                if open_place.is_some() {
-                    " at this place"
-                } else {
-                    ""
-                }
-            ),
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((heading.x0 + 16.0, heading.y0 + 42.0)),
-            Some(if compact {
-                (heading.width() - 32.0).max(80.0) as f32
-            } else {
-                (heading.width() - 510.0).max(80.0) as f32
-            }),
-            TextWeight::Regular,
-        );
-        if compact {
-            self.draw_library_navigation(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(
-                    heading.x0 + 12.0,
-                    heading.y0 + 56.0,
-                    heading.x1 - 12.0,
-                    heading.y1 - 10.0,
-                ),
-            );
-        } else {
-            self.draw_library_navigation(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(
-                    (heading.x1 - 450.0).max(heading.x0 + 360.0),
-                    heading.y0 + 14.0,
-                    heading.x1 - 10.0,
-                    heading.y0 + 54.0,
-                ),
-            );
-        }
         if self.places_items.is_empty() {
-            self.draw_empty_state(scene, transform, text_renderer, theme, "No places yet", "Import photos with GPS metadata or add an explicit shared location in photo details. Photos does not guess or upload locations.");
+            let title = tr("photos-places-empty-title");
+            let body = tr("photos-places-empty-body");
+            EmptyState::paint(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                self.canvas_rect,
+                &EmptyStateContent {
+                    icon: Some(Icon::Globe),
+                    illustration: None,
+                    title: &title,
+                    message: Some(&body),
+                    action_label: None,
+                    error: false,
+                },
+                self.pointer,
+            );
             return;
         }
-        let content = Rect::new(bounds.x0, heading.y1 + 12.0, bounds.x1, bounds.y1);
-        let show_overview = !self.places_list_mode && self.places_open_key.is_none();
-        let rail_w = if show_overview && content.width() >= 960.0 {
-            300.0
+        if self.places_list_mode {
+            let frame = self.content_frame(theme);
+            self.draw_places_list(scene, transform, text_renderer, theme, frame);
+            return;
+        }
+        let bounds = self.canvas_rect;
+        let show_rail = self.places_open_key.is_none()
+            && bounds.width() >= f64::from(theme.tokens.metrics.compact_breakpoint);
+        let rail_w = if show_rail {
+            f64::from(theme.tokens.metrics.inspector_width)
         } else {
             0.0
         };
-        let map = Rect::new(content.x0, content.y0, content.x1 - rail_w, content.y1);
+        let map = Rect::new(bounds.x0, bounds.y0, bounds.x1 - rail_w, bounds.y1);
         self.places_map_bounds = map;
-        let rail =
-            (rail_w > 0.0).then(|| Rect::new(map.x1 + 12.0, content.y0, content.x1, content.y1));
-        let toggle = Rect::new(map.x1 - 132.0, map.y0 + 12.0, map.x1 - 12.0, map.y0 + 50.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &toggle,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &toggle,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            if self.places_list_mode {
-                "Map"
-            } else {
-                "Photo list"
-            },
-            12.0,
-            theme.text_primary,
-            transform * Affine::translate((toggle.x0 + 14.0, toggle.y0 + 11.0)),
-            Some((toggle.width() - 28.0) as f32),
-            TextWeight::Medium,
-        );
-        self.places_hits.push((PlacesHit::ToggleList, toggle));
-        if self.places_list_mode {
-            self.draw_places_list(scene, transform, text_renderer, theme, map);
-            return;
-        }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.neutral[1],
-            None,
-            &map,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &map,
-        );
+
+        // The map is content: water on the raised well, land one step off it,
+        // coasts derived from the land.
+        let colors = &theme.tokens.colors;
+        let water = colors.surfaces.raised;
+        let land = colors.lift_on(water, 1.0);
+        scene.fill(Fill::NonZero, transform, water, None, &map);
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -11567,10 +8808,6 @@ impl PhotosApp {
             transform,
             &map,
         );
-        // A bundled, deliberately low-detail land silhouette gives the
-        // offline map genuine geographic orientation without contacting a
-        // tile provider. Roads and live place data belong to Maps; Photos
-        // needs a calm spatial index that remains useful on an airplane.
         for landmass in OFFLINE_WORLD_LANDMASSES {
             let mut coast = BezPath::new();
             let mut visible_points = 0_usize;
@@ -11597,116 +8834,19 @@ impl PhotosApp {
             }
             if visible_points >= 3 {
                 coast.close_path();
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.neutral[3],
-                    None,
-                    &coast,
-                );
+                scene.fill(Fill::NonZero, transform, land, None, &coast);
                 scene.stroke(
-                    &Stroke::new(1.0),
+                    &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
                     transform,
-                    theme.tokens.colors.neutral[5],
+                    surface::edge_on(land),
                     None,
                     &coast,
                 );
             }
         }
-        // Calm offline geographic grid: it retains spatial orientation while
-        // clearly avoiding a claim that live roads/tiles were downloaded.
-        for step in 1..6 {
-            let fx = map.x0 + map.width() * f64::from(step) / 6.0;
-            let fy = map.y0 + map.height() * f64::from(step) / 6.0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(fx, map.y0, fx + 1.0, map.y1),
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(map.x0, fy, map.x1, fy + 1.0),
-            );
-        }
-        let map_summary = Rect::new(map.x0 + 14.0, map.y0 + 14.0, map.x0 + 226.0, map.y0 + 84.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised.with_alpha(0.94),
-            None,
-            &RoundedRect::from_rect(map_summary, 12.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(map_summary, 12.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Your places",
-            13.0,
-            theme.text_primary,
-            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 12.0)),
-            Some(150.0),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Drag to explore · scroll to zoom",
-            11.0,
-            theme.text_dim,
-            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 34.0)),
-            Some((map_summary.width() - 24.0) as f32),
-            TextWeight::Regular,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Offline and private",
-            11.0,
-            theme.tokens.colors.accent[8],
-            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 51.0)),
-            Some((map_summary.width() - 24.0) as f32),
-            TextWeight::Medium,
-        );
-        let zoom_out = Rect::new(map.x0 + 14.0, map.y1 - 98.0, map.x0 + 54.0, map.y1 - 58.0);
-        let zoom_in = Rect::new(map.x0 + 14.0, map.y1 - 52.0, map.x0 + 54.0, map.y1 - 12.0);
-        for (hit, rect, label) in [
-            (PlacesHit::ZoomOut, zoom_out, "−"),
-            (PlacesHit::ZoomIn, zoom_in, "+"),
-        ] {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised.with_alpha(0.94),
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                20.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 14.0, rect.y0 + 6.0)),
-                Some(16.0),
-                TextWeight::Medium,
-            );
-            self.places_hits.push((hit, rect));
-        }
         let camera_feedback = self.places_camera_feedback();
+        let marker_r = f64::from(theme.tokens.metrics.min_pointer_target) * 0.75;
+        let ring = f64::from(theme.tokens.spacing.s1) * 0.5;
         for cluster in &place_clusters {
             let location = crate::model::PhotoLocation {
                 latitude: cluster.latitude,
@@ -11724,67 +8864,54 @@ impl PhotosApp {
             if !map.contains(point) {
                 continue;
             }
-            let radius = (16.0 + (cluster.count() as f64).sqrt() * 2.5).min(25.0)
-                * (1.0 + camera_feedback * 0.10);
+            let radius = marker_r * (1.0 + camera_feedback * 0.10);
+            // A place is its photograph, ringed in the ground so it reads
+            // against land and water alike.
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[6],
+                colors.surfaces.content,
                 None,
                 &Circle::new(point, radius),
             );
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &Circle::new(point, radius),
-            );
-            if let Some(photo_id) = cluster.photo_ids.first()
-                && let Some(image) = self.library_thumbnails.get(
-                    self.thumbnail_resource_keys
-                        .get(photo_id)
-                        .unwrap_or(photo_id),
-                )
+            let inner = Circle::new(point, radius - ring * 2.0);
+            if let Some(image) = cluster
+                .photo_ids
+                .first()
+                .and_then(|photo_id| self.thumbnail_for(photo_id))
             {
-                let side = (radius * 1.25).max(18.0);
-                let scale = (side / f64::from(image.width)).min(side / f64::from(image.height));
+                let side = inner.radius * 2.0;
+                let scale = (side / f64::from(image.width)).max(side / f64::from(image.height));
                 scene.push_layer(
                     Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     1.0,
                     transform,
-                    &Circle::new(point, radius - 3.0),
+                    &inner,
                 );
-                let image_transform = transform
-                    * Affine::translate((
-                        point.x - f64::from(image.width) * scale * 0.5,
-                        point.y - f64::from(image.height) * scale * 0.5,
-                    ))
-                    * Affine::scale(scale);
-                scene.draw_image(image, image_transform);
+                scene.draw_image(
+                    image,
+                    transform
+                        * Affine::translate((
+                            point.x - f64::from(image.width) * scale * 0.5,
+                            point.y - f64::from(image.height) * scale * 0.5,
+                        ))
+                        * Affine::scale(scale),
+                );
                 scene.pop_layer();
+            } else {
+                scene.fill(Fill::NonZero, transform, land, None, &inner);
             }
-            let count_badge = Rect::from_center_size(
-                Point::new(point.x + radius - 3.0, point.y - radius + 3.0),
-                (18.0, 18.0),
+            let count = cluster.count().to_string();
+            let badge_w = ui::widget::BadgeFace::intrinsic_width(&count, text_renderer, theme);
+            let badge_h = ui::widget::BadgeFace::height(theme);
+            let badge = Rect::new(
+                point.x + radius * 0.5,
+                point.y - radius - badge_h * 0.25,
+                point.x + radius * 0.5 + badge_w,
+                point.y - radius + badge_h * 0.75,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.accent[8],
-                None,
-                &RoundedRect::from_rect(count_badge, 9.0),
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &cluster.count().to_string(),
-                10.0,
-                theme.tokens.colors.surfaces.base,
-                transform * Affine::translate((count_badge.x0 + 6.0, count_badge.y0 + 4.0)),
-                Some(10.0),
-                TextWeight::Medium,
-            );
+            ui::widget::BadgeFace::new(badge, &count).paint(scene, transform, text_renderer, theme);
             let hit = Rect::new(
                 point.x - radius,
                 point.y - radius,
@@ -11793,58 +8920,22 @@ impl PhotosApp {
             );
             self.places_hits
                 .push((PlacesHit::Place(cluster.key.clone()), hit));
-            if map.width() >= 520.0 {
-                let label_width =
-                    (cluster.label.chars().count() as f64 * 6.5 + 24.0).clamp(72.0, 180.0);
+            if !show_rail || map.width() >= f64::from(theme.tokens.metrics.panel_width_sheet) {
+                let label_w =
+                    ui::widget::BadgeFace::intrinsic_width(&cluster.label, text_renderer, theme);
                 let label_x =
-                    (point.x - label_width * 0.5).clamp(map.x0 + 6.0, map.x1 - label_width - 6.0);
-                let label_y = (point.y + radius + 8.0).min(map.y1 - 38.0);
-                let label = Rect::new(label_x, label_y, label_x + label_width, label_y + 30.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &RoundedRect::from_rect(label, 10.0),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
+                    (point.x - label_w * 0.5).clamp(map.x0, (map.x1 - label_w).max(map.x0));
+                let label_y = point.y + radius + f64::from(theme.tokens.spacing.s1);
+                ui::widget::BadgeFace::new(
+                    Rect::new(label_x, label_y, label_x + label_w, label_y + badge_h),
                     &cluster.label,
-                    10.0,
-                    theme.text_primary,
-                    transform * Affine::translate((label.x0 + 10.0, label.y0 + 8.0)),
-                    Some((label.width() - 20.0) as f32),
-                    TextWeight::Medium,
-                );
+                )
+                .paint(scene, transform, text_renderer, theme);
             }
         }
         scene.pop_layer();
-        // The mode switch belongs to map chrome, so paint it after the clipped
-        // cartography instead of letting the map substrate cover it.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &toggle,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &toggle,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Photo list",
-            12.0,
-            theme.text_primary,
-            transform * Affine::translate((toggle.x0 + 14.0, toggle.y0 + 11.0)),
-            Some((toggle.width() - 28.0) as f32),
-            TextWeight::Medium,
-        );
-        if let Some(rail) = rail {
+        if show_rail {
+            let rail = Rect::new(map.x1, bounds.y0, bounds.x1, bounds.y1);
             self.draw_places_overview_rail(
                 scene,
                 transform,
@@ -11856,10 +8947,8 @@ impl PhotosApp {
         }
     }
 
-    /// A compact, keyboard-addressable summary of the canonical collections
-    /// shown on the map.  It keeps the map spatial while making the next
-    /// useful decision obvious on a desktop: choose the city, not a random
-    /// representative photograph.
+    /// The places beside the map, one row each, so the next decision is a
+    /// place to open rather than a marker to find.
     fn draw_places_overview_rail(
         &mut self,
         scene: &mut Scene,
@@ -11869,107 +8958,58 @@ impl PhotosApp {
         rail: Rect,
         clusters: &[crate::places::PlaceCluster],
     ) {
-        use vello::peniko::Fill;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(rail, 14.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(rail, 14.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Places",
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((rail.x0 + 16.0, rail.y0 + 18.0)),
-            Some((rail.width() - 32.0) as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &format!("{} collections in this library", clusters.len()),
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((rail.x0 + 16.0, rail.y0 + 44.0)),
-            Some((rail.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        let row_h = 82.0;
-        let mut y = rail.y0 + 76.0;
-        for cluster in clusters.iter().take(5) {
-            if y + row_h > rail.y1 - 12.0 {
+        let inset = f64::from(theme.tokens.spacing.rhythm.section);
+        let frame = rail.inset(-inset);
+        let counts: Vec<String> = clusters
+            .iter()
+            .map(|cluster| chrome::count_label(cluster.count(), "photo", "photos"))
+            .collect();
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        let mut y = frame.y0;
+        for (index, (cluster, count)) in clusters.iter().zip(&counts).enumerate() {
+            let art = cluster
+                .photo_ids
+                .first()
+                .and_then(|id| self.thumbnail_for(id));
+            let mut face = ListRowFace::new(&cluster.label)
+                .secondary(count)
+                .disclosure();
+            face = match art {
+                Some(image) => face.leading(ui::widget::RowLeading::Avatar(
+                    ui::widget::AvatarFace::new(&cluster.label, &cluster.key)
+                        .square()
+                        .image(Some(image)),
+                )),
+                None => face.leading(ui::widget::RowLeading::Icon(Icon::Globe)),
+            };
+            if index + 1 < clusters.len() {
+                face = face.separator(false);
+            }
+            let h = face.height(ctx.text, theme);
+            if y + h > frame.y1 {
                 break;
             }
-            let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + row_h - 6.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.neutral[2],
-                None,
-                &RoundedRect::from_rect(row, 10.0),
-            );
-            let marker = Point::new(row.x0 + 26.0, row.y0 + row.height() * 0.5);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.accent[6],
-                None,
-                &Circle::new(marker, 14.0),
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &cluster.label,
-                14.0,
-                theme.text_primary,
-                transform * Affine::translate((row.x0 + 52.0, row.y0 + 13.0)),
-                Some((row.width() - 68.0) as f32),
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &format!(
-                    "{} photo{} · open collection",
-                    cluster.count(),
-                    if cluster.count() == 1 { "" } else { "s" }
-                ),
-                11.0,
-                theme.text_dim,
-                transform * Affine::translate((row.x0 + 52.0, row.y0 + 37.0)),
-                Some((row.width() - 68.0) as f32),
-                TextWeight::Regular,
-            );
+            let row = Rect::new(frame.x0, y, frame.x1, y + h);
+            let face = face.interaction(ui::widget::Interaction {
+                hovered: row.contains(self.pointer),
+                ..Default::default()
+            });
+            face.paint(&mut ctx, row);
             self.places_hits
                 .push((PlacesHit::Place(cluster.key.clone()), row));
-            y += row_h;
+            y += h;
         }
-        text_renderer.draw_text_weighted(
-            scene,
-            "Locations stay on your device until you choose to share them.",
-            11.0,
-            theme.text_dim,
-            transform * Affine::translate((rail.x0 + 16.0, rail.y1 - 30.0)),
-            Some((rail.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
     }
 
+    /// The located photographs as a list, a page at a time.
     fn draw_places_list(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        map: Rect,
+        frame: Rect,
     ) {
-        use vello::peniko::Fill;
         let items: Vec<PlaceItem> = self
             .places_items
             .iter()
@@ -11983,308 +9023,69 @@ impl PhotosApp {
             })
             .cloned()
             .collect();
+        let rows: Vec<(String, String, String, String)> = items
+            .iter()
+            .skip(self.places_page * COLLECTION_PAGE_SIZE)
+            .take(COLLECTION_PAGE_SIZE)
+            .map(|item| {
+                (
+                    item.photo.id.clone(),
+                    item.photo.image.name.clone(),
+                    item.photo
+                        .location
+                        .as_ref()
+                        .map_or_else(String::new, crate::model::PhotoLocation::display_name),
+                    item.photo
+                        .captured_at
+                        .as_deref()
+                        .map(timeline_date_label)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        let pager_h = ui::widget::ControlSize::Regular.height(theme);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        let mut y = frame.y0;
+        for (index, (id, name, place, date)) in rows.iter().enumerate() {
+            let mut face = ListRowFace::new(name).secondary(place).meta(date);
+            if let Some(image) = self.thumbnail_for(id) {
+                face = face.leading(ui::widget::RowLeading::Avatar(
+                    ui::widget::AvatarFace::new(name, id)
+                        .square()
+                        .image(Some(image)),
+                ));
+            }
+            if index + 1 < rows.len() {
+                face = face.separator(false);
+            }
+            let h = face.height(ctx.text, theme);
+            if y + h > frame.y1 - pager_h {
+                break;
+            }
+            let row = Rect::new(frame.x0, y, frame.x1, y + h);
+            let face = face.interaction(ui::widget::Interaction {
+                hovered: row.contains(self.pointer),
+                ..Default::default()
+            });
+            face.paint(&mut ctx, row);
+            self.places_hits.push((PlacesHit::Photo(id.clone()), row));
+            y += h;
+        }
         self.draw_collection_pager(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
+            &mut ctx,
+            Rect::new(frame.x0, frame.y1 - pager_h, frame.x1, frame.y1),
             self.places_page,
             items.len(),
             CollectionPageHit::PlacesPrevious,
             CollectionPageHit::PlacesNext,
         );
-        let mut y = map.y0 + 64.0;
-        for item in items
-            .iter()
-            .skip(self.places_page * COLLECTION_PAGE_SIZE)
-            .take(COLLECTION_PAGE_SIZE)
-        {
-            if y + 58.0 > map.y1 {
-                break;
-            }
-            let row = Rect::new(map.x0 + 12.0, y, map.x1 - 12.0, y + 50.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &row,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &row,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &item.photo.image.name,
-                14.0,
-                theme.text_primary,
-                transform * Affine::translate((row.x0 + 12.0, row.y0 + 8.0)),
-                Some((row.width() - 220.0) as f32),
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &format!(
-                    "{} · {}",
-                    item.photo.location.as_ref().map_or_else(
-                        || "Shared location".to_owned(),
-                        crate::model::PhotoLocation::display_name
-                    ),
-                    item.photo.captured_at.as_deref().unwrap_or("Undated")
-                ),
-                11.0,
-                theme.text_dim,
-                transform * Affine::translate((row.x0 + 12.0, row.y0 + 29.0)),
-                Some((row.width() - 220.0) as f32),
-                TextWeight::Regular,
-            );
-            self.places_hits
-                .push((PlacesHit::Photo(item.photo.id.clone()), row));
-            y += 58.0;
-        }
     }
 
-    #[allow(
+    /// The album picker for a selection: a modal sheet over the window, one
+    /// row per album, the chosen one lifted. Painted in the top layer.
+    #[expect(
         clippy::too_many_lines,
-        reason = "the responsive selection task bar keeps its painted controls and exact pointer hit geometry in one audited component"
-    )]
-    fn draw_selection_controls(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        bounds: Rect,
-        masthead: Rect,
-        selection_band: Rect,
-        desktop_library: bool,
-        compact_selection_rect: Rect,
-        presence: &PresenceCtx,
-    ) {
-        use vello::peniko::Fill;
-        let theme = ctx.theme;
-        let (selection_y, selection_h) = (selection_band.y0, selection_band.height());
-
-        self.selection_hits.clear();
-        self.selection_destination_hits.clear();
-        let transform = ctx.transform;
-        let draw_button = |scene: &mut Scene,
-                           text_renderer: &mut TextRenderer,
-                           hit: SelectionHit,
-                           rect: Rect,
-                           label: &str,
-                           enabled: bool,
-                           hits: &mut Vec<(SelectionHit, Rect)>| {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if enabled {
-                    theme.tokens.colors.surfaces.raised
-                } else {
-                    theme.tokens.colors.neutral[2]
-                },
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 13.0)),
-                Some((rect.width() - 20.0) as f32),
-                TextWeight::Medium,
-            );
-            if enabled {
-                hits.push((hit, rect));
-            }
-        };
-
-        if !self.selection_mode {
-            // The normal desktop masthead has intentional empty room between
-            // its destination tabs and the right-edge density controls. On
-            // compact layouts this short, named control follows the heading
-            // rather than replacing a destructive card affordance.
-            let rect = if desktop_library {
-                Rect::new(
-                    masthead.x1 - 216.0,
-                    masthead.y0 + 16.0,
-                    masthead.x1 - 104.0,
-                    masthead.y1 - 16.0,
-                )
-            } else {
-                compact_selection_rect
-            };
-            self.library_select_button.apply_layout_external(rect);
-            self.library_select_button
-                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
-            self.selection_hits.push((SelectionHit::Start, rect));
-            return;
-        }
-
-        let selected = self.selected_photo_ids.len();
-        let destination_label = self
-            .selection_destination_album
-            .as_deref()
-            .and_then(|id| {
-                self.library_albums
-                    .iter()
-                    .find(|(album_id, _, _)| album_id == id)
-                    .map(|(_, name, _)| name)
-            })
-            .map_or_else(
-                || "Choose album".to_owned(),
-                |name| format!("Add to {}", compact_label(name, 12)),
-            );
-        let wide = desktop_library && selection_h <= 52.0;
-        let x = bounds.x0 + f64::from(PAD);
-        let max_x = bounds.x1 - f64::from(PAD);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            theme.border_standard,
-            None,
-            &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
-        );
-        let label = format!("{selected} selected");
-        if wide {
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &label,
-                13.0,
-                theme.text_primary,
-                ctx.transform * Affine::translate((x + 12.0, selection_y + 15.0)),
-                Some(112.0),
-                TextWeight::Medium,
-            );
-            let mut button_x = x + 122.0;
-            for (hit, label, width, enabled) in [
-                (
-                    SelectionHit::SelectAll,
-                    "Select all",
-                    102.0,
-                    !self.library_cards.is_empty(),
-                ),
-                (SelectionHit::Clear, "Clear", 76.0, selected > 0),
-                (
-                    SelectionHit::Favorite,
-                    if self.selection_all_favorite {
-                        "Unfavorite"
-                    } else {
-                        "Favorite"
-                    },
-                    104.0,
-                    selected > 0,
-                ),
-                (
-                    SelectionHit::EditDetails,
-                    "Edit details",
-                    112.0,
-                    selected > 0,
-                ),
-                (
-                    if self.selection_destination_album.is_some() {
-                        SelectionHit::AddToAlbum
-                    } else {
-                        SelectionHit::ChooseAlbum
-                    },
-                    destination_label.as_str(),
-                    128.0,
-                    selected > 0 && !self.library_albums.is_empty(),
-                ),
-                (SelectionHit::Done, "Done", 78.0, true),
-            ] {
-                let rect = Rect::new(
-                    button_x,
-                    selection_y + 4.0,
-                    button_x + width,
-                    selection_y + 44.0,
-                );
-                draw_button(
-                    ctx.scene,
-                    ctx.text,
-                    hit,
-                    rect,
-                    label,
-                    enabled,
-                    &mut self.selection_hits,
-                );
-                button_x += width + 6.0;
-            }
-        } else {
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &label,
-                12.0,
-                theme.text_primary,
-                ctx.transform * Affine::translate((x + 10.0, selection_y + 15.0)),
-                Some(92.0),
-                TextWeight::Medium,
-            );
-            let row_y = selection_y + 4.0;
-            let middle_x = x + 98.0;
-            let middle_w = ((max_x - 84.0 - middle_x - 6.0) * 0.5).max(72.0);
-            for (hit, label, rect, enabled) in [
-                (
-                    SelectionHit::Done,
-                    "Done",
-                    Rect::new(max_x - 78.0, row_y, max_x, row_y + 40.0),
-                    true,
-                ),
-                (
-                    SelectionHit::EditDetails,
-                    "Details",
-                    Rect::new(middle_x, row_y, middle_x + middle_w, row_y + 40.0),
-                    selected > 0,
-                ),
-                (
-                    if self.selection_destination_album.is_some() {
-                        SelectionHit::AddToAlbum
-                    } else {
-                        SelectionHit::ChooseAlbum
-                    },
-                    destination_label.as_str(),
-                    Rect::new(middle_x + middle_w + 6.0, row_y, max_x - 84.0, row_y + 40.0),
-                    selected > 0 && !self.library_albums.is_empty(),
-                ),
-            ] {
-                draw_button(
-                    ctx.scene,
-                    ctx.text,
-                    hit,
-                    rect,
-                    label,
-                    enabled,
-                    &mut self.selection_hits,
-                );
-            }
-        }
-    }
-
-    /// The album picker is a real modal surface, not a third row packed into
-    /// the selection bar. That keeps 200% text, paging, and the card grid
-    /// from competing for the same few pixels. The underlying selection stays
-    /// intact but is deliberately inert until this sheet closes.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the modal keeps responsive layout, drawing, paging, and exact hit geometry together so they cannot drift"
+        reason = "the sheet measures, lays out and paints its rows and paged actions in one pass"
     )]
     fn draw_selection_destination_sheet(
         &mut self,
@@ -12292,16 +9093,13 @@ impl PhotosApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        bounds: Rect,
+        presence: &PresenceCtx,
     ) {
         self.selection_destination_hits.clear();
+        self.selection_hits.clear();
         if !self.library_mode || !self.selection_album_chooser {
             return;
         }
-        // The sheet owns the interaction tree while it is visible. The
-        // selection bar remains visible behind the scrim for context, but it
-        // cannot receive a second, conflicting command.
-        self.selection_hits.clear();
         let page_count = self
             .library_albums
             .len()
@@ -12312,131 +9110,130 @@ impl PhotosApp {
         let previous_enabled = self.selection_album_page > 0;
         let next_enabled = end < self.library_albums.len();
         let apply_enabled = self.selection_destination_album.is_some();
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        let max_width = f64::from(theme.tokens.metrics.panel_width_sheet);
 
-        // This used to be a hand-painted panel with four local button
-        // imitations.  ModalFrame gives the chooser the same elevation,
-        // close target, focus treatment, and platform action order as the
-        // People and metadata surfaces while retaining its canonical album
-        // resource ids and existing accessibility tree.
-        let base_actions = [
-            ModalAction::secondary("Previous").enabled(previous_enabled),
-            ModalAction::secondary("Next").enabled(next_enabled),
-            ModalAction::secondary("Cancel"),
-            ModalAction::primary("Use album").enabled(apply_enabled),
-        ];
-        let base_spec = ModalSpec::new("Choose destination album")
+        let visible_albums: Vec<(String, String, String)> = self
+            .library_albums
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|(id, name, count)| {
+                (
+                    id.clone(),
+                    name.clone(),
+                    chrome::count_label(*count, "photo", "photos"),
+                )
+            })
+            .collect();
+        let faces: Vec<ListRowFace<'_>> = visible_albums
+            .iter()
+            .enumerate()
+            .map(|(index, (id, name, count))| {
+                let chosen = self.selection_destination_album.as_deref() == Some(id.as_str());
+                let next_chosen = visible_albums.get(index + 1).is_some_and(|(next, _, _)| {
+                    self.selection_destination_album.as_deref() == Some(next.as_str())
+                });
+                let face = ListRowFace::new(name)
+                    .leading(ui::widget::RowLeading::Icon(Icon::GalleryVerticalEnd))
+                    .meta(count)
+                    .selected(chosen);
+                if index + 1 < visible_albums.len() {
+                    face.separator(next_chosen)
+                } else {
+                    face
+                }
+            })
+            .collect();
+        let sheet = theme.on_ground(ui::chrome::panel_ground(theme));
+        let heights: Vec<f64> = faces
+            .iter()
+            .map(|face| face.height(text_renderer, &sheet))
+            .collect();
+        let body_h: f64 = heights.iter().sum();
+        let paged = page_count > 1;
+        let mut base_actions = Vec::new();
+        if paged {
+            base_actions.push(ModalAction::secondary("Previous").enabled(previous_enabled));
+            base_actions.push(ModalAction::secondary("Next").enabled(next_enabled));
+        }
+        base_actions.push(ModalAction::secondary("Cancel"));
+        base_actions.push(ModalAction::primary("Choose album").enabled(apply_enabled));
+        let base_spec = ModalSpec::new("Add to album")
             .actions(&base_actions)
-            .body_height(310.0)
-            .max_width(620.0)
+            .body_height(body_h)
+            .max_width(max_width)
             .dismiss_on_scrim(false);
-        let layout = ModalFrame::layout(bounds, &base_spec, text_renderer, theme);
-        let hovered = |index: usize| {
-            layout
-                .actions
-                .get(index)
-                .is_some_and(|rect| rect.contains(self.pointer))
-        };
-        let actions = [
-            ModalAction::secondary("Previous")
-                .enabled(previous_enabled)
-                .hovered(hovered(0)),
-            ModalAction::secondary("Next")
-                .enabled(next_enabled)
-                .hovered(hovered(1)),
-            ModalAction::secondary("Cancel").hovered(hovered(2)),
-            ModalAction::primary("Use album")
-                .enabled(apply_enabled)
-                .hovered(hovered(3)),
-        ];
-        let spec = ModalSpec::new("Choose destination album")
+        let layout = ui::widget::modal_dialog::layout(window, &base_spec, text_renderer, theme);
+        let actions: Vec<ModalAction<'_>> = base_actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| {
+                action.hovered(
+                    layout
+                        .actions
+                        .get(index)
+                        .is_some_and(|rect| rect.contains(self.pointer)),
+                )
+            })
+            .collect();
+        let spec = ModalSpec::new("Add to album")
             .actions(&actions)
-            .body_height(310.0)
-            .max_width(620.0)
+            .body_height(body_h)
+            .max_width(max_width)
             .dismiss_on_scrim(false)
             .close_hovered(layout.close.is_some_and(|rect| rect.contains(self.pointer)));
-        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
-
-        let (ink, dim) = ModalFrame::ink(theme);
-        // Primary-button rows use the theme's contrast-checked accent ink;
-        // album choices stay readable in every system theme without baking
-        // a foreground colour into this app-owned presentation.
-        let selected_ink = theme.tokens.colors.on_accent(4.5);
-        let summary = format!(
-            "Albums {}–{} of {} · choose one destination",
-            start + 1,
-            end,
-            self.library_albums.len()
-        );
-        text_renderer.draw_text_weighted(
+        ui::widget::modal_dialog::paint_backdrop(
             scene,
-            &summary,
-            12.0,
-            dim,
-            transform * Affine::translate((layout.body.x0, layout.body.y0 + 2.0)),
-            Some(layout.body.width() as f32),
-            TextWeight::Regular,
+            transform,
+            text_renderer,
+            theme,
+            &layout,
+            &spec,
         );
-        let list_top = layout.body.y0 + 30.0;
-        let list_bottom = layout.body.y1 - 2.0;
-        let visible_count = end.saturating_sub(start).max(1);
-        let row_h = ((list_bottom - list_top) / visible_count as f64).clamp(54.0, 68.0);
-        let visible_albums = self.library_albums.get(start..end).unwrap_or_default();
-        for (index, (id, name, count)) in visible_albums.iter().enumerate() {
-            let y = list_top + index as f64 * row_h;
-            let row = Rect::new(layout.body.x0, y, layout.body.x1, y + row_h - 6.0);
-            let chosen = self.selection_destination_album.as_deref() == Some(id);
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(row, "")
-                    .style(if chosen {
-                        ButtonStyle::Primary
-                    } else {
-                        ButtonStyle::Neutral
-                    })
-                    .radius(10.0)
-                    .hovered(row.contains(self.pointer))
-                    .accessible_name(&format!("Use {name} as destination album")),
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                name,
-                13.0,
-                if chosen { selected_ink } else { ink },
-                transform * Affine::translate((row.x0 + 14.0, row.y0 + 12.0)),
-                Some((row.width() - 128.0) as f32),
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &format!("{count} photo{}", if *count == 1 { "" } else { "s" }),
-                11.0,
-                if chosen {
-                    selected_ink.with_alpha(0.78)
-                } else {
-                    dim
-                },
-                transform * Affine::translate((row.x1 - 100.0, row.y0 + 14.0)),
-                Some(86.0),
-                TextWeight::Regular,
-            );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &layout.body,
+        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &sheet);
+        let mut y = layout.body.y0;
+        for ((face, h), (id, _, _)) in faces.iter().zip(&heights).zip(&visible_albums) {
+            let row = Rect::new(layout.body.x0, y, layout.body.x1, y + h);
+            let face = face.clone().interaction(ui::widget::Interaction {
+                hovered: row.contains(self.pointer),
+                ..Default::default()
+            });
+            face.paint(&mut ctx, row);
             self.selection_destination_hits.push((id.clone(), row));
+            y += h;
         }
-        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
-        // One layout rect per declared action, in declaration order.
-        let &[previous_rect, next_rect, cancel_rect, apply_rect] = layout.actions.as_slice() else {
-            return;
-        };
-        if previous_enabled {
-            self.selection_hits
-                .push((SelectionHit::PreviousDestinationPage, previous_rect));
+        scene.pop_layer();
+        ui::widget::modal_dialog::paint_actions(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &layout,
+            &spec,
+        );
+        let mut rects = layout.actions.iter().copied();
+        if paged {
+            let previous_rect = rects.next().unwrap_or(Rect::ZERO);
+            let next_rect = rects.next().unwrap_or(Rect::ZERO);
+            if previous_enabled {
+                self.selection_hits
+                    .push((SelectionHit::PreviousDestinationPage, previous_rect));
+            }
+            if next_enabled {
+                self.selection_hits
+                    .push((SelectionHit::NextDestinationPage, next_rect));
+            }
         }
-        if next_enabled {
-            self.selection_hits
-                .push((SelectionHit::NextDestinationPage, next_rect));
-        }
+        let cancel_rect = rects.next().unwrap_or(Rect::ZERO);
+        let apply_rect = rects.next().unwrap_or(Rect::ZERO);
         self.selection_hits
             .push((SelectionHit::CancelDestinationChooser, cancel_rect));
         if let Some(close) = layout.close {
@@ -12449,12 +9246,11 @@ impl PhotosApp {
         }
     }
 
-    /// Paint the album editor directly over the library, keeping the selected
-    /// photographs visible behind it. On narrow screens it becomes a full
-    /// width sheet, avoiding a tiny side panel with clipped controls.
-    #[allow(
+    /// The album editor in the inspector: the album's name, how many photos
+    /// are in it (chosen in the timeline beside it), and its actions.
+    #[expect(
         clippy::too_many_lines,
-        reason = "the compact/wide album-sheet geometry and its shared-widget paint path must remain auditable together"
+        reason = "the editor lays out its field, count and footer actions in one pass"
     )]
     fn draw_album_editor(
         &mut self,
@@ -12464,556 +9260,135 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if !self.library_mode || self.metadata_editor {
-            return;
-        }
-        // The Albums overview owns its visible New/Edit controls. Keep those
-        // retained hit targets intact unless an editor sheet is actually
-        // replacing them.
-        if !self.album_editor && self.library_destination == LibraryDestination::Albums {
+        if !self.library_mode || !self.album_editor {
+            if self.library_destination != LibraryDestination::Albums {
+                self.album_editor_hits.clear();
+            }
+            self.album_name_input.apply_layout_external(Rect::ZERO);
             return;
         }
         self.album_editor_hits.clear();
-        // On phone and 200% the library opens with chronology above the fold.
-        // Album editing remains available through its canonical resource
-        // action; it does not occupy a permanent New/Edit row in front of
-        // every first photo.
-        if !self.album_editor
-            && (theme.text_scale > 1.25
-                || self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W)
-        {
+        let title = if self.album_editor_creating {
+            tr("photos-new-album")
+        } else {
+            tr("photos-edit-album")
+        };
+        let Some((frame, local)) =
+            self.paint_inspector(scene, transform, text_renderer, theme, &title)
+        else {
+            self.album_name_input.apply_layout_external(Rect::ZERO);
             return;
-        }
-        if self.album_editor && theme.text_scale > 1.25 {
-            self.draw_large_text_album_editor(scene, transform, text_renderer, theme, presence);
-            return;
-        }
-        let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 620.0;
-        let panel_w = if narrow { bounds.width() - 16.0 } else { 360.0 };
-        // A phone must keep actual photographs reachable while editing; a
-        // compact bottom sheet leaves the upper grid visible instead of
-        // turning “choose photographs” into an instruction with no surface.
-        let panel_h = if !self.album_editor && narrow {
-            // Album management is an ordinary library route, not a tiny
-            // desktop-only affordance. Keep its buttons at the same 44px
-            // target as the card actions below it.
-            44.0
-        } else if narrow {
-            // The editor has two paging controls and a footer. Their 44px
-            // targets need a real gap rather than being squeezed into the
-            // former 34px desktop rhythm.
-            280.0
-        } else {
-            332.0
         };
-        let album_chips_h = if self.library_albums.is_empty() {
-            0.0
-        } else {
-            26.0 + LIB_ROW_GAP
-        };
-        let control_radius = f64::from(theme.tokens.radii.md);
-        let panel_radius = f64::from(theme.tokens.radii.lg);
-        let panel_y = if !self.album_editor && narrow {
-            // Kept in lock-step with `draw_library`'s album and metadata
-            // filter rows: the buttons start where the filter row (chip +
-            // `s2`) ends, so the shelf keeps one rhythm.
-            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 28.0 + LIB_ROW_GAP_TIGHT
-        } else if narrow {
-            bounds.y1 - panel_h - 8.0
-        } else {
-            bounds.y0 + 10.0
-        };
-        let desktop_header_actions = !self.album_editor
-            && !narrow
-            && theme.text_scale <= 1.25
-            && bounds.width() >= LIBRARY_DESKTOP_MASTHEAD_MIN_W;
-        let panel = if desktop_header_actions {
-            // Album management belongs to the album rail, not between the
-            // Library title and its first-class destination tabs. When the
-            // rail is paged, leave its shared pager the rightmost lane.
-            let album_pages = self
-                .library_albums
-                .len()
-                .max(1)
-                .div_ceil(COLLECTION_PAGE_SIZE);
-            let pager_reserve = if album_pages > 1 { 300.0 } else { 0.0 };
-            let right = bounds.x1 - f64::from(PAD) - pager_reserve;
-            Rect::new(right - 226.0, bounds.y0 + 72.0, right, bounds.y0 + 116.0)
-        } else {
-            Rect::new(
-                if narrow {
-                    bounds.x0 + 8.0
-                } else {
-                    bounds.x1 - panel_w - 12.0
-                },
-                panel_y,
-                if narrow {
-                    bounds.x1 - 8.0
-                } else {
-                    bounds.x1 - 12.0
-                },
-                panel_y + panel_h,
-            )
-        };
-        self.album_editor_rect = panel;
-        if !self.album_editor {
-            let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 44.0);
-            let edit = Rect::new(new.x1 + 8.0, panel.y0, new.x1 + 116.0, panel.y0 + 44.0);
-            for (hit, rect, enabled) in [
-                (AlbumEditorHit::New, new, true),
-                (AlbumEditorHit::Edit, edit, self.active_album.is_some()),
-            ] {
-                if let Some((_, button)) = self
-                    .library_album_buttons
-                    .iter_mut()
-                    .find(|(candidate, _)| *candidate == hit)
-                {
-                    button.set_enabled(enabled);
-                    button.apply_layout_external(rect);
-                    button.draw(scene, transform, text_renderer, theme, presence);
-                }
-                if enabled {
-                    self.album_editor_hits.push((hit, rect));
-                }
-            }
-            return;
-        }
-        ui::surface::shadow(
-            scene,
-            transform,
-            panel,
-            panel_radius,
-            &theme.tokens.elevation.e3,
+        self.album_editor_rect = frame.panel;
+        let rhythm = &local.tokens.spacing.rhythm;
+        let control_h = ui::widget::ControlSize::Regular.height(&local);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &local);
+        let body = frame.body;
+        let mut y = body.y0;
+        ctx.text_role(
+            "Name",
+            ui::TextRole::Label,
+            local.text_dim,
+            Point::new(body.x0, y),
+            None,
         );
-        // The sheet is a card over the grid: raised fill, derived edge.
-        surface::card(
-            scene,
-            transform,
-            panel,
-            panel_radius,
-            theme.tokens.colors.surfaces.raised,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            if self.album_editor_creating {
-                "New album"
-            } else {
-                "Edit album"
-            },
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Album name",
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0)),
-            Some(180.0),
-            TextWeight::Regular,
-        );
-        let name_rect = Rect::new(
-            panel.x0 + 16.0,
-            panel.y0 + 66.0,
-            panel.x1 - 16.0,
-            panel.y0 + 106.0,
-        );
-        self.album_name_input.apply_layout_external(name_rect);
+        y += Self::line_of(&local, ui::TextRole::Label) + f64::from(rhythm.tight);
         self.album_name_input
-            .draw(scene, transform, text_renderer, theme, presence);
-        text_renderer.draw_text_weighted(
-            scene,
-            "Choose photographs in the grid",
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 122.0)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &self.library_page_label(),
-            14.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 146.0)),
-            Some((panel.width() - 150.0) as f32),
-            TextWeight::Medium,
-        );
-        // Right-aligned to the sheet's 16 px inset — the Next button's edge on
-        // the row below — from its measured width, instead of starting at a
-        // fixed offset and ending wherever the digits stop.
-        let selected = format!("{} selected", self.album_editor_members.len());
-        let (selected_w, _) =
-            text_renderer.measure_weighted(&selected, 13.0, Some(100.0), TextWeight::Regular);
-        text_renderer.draw_text_weighted(
-            scene,
-            &selected,
-            13.0,
-            theme.text_dim,
-            transform
-                * Affine::translate((
-                    panel.x1 - 16.0 - f64::from(selected_w.min(100.0)),
-                    panel.y0 + 147.0,
-                )),
-            Some(100.0),
-            TextWeight::Regular,
-        );
-        let page_y = panel.y0 + 166.0;
-        let previous = Rect::new(panel.x0 + 16.0, page_y, panel.x0 + 108.0, page_y + 44.0);
-        let next = Rect::new(panel.x1 - 108.0, page_y, panel.x1 - 16.0, page_y + 44.0);
-        for (hit, rect) in [
-            (AlbumEditorHit::PreviousPage, previous),
-            (AlbumEditorHit::NextPage, next),
-        ] {
-            let enabled = match hit {
-                AlbumEditorHit::PreviousPage => self.can_page_library(false),
-                AlbumEditorHit::NextPage => self.can_page_library(true),
-                _ => false,
-            };
-            if let Some((_, button)) = self
-                .album_page_buttons
-                .iter_mut()
-                .find(|(candidate, _)| *candidate == hit)
-            {
-                button.set_enabled(enabled);
-                button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, presence);
-            }
-        }
-        let y = panel.y1 - 60.0;
-        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 44.0);
-        let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 44.0);
-        let delete = Rect::new(save.x0 - 88.0, y, save.x0 - 8.0, y + 44.0);
-        for (hit, rect, label, style, focused) in [
-            (
-                AlbumEditorHit::Cancel,
-                cancel,
-                "Cancel",
-                ButtonStyle::Neutral,
-                self.album_editor_focus == 1,
-            ),
-            (
-                AlbumEditorHit::Save,
-                save,
-                "Save",
-                ButtonStyle::Primary,
-                self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 },
-            ),
-        ] {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(rect, label)
-                    .style(style)
-                    .radius(control_radius)
-                    .hovered(rect.contains(self.pointer))
-                    .focused(focused),
-            );
-            self.album_editor_hits.push((hit, rect));
-        }
-        if !self.album_editor_creating {
-            let (hit, label) = if self.album_delete_confirm {
-                (AlbumEditorHit::ConfirmDelete, "Delete album?")
-            } else {
-                (AlbumEditorHit::Delete, "Delete")
-            };
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(delete, label)
-                    .style(ButtonStyle::Danger)
-                    .radius(control_radius)
-                    .hovered(delete.contains(self.pointer))
-                    .focused(self.album_editor_focus == 2),
-            );
-            self.album_editor_hits.push((hit, delete));
-        }
-    }
-
-    /// A large-text album sheet uses a short vertical rhythm instead of trying
-    /// to scale the desktop side panel into a phone viewport.  Its action
-    /// targets are still the same local intents and shared `TextInput` as the
-    /// regular sheet; only this device's presentation changes.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "large-text album geometry deliberately keeps every field and action in one auditable sheet"
-    )]
-    fn draw_large_text_album_editor(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        use vello::peniko::Fill;
-
-        let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 620.0;
-        let panel_w = if narrow { bounds.width() - 16.0 } else { 460.0 };
-        let panel_h = (bounds.height() - 16.0).min(620.0);
-        let panel = Rect::new(
-            if narrow {
-                bounds.x0 + 8.0
-            } else {
-                bounds.x1 - panel_w - 12.0
-            },
-            if narrow {
-                bounds.y1 - panel_h - 8.0
-            } else {
-                bounds.y0 + 12.0
-            },
-            if narrow {
-                bounds.x1 - 8.0
-            } else {
-                bounds.x1 - 12.0
-            },
-            if narrow {
-                bounds.y1 - 8.0
-            } else {
-                bounds.y0 + 12.0 + panel_h
-            },
-        );
-        self.album_editor_rect = panel;
-        let panel_radius = f64::from(theme.tokens.radii.lg);
-        ui::surface::shadow(
-            scene,
-            transform,
-            panel,
-            panel_radius,
-            &theme.tokens.elevation.e3,
-        );
-        surface::card(
-            scene,
-            transform,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.surfaces.raised,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            if self.album_editor_creating {
-                "New album"
-            } else {
-                "Edit album"
-            },
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Album name",
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 66.0)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        self.album_name_input.apply_layout_external(Rect::new(
-            panel.x0 + 16.0,
-            panel.y0 + 94.0,
-            panel.x1 - 16.0,
-            panel.y0 + 170.0,
-        ));
+            .apply_layout_external(Rect::new(body.x0, y, body.x1, y + control_h));
         self.album_name_input
-            .draw(scene, transform, text_renderer, theme, presence);
-        text_renderer.draw_text_weighted(
-            scene,
-            "Choose photos",
-            11.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 190.0)),
-            Some((panel.width() - 180.0) as f32),
-            TextWeight::Regular,
+            .draw(ctx.scene, transform, ctx.text, &local, presence);
+        y += control_h + f64::from(rhythm.group);
+        let guidance = tr("photos-album-editor-hint");
+        let guidance_h = ctx
+            .measure_role(&guidance, ui::TextRole::Body, Some(body.width() as f32))
+            .height;
+        ctx.text_role(
+            &guidance,
+            ui::TextRole::Body,
+            local.text_dim,
+            Point::new(body.x0, y),
+            Some(body.width() as f32),
         );
-        text_renderer.draw_text_weighted(
-            scene,
-            &format!("{} selected", self.album_editor_members.len()),
-            12.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x1 - 146.0, panel.y0 + 190.0)),
-            Some(130.0),
-            TextWeight::Medium,
+        y += guidance_h + f64::from(rhythm.related);
+        let members = chrome::count_label(self.album_editor_members.len(), "photo", "photos");
+        ctx.text_role(
+            &format!("{members} in this album"),
+            ui::TextRole::Caption,
+            local.text_dim,
+            Point::new(body.x0, y),
+            None,
         );
-        let page_y = panel.y0 + 222.0;
-        let previous = Rect::new(panel.x0 + 16.0, page_y, panel.x0 + 132.0, page_y + 48.0);
-        let next = Rect::new(panel.x0 + 140.0, page_y, panel.x0 + 256.0, page_y + 48.0);
-        for (hit, rect, label) in [
-            (AlbumEditorHit::PreviousPage, previous, "Previous"),
-            (AlbumEditorHit::NextPage, next, "Next"),
-        ] {
-            let enabled = match hit {
-                AlbumEditorHit::PreviousPage => self.can_page_library(false),
-                AlbumEditorHit::NextPage => self.can_page_library(true),
-                _ => false,
-            };
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(rect, label)
-                    .style(ButtonStyle::Neutral)
-                    .radius(10.0)
-                    .hovered(enabled && rect.contains(self.pointer))
-                    .disabled(!enabled),
-            );
-            if enabled {
-                self.album_editor_hits.push((hit, rect));
-            }
-        }
-        self.library_cards.clear();
-        let row_top = panel.y0 + 286.0;
-        for (index, item) in self.library_items.iter().take(2).enumerate() {
-            let row_y = row_top + index as f64 * 84.0;
-            let row = Rect::new(panel.x0 + 16.0, row_y, panel.x1 - 16.0, row_y + 74.0);
-            let selected = self.album_editor_members.contains(&item.id);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if selected {
-                    theme.tokens.colors.neutral[3]
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &row,
-            );
-            scene.stroke(
-                &Stroke::new(if selected { 2.0 } else { 1.0 }),
-                transform,
-                if selected {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.border_standard
-                },
-                None,
-                &row,
-            );
-            let toggle = Rect::new(row.x0 + 10.0, row.y0 + 18.0, row.x0 + 48.0, row.y0 + 56.0);
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                theme.border_standard,
-                None,
-                &toggle,
-            );
-            if selected {
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::from_center_size(toggle.center(), (20.0, 20.0)),
-                    Icon::Check,
-                    theme.tokens.colors.accent[6],
-                    1.8,
-                );
-            }
-            text_renderer.draw_text_weighted(
-                scene,
-                &item.name,
-                11.0,
-                theme.text_primary,
-                transform * Affine::translate((row.x0 + 60.0, row.y0 + 12.0)),
-                Some((row.width() - 72.0) as f32),
-                TextWeight::Medium,
-            );
-            self.library_cards
-                .push((item.id.clone(), row, item.favorite));
-        }
-        let action_h = 60.0;
-        let action_y = panel.y1 - action_h - 16.0;
+
+        // Footer: delete leading, cancel and save trailing.
+        let footer = frame.footer;
+        let gap = f64::from(rhythm.related);
+        let save_label = tr("photos-save");
+        let cancel_label = tr("photos-cancel");
+        let save_w = ButtonFace::new(Rect::ZERO, &save_label).intrinsic_width(ctx.text, &local);
+        let cancel_w = ButtonFace::new(Rect::ZERO, &cancel_label).intrinsic_width(ctx.text, &local);
+        let save = Rect::new(footer.x1 - save_w, footer.y0, footer.x1, footer.y1);
         let cancel = Rect::new(
-            panel.x0 + 16.0,
-            action_y,
-            panel.x0 + 166.0,
-            action_y + action_h,
+            save.x0 - gap - cancel_w,
+            footer.y0,
+            save.x0 - gap,
+            footer.y1,
         );
-        let save = Rect::new(
-            panel.x1 - 166.0,
-            action_y,
-            panel.x1 - 16.0,
-            action_y + action_h,
-        );
-        let delete = Rect::new(
-            panel.x0 + 16.0,
-            action_y - action_h - 10.0,
-            panel.x1 - 16.0,
-            action_y - 10.0,
-        );
-        for (hit, rect, label, style, focused) in [
+        let mut buttons = vec![
             (
                 AlbumEditorHit::Cancel,
                 cancel,
-                "Cancel",
-                ButtonStyle::Neutral,
+                cancel_label,
+                ButtonRole::Secondary,
                 self.album_editor_focus == 1,
             ),
             (
                 AlbumEditorHit::Save,
                 save,
-                "Save",
-                ButtonStyle::Primary,
+                save_label,
+                ButtonRole::Primary,
                 self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 },
             ),
-        ] {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(rect, label)
-                    .style(style)
-                    .radius(12.0)
-                    .hovered(rect.contains(self.pointer))
-                    .focused(focused),
-            );
-            self.album_editor_hits.push((hit, rect));
-        }
+        ];
         if !self.album_editor_creating {
-            let hit = if self.album_delete_confirm {
-                AlbumEditorHit::ConfirmDelete
-            } else {
-                AlbumEditorHit::Delete
-            };
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(
-                    delete,
-                    if self.album_delete_confirm {
-                        "Delete album?"
-                    } else {
-                        "Delete album"
-                    },
+            let (hit, delete_label) = if self.album_delete_confirm {
+                (
+                    AlbumEditorHit::ConfirmDelete,
+                    tr("photos-confirm-delete-album"),
                 )
-                .style(ButtonStyle::Danger)
-                .radius(12.0)
-                .hovered(delete.contains(self.pointer))
-                .focused(self.album_editor_focus == 2),
+            } else {
+                (AlbumEditorHit::Delete, tr("photos-delete-album"))
+            };
+            let width =
+                ButtonFace::new(Rect::ZERO, &delete_label).intrinsic_width(ctx.text, &local);
+            let x1 = (footer.x0 + width).min(cancel.x0 - gap);
+            buttons.push((
+                hit,
+                Rect::new(footer.x0, footer.y0, x1, footer.y1),
+                delete_label,
+                ButtonRole::Destructive,
+                self.album_editor_focus == 2,
+            ));
+        }
+        for (hit, rect, label, role, focused) in &buttons {
+            Button::paint(
+                ctx.scene,
+                transform,
+                ctx.text,
+                &local,
+                &ButtonFace::new(*rect, label)
+                    .role(*role)
+                    .hovered(rect.contains(self.pointer))
+                    .focused(*focused),
             );
-            self.album_editor_hits.push((hit, delete));
+            self.album_editor_hits.push((*hit, *rect));
         }
     }
 
-    /// A focused details sheet built from shared `TextInputs`. It intentionally
-    /// asks for labels rather than offering facial analysis: people metadata is
-    /// explicit, editable, and replicated only after Save.
-    #[allow(
+    /// The details editor in the inspector: the photographs' folder, people
+    /// and tags, or when and where they were taken, and Save.
+    #[expect(
         clippy::too_many_lines,
-        reason = "the metadata sheet paints four shared fields and its actions in one auditable geometry block"
+        reason = "the two sections share one scroll region, field rhythm and footer"
     )]
     fn draw_metadata_editor(
         &mut self,
@@ -13025,10 +9400,6 @@ impl PhotosApp {
     ) {
         use vello::peniko::Fill;
 
-        if !self.metadata_editor {
-            self.metadata_editor_hits.clear();
-            return;
-        }
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -13043,478 +9414,369 @@ impl PhotosApp {
         for (_, button) in &mut self.metadata_editor_buttons {
             button.apply_layout_external(Rect::ZERO);
         }
-        let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 720.0;
-        let panel_w = if narrow {
-            (bounds.width() - 16.0).max(0.0)
-        } else {
-            536.0_f64.min(bounds.width() - 28.0)
-        };
-        // On a narrow strip this is a true detail sheet, not an awkwardly
-        // translucent sidebar over an interactive photo grid. The shared
-        // scrim keeps the context visible while presenting one focus scope.
-        if narrow {
-            fill_scrim(scene, transform, bounds, 0.42, theme);
+        if !self.metadata_editor {
+            self.metadata_editor_hits.clear();
+            return;
         }
-        let panel_bottom = (bounds.y0 + 700.0).min(bounds.y1 - 8.0);
-        let panel = Rect::new(
-            if narrow {
-                bounds.x0 + 8.0
-            } else {
-                bounds.x1 - panel_w - 14.0
-            },
-            bounds.y0 + 8.0,
-            bounds.x1 - if narrow { 8.0 } else { 14.0 },
-            panel_bottom,
-        );
-        surface::card(
-            scene,
-            transform,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.surfaces.raised,
-        );
-
         let count = self.metadata_editor_ids.len();
         let title = if count == 1 {
-            "Photo details".to_owned()
+            tr("photos-photo-details")
         } else {
-            format!("Edit {count} photographs")
+            format!("Edit {count} photos")
         };
-        let subtitle = if count == 1 {
-            "Organize this photograph or correct when and where it was taken."
-        } else {
-            "Only fields you change are applied. Mixed values stay untouched."
+        let Some((frame, local)) =
+            self.paint_inspector(scene, transform, text_renderer, theme, &title)
+        else {
+            self.metadata_editor_hits.clear();
+            return;
         };
-        let scale = f64::from(theme.text_scale);
-        let inset = SHEET_INSET;
-        let inner_width = (panel.width() - 2.0 * inset).max(0.0) as f32;
-        let title_h = f64::from(
-            text_renderer
-                .measure_weighted(&title, 20.0, Some(inner_width), TextWeight::Medium)
-                .1,
+        let rhythm = &local.tokens.spacing.rhythm;
+        let (tight, related, sibling) = (
+            f64::from(rhythm.tight),
+            f64::from(rhythm.related),
+            f64::from(rhythm.sibling),
         );
-        let subtitle_h = f64::from(
-            text_renderer
-                .measure_weighted(subtitle, 11.0, Some(inner_width), TextWeight::Regular)
-                .1,
-        );
-        let title_y = panel.y0 + SHEET_TOP_PAD;
-        let subtitle_y = title_y + title_h + SHEET_TITLE_GAP;
-        text_renderer.draw_text_weighted(
-            scene,
-            &title,
-            20.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + inset, title_y)),
-            Some(inner_width),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            subtitle,
-            11.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + inset, subtitle_y)),
-            Some(inner_width),
-            TextWeight::Regular,
-        );
-
-        let tab_y = subtitle_y + subtitle_h + SHEET_SUBTITLE_GAP;
-        let tab_h = 40.0 * scale;
-        let tab_gap = 8.0;
-        let tab_w = (panel.width() - 40.0 - tab_gap) * 0.5;
+        let control_h = ui::widget::ControlSize::Regular.height(&local);
+        let label_h = Self::line_of(&local, ui::TextRole::Label)
+            .max(ui::widget::ControlSize::Small.height(&local));
+        let body = frame.body;
         let mut hits = Vec::new();
-        for (section, hit, _label, x) in [
-            (
-                MetadataEditorSection::Organize,
-                MetadataEditorHit::Organize,
-                "Organize",
-                panel.x0 + 20.0,
-            ),
-            (
-                MetadataEditorSection::TimeAndPlace,
-                MetadataEditorHit::TimeAndPlace,
-                "Time & place",
-                panel.x0 + 20.0 + tab_w + tab_gap,
-            ),
-        ] {
-            let rect = Rect::new(x, tab_y, x + tab_w, tab_y + tab_h);
-            if let Some((_, button)) = self
-                .metadata_editor_buttons
-                .iter_mut()
-                .find(|(candidate, _)| *candidate == hit)
-            {
-                button.set_style(if self.metadata_editor_section == section {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Neutral
-                });
-                button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, presence);
-            }
-        }
 
-        let fields_top = tab_y + tab_h + SHEET_FIELD_GAP * scale;
-        let footer_y = panel.y1 - SHEET_BUTTON_H * scale - SHEET_INSET;
-        let body = Rect::new(
-            panel.x0,
-            fields_top,
-            panel.x1,
-            (footer_y - SHEET_BODY_FOOTER_GAP).max(fields_top),
+        // The two sections.
+        let strip_h = SegmentedFace::height(ui::widget::ControlSize::Regular, &local);
+        let strip = Rect::new(body.x0, body.y0, body.x1, body.y0 + strip_h);
+        let labels = [tr("photos-organize"), tr("photos-time-and-place")];
+        let label_refs = [labels[0].as_str(), labels[1].as_str()];
+        let half = strip.width() / 2.0;
+        let segments = [
+            Rect::new(strip.x0, strip.y0, strip.x0 + half, strip.y1),
+            Rect::new(strip.x0 + half, strip.y0, strip.x1, strip.y1),
+        ];
+        let selected =
+            usize::from(self.metadata_editor_section == MetadataEditorSection::TimeAndPlace);
+        let hovered = segments
+            .iter()
+            .position(|segment| segment.contains(self.pointer));
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            &local,
+            &SegmentedFace::new(&segments, &label_refs, selected).hovered(hovered),
         );
-        self.metadata_editor_body = body;
-        let label_h = f64::from(
-            text_renderer
-                .measure_weighted(
-                    "Captured · Mixed — unchanged",
-                    11.0,
-                    Some((inner_width - 100.0 * theme.text_scale).max(1.0)),
-                    TextWeight::Medium,
-                )
-                .1,
-        )
-        .max(36.0 * scale);
-        let label_gap = SHEET_LABEL_GAP * scale;
-        let input_h = SHEET_INPUT_H * scale;
-        let field_gap = SHEET_FIELD_GAP * scale;
-        let row_h = label_h + label_gap + input_h + field_gap;
-        let map_h = 154.0 * scale;
+        hits.push((MetadataEditorHit::Organize, segments[0]));
+        hits.push((MetadataEditorHit::TimeAndPlace, segments[1]));
+
+        let fields_top = strip.y1 + sibling;
+        let region = Rect::new(body.x0, fields_top, body.x1, body.y1.max(fields_top));
+        self.metadata_editor_body = region;
+        let row_h = label_h + tight + control_h + sibling;
+        let map_h =
+            (region.width() * 0.5).min(f64::from(local.tokens.metrics.panel_width_utility) * 0.6);
         let time_and_place = self.metadata_editor_section == MetadataEditorSection::TimeAndPlace;
-        let content_h = 3.0 * row_h
-            + if time_and_place {
-                map_h + field_gap
-            } else {
-                0.0
-            };
+        let content_h = if time_and_place {
+            3.0 * row_h + map_h + sibling
+        } else {
+            3.0 * row_h
+        };
         if std::mem::take(&mut self.metadata_editor_reveal_focus) {
             let focused_row_top = match (time_and_place, self.metadata_editor_focus) {
                 (false, focus @ 0..=2) | (true, focus @ 0..=1) => Some(focus as f64 * row_h),
-                (true, 2 | 3) => Some(2.0 * row_h + map_h + field_gap),
+                (true, 2 | 3) => Some(2.0 * row_h + map_h + sibling),
                 _ => None,
             };
             if let Some(top) = focused_row_top {
-                let bottom = top + row_h - field_gap;
+                let bottom = top + row_h - sibling;
                 if top < self.metadata_editor_scroll {
                     self.metadata_editor_scroll = top;
-                } else if bottom > self.metadata_editor_scroll + body.height() {
-                    self.metadata_editor_scroll = bottom - body.height();
+                } else if bottom > self.metadata_editor_scroll + region.height() {
+                    self.metadata_editor_scroll = bottom - region.height();
                 }
             }
         }
         self.metadata_editor_scroll = self
             .metadata_editor_scroll
-            .clamp(0.0, (content_h - body.height()).max(0.0));
+            .clamp(0.0, (content_h - region.height()).max(0.0));
         let fields_y = fields_top - self.metadata_editor_scroll;
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
-            &body,
+            &region,
         );
-        let label_and_input =
-            |scene: &mut Scene,
-             text_renderer: &mut TextRenderer,
-             input: &mut TextInput,
-             label: &str,
-             mixed: bool,
-             clear_hit: MetadataEditorHit,
-             force_clear: bool,
-             rect: Rect,
-             buttons: &mut Vec<(MetadataEditorHit, Button)>| {
-                let visible_label = if mixed {
-                    format!("{label} · Mixed — unchanged")
-                } else {
-                    label.to_owned()
-                };
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &visible_label,
-                    11.0,
-                    theme.text_dim,
-                    transform * Affine::translate((rect.x0, rect.y0)),
-                    Some((rect.width() - 100.0 * scale).max(1.0) as f32),
-                    TextWeight::Medium,
-                );
-                let clear = Rect::new(
-                    rect.x1 - 92.0 * scale,
-                    rect.y0,
-                    rect.x1,
-                    rect.y0 + 36.0 * scale,
-                );
-                if let Some((_, button)) = buttons
+        // One field: its label with a clear button at the trailing end, and
+        // the input under it.
+        let field = |scene: &mut Scene,
+                     text_renderer: &mut TextRenderer,
+                     input: &mut TextInput,
+                     label: &str,
+                     clear: Option<(MetadataEditorHit, bool)>,
+                     rect: Rect,
+                     buttons: &mut Vec<(MetadataEditorHit, Button)>| {
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role_in_band(
+                label,
+                ui::TextRole::Label,
+                local.text_dim,
+                rect.x0,
+                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + label_h),
+                None,
+            );
+            if let Some((clear_hit, forced)) = clear
+                && let Some((_, button)) = buttons
                     .iter_mut()
                     .find(|(candidate, _)| *candidate == clear_hit)
-                {
-                    button.set_style(if force_clear {
-                        ButtonStyle::Danger
-                    } else {
-                        ButtonStyle::Ghost
-                    });
-                    button.apply_layout_external(clear);
-                    button.draw(scene, transform, text_renderer, theme, presence);
-                }
-                input.apply_layout_external(Rect::new(
-                    rect.x0,
-                    rect.y0 + label_h + label_gap,
+            {
+                let side = label_h;
+                button.set_role(if forced {
+                    ButtonRole::Destructive
+                } else {
+                    ButtonRole::Plain
+                });
+                button.apply_layout_external(Rect::new(
+                    rect.x1 - side,
+                    rect.y0,
                     rect.x1,
-                    rect.y1,
+                    rect.y0 + side,
                 ));
-                input.draw(scene, transform, text_renderer, theme, presence);
-            };
+                button.draw(scene, transform, text_renderer, &local, presence);
+            }
+            input.apply_layout_external(Rect::new(
+                rect.x0,
+                rect.y0 + label_h + tight,
+                rect.x1,
+                rect.y0 + label_h + tight + control_h,
+            ));
+            input.draw(scene, transform, text_renderer, &local, presence);
+        };
 
+        let column = |index: f64| {
+            let y = fields_y + index * row_h;
+            Rect::new(region.x0, y, region.x1, y + row_h - sibling)
+        };
         match self.metadata_editor_section {
             MetadataEditorSection::Organize => {
-                for (index, (field, (mixed, force_clear))) in [
+                let force = self.metadata_force_clear;
+                for (index, (label, input, hit)) in [
                     (
-                        "Folder",
+                        tr("photos-folder"),
                         &mut self.metadata_folder_input,
                         MetadataEditorHit::ClearFolder,
                     ),
                     (
-                        "People",
+                        tr("photos-people"),
                         &mut self.metadata_people_input,
                         MetadataEditorHit::ClearPeople,
                     ),
                     (
-                        "Tags",
+                        tr("photos-tags"),
                         &mut self.metadata_tags_input,
                         MetadataEditorHit::ClearTags,
                     ),
                 ]
                 .into_iter()
-                .zip(
-                    self.metadata_mixed
-                        .into_iter()
-                        .zip(self.metadata_force_clear),
-                )
                 .enumerate()
                 {
-                    let (label, input, hit) = field;
-                    let y = fields_y + index as f64 * row_h;
-                    label_and_input(
+                    let forced = force.get(index).copied().unwrap_or(false);
+                    field(
                         scene,
                         text_renderer,
                         input,
-                        label,
-                        mixed,
-                        hit,
-                        force_clear,
-                        Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + row_h - field_gap),
+                        &label,
+                        Some((hit, forced)),
+                        column(index as f64),
                         &mut self.metadata_editor_buttons,
                     );
                 }
             }
             MetadataEditorSection::TimeAndPlace => {
-                // Location deserves a real pick surface, not the old 58px
-                // strip that made every coordinate edit feel accidental.
-                // Keep enough fixed room for the date, place and coordinate
-                // fields first; the map absorbs the responsive remainder.
-                label_and_input(
+                field(
                     scene,
                     text_renderer,
                     &mut self.metadata_captured_at_input,
-                    "Captured",
-                    self.metadata_mixed[3],
-                    MetadataEditorHit::ClearCapturedAt,
-                    self.metadata_force_clear[3],
-                    Rect::new(
-                        panel.x0 + 20.0,
-                        fields_y,
-                        panel.x1 - 20.0,
-                        fields_y + row_h - field_gap,
-                    ),
+                    &tr("photos-captured"),
+                    Some((
+                        MetadataEditorHit::ClearCapturedAt,
+                        self.metadata_force_clear[3],
+                    )),
+                    column(0.0),
                     &mut self.metadata_editor_buttons,
                 );
-                label_and_input(
+                field(
                     scene,
                     text_renderer,
                     &mut self.metadata_place_input,
-                    "Place name",
-                    self.metadata_mixed[4],
-                    MetadataEditorHit::ClearLocation,
-                    self.metadata_force_clear[4],
-                    Rect::new(
-                        panel.x0 + 20.0,
-                        fields_y + row_h,
-                        panel.x1 - 20.0,
-                        fields_y + row_h * 2.0 - field_gap,
-                    ),
+                    &tr("photos-place"),
+                    Some((
+                        MetadataEditorHit::ClearLocation,
+                        self.metadata_force_clear[4],
+                    )),
+                    column(1.0),
                     &mut self.metadata_editor_buttons,
                 );
-                let map = Rect::new(
-                    panel.x0 + 20.0,
-                    fields_y + row_h * 2.0,
-                    panel.x1 - 20.0,
-                    fields_y + row_h * 2.0 + map_h,
-                );
+                // A pick surface for the location: the offline map, with the
+                // drafted position marked.
+                let map_y = fields_y + 2.0 * row_h;
+                let map = Rect::new(region.x0, map_y, region.x1, map_y + map_h);
                 self.metadata_location_map_bounds = map;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.neutral[2],
-                    None,
-                    &map,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &map,
-                );
-                for step in 1..5 {
-                    let x = map.x0 + map.width() * f64::from(step) / 5.0;
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.border_standard,
-                        None,
-                        &Rect::new(x, map.y0, x + 1.0, map.y1),
-                    );
-                }
-                for step in 1..3 {
-                    let y = map.y0 + map.height() * f64::from(step) / 3.0;
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.border_standard,
-                        None,
-                        &Rect::new(map.x0, y, map.x1, y + 1.0),
-                    );
-                }
-                let center = map.center();
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Circle::new(center, 7.0),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    "Click to pin a location · saved only when you save changes",
-                    10.0,
-                    theme.text_primary,
-                    transform * Affine::translate((map.x0 + 12.0, map.y0 + 10.0)),
-                    Some((map.width() - 20.0) as f32),
-                    TextWeight::Medium,
-                );
-                hits.push((MetadataEditorHit::PlaceOnMap, map.intersect(body)));
-                let y = map.y1 + field_gap;
-                let gap = 10.0;
-                let field_w = (panel.width() - 40.0 - gap) * 0.5;
+                self.paint_location_map(scene, transform, &local, map);
+                hits.push((MetadataEditorHit::PlaceOnMap, map.intersect(region)));
+                let y = map.y1 + sibling;
+                let half = (region.width() - related) / 2.0;
                 for (label, input, x) in [
                     (
-                        "Latitude",
+                        tr("photos-latitude"),
                         &mut self.metadata_latitude_input,
-                        panel.x0 + 20.0,
+                        region.x0,
                     ),
                     (
-                        "Longitude",
+                        tr("photos-longitude"),
                         &mut self.metadata_longitude_input,
-                        panel.x0 + 20.0 + field_w + gap,
+                        region.x0 + half + related,
                     ),
                 ] {
-                    let visible_label = if self.metadata_mixed[4] {
-                        format!("{label} · Mixed")
-                    } else {
-                        label.to_owned()
-                    };
-                    text_renderer.draw_text_weighted(
+                    field(
                         scene,
-                        &visible_label,
-                        11.0,
-                        theme.text_dim,
-                        transform * Affine::translate((x, y)),
-                        Some(field_w as f32),
-                        TextWeight::Medium,
+                        text_renderer,
+                        input,
+                        &label,
+                        None,
+                        Rect::new(x, y, x + half, y + row_h - sibling),
+                        &mut self.metadata_editor_buttons,
                     );
-                    input.apply_layout_external(Rect::new(
-                        x,
-                        y + label_h + label_gap,
-                        x + field_w,
-                        y + row_h - field_gap,
-                    ));
-                    input.draw(scene, transform, text_renderer, theme, presence);
                 }
             }
         }
-
         scene.pop_layer();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.border_standard,
-            None,
-            &Rect::new(
-                panel.x0 + 20.0,
-                footer_y - 12.0,
-                panel.x1 - 20.0,
-                footer_y - 11.0,
-            ),
-        );
-        let cancel = Rect::new(panel.x0 + 20.0, footer_y, panel.x0 + 142.0, panel.y1 - 16.0);
-        let save = Rect::new(panel.x1 - 156.0, footer_y, panel.x1 - 20.0, panel.y1 - 16.0);
+
+        // Footer: cancel and save, trailing.
+        let footer = frame.footer;
         let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
             (3, 4)
         } else {
             (4, 5)
         };
-        for (hit, rect, focused, style) in [
-            (
-                MetadataEditorHit::Cancel,
-                cancel,
-                self.metadata_editor_focus == footer_focus.0,
-                ButtonStyle::Neutral,
-            ),
+        let mut x1 = footer.x1;
+        for (hit, focused) in [
             (
                 MetadataEditorHit::Save,
-                save,
                 self.metadata_editor_focus == footer_focus.1,
-                ButtonStyle::Primary,
+            ),
+            (
+                MetadataEditorHit::Cancel,
+                self.metadata_editor_focus == footer_focus.0,
             ),
         ] {
+            let label = if hit == MetadataEditorHit::Save {
+                tr("photos-save-changes")
+            } else {
+                tr("photos-cancel")
+            };
+            let width = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(text_renderer, &local);
+            let rect = Rect::new(x1 - width, footer.y0, x1, footer.y1);
+            x1 = rect.x0 - related;
             if let Some((_, button)) = self
                 .metadata_editor_buttons
                 .iter_mut()
                 .find(|(candidate, _)| *candidate == hit)
             {
-                button.set_style(style);
                 button.set_focus(focused);
                 button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, presence);
+                button.draw(scene, transform, text_renderer, &local, presence);
             }
         }
         self.metadata_editor_hits = hits;
     }
-}
 
-fn wrap_words(text: &str, max_chars: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let separator = usize::from(!line.is_empty());
-        if !line.is_empty()
-            && line
-                .chars()
-                .count()
-                .saturating_add(separator)
-                .saturating_add(word.chars().count())
-                > max_chars
-        {
-            lines.push(std::mem::take(&mut line));
+    /// The location pick surface: the offline land silhouettes on the
+    /// raised well, and the drafted position as a ring in primary ink.
+    fn paint_location_map(&self, scene: &mut Scene, transform: Affine, theme: &Theme, map: Rect) {
+        use vello::peniko::Fill;
+        let colors = &theme.tokens.colors;
+        let water = colors.surfaces.raised;
+        let land = colors.lift_on(water, 1.0);
+        let radius = f64::from(theme.tokens.radii.control);
+        let shape = RoundedRect::from_rect(map, radius);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &shape,
+        );
+        scene.fill(Fill::NonZero, transform, water, None, &map);
+        let viewport = self.metadata_location_map;
+        for landmass in OFFLINE_WORLD_LANDMASSES {
+            let mut coast = BezPath::new();
+            let mut points = 0_usize;
+            for &(latitude, longitude) in *landmass {
+                let location = crate::model::PhotoLocation {
+                    latitude,
+                    longitude,
+                    label: None,
+                    provenance: crate::model::LocationProvenance::default(),
+                };
+                let Some((x, y)) = viewport.project(&location, map.width(), map.height()) else {
+                    continue;
+                };
+                if points == 0 {
+                    coast.move_to((map.x0 + x, map.y0 + y));
+                } else {
+                    coast.line_to((map.x0 + x, map.y0 + y));
+                }
+                points += 1;
+            }
+            if points >= 3 {
+                coast.close_path();
+                scene.fill(Fill::NonZero, transform, land, None, &coast);
+            }
         }
-        if !line.is_empty() {
-            line.push(' ');
+        let pin = self
+            .metadata_latitude_input
+            .value()
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .zip(
+                self.metadata_longitude_input
+                    .value()
+                    .trim()
+                    .parse::<f64>()
+                    .ok(),
+            )
+            .and_then(|(latitude, longitude)| {
+                viewport.project(
+                    &crate::model::PhotoLocation {
+                        latitude,
+                        longitude,
+                        label: None,
+                        provenance: crate::model::LocationProvenance::default(),
+                    },
+                    map.width(),
+                    map.height(),
+                )
+            });
+        if let Some((x, y)) = pin {
+            scene.stroke(
+                &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0),
+                transform,
+                theme.text_primary,
+                None,
+                &Circle::new(
+                    Point::new(map.x0 + x, map.y0 + y),
+                    f64::from(theme.tokens.spacing.s2),
+                ),
+            );
         }
-        line.push_str(word);
+        scene.pop_layer();
+        scene.stroke(
+            &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+            transform,
+            surface::edge_on(water),
+            None,
+            &surface::edge_outline(map, radius),
+        );
     }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 fn metadata_filter_id(folder: Option<&str>, person: Option<&str>, tag: Option<&str>) -> String {
@@ -13529,24 +9791,48 @@ fn metadata_filter_id(folder: Option<&str>, person: Option<&str>, tag: Option<&s
     }
 }
 
-fn draw_centered_text(
-    ctx: &mut PaintCtx<'_>,
-    text: &str,
-    style: &TextStyle,
-    color: vello::peniko::Color,
-    top_center: Point,
-    max_width: f64,
-) {
-    let (measured, _) = ctx.text.measure_style(text, None, style);
-    let width = f64::from(measured).min(max_width);
-    let origin = Point::new(top_center.x - width * 0.5, top_center.y);
-    ctx.text(text, style, color, origin, Some(max_width as f32));
+/// Where the photograph is drawn on screen: its quad clipped to the viewer.
+fn displayed_image_rect(viewer: &ImageViewer, w: f64, h: f64) -> Option<Rect> {
+    let rect = Widget::get_rect(viewer);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let scale = (rect.width() / w).min(rect.height() / h) * f64::from(viewer.zoom());
+    if scale <= 0.0 {
+        return None;
+    }
+    let pan = viewer.pan();
+    let (dw, dh) = (w * scale, h * scale);
+    let x0 = rect.center().x - dw * 0.5 + pan.x * scale;
+    let y0 = rect.center().y - dh * 0.5 + pan.y * scale;
+    let shown = Rect::new(x0, y0, x0 + dw, y0 + dh).intersect(rect);
+    (shown.width() > 0.0 && shown.height() > 0.0).then_some(shown)
 }
 
-/// The region of a `w`×`h` image `viewer` currently frames, in normalized
-/// `0..1` coordinates — the inverse of the transform `ImageViewer::draw`
-/// applies (contain-fit, then the widget's own zoom and pan). `None` when the
-/// viewer or the image has a zero dimension.
+/// A photograph's size in pixels as people read it: "1200 × 800".
+pub(crate) fn dimensions_label(width: u32, height: u32) -> String {
+    format!("{width} × {height}")
+}
+
+/// "1 photo", "12 photos".
+pub(crate) fn count_photos(count: usize) -> String {
+    chrome::count_label(count, "photo", "photos")
+}
+
+/// A capture day as people read it: "Jul 12, 2026".
+pub(crate) fn date_label(captured_at: &str) -> String {
+    timeline_date_label(captured_at)
+}
+
+/// A capture time as people read it: "Jul 12, 2026 at 18:16".
+fn captured_label(captured_at: &str) -> String {
+    let date = timeline_date_label(captured_at);
+    match captured_at.split_whitespace().nth(1) {
+        Some(time) if !time.is_empty() => format!("{date} at {time}"),
+        _ => date,
+    }
+}
+
 fn visible_image_rect(viewer: &ImageViewer, w: f64, h: f64) -> Option<Rect01> {
     let rect = Widget::get_rect(viewer);
     let (rw, rh) = (rect.width(), rect.height());
@@ -13578,94 +9864,6 @@ fn visible_image_rect(viewer: &ImageViewer, w: f64, h: f64) -> Option<Rect01> {
 
 /// Keep compact card chrome single-line.  Character iteration, rather than a
 /// byte slice, preserves Unicode names in both painting and accessibility.
-fn compact_label(label: &str, max_chars: usize) -> String {
-    let mut chars = label.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
-}
-
-/// Build one toolbar button in the presentation `face` asks for.
-///
-/// A glyph-only button keeps its words as the tooltip, which
-/// [`ui::widget::Button`] also adopts as its accessible name — so dropping the
-/// label costs the pointer user a hover and the screen-reader user nothing.
-fn build_button(
-    hit: Hit,
-    key: &str,
-    icon: Icon,
-    face: Face,
-    btn_h: f32,
-    pending: &Rc<Cell<Option<Hit>>>,
-) -> Button {
-    let label = tr(key);
-    let slot = pending.clone();
-    let shown = match face {
-        Face::Labelled => label.as_str(),
-        Face::IconOnly | Face::LargeOverflow => "",
-    };
-    // “Library” has a measured 104 px compact face (including icon and
-    // padding); the conservative generic estimate is 120 px. Keeping the
-    // compact value prevents the first phone button from being pushed a few
-    // pixels beyond the left edge while retaining room for every glyph.
-    let width = if key == "photos-library" && matches!(face, Face::Labelled) {
-        104.0
-    } else {
-        item_width(face, &label, btn_h)
-    };
-    let button = Button::new(key, shown, None);
-    // The large-text overflow face paints a deliberately smaller “More”
-    // caption below. An icon-only Button centres its glyph in the entire
-    // word-sized slot, so retaining the ellipsis here would paint it through
-    // that caption instead of beside it.
-    let button = if matches!(face, Face::LargeOverflow) {
-        button
-    } else {
-        button.with_icon(icon)
-    };
-    button
-        .with_size(width, btn_h)
-        .tooltip(label.clone())
-        .with_accessible_name(&label)
-        .on_effect(move || slot.set(Some(hit)))
-}
-
-/// A local navigation button in the album sheet. Membership paging is device
-/// presentation state, so its callback only posts local intent; it never
-/// mutates the document from inside the widget.
-fn build_album_page_button(
-    hit: AlbumEditorHit,
-    id: &str,
-    label: &str,
-    pending: &Rc<Cell<Option<AlbumEditorHit>>>,
-) -> Button {
-    let slot = pending.clone();
-    Button::new(id, label, None)
-        .with_size(92.0, 44.0)
-        .tooltip(label)
-        .with_accessible_name(label)
-        .on_effect(move || slot.set(Some(hit)))
-}
-
-fn build_album_page_buttons(
-    pending: &Rc<Cell<Option<AlbumEditorHit>>>,
-) -> Vec<(AlbumEditorHit, Button)> {
-    [
-        (
-            AlbumEditorHit::PreviousPage,
-            "photos-album-previous-page",
-            "Previous",
-        ),
-        (AlbumEditorHit::NextPage, "photos-album-next-page", "Next"),
-    ]
-    .into_iter()
-    .map(|(hit, id, label)| (hit, build_album_page_button(hit, id, label, pending)))
-    .collect()
-}
-
 /// Native controls layered over the custom metadata inspector. The inspector
 /// owns responsive geometry; `Button` owns interaction states, focus, action
 /// publication, tooltips, and the accessible name. This keeps the sheet from
@@ -13679,7 +9877,7 @@ fn build_metadata_editor_buttons(
         (
             MetadataEditorHit::TimeAndPlace,
             "time-place",
-            "Time & place",
+            "Time and place",
         ),
         (
             MetadataEditorHit::ClearFolder,
@@ -13713,35 +9911,28 @@ fn build_metadata_editor_buttons(
     .into_iter()
     .map(|(hit, id, label)| {
         let slot = Rc::clone(pending);
-        (
+        let id = format!("photos-metadata-{id}");
+        let button = if matches!(
             hit,
-            Button::new(&format!("photos-metadata-{id}"), label, None)
+            MetadataEditorHit::ClearFolder
+                | MetadataEditorHit::ClearPeople
+                | MetadataEditorHit::ClearTags
+                | MetadataEditorHit::ClearCapturedAt
+                | MetadataEditorHit::ClearLocation
+        ) {
+            Button::icon_only(&id, Icon::X, label).control_size(ui::widget::ControlSize::Small)
+        } else {
+            Button::new(&id, label, None)
                 .tooltip(label)
                 .with_accessible_name(label)
-                .on_effect(move || slot.set(Some(hit))),
-        )
+        };
+        let button = if hit == MetadataEditorHit::Save {
+            button.role(ButtonRole::Primary)
+        } else {
+            button
+        };
+        (hit, button.on_effect(move || slot.set(Some(hit))))
     })
-    .collect()
-}
-
-fn build_library_header_button(id: &str, label: &str) -> Button {
-    Button::new(id, label, None)
-        .with_size(142.0, 44.0)
-        .tooltip(label)
-        .with_accessible_name(label)
-}
-
-fn build_library_album_buttons() -> Vec<(AlbumEditorHit, Button)> {
-    [
-        (AlbumEditorHit::New, "photos-library-new-album", "New album"),
-        (
-            AlbumEditorHit::Edit,
-            "photos-library-edit-album",
-            "Edit album",
-        ),
-    ]
-    .into_iter()
-    .map(|(hit, id, label)| (hit, build_library_header_button(id, label)))
     .collect()
 }
 
@@ -13774,7 +9965,6 @@ fn build_collection_page_buttons(
         (
             hit,
             Button::new(id, label, None)
-                .with_size(88.0, 40.0)
                 .tooltip(label)
                 .with_accessible_name(label)
                 .on_effect(move || slot.set(Some(hit))),
@@ -13787,30 +9977,21 @@ fn build_directory_import_buttons(
     pending: &Rc<Cell<Option<DirectoryStatusHit>>>,
 ) -> Vec<(DirectoryStatusHit, Button)> {
     [
-        (
-            DirectoryStatusHit::Stop,
-            "photos-directory-stop",
-            "Stop",
-            Icon::Square,
-        ),
+        (DirectoryStatusHit::Stop, "photos-directory-stop", "Stop"),
         (
             DirectoryStatusHit::Details,
             "photos-directory-details",
             "Details",
-            Icon::List,
         ),
         (
             DirectoryStatusHit::Dismiss,
             "photos-directory-dismiss",
             "Dismiss",
-            Icon::X,
         ),
     ]
     .into_iter()
-    .map(|(hit, id, label, icon)| {
+    .map(|(hit, id, label)| {
         let button = Button::new(id, label, None)
-            .with_icon(icon)
-            .with_size(104.0, 40.0)
             .tooltip(label)
             .with_accessible_name(label);
         let button = if hit == DirectoryStatusHit::Details {
@@ -13825,42 +10006,6 @@ fn build_directory_import_buttons(
     .collect()
 }
 
-/// Shared retained controls placed over the custom timeline geometry.  The
-/// timeline owns placement, while Button owns its visual states, names and
-/// minimum target treatment.
-fn build_timeline_density_buttons(
-    pending: &Rc<Cell<Option<TimelineHit>>>,
-) -> Vec<(TimelineHit, Button)> {
-    [
-        (
-            TimelineHit::ZoomOut,
-            "photos-timeline-density-out",
-            "Show fewer photographs",
-            Icon::Minimize2,
-        ),
-        (
-            TimelineHit::ZoomIn,
-            "photos-timeline-density-in",
-            "Show more photographs",
-            Icon::Plus,
-        ),
-    ]
-    .into_iter()
-    .map(|(hit, id, name, icon)| {
-        let slot = pending.clone();
-        (
-            hit,
-            Button::new(id, "", None)
-                .with_icon(icon)
-                .with_size(44.0, 44.0)
-                .tooltip(name)
-                .with_accessible_name(name)
-                .on_effect(move || slot.set(Some(hit))),
-        )
-    })
-    .collect()
-}
-
 fn build_library_analysis_buttons(
     pending: &Rc<Cell<Option<LibraryAnalysisHit>>>,
 ) -> Vec<(LibraryAnalysisHit, Button)> {
@@ -13868,7 +10013,7 @@ fn build_library_analysis_buttons(
         (
             LibraryAnalysisHit::Start,
             "photos-analysis-start",
-            "Analyze unprocessed photos",
+            "Analyze photos",
             Icon::Sparkles,
         ),
         (
@@ -13880,7 +10025,7 @@ fn build_library_analysis_buttons(
         (
             LibraryAnalysisHit::Resume,
             "photos-analysis-resume",
-            "Resume analysis",
+            "Resume",
             Icon::Play,
         ),
         (
@@ -13897,7 +10042,6 @@ fn build_library_analysis_buttons(
             hit,
             Button::new(id, label, None)
                 .with_icon(icon)
-                .with_size(220.0, 44.0)
                 .tooltip(label)
                 .with_accessible_name(label)
                 .on_effect(move || slot.set(Some(hit))),
@@ -13922,7 +10066,7 @@ fn decode_key(open: &OpenImage) -> String {
 }
 
 fn thumbnail_key(open: &OpenImage) -> String {
-    format!("{}:320x180", decode_key(open))
+    format!("{}:480x480", decode_key(open))
 }
 
 /// Turn the portable capture value into a calm timeline label without parsing
@@ -14090,8 +10234,6 @@ impl PhotosApp {
             && old != &current
         {
             self.pending.take();
-            self.album_page_pending.take();
-            self.compact_more_open = false;
             self.library_cards.clear();
             self.library_details_cards.clear();
             let metadata_changed = self
@@ -14164,6 +10306,13 @@ impl PhotosApp {
     /// Accept a worker result only when it still belongs to the materialised
     /// library slice. This is the generation fence that makes scrolling,
     /// filtering and collaboration safe while a decode is in flight.
+    /// The decoded preview of the photograph `photo_id`, once it arrived.
+    fn thumbnail_for(&self, photo_id: &str) -> Option<&ImageData> {
+        self.thumbnail_resource_keys
+            .get(photo_id)
+            .and_then(|key| self.library_thumbnails.get(key))
+    }
+
     fn accept_thumbnail_result(&mut self, result: ThumbnailResult) {
         if Some(result.generation) != self.thumbnail_generation
             || !self.thumbnail_visible_ids.contains(&result.id)
@@ -14186,8 +10335,7 @@ impl PhotosApp {
     /// inventory in one place so resource publication, policy refresh,
     /// invocation draining, and operation dispatch cannot drift apart.
     fn retained_buttons(&self) -> Vec<&Button> {
-        let mut buttons = Vec::new();
-        buttons.extend(self.buttons.iter().map(|(_, button)| button));
+        let mut buttons = vec![&self.chrome.back, &self.chrome.search];
         buttons.extend(
             self.directory_import_buttons
                 .iter()
@@ -14203,14 +10351,6 @@ impl PhotosApp {
                 .iter()
                 .map(|(_, button)| button),
         );
-        buttons.extend(
-            self.timeline_density_buttons
-                .iter()
-                .map(|(_, button)| button),
-        );
-        buttons.push(&self.library_select_button);
-        buttons.extend(self.library_album_buttons.iter().map(|(_, button)| button));
-        buttons.extend(self.album_page_buttons.iter().map(|(_, button)| button));
         buttons.extend(
             self.metadata_editor_buttons
                 .iter()
@@ -14221,8 +10361,7 @@ impl PhotosApp {
     }
 
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
-        let mut buttons = Vec::new();
-        buttons.extend(self.buttons.iter_mut().map(|(_, button)| button));
+        let mut buttons = vec![&mut self.chrome.back, &mut self.chrome.search];
         buttons.extend(
             self.directory_import_buttons
                 .iter_mut()
@@ -14238,18 +10377,6 @@ impl PhotosApp {
                 .iter_mut()
                 .map(|(_, button)| button),
         );
-        buttons.extend(
-            self.timeline_density_buttons
-                .iter_mut()
-                .map(|(_, button)| button),
-        );
-        buttons.push(&mut self.library_select_button);
-        buttons.extend(
-            self.library_album_buttons
-                .iter_mut()
-                .map(|(_, button)| button),
-        );
-        buttons.extend(self.album_page_buttons.iter_mut().map(|(_, button)| button));
         buttons.extend(
             self.metadata_editor_buttons
                 .iter_mut()
@@ -14277,16 +10404,6 @@ impl PhotosApp {
         }
         if let Some(hit) = self.collection_page_pending.take() {
             self.page_collection(hit);
-        }
-        if let Some(hit) = self.timeline_density_pending.take() {
-            self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
-        }
-        if let Some(hit) = self.album_page_pending.take() {
-            match hit {
-                AlbumEditorHit::PreviousPage => self.page_library(false),
-                AlbumEditorHit::NextPage => self.page_library(true),
-                _ => {}
-            }
         }
         if let Some(hit) = self.metadata_editor_pending.take() {
             self.activate_metadata_editor_hit(hit, doc);
@@ -14404,12 +10521,42 @@ impl Widget for PhotosApp {
         }
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        let viewer = self
+            .viewer
+            .as_mut()
+            .is_some_and(Widget::take_structure_dirty);
+        std::mem::take(&mut self.structure_dirty) | viewer
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        !self.places_motion_reduced
-            && (self
-                .places_camera_feedback
-                .is_some_and(|feedback| !feedback.done(ui::time::now()))
-                || self.people_detail_transition.is_animating(ui::time::now()))
+        let now = ui::time::now();
+        self.chrome.drawer.is_animating()
+            || self.chrome.inspector.is_animating()
+            || self.status_bubble.needs_frame(now)
+            || (!self.places_motion_reduced
+                && (self
+                    .places_camera_feedback
+                    .is_some_and(|feedback| !feedback.done(now))
+                    || self.people_detail_transition.is_animating(now)))
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        true
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        true
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    /// Previews still decoding for what is on screen: a capture waits for
+    /// them instead of photographing placeholders.
+    fn has_pending_visual_work(&self) -> bool {
+        self.staged_scenario.is_some() || !self.thumbnail_queued.is_empty()
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -14528,7 +10675,10 @@ impl Widget for PhotosApp {
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, path) = ui::doc::document(doc, path);
+        let (doc, _) = ui::doc::document(doc, path);
+        if let Some((scenario, dir)) = self.staged_scenario.take() {
+            crate::seed_scenario(self, doc, &scenario, &dir);
+        }
         self.reconcile_content(doc);
         self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
@@ -14555,20 +10705,6 @@ impl Widget for PhotosApp {
         self.drain_picker(doc);
         self.drain_directory_import(doc);
         self.refresh(doc);
-        self.library_search.sync(doc, path);
-        if let Some(query) = self.library_search.take_dirty() {
-            self.library_query = query;
-            self.timeline_scroll_y = 0.0;
-        }
-
-        // An address can arrive before its bytes. Do not offer Copy, Save or
-        // a blind crop against an empty canvas; the durable resource remains
-        // available to a headless collaborator that deliberately chooses it.
-        let has_image = self.has_image();
-        let edited = !PhotosDoc::edits(doc).is_identity();
-        for (hit, button) in &mut self.buttons {
-            button.set_enabled(Self::enabled(*hit, has_image, edited));
-        }
         let heads = doc.get_heads();
         let document_changed = heads != self.search_heads;
         if document_changed {
@@ -14579,9 +10715,8 @@ impl Widget for PhotosApp {
             self.thumbnail_unavailable.clear();
             self.search_heads.clone_from(&heads);
         }
-        self.advance_library_query();
-        self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
+        self.library_photo_count = library.photos.len();
         self.library_analysis_coverage = library.photos.iter().fold(
             (0usize, 0usize, 0usize),
             |(analyzed, available, awaiting), photo| {
@@ -14619,11 +10754,8 @@ impl Widget for PhotosApp {
                 .find(|album| &album.id == id)
                 .map(|album| &album.photo_ids)
         });
-        let query_active = !self.library_query.trim().is_empty();
         let matches_filter = |photo: &LibraryPhoto| {
-            let query_matches = !query_active || self.library_query_matches.contains(&photo.id);
             membership.is_none_or(|ids| ids.contains(&photo.id))
-                && query_matches
                 && (!self.active_favorites || photo.favorite)
                 && self
                     .active_folder
@@ -14665,7 +10797,6 @@ impl Widget for PhotosApp {
             .filter(|photo| matches_filter(photo))
             .map(|photo| LibraryItem {
                 id: photo.id.clone(),
-                thumbnail_key: thumbnail_key(&photo.image),
                 name: photo.image.name.clone(),
                 favorite: photo.favorite,
                 captured_at: photo
@@ -14686,9 +10817,7 @@ impl Widget for PhotosApp {
                 .then_with(|| left.id.cmp(&right.id))
         });
         let projection_filter = format!(
-            "{}\u{1f}{}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{}",
-            self.library_query_indexed,
-            self.library_query_matches.len(),
+            "{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{}",
             self.active_album,
             self.active_folder,
             self.active_person,
@@ -14890,7 +11019,8 @@ impl Widget for PhotosApp {
         }
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
-        self.refresh_people_controls();
+        self.refresh_chrome_text(doc);
+        self.refresh_toolbar();
     }
 
     #[allow(
@@ -14903,19 +11033,34 @@ impl Widget for PhotosApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Refit against the width the last layout produced. The first frame
-        // has no rect yet and lays out roomy; the frame after corrects it.
-        // Large text uses the same labelled More overflow model as a phone:
-        // a small, visible “More” doorway keeps the hidden commands
-        // discoverable, while the four immediate navigation/edit controls
-        // retain their accessible icon names without colliding.
-        self.large_text_toolbar = theme.text_scale > 1.25;
-        self.refit_toolbar(self.rect.width() as f32, btn_h(theme.text_scale));
+        self.layout_theme = theme.clone();
+        self.chrome.drawer.scale_for(theme);
+        // A docked sidebar or inspector takes its column beside the content;
+        // in a narrow window each floats over it and takes nothing.
+        self.chrome.inspector.scale_for(theme);
+        self.sync_inspector();
+        let content = self.chrome.drawer.resolve(self.rect);
+        let sidebar_inset = (content.x0 - self.rect.x0).max(0.0);
+        let beside = self.chrome.inspector.resolve(self.rect);
+        let inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
+        self.refresh_toolbar();
+        // The layout tree points at the People buttons, and the framework
+        // syncs again before it measures; rebuilding them only here keeps
+        // those pointers alive until the next tree replaces them.
+        self.refresh_people_controls();
 
-        let bar = self.build_toolbar_node(taffy, theme, node_map);
-        let search = self.build_library_search_node(taffy, theme, node_map);
+        let header = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(chrome::header_height(theme) as f32),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
         let canvas = self.build_canvas_node(taffy, theme, node_map);
-        let status = self.build_status_node(taffy, theme.text_scale);
+        let status = self.build_status_node(taffy, theme);
 
         let root = taffy
             .new_with_children(
@@ -14925,9 +11070,15 @@ impl Widget for PhotosApp {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
                     },
+                    padding: taffy::Rect {
+                        left: LengthPercentage::length(sidebar_inset as f32),
+                        right: LengthPercentage::length(inspector_inset as f32),
+                        top: LengthPercentage::length(0.0),
+                        bottom: LengthPercentage::length(0.0),
+                    },
                     ..Default::default()
                 },
-                &[bar, search, canvas, status],
+                &[header, canvas, status],
             )
             .unwrap();
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
@@ -14946,61 +11097,23 @@ impl Widget for PhotosApp {
             y + f64::from(layout.size.height),
         );
         let here = Point::new(x, y);
+        let child_rect = |child: NodeId| {
+            let l = taffy.layout(child).unwrap();
+            Rect::new(
+                x + f64::from(l.location.x),
+                y + f64::from(l.location.y),
+                x + f64::from(l.location.x) + f64::from(l.size.width),
+                y + f64::from(l.location.y) + f64::from(l.size.height),
+            )
+        };
 
         let children = taffy.children(node).unwrap();
-        let Some(&bar) = children.first() else { return };
-        let bl = taffy.layout(bar).unwrap();
-        self.toolbar_rect = Rect::new(
-            x + f64::from(bl.location.x),
-            y + f64::from(bl.location.y),
-            x + f64::from(bl.location.x) + f64::from(bl.size.width),
-            y + f64::from(bl.location.y) + f64::from(bl.size.height),
-        );
-        let bar_origin = Point::new(x + f64::from(bl.location.x), y + f64::from(bl.location.y));
-        let bar_children = taffy.children(bar).unwrap();
-        self.separator_rects.clear();
-        for (slot, &bn) in self.toolbar_slots().iter().zip(bar_children.iter()) {
-            match *slot {
-                Slot::Item(n) => {
-                    if let Some((_, button)) = self.buttons.get_mut(n) {
-                        button.apply_layout(taffy, bn, bar_origin);
-                    }
-                }
-                Slot::Separator => {
-                    let sl = taffy.layout(bn).unwrap();
-                    let sx =
-                        bar_origin.x + f64::from(sl.location.x) + f64::from(sl.size.width) / 2.0;
-                    let sy = bar_origin.y + f64::from(sl.location.y);
-                    self.separator_rects.push(Rect::new(
-                        sx,
-                        sy,
-                        sx + 1.0,
-                        sy + f64::from(sl.size.height),
-                    ));
-                }
-                Slot::Spacer => {}
-            }
+        if let Some(&header) = children.first() {
+            self.chrome.header = child_rect(header);
         }
-
-        if let Some(&search) = children.get(1) {
-            let sl = taffy.layout(search).unwrap();
-            let search_origin =
-                Point::new(x + f64::from(sl.location.x), y + f64::from(sl.location.y));
-            if let Some(&field) = taffy.children(search).unwrap_or_default().first() {
-                self.library_search
-                    .apply_layout(taffy, field, search_origin);
-            }
-        }
-        if let Some(&canvas) = children.get(2) {
-            let cl = taffy.layout(canvas).unwrap();
-            let canvas_origin =
-                Point::new(x + f64::from(cl.location.x), y + f64::from(cl.location.y));
-            self.canvas_rect = Rect::new(
-                canvas_origin.x,
-                canvas_origin.y,
-                canvas_origin.x + f64::from(cl.size.width),
-                canvas_origin.y + f64::from(cl.size.height),
-            );
+        if let Some(&canvas) = children.get(1) {
+            self.canvas_rect = child_rect(canvas);
+            let canvas_origin = Point::new(self.canvas_rect.x0, self.canvas_rect.y0);
             let people_surface = self.library_mode
                 && (self.library_destination == LibraryDestination::People || self.people_mode);
             if people_surface {
@@ -15020,25 +11133,32 @@ impl Widget for PhotosApp {
                     }
                     index += 1;
                 }
+                // The tree was placed from the canvas the previous frame
+                // had; place the surface again on the canvas it has now, so
+                // the painted headings and the controls always agree.
+                let theme = self.layout_theme.clone();
+                self.layout_people_controls(&theme);
+                if show_name {
+                    self.people_name_input
+                        .apply_layout_external(self.people_name_bounds);
+                }
+                for control in &mut self.people_controls {
+                    let bounds = if control.is_card() {
+                        Rect::from_origin_size(canvas_origin, (0.0, 0.0))
+                    } else {
+                        control.bounds
+                    };
+                    control.button.apply_layout_external(bounds);
+                }
             } else if let Some(v) = self.viewer.as_mut() {
                 v.apply_layout(taffy, canvas, here);
             }
         }
-        if let Some(&status) = children.get(3) {
-            let sl = taffy.layout(status).unwrap();
-            self.status_rect = Rect::new(
-                x + f64::from(sl.location.x),
-                y + f64::from(sl.location.y),
-                x + f64::from(sl.location.x) + f64::from(sl.size.width),
-                y + f64::from(sl.location.y) + f64::from(sl.size.height),
-            );
+        if let Some(&status) = children.get(2) {
+            self.status_rect = child_rect(status);
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the top-level paint entry point keeps surface precedence and overlay order explicit"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -15047,92 +11167,16 @@ impl Widget for PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use vello::peniko::Fill;
+        // No window ground: the framework paints `surfaces.content` under
+        // the app, and the sidebar paints its own region.
+        self.chrome.drawer.tick(theme);
+        self.chrome.drawer.resolve(self.rect);
+        self.chrome.inspector.tick(theme);
+        self.chrome.inspector.resolve(self.rect);
+        self.place_chrome(text_renderer, theme);
+        self.empty_action_rect = None;
 
-        // App background. Every colour on this path comes from the theme.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        // The toolbar sits on the raised surface so it reads as chrome
-        // against the canvas below it.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &self.toolbar_rect,
-        );
-        // …and is separated from the canvas by a real rule, not only by that
-        // fill. Under the high-contrast palette `surfaces.raised` and
-        // `surfaces.base` are both pure black by design — that theme
-        // deliberately carries structure in borders rather than in fills — so
-        // a toolbar defined only by its plate has no edge at all there. The
-        // same rule above the status line, for the same reason.
-        // The status line's rule is drawn only when the line has something in
-        // it; an empty band would otherwise be fenced off as if it did.
-        // Bar-role hairline under the toolbar plate (HIG §9.5); the status
-        // band's rule sits on the base canvas, so it derives from that.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &Rect::new(
-                self.rect.x0,
-                self.toolbar_rect.y1 - 1.0,
-                self.rect.x1,
-                self.toolbar_rect.y1,
-            ),
-        );
-        if !self.status.is_empty() {
-            let edge = self.status_rect.y0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                surface::edge_on(theme.tokens.colors.surfaces.base),
-                None,
-                &Rect::new(self.rect.x0, edge - 1.0, self.rect.x1, edge),
-            );
-        }
-
-        // Group rules: what opens a file, what adjusts it, what exports it —
-        // derived against the raised plate they sit on.
-        let group_rule = surface::edge_on(theme.tokens.colors.surfaces.raised);
-        for sep in &self.separator_rects {
-            scene.fill(Fill::NonZero, transform, group_rule, None, sep);
-        }
-
-        for slot in self.toolbar_slots() {
-            let Slot::Item(index) = *slot else { continue };
-            if let Some((_, button)) = self.buttons.get_mut(index) {
-                button.draw(scene, transform, text_renderer, theme, presence);
-            }
-        }
-        // Button chrome has a fixed 34px height.  Paint the one high-text
-        // overflow word ourselves at a smaller, centred size so it remains
-        // visibly labelled without letting a 200%-scaled button caption
-        // bleed through the toolbar rule.
-        if self.large_text_toolbar
-            && let Some((_, more)) = self.buttons.get(9)
-        {
-            let rect = more.get_rect();
-            text_renderer.draw_text_weighted(
-                scene,
-                "More",
-                10.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 34.0, rect.y0 + 8.0)),
-                Some((rect.width() - 40.0) as f32),
-                TextWeight::Medium,
-            );
-        }
         if self.library_mode {
-            self.library_search
-                .draw(scene, transform, text_renderer, theme, presence);
             if self.library_destination == LibraryDestination::Albums {
                 self.draw_albums(scene, transform, text_renderer, theme, presence);
             } else if self.library_destination == LibraryDestination::People || self.people_mode {
@@ -15142,9 +11186,11 @@ impl Widget for PhotosApp {
                         .draw(scene, transform, text_renderer, theme, presence);
                 }
                 for control in &mut self.people_controls {
-                    control
-                        .button
-                        .draw(scene, transform, text_renderer, theme, presence);
+                    if !control.is_card() {
+                        control
+                            .button
+                            .draw(scene, transform, text_renderer, theme, presence);
+                    }
                 }
             } else if self.library_destination == LibraryDestination::Places {
                 self.draw_places(scene, transform, text_renderer, theme, presence);
@@ -15160,36 +11206,42 @@ impl Widget for PhotosApp {
             let (title, body) = self.empty_state_text();
             self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
         }
-        // This is deliberately after the canvas/library so the compact menu
-        // is a real popup rather than a panel hidden behind the grid.
-        self.draw_compact_more(scene, transform, text_renderer, theme);
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);
-
-        if !self.status.is_empty() {
-            let inner = self.status_rect;
-            // Centre the line on its measured height inside a band sized by
-            // `status_h` — at 2× the filename used to run off the bottom of a
-            // fixed band anchored 4 px from its top (plan task 19).
-            let budget = (inner.width() - 2.0 * f64::from(PAD)) as f32;
-            let (_, line_h) = text_renderer.measure_weighted(
-                &self.status,
-                STATUS_TEXT_SIZE,
-                Some(budget),
-                TextWeight::Regular,
-            );
-            let y = inner.y0 + (inner.height() - f64::from(line_h)).max(0.0) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                &self.status,
-                STATUS_TEXT_SIZE,
-                theme.text_primary,
-                transform * Affine::translate((inner.x0 + f64::from(PAD), y)),
-                Some(budget),
-                TextWeight::Regular,
-            );
+        self.paint_status(scene, transform, text_renderer, theme);
+        self.paint_header(scene, transform, text_renderer, theme, presence);
+        let now = ui::time::now();
+        if let Some(notice) = self.notice.as_deref() {
+            self.status_bubble.show(notice, now);
         }
-        self.draw_directory_import_details(scene, transform, text_renderer, theme);
+        self.status_bubble
+            .pointer_moved(self.canvas_rect, self.pointer, text_renderer, theme, now);
+        self.status_bubble.paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.canvas_rect,
+            now,
+        );
+        self.paint_sidebar(scene, transform, text_renderer, theme);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.chrome
+            .toolbar
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        if self.library_mode && self.selection_album_chooser {
+            self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, presence);
+        }
+        self.draw_directory_import_details(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(
@@ -15268,6 +11320,26 @@ impl Widget for PhotosApp {
                 return;
             }
         }
+        if !self.selection_album_chooser && self.handle_chrome_event(event, ctx) {
+            self.drain_pending(ctx.state);
+            return;
+        }
+        if matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) && self
+            .empty_action_rect
+            .is_some_and(|rect| rect.contains(self.pointer))
+        {
+            self.pending.set(Some(Hit::Open));
+            self.drain_pending(ctx.state);
+            *ctx.handled = true;
+            return;
+        }
         for (_, button) in &mut self.directory_import_buttons {
             let mut sink = None;
             button.handle_event(
@@ -15315,7 +11387,7 @@ impl Widget for PhotosApp {
                 return;
             }
             let root_children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-            if let Some(&canvas) = root_children.get(2) {
+            if let Some(&canvas) = root_children.get(1) {
                 let canvas_children = ctx.taffy.children(canvas).unwrap_or_default();
                 let show_name = self.people_selection.is_some() && !self.people_merge_mode;
                 let mut index = 0usize;
@@ -15345,7 +11417,23 @@ impl Widget for PhotosApp {
                     index += 1;
                 }
             }
-            let pending = self.people_pending.borrow_mut().take();
+            let mut pending = self.people_pending.borrow_mut().take();
+            if pending.is_none()
+                && matches!(
+                    event,
+                    winit::event::WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                        ..
+                    }
+                )
+            {
+                pending = self
+                    .people_controls
+                    .iter()
+                    .find(|control| control.is_card() && control.bounds.contains(self.pointer))
+                    .map(|control| control.intent.clone());
+            }
             if let Some(intent) = pending {
                 self.handle_people_intent(intent, ctx.state);
                 *ctx.handled = true;
@@ -15438,13 +11526,6 @@ impl Widget for PhotosApp {
             *ctx.handled = true;
             return;
         }
-        if self.library_mode
-            && let Some(hit) = self.timeline_density_pending.take()
-        {
-            self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
-            *ctx.handled = true;
-            return;
-        }
 
         if self.library_mode
             && matches!(
@@ -15462,26 +11543,6 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             match hit {
-                PlacesHit::Timeline => {
-                    self.people_mode = false;
-                    self.library_destination = LibraryDestination::Timeline;
-                }
-                PlacesHit::Albums => self.show_albums(),
-                PlacesHit::People => {
-                    self.people_mode = true;
-                    self.library_destination = LibraryDestination::People;
-                }
-                PlacesHit::Places => {
-                    self.people_mode = false;
-                    self.library_destination = LibraryDestination::Places;
-                }
-                PlacesHit::Analysis => {
-                    self.people_mode = false;
-                    self.show_library_analysis();
-                }
-                PlacesHit::ToggleList => self.places_list_mode = !self.places_list_mode,
-                PlacesHit::ZoomIn => self.zoom_places_by(1.0),
-                PlacesHit::ZoomOut => self.zoom_places_by(-1.0),
                 PlacesHit::Place(key) => {
                     let _ = self.open_place_collection(ctx.state, &key);
                 }
@@ -15545,82 +11606,6 @@ impl Widget for PhotosApp {
             return;
         }
 
-        // The phone overflow is a real keyboard menu, not a pointer-only
-        // drawing. Its entries are normal canonical toolbar actions, so this
-        // just supplies focus traversal and activation for the compact locus.
-        if self.compact_more_open
-            && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == winit::event::ElementState::Pressed
-        {
-            match &key.logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    self.compact_more_open = false;
-                }
-                Key::Named(NamedKey::ArrowDown) => self.step_compact_more_focus(true),
-                Key::Named(NamedKey::ArrowUp) => self.step_compact_more_focus(false),
-                Key::Named(NamedKey::Enter) => {
-                    if let Some(hit) = self.focused_compact_more_hit()
-                        && self.is_toolbar_hit_enabled(hit)
-                    {
-                        self.pending.set(Some(hit));
-                        self.compact_more_open = false;
-                        self.drain_pending(ctx.state);
-                    }
-                }
-                Key::Character(text) if text == " " => {
-                    if let Some(hit) = self.focused_compact_more_hit()
-                        && self.is_toolbar_hit_enabled(hit)
-                    {
-                        self.pending.set(Some(hit));
-                        self.compact_more_open = false;
-                        self.drain_pending(ctx.state);
-                    }
-                }
-                _ => return,
-            }
-            *ctx.handled = true;
-            return;
-        }
-
-        // The labeled compact overflow is painted above both the viewer and
-        // the library.  Give it first refusal of clicks so an action in the
-        // popup cannot also select a photograph behind it.
-        if self.compact_more_open
-            && matches!(
-                event,
-                winit::event::WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Released,
-                    button: winit::event::MouseButton::Left,
-                    ..
-                }
-            )
-            && let Some((hit, _)) = self
-                .compact_more_hits
-                .iter()
-                .find(|(_, rect)| rect.contains(self.pointer))
-                .copied()
-        {
-            self.pending.set(Some(hit));
-            self.compact_more_open = false;
-            self.drain_pending(ctx.state);
-            *ctx.handled = true;
-            return;
-        }
-
-        // The library search is a real shared SearchField, placed directly
-        // beneath the toolbar so OCR/descriptions and people/object facets
-        // have one obvious entry point instead of another filter-chip row.
-        if self.library_mode
-            && let Some(&search_wrap) = ctx.taffy.children(ctx.node_id).unwrap_or_default().get(1)
-            && let Some(&search) = ctx.taffy.children(search_wrap).unwrap_or_default().first()
-        {
-            self.library_search
-                .handle_event(event, &mut ctx.reborrow(ctx.path, search));
-            if *ctx.handled {
-                return;
-            }
-        }
-
         // Give the shared chronological index first refusal only while its
         // narrow track/preview lane owns the pointer (or it holds a drag / AT
         // focus). Ordinary scrolling anywhere else remains the timeline's
@@ -15658,23 +11643,6 @@ impl Widget for PhotosApp {
                     return;
                 }
             }
-        }
-
-        if self.library_mode
-            && self.album_editor
-            && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
-        {
-            let direction = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum(),
-                winit::event::MouseScrollDelta::PixelDelta(position) => position.y.signum() as f32,
-            };
-            if direction < 0.0 {
-                self.page_library(true);
-            } else if direction > 0.0 {
-                self.page_library(false);
-            }
-            *ctx.handled = true;
-            return;
         }
 
         // Ctrl + wheel is the cross-platform density gesture.  Keep an
@@ -15771,26 +11739,6 @@ impl Widget for PhotosApp {
                 *ctx.handled = true;
                 return;
             }
-        }
-
-        if self.library_mode
-            && matches!(
-                event,
-                winit::event::WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Released,
-                    button: winit::event::MouseButton::Left,
-                    ..
-                }
-            )
-            && let Some((hit, _)) = self
-                .timeline_density_hits
-                .iter()
-                .find(|(_, rect)| rect.contains(self.pointer))
-                .copied()
-        {
-            self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
-            *ctx.handled = true;
-            return;
         }
 
         if self.library_mode
@@ -15908,10 +11856,8 @@ impl Widget for PhotosApp {
                 .find(|(_, rect)| rect.contains(self.pointer))
                 .copied()
         {
-            match hit {
-                AlbumEditorHit::New => self.begin_new_album(ctx.state),
-                AlbumEditorHit::Edit => self.begin_edit_album(ctx.state),
-                _ => {}
+            if hit == AlbumEditorHit::New {
+                self.begin_new_album(ctx.state);
             }
             *ctx.handled = true;
             return;
@@ -16026,12 +11972,12 @@ impl Widget for PhotosApp {
             if self.selection_mode {
                 self.toggle_library_selection(&photo_id, ctx.modifiers.state().shift_key());
             } else if !self.album_editor
-                && !self.large_text_toolbar
-                && self.canvas_rect.width() >= 720.0
-                && self.pointer.y >= card.y1 - 44.0
-                && self.pointer.x >= card.x1 - 88.0
+                && card_action_controls(card, &self.layout_theme)
+                    .favorite
+                    .union(card_action_controls(card, &self.layout_theme).remove)
+                    .contains(self.pointer)
             {
-                let actions = card_action_controls(card);
+                let actions = card_action_controls(card, &self.layout_theme);
                 if actions.favorite.contains(self.pointer) {
                     self.library_remove_confirm = None;
                     self.commit_library_action(
@@ -16051,7 +11997,8 @@ impl Widget for PhotosApp {
                 } else {
                     self.library_remove_confirm = Some(photo_id);
                     self.notice = Some(
-                        "Click × again to remove it from the library and every album".to_owned(),
+                        "Click Remove again to remove it from the library and every album"
+                            .to_owned(),
                     );
                 }
             } else {
@@ -16066,17 +12013,7 @@ impl Widget for PhotosApp {
             return;
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        if let Some(&bar) = children.first() {
-            let bar_children = ctx.taffy.children(bar).unwrap_or_default();
-            for (slot, &bn) in self.toolbar_slots().iter().zip(bar_children.iter()) {
-                let Slot::Item(n) = *slot else { continue };
-                let Some((_, button)) = self.buttons.get_mut(n) else {
-                    continue;
-                };
-                button.handle_event(event, &mut ctx.reborrow(ctx.path, bn));
-            }
-        }
-        if let (Some(v), Some(&canvas)) = (self.viewer.as_mut(), children.get(2)) {
+        if let (Some(v), Some(&canvas)) = (self.viewer.as_mut(), children.get(1)) {
             v.handle_event(event, &mut ctx.reborrow(ctx.path, canvas));
         }
         self.drain_pending(ctx.state);
@@ -16108,21 +12045,18 @@ impl Widget for PhotosApp {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if self.perform_chrome_semantic_action(target, action, state, path) {
+            return true;
+        }
         let (state, _) = ui::doc::document(state, path);
         self.reconcile_content(state);
-        self.perform_toolbar_semantic_action(target, action, state)
-            || self.perform_directory_semantic_action(target, action)
+        self.perform_directory_semantic_action(target, action)
             || self.perform_library_semantic_action(target, action, state)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         match path {
-            [0, button] => self
-                .buttons
-                .get(*button)
-                .map(|(_, button)| button.get_rect()),
-            [1] => Some(self.canvas_rect),
-            [2] if !self.status.is_empty() => Some(self.status_rect),
+            [0] => Some(self.canvas_rect),
             _ => None,
         }
     }
@@ -16193,9 +12127,11 @@ impl ui::resources::PublishesResources for PhotosApp {
 
 impl ui::widget::controls::ActionControls for PhotosApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.retained_buttons_mut()
-            .into_iter()
-            .find_map(|button| ui::widget::controls::take_control_invocation(button))
+        self.chrome.search_opener.take().or_else(|| {
+            self.retained_buttons_mut()
+                .into_iter()
+                .find_map(|button| ui::widget::controls::take_control_invocation(button))
+        })
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         // Photos projects its custom media surfaces and retained buttons into
@@ -16624,132 +12560,6 @@ impl PhotosApp {
         );
         Ok(())
     }
-
-    fn is_toolbar_hit_enabled(&self, hit: Hit) -> bool {
-        self.buttons
-            .iter()
-            .find(|(candidate, _)| *candidate == hit)
-            .is_some_and(|(_, button)| button.is_enabled())
-    }
-
-    fn focused_compact_more_hit(&self) -> Option<Hit> {
-        COMPACT_MORE_ENTRIES.get(self.compact_more_focus).copied()
-    }
-
-    fn step_compact_more_focus(&mut self, forward: bool) {
-        for _ in 0..COMPACT_MORE_ENTRIES.len() {
-            self.compact_more_focus = if forward {
-                (self.compact_more_focus + 1) % COMPACT_MORE_ENTRIES.len()
-            } else {
-                (self.compact_more_focus + COMPACT_MORE_ENTRIES.len() - 1)
-                    % COMPACT_MORE_ENTRIES.len()
-            };
-            if self
-                .focused_compact_more_hit()
-                .is_some_and(|hit| self.is_toolbar_hit_enabled(hit))
-            {
-                break;
-            }
-        }
-    }
-
-    /// Draw the phone-only action menu over the current surface. Its entries
-    /// reuse the canonical toolbar actions, so hiding their buttons never
-    /// creates a second edit/export implementation.
-    fn draw_compact_more(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.compact_more_hits.clear();
-        if !self.compact_more_open || self.toolbar_slots() != COMPACT_SLOTS {
-            return;
-        }
-        let entries = [
-            (Hit::CropToView, tr("photos-crop")),
-            (Hit::Reset, tr("photos-reset")),
-            (Hit::Copy, tr("photos-copy")),
-            (Hit::Share, tr("photos-share")),
-            (Hit::Save, tr("photos-save")),
-        ];
-        let width = 178.0;
-        let row_h = 44.0;
-        let panel = Rect::new(
-            self.toolbar_rect.x1 - width - f64::from(PAD),
-            self.toolbar_rect.y1 + 4.0,
-            self.toolbar_rect.x1 - f64::from(PAD),
-            self.toolbar_rect.y1 + 4.0 + row_h * entries.len() as f64,
-        );
-        // A floating menu: Panel role ground + border (HIG §9.5), rows
-        // separated by inset derived rules rather than full-bleed ones.
-        let menu_radius = f64::from(theme.tokens.radii.md);
-        let ground = ui::chrome::panel_ground(theme);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            ground,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(panel, menu_radius),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &surface::edge_outline(panel, menu_radius),
-        );
-        for (index, (hit, label)) in entries.into_iter().enumerate() {
-            let row = Rect::new(
-                panel.x0,
-                panel.y0 + index as f64 * row_h,
-                panel.x1,
-                panel.y0 + (index + 1) as f64 * row_h,
-            );
-            let enabled = self
-                .buttons
-                .iter()
-                .find(|(candidate, _)| *candidate == hit)
-                .is_some_and(|(_, button)| button.is_enabled());
-            if index == self.compact_more_focus && enabled {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.bg_hover,
-                    None,
-                    &row,
-                );
-            }
-            text_renderer.draw_text_weighted(
-                scene,
-                &label,
-                13.0,
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-                transform * Affine::translate((row.x0 + 12.0, row.y0 + 13.0)),
-                Some((row.width() - 24.0) as f32),
-                TextWeight::Medium,
-            );
-            if index > 0 {
-                surface::separator(
-                    scene,
-                    transform,
-                    row.x0,
-                    row.x1,
-                    row.y0 + 0.5,
-                    step(Spacing::BASE.s3),
-                    ground,
-                );
-            }
-            if enabled {
-                self.compact_more_hits.push((hit, row));
-            }
-        }
-    }
 }
 
 /// Lets the compositor host Photos in a tab directly, the same way it hosts
@@ -16982,9 +12792,18 @@ mod history_reconcile_tests {
                 &PresenceCtx::empty(),
             );
             assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+            let images = |scene: &Scene| {
+                scene
+                    .encoding()
+                    .resources
+                    .patches
+                    .iter()
+                    .filter(|patch| matches!(patch, vello_encoding::Patch::Image { .. }))
+                    .count()
+            };
             assert_eq!(
-                hydrated.encoding().resources.patches.len(),
-                missing.encoding().resources.patches.len() + 1,
+                images(&hydrated),
+                images(&missing) + 1,
                 "the production painter records the cached immutable image even before it enters the queued thumbnail window"
             );
         }
