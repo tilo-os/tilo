@@ -25,13 +25,21 @@ const MAX_BOOKMARKS: usize = 10_000;
 const MAX_WEB_URL_BYTES: usize = 8 * 1024;
 const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
 
+/// Search scope and resource id of the history section. A history entry's id
+/// lies beneath it, so a search narrowed to History admits exactly its hits.
+pub const HISTORY_SCOPE: &str = "browser.history";
+/// Search scope and resource id of the bookmarks section.
+pub const BOOKMARKS_SCOPE: &str = "browser.bookmarks";
+/// Search scope and resource id of the downloads section.
+pub const DOWNLOADS_SCOPE: &str = "browser.downloads";
+
 /// Stable identity for a private history entry.  History is deliberately not
 /// copied into the shared document (visited URLs are sensitive activity), but
 /// it still needs the same canonical identity everywhere it is exposed: the
 /// library tree, global search, and an agent's resource address.
 pub fn history_resource_id(url: &str) -> String {
     format!(
-        "browser.history.{}",
+        "{HISTORY_SCOPE}/{}",
         blake3::hash(url.trim().as_bytes()).to_hex()
     )
 }
@@ -77,7 +85,7 @@ pub fn normalized_bookmark_url(url: &str) -> Option<String> {
 pub fn bookmark_resource_id(url: &str) -> String {
     let normalized = normalized_bookmark_url(url).unwrap_or_else(|| url.trim().to_string());
     format!(
-        "browser.bookmark.{}",
+        "{BOOKMARKS_SCOPE}/{}",
         blake3::hash(normalized.as_bytes()).to_hex()
     )
 }

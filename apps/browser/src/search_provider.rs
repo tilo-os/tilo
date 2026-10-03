@@ -12,7 +12,10 @@ use tilo_actions::{
     RetryPolicy,
 };
 use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::search::{
+    CatalogSearchProvider, Facet, PagePoll, PendingToken, ScopeDecl, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchQuery, SearchResult,
+};
 
 const DEFAULT_RESULT_LIMIT: usize = 100;
 
@@ -189,16 +192,79 @@ impl BrowserSearchIndex {
 
     pub fn provider(&self) -> BrowserSearchProvider {
         BrowserSearchProvider {
-            index: self.clone(),
+            library: LibraryCatalog {
+                index: self.clone(),
+            },
         }
     }
 }
 
+/// The library's search provider: history, bookmarks and downloads, with each
+/// section declared as a scope the Library's search button narrows to.
 pub struct BrowserSearchProvider {
+    library: LibraryCatalog,
+}
+
+/// The catalogue answering every query; [`BrowserSearchProvider`] adds the
+/// scopes a catalogue provider cannot declare itself.
+struct LibraryCatalog {
     index: BrowserSearchIndex,
 }
 
-impl BrowserSearchProvider {
+impl SearchProvider for BrowserSearchProvider {
+    fn name(&self) -> &str {
+        SearchProvider::name(&self.library)
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        self.library.action_directory_generation()
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.library.action_directory_cursor_is_current(cursor)
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.library.search(query)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.library.search_limited(query, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &SearchQuery,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.library
+            .search_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn poll_page(&self, token: &PendingToken) -> PagePoll {
+        self.library.poll_page(token)
+    }
+
+    fn facets(&self) -> Vec<Facet> {
+        SearchProvider::facets(&self.library)
+    }
+
+    fn search_scopes(&self) -> Vec<ScopeDecl> {
+        vec![
+            ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
+            ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
+            ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+        ]
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.library.resolve_action_resource(address)
+    }
+}
+
+impl LibraryCatalog {
     fn row_resource(row: &Row) -> Resource {
         let mut resource = Resource::new(&row.resource_id, row.resource_kind, &row.title);
         let (action, label, payload, contract) = if row.resource_kind == "browser.download" {
@@ -244,7 +310,7 @@ fn navigation_contract() -> ActionContract {
     }
 }
 
-impl CatalogSearchProvider for BrowserSearchProvider {
+impl CatalogSearchProvider for LibraryCatalog {
     const RESULT_LIMIT: usize = DEFAULT_RESULT_LIMIT;
 
     fn provider_name(&self) -> &'static str {
@@ -315,11 +381,12 @@ mod tests {
             let address = hits[0].action_address().unwrap();
             assert!(provider.resolve_action_resource(&address).is_some());
 
-            let first = provider.search_page("Page", None, 7, 3);
+            let query = SearchQuery::new("Page");
+            let first = provider.search_page(&query, None, 7, 3);
             assert!(first.inspected <= 7);
             assert!(first.results.len() <= 3);
             assert!(first.next.is_some());
-            let second = provider.search_page("Page", first.next.as_ref(), 7, 3);
+            let second = provider.search_page(&query, first.next.as_ref(), 7, 3);
             assert!(second.inspected <= 7);
             assert!(second.results.len() <= 3);
         }
@@ -383,7 +450,7 @@ mod tests {
             let provider = index.provider();
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
-            assert_eq!(address.resource, "browser.download.stable-download");
+            assert_eq!(address.resource, "browser.downloads/stable-download");
             assert_eq!(address.action, "show");
             let resource = provider.resolve_action_resource(&address).unwrap();
             assert_eq!(resource.kind, "browser.download");

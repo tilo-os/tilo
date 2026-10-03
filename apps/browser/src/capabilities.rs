@@ -1,7 +1,12 @@
 //! Device-local permission and download surfaces backed by engine outcomes.
 use std::collections::BTreeMap;
+use ui::icons::Icon;
+use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
-use ui::widget::{Button, Column, Container, Row, Text, Widget};
+use ui::widget::{
+    Actions, Banner, Button, ButtonRole, Column, Container, EmptyState, ListRow, Row, Section,
+    Text, Widget,
+};
 
 pub(crate) struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
@@ -119,7 +124,7 @@ impl Capabilities {
                     .unwrap_or(0)
                     .min(100);
                 return Some(format!(
-                    "{count} {} · {percent}%",
+                    "{count} {} at {percent}%",
                     if count == 1 { "download" } else { "downloads" }
                 ));
             }
@@ -281,81 +286,114 @@ impl Capabilities {
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
         let downloads = self.downloads.borrow();
-        let (id, title, permission) =
+        let (id, title, detail, permission) =
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
                 (
                     id,
-                    format!("{origin} requests {rights}. Expires in 60 seconds."),
+                    format!("{origin} requests {rights}"),
+                    "The request expires in 60 seconds.".to_owned(),
                     true,
                 )
             } else if let Some((&id, (url, name))) = downloads.prompts.first_key_value() {
                 (
                     id,
-                    format!("Download {name} from {url}? Save in a new folder in Downloads."),
+                    format!("Download {name}?"),
+                    format!("From {url}. It is saved in a new folder in Downloads."),
                     false,
                 )
             } else {
                 return None;
             };
         drop(downloads);
-        let mut row = Row::new();
-        for (label, allow) in [
-            (if permission { "Allow" } else { "Save" }, true),
-            ("Deny", false),
-        ] {
+        let decide = |label: &str, allow: bool| {
             let engine = engine.clone();
-            row = row.push(Box::new(
-                Button::new(
-                    &format!("browser.decision.{permission}.{id}.{allow}"),
-                    label,
-                    None,
-                )
-                .with_size(80.0, 36.0)
-                .on_effect(move || {
-                    engine.send(if permission {
-                        WebViewCommand::PermissionDecision { id, allow }
-                    } else {
-                        WebViewCommand::DownloadDecision { id, allow }
-                    });
-                }),
-            ));
-        }
+            Button::new(
+                &format!("browser.decision.{permission}.{id}.{allow}"),
+                label,
+                None,
+            )
+            .on_effect(move || {
+                engine.send(if permission {
+                    WebViewCommand::PermissionDecision { id, allow }
+                } else {
+                    WebViewCommand::DownloadDecision { id, allow }
+                });
+            })
+        };
+        let (accept, decline) = if permission {
+            ("Allow", "Deny")
+        } else {
+            ("Save", "Don’t save")
+        };
         Some(Box::new(
-            Container::new().with_background().with_child(Box::new(
+            Container::new().with_child(Box::new(
                 Column::new()
+                    .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&title).with_size(13.0)))
-                    .push(Box::new(row)),
+                    .push(Box::new(Banner::warning(title).with_message(detail)))
+                    .push(Box::new(
+                        Actions::new(decide(accept, true).role(ButtonRole::Primary))
+                            .secondary(decide(decline, false)),
+                    )),
             )),
         ))
     }
     pub fn downloads(&self, engine: &SharedEngine) -> Box<dyn Widget> {
         let downloads = self.downloads.borrow();
-        let mut rows = Column::new().with_no_padding().with_intrinsic_height();
-        rows = rows.push(Box::new(
+        let mut column = Column::new().with_no_padding().with_intrinsic_height();
+        column = column.push(Box::new(
             Text::from_state(&self.notice, Clone::clone)
                 .with_id("browser.download.notice")
-                .with_size(13.0),
+                .with_role(TextRole::Body),
         ));
         if !downloads.terminal_notice.is_empty() {
-            rows = rows.push(Box::new(
+            column = column.push(Box::new(
                 Text::new(&downloads.terminal_notice)
                     .with_id("browser.download.terminal-status")
-                    .with_size(13.0),
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
             ));
         }
         if downloads.records.is_empty() {
-            rows = rows.push(Box::new(Text::new("No downloads this session.")));
-        }
-        for (&id, d) in downloads.records.iter().rev() {
-            let summary = format!(
-                "{} · {} · {} / {} bytes\n{} {}",
-                d.name, d.state, d.received, d.total, d.path, d.error
+            drop(downloads);
+            return Box::new(
+                column.push(Box::new(
+                    EmptyState::new("No downloads yet")
+                        .with_icon(Icon::Download)
+                        .with_message(
+                            "Files you download appear here. You choose where each one is saved.",
+                        ),
+                )),
             );
-            let mut row = Row::new().push(Box::new(Text::new(&summary).with_size(13.0)));
+        }
+        let mut rows: Vec<Box<dyn Widget>> = Vec::new();
+        for (&id, d) in downloads.records.iter().rev() {
+            let status = match d.state.as_str() {
+                "progress" if d.total > 0 => format!(
+                    "{} of {}",
+                    ui::format::bytes_si(d.received),
+                    ui::format::bytes_si(d.total)
+                ),
+                "progress" => format!("{} downloaded", ui::format::bytes_si(d.received)),
+                "complete" => format!("Saved to {}", d.path),
+                "cancelled" => "Cancelled".to_owned(),
+                _ if d.error.is_empty() => "The download failed".to_owned(),
+                _ => d.error.clone(),
+            };
+            let mut row = ListRow::new(format!("browser.download.row.{id}"), &d.name);
+            let mut buttons = Row::new().no_wrap();
             if d.state == "progress" {
+                let percent = d
+                    .received
+                    .saturating_mul(100)
+                    .checked_div(d.total)
+                    .unwrap_or(0)
+                    .min(100);
+                if d.total > 0 {
+                    row = row.meta(format!("{percent}%"));
+                }
                 let engine = engine.clone();
-                row = row.push(Box::new(
+                buttons = buttons.push(Box::new(
                     Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
                         .on_effect(move || {
                             engine.send(WebViewCommand::CancelNativeDownload { id });
@@ -363,10 +401,12 @@ impl Capabilities {
                 ));
             }
             if d.state == "complete" && !d.path.is_empty() {
-                for (name, label, reveal) in [("open", "Open", false), ("reveal", "Reveal", true)] {
+                for (name, label, reveal) in
+                    [("open", "Open", false), ("reveal", "Show in Files", true)]
+                {
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
-                    row = row.push(Box::new(
+                    buttons = buttons.push(Box::new(
                         Button::new(&format!("browser.download.{name}.{id}"), label, None)
                             .on_effect(move || match open_download(&path, reveal) {
                                 Err(message) => notice.set(message),
@@ -393,22 +433,31 @@ impl Capabilities {
             if matches!(d.state.as_str(), "failed" | "cancelled") {
                 if d.retryable {
                     let engine = engine.clone();
-                    row = row.push(Box::new(
+                    buttons = buttons.push(Box::new(
                         Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
                             .on_effect(move || {
                                 engine.send(WebViewCommand::RetryDownload { id });
                             }),
                     ));
                 } else {
-                    row = row.push(Box::new(
-                        Text::new("Retry unavailable for this address.").with_size(13.0),
-                    ));
+                    row = row.meta("Can’t retry");
                 }
             }
-            rows = rows.push(Box::new(Container::new().with_child(Box::new(row))));
+            row = row.secondary(status);
+            rows.push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_child(Box::new(row)),
+                    ))
+                    .push(Box::new(buttons)),
+            ));
         }
         drop(downloads);
-        Box::new(rows)
+        Box::new(column.push(Box::new(Section::new(rows))))
     }
 }
 
@@ -584,7 +633,7 @@ mod tests {
             }
             assert_eq!(
                 capabilities.toolbar_status().as_deref(),
-                Some("4 downloads · 50%")
+                Some("4 downloads at 50%")
             );
         }
 
@@ -606,7 +655,7 @@ mod tests {
             });
             assert_eq!(
                 capabilities.toolbar_status().as_deref(),
-                Some("1 download · 25%")
+                Some("1 download at 25%")
             );
 
             capabilities.apply(WebViewEvent::DownloadUpdated {
