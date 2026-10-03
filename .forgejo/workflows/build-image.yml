@@ -3502,7 +3502,9 @@ jobs:
   # Integration images remain unsigned and outside the production tilo
   # repository. Publish a multi-architecture index once both native lanes
   # complete. Nothing waits on it: each lane has already published its own
-  # tilo-ci child and dev disk.
+  # tilo-ci child and dev disk. Main builds x86_64 in Build / OS dev and
+  # aarch64 in Build / OS dev (aarch64), newest commit only, so whichever of
+  # the two finishes second promotes; a commit aarch64 skipped has none.
   promote-integration:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
@@ -3529,7 +3531,22 @@ jobs:
           registry: registry.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Each lane publishes its dev image last, so both being in the commit's
+      # dev index means both lanes are done.
+      - name: Check that both native lanes published this commit
+        id: lanes
+        run: |
+          set -euo pipefail
+          source="registry.tilo.so/tilo/tilo-vm:main-${GITHUB_SHA:0:7}-ci"
+          if skopeo inspect --raw "docker://$source" 2>/dev/null \
+              | jq -e '[.manifests[]?.platform.architecture] | sort == ["amd64","arm64"]' >/dev/null; then
+            echo "both=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$source does not hold both native dev images yet; the other lane promotes, or aarch64 skipped this commit"
+            echo "both=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Verify native children and publish unsigned integration index
+        if: steps.lanes.outputs.both == 'true'
         run: |
           set -euo pipefail
           repository=registry.tilo.so/tilo/tilo-ci
@@ -3580,20 +3597,26 @@ jobs:
             exit 1
           }
           durable="$repository:main-${GITHUB_SHA:0:7}"
-          existing=""
+          children_of() { jq -ce '
+            [.manifests[] | {
+              architecture: (if .platform.architecture == "amd64" then "x86_64"
+                             elif .platform.architecture == "arm64" then "aarch64"
+                             else error("unsupported index architecture") end),
+              digest: .digest
+            }] | sort_by(.architecture)'; }
+          # Both lanes may finish together and both promote: an index of the
+          # same children is the same publication.
           if existing_raw="$(skopeo inspect --raw "docker://$durable" 2>/dev/null)"; then
-            existing="sha256:$(printf '%s' "$existing_raw" | sha256sum | awk '{print $1}')"
-          fi
-          [[ -z "$existing" || "$existing" == "$index_digest" ]] || {
-            echo "::error::$durable already binds $existing"
-            exit 1
-          }
-          if [[ -z "$existing" ]]; then
+            [[ "$(children_of <<< "$existing_raw")" == "$expected" ]] || {
+              echo "::error::$durable already binds other children"
+              exit 1
+            }
+          else
             # Only the index: its children are already in the repository.
             skopeo copy --multi-arch index-only --preserve-digests "docker://$image" "docker://$durable"
           fi
-          [[ "$(skopeo inspect --raw "docker://$durable" | sha256sum | awk '{print "sha256:" $1}')" == "$index_digest" ]] || {
-            echo "::error::registry did not persist $durable as $index_digest"
+          [[ "$(skopeo inspect --raw "docker://$durable" | children_of)" == "$expected" ]] || {
+            echo "::error::registry did not persist $durable with the verified native children"
             exit 1
           }
           jq -n --arg image "$image" --arg source "$GITHUB_SHA" \
@@ -3603,6 +3626,7 @@ jobs:
       # origin a machine installed from a dev-disk.yml disk of tag main-ci
       # upgrades from. It only moves forward along main.
       - name: Move tilo-vm:main-ci to this commit's dev images
+        if: steps.lanes.outputs.both == 'true'
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -3629,6 +3653,7 @@ jobs:
       # A dev VM of this commit downloads its media codecs only through a
       # signed manifest resolved for exactly its base (extension-manifests.yml).
       - name: Request the system extension manifests for this commit's dev images
+        if: steps.lanes.outputs.both == 'true'
         continue-on-error: true
         env:
           FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
@@ -3644,6 +3669,7 @@ jobs:
             --data "$(jq -cn --arg images "$image" '{ref:"main",inputs:{images:$images}}')"
           echo "::notice::requested extension manifests for $image ($source)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: steps.lanes.outputs.both == 'true'
         with:
           name: tilo-os-integration-index
           path: tilo-os-integration-index.json
