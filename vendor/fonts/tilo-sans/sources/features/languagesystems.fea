@@ -8,4 +8,8 @@ languagesystem latn TRK;
 languagesystem latn ROM;
 languagesystem latn MOL;
 languagesystem latn CAT;
+languagesystem cyrl dflt;
+languagesystem cyrl BGR;
+languagesystem cyrl SRB;
+languagesystem cyrl MKD;
 languagesystem grek dflt;

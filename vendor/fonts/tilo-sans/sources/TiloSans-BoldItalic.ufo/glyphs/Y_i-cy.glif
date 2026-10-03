@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Yi-cy" format="2">
+  <advance width="289"/>
+  <unicode hex="0407"/>
+  <outline>
+    <contour>
+      <point x="145" y="836" type="line"/>
+      <point x="257" y="836" type="line"/>
+      <point x="283" y="950" type="line"/>
+      <point x="171" y="950" type="line"/>
+    </contour>
+    <contour>
+      <point x="299" y="836" type="line"/>
+      <point x="411" y="836" type="line"/>
+      <point x="438" y="950" type="line"/>
+      <point x="326" y="950" type="line"/>
+    </contour>
+    <component base="I" xOffset="17"/>
+  </outline>
+</glyph>

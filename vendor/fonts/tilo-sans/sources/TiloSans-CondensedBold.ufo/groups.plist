@@ -18,6 +18,7 @@
       <string>Lambda</string>
       <string>Delta</string>
       <string>Alpha</string>
+      <string>A-cy</string>
     </array>
     <key>public.kern1.KO_A__stack</key>
     <array>
@@ -47,9 +48,14 @@
     <array>
       <string>Beta</string>
       <string>B</string>
+      <string>Be-cy</string>
+      <string>Ve-cy</string>
+      <string>Ze-cy</string>
     </array>
     <key>public.kern1.KO_C</key>
     <array>
+      <string>E-cy</string>
+      <string>Es-cy</string>
       <string>C</string>
       <string>Cacute</string>
       <string>Ccaron</string>
@@ -85,6 +91,9 @@
       <string>Epsilontonos</string>
       <string>Sigma</string>
       <string>Epsilon</string>
+      <string>Ie-cy</string>
+      <string>Iegrave-cy</string>
+      <string>Io-cy</string>
     </array>
     <key>public.kern1.KO_E__top</key>
     <array>
@@ -117,6 +126,13 @@
       <string>Gcommaaccent.ss01.ss07</string>
       <string>Gdotaccent.ss01.ss07</string>
     </array>
+    <key>public.kern1.KO_H</key>
+    <array>
+      <string>De-cy</string>
+      <string>Shcha-cy</string>
+      <string>Tse-cy</string>
+      <string>Yeru-cy</string>
+    </array>
     <key>public.kern1.KO_I.ss13</key>
     <array>
       <string>I.ss13</string>
@@ -148,6 +164,7 @@
     </array>
     <key>public.kern1.KO_J</key>
     <array>
+      <string>Je-cy</string>
       <string>J</string>
     </array>
     <key>public.kern1.KO_K</key>
@@ -156,6 +173,10 @@
       <string>K</string>
       <string>Kcommaaccent</string>
       <string>Kcommaaccent.ss01</string>
+      <string>Ka-cy</string>
+      <string>Kadescender-cy</string>
+      <string>Kje-cy</string>
+      <string>Zhe-cy</string>
     </array>
     <key>public.kern1.KO_K.ss08</key>
     <array>
@@ -205,6 +226,12 @@
       <string>Phi</string>
       <string>Theta</string>
       <string>Omicron</string>
+      <string>Ef-cy</string>
+      <string>Ereversed-cy</string>
+      <string>O-cy</string>
+      <string>Obarred-cy</string>
+      <string>Schwa-cy</string>
+      <string>Yu-cy</string>
     </array>
     <key>public.kern1.KO_Ohorn</key>
     <array>
@@ -223,6 +250,7 @@
     <array>
       <string>Rho</string>
       <string>P</string>
+      <string>Er-cy</string>
     </array>
     <key>public.kern1.KO_Q</key>
     <array>
@@ -245,12 +273,20 @@
     </array>
     <key>public.kern1.KO_S</key>
     <array>
+      <string>Dze-cy</string>
       <string>S</string>
       <string>Sacute</string>
       <string>Scaron</string>
       <string>Scedilla</string>
       <string>Scommaaccent</string>
       <string>Scommaaccent.ss01</string>
+    </array>
+    <key>public.kern1.KO_Softsign-cy</key>
+    <array>
+      <string>Hardsign-cy</string>
+      <string>Lje-cy</string>
+      <string>Nje-cy</string>
+      <string>Softsign-cy</string>
     </array>
     <key>public.kern1.KO_T</key>
     <array>
@@ -260,6 +296,11 @@
       <string>Tcaron</string>
       <string>Tcommaaccent</string>
       <string>Tcommaaccent.ss01</string>
+      <string>Ge-cy</string>
+      <string>Gestroke-cy</string>
+      <string>Geupturn-cy</string>
+      <string>Gje-cy</string>
+      <string>Te-cy</string>
     </array>
     <key>public.kern1.KO_U</key>
     <array>
@@ -309,6 +350,7 @@
     <array>
       <string>Chi</string>
       <string>X</string>
+      <string>Ha-cy</string>
     </array>
     <key>public.kern1.KO_Y</key>
     <array>
@@ -325,6 +367,10 @@
       <string>Upsilontonos</string>
       <string>Upsilondieresis</string>
       <string>Upsilon</string>
+      <string>U-cy</string>
+      <string>Ushort-cy</string>
+      <string>Ustraight-cy</string>
+      <string>Ustraightstroke-cy</string>
     </array>
     <key>public.kern1.KO_Z</key>
     <array>
@@ -347,6 +393,7 @@
       <string>aogonek</string>
       <string>aring</string>
       <string>adieresis.ss01</string>
+      <string>a-cy</string>
     </array>
     <key>public.kern1.KO_a__stack</key>
     <array>
@@ -409,6 +456,8 @@
       <string>ccedilla</string>
       <string>cdotaccent</string>
       <string>cdotaccent.ss01</string>
+      <string>e-cy</string>
+      <string>es-cy</string>
     </array>
     <key>public.kern1.KO_colon</key>
     <array>
@@ -424,6 +473,11 @@
     <array>
       <string>dcaron</string>
       <string>lcaron</string>
+    </array>
+    <key>public.kern1.KO_de-cy</key>
+    <array>
+      <string>de-cy</string>
+      <string>de-cy.loclSRB</string>
     </array>
     <key>public.kern1.KO_degree</key>
     <array>
@@ -443,6 +497,7 @@
       <string>eogonek</string>
       <string>oe</string>
       <string>edotaccent.ss01</string>
+      <string>ie-cy</string>
     </array>
     <key>public.kern1.KO_e__top</key>
     <array>
@@ -455,6 +510,7 @@
       <string>edieresis</string>
       <string>emacron</string>
       <string>edieresis.ss01</string>
+      <string>io-cy</string>
     </array>
     <key>public.kern1.KO_ecaron__stack</key>
     <array>
@@ -472,6 +528,7 @@
     <key>public.kern1.KO_egrave</key>
     <array>
       <string>edotaccent</string>
+      <string>iegrave-cy</string>
     </array>
     <key>public.kern1.KO_egrave__top</key>
     <array>
@@ -548,6 +605,7 @@
     <array>
       <string>i</string>
       <string>idotbelow</string>
+      <string>i-cy</string>
     </array>
     <key>public.kern1.KO_iacute</key>
     <array/>
@@ -577,6 +635,8 @@
       <string>i.ss01</string>
       <string>idotbelow.ss01</string>
       <string>j</string>
+      <string>dje-cy</string>
+      <string>je-cy</string>
     </array>
     <key>public.kern1.KO_k</key>
     <array>
@@ -584,6 +644,12 @@
       <string>k</string>
       <string>kcommaaccent</string>
       <string>kcommaaccent.ss01</string>
+      <string>ka-cy</string>
+      <string>ka-cy.loclBGR</string>
+      <string>kadescender-cy</string>
+      <string>kje-cy</string>
+      <string>zhe-cy</string>
+      <string>zhe-cy.loclBGR</string>
     </array>
     <key>public.kern1.KO_k.ss04</key>
     <array>
@@ -624,6 +690,10 @@
       <string>ntilde</string>
       <string>eng</string>
       <string>ncommaaccent.ss01</string>
+      <string>pe-cy.loclBGR</string>
+      <string>shha-cy</string>
+      <string>te-cy.loclBGR</string>
+      <string>tshe-cy</string>
     </array>
     <key>public.kern1.KO_o</key>
     <array>
@@ -647,6 +717,13 @@
       <string>omicron</string>
       <string>theta</string>
       <string>delta</string>
+      <string>ef-cy</string>
+      <string>ereversed-cy</string>
+      <string>o-cy</string>
+      <string>obarred-cy</string>
+      <string>schwa-cy</string>
+      <string>yu-cy</string>
+      <string>yu-cy.loclBGR</string>
     </array>
     <key>public.kern1.KO_o__stack</key>
     <array>
@@ -697,6 +774,15 @@
       <string>b</string>
       <string>p</string>
       <string>thorn</string>
+      <string>be-cy</string>
+      <string>be-cy.loclSRB</string>
+      <string>er-cy</string>
+      <string>hardsign-cy</string>
+      <string>lje-cy</string>
+      <string>nje-cy</string>
+      <string>softsign-cy</string>
+      <string>ve-cy</string>
+      <string>ze-cy</string>
     </array>
     <key>public.kern1.KO_parenleft</key>
     <array>
@@ -787,9 +873,16 @@
       <string>r</string>
       <string>rcommaaccent</string>
       <string>rcommaaccent.ss01</string>
+      <string>ge-cy</string>
+      <string>ge-cy.loclSRB</string>
+      <string>gestroke-cy</string>
+      <string>geupturn-cy</string>
+      <string>gje-cy</string>
+      <string>gje-cy.loclSRB</string>
     </array>
     <key>public.kern1.KO_s</key>
     <array>
+      <string>dze-cy</string>
       <string>s</string>
       <string>scaron</string>
       <string>scedilla</string>
@@ -824,6 +917,11 @@
     <key>public.kern1.KO_tcaron</key>
     <array>
       <string>tcaron</string>
+    </array>
+    <key>public.kern1.KO_te-cy</key>
+    <array>
+      <string>te-cy</string>
+      <string>te-cy.loclSRB</string>
     </array>
     <key>public.kern1.KO_three</key>
     <array>
@@ -891,6 +989,29 @@
       <string>psi</string>
       <string>mu</string>
       <string>alpha</string>
+      <string>che-cy</string>
+      <string>de-cy.loclBGR</string>
+      <string>dzhe-cy</string>
+      <string>el-cy</string>
+      <string>em-cy</string>
+      <string>en-cy</string>
+      <string>endescender-cy</string>
+      <string>ii-cy</string>
+      <string>ii-cy.loclBGR</string>
+      <string>iigrave-cy</string>
+      <string>iigrave-cy.loclBGR</string>
+      <string>iishort-cy</string>
+      <string>iishort-cy.loclBGR</string>
+      <string>pe-cy</string>
+      <string>pe-cy.loclSRB</string>
+      <string>sha-cy</string>
+      <string>sha-cy.loclBGR</string>
+      <string>shcha-cy</string>
+      <string>shcha-cy.loclBGR</string>
+      <string>tse-cy</string>
+      <string>tse-cy.loclBGR</string>
+      <string>ya-cy</string>
+      <string>yeru-cy</string>
     </array>
     <key>public.kern1.KO_uhorn</key>
     <array>
@@ -926,6 +1047,7 @@
     <array>
       <string>chi</string>
       <string>x</string>
+      <string>ha-cy</string>
     </array>
     <key>public.kern1.KO_y</key>
     <array>
@@ -944,6 +1066,10 @@
       <string>ydieresis.ss01.ss03</string>
       <string>nu</string>
       <string>gamma</string>
+      <string>u-cy</string>
+      <string>ushort-cy</string>
+      <string>ustraight-cy</string>
+      <string>ustraightstroke-cy</string>
     </array>
     <key>public.kern1.KO_y__top</key>
     <array>
@@ -995,6 +1121,7 @@
       <string>Lambda</string>
       <string>Delta</string>
       <string>Alpha</string>
+      <string>A-cy</string>
     </array>
     <key>public.kern2.KO_A__stack</key>
     <array>
@@ -1059,6 +1186,7 @@
       <string>Kcommaaccent.ss01.ss04</string>
       <string>Rcommaaccent.ss01.ss05</string>
       <string>Beta</string>
+      <string>Ve-cy</string>
     </array>
     <key>public.kern2.KO_B__stack</key>
     <array>
@@ -1079,6 +1207,17 @@
       <string>Igrave</string>
       <string>Ihookabove</string>
     </array>
+    <key>public.kern2.KO_El-cy</key>
+    <array>
+      <string>De-cy</string>
+      <string>El-cy</string>
+      <string>Lje-cy</string>
+    </array>
+    <key>public.kern2.KO_H</key>
+    <array>
+      <string>Shcha-cy</string>
+      <string>Tse-cy</string>
+    </array>
     <key>public.kern2.KO_I.ss13</key>
     <array>
       <string>I.ss13</string>
@@ -1095,6 +1234,7 @@
     </array>
     <key>public.kern2.KO_J</key>
     <array>
+      <string>Je-cy</string>
       <string>J</string>
     </array>
     <key>public.kern2.KO_J.ss09</key>
@@ -1142,6 +1282,12 @@
       <string>Phi</string>
       <string>Theta</string>
       <string>Omicron</string>
+      <string>E-cy</string>
+      <string>Ef-cy</string>
+      <string>Es-cy</string>
+      <string>O-cy</string>
+      <string>Obarred-cy</string>
+      <string>Schwa-cy</string>
     </array>
     <key>public.kern2.KO_O__stack</key>
     <array>
@@ -1166,6 +1312,7 @@
     </array>
     <key>public.kern2.KO_S</key>
     <array>
+      <string>Dze-cy</string>
       <string>S</string>
       <string>Sacute</string>
       <string>Scaron</string>
@@ -1180,6 +1327,10 @@
       <string>Tcaron</string>
       <string>Tcommaaccent</string>
       <string>Tcommaaccent.ss01</string>
+      <string>Dje-cy</string>
+      <string>Hardsign-cy</string>
+      <string>Te-cy</string>
+      <string>Tshe-cy</string>
     </array>
     <key>public.kern2.KO_U</key>
     <array>
@@ -1198,6 +1349,7 @@
       <string>Uring</string>
       <string>Udieresis.ss01</string>
       <string>Psi</string>
+      <string>Che-cy</string>
     </array>
     <key>public.kern2.KO_U__top</key>
     <array>
@@ -1224,6 +1376,8 @@
     <array>
       <string>Chi</string>
       <string>X</string>
+      <string>Ha-cy</string>
+      <string>Zhe-cy</string>
     </array>
     <key>public.kern2.KO_Y</key>
     <array>
@@ -1236,12 +1390,20 @@
       <string>Upsilondieresis.ss01</string>
       <string>Upsilondieresis</string>
       <string>Upsilon</string>
+      <string>U-cy</string>
+      <string>Ushort-cy</string>
+      <string>Ustraight-cy</string>
+      <string>Ustraightstroke-cy</string>
     </array>
     <key>public.kern2.KO_Y__top</key>
     <array>
       <string>Yacute</string>
       <string>Ygrave</string>
       <string>Yhookabove</string>
+    </array>
+    <key>public.kern2.KO_Ya-cy</key>
+    <array>
+      <string>Ya-cy</string>
     </array>
     <key>public.kern2.KO_Z</key>
     <array>
@@ -1261,6 +1423,7 @@
       <string>adotbelow.ss01</string>
       <string>aogonek</string>
       <string>ae</string>
+      <string>a-cy</string>
     </array>
     <key>public.kern2.KO_a__top</key>
     <array>
@@ -1352,6 +1515,11 @@
       <string>adieresis.ss01.ss02</string>
       <string>dong</string>
     </array>
+    <key>public.kern2.KO_de-cy</key>
+    <array>
+      <string>de-cy</string>
+      <string>de-cy.loclSRB</string>
+    </array>
     <key>public.kern2.KO_e</key>
     <array>
       <string>c</string>
@@ -1386,6 +1554,17 @@
       <string>epsilon</string>
       <string>delta</string>
       <string>alpha</string>
+      <string>be-cy</string>
+      <string>be-cy.loclSRB</string>
+      <string>e-cy</string>
+      <string>ef-cy</string>
+      <string>es-cy</string>
+      <string>ie-cy</string>
+      <string>iegrave-cy</string>
+      <string>o-cy</string>
+      <string>obarred-cy</string>
+      <string>schwa-cy</string>
+      <string>ya-cy</string>
     </array>
     <key>public.kern2.KO_e__top</key>
     <array>
@@ -1400,6 +1579,12 @@
     <key>public.kern2.KO_eight</key>
     <array>
       <string>eight</string>
+    </array>
+    <key>public.kern2.KO_el-cy</key>
+    <array>
+      <string>el-cy</string>
+      <string>el-cy.loclBGR</string>
+      <string>lje-cy</string>
     </array>
     <key>public.kern2.KO_ellipsis</key>
     <array>
@@ -1448,6 +1633,7 @@
     </array>
     <key>public.kern2.KO_g</key>
     <array>
+      <string>de-cy.loclBGR</string>
       <string>g</string>
       <string>gbreve</string>
       <string>gcommaaccent</string>
@@ -1482,6 +1668,7 @@
       <string>ij</string>
       <string>i</string>
       <string>idotbelow</string>
+      <string>i-cy</string>
     </array>
     <key>public.kern2.KO_icircumflex</key>
     <array>
@@ -1494,6 +1681,7 @@
       <string>iotadieresistonos</string>
       <string>iotadieresis</string>
       <string>idieresis</string>
+      <string>yi-cy</string>
     </array>
     <key>public.kern2.KO_idotless</key>
     <array>
@@ -1537,12 +1725,45 @@
       <string>lcommaaccent.ss13</string>
       <string>lcommaaccent.ss01.ss13</string>
       <string>iotatonos</string>
+      <string>je-cy</string>
     </array>
     <key>public.kern2.KO_j__top</key>
     <array>
       <string>iacute</string>
       <string>igrave</string>
       <string>ihookabove</string>
+    </array>
+    <key>public.kern2.KO_n-cy</key>
+    <array>
+      <string>che-cy</string>
+      <string>dzhe-cy</string>
+      <string>em-cy</string>
+      <string>en-cy</string>
+      <string>endescender-cy</string>
+      <string>er-cy</string>
+      <string>ge-cy</string>
+      <string>ge-cy.loclSRB</string>
+      <string>geupturn-cy</string>
+      <string>gje-cy</string>
+      <string>gje-cy.loclSRB</string>
+      <string>ii-cy</string>
+      <string>iigrave-cy</string>
+      <string>iishort-cy</string>
+      <string>ka-cy</string>
+      <string>kadescender-cy</string>
+      <string>kje-cy</string>
+      <string>nje-cy</string>
+      <string>pe-cy</string>
+      <string>pe-cy.loclBGR</string>
+      <string>pe-cy.loclSRB</string>
+      <string>sha-cy</string>
+      <string>shcha-cy</string>
+      <string>softsign-cy</string>
+      <string>te-cy.loclBGR</string>
+      <string>tse-cy</string>
+      <string>ve-cy</string>
+      <string>yeru-cy</string>
+      <string>yu-cy</string>
     </array>
     <key>public.kern2.KO_nine</key>
     <array>
@@ -1559,6 +1780,7 @@
       <string>omacron</string>
       <string>edieresis.ss01</string>
       <string>odieresis.ss01</string>
+      <string>io-cy</string>
     </array>
     <key>public.kern2.KO_odieresis__stack</key>
     <array>
@@ -1658,6 +1880,9 @@
     </array>
     <key>public.kern2.KO_s</key>
     <array>
+      <string>dze-cy</string>
+      <string>ereversed-cy</string>
+      <string>ze-cy</string>
       <string>s</string>
       <string>sacute</string>
       <string>scaron</string>
@@ -1680,9 +1905,17 @@
       <string>tcaron</string>
       <string>tcommaaccent</string>
       <string>tcommaaccent.ss01</string>
+      <string>hardsign-cy</string>
+    </array>
+    <key>public.kern2.KO_te-cy</key>
+    <array>
+      <string>te-cy</string>
+      <string>te-cy.loclSRB</string>
     </array>
     <key>public.kern2.KO_three</key>
     <array>
+      <string>Ereversed-cy</string>
+      <string>Ze-cy</string>
       <string>three</string>
     </array>
     <key>public.kern2.KO_two</key>
@@ -1720,6 +1953,12 @@
       <string>psi</string>
       <string>upsilon</string>
       <string>mu</string>
+      <string>ii-cy.loclBGR</string>
+      <string>iigrave-cy.loclBGR</string>
+      <string>iishort-cy.loclBGR</string>
+      <string>sha-cy.loclBGR</string>
+      <string>shcha-cy.loclBGR</string>
+      <string>tse-cy.loclBGR</string>
     </array>
     <key>public.kern2.KO_u__top</key>
     <array>
@@ -1745,6 +1984,10 @@
       <string>ydieresis.ss01</string>
       <string>nu</string>
       <string>gamma</string>
+      <string>u-cy</string>
+      <string>ushort-cy</string>
+      <string>ustraight-cy</string>
+      <string>ustraightstroke-cy</string>
     </array>
     <key>public.kern2.KO_v__top</key>
     <array>
@@ -1766,6 +2009,8 @@
     <array>
       <string>chi</string>
       <string>x</string>
+      <string>ha-cy</string>
+      <string>zhe-cy</string>
     </array>
     <key>public.kern2.KO_y.ss03</key>
     <array>

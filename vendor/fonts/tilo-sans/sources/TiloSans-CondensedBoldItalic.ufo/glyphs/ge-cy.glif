@@ -1,0 +1,21 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="ge-cy" format="2">
+  <advance width="300"/>
+  <unicode hex="0433"/>
+  <anchor x="55" y="0" name="bottom"/>
+  <anchor x="223" y="510" name="top"/>
+  <outline>
+    <contour>
+      <point x="-15" y="0" type="line"/>
+      <point x="124" y="0" type="line"/>
+      <point x="242" y="510" type="line"/>
+      <point x="103" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="147" y="402" type="line"/>
+      <point x="318" y="402" type="line"/>
+      <point x="343" y="510" type="line"/>
+      <point x="172" y="510" type="line"/>
+    </contour>
+  </outline>
+</glyph>

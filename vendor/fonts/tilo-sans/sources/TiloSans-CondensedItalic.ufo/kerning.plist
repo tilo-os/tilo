@@ -7783,6 +7783,8 @@
       <integer>-20</integer>
       <key>public.kern2.KO_d</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-20</integer>
       <key>public.kern2.KO_e</key>
       <integer>-20</integer>
       <key>public.kern2.KO_e__top</key>
@@ -8067,6 +8069,8 @@
       <integer>-13</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-13</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>8</integer>
       <key>public.kern2.KO_J</key>
@@ -8119,6 +8123,8 @@
       <integer>-33</integer>
       <key>public.kern2.KO_d</key>
       <integer>-16</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-21</integer>
       <key>public.kern2.KO_e</key>
       <integer>-21</integer>
       <key>public.kern2.KO_e__top</key>
@@ -9017,6 +9023,8 @@
       <integer>-10</integer>
       <key>public.kern2.KO_d</key>
       <integer>-24</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-24</integer>
       <key>public.kern2.KO_e</key>
       <integer>-24</integer>
       <key>public.kern2.KO_e__top</key>
@@ -9175,6 +9183,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-4</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-18</integer>
       <key>public.kern2.KO_e</key>
       <integer>-18</integer>
@@ -9341,6 +9351,8 @@
       <integer>-18</integer>
       <key>public.kern2.KO_d</key>
       <integer>-30</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-30</integer>
       <key>public.kern2.KO_e</key>
       <integer>-30</integer>
       <key>public.kern2.KO_e__top</key>
@@ -9503,6 +9515,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-18</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-28</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-28</integer>
       <key>public.kern2.KO_e</key>
       <integer>-28</integer>
@@ -10237,6 +10251,8 @@
       <integer>-6</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-6</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-26</integer>
       <key>public.kern2.KO_J</key>
@@ -10289,6 +10305,8 @@
       <integer>-11</integer>
       <key>public.kern2.KO_d</key>
       <integer>-14</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-13</integer>
       <key>public.kern2.KO_e</key>
       <integer>-13</integer>
       <key>public.kern2.KO_e__top</key>
@@ -10453,6 +10471,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
+      <integer>13</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>13</integer>
       <key>public.kern2.KO_e</key>
       <integer>13</integer>
@@ -10776,6 +10796,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
       <integer>-8</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-10</integer>
       <key>public.kern2.KO_e</key>
       <integer>-10</integer>
       <key>public.kern2.KO_e__top</key>
@@ -11042,6 +11064,97 @@
       <key>public.kern2.KO_zero</key>
       <integer>21</integer>
     </dict>
+    <key>public.kern1.KO_Softsign-cy</key>
+    <dict>
+      <key>public.kern2.KO_A</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_O</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_S</key>
+      <integer>9</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>-40</integer>
+      <key>public.kern2.KO_U</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>-40</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-47</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-65</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-40</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_endash.case</key>
+      <integer>-36</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_hyphen.case</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-35</integer>
+      <key>public.kern2.KO_icircumflex</key>
+      <integer>23</integer>
+      <key>public.kern2.KO_idieresis</key>
+      <integer>19</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-45</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>-44</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-36</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-26</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-54</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-70</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-56</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-58</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-70</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-48</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_zero</key>
+      <integer>7</integer>
+    </dict>
     <key>public.kern1.KO_T</key>
     <dict>
       <key>m</key>
@@ -11062,6 +11175,8 @@
       <integer>-12</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-12</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-14</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>8</integer>
       <key>public.kern2.KO_J</key>
@@ -11088,6 +11203,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_X</key>
       <integer>-7</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-21</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-14</integer>
       <key>public.kern2.KO_a</key>
@@ -11108,10 +11225,14 @@
       <integer>-76</integer>
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-75</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-69</integer>
       <key>public.kern2.KO_e</key>
       <integer>-69</integer>
       <key>public.kern2.KO_e__top</key>
       <integer>-69</integer>
+      <key>public.kern2.KO_el-cy</key>
+      <integer>-64</integer>
       <key>public.kern2.KO_ellipsis</key>
       <integer>-85</integer>
       <key>public.kern2.KO_endash</key>
@@ -11148,6 +11269,8 @@
       <integer>-16</integer>
       <key>public.kern2.KO_j__top</key>
       <integer>3</integer>
+      <key>public.kern2.KO_n-cy</key>
+      <integer>-64</integer>
       <key>public.kern2.KO_odieresis</key>
       <integer>-23</integer>
       <key>public.kern2.KO_odieresis__stack</key>
@@ -11186,6 +11309,8 @@
       <integer>-43</integer>
       <key>public.kern2.KO_t</key>
       <integer>-36</integer>
+      <key>public.kern2.KO_te-cy</key>
+      <integer>-64</integer>
       <key>public.kern2.KO_underscore</key>
       <integer>-76</integer>
       <key>public.kern2.KO_v</key>
@@ -11728,6 +11853,8 @@
       <integer>-5</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-5</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-12</integer>
       <key>public.kern2.KO_J</key>
       <integer>-50</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -11756,6 +11883,8 @@
       <integer>5</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>5</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-5</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-20</integer>
       <key>public.kern2.KO_a</key>
@@ -11774,10 +11903,14 @@
       <integer>-33</integer>
       <key>public.kern2.KO_d</key>
       <integer>-31</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-31</integer>
       <key>public.kern2.KO_e</key>
       <integer>-31</integer>
       <key>public.kern2.KO_e__top</key>
       <integer>-31</integer>
+      <key>public.kern2.KO_el-cy</key>
+      <integer>-22</integer>
       <key>public.kern2.KO_ellipsis</key>
       <integer>-80</integer>
       <key>public.kern2.KO_endash</key>
@@ -11814,6 +11947,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_j__top</key>
       <integer>-3</integer>
+      <key>public.kern2.KO_n-cy</key>
+      <integer>-22</integer>
       <key>public.kern2.KO_odieresis</key>
       <integer>-15</integer>
       <key>public.kern2.KO_odieresis__stack</key>
@@ -11854,6 +11989,8 @@
       <integer>-48</integer>
       <key>public.kern2.KO_t</key>
       <integer>-4</integer>
+      <key>public.kern2.KO_te-cy</key>
+      <integer>-22</integer>
       <key>public.kern2.KO_u</key>
       <integer>-28</integer>
       <key>public.kern2.KO_u__top</key>
@@ -11897,6 +12034,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-3</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_J</key>
       <integer>-33</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -11947,10 +12086,14 @@
       <integer>-26</integer>
       <key>public.kern2.KO_d</key>
       <integer>-20</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-19</integer>
       <key>public.kern2.KO_e</key>
       <integer>-19</integer>
       <key>public.kern2.KO_e__top</key>
       <integer>-19</integer>
+      <key>public.kern2.KO_el-cy</key>
+      <integer>-16</integer>
       <key>public.kern2.KO_ellipsis</key>
       <integer>-57</integer>
       <key>public.kern2.KO_endash</key>
@@ -11987,6 +12130,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_j__top</key>
       <integer>-3</integer>
+      <key>public.kern2.KO_n-cy</key>
+      <integer>-16</integer>
       <key>public.kern2.KO_odieresis</key>
       <integer>-12</integer>
       <key>public.kern2.KO_odieresis__stack</key>
@@ -12027,6 +12172,8 @@
       <integer>-49</integer>
       <key>public.kern2.KO_t</key>
       <integer>-2</integer>
+      <key>public.kern2.KO_te-cy</key>
+      <integer>-16</integer>
       <key>public.kern2.KO_u</key>
       <integer>-20</integer>
       <key>public.kern2.KO_u__top</key>
@@ -12114,6 +12261,8 @@
       <integer>-10</integer>
       <key>public.kern2.KO_d</key>
       <integer>-18</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-19</integer>
       <key>public.kern2.KO_e</key>
       <integer>-19</integer>
       <key>public.kern2.KO_e__top</key>
@@ -12235,6 +12384,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-3</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-14</integer>
       <key>public.kern2.KO_J</key>
       <integer>-60</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -12261,6 +12412,8 @@
       <integer>5</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>5</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-18</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-19</integer>
       <key>public.kern2.KO_a</key>
@@ -12282,6 +12435,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-48</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-70</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-70</integer>
       <key>public.kern2.KO_e</key>
       <integer>-70</integer>
@@ -12447,6 +12602,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-25</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-33</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-33</integer>
       <key>public.kern2.KO_e</key>
       <integer>-33</integer>
@@ -13040,6 +13197,8 @@
       <integer>-34</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-34</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-16</integer>
       <key>public.kern2.KO_J</key>
       <integer>-93</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -13077,6 +13236,8 @@
       <key>public.kern2.KO_a__top</key>
       <integer>-44</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-48</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-48</integer>
       <key>public.kern2.KO_e</key>
       <integer>-48</integer>
@@ -13129,6 +13290,8 @@
       <integer>-33</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-33</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-11</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J</key>
@@ -13177,6 +13340,8 @@
       <integer>-31</integer>
       <key>public.kern2.KO_d</key>
       <integer>-25</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-24</integer>
       <key>public.kern2.KO_e</key>
       <integer>-24</integer>
       <key>public.kern2.KO_e__top</key>
@@ -13284,6 +13449,8 @@
       <integer>-18</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-18</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-14</integer>
       <key>public.kern2.KO_J</key>
       <integer>-77</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -13331,6 +13498,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-36</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-41</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-41</integer>
       <key>public.kern2.KO_e</key>
       <integer>-41</integer>
@@ -13441,6 +13610,8 @@
       <integer>-28</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-28</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_J</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -13481,6 +13652,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
       <integer>-52</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-50</integer>
       <key>public.kern2.KO_e</key>
       <integer>-50</integer>
       <key>public.kern2.KO_e__top</key>
@@ -13534,6 +13707,8 @@
       <integer>-29</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-29</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_J</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -13586,6 +13761,8 @@
       <integer>-42</integer>
       <key>public.kern2.KO_d</key>
       <integer>-70</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-69</integer>
       <key>public.kern2.KO_e</key>
       <integer>-69</integer>
       <key>public.kern2.KO_e__top</key>
@@ -14113,6 +14290,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
       <integer>-11</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-12</integer>
       <key>public.kern2.KO_e</key>
       <integer>-12</integer>
       <key>public.kern2.KO_e__top</key>
@@ -14187,6 +14366,87 @@
       <integer>0</integer>
       <key>public.kern2.KO_z</key>
       <integer>0</integer>
+    </dict>
+    <key>public.kern1.KO_de-cy</key>
+    <dict>
+      <key>public.kern2.KO_A</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_J.ss09</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>-31</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-70</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-42</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-38</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-33</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_hyphen</key>
+      <integer>17</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-38</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-9</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-43</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-32</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-26</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-44</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-53</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-38</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-60</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-48</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-35</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-45</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-47</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>-9</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-9</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-11</integer>
     </dict>
     <key>public.kern1.KO_degree</key>
     <dict>
@@ -15434,6 +15694,8 @@
       <integer>-32</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-32</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-22</integer>
       <key>public.kern2.KO_J</key>
@@ -15486,6 +15748,8 @@
       <integer>-65</integer>
       <key>public.kern2.KO_d</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-20</integer>
       <key>public.kern2.KO_e</key>
       <integer>-20</integer>
       <key>public.kern2.KO_e__top</key>
@@ -15589,6 +15853,8 @@
       <integer>-32</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-32</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-10</integer>
       <key>public.kern2.KO_J</key>
       <integer>-92</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -15730,6 +15996,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_d</key>
       <integer>-17</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-16</integer>
       <key>public.kern2.KO_e</key>
       <integer>-16</integer>
       <key>public.kern2.KO_e__top</key>
@@ -15833,6 +16101,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-3</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-6</integer>
       <key>public.kern2.KO_J</key>
       <integer>-24</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -15883,6 +16153,8 @@
       <integer>-13</integer>
       <key>public.kern2.KO_d</key>
       <integer>-13</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-12</integer>
       <key>public.kern2.KO_e</key>
       <integer>-12</integer>
       <key>public.kern2.KO_e__top</key>
@@ -16525,6 +16797,8 @@
       <integer>-23</integer>
       <key>public.kern2.KO_d</key>
       <integer>-19</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-18</integer>
       <key>public.kern2.KO_e</key>
       <integer>-18</integer>
       <key>public.kern2.KO_e__top</key>
@@ -16644,6 +16918,8 @@
       <integer>-25</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-25</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-6</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-22</integer>
       <key>public.kern2.KO_J</key>
@@ -16871,6 +17147,8 @@
       <integer>-38</integer>
       <key>public.kern2.KO_d</key>
       <integer>16</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>18</integer>
       <key>public.kern2.KO_e</key>
       <integer>18</integer>
       <key>public.kern2.KO_e__top</key>
@@ -16976,6 +17254,8 @@
       <integer>-7</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-7</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_J</key>
       <integer>-79</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -17862,6 +18142,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
       <integer>-17</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-23</integer>
       <key>public.kern2.KO_e</key>
       <integer>-23</integer>
       <key>public.kern2.KO_e__top</key>
@@ -18014,6 +18296,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-9</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-9</integer>
       <key>public.kern2.KO_e</key>
       <integer>-9</integer>
@@ -18554,6 +18838,8 @@
       <integer>-32</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-32</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-10</integer>
       <key>public.kern2.KO_J</key>
       <integer>-89</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -18606,6 +18892,8 @@
       <integer>-31</integer>
       <key>public.kern2.KO_d</key>
       <integer>-26</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-25</integer>
       <key>public.kern2.KO_e</key>
       <integer>-25</integer>
       <key>public.kern2.KO_e__top</key>
@@ -19861,6 +20149,8 @@
       <integer>-30</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-30</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_J</key>
       <integer>-28</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -19913,6 +20203,8 @@
       <integer>-42</integer>
       <key>public.kern2.KO_d</key>
       <integer>-73</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-72</integer>
       <key>public.kern2.KO_e</key>
       <integer>-72</integer>
       <key>public.kern2.KO_e__top</key>
@@ -20026,6 +20318,8 @@
       <integer>-29</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-29</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-6</integer>
       <key>public.kern2.KO_J</key>
       <integer>-14</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -20129,6 +20423,8 @@
       <integer>-24</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-24</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-7</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J</key>
@@ -20183,6 +20479,8 @@
       <integer>-29</integer>
       <key>public.kern2.KO_d</key>
       <integer>-9</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_e</key>
       <integer>-8</integer>
       <key>public.kern2.KO_e__top</key>
@@ -20393,6 +20691,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
       <integer>-11</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-12</integer>
       <key>public.kern2.KO_e</key>
       <integer>-12</integer>
       <key>public.kern2.KO_e__top</key>
@@ -20544,6 +20844,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_d</key>
       <integer>-30</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-30</integer>
       <key>public.kern2.KO_e</key>
       <integer>-30</integer>
       <key>public.kern2.KO_e__top</key>
@@ -20643,6 +20945,8 @@
       <integer>-32</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-32</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-10</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J</key>
@@ -20697,6 +21001,8 @@
       <integer>-31</integer>
       <key>public.kern2.KO_d</key>
       <integer>-27</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-26</integer>
       <key>public.kern2.KO_e</key>
       <integer>-26</integer>
       <key>public.kern2.KO_e__top</key>
@@ -20806,6 +21112,8 @@
       <integer>-9</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-9</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-11</integer>
       <key>public.kern2.KO_J</key>
       <integer>-39</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -20854,6 +21162,8 @@
       <integer>-25</integer>
       <key>public.kern2.KO_d</key>
       <integer>-35</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-34</integer>
       <key>public.kern2.KO_e</key>
       <integer>-34</integer>
       <key>public.kern2.KO_e__top</key>
@@ -20983,6 +21293,8 @@
       <integer>-28</integer>
       <key>public.kern2.KO_d</key>
       <integer>-36</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-36</integer>
       <key>public.kern2.KO_e</key>
       <integer>-36</integer>
       <key>public.kern2.KO_e__top</key>
@@ -21028,6 +21340,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-18</integer>
       <key>public.kern2.KO_M.ss06</key>
       <integer>-26</integer>
       <key>public.kern2.KO_O</key>
@@ -21054,6 +21368,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>0</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-20</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-31</integer>
       <key>public.kern2.KO_a</key>
@@ -21076,6 +21392,8 @@
       <integer>-45</integer>
       <key>public.kern2.KO_d</key>
       <integer>-60</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-55</integer>
       <key>public.kern2.KO_e</key>
       <integer>-55</integer>
       <key>public.kern2.KO_e__top</key>
@@ -21219,6 +21537,8 @@
       <integer>-97</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>-97</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-27</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-25</integer>
       <key>public.kern2.KO_a</key>
@@ -21236,6 +21556,8 @@
       <key>public.kern2.KO_colon</key>
       <integer>-11</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-30</integer>
       <key>public.kern2.KO_e</key>
       <integer>-30</integer>
@@ -21376,6 +21698,8 @@
       <integer>-97</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>-97</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-26</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-25</integer>
       <key>public.kern2.KO_a</key>
@@ -21394,6 +21718,8 @@
       <integer>-18</integer>
       <key>public.kern2.KO_d</key>
       <integer>-26</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-27</integer>
       <key>public.kern2.KO_e</key>
       <integer>-27</integer>
       <key>public.kern2.KO_e__top</key>
@@ -21499,6 +21825,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-17</integer>
       <key>public.kern2.KO_M.ss06</key>
       <integer>-24</integer>
       <key>public.kern2.KO_O</key>
@@ -21523,6 +21851,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>0</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-18</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-35</integer>
       <key>public.kern2.KO_a</key>
@@ -21543,6 +21873,8 @@
       <integer>-40</integer>
       <key>public.kern2.KO_d</key>
       <integer>-55</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-53</integer>
       <key>public.kern2.KO_e</key>
       <integer>-53</integer>
       <key>public.kern2.KO_e__top</key>
@@ -21654,6 +21986,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-17</integer>
       <key>public.kern2.KO_J</key>
       <integer>-85</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -21684,6 +22018,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>0</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-20</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-35</integer>
       <key>public.kern2.KO_a</key>
@@ -21704,6 +22040,8 @@
       <integer>-44</integer>
       <key>public.kern2.KO_d</key>
       <integer>-48</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-53</integer>
       <key>public.kern2.KO_e</key>
       <integer>-53</integer>
       <key>public.kern2.KO_e__top</key>
@@ -21817,6 +22155,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-19</integer>
       <key>public.kern2.KO_J</key>
       <integer>-85</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -21847,6 +22187,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>0</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-23</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-30</integer>
       <key>public.kern2.KO_a</key>
@@ -21861,6 +22203,8 @@
       <integer>-29</integer>
       <key>public.kern2.KO_d</key>
       <integer>-81</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-79</integer>
       <key>public.kern2.KO_e</key>
       <integer>-79</integer>
       <key>public.kern2.KO_e__top</key>
@@ -21918,6 +22262,8 @@
       <integer>-21</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-21</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-19</integer>
       <key>public.kern2.KO_J</key>
       <integer>-85</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -21948,6 +22294,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>0</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-23</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-31</integer>
       <key>public.kern2.KO_a</key>
@@ -21968,6 +22316,8 @@
       <integer>-62</integer>
       <key>public.kern2.KO_d</key>
       <integer>-82</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-83</integer>
       <key>public.kern2.KO_e</key>
       <integer>-83</integer>
       <key>public.kern2.KO_e__top</key>
@@ -22079,6 +22429,8 @@
       <integer>-24</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-24</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-20</integer>
       <key>public.kern2.KO_J</key>
       <integer>-90</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -22109,6 +22461,8 @@
       <integer>-2</integer>
       <key>public.kern2.KO_Y__top</key>
       <integer>-2</integer>
+      <key>public.kern2.KO_Ya-cy</key>
+      <integer>-26</integer>
       <key>public.kern2.KO_Z</key>
       <integer>-33</integer>
       <key>public.kern2.KO_a</key>
@@ -22123,6 +22477,8 @@
       <integer>-32</integer>
       <key>public.kern2.KO_d</key>
       <integer>-86</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-84</integer>
       <key>public.kern2.KO_e</key>
       <integer>-84</integer>
       <key>public.kern2.KO_e__top</key>
@@ -22180,6 +22536,8 @@
       <integer>-11</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-11</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J</key>
@@ -22231,6 +22589,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-15</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-20</integer>
       <key>public.kern2.KO_e</key>
       <integer>-20</integer>
@@ -22393,6 +22753,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_d</key>
       <integer>6</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>6</integer>
       <key>public.kern2.KO_e</key>
       <integer>6</integer>
       <key>public.kern2.KO_e__top</key>
@@ -22500,6 +22862,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-3</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-13</integer>
       <key>public.kern2.KO_J</key>
       <integer>-60</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -22552,6 +22916,8 @@
       <integer>-40</integer>
       <key>public.kern2.KO_d</key>
       <integer>-48</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-47</integer>
       <key>public.kern2.KO_e</key>
       <integer>-47</integer>
       <key>public.kern2.KO_e__top</key>
@@ -22750,6 +23116,8 @@
       <integer>-17</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-17</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-12</integer>
       <key>public.kern2.KO_J</key>
       <integer>-39</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -22802,6 +23170,8 @@
       <integer>-34</integer>
       <key>public.kern2.KO_d</key>
       <integer>-30</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-28</integer>
       <key>public.kern2.KO_e</key>
       <integer>-28</integer>
       <key>public.kern2.KO_e__top</key>
@@ -22971,6 +23341,8 @@
       <integer>0</integer>
       <key>public.kern2.KO_d</key>
       <integer>-7</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_e</key>
       <integer>-8</integer>
       <key>public.kern2.KO_e__top</key>
@@ -23078,6 +23450,8 @@
       <integer>3</integer>
       <key>public.kern2.KO_d</key>
       <integer>-7</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_e</key>
       <integer>-8</integer>
       <key>public.kern2.KO_e__top</key>
@@ -23152,6 +23526,87 @@
       <integer>0</integer>
       <key>public.kern2.KO_z</key>
       <integer>13</integer>
+    </dict>
+    <key>public.kern1.KO_te-cy</key>
+    <dict>
+      <key>public.kern2.KO_B</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_J.ss09</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_S</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>-77</integer>
+      <key>public.kern2.KO_U</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>-33</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-26</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-68</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-37</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-40</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-33</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-43</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-38</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-44</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-51</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-50</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-47</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-47</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-47</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-32</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-6</integer>
     </dict>
     <key>public.kern1.KO_three</key>
     <dict>
@@ -23891,6 +24346,8 @@
       <integer>-34</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-34</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-5</integer>
       <key>public.kern2.KO_J</key>
       <integer>-18</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -23935,6 +24392,8 @@
       <integer>-36</integer>
       <key>public.kern2.KO_d</key>
       <integer>-44</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-45</integer>
       <key>public.kern2.KO_e</key>
       <integer>-45</integer>
       <key>public.kern2.KO_e__top</key>
@@ -23988,6 +24447,8 @@
       <integer>-12</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-12</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J</key>
@@ -24040,6 +24501,8 @@
       <integer>-13</integer>
       <key>public.kern2.KO_d</key>
       <integer>-10</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_e</key>
       <integer>-9</integer>
       <key>public.kern2.KO_e__top</key>
@@ -24151,6 +24614,8 @@
       <integer>-12</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-12</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_O</key>
       <integer>-3</integer>
       <key>public.kern2.KO_O__stack</key>
@@ -24179,6 +24644,8 @@
       <integer>-13</integer>
       <key>public.kern2.KO_d</key>
       <integer>-10</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_e</key>
       <integer>-9</integer>
       <key>public.kern2.KO_e__top</key>
@@ -24320,6 +24787,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_d</key>
       <integer>-17</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-17</integer>
       <key>public.kern2.KO_e</key>
       <integer>-17</integer>
       <key>public.kern2.KO_e__top</key>
@@ -24435,6 +24904,8 @@
       <integer>-7</integer>
       <key>public.kern2.KO_B__top</key>
       <integer>-7</integer>
+      <key>public.kern2.KO_El-cy</key>
+      <integer>-8</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-32</integer>
       <key>public.kern2.KO_J</key>
@@ -24486,6 +24957,8 @@
       <key>public.kern2.KO_colon.ss01</key>
       <integer>-10</integer>
       <key>public.kern2.KO_d</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_de-cy</key>
       <integer>-8</integer>
       <key>public.kern2.KO_e</key>
       <integer>-8</integer>
@@ -24805,6 +25278,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_d</key>
       <integer>-10</integer>
+      <key>public.kern2.KO_de-cy</key>
+      <integer>-9</integer>
       <key>public.kern2.KO_e</key>
       <integer>-9</integer>
       <key>public.kern2.KO_e__top</key>
@@ -27113,6 +27588,11 @@
       <integer>-76</integer>
       <key>slash</key>
       <integer>-21</integer>
+    </dict>
+    <key>yi-cy</key>
+    <dict>
+      <key>yi-cy</key>
+      <integer>22</integer>
     </dict>
     <key>z</key>
     <dict>
