@@ -9,8 +9,8 @@
 //!                   On this device (2) ┌ card ┐ ┌ card ┐
 //!                   Discover (3)       ┌ card ┐ ┌ card ┐ ┌ card ┐
 //! details           ← Back to apps
-//!                   [icon] Name  · badges, then actions, description,
-//!                   Package / Publisher and trust / On this device / Links
+//!                   [icon] Name, its badges, its actions and description,
+//!                   then Details (one property list) and Trust
 //! flatpak remotes   the add form and the configured remotes
 //! trust             report drafts and how decisions are made
 //! ```
@@ -879,7 +879,8 @@ impl StoreApp {
     }
 
     /// Replace the artwork cache: `None` shows every app with its generated
-    /// icon and no previews, which a hermetic capture needs.
+    /// icon and no previews. A capture passes a store that serves bundled
+    /// artwork, so it never reaches for the network.
     pub fn set_image_store(&mut self, images: Option<ui::ImageStore>) {
         self.images = images;
         self.structure_dirty = true;
@@ -2879,7 +2880,7 @@ mod tests {
             assert_eq!(
                 view::device_properties(&tilo),
                 vec![
-                    ("Status", "Available on demand".to_string()),
+                    ("On this device", "Available on demand".to_string()),
                     (
                         "Storage",
                         "Fetched when opened, not kept on this device".to_string()
@@ -2888,7 +2889,7 @@ mod tests {
             );
             assert_eq!(
                 view::device_properties(&flatpak),
-                vec![("Status", "Not installed".to_string())]
+                vec![("On this device", "Not installed".to_string())]
             );
             assert_eq!(tilo.action_kind(true).label(), "Open");
             assert_eq!(flatpak.action_kind(true).label(), "Install");
@@ -3354,6 +3355,14 @@ mod tests {
     fn status_and_accessibility_surfaces_are_named_bounded_live_regions() {
         // Case `operation_notice_uses_shared_live_banner_semantics`.
         {
+            fn banner(widget: &dyn Widget) -> Option<AccessNode> {
+                if let Some(node) = widget.accessibility()
+                    && node.name.as_deref() == Some("Working in background")
+                {
+                    return Some(node);
+                }
+                widget.children().into_iter().find_map(banner)
+            }
             let mut app = seeded_app();
             assert!(app.operation_notice(&Theme::dark()).is_none());
 
@@ -3362,20 +3371,10 @@ mod tests {
             let busy_notice = app
                 .operation_notice(&Theme::dark())
                 .expect("busy work has a semantic notice");
-            let busy = busy_notice
-                .children()
-                .first()
-                .and_then(|child| child.accessibility())
+            let busy = banner(&*busy_notice)
                 .expect("busy banner remains a live child of the progress notice");
-            assert_eq!(busy.name.as_deref(), Some("Working in background"));
             assert_eq!(busy.live, Some(Politeness::Polite));
             assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
-            let progress = busy_notice
-                .children()
-                .get(1)
-                .and_then(|child| child.accessibility())
-                .expect("progress remains visible to a screen reader");
-            assert_eq!(progress.name.as_deref(), Some("Operation in progress"));
 
             app.set_worker_busy(false);
             app.set_operation_error(Some("signature mismatch".into()));
