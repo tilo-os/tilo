@@ -14,7 +14,8 @@ name: Build / OS dev
 # A pull request builds only when its own diff touches the image, builds
 # x86_64, and adds aarch64 when it changes an architecture-specific input or
 # carries the `os-arm64` label
-# (tools/ci/os_dev_arches.py). Main always builds both.
+# (tools/ci/os_dev_arches.py). Main builds x86_64 here and aarch64 in
+# Build / OS dev (aarch64) (os-dev-arm.yml), newest commit only.
 on:
   workflow_dispatch:
     inputs:
