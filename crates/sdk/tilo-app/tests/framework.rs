@@ -82,6 +82,33 @@ impl ResourceApp for ChecklistApp {
     }
 }
 
+/// The same checklist, declared as showing secrets.
+struct SecretChecklistApp;
+
+impl ResourceApp for SecretChecklistApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-secret-checklist";
+    const TITLE: &'static str = "Secret checklist";
+    const BEHAVIOUR: tilo_app::application::ComponentBehaviour =
+        tilo_app::application::ComponentBehaviour {
+            capture_protected: true,
+            ..tilo_app::application::ComponentBehaviour::DEFAULT
+        };
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        ChecklistApp::view(cx)
+    }
+}
+
+#[test]
+fn the_live_window_withholds_itself_from_captures_only_when_the_app_declares_it() {
+    use tilo_app::framework::testing::inspect_live_window;
+    assert!(
+        inspect_live_window::<SecretChecklistApp, _>(tilo_app::App::capture_protected).unwrap()
+    );
+    assert!(!inspect_live_window::<ChecklistApp, _>(tilo_app::App::capture_protected).unwrap());
+}
+
 fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
     app.state()
         .items

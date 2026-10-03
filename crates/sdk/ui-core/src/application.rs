@@ -592,7 +592,7 @@ impl ApplicationDefinition {
 
 /// How the window hosting a component treats its tree. Part of the
 /// component, so every host that runs it applies the same behaviour.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComponentBehaviour {
     /// After a structural rebuild, focus the first focusable field again so a
     /// filter that rebuilds the tree keeps its caret.
@@ -600,6 +600,26 @@ pub struct ComponentBehaviour {
     /// Apply the tree's [`crate::widget::Widget::appearance_intent`] live:
     /// scale, theme, contrast and motion follow it each tick.
     pub appearance_reconcile: bool,
+    /// Withhold the window from screenshots, recordings, screen sharing and
+    /// remote viewers, as [`crate::App::set_capture_protected`] does: for
+    /// apps that show secrets, such as a password manager.
+    pub capture_protected: bool,
+}
+
+impl ComponentBehaviour {
+    /// Every behaviour off; a component spells out only what it turns on,
+    /// `ComponentBehaviour { capture_protected: true, ..ComponentBehaviour::DEFAULT }`.
+    pub const DEFAULT: Self = Self {
+        autofocus_on_structure_change: false,
+        appearance_reconcile: false,
+        capture_protected: false,
+    };
+}
+
+impl Default for ComponentBehaviour {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
