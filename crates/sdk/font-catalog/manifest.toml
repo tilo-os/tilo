@@ -1,16 +1,16 @@
 schema = 1
 catalog_id = "tilo-fonts-fedora44-tilo-sans-2026-10-03"
-product_bytes = 44743200
-fixture_bytes = 45622996
+product_bytes = 44739516
+fixture_bytes = 45619312
 
 [[font]]
 scope = "product"
 browser_startup = true
 file = "TiloSans[wdth,wght].ttf"
-bytes = 298140
-sha256 = "a2a38f9f9898610aee0cc0f9e5bc984d30b0da0d4c89a171a459445a0ed5e45f"
+bytes = 296124
+sha256 = "140edddcc0ee4953e5120ac208757e88f48c786788bfdd092d2dba1bb49abef4"
 source_path = "vendor/fonts/tilo-sans/fonts/default/TiloSans[wdth,wght].ttf"
-source_commit = "cf769051cc76431fe21f17e5c22cb938c826ca60"
+source_commit = "c29493874c0874e530ed6bc6398b96bac7bf8df6"
 source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
@@ -25,10 +25,10 @@ style = "normal"
 scope = "product"
 browser_startup = true
 file = "TiloSans-Italic[wdth,wght].ttf"
-bytes = 308180
-sha256 = "5b255ff718cee4c24b3a98e4af3b0750502d01d80d2c1c5c44e56ee06e09c3cb"
+bytes = 306512
+sha256 = "a4ca118abf92d41fa93f46a6833436bea98869eada3f07634a3594104dfad09c"
 source_path = "vendor/fonts/tilo-sans/fonts/default/TiloSans-Italic[wdth,wght].ttf"
-source_commit = "cf769051cc76431fe21f17e5c22cb938c826ca60"
+source_commit = "c29493874c0874e530ed6bc6398b96bac7bf8df6"
 source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
@@ -448,7 +448,7 @@ sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
 [[license]]
 file = "LICENSES/Tilo-Sans-OFL.txt"
 source_path = "vendor/fonts/tilo-sans/OFL.txt"
-source_commit = "cf769051cc76431fe21f17e5c22cb938c826ca60"
+source_commit = "c29493874c0874e530ed6bc6398b96bac7bf8df6"
 sha256 = "63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98"
 
 [[license]]
