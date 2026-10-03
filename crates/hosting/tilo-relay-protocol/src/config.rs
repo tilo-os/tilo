@@ -156,6 +156,10 @@ pub struct EnvironmentsConfig {
     /// process limits.
     #[serde(default)]
     pub cgroup_root: Option<PathBuf>,
+    /// OCI references (`host/repo[:tag]`) environment images are fetched
+    /// from when the relay's own stores lack them.
+    #[serde(default = "default_image_sources")]
+    pub image_sources: Vec<String>,
 }
 
 impl Default for EnvironmentsConfig {
@@ -173,8 +177,16 @@ impl Default for EnvironmentsConfig {
             member_uid_first: None,
             member_uid_count: 0,
             cgroup_root: None,
+            image_sources: default_image_sources(),
         }
     }
+}
+
+fn default_image_sources() -> Vec<String> {
+    vec![
+        "registry.tilo.so/tilo/env-runtime".into(),
+        "registry.tilo.so/tilo/env-tools".into(),
+    ]
 }
 
 fn default_ush_binary() -> PathBuf {

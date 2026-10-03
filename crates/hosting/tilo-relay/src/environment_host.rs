@@ -41,6 +41,13 @@ use tilo_relay_protocol::environment::{
 
 use crate::frame::{read_frame_or_eof, write_frame};
 
+/// A tool's image for this worker's architecture.
+fn own_image(tool: &ToolImage) -> Option<String> {
+    tool.images
+        .get(tilo_relay_protocol::environment::this_architecture())
+        .cloned()
+}
+
 /// A guest's pty output.
 type GuestOutput = Pin<Box<dyn AsyncRead + Send>>;
 
@@ -136,6 +143,7 @@ pub fn worker_environments(
     let mut launcher = crate::environment_guest::UshLauncherConfig::at(root.to_path_buf());
     launcher.ush_binary.clone_from(&config.ush_binary);
     launcher.cgroup_root.clone_from(&config.cgroup_root);
+    launcher.image_sources.clone_from(&config.image_sources);
     if let Some(first) = config.member_uid_first {
         launcher.isolation = crate::environment_guest::MemberIsolation::SeparateUids {
             first,
@@ -302,6 +310,9 @@ pub struct Guest {
     pub input: Pin<Box<dyn AsyncWrite + Send>>,
     /// Resize and teardown.
     pub control: Box<dyn GuestControl>,
+    /// Tool images built for this worker's architecture to start the
+    /// guest; the member's terminal is told of them.
+    pub built_tools: Vec<ToolImage>,
 }
 
 /// Out-of-band control of a running guest.
@@ -722,6 +733,7 @@ impl EnvironmentHost {
             output,
             input,
             control,
+            built_tools,
         } = guest;
         let slot = Arc::new(Slot {
             id: session,
@@ -731,7 +743,8 @@ impl EnvironmentHost {
                     .spec
                     .tools
                     .iter()
-                    .map(|tool| tool.id.clone())
+                    .chain(&built_tools)
+                    .filter_map(own_image)
                     .collect(),
             ),
             record: request.record,
@@ -744,7 +757,7 @@ impl EnvironmentHost {
                 next_generation: 0,
                 last_activity: Instant::now(),
                 ended: false,
-                pending_tools: Vec::new(),
+                pending_tools: built_tools,
             }),
         });
         self.sessions().insert(session, Arc::clone(&slot));
@@ -1059,9 +1072,9 @@ impl EnvironmentHost {
                     .unwrap_or_else(PoisonError::into_inner);
                 let new = tools
                     .into_iter()
-                    .filter(|tool| !known.contains(&tool.id))
+                    .filter(|tool| own_image(tool).is_some_and(|id| !known.contains(&id)))
                     .collect::<Vec<_>>();
-                known.extend(new.iter().map(|tool| tool.id.clone()));
+                known.extend(new.iter().filter_map(own_image));
                 new
             };
             for tool in new {

@@ -15,26 +15,32 @@ use serde::Serialize;
 use tilo_relay_client::{EnvironmentClientError, PtyEvent, PtyStream};
 use tilo_relay_protocol::environment::{
     DirectoryGrant, EnvironmentRecordRef, EnvironmentSpec, HomePolicy, MAX_SCROLLBACK_BYTES,
-    PtySize, Refusal, SessionId, ToolImage,
+    PtySize, Refusal, RuntimeImages, SessionId, ToolImage, this_architecture,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 /// The wire form of an environment record: what a relay builds the guest
-/// from. Grants are the record's `FsPath` grants for the runtime;
-/// read-write when the grant allows writing.
+/// from. The record's images are this device's architecture's; a relay of
+/// another architecture builds the tools it lacks. Grants are the record's
+/// `FsPath` grants for the runtime; read-write when the grant allows
+/// writing.
 #[must_use]
 pub fn environment_spec(environment: &tilo_environment::Environment) -> EnvironmentSpec {
     use collab_types::caps::{Scope, Verb};
+    let arch = this_architecture().to_owned();
     EnvironmentSpec {
         name: environment.name.clone(),
-        runtime: environment.runtime.clone(),
+        runtime: RuntimeImages {
+            release: String::new(),
+            images: [(arch.clone(), environment.runtime.clone())].into(),
+        },
         tools: environment
             .tools
             .iter()
             .map(|tool| ToolImage {
-                id: tool.id.clone(),
                 packages: tool.packages.clone(),
+                images: [(arch.clone(), tool.id.clone())].into(),
             })
             .collect(),
         grants: environment
@@ -78,10 +84,10 @@ pub enum BridgeStatus {
         record: String,
         /// The workspace it lives in.
         workspace_id: u64,
-        /// The tool image id.
-        tool: String,
         /// The packages it provides.
         packages: Vec<String>,
+        /// The image built, by architecture.
+        images: std::collections::BTreeMap<String, String>,
     },
     /// The bridge ended.
     Ended {
@@ -97,8 +103,8 @@ impl BridgeStatus {
         Self::ToolBuilt {
             record: record.record_id.clone(),
             workspace_id: record.workspace_id,
-            tool: tool.id.clone(),
             packages: tool.packages.clone(),
+            images: tool.images.clone(),
         }
     }
 }
@@ -274,7 +280,10 @@ mod tests {
         );
         let spec = environment_spec(&environment);
         assert!(spec.valid());
-        assert_eq!(spec.runtime, runtime.to_string());
+        assert_eq!(
+            spec.runtime.images.get(this_architecture()),
+            Some(&runtime.to_string())
+        );
         assert_eq!(spec.tools[0].packages, vec!["pandoc".to_owned()]);
         assert_eq!(
             spec.grants,

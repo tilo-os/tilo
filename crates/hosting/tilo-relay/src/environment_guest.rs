@@ -65,7 +65,7 @@ use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
 use tilo_relay_protocol::environment::{
-    EnvironmentRecordRef, EnvironmentSpec, MemberIdentity, PtySize, ToolImage,
+    EnvironmentRecordRef, EnvironmentSpec, MemberIdentity, PtySize, ToolImage, this_architecture,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -105,6 +105,9 @@ pub struct UshLauncherConfig {
     pub cgroup_root: Option<PathBuf>,
     /// How long a supervisor may take to listen.
     pub start_timeout: Duration,
+    /// OCI references the members' supervisors fetch environment images
+    /// from when no local store holds them (see `tilo_oci_images`).
+    pub image_sources: Vec<String>,
 }
 
 impl UshLauncherConfig {
@@ -118,6 +121,10 @@ impl UshLauncherConfig {
             isolation: MemberIsolation::SharedUid,
             cgroup_root: None,
             start_timeout: Duration::from_secs(10),
+            image_sources: vec![
+                "registry.tilo.so/tilo/env-runtime".into(),
+                "registry.tilo.so/tilo/env-tools".into(),
+            ],
         }
     }
 }
@@ -126,6 +133,7 @@ impl UshLauncherConfig {
 pub struct UshGuestLauncher {
     config: UshLauncherConfig,
     supervisors: Mutex<BTreeMap<[u8; 32], Supervisor>>,
+    tool_builder: Arc<dyn tilo_environment::ToolBuilder>,
 }
 
 struct Supervisor {
@@ -156,7 +164,15 @@ impl UshGuestLauncher {
         Self {
             config,
             supervisors: Mutex::new(BTreeMap::new()),
+            tool_builder: Arc::new(tilo_environment::NoToolBuilder),
         }
+    }
+
+    /// Build tool images this worker's architecture lacks with `builder`.
+    #[must_use]
+    pub fn with_tool_builder(mut self, builder: Arc<dyn tilo_environment::ToolBuilder>) -> Self {
+        self.tool_builder = builder;
+        self
     }
 
     fn uid_for(&self, member: &MemberIdentity) -> Result<Option<u32>, LaunchError> {
@@ -228,6 +244,14 @@ impl UshGuestLauncher {
             .env(ush::store::STORE_ENV, area.store())
             .env(ush::store::RECORDS_ENV, area.records())
             .env(ush::store::GRANT_ROOT_ENV, area.files())
+            .env(
+                ush::images::IMAGE_SOURCES_ENV,
+                self.config.image_sources.join(","),
+            )
+            .env(
+                ush::images::IMAGE_CACHE_ENV,
+                area.root().join("image-cache"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
@@ -281,9 +305,12 @@ impl GuestLauncher for UshGuestLauncher {
             .map_err(|error| LaunchError::Failed(format!("granted directories: {error}")))?;
         tracing::debug!(grants = grants.len(), "relay environment grants resolved");
         let uid = self.uid_for(&member.identity)?;
-        let key = write_record(&member.area, &request.record, &request.spec, uid)?;
+        let resolved = resolve_images(&request.spec, self.tool_builder.as_ref())?;
+        let key = write_record(&member.area, &request.record, &request.spec, &resolved, uid)?;
         let socket = self.supervisor_socket(member)?;
-        open_ush_session(&socket, &key, request)
+        let mut guest = open_ush_session(&socket, &key, request)?;
+        guest.built_tools = resolved.built;
+        Ok(guest)
     }
 
     fn current_tools(
@@ -299,8 +326,8 @@ impl GuestLauncher for UshGuestLauncher {
                 .tools
                 .into_iter()
                 .map(|tool| ToolImage {
-                    id: tool.id,
                     packages: tool.packages,
+                    images: [(this_architecture().to_owned(), tool.id)].into(),
                 })
                 .collect(),
         )
@@ -368,23 +395,92 @@ pub fn record_key(record: &EnvironmentRecordRef) -> String {
     )
 }
 
+/// An environment's images for this worker's architecture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedImages {
+    /// The `env-runtime` image.
+    pub runtime: String,
+    /// `(tool image, packages)`, in the record's order.
+    pub tools: Vec<(String, Vec<String>)>,
+    /// Tools whose image for this architecture was built here; the
+    /// member's device records them.
+    pub built: Vec<ToolImage>,
+}
+
+/// Pick this worker's architecture's images from `spec`, building a tool
+/// image the record has none of for it with `builder`. A tool that cannot
+/// be built is left out of the session (and logged); a runtime without an
+/// image for this architecture cannot open.
+///
+/// # Errors
+///
+/// Returns an error when the runtime has no image for this architecture.
+pub fn resolve_images(
+    spec: &EnvironmentSpec,
+    builder: &dyn tilo_environment::ToolBuilder,
+) -> Result<ResolvedImages, LaunchError> {
+    let arch = this_architecture();
+    let runtime = spec.runtime.images.get(arch).cloned().ok_or_else(|| {
+        LaunchError::Failed(format!(
+            "the environment's runtime {} has no image for this relay's architecture ({arch})",
+            spec.runtime.release
+        ))
+    })?;
+    let mut resolved = ResolvedImages {
+        runtime: runtime.clone(),
+        tools: Vec::new(),
+        built: Vec::new(),
+    };
+    for tool in &spec.tools {
+        if let Some(id) = tool.images.get(arch) {
+            resolved.tools.push((id.clone(), tool.packages.clone()));
+            continue;
+        }
+        let built = tilo_environment::parse_image(&runtime).and_then(|runtime_id| {
+            builder
+                .build(&runtime_id, &tool.packages, &mut std::io::sink())
+                .map_err(|error| error.to_string())
+        });
+        match built {
+            Ok(id) => {
+                let id = id.to_string();
+                resolved.tools.push((id.clone(), tool.packages.clone()));
+                resolved.built.push(ToolImage {
+                    packages: tool.packages.clone(),
+                    images: [(arch.to_owned(), id)].into(),
+                });
+            }
+            Err(error) => tracing::warn!(
+                packages = ?tool.packages,
+                %error,
+                "a tool has no image for this architecture and could not be built; \
+                 the session opens without it"
+            ),
+        }
+    }
+    Ok(resolved)
+}
+
 /// The record a member's supervisor builds the guest from: the member's
-/// environment as their device resolved it. Grants keep the paths the
-/// member names them by; the supervisor finds their contents below the
-/// member's file area. A grant of a path the guest builds itself is left
-/// out.
+/// environment as their device resolved it, with this worker's images.
+/// Grants keep the paths the member names them by; the supervisor finds
+/// their contents below the member's file area. A grant of a path the
+/// guest builds itself is left out.
 #[must_use]
-pub fn environment_record(spec: &EnvironmentSpec) -> tilo_environment::Environment {
+pub fn environment_record(
+    spec: &EnvironmentSpec,
+    images: &ResolvedImages,
+) -> tilo_environment::Environment {
     use tilo_relay_protocol::environment::HomePolicy;
     let mut environment = tilo_environment::Environment {
         name: spec.name.clone(),
-        runtime: spec.runtime.clone(),
-        tools: spec
+        runtime: images.runtime.clone(),
+        tools: images
             .tools
             .iter()
-            .map(|tool| tilo_environment::ToolRef {
-                id: tool.id.clone(),
-                packages: tool.packages.clone(),
+            .map(|(id, packages)| tilo_environment::ToolRef {
+                id: id.clone(),
+                packages: packages.clone(),
             })
             .collect(),
         home: match spec.home {
@@ -414,6 +510,7 @@ pub fn write_record(
     area: &MemberArea,
     record: &EnvironmentRecordRef,
     spec: &EnvironmentSpec,
+    images: &ResolvedImages,
     owner: Option<u32>,
 ) -> Result<String, LaunchError> {
     let failed = |error: String| LaunchError::Failed(format!("environment record: {error}"));
@@ -426,7 +523,7 @@ pub fn write_record(
         std::fs::remove_dir_all(&directory).map_err(|error| failed(error.to_string()))?;
     }
     records
-        .create(&key, &environment_record(spec))
+        .create(&key, &environment_record(spec, images))
         .map_err(|error| failed(error.to_string()))?;
     if let Some(uid) = owner {
         chown_tree(&area.records(), uid).map_err(|error| failed(error.to_string()))?;
@@ -458,6 +555,7 @@ pub fn pty_guest(master: OwnedFd, lifetime: Option<UnixStream>) -> io::Result<Gu
         output: Box::pin(PtyHalf(Arc::clone(&master))),
         input: Box::pin(PtyHalf(Arc::clone(&master))),
         control: Box::new(PtyControl { master, lifetime }),
+        built_tools: Vec::new(),
     })
 }
 
@@ -708,7 +806,14 @@ mod tests {
     fn spec(grants: &[&str]) -> EnvironmentSpec {
         EnvironmentSpec {
             name: "dev".into(),
-            runtime: "so.tilo.env.fedora".into(),
+            runtime: tilo_relay_protocol::environment::RuntimeImages {
+                release: "2026.10".into(),
+                images: [(
+                    tilo_relay_protocol::environment::this_architecture().to_owned(),
+                    "tapp:01".to_owned(),
+                )]
+                .into(),
+            },
             tools: Vec::new(),
             grants: grants
                 .iter()
@@ -756,8 +861,9 @@ mod tests {
         };
         let runtime = tilo_environment::PackageId::from_bytes([1; 32]).to_string();
         let mut spec = spec(&["/home/alice/src", "/usr/share"]);
-        spec.runtime.clone_from(&runtime);
-        let key = write_record(&area, &record, &spec, None).unwrap();
+        spec.runtime.images = [(this_architecture().to_owned(), runtime.clone())].into();
+        let images = resolve_images(&spec, &tilo_environment::NoToolBuilder).unwrap();
+        let key = write_record(&area, &record, &spec, &images, None).unwrap();
         assert!(tilo_environment::is_record_key(&key));
         let stored = ush::records::Records::at(area.records())
             .load(&key)
@@ -787,13 +893,79 @@ mod tests {
         assert_eq!(
             launcher.current_tools(&member, &record).unwrap(),
             vec![ToolImage {
-                id: tool,
                 packages: vec!["jq".into()],
+                images: [(this_architecture().to_owned(), tool)].into(),
             }]
         );
         // A new session starts from what the device resolved again.
-        write_record(&area, &record, &spec, None).unwrap();
+        write_record(&area, &record, &spec, &images, None).unwrap();
         assert!(launcher.current_tools(&member, &record).unwrap().is_empty());
+    }
+
+    struct Builder;
+
+    impl tilo_environment::ToolBuilder for Builder {
+        fn build(
+            &self,
+            runtime: &tilo_environment::PackageId,
+            packages: &[String],
+            _progress: &mut dyn std::io::Write,
+        ) -> Result<tilo_environment::PackageId, tilo_environment::ToolBuildError> {
+            if *runtime != tilo_environment::PackageId::from_bytes([1; 32])
+                || packages == ["missing"]
+            {
+                return Err(tilo_environment::ToolBuildError::UnknownPackage(
+                    "missing".into(),
+                ));
+            }
+            Ok(tilo_environment::PackageId::from_bytes([9; 32]))
+        }
+    }
+
+    #[test]
+    fn a_worker_uses_its_own_architectures_images_and_builds_what_is_missing() {
+        let arch = this_architecture().to_owned();
+        let runtime = tilo_environment::PackageId::from_bytes([1; 32]).to_string();
+        let mut spec = spec(&[]);
+        spec.runtime.images = [
+            (arch.clone(), runtime.clone()),
+            ("riscv64".into(), "tapp:other".into()),
+        ]
+        .into();
+        spec.tools = vec![
+            ToolImage {
+                packages: vec!["git".into()],
+                images: [(arch.clone(), "tapp:git".into())].into(),
+            },
+            ToolImage {
+                packages: vec!["pandoc".into()],
+                images: [("riscv64".into(), "tapp:pandoc-rv".into())].into(),
+            },
+            ToolImage {
+                packages: vec!["missing".into()],
+                images: [("riscv64".into(), "tapp:x".into())].into(),
+            },
+        ];
+        let built = tilo_environment::PackageId::from_bytes([9; 32]).to_string();
+        let resolved = resolve_images(&spec, &Builder).unwrap();
+        assert_eq!(resolved.runtime, runtime);
+        assert_eq!(
+            resolved.tools,
+            vec![
+                ("tapp:git".to_owned(), vec!["git".to_owned()]),
+                (built.clone(), vec!["pandoc".to_owned()]),
+            ],
+            "a tool that cannot be built is left out"
+        );
+        assert_eq!(
+            resolved.built,
+            vec![ToolImage {
+                packages: vec!["pandoc".into()],
+                images: [(arch, built)].into(),
+            }]
+        );
+        spec.runtime.images = [("riscv64".into(), "tapp:other".into())].into();
+        assert!(resolve_images(&spec, &Builder).is_err());
     }
 
     #[test]
@@ -917,6 +1089,7 @@ mod tests {
             mut output,
             mut input,
             control,
+            ..
         } = guest;
         slave.write_all(b"hello").unwrap();
         let mut buffer = [0; 5];

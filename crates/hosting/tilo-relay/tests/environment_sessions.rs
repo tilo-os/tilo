@@ -90,6 +90,7 @@ impl GuestLauncher for EchoLauncher {
             output: Box::pin(output),
             input: Box::pin(input),
             control: Box::new(EchoControl(Mutex::new(Some(stop)))),
+            built_tools: Vec::new(),
         })
     }
 }
@@ -126,7 +127,14 @@ impl LegacyVmHost for WindowVm {
 fn spec() -> EnvironmentSpec {
     EnvironmentSpec {
         name: "dev".into(),
-        runtime: "so.tilo.env.fedora".into(),
+        runtime: tilo_relay_protocol::environment::RuntimeImages {
+            release: "2026.10".into(),
+            images: [(
+                tilo_relay_protocol::environment::this_architecture().to_owned(),
+                "tapp:01".to_owned(),
+            )]
+            .into(),
+        },
         tools: Vec::new(),
         grants: Vec::new(),
         home: HomePolicy::Persistent,
