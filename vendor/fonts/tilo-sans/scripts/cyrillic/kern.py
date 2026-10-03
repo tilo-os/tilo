@@ -15,12 +15,13 @@ K1, K2 = "public.kern1.", "public.kern2."
 # glyph -> (kern1 group, kern2 group); None = no group.
 CY_GROUPS = {
     "Be-cy": ("KO_B", None), "Ge-cy": ("KO_T", None), "Gje-cy": ("KO_T", None), "Geupturn-cy": ("KO_T", None),
-    "Gestroke-cy": ("KO_T", None), "De-cy": (None, "KO_El-cy"), "El-cy": (None, "KO_El-cy"), "Lje-cy": ("KO_B", "KO_El-cy"),
+    "Gestroke-cy": ("KO_T", None), "De-cy": ("KO_H", "KO_El-cy"), "El-cy": (None, "KO_El-cy"), "Lje-cy": ("KO_Softsign-cy", "KO_El-cy"),
+    "Tse-cy": ("KO_H", "KO_H"), "Shcha-cy": ("KO_H", "KO_H"), "Yeru-cy": ("KO_H", None),
     "Zhe-cy": ("KO_K", "KO_X"), "Kadescender-cy": ("KO_K", None), "Ze-cy": ("KO_B", "KO_three"),
     "Ereversed-cy": ("KO_O", "KO_three"), "Yu-cy": ("KO_O", None), "Ef-cy": ("KO_O", "KO_O"), "Schwa-cy": ("KO_O", "KO_O"),
     "Obarred-cy": ("KO_O", "KO_O"), "E-cy": ("KO_C", "KO_O"), "U-cy": ("KO_Y", "KO_Y"), "Ushort-cy": ("KO_Y", "KO_Y"),
-    "Ustraightstroke-cy": ("KO_Y", "KO_Y"), "Hardsign-cy": ("KO_B", "KO_T"), "Softsign-cy": ("KO_B", None),
-    "Nje-cy": ("KO_B", None), "Che-cy": (None, "KO_U"), "Tshe-cy": (None, "KO_T"), "Dje-cy": (None, "KO_T"),
+    "Ustraightstroke-cy": ("KO_Y", "KO_Y"), "Hardsign-cy": ("KO_Softsign-cy", "KO_T"), "Softsign-cy": ("KO_Softsign-cy", None),
+    "Nje-cy": ("KO_Softsign-cy", None), "Che-cy": (None, "KO_U"), "Tshe-cy": (None, "KO_T"), "Dje-cy": (None, "KO_T"),
     "Io-cy": ("KO_E", None), "Iegrave-cy": ("KO_E", None), "Kje-cy": ("KO_K", None),
     # lowercase
     "be-cy": ("KO_p", "KO_e"), "ve-cy": ("KO_p", "KO_n-cy"), "ge-cy": ("KO_r", "KO_n-cy"), "gje-cy": ("KO_r", "KO_n-cy"),
@@ -43,22 +44,30 @@ CY_GROUPS = {
     "iigrave-cy.loclBGR": ("KO_u", "KO_u"), "ka-cy.loclBGR": ("KO_k", None), "pe-cy.loclBGR": ("KO_n", "KO_n-cy"),
     "te-cy.loclBGR": ("KO_n", "KO_n-cy"), "tse-cy.loclBGR": ("KO_u", "KO_u"), "sha-cy.loclBGR": ("KO_u", "KO_u"),
     "shcha-cy.loclBGR": ("KO_u", "KO_u"), "zhe-cy.loclBGR": ("KO_k", None), "el-cy.loclBGR": (None, "KO_el-cy"),
-    "yu-cy.loclBGR": ("KO_o", None), "ze-cy.loclBGR": (None, "KO_s"),
-    "be-cy.loclSRB": ("KO_p", "KO_e"), "ge-cy.loclSRB": ("KO_r", "KO_n-cy"), "de-cy.loclSRB": ("KO_de-cy", "KO_de-cy"),
+    "yu-cy.loclBGR": ("KO_o", None),
+    "be-cy.loclSRB": ("KO_p", "KO_e"), "ge-cy.loclSRB": ("KO_r", "KO_n-cy"), "gje-cy.loclSRB": ("KO_r", "KO_n-cy"), "de-cy.loclSRB": ("KO_de-cy", "KO_de-cy"),
     "pe-cy.loclSRB": ("KO_u", "KO_n-cy"), "te-cy.loclSRB": ("KO_te-cy", "KO_te-cy"),
 }
 
 # Cyrillic groups and the Latin source of their values, per style:
 # (Latin group or glyph, factor).
+# Ь's right side: its bowl sits low and leaves the top open, so letters
+# with a top bar or open arms (Т У Ч V Y, quotes) tuck in over it nearly as
+# far as over L's arm; everything else sees B's lower bowl.
+OPEN_TOP = ["KO_T", "KO_Y", "KO_V", "KO_W", "KO_U", "KO_quotedbl", "KO_quotedblleft", "KO_quotedblright",
+            "KO_asterisk", "KO_question"]
 NEW_KERN1 = {
     "KO_te-cy": {"upright": ("KO_r", 1.0), "italic": ("KO_n", 1.0)},
     "KO_de-cy": {"upright": ("KO_u", 1.0), "italic": ("KO_o", 1.0)},
+    "KO_Softsign-cy": {"upright": [("KO_L", 0.55, OPEN_TOP), ("KO_B", 1.0, None)],
+                       "italic": [("KO_L", 0.55, OPEN_TOP), ("KO_B", 1.0, None)]},
 }
 NEW_KERN2 = {
     "KO_n-cy": {"upright": ("n", 1.0), "italic": ("n", 1.0)},
-    "KO_El-cy": {"upright": ("KO_A", 0.45), "italic": ("KO_A", 0.45)},
-    "KO_el-cy": {"upright": ("KO_A", 0.45), "italic": ("KO_A", 0.45)},
-    "KO_de-cy": {"upright": ("KO_A", 0.45), "italic": ("KO_e", 1.0)},
+    # Л Д: the stem stands about a stem's width in from the foot
+    "KO_El-cy": {"upright": ("KO_A", 0.25), "italic": ("KO_A", 0.25)},
+    "KO_el-cy": {"upright": ("n", 1.0), "italic": ("n", 1.0)},
+    "KO_de-cy": {"upright": ("n", 1.0), "italic": ("KO_e", 1.0)},
     "KO_te-cy": {"upright": ("KO_t", 1.0), "italic": ("n", 1.0)},
 }
 
@@ -69,7 +78,7 @@ def _key(side, name):
     return name
 
 
-def update_kerning(ufo, italic, cy_names, lookalikes):
+def update_kerning(ufo, italic, cy_names, lookalikes, extra=None):
     groups = plistlib.loads((ufo / "groups.plist").read_bytes())
     kerning = plistlib.loads((ufo / "kerning.plist").read_bytes())
     style = "italic" if italic else "upright"
@@ -109,9 +118,14 @@ def update_kerning(ufo, italic, cy_names, lookalikes):
     def value(first, second):
         return kerning.get(first, {}).get(second, 0)
 
-    def src(k, table, prefix, side):
+    def src(k, table, prefix, side, other=None):
         if k.startswith(prefix) and k[len(prefix):] in table:
-            s, f = table[k[len(prefix):]][style]
+            rule = table[k[len(prefix):]][style]
+            if isinstance(rule, list):  # [(source, factor, seconds or None)]
+                for s, f, only in rule:
+                    if only is None or (other is not None and other[len(K2):] in only):
+                        return _key(side, s), f
+            s, f = rule
             return _key(side, s), f
         return k, 1.0
 
@@ -121,14 +135,21 @@ def update_kerning(ufo, italic, cy_names, lookalikes):
     seconds = sorted(s for s in seconds if s.startswith(K2)) + sorted(new2)
     firsts = sorted(k for k in kerning) + sorted(new1)
     for first in firsts:
-        f_src, f_fac = src(first, NEW_KERN1, K1, 1)
         for second in seconds:
             if first not in new1 and second not in new2:
                 continue
+            f_src, f_fac = src(first, NEW_KERN1, K1, 1, second)
             s_src, s_fac = src(second, NEW_KERN2, K2, 2)
             v = value(f_src, s_src) * f_fac * s_fac
             if abs(v) >= 5:
                 kerning.setdefault(first, {})[second] = int(round(v))
+    for (first, second), v in (extra or {}).items():
+        first = _key(1, first) if first.startswith("KO_") else first
+        second = _key(2, second) if second.startswith("KO_") else second
+        if v:
+            kerning.setdefault(first, {})[second] = int(round(v))
+        else:
+            kerning.get(first, {}).pop(second, None)
     for k in list(kerning):
         if not kerning[k]:
             del kerning[k]

@@ -1,9 +1,20 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="yi-cy" format="2">
-  <advance width="227"/>
+  <advance width="255"/>
   <unicode hex="0457"/>
   <outline>
-    <component base="idotless"/>
-    <component base="dieresiscomb" xOffset="-122"/>
+    <contour>
+      <point x="94" y="618" type="line"/>
+      <point x="192" y="618" type="line"/>
+      <point x="215" y="720" type="line"/>
+      <point x="117" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="230" y="618" type="line"/>
+      <point x="329" y="618" type="line"/>
+      <point x="352" y="720" type="line"/>
+      <point x="253" y="720" type="line"/>
+    </contour>
+    <component base="idotless" xOffset="14"/>
   </outline>
 </glyph>

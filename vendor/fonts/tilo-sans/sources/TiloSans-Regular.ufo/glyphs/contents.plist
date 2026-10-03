@@ -746,6 +746,8 @@
     <string>geupturn-cy.glif</string>
     <key>gje-cy</key>
     <string>gje-cy.glif</string>
+    <key>gje-cy.loclSRB</key>
+    <string>gje-cy.loclS_R_B_.glif</string>
     <key>grave</key>
     <string>grave.glif</string>
     <key>gravecomb</key>
@@ -1262,8 +1264,6 @@
     <string>zdotaccent.ss01.glif</string>
     <key>ze-cy</key>
     <string>ze-cy.glif</string>
-    <key>ze-cy.loclBGR</key>
-    <string>ze-cy.loclB_G_R_.glif</string>
     <key>zero</key>
     <string>zero.glif</string>
     <key>zero.tf</key>

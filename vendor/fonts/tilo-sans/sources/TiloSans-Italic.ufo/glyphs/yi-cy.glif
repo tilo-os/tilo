@@ -3,7 +3,18 @@
   <advance width="241"/>
   <unicode hex="0457"/>
   <outline>
+    <contour>
+      <point x="115" y="639" type="line"/>
+      <point x="194" y="639" type="line"/>
+      <point x="212" y="720" type="line"/>
+      <point x="133" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="225" y="639" type="line"/>
+      <point x="304" y="639" type="line"/>
+      <point x="322" y="720" type="line"/>
+      <point x="243" y="720" type="line"/>
+    </contour>
     <component base="idotless"/>
-    <component base="dieresiscomb" xOffset="-101"/>
   </outline>
 </glyph>

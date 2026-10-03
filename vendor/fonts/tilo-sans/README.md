@@ -246,35 +246,62 @@ and italic, in all eight masters (134 glyphs). `proof.py --set cyrillic`
 shows all of them.
 
 - **Shared forms** are components of the Latin glyphs: А В Е К М Н О Р С Т Х,
-  а е о р с у х, Ѕ І Ј Ү, ѕ і ј һ, and Ё Ѐ Ї ё ѐ ї reuse the Latin
-  composites' offsets.
+  а е о р с у х, Ѕ І Ј Ү, ѕ і ј һ, and Ё Ѐ ё ѐ reuse the Latin composites'
+  offsets.
 - **Native forms** are built by `scripts/cyrillic/construct.py` from the same
-  master's Latin drawings, never by plain scaling: strokes are moved or
-  zone-mapped so stems, bars and curve tension stay Instrument's. Б Ь Ъ Ы Љ Њ
-  use the P bowl, И Я mirrored N and R, З the 3, Э Є the C, Ю Ф Ө the O,
-  Ч ч u's bowl, Ж ж K's and k's arms, Д Л Љ д л љ straight legs with A's
-  weight, У the Y arms, Ц Щ Џ Қ Ң д tails to −160, б a level flag on 6's bowl;
-  в з ь ъ ы я are the capitals zone-mapped to x-height with lowercase bars.
-  Italic masters are slanted back upright (13° about y = 251), constructed and
-  slanted again. Running the script rewrites those glyphs (and the Cyrillic
-  kerning), so refine a glyph in the script, or stop passing it to the script
-  once it is edited by hand.
+  master's Latin drawings, never by plain scaling. Curved parts are either
+  scaled as a whole (an affine map keeps every curve's tension) or redrawn
+  from numbers measured off one Latin glyph of that master (`parts.py`):
+  - the Ь bowl (Б Ь Ъ Ы Љ Њ, and at x-height ь ъ ы љ њ я) is P's bowl redrawn
+    at the letter's size with P's bars, side and curve tensions; capitals use
+    P's own height, lowercase bowls are about 60% of the x-height, a little
+    taller and with lighter bars in the bold masters so the counter stays
+    open. The counter's left edge is the stem's inner edge;
+  - Л Д Љ л д љ have a vertical left leg whose foot is J's tail turned left
+    (Д's runs into the base bar); their counters are set from H's or n's;
+  - Ђ ђ are Ћ ћ whose right leg runs on into J's or j's tail as one contour;
+  - м is M's construction redrawn at x-height, with lighter diagonals and a
+    raised vertex in the condensed bold so the V stays open;
+  - я is R's bowl and leg mirrored, the leg leaving the bowl where its inner
+    edge meets the stem; Ю ю and Ф ф narrow O, o and p's bowls as a whole
+    (outer and counter each scaled), and the bold Ф ф bowls are drawn from a
+    lighter O or p so the counters stay open;
+  - б is o with a straight stroke rising into f's top curve, run on as a
+    level flag; ї Ї get their own, closer dieresis inside the advance.
+  И Я Э are mirrored N, R, C (the italic's side extremes are turned back so
+  they stay vertical once slanted), З the 3, Ч ч u's bowl, Ж ж K's and k's
+  arms, У the Y arms, Ц Щ Џ Қ Ң tails to −160. Italic masters are slanted
+  back upright (13° about y = 251), constructed and slanted again.
+- **Checks**: before writing, `construct.py` checks every glyph it built in
+  every master and writes nothing if one fails (`--check` only reports,
+  `--force` writes anyway): no curve tighter than Instrument's own (tension
+  above 0.81, 0.86 in the condensed masters), no handle outside its
+  segment's box (upright; italic: vertically only), counters probed along
+  scanlines against the n, H, o or O counter of that master (`PROBES`), ђ
+  has its bar and ї's dieresis stays inside the advance. Running the script
+  rewrites those glyphs (and the Cyrillic kerning), so refine a glyph in the
+  script, or stop passing it to the script once it is edited by hand.
 - **Italic** uses the cursive forms: и й ѝ п т = u ŭ ù n m, ц ш щ on u,
-  д = ∂.
-- **`locl`** (`features/cyrillic.fea`): Bulgarian (`BGR`) д ж з и й ѝ к л п т
-  ц ш щ ю (`*.loclBGR`: g-shaped д, ascending ж and ю, ʒ-shaped з, u n m
-  shapes, Λ л); Serbian and Macedonian (`SRB`, `MKD`) б г д п т
-  (`*.loclSRB`), which differ only in the italic (δ-shaped б, ī, g-shaped д,
-  n̄, m̄). The same file makes і and ј lose their dot under a top mark.
+  д = ∂ (the 6 mirrored).
+- **`locl`** (`features/cyrillic.fea`): Bulgarian (`BGR`) д ж и й ѝ к л п т ц
+  ш щ ю (`*.loclBGR`: g-shaped д, ascending ж and ю, u n m shapes, Λ л);
+  Serbian and Macedonian (`SRB`, `MKD`) б г ѓ д п т (`*.loclSRB`), which
+  differ only in the italic (δ-shaped б, ī and ī with acute, g-shaped д, n̄,
+  m̄). The same file makes і and ј lose their dot under a top mark. Bulgarian
+  з keeps the common form until a Bulgarian reader signs off a variant.
 - **Anchors**: every native letter has `top` and `bottom`, so stress marks
   (а́ е́ и́ …) and the precomposed letters attach through `mark`.
 - **Kerning**: look-alikes sit in their Latin base glyph's groups; other
   Cyrillic sides join the Latin group with the same profile (Г Ґ Ѓ in `KO_T`,
-  У Ў in `KO_Y`, Ж in `KO_K`/`KO_X`, …). Sides without a Latin counterpart use
-  Cyrillic groups whose values are taken, per master, from a Latin row or
-  column: `KO_n-cy` (left stems after Т Г У, from `n`), `KO_El-cy`/`KO_el-cy`
-  (Д Л Љ д л љ, 0.45 × `KO_A`), `KO_te-cy` and `KO_de-cy` (т д, whose italic
-  forms differ: r/t upright, n/o/e italic).
+  У Ў in `KO_Y`, Ж in `KO_K`/`KO_X`, Д Ц Щ Ы on the right in `KO_H`, …).
+  Sides without a Latin counterpart use Cyrillic groups whose values are
+  taken, per master, from a Latin row or column: `KO_Softsign-cy` (the right
+  of Ь Ъ Љ Њ: 0.55 × L's row before Т У Ч V Y and quotes, which tuck in over
+  the low bowl, B's row otherwise), `KO_n-cy` (left stems after Т Г У, from
+  `n`), `KO_El-cy` (Д Л Љ, 0.25 × `KO_A`), `KO_el-cy`/`KO_de-cy` (л љ д, from
+  `n`; the italic ∂ from `e`), `KO_te-cy` (т: r upright, n italic). ї next to
+  ї or і gets a pair that keeps the space between their dots wider than the
+  space inside ї's dieresis.
 
 The fallback check is `proof.py --set cyrillic --fallback onest` (Onest with
 `ss02`). Native readers have not reviewed these yet.

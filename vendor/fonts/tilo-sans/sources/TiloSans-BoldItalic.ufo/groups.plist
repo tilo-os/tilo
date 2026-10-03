@@ -21,10 +21,6 @@
     <key>public.kern1.KO_B</key>
     <array>
       <string>Be-cy</string>
-      <string>Hardsign-cy</string>
-      <string>Lje-cy</string>
-      <string>Nje-cy</string>
-      <string>Softsign-cy</string>
       <string>Ve-cy</string>
       <string>Ze-cy</string>
       <string>B</string>
@@ -87,6 +83,13 @@
       <string>Gdotaccent.ss07</string>
       <string>Gcommaaccent.ss01.ss07</string>
       <string>Gdotaccent.ss01.ss07</string>
+    </array>
+    <key>public.kern1.KO_H</key>
+    <array>
+      <string>De-cy</string>
+      <string>Shcha-cy</string>
+      <string>Tse-cy</string>
+      <string>Yeru-cy</string>
     </array>
     <key>public.kern1.KO_Iacute</key>
     <array>
@@ -191,6 +194,13 @@
       <string>Scedilla</string>
       <string>Scommaaccent</string>
       <string>Scommaaccent.ss01</string>
+    </array>
+    <key>public.kern1.KO_Softsign-cy</key>
+    <array>
+      <string>Hardsign-cy</string>
+      <string>Lje-cy</string>
+      <string>Nje-cy</string>
+      <string>Softsign-cy</string>
     </array>
     <key>public.kern1.KO_T</key>
     <array>
@@ -630,6 +640,7 @@
       <string>gestroke-cy</string>
       <string>geupturn-cy</string>
       <string>gje-cy</string>
+      <string>gje-cy.loclSRB</string>
       <string>r</string>
       <string>rcommaaccent</string>
       <string>rcommaaccent.ss01</string>
@@ -859,6 +870,11 @@
       <string>De-cy</string>
       <string>El-cy</string>
       <string>Lje-cy</string>
+    </array>
+    <key>public.kern2.KO_H</key>
+    <array>
+      <string>Shcha-cy</string>
+      <string>Tse-cy</string>
     </array>
     <key>public.kern2.KO_J</key>
     <array>
@@ -1224,6 +1240,7 @@
       <string>ge-cy.loclSRB</string>
       <string>geupturn-cy</string>
       <string>gje-cy</string>
+      <string>gje-cy.loclSRB</string>
       <string>ii-cy</string>
       <string>iigrave-cy</string>
       <string>iishort-cy</string>
@@ -1339,7 +1356,6 @@
       <string>dze-cy</string>
       <string>ereversed-cy</string>
       <string>ze-cy</string>
-      <string>ze-cy.loclBGR</string>
       <string>s</string>
       <string>sacute</string>
       <string>scaron</string>

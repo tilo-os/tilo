@@ -233,3 +233,107 @@ def move_points(contours, pred, dx=0, dy=0):
                 nc[i][1] += dy
         out.append(nc)
     return out
+
+
+def _line_meet(p, d, q, e):
+    det = d[0] * e[1] - d[1] * e[0]
+    if abs(det) < 1e-9:
+        return None
+    t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / det
+    return p[0] + t * d[0], p[1] + t * d[1]
+
+
+def retilt(contours, slope_from, slope_to, tol=0.12):
+    """Turn the tangents at side extremes from dx/dy = slope_from to
+    slope_to, keeping each curve's tension (handle length over the distance
+    to where its tangents meet). Mirroring an italic outline flips the lean
+    of its side extremes; retilt(mirrored, s, -s) puts it back."""
+    k = slope_to - slope_from
+    out = []
+    for con in contours:
+        n = len(con)
+        # on-curve points whose tangent (through both neighbours) leans slope_from
+        turn = set()
+        for i, p in enumerate(con):
+            if not is_on(p):
+                continue
+            a, b = con[i - 1], con[(i + 1) % n]
+            if is_on(a) and is_on(b):
+                continue
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            if is_on(a):
+                dx, dy = b[0] - p[0], b[1] - p[1]
+            elif is_on(b):
+                dx, dy = p[0] - a[0], p[1] - a[1]
+            if abs(dy) > 1e-6 and abs(dx / dy - slope_from) < tol:
+                turn.add(i)
+        nc = [p[:] for p in con]
+        on = [i for i, p in enumerate(con) if is_on(p)]
+        for j, i in enumerate(on):
+            prev = on[j - 1]
+            if (i - prev) % n != 3 or not ({prev, i} & turn):
+                continue
+            h1, h2 = (prev + 1) % n, (prev + 2) % n
+            P0, P3 = con[prev], con[i]
+            d0 = (con[h1][0] - P0[0], con[h1][1] - P0[1])
+            d1 = (con[h2][0] - P3[0], con[h2][1] - P3[1])
+            n0 = (d0[0] + k * d0[1], d0[1]) if prev in turn else d0
+            n1 = (d1[0] + k * d1[1], d1[1]) if i in turn else d1
+            I0 = _line_meet(P0, d0, P3, d1)
+            I1 = _line_meet(P0, n0, P3, n1)
+            ok = I0 is not None and I1 is not None
+            if ok:
+                t0 = math.hypot(*d0) / max(math.hypot(I0[0] - P0[0], I0[1] - P0[1]), 1e-9)
+                t1 = math.hypot(*d1) / max(math.hypot(I0[0] - P3[0], I0[1] - P3[1]), 1e-9)
+                e0 = (I1[0] - P0[0], I1[1] - P0[1])
+                e1 = (I1[0] - P3[0], I1[1] - P3[1])
+                # the new meeting point must lie ahead of both handles
+                ok = e0[0] * n0[0] + e0[1] * n0[1] > 0 and e1[0] * n1[0] + e1[1] * n1[1] > 0 and t0 < 1.5 and t1 < 1.5
+            if ok:
+                nc[h1][0], nc[h1][1] = P0[0] + t0 * e0[0], P0[1] + t0 * e0[1]
+                nc[h2][0], nc[h2][1] = P3[0] + t1 * e1[0], P3[1] + t1 * e1[1]
+            else:  # S-curve or parallel tangents: turn the handles, keep their lengths
+                for hi, Pt, d, dn in ((h1, P0, d0, n0), (h2, P3, d1, n1)):
+                    L, Ln = math.hypot(*d), math.hypot(*dn)
+                    if Ln:
+                        nc[hi][0], nc[hi][1] = Pt[0] + dn[0] / Ln * L, Pt[1] + dn[1] / Ln * L
+        out.append(nc)
+    return out
+
+
+def cap_tension(contours, limit):
+    """Shorten the handles of curves tighter than `limit` (zone maps can
+    stretch a handle past its curve's proportions) to exactly `limit`."""
+    out = []
+    for con in contours:
+        n = len(con)
+        nc = [p[:] for p in con]
+        on = [i for i, p in enumerate(con) if is_on(p)]
+        for j, i in enumerate(on):
+            prev = on[j - 1]
+            if (i - prev) % n != 3:
+                continue
+            h1, h2 = (prev + 1) % n, (prev + 2) % n
+            P0, P3 = con[prev], con[i]
+            d0 = (con[h1][0] - P0[0], con[h1][1] - P0[1])
+            d1 = (con[h2][0] - P3[0], con[h2][1] - P3[1])
+            I = _line_meet(P0, d0, P3, d1)
+            if I is None:
+                continue
+            for hi, Pt, d in ((h1, P0, d0), (h2, P3, d1)):
+                e = (I[0] - Pt[0], I[1] - Pt[1])
+                L, Le = math.hypot(*d), math.hypot(*e)
+                if e[0] * d[0] + e[1] * d[1] <= 0 or not Le:
+                    continue
+                if L / Le > limit:
+                    nc[hi][0], nc[hi][1] = Pt[0] + d[0] * limit * Le / L, Pt[1] + d[1] * limit * Le / L
+        out.append(nc)
+    return out
+
+
+def mirror_x_italic(contours, axis, italic):
+    """mirror_x for outlines in upright-equivalent space: in the italic the
+    side extremes are turned back to Instrument's lean (vertical once
+    slanted)."""
+    out = mirror_x(contours, axis)
+    return retilt(out, SLANT, -SLANT) if italic else out

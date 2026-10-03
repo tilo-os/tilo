@@ -12,7 +12,6 @@ lookup locl_cyrl_BGR {
 	# Bulgarian lowercase forms
 	sub de-cy by de-cy.loclBGR;
 	sub zhe-cy by zhe-cy.loclBGR;
-	sub ze-cy by ze-cy.loclBGR;
 	sub ii-cy by ii-cy.loclBGR;
 	sub iishort-cy by iishort-cy.loclBGR;
 	sub iigrave-cy by iigrave-cy.loclBGR;
@@ -30,6 +29,7 @@ lookup locl_cyrl_SRB {
 	# Serbian and Macedonian (the italic forms differ)
 	sub be-cy by be-cy.loclSRB;
 	sub ge-cy by ge-cy.loclSRB;
+	sub gje-cy by gje-cy.loclSRB;
 	sub de-cy by de-cy.loclSRB;
 	sub pe-cy by pe-cy.loclSRB;
 	sub te-cy by te-cy.loclSRB;

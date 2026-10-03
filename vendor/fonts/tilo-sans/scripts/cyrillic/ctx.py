@@ -145,6 +145,34 @@ class Ctx:
     def b(self, contours):
         return G.bounds(contours)
 
+    def other(self, master):
+        """The context of another master of the same style."""
+        key = ("ctx", master)
+        if key not in self._cache:
+            self._cache[key] = self if master == self.master else Ctx(master, self.fonts)
+        return self._cache[key]
+
+    @property
+    def light(self):
+        return self.other(LIGHT[self.master])
+
+    @property
+    def heavy(self):
+        return self.other(HEAVY[self.master])
+
+    @property
+    def wt(self):
+        """Where this master sits between its light and bold masters (0..1),
+        by lowercase stem."""
+        lo, hi = self.light.lc["V"], self.heavy.lc["V"]
+        return (self.lc["V"] - lo) / (hi - lo)
+
+    def blend(self, name, t):
+        """The outline of `name` interpolated from this master's light master
+        (t=0) to its bold master (t=1): a lighter drawing of the same width
+        class, for parts that must stay lighter than the stems."""
+        return G.interpolate(self.light.g(name), self.heavy.g(name), t)
+
     # ------------------------------------------------------------ metrics
     @property
     def cap(self):
