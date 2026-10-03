@@ -43,6 +43,8 @@ use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+/// The most lines a detail sheet lists.
+const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
@@ -1059,7 +1061,7 @@ impl FileExplorerWidget {
         }
         if reauthenticate {
             lines.push(
-                "Open Settings → External Accounts and choose Sign in again. Credentials stay in the system vault and are never shown to Files."
+                "Open Settings, choose External accounts, then Sign in again. Credentials stay in the system vault and are never shown to Files."
                     .into(),
             );
         }
@@ -1636,7 +1638,7 @@ impl FileExplorerWidget {
     /// in the location bar and the root accessibility description.
     fn state_surface_copy(&self) -> Option<(String, String, bool)> {
         let location = Self::bounded_state_text(
-            &self.current_path.display().to_string(),
+            &crate::model::format_path(&self.current_path, self.home_path.as_deref()),
             STATE_SURFACE_LOCATION_CHARS,
         );
         if self.is_loading {
@@ -1926,6 +1928,26 @@ impl FileExplorerWidget {
         }
         self.status_bubble
             .paint(scene, transform, tr, theme, self.rect, now);
+    }
+
+    /// The shell puts its sidebar toggle (and, in a narrow window, Back) at the
+    /// leading edge of the content header when the sidebar is not beside it;
+    /// the toolbar starts after them.
+    fn keep_shell_controls_clear(&self) {
+        let geometry = self.nav.geometry();
+        let column = geometry.content_column;
+        let gap = f64::from(ui::tokens::spacing::Spacing::BASE.s2);
+        let inset = [geometry.toggle, geometry.back]
+            .into_iter()
+            .filter(|control| {
+                control.width() > 0.0
+                    && control.x0 >= column.x0
+                    && control.x0 < column.x1
+                    && control.y0 < column.y0 + geometry.header_height
+            })
+            .map(|control| control.x1 - column.x0 + gap)
+            .fold(0.0, f64::max);
+        self.toolbar.set_leading_inset(inset);
     }
 
     /// Whether `point` is over the places list (docked or drawn as a drawer).
@@ -4628,21 +4650,27 @@ impl FileExplorerWidget {
     }
 
     /// Height the sheet's body wants at `width`: the summary, then each line
-    /// in its own row.
+    /// in its own wrapped row.
     fn collab_panel_body_height(
         panel: &CollabPanel,
         tr: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
+        width: f32,
     ) -> f64 {
-        let mut height = 0.0;
         let rhythm = &theme.tokens.spacing.rhythm;
-        let (_, summary) = tr.measure_style("Ag", None, &theme.text(ui::TextRole::Body));
-        height += f64::from(summary);
-        let (_, line) = tr.measure_style("Ag", None, &theme.text(ui::TextRole::Body));
-        let lines = panel.lines.iter().take(20).count();
-        if lines > 0 {
-            height += f64::from(rhythm.group) + lines as f64 * f64::from(line);
-            height += lines.saturating_sub(1) as f64 * f64::from(rhythm.related);
+        let style = theme.text(ui::TextRole::Body);
+        let (_, summary) = tr.measure_style(&panel.summary, Some(width), &style);
+        let mut height = f64::from(summary);
+        let mut lines = panel.lines.iter().take(COLLAB_PANEL_MAX_LINES).peekable();
+        if lines.peek().is_some() {
+            height += f64::from(rhythm.group);
+        }
+        for (index, line) in lines.enumerate() {
+            if index > 0 {
+                height += f64::from(rhythm.related);
+            }
+            let (_, h) = tr.measure_style(line, Some(width), &style);
+            height += f64::from(h);
         }
         height
     }
@@ -4680,7 +4708,9 @@ impl FileExplorerWidget {
                 modal_dialog::ModalAction::danger(label)
             });
         }
-        let body_height = Self::collab_panel_body_height(panel, text_renderer, theme);
+        let body_width = modal_dialog::body_width(self.rect, modal_dialog::MODAL_MAX_WIDTH, theme);
+        let body_height =
+            Self::collab_panel_body_height(panel, text_renderer, theme, body_width as f32);
         let spec = Self::collab_panel_spec(&panel.title, &actions, body_height);
         let layout = modal_dialog::layout(self.rect, &spec, text_renderer, theme);
         // Hover on the footer action and the close control follows the pointer.
@@ -4695,29 +4725,28 @@ impl FileExplorerWidget {
         let body = layout.body;
         let width = body.width() as f32;
         let text_style = theme.text(ui::TextRole::Body);
-        let (_, line_h) = text_renderer.measure_style("Ag", None, &text_style);
         let mut y = body.y0;
-        let summary = text_renderer.elide_to_width_style(&panel.summary, width, &text_style);
+        let (_, summary_h) = text_renderer.measure_style(&panel.summary, Some(width), &text_style);
         text_renderer.draw_style(
             scene,
-            &summary,
+            &panel.summary,
             dim,
             transform * vello::kurbo::Affine::translate((body.x0, y)),
-            None,
+            Some(width),
             &text_style,
         );
-        y += f64::from(line_h) + f64::from(theme.tokens.spacing.rhythm.group);
-        for line in panel.lines.iter().take(20) {
+        y += f64::from(summary_h) + f64::from(theme.tokens.spacing.rhythm.group);
+        for line in panel.lines.iter().take(COLLAB_PANEL_MAX_LINES) {
+            let (_, line_h) = text_renderer.measure_style(line, Some(width), &text_style);
             if y + f64::from(line_h) > body.y1 + 0.5 {
                 break;
             }
-            let line = text_renderer.elide_to_width_style(line, width, &text_style);
             text_renderer.draw_style(
                 scene,
-                &line,
+                line,
                 ink,
                 transform * vello::kurbo::Affine::translate((body.x0, y)),
-                None,
+                Some(width),
                 &text_style,
             );
             y += f64::from(line_h) + f64::from(theme.tokens.spacing.rhythm.related);
@@ -4750,16 +4779,14 @@ impl FileExplorerWidget {
     }
 
     /// Mark the folder (or Up affordance) a live drag is hovering, so the drop
-    /// target is unmistakable: the row's lift with your colour as its edge.
-    /// Drawn under the ghost.
+    /// target is unmistakable: your colour ringed around its row. Drawn under
+    /// the ghost.
     fn draw_drop_highlight(
         &self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         theme: &ui::Theme,
     ) {
-        use vello::kurbo::{Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
         let Some(hover) = &self.drag_hover else {
             return;
         };
@@ -4777,26 +4804,17 @@ impl FileExplorerWidget {
                     .flatten()
             });
         let Some(rect) = rect else { return };
-        let colors = &theme.tokens.colors;
         let (ix, iy) = (
             f64::from(theme.tokens.spacing.s2),
             f64::from(theme.tokens.spacing.s1) / 2.0,
         );
-        let inset = Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
-        let shape = RoundedRect::from_rect(inset, f64::from(theme.tokens.radii.item));
-        scene.fill(
-            Fill::NonZero,
+        let face = vello::kurbo::Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
+        ui::widget::paint_focus_ring(
+            scene,
             transform,
-            colors.lift_on(colors.surfaces.content, 1.0),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(2.0),
-            transform,
-            colors.intent.you,
-            None,
-            &shape,
+            face,
+            f64::from(theme.tokens.radii.item),
+            theme,
         );
     }
 
@@ -5646,6 +5664,16 @@ impl FileExplorerWidget {
             .any(|f| !f.is_home && f.path == self.current_path)
     }
 
+    /// The check a menu row for `command` shows: the sort that is in force,
+    /// and whether hidden files are shown. Other commands are not state.
+    fn command_checked(&self, command: Option<&FileCommand>) -> Option<bool> {
+        match command? {
+            FileCommand::SetSort(by) => Some(self.sort_by == *by),
+            FileCommand::ToggleHidden => Some(self.show_hidden),
+            _ => None,
+        }
+    }
+
     fn open_context_menu(&mut self, at: Point) {
         self.submenu.close();
         let spec = self.context_menu_spec(&self.available_templates());
@@ -5658,7 +5686,11 @@ impl FileExplorerWidget {
             } else {
                 // No-op action — the app maps the clicked index to a command
                 // itself (the sink is !Send, so it can't live in the action).
-                menu.push(MenuItem::action(label, || {}));
+                let item = MenuItem::action(label, || {});
+                menu.push(match self.command_checked(cmd.as_ref()) {
+                    Some(checked) => item.with_checked(checked),
+                    None => item,
+                });
                 cmds.push(cmd);
             }
         }
@@ -5928,7 +5960,6 @@ impl FileExplorerWidget {
             ));
         }
         if self.last_trash_undo.is_some() {
-            spec.push((String::new(), None, None));
             spec.push((
                 t("files-undo-move-trash"),
                 Some(FileCommand::UndoLastTrash),
@@ -5942,14 +5973,12 @@ impl FileExplorerWidget {
             Some(self.show_hidden),
         ));
         if self.is_trash_view() {
-            spec.push((String::new(), None, None));
             spec.push((
                 t("files-menu-empty-trash"),
                 Some(FileCommand::EmptyTrash),
                 None,
             ));
         }
-        spec.push((String::new(), None, None));
         spec.push((
             t("files-menu-open-terminal"),
             Some(FileCommand::OpenTerminal),
@@ -8304,6 +8333,7 @@ impl Widget for FileExplorerWidget {
             && let Some(&nav_n) = children.first()
         {
             self.nav.apply_layout(taffy, nav_n, base);
+            self.keep_shell_controls_clear();
         }
     }
 
@@ -8426,7 +8456,7 @@ impl Widget for FileExplorerWidget {
             // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()
-                && self.last_cursor.distance(start) > crate::views::file_view::DRAG_THRESHOLD
+                && self.last_cursor.distance(start) > crate::views::file_view::drag_threshold()
             {
                 self.armed_drag = None;
                 self.apply_command(FileCommand::BeginDrag { path, is_dir });
