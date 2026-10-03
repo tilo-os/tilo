@@ -1,19 +1,20 @@
 //! The Store's live application host.
 //!
-//! Keeping this wrapper in the library—not the binary shim—means every
+//! Keeping this wrapper in the library, not the binary shim, means every
 //! launch path uses the same worker-backed lifecycle and gives the Tilo app
 //! SDK a real `app_root()` contract to inspect and reuse.
+//!
+//! [`LiveStore`] is a [`Decorator`](ui::widget::Decorator) over [`StoreApp`]:
+//! it adds the one thing the app does not own, the serialized worker that
+//! fetches catalogues and runs package operations, and forwards everything
+//! else (resources, search, undo, layout, painting) to the app itself.
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
-use ui::tilo_actions::{ControlInvocation, InvocationId, InvocationUpdate, Resource};
-use ui::widget::{AppModel, ModelPath};
-use ui::widget::{ResourceOperation, ResourceOperationStart, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use ui::framework::{ResourceSurface, SurfaceCx};
+use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::FlatpakRef;
 use crate::app::{ModerationIntent, RemoteIntent, StoreApp};
+use crate::resource::{Store, StoreState};
 use crate::worker::{Request, StoreWorker};
 
 /// Construct the standard worker-backed Store root used by normal app hosts.
@@ -36,11 +37,15 @@ pub fn app_root_with_launch(
 /// package work; this retained widget drains only completed snapshots.
 pub struct LiveStore {
     inner: StoreApp,
-    worker: StoreWorker,
+    /// `None` once a capture staged the app: a staged catalogue is fixture
+    /// content, and no worker may replace it.
+    worker: Option<StoreWorker>,
 }
 
 impl LiveStore {
-    fn new(opened_ref: Option<FlatpakRef>, store_target: Option<String>) -> Self {
+    /// A Store window with its worker already fetching.
+    #[must_use]
+    pub fn new(opened_ref: Option<FlatpakRef>, store_target: Option<String>) -> Self {
         let search_index = crate::search_provider::StoreSearchIndex::default();
         let mut inner = StoreApp::new()
             .with_image_store(crate::images::image_store())
@@ -53,39 +58,20 @@ impl LiveStore {
         inner.set_worker_busy(true);
         Self {
             inner,
-            worker: StoreWorker::spawn(opened_ref, search_index),
+            worker: Some(StoreWorker::spawn(opened_ref, search_index)),
         }
     }
 }
 
-impl Widget for LiveStore {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
-    );
+impl ui::widget::Decorator for LiveStore {
+    type Inner = StoreApp;
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        self.inner.local_resource_operation_handlers()
+    fn inner(&self) -> &StoreApp {
+        &self.inner
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner.start_operation(op, doc, path)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<InvocationUpdate> {
-        self.inner
-            .poll_resource_operation(invocation, cancellation_requested, doc, path)
+    fn inner_mut(&mut self) -> &mut StoreApp {
+        &mut self.inner
     }
 
     #[allow(
@@ -93,8 +79,12 @@ impl Widget for LiveStore {
         reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
     )]
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let Some(worker) = self.worker.as_ref() else {
+            self.inner.sync(state, path);
+            return;
+        };
         let (state, path) = ui::doc::document(state, path);
-        while let Some(snap) = self.worker.try_snapshot() {
+        while let Some(snap) = worker.try_snapshot() {
             if let Some(invocation) = snap.invocation {
                 self.inner
                     .complete_lifecycle_invocation(invocation, snap.operation_error.clone());
@@ -125,8 +115,7 @@ impl Widget for LiveStore {
                 .find(|item| item.id == id)
                 .cloned()
             {
-                if !self
-                    .worker
+                if !worker
                     .request_with_invocation(Request::Act(Box::new(item), action), Some(invocation))
                 {
                     self.inner.complete_lifecycle_invocation(
@@ -142,9 +131,7 @@ impl Widget for LiveStore {
             }
         }
         if let Some(invocation) = self.inner.take_lifecycle_refresh()
-            && !self
-                .worker
-                .request_with_invocation(Request::Refresh, Some(invocation))
+            && !worker.request_with_invocation(Request::Refresh, Some(invocation))
         {
             self.inner.complete_lifecycle_invocation(
                 invocation,
@@ -152,10 +139,10 @@ impl Widget for LiveStore {
             );
         }
         if let Some(query) = self.inner.take_search_requested() {
-            self.worker.request(Request::Search(query));
+            worker.request(Request::Search(query));
         }
         if let Some(id) = self.inner.take_detail_requested() {
-            self.worker.request(Request::Detail(id));
+            worker.request(Request::Detail(id));
         }
         for (intent, invocation) in self.inner.take_lifecycle_remote() {
             let request = match intent {
@@ -163,10 +150,7 @@ impl Widget for LiveStore {
                 RemoteIntent::Add { name, url } => Request::RemoteAdd { name, url },
                 RemoteIntent::Remove(name) => Request::RemoteRemove(name),
             };
-            if !self
-                .worker
-                .request_with_invocation(request, Some(invocation))
-            {
+            if !worker.request_with_invocation(request, Some(invocation)) {
                 self.inner.complete_lifecycle_invocation(
                     invocation,
                     Some("store worker is unavailable".into()),
@@ -199,121 +183,36 @@ impl Widget for LiveStore {
                     reason,
                 },
             };
-            if !self
-                .worker
-                .request_with_invocation(request, Some(invocation))
-            {
+            if !worker.request_with_invocation(request, Some(invocation)) {
                 self.inner.complete_lifecycle_invocation(
                     invocation,
                     Some("Store worker is unavailable; the report draft was not submitted".into()),
                 );
             }
         }
-        self.inner.set_worker_busy(self.worker.has_pending());
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &ui::Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.inner.build_layout(taffy, theme, node_map)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.inner.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.inner.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.inner
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        self.inner.handle_event(event, ctx);
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.inner.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.inner.children_mut()
-    }
-
-    fn name(&self) -> &'static str {
-        "LiveStore"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.inner.accessibility()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.inner.take_structure_dirty()
+        self.inner.set_worker_busy(worker.has_pending());
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.worker.has_pending() || self.inner.needs_animation_frame()
+        self.worker.as_ref().is_some_and(StoreWorker::has_pending)
+            || self.inner.needs_animation_frame()
     }
 }
 
-impl ui::resources::PublishesResources for LiveStore {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        self.inner.resources(doc)
+impl ResourceSurface<Store> for LiveStore {
+    fn present(&mut self, state: &std::rc::Rc<StoreState>) {
+        self.inner.present(state);
     }
-}
 
-impl ui::widget::controls::ActionControls for LiveStore {
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.inner.take_control_invocation()
+    fn attach(&mut self, cx: SurfaceCx<Store>) {
+        self.inner.attach(cx);
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        // A capture shows the fixture catalogue and the scenario's state, so
+        // nothing the worker fetched may replace them.
+        self.worker = None;
+        self.inner.stage(scenario);
     }
 }
 
@@ -327,7 +226,7 @@ mod tests {
         // Case `app_root_is_the_real_worker_backed_store_host`.
         {
             let root = app_root();
-            assert_eq!(root.name(), "LiveStore");
+            assert_eq!(root.name(), "StoreApp");
             assert!(
                 root.local_resource_operation_handlers()
                     .contains(&"store.refresh")
@@ -337,7 +236,6 @@ mod tests {
         // Case `launch_context_keeps_the_real_host_contract`.
         {
             let root = app_root_with_launch(None, Some("so.tilo.notes".into()));
-            assert_eq!(root.name(), "LiveStore");
             assert!(root.needs_animation_frame());
         }
 
@@ -348,8 +246,20 @@ mod tests {
             // fresh, independent host rather than retaining the old channel.
             drop(app_root());
             let reopened = app_root();
-            assert_eq!(reopened.name(), "LiveStore");
             assert!(reopened.needs_animation_frame());
         }
+    }
+
+    /// A staged capture drops the worker, so fixture content is never replaced.
+    #[test]
+    fn staging_a_capture_drops_the_worker_and_keeps_the_fixture() {
+        let mut live = LiveStore::new(None, None);
+        assert!(live.worker.is_some());
+        live.stage(Some("detail"));
+        assert!(live.worker.is_none());
+        assert_eq!(
+            live.inner.items().len(),
+            crate::shots::fixture_catalog().len()
+        );
     }
 }
