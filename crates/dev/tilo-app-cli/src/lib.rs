@@ -3307,7 +3307,7 @@ mod tests {{
     use super::*;
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
-    use ui::widget::Button;
+    use ui::widget::{{Button, ControlSize}};
     use ui::widget::data_table::{{ColumnWidth, TableRowState}};
 
     struct Row {{
@@ -3359,7 +3359,8 @@ mod tests {{
                             "Open",
                             Some("open-requested"),
                         )
-                        .with_click_value(index.to_string()),
+                        .with_click_value(index.to_string())
+                        .control_size(if index == 0 {{ ControlSize::Large }} else {{ ControlSize::Small }}),
                     )
                 }}),
         ];
@@ -3419,7 +3420,6 @@ fn text_component_source(
     let mut source = format!(
         r#"use ui::widget::Text;
 use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextRole}};
-use ui::widget::ButtonRole;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Props {{
