@@ -481,6 +481,11 @@ installNodeCertificate({origin, certificate, installToken}): Promise<{device_pub
 // certificate (which must be a host of this root), no approver. Defaults:
 // a profile per identity, its device key, the page host's runtime.
 connectPeer({origin, identity, signal, …}): Promise<CertifiedPeer>;
+// Another person's workspace: what an invitation offers, then join it as
+// this identity (its own root certifies the device; the owner admits it).
+inspectInvitation(relayUrl, invitation): Promise<{workspaceName, role, room, workspaceId, expiresAtNs, inviter: undefined}>;
+joinWorkspace({origin, invitation, identity?, displayName, signal, onProgress?}): Promise<CertifiedPeer>;
+// onProgress({phase: 'asking' | 'waiting' | 'admitted'}); rejects when declined or refused
 // RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts?), lock()}
 ```
 
