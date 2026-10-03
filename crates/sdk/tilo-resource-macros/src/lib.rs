@@ -394,6 +394,7 @@ struct ResourceOptions {
     kind: String,
     label: String,
     search: Option<syn::Path>,
+    scopes: Option<syn::Path>,
     children: Option<syn::Path>,
 }
 
@@ -402,6 +403,7 @@ fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
     let mut kind = None;
     let mut label = None;
     let mut search = None;
+    let mut scopes = None;
     let mut children = None;
     for meta in metas {
         let Meta::NameValue(pair) = meta else {
@@ -428,11 +430,12 @@ fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
                 }),
             ) => label = Some(text.value()),
             ("search", Expr::Path(path)) => search = Some(path.path.clone()),
+            ("scopes", Expr::Path(path)) => scopes = Some(path.path.clone()),
             ("children", Expr::Path(path)) => children = Some(path.path.clone()),
             _ => {
                 return Err(syn::Error::new(
                     pair.span(),
-                    "expected `kind = \"...\"`, `label = \"...\"`, `search = path` or `children = path`",
+                    "expected `kind = \"...\"`, `label = \"...\"`, `search = path`, `scopes = path` or `children = path`",
                 ));
             }
         }
@@ -444,6 +447,7 @@ fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
         kind,
         label,
         search,
+        scopes,
         children,
     })
 }
@@ -572,8 +576,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// for the same confirmation; `housekeeping` declares a change about the
 /// record rather than to it, such as a read marker, which workspace activity
 /// leaves out);
-/// `#[resource(search = path, children = path)]` override search entries and
-/// nested resources.
+/// `#[resource(search = path, scopes = path, children = path)]` override
+/// search entries, the parts search can be narrowed to, and nested resources.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match resource_options(attr) {
@@ -827,6 +831,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         || quote!(#krate::__private::default_search(#label, state)),
         |path| quote!(#path(state)),
     );
+    let scopes = options.scopes.as_ref().map_or_else(
+        || quote!(::std::vec::Vec::new()),
+        |path| quote!(#path(state)),
+    );
     let children = options.children.as_ref().map_or_else(
         || quote!(::std::vec::Vec::new()),
         |path| quote!(#path(state)),
@@ -953,6 +961,11 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
                 #search
+            }
+
+            fn search_scopes(state: &Self) -> ::std::vec::Vec<#krate::ScopeDecl> {
+                let _ = state;
+                #scopes
             }
 
             fn shape() -> ::core::option::Option<#krate::Shape> {

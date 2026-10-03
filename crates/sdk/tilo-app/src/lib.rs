@@ -170,7 +170,8 @@ pub mod prelude {
     pub use ui_core::widget::{
         ActionEmitter, AppShell, AudiencePresentationProvider, Banner, Button, Card, Checkbox,
         Collaborative, Column, CompleteContentProvider, Container, Continuable, ControlBindingKind,
-        ControlBindingMetadata, Dropdown, Element, EmptyState, EventCtx, FloatingSurfaceProvider,
+        ControlBindingMetadata, Dropdown, Element, EmptyState, EventCtx, FilterCount, Filterable,
+        Filtered, FindBar, FindMatch, FindOptions, FindScope, Findable, FloatingSurfaceProvider,
         FullscreenProvider, ModelView, NarrowScreen, NativeViewLifecycle, NumberInput, QrWidget,
         ResourceOperationStart, Row, Scrollable, SearchField, SearchResultsView, Slider, Spacer,
         Spinner, Stack, Text, TextInput, Toggle, TreeNode, TreeView, Widget, labeled_check,

@@ -128,8 +128,8 @@ pub use model::{
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, build_action, encode,
-    origin_now_ms, publish,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, ScopeDecl, SearchEntry, build_action,
+    encode, origin_now_ms, publish, scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};

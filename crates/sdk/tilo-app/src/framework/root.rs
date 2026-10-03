@@ -7,13 +7,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use ui_core::widget::{AppModel, ModelPath};
 
-use tilo_resource::{Resource, SearchEntry};
+use tilo_resource::{Resource, ScopeDecl, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
-use ui_core::search::{SearchProvider, SearchResult};
+use ui_core::search::{SearchCursor, SearchPage, SearchProvider, SearchQuery, SearchResult};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
@@ -110,6 +110,43 @@ fn render_spec() -> tilo_actions::ActionSpec {
         schema: serde_json::json!({"type": "object"}),
     };
     spec
+}
+
+/// The operation type of the framework's `open` view: show the item at an
+/// anchor, as picking a search hit does.
+pub(crate) const OPEN_TYPE: &str = "tilo.app.open";
+
+/// The parameter of `open` naming what to show.
+const OPEN_ANCHOR: &str = "anchor";
+
+/// `open`: show the item at an anchor (a search entry's anchor). Published
+/// when a view shows items ([`ViewCx::on_open`](super::ViewCx::on_open)), so
+/// an agent opens the app where a person's search hit would.
+fn open_spec() -> tilo_actions::ActionSpec {
+    tilo_actions::ActionSpec::typed_operation(
+        "open",
+        "Open",
+        "Item to open",
+        tilo_actions::OperationKind::View,
+        OPEN_TYPE,
+        vec![tilo_actions::ActionParam::required(
+            OPEN_ANCHOR,
+            tilo_actions::ParamType::Text,
+            "Item to open: the anchor of a search hit",
+        )],
+        |args| {
+            tilo_actions::EncodedAction::encode_operation(
+                OPEN_TYPE,
+                &serde_json::json!({ OPEN_ANCHOR: args.text(OPEN_ANCHOR) }),
+            )
+            .unwrap_or_else(|_| tilo_actions::EncodedAction {
+                type_id: OPEN_TYPE.into(),
+                payload: Vec::new(),
+            })
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
 /// The revision a picture shows: the document's heads.
@@ -325,6 +362,31 @@ impl IndexedEntries {
 struct ResourceSearch {
     name: &'static str,
     indexed: Arc<IndexedEntries>,
+    scopes: Vec<ScopeDecl>,
+}
+
+impl ResourceSearch {
+    /// The hits for `text` inside `scope`, at most `limit`.
+    fn hits(&self, text: &str, scope: Option<&str>, limit: usize) -> Vec<SearchResult> {
+        self.indexed
+            .index
+            .search(text, Page::first(limit))
+            .hits
+            .into_iter()
+            .filter_map(|hit| {
+                let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                let anchor = entry.anchor.clone().unwrap_or_default();
+                if scope.is_some_and(|scope| !tilo_resource::scope_contains(scope, &anchor)) {
+                    return None;
+                }
+                Some(
+                    SearchResult::new(self.name, entry.title.clone(), anchor)
+                        .with_preview(entry.text.clone())
+                        .with_score(hit.rank.unwrap_or(0)),
+                )
+            })
+            .collect()
+    }
 }
 
 impl SearchProvider for ResourceSearch {
@@ -337,24 +399,27 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.indexed
-            .index
-            .search(query, Page::first(limit))
-            .hits
-            .into_iter()
-            .filter_map(|hit| {
-                let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
-                Some(
-                    SearchResult::new(
-                        self.name,
-                        entry.title.clone(),
-                        entry.anchor.clone().unwrap_or_default(),
-                    )
-                    .with_preview(entry.text.clone())
-                    .with_score(hit.rank.unwrap_or(0)),
-                )
-            })
-            .collect()
+        self.hits(query, None, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &SearchQuery,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        if cursor.is_some() {
+            return SearchPage::empty();
+        }
+        SearchPage::of(
+            self.hits(query.text(), query.scope(), work_budget.min(result_limit)),
+            None,
+        )
+    }
+
+    fn search_scopes(&self) -> Vec<ScopeDecl> {
+        self.scopes.clone()
     }
 }
 
@@ -458,6 +523,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             handlers.insert(RENDER_TYPE.to_owned());
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
+        handlers.insert(OPEN_TYPE.to_owned());
         for spec in R::local_operations()
             .into_iter()
             .chain(self.presentation.iter().cloned())
@@ -482,6 +548,22 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             let output = self.render(request.payload, doc)?;
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
+            )));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == OPEN_TYPE
+        {
+            let args: serde_json::Value =
+                serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
+            let anchor = args
+                .get(OPEN_ANCHOR)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
+            if !self.stages.open(anchor) {
+                return Err("this app does not open items".into());
+            }
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
             )));
         }
         if let Some(request) = op.unscoped()
@@ -535,11 +617,25 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
             name: R::LABEL,
             indexed,
+            scopes: R::search_scopes(&self.live.get()),
         })];
         providers.extend(ui_core::search::capability::search_providers(
             self.content.as_ref(),
         ));
         providers
+    }
+
+    /// A picked hit opens the app at its anchor: the views registered with
+    /// `on_open` show it, then any hit the content provided reaches it.
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        if !self.stages.open(action_id) {
+            ui_core::search::capability::activate_search_result(
+                self.content.as_mut(),
+                action_id,
+                doc,
+                path,
+            );
+        }
     }
 }
 
@@ -583,6 +679,14 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             {
                 resource = resource.with_action(spec);
             }
+        }
+        if self.stages.opens()
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "open")
+        {
+            resource = resource.with_action(open_spec());
         }
         let mut resources = vec![resource];
         resources.extend(ui_core::resources::resources_for(
@@ -665,5 +769,113 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod search_tests {
+    use super::*;
+    use crate::prelude::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static OPENED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    #[derive(Model, Default)]
+    pub struct Mailbox {
+        pub subject: String,
+    }
+
+    fn entries(_: &Mailbox) -> Vec<SearchEntry> {
+        vec![
+            SearchEntry {
+                anchor: Some("folder:inbox/msg:1".into()),
+                title: "Invoice from Ada".into(),
+                text: "March".into(),
+            },
+            SearchEntry {
+                anchor: Some("folder:sent/msg:2".into()),
+                title: "Invoice to Grace".into(),
+                text: "April".into(),
+            },
+        ]
+    }
+
+    fn scopes(_: &Mailbox) -> Vec<ScopeDecl> {
+        vec![ScopeDecl::new("folder:inbox", "Inbox")]
+    }
+
+    #[resource(kind = "test.mailbox", label = "Mailbox", search = entries, scopes = scopes)]
+    impl Mailbox {
+        /// Set the subject.
+        #[action]
+        pub fn set_subject(&mut self, subject: String) {
+            self.subject = subject;
+        }
+    }
+
+    struct MailApp;
+
+    impl ResourceApp for MailApp {
+        type Resource = Mailbox;
+        const ID: &'static str = "so.tilo.test-mailbox";
+        const TITLE: &'static str = "Mailbox";
+
+        fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+            cx.on_open(|anchor| OPENED.with_borrow_mut(|opened| opened.push(anchor.to_owned())));
+            Box::new(Column::new().push(Box::new(
+                cx.search_button(ui_core::search::SearchRequest::this_app()),
+            )))
+        }
+    }
+
+    #[test]
+    fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        let (titles, scoped, declared) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
+                let providers = ui_core::search::capability::search_providers(root);
+                let search = providers.first().unwrap();
+                let titles = |query: &SearchQuery| {
+                    search
+                        .search_page(query, None, 10, 10)
+                        .results
+                        .into_iter()
+                        .map(|hit| hit.title)
+                        .collect::<Vec<_>>()
+                };
+                (
+                    titles(&SearchQuery::new("invoice")),
+                    titles(&SearchQuery::new("invoice").within("folder:inbox")),
+                    search.search_scopes(),
+                )
+            })
+            .unwrap();
+        assert_eq!(titles.len(), 2);
+        assert_eq!(scoped, ["Invoice from Ada"]);
+        assert_eq!(declared, [ScopeDecl::new("folder:inbox", "Inbox")]);
+
+        // Picking a hit opens the app at it.
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
+                let mut doc = ui_core::automerge::AutoCommit::new();
+                ui_core::search::capability::activate_search_result(
+                    root,
+                    "folder:inbox/msg:1",
+                    &mut doc,
+                    &ui_core::automerge::ROOT,
+                );
+            })
+            .unwrap();
+        OPENED.with_borrow(|opened| assert_eq!(opened.as_slice(), ["folder:inbox/msg:1"]));
+
+        // An agent opens it through the same door.
+        app.call("open", serde_json::json!({ "anchor": "folder:sent/msg:2" }))
+            .unwrap();
+        OPENED.with_borrow(|opened| {
+            assert_eq!(opened.last().map(String::as_str), Some("folder:sent/msg:2"));
+        });
     }
 }

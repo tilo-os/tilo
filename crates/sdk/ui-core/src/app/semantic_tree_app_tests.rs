@@ -106,7 +106,7 @@ impl crate::search::SearchProvider for LargeDirectoryProvider {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &crate::search::SearchQuery,
         cursor: Option<&crate::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
@@ -116,7 +116,7 @@ impl crate::search::SearchProvider for LargeDirectoryProvider {
         self.largest_budget
             .fetch_max(work_budget, std::sync::atomic::Ordering::Relaxed);
         self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+            .query_page(query.text(), cursor, work_budget, result_limit)
     }
 
     fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {

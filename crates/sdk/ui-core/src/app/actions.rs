@@ -325,7 +325,7 @@ impl App {
         let trace = self.trace_resource_stage(Stage::ControlRefresh);
         // Clone only the compact address set so the cache borrow does not
         // span a mutable call into the retained widget tree.
-        let allowed = self
+        let mut allowed = self
             .actions
             .local_resource_cache
             .borrow()
@@ -333,6 +333,8 @@ impl App {
             .map_or_else(std::collections::HashSet::new, |cache| {
                 cache.allowed.clone()
             });
+        // Opening search is the host's, and this host always answers it.
+        allowed.insert(crate::search::search_address());
         crate::widget::controls::refresh_control_action_availability(
             self.root_widget.as_mut(),
             &allowed,
@@ -1420,7 +1422,7 @@ impl App {
             // request to `max_results` provider steps.
             let room = 1;
             let page = providers[provider_index].search_page(
-                &query.needle,
+                &crate::search::SearchQuery::new(query.needle.as_str()),
                 provider_cursor.as_ref(),
                 work_left,
                 room,
@@ -3081,7 +3083,9 @@ impl App {
             );
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            if self.dispatch_bound_control_invocation(&target, &intent) {
+            if self.take_search_invocation(&intent, Some(&target.binding))
+                || self.dispatch_bound_control_invocation(&target, &intent)
+            {
                 dispatched = dispatched.saturating_add(1);
             }
         }
@@ -3092,6 +3096,10 @@ impl App {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root_widget.as_mut()))
         {
+            if self.take_search_invocation(&intent, None) {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
             let (key, generation) = self.ensure_local_resource_cache();
             let local_resources = self
                 .actions
@@ -3454,6 +3462,79 @@ impl App {
         self.focused_node = None;
         self.actions.action_palette = Some(palette);
         self.rebuild_action_palette_admission();
+    }
+
+    /// Open search the way `request` asks: this app, or one part of it, with
+    /// the query already typed. A standalone window shows its own palette;
+    /// inside the Tilo shell the component hands the request to the shell.
+    pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        self.open_action_palette();
+        if let Some(palette) = self.actions.action_palette.as_mut() {
+            palette.set_scope(request.resource_scope().cloned());
+            if let Some(query) = &request.query {
+                palette.set_query(query);
+                palette.select_query();
+            }
+        }
+    }
+
+    /// `/` pressed with nothing focused that types it: open search of this
+    /// app. A text field consumes `/` before this runs, and a focused widget
+    /// that takes text (a terminal, a canvas with an IME) keeps it, so
+    /// typing a path or a fraction never opens search.
+    #[cfg(feature = "native")]
+    pub(crate) fn handle_unconsumed_search_key(
+        &mut self,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
+        let winit::event::WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Character(character),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let modifiers = self.input.modifiers.state();
+        if character.as_str() != "/"
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+            || !self.presents_search()
+            || self.actions.action_palette.is_some()
+            || self.ime_window_state().is_some()
+        {
+            return false;
+        }
+        self.open_search(crate::search::SearchRequest::this_app());
+        true
+    }
+
+    /// Whether this window presents search itself. A shell hosting the app
+    /// presents it instead, and receives the request as a host intent.
+    fn presents_search(&self) -> bool {
+        self.document_history.has_search()
+    }
+
+    /// Take a control invocation addressed to the host search door: open
+    /// search here, or queue it for the shell hosting `owner`.
+    fn take_search_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+        owner: Option<&crate::bound_dispatch::CallbackBinding>,
+    ) -> bool {
+        let Some(request) = crate::search::SearchRequest::from_invocation(intent) else {
+            return false;
+        };
+        match owner {
+            Some(binding) if !self.presents_search() => binding.request_search(request),
+            _ => self.open_search(request),
+        }
+        true
     }
 
     fn rebuild_action_palette_admission(&mut self) {
