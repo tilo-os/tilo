@@ -149,12 +149,8 @@ impl PdfApp {
                 return Some(ToolbarHit::Tool(*t));
             }
         }
-        if self.tool.annotates() {
-            for (s, r) in &lay.swatches {
-                if r.contains(p) {
-                    return Some(ToolbarHit::Swatch(*s));
-                }
-            }
+        if lay.colour.is_some_and(|r| r.contains(p)) {
+            return Some(ToolbarHit::MarkerColour);
         }
         if lay.zoom_out.contains(p) {
             return Some(ToolbarHit::ZoomOut);
@@ -185,6 +181,7 @@ impl PdfApp {
     fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut AutoCommit) {
         match hit {
             ToolbarHit::Tool(t) => self.set_tool(*t),
+            ToolbarHit::MarkerColour => self.open_marker_colours(),
             ToolbarHit::Swatch(s) => {
                 self.swatch = *s;
                 if let Some(id) = self.selected_anno.clone() {
@@ -219,6 +216,29 @@ impl PdfApp {
             // The stepper's value is edited in place by the stepper itself.
             ToolbarHit::ZoomValue | ToolbarHit::Inert => {}
         }
+    }
+
+    /// Open the marker-colour popover under its well: the five marker
+    /// colours, the armed one chosen.
+    fn open_marker_colours(&mut self) {
+        let Some(well) = self.toolbar_layout().colour else {
+            return;
+        };
+        let swatches = Swatch::ALL
+            .iter()
+            .map(|s| ColorSwatch::named(render::swatch_color(*s), swatch_label(*s)));
+        let mut picker = ColorSwatchPicker::new(swatches, Swatch::ALL.len());
+        if let Some(i) = Swatch::ALL.iter().position(|s| *s == self.swatch) {
+            picker = picker.with_selected(i);
+        }
+        self.marker_colours = Some(
+            ui::widget::Popover::with_content(picker)
+                .anchored(well)
+                .side(ui::widget::PopoverSide::Below)
+                .with_viewport(self.rect)
+                .open(true),
+        );
+        self.dirty = true;
     }
 
     /// Run `f` with an event context for a control the reader positions
@@ -535,7 +555,8 @@ impl PdfApp {
         if let Some((page, pt)) = self.hit_page(p)
             && let Some(target) = self.delete_target_at(page, pt)
         {
-            self.context_menu = Some(ContextMenu::delete(target, p, self.rect));
+            let anchor = self.delete_menu_anchor(&target, p);
+            self.context_menu = Some(ContextMenu::delete(target, anchor, self.rect));
             self.dirty = true;
             return true;
         }
@@ -1703,6 +1724,21 @@ mod event_tests {
                 self.app.context_menu.is_some(),
                 "right-click over the note opens its delete menu"
             );
+            // The menu opens beside what it acts on, never over it.
+            let target = self
+                .app
+                .delete_target_screen_rect(&DeleteTarget::Annotation(sticky.id.clone()))
+                .expect("the note is on a laid-out page");
+            let menu = self
+                .app
+                .context_menu
+                .as_ref()
+                .map(|m| Widget::get_rect(&m.widget))
+                .unwrap();
+            assert!(
+                menu.y0 >= target.y1 - 1e-6 || menu.y1 <= target.y0 + 1e-6,
+                "menu {menu:?} clears the note {target:?}"
+            );
             sticky.id
         }
 
@@ -1736,8 +1772,8 @@ mod event_tests {
         for (t, r) in &lay.tools {
             out.push((format!("{t:?}"), *r));
         }
-        for (sw, r) in &lay.swatches {
-            out.push((format!("{sw:?}"), *r));
+        if let Some(r) = lay.colour {
+            out.push(("marker colour".to_string(), r));
         }
         out.retain(|(_, r)| r.width() > 0.0 && r.height() > 0.0);
         out
@@ -1839,6 +1875,37 @@ mod event_tests {
             !app.needs_animation_frame(),
             "idle app must settle to zero animation frames"
         );
+    }
+
+    #[test]
+    fn tool_strip_centres_on_the_window_and_wraps_flush_with_the_leading_edge() {
+        // On a desktop window the tool strip stands on the window's centre
+        // line, and arming a markup tool shows its colour well without
+        // moving the strip; the well opens the colour popover.
+        let (mut app, mut st) = sample_app();
+        let resting = app.toolbar_layout();
+        assert!(
+            (resting.tool_strip.center().x - app.toolbar_rect.center().x).abs() < 0.5,
+            "strip {:?} is centred in the bar {:?}",
+            resting.tool_strip,
+            app.toolbar_rect
+        );
+        assert!(resting.colour.is_none(), "Select shows no colour well");
+        app.set_tool(Tool::Highlight);
+        let armed = app.toolbar_layout();
+        assert_eq!(armed.tool_strip, resting.tool_strip, "arming moves nothing");
+        let well = armed.colour.expect("a markup tool shows its colour well");
+        let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
+        app.apply_toolbar(&hit, &mut st.doc);
+        assert!(app.marker_colours.is_some(), "the well opens the popover");
+
+        // A narrow window wraps the strip onto a second row that starts on
+        // the bar's leading inset, the edge the panel toggle stands on.
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.recompute_regions();
+        let narrow = app.toolbar_layout();
+        assert_eq!(narrow.rows, 2);
+        assert!((narrow.tool_strip.x0 - narrow.toggle_rail.x0).abs() < 1e-9);
     }
 
     /// Scrolling and zooming through the real `handle_event` dispatch, not the
@@ -2561,7 +2628,7 @@ mod event_tests {
         let (mut app, _st) = sample_app();
         app.context_menu = Some(ContextMenu::delete(
             DeleteTarget::Annotation("anno".into()),
-            Point::new(400.0, 400.0),
+            Rect::new(400.0, 400.0, 400.0, 400.0),
             app.rect,
         ));
         let menu = app.context_menu.as_ref().unwrap();

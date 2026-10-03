@@ -64,8 +64,9 @@ struct ToolbarLayout {
     /// The segmented tool strip, and each tool's segment inside it.
     tool_strip: Rect,
     tools: Vec<(Tool, Rect)>,
-    /// Each swatch's pointer target; the painted swatch is centred in it.
-    swatches: Vec<(Swatch, Rect)>,
+    /// The marker-colour well beside the strip while a markup tool is armed:
+    /// its pointer target (the painted swatch is centred in it).
+    colour: Option<Rect>,
     /// The zoom stepper, and its step-out / step-in ends.
     zoom: Rect,
     zoom_out: Rect,
@@ -154,25 +155,25 @@ impl PdfApp {
         let save = row(open.x1 + related, control);
         let left_end = save.x1;
 
-        // ---- the tool strip, centred in the remaining span ----
-        // When the span between the edge clusters cannot hold the strip, it
-        // wraps onto a second row spanning the full width instead of running
+        // ---- the tool strip, centred on the window ----
+        // The strip stands on the window's centre line; the marker-colour
+        // well of a markup tool hangs off its trailing edge. The well's room
+        // is kept even while it is hidden, so arming a tool never moves the
+        // others. When the edge clusters leave too little room the strip
+        // wraps onto a second row, flush with the bar's leading inset (the
+        // edge the panel toggle and the find bar share), instead of running
         // under the zoom controls; every command stays reachable.
         let strip_w = self.tool_strip_w;
-        let annotate = self.tool.annotates();
-        let swatch_w = control * Swatch::ALL.len() as f64;
-        // The strip keeps its place whichever tool is armed: room for the
-        // swatches of a markup tool is kept beside it even while they are
-        // hidden, so arming a tool never moves the others.
-        let wanted = strip_w + cluster + swatch_w;
-        let wrap = wanted + 2.0 * cluster > right_start - left_end;
-        let (rows, tools_cy, span_x0, span_x1) = if wrap {
+        let well_room = related + control;
+        let lo = left_end + cluster;
+        let hi = right_start - cluster - well_room - strip_w;
+        let (rows, tools_cy, x0, span_x1) = if hi < lo {
             (2, tb.y0 + row_h * 1.5, tb.x0 + inset, tb.x1 - inset)
         } else {
-            (1, cy, left_end + cluster, right_start - cluster)
+            let centred = tb.center().x - strip_w / 2.0;
+            (1, cy, centred.clamp(lo, hi), right_start - cluster)
         };
         let strip_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let x0 = (f64::midpoint(span_x0, span_x1) - wanted / 2.0).max(span_x0);
         let tool_strip = Rect::new(
             x0,
             tools_cy - strip_h / 2.0,
@@ -195,22 +196,15 @@ impl PdfApp {
             })
             .collect();
 
-        let mut swatches = Vec::new();
-        let sx0 = tool_strip.x1 + cluster;
-        if annotate && sx0 + swatch_w <= span_x1 {
-            for (i, s) in Swatch::ALL.iter().enumerate() {
-                let x = sx0 + control * i as f64;
-                swatches.push((
-                    *s,
-                    Rect::new(
-                        x,
-                        tools_cy - control / 2.0,
-                        x + control,
-                        tools_cy + control / 2.0,
-                    ),
-                ));
-            }
-        }
+        let well_x = tool_strip.x1 + related;
+        let colour = (self.tool.annotates() && well_x + control <= span_x1).then(|| {
+            Rect::new(
+                well_x,
+                tools_cy - control / 2.0,
+                well_x + control,
+                tools_cy + control / 2.0,
+            )
+        });
 
         ToolbarLayout {
             rows,
@@ -219,7 +213,7 @@ impl PdfApp {
             save,
             tool_strip,
             tools,
-            swatches,
+            colour,
             zoom,
             zoom_out,
             zoom_in,
@@ -278,10 +272,8 @@ impl PdfApp {
                 out.push((format!("{} ({})", t.label(), t.hotkey()), *r));
             }
         }
-        if self.tool.annotates() {
-            for (s, r) in &lay.swatches {
-                out.push((format!("{} marker", swatch_label(*s)), *r));
-            }
+        if let Some(r) = lay.colour {
+            out.push((format!("Marker colour: {}", swatch_label(self.swatch)), r));
         }
         out.push(("Find in document (Ctrl+F)".to_string(), lay.search));
         out.push((
@@ -393,6 +385,10 @@ impl PdfApp {
         }
         self.bubble_shown_page = self.current_page;
         self.measure_toolbar(tr, theme);
+        if self.shots_colours && self.has_document {
+            self.shots_colours = false;
+            self.open_marker_colours();
+        }
         if self.shots_selection {
             self.stage_shots_selection(tr);
         }
@@ -498,18 +494,7 @@ impl PdfApp {
             self.edit_rect = rect;
         }
         self.draw_toolbar(scene, base, tr, theme);
-        if self.shots_context_menu
-            && self.context_menu.is_none()
-            && let Some(annotation) = self.annotations.first()
-        {
-            let target = DeleteTarget::Annotation(annotation.id.clone());
-            // The menu opens where a right-click on the markup would.
-            let at = self
-                .annotation_screen_anchor(annotation)
-                .unwrap_or_else(|| self.canvas_rect.center());
-            self.context_menu = Some(ContextMenu::delete(target, at, self.rect));
-            self.shots_context_menu = false;
-        }
+        self.stage_shots_context_menu();
         // Context menu + tooltip composite above everything else. File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
@@ -524,19 +509,79 @@ impl PdfApp {
         self.sidebar_hits = hits;
     }
 
-    /// Where a menu for `annotation` opens on screen: under the first line
-    /// of marked-up text, else at its anchor. `None` if its page is not laid
-    /// out.
-    fn annotation_screen_anchor(&self, annotation: &Annotation) -> Option<Point> {
-        let origin = *self.page_origins().get(annotation.page.checked_sub(1)?)?;
-        let z = self.zoom();
-        let (x, y) = match &annotation.kind {
-            AnnoKind::Markup { quads, .. } => quads
-                .first()
-                .map_or_else(|| annotation.anchor(), |q| (q.x, q.y + q.h)),
-            _ => annotation.anchor(),
+    /// Screenshot hook: open the delete menu of the first markup, as a
+    /// right-click at its start would, once the sync has populated it.
+    fn stage_shots_context_menu(&mut self) {
+        if !self.shots_context_menu || self.context_menu.is_some() {
+            return;
+        }
+        let Some(annotation) = self.annotations.first() else {
+            return;
         };
-        Some(Point::new(origin.x + x * z, origin.y + y * z))
+        let target = DeleteTarget::Annotation(annotation.id.clone());
+        let at = self
+            .delete_target_screen_rect(&target)
+            .map_or_else(|| self.canvas_rect.center(), |r| r.origin());
+        let anchor = self.delete_menu_anchor(&target, at);
+        self.context_menu = Some(ContextMenu::delete(target, anchor, self.rect));
+        self.shots_context_menu = false;
+    }
+
+    /// What a delete menu acts on, on screen: the whole marked-up text, the
+    /// note's glyph, the ink's or text box's extent, or the placed
+    /// signature. `None` if it has no place on a laid-out page.
+    fn delete_target_screen_rect(&self, target: &DeleteTarget) -> Option<Rect> {
+        let (page, r) = match target {
+            DeleteTarget::Annotation(id) => {
+                let a = self.annotations.iter().find(|a| &a.id == id)?;
+                let r = match &a.kind {
+                    AnnoKind::Markup { quads, .. } => quads
+                        .iter()
+                        .map(|q| Rect::new(q.x, q.y, q.x + q.w, q.y + q.h))
+                        .reduce(|a, b| a.union(b))?,
+                    AnnoKind::Ink { strokes } => strokes
+                        .iter()
+                        .flatten()
+                        .map(|&(x, y)| Rect::new(x, y, x, y))
+                        .reduce(|a, b| a.union(b))?,
+                    AnnoKind::FreeText { rect, .. } => {
+                        Rect::new(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h)
+                    }
+                    AnnoKind::Note { x, y } => {
+                        let half = f64::from(self.layout_theme.tokens.metrics.icon_md) / 2.0;
+                        Rect::new(x - half, y - half, x + half, y + half)
+                    }
+                };
+                (a.page, r)
+            }
+            DeleteTarget::Signature(id) => {
+                let s = self.signatures.iter().find(|s| &s.id == id)?;
+                let r = s.rect;
+                (s.page, Rect::new(r.x, r.y, r.x + r.w, r.y + r.h))
+            }
+            DeleteTarget::Comment(_) => return None,
+        };
+        let origin = *self.page_origins().get(page.checked_sub(1)?)?;
+        let z = self.zoom();
+        Some(Rect::new(
+            origin.x + r.x0 * z,
+            origin.y + r.y0 * z,
+            origin.x + r.x1 * z,
+            origin.y + r.y1 * z,
+        ))
+    }
+
+    /// Where the delete menu for `target`, asked for at `at`, opens: under
+    /// what it acts on, from the pointer's column, so it never covers it
+    /// (above it when there is no room below).
+    fn delete_menu_anchor(&self, target: &DeleteTarget, at: Point) -> Rect {
+        self.delete_target_screen_rect(target).map_or_else(
+            || Rect::new(at.x, at.y, at.x, at.y),
+            |r| {
+                let x = at.x.clamp(r.x0, r.x1);
+                Rect::new(x, r.y0, x, r.y1)
+            },
+        )
     }
 
     /// Rasterise every page (and thumbnail) currently on screen exactly once,
@@ -1609,72 +1654,64 @@ impl PdfApp {
         let hover = |r: Rect| r.contains(self.last_mouse);
         let has_doc = self.has_document;
 
-        // Panel toggles and find are on while their panel is shown: the lift
-        // the toolkit's toolbar paints under a toggle that is on.
-        let ground = theme.tokens.colors.surfaces.content;
-        for (rect, on) in [
-            (lay.toggle_rail, self.show_rail),
-            (lay.search, self.search_active),
-            (lay.toggle_sidebar, self.show_sidebar),
-        ] {
-            if on {
-                ui::chrome::paint_row_selection(
-                    scene,
-                    base,
-                    rect,
-                    SelectionState::active(true),
-                    ground,
-                    theme,
-                );
-            }
-        }
+        // The panel toggles and find are toggles: on while their panel shows.
         let buttons = [
             (
                 lay.toggle_rail,
                 Icon::PanelLeft,
                 "Show or hide pages",
                 !has_doc,
+                self.show_rail,
             ),
             (
                 lay.open,
                 Icon::FolderOpen,
                 "Open PDF",
                 self.pending_open.is_some(),
+                false,
             ),
             (
                 lay.save,
                 Icon::Download,
                 "Save annotated PDF",
                 !(has_doc && self.raster_active()),
+                false,
             ),
-            (lay.search, Icon::Search, "Find in document", !has_doc),
+            (
+                lay.search,
+                Icon::Search,
+                "Find in document",
+                !has_doc,
+                self.search_active,
+            ),
             (
                 lay.toggle_sidebar,
                 Icon::PanelRight,
                 "Show or hide the review panel",
                 !has_doc,
+                self.show_sidebar,
             ),
         ];
-        for (rect, icon, name, disabled) in buttons {
+        for (rect, icon, name, disabled, on) in buttons {
             let face = ButtonFace::icon_only(rect, icon, name)
+                .toggled(on && !disabled)
                 .hovered(hover(rect) && !disabled)
                 .disabled(disabled);
             Button::paint(scene, base, tr, theme, &face);
         }
         // Unsaved page edits (reorder / delete / duplicate / import): the
-        // Save button carries the one live dot.
+        // Save button carries the toolkit's dot badge at its corner.
         if self.pages_dirty && has_doc && self.raster_active() {
-            // No toolkit face paints a bare live dot on a button yet; it is
-            // the badge's dot size, in your colour.
-            let r = f64::from(theme.tokens.spacing.s1);
-            let centre = Point::new(lay.save.x1 - r, lay.save.y0 + r);
-            scene.fill(
-                Fill::NonZero,
-                base,
-                theme.tokens.colors.intent.you,
-                None,
-                &Circle::new(centre, r),
+            let dot = &mut self.unsaved_dot;
+            let probe = Rect::new(lay.save.x1, lay.save.y0, lay.save.x1, lay.save.y0);
+            dot.layout(probe, theme, tr);
+            let side = dot.widget().get_rect().width();
+            dot.layout(
+                probe.with_origin((lay.save.x1 - side, lay.save.y0)),
+                theme,
+                tr,
             );
+            dot.draw(scene, base, tr, theme, &PresenceCtx::empty());
         }
 
         self.draw_toolbar_controls(scene, base, tr, theme, &lay);
@@ -1717,21 +1754,19 @@ impl PdfApp {
             scene.pop_layer();
         }
 
-        // Marker colours, while a markup tool is armed.
-        if self.tool.annotates() {
+        // The marker-colour well, while a markup tool is armed: the colour
+        // the next mark takes; it opens the colour popover.
+        if let Some(target) = lay.colour {
             let side = f64::from(theme.tokens.metrics.icon_md);
-            for (s, target) in &lay.swatches {
-                let swatch = Rect::from_center_size(target.center(), (side, side));
-                ColorSwatchFace::new(
-                    swatch,
-                    render::swatch_color(*s),
-                    format!("{} marker", swatch_label(*s)),
-                )
-                .target_rect(*target)
-                .selected(*s == self.swatch)
-                .hovered(target.contains(self.last_mouse))
-                .paint(scene, base, tr, theme);
-            }
+            let well = Rect::from_center_size(target.center(), (side, side));
+            ColorSwatchFace::new(
+                well,
+                render::swatch_color(self.swatch),
+                format!("Marker colour: {}", swatch_label(self.swatch)),
+            )
+            .target_rect(target)
+            .hovered(target.contains(self.last_mouse) || self.marker_colours.is_some())
+            .paint(scene, base, tr, theme);
         }
 
         // Zoom stepper and Fit.
@@ -2042,18 +2077,44 @@ impl PdfApp {
     ) -> f64 {
         // Only the type scale reaches layout; colours are the painting theme's.
         let theme = self.layout_theme.clone();
+        let rect = self.rich_text_rect(tr, 0.0, 0.0, width);
         let mut views = self.comment_views.borrow_mut();
         let view = views.entry(key).or_default();
         view.show(blocks);
-        view.layout(Self::rich_text_rect(&theme, 0.0, 0.0, width), &theme, tr)
+        view.layout(rect, &theme, tr)
     }
 
     /// The rect a comment's rich text is laid out in so its glyphs start at
-    /// `x` and wrap at `width`: the editor sets each line one field padding
-    /// in from its rect.
-    fn rich_text_rect(theme: &Theme, x: f64, y: f64, width: f64) -> Rect {
-        let pad = f64::from(theme.padding_standard);
+    /// `x` and wrap at `width`: the editor sets each line in from its rect
+    /// by its own inset, on both sides.
+    fn rich_text_rect(&self, tr: &mut TextRenderer, x: f64, y: f64, width: f64) -> Rect {
+        let pad = self.rich_text_inset(tr);
         Rect::new(x - pad, y, x + width + pad, y)
+    }
+
+    /// How far in from its rect the rich-text view sets the first glyph of a
+    /// line, read from the view itself (where its caret stands before the
+    /// first character), so comment text shares the author name's edge
+    /// exactly. Measured once per text scale.
+    fn rich_text_inset(&self, tr: &mut TextRenderer) -> f64 {
+        let theme = &self.layout_theme;
+        if let Some((scale, inset)) = self.rich_inset.get()
+            && (scale - theme.text_scale).abs() < f32::EPSILON
+        {
+            return inset;
+        }
+        let mut view = RichTextView::new();
+        view.show(&[ui::widget::BlockContent::paragraph("inset", "Inset")]);
+        view.layout(Rect::new(0.0, 0.0, 240.0, 0.0), theme, tr);
+        let origin = view.rect().x0;
+        let inset = view
+            .editor_mut()
+            .blocks()
+            .first()
+            .map_or(0.0, |block| block.line.caret_rect(theme, 0).x0 - origin)
+            .max(0.0);
+        self.rich_inset.set(Some((theme.text_scale, inset)));
+        inset
     }
 
     /// The width of a card in the comments list.
@@ -2217,12 +2278,17 @@ impl PdfApp {
             }
 
             // A comment is an object (it opens its markup on the page): a
-            // card. The chosen thread is lifted like a pressed card.
+            // card. The thread of the markup you have selected carries the
+            // ring in your colour, the colour of that markup's frame on the
+            // page; its surface stays the card's. While one of its fields is
+            // being written, that field carries the ring instead.
+            let writing = self.is_editing(&EditTarget::CommentBody(cm.id.clone()))
+                || self.is_editing(&EditTarget::Reply(cm.id.clone()));
             let face = CardFace::new()
                 .pressable()
                 .interaction(ui::widget::Interaction {
                     hovered: card.contains(self.last_mouse),
-                    pressed: selected,
+                    focused: selected && !writing,
                     ..Default::default()
                 });
             let ctx = &mut PaintCtx::new(scene, base, tr, theme);
@@ -2307,8 +2373,17 @@ impl PdfApp {
         let body_top = hdr.body_top;
         let tight = f64::from(theme.tokens.spacing.rhythm.tight);
         let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
-        let body_hit =
-            Rect::new(body_x, body_top, card.x1, body_top + m.body_h).inflate(tight, tight);
+        // The body as a field: its box stands one field pad out from the text
+        // (the edge the reply field and the Reply button share), so the text
+        // itself keeps the author name's edge.
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let body_hit = Rect::new(
+            body_x - pad,
+            body_top - tight,
+            card.x1,
+            body_top + m.body_h + tight,
+        );
+        let text_rect = self.rich_text_rect(tr, body_x, body_top, text_w);
         if editing_body {
             ui::widget::paint_focus_ring(
                 scene,
@@ -2325,11 +2400,7 @@ impl PdfApp {
                 ..
             }) = self.editing.as_mut()
             {
-                field.layout(
-                    Self::rich_text_rect(theme, body_x, body_top, text_w),
-                    theme,
-                    tr,
-                );
+                field.layout(text_rect, theme, tr);
                 field.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
         } else if cm.body.is_empty() {
@@ -2346,11 +2417,7 @@ impl PdfApp {
             let view = views.entry(comment_view_key(&cm.id, None)).or_default();
             view.show(&cm.blocks);
             view.set_text_color(cm.resolved.then_some(theme.text_dim));
-            view.layout(
-                Self::rich_text_rect(theme, body_x, body_top, text_w),
-                theme,
-                tr,
-            );
+            view.layout(text_rect, theme, tr);
             view.draw(scene, base, tr, theme);
         }
         out.hits
@@ -2389,13 +2456,14 @@ impl PdfApp {
                 &author_style,
             );
             yy += label_h + f64::from(rhythm.tight);
+            let rect = self.rich_text_rect(tr, x0, yy, text_w);
             let mut views = self.comment_views.borrow_mut();
             let view = views
                 .entry(comment_view_key(&cm.id, Some(&r.id)))
                 .or_default();
             view.show(&r.blocks);
             view.set_text_color(cm.resolved.then_some(theme.text_dim));
-            view.layout(Self::rich_text_rect(theme, x0, yy, text_w), theme, tr);
+            view.layout(rect, theme, tr);
             view.draw(scene, base, tr, theme);
             yy += reply_h;
         }
@@ -2444,14 +2512,13 @@ impl PdfApp {
             );
             ui::widget::paint_focus_ring(scene, base, field, radius, theme);
             *out.edit_rect = field;
+            let text_rect = self.rich_text_rect(tr, hdr.text_x, field.y0 + pad, text_w - pad);
             if let Some(Editing {
                 input: EditInput::Rich(reply),
                 ..
             }) = self.editing.as_mut()
             {
-                let tx = hdr.text_x;
-                let ty = field.y0 + pad;
-                reply.layout(Self::rich_text_rect(theme, tx, ty, text_w - pad), theme, tr);
+                reply.layout(text_rect, theme, tr);
                 reply.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
             out.hits

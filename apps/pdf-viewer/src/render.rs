@@ -19,7 +19,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
+use vello::peniko::{BlendMode, Color, Compose, Fill, ImageData as PenikoImage, Mix};
 
 use ui::paint::{PaintCtx, with_alpha};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
@@ -321,21 +321,18 @@ pub fn collect_text_lines(tr: &mut TextRenderer, page: &Page) -> Vec<TextLine> {
     out
 }
 
-/// The glyphs of the first line of `page`'s first body paragraph, each with
-/// its box in page points, as the page draws them: a glyph layer for the
-/// block model's staged selection.
-pub fn first_body_line_glyphs(
+/// The glyphs of the line of `page` that holds `needle`, each with its box
+/// in page points, as the page draws them: a glyph layer for the block
+/// model's staged selection. Empty when no text block holds `needle`.
+pub fn line_glyphs(
     tr: &mut TextRenderer,
     page: &Page,
+    needle: &str,
 ) -> Vec<(char, crate::model::PtRect)> {
-    let lines = collect_text_lines(tr, page);
-    let Some((block, line)) = page
-        .blocks
-        .iter()
-        .enumerate()
-        .find(|(_, b)| matches!(b, Block::Body(_)))
-        .and_then(|(bi, b)| Some((b, lines.iter().find(|l| l.block == bi)?)))
-    else {
+    let Some((bi, block, at)) = page.blocks.iter().enumerate().find_map(|(bi, b)| {
+        let at = b.search_text()?.find(needle)?;
+        Some((bi, b, at))
+    }) else {
         return Vec::new();
     };
     let Some(spec) = body_spec(block) else {
@@ -343,10 +340,16 @@ pub fn first_body_line_glyphs(
     };
     let style = spec.style(1.0);
     let text = block.search_text().unwrap_or("");
-    let Some(range) = wrap_lines(tr, text, &style, PAGE_W - 2.0 * MARGIN)
+    let wrapped = wrap_lines(tr, text, &style, PAGE_W - 2.0 * MARGIN - spec.indent);
+    let Some((li, range)) = wrapped
         .into_iter()
-        .next()
+        .enumerate()
+        .find(|(_, r)| r.contains(&at))
     else {
+        return Vec::new();
+    };
+    let lines = collect_text_lines(tr, page);
+    let Some(line) = lines.iter().filter(|l| l.block == bi).nth(li) else {
         return Vec::new();
     };
     let line_text = text.get(range).unwrap_or("");
@@ -679,7 +682,7 @@ fn draw_annotation(
                 let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
                 match style {
                     MarkupStyle::Highlight => {
-                        scene.fill(Fill::NonZero, base, alpha(col, HIGHLIGHT_ALPHA), None, &r);
+                        fill_highlight(scene, base, col, r);
                     }
                     MarkupStyle::Underline | MarkupStyle::StrikeOut => {
                         // A line at the baseline (underline) or through the
@@ -968,7 +971,22 @@ pub fn draw_signature_ink(
 
 /// A highlight being dragged out, as the committed highlight will look.
 pub fn draw_highlight_preview(scene: &mut Scene, base: Affine, col: Color, r: Rect) {
+    fill_highlight(scene, base, col, r);
+}
+
+/// One highlighted band, laid on the way a highlighter marks paper: its
+/// colour multiplies into what is under it, so the paper takes the colour
+/// and the ink over it stays as dark as it was printed.
+fn fill_highlight(scene: &mut Scene, base: Affine, col: Color, r: Rect) {
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Multiply, Compose::SrcOver),
+        1.0,
+        base,
+        &r,
+    );
     scene.fill(Fill::NonZero, base, alpha(col, HIGHLIGHT_ALPHA), None, &r);
+    scene.pop_layer();
 }
 
 /// A freehand stroke being drawn, through screen `points`.
