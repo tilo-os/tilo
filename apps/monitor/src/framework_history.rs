@@ -8,7 +8,7 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.monitor",
     scopes: &[HistoryScopeDefinition {
         key: "system-observations",
-        title: "System observations (not recorded)",
+        title: "System activity",
         presentation: HistoryPresentation::External { reason: LIMITATION },
         content_schema: None,
     }],

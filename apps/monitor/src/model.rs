@@ -200,7 +200,7 @@ impl MonitorModel {
 
         let metrics = Metrics {
             cpu_brand: "AMD Ryzen 7 7840U w/ Radeon 780M".into(),
-            host: "quos-workstation".into(),
+            host: "tilo-workstation".into(),
             kernel: "Linux 7.0.9".into(),
             cores,
             mem_total,
@@ -288,9 +288,7 @@ type SampleRow = (
 const SAMPLE_ROWS: &[SampleRow] = &[
     // ---- the user session, rooted at the compositor ----------------
     ("shell", "", "ada", 14.6, 412, 24, "Running", false),
-    (
-        "browser", "shell", "ada", 12.3, 643, 14, "Running", false,
-    ),
+    ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
     (
         "Web Content",
         "browser",
@@ -334,12 +332,8 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     ),
     ("cargo", "code", "ada", 11.2, 140, 4, "Running", false),
     ("rustc", "cargo", "ada", 88.7, 760, 1, "Running", false),
-    (
-        "firefox", "shell", "ada", 47.1, 2210, 51, "Running", false,
-    ),
-    (
-        "terminal", "shell", "ada", 3.2, 142, 6, "Sleeping", false,
-    ),
+    ("blender", "shell", "ada", 47.1, 2210, 51, "Running", false),
+    ("terminal", "shell", "ada", 3.2, 142, 6, "Sleeping", false),
     ("fish", "terminal", "ada", 0.4, 28, 1, "Sleeping", false),
     ("monitor", "shell", "ada", 5.7, 96, 5, "Running", false),
     (
@@ -352,9 +346,7 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         "Sleeping",
         false,
     ),
-    (
-        "Xwayland", "shell", "ada", 4.3, 176, 5, "Running", false,
-    ),
+    ("Xwayland", "shell", "ada", 4.3, 176, 5, "Running", false),
     // ---- the system service tree, rooted at systemd ----------------
     ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
     ("tilo-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
@@ -368,16 +360,7 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         "Running",
         false,
     ),
-    (
-        "gossip",
-        "iroh-node",
-        "ada",
-        2.2,
-        88,
-        6,
-        "Running",
-        false,
-    ),
+    ("gossip", "iroh-node", "ada", 2.2, 88, 6, "Running", false),
     (
         "systemd-journald",
         "systemd",
@@ -441,9 +424,7 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         "Sleeping",
         false,
     ),
-    (
-        "pipewire", "systemd", "ada", 2.4, 64, 4, "Sleeping", false,
-    ),
+    ("pipewire", "systemd", "ada", 2.4, 64, 4, "Sleeping", false),
     (
         "wireplumber",
         "pipewire",
@@ -464,9 +445,7 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         "Sleeping",
         false,
     ),
-    (
-        "podman", "systemd", "ada", 0.5, 64, 7, "Sleeping", false,
-    ),
+    ("podman", "systemd", "ada", 0.5, 64, 7, "Sleeping", false),
     ("conmon", "podman", "ada", 0.1, 14, 1, "Sleeping", false),
     ("swaybg", "shell", "ada", 0.2, 44, 2, "Sleeping", false),
     (
@@ -593,8 +572,8 @@ fn sample_cmdline(name: &str, user: &str) -> String {
         "rust-analyzer" => "/usr/bin/rust-analyzer --log-file /tmp/ra.log".into(),
         "cargo" => "/usr/bin/cargo build --release -p ui".into(),
         "rustc" => "/usr/bin/rustc --edition 2024 --crate-type lib src/lib.rs".into(),
-        "firefox" => format!("/usr/lib/firefox/firefox -P {user}"),
-        "terminal" => "/usr/bin/terminal --shots off".into(),
+        "blender" => format!("/usr/bin/blender /home/{user}/Projects/studio.blend"),
+        "terminal" => "/usr/bin/terminal".into(),
         "monitor" => "/usr/bin/monitor".into(),
         "systemd" => "/usr/lib/systemd/systemd --system --deserialize 34".into(),
         "tilo-fs" => "/usr/bin/tilo-fs --mount /var/workspace --cache /var/cache/tilo-fs".into(),
