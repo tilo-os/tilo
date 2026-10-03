@@ -35,14 +35,6 @@ pub trait Images: Send + Sync {
     fn current_runtime(&self) -> Result<(String, PackageId), String>;
 }
 
-/// OCI references (`host/repo[:tag]`, comma-separated) to fetch images no
-/// local store holds from. A relay sets it for its members' supervisors; a
-/// device ships its images and leaves it unset.
-pub const IMAGE_SOURCES_ENV: &str = "TILO_USH_IMAGE_SOURCES";
-
-/// Where images fetched from [`IMAGE_SOURCES_ENV`] are cached.
-pub const IMAGE_CACHE_ENV: &str = "TILO_USH_IMAGE_CACHE";
-
 /// The device's package store: system stores first, then the user's, with
 /// the store's own trust deciding which images are admitted.
 #[derive(Debug, Clone)]
@@ -66,31 +58,8 @@ impl StoreImages {
             let trust = store.trust().clone().with_publisher(key);
             store = store.with_trust(trust);
         }
-        if let Some(fetcher) = oci_fetcher_from_env()? {
-            store = store.with_fetcher(fetcher);
-        }
         Ok(Self::new(store))
     }
-}
-
-/// The OCI fetcher [`IMAGE_SOURCES_ENV`] and [`IMAGE_CACHE_ENV`] describe.
-fn oci_fetcher_from_env() -> Result<Option<tilo_oci_images::OciImages>, String> {
-    let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV) else {
-        return Ok(None);
-    };
-    let sources = sources
-        .to_string_lossy()
-        .split(',')
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-        .map(tilo_oci_images::OciSource::parse)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("{IMAGE_SOURCES_ENV}: {e}"))?;
-    let cache = std::env::var_os(IMAGE_CACHE_ENV)
-        .map(PathBuf::from)
-        .filter(|cache| cache.is_absolute())
-        .ok_or_else(|| format!("{IMAGE_SOURCES_ENV} needs an absolute {IMAGE_CACHE_ENV}"))?;
-    Ok((!sources.is_empty()).then(|| tilo_oci_images::OciImages::new(sources, cache)))
 }
 
 impl Images for StoreImages {

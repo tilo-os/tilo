@@ -13,8 +13,6 @@
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
-//! - [`environment`] — interactive environment sessions a relay runs for its
-//!   members, and the legacy launches they route to KVM workers;
 //! - [`legacy_window`] — legacy windows a session streams, as the live plane
 //!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
@@ -52,7 +50,6 @@ pub mod auth;
 pub mod certify;
 pub mod compaction;
 pub mod config;
-pub mod environment;
 pub mod home_peer;
 pub mod legacy_window;
 pub mod live;
@@ -68,7 +65,7 @@ pub mod voice;
 pub mod web;
 
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
-pub use config::{ConfigError, EnvironmentsConfig, PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use config::{ConfigError, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,

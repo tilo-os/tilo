@@ -107,114 +107,6 @@ pub struct RelayConfig {
     /// empty list keeps the relay standalone (current behaviour).
     #[serde(default, rename = "peer_relays")]
     pub peer_relays: Vec<PeerRelayConfig>,
-
-    /// Interactive environment sessions this relay's own compute worker
-    /// runs for members. Absent: it runs none. Needs `services.compute`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environments: Option<EnvironmentsConfig>,
-}
-
-/// How a relay's compute worker hosts members' environment sessions.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnvironmentsConfig {
-    /// The `tilo-ush` binary members' supervisors run.
-    #[serde(default = "default_ush_binary")]
-    pub ush_binary: PathBuf,
-    /// Sessions the worker runs at once, for all members together.
-    #[serde(default = "default_environment_capacity")]
-    pub capacity: u32,
-    /// Concurrent sessions per member.
-    #[serde(default = "default_member_sessions")]
-    pub member_sessions: u32,
-    /// Disk per member, bytes.
-    #[serde(default = "default_member_disk_bytes")]
-    pub member_disk_bytes: u64,
-    /// Memory per member, bytes (enforced with `cgroup_root`).
-    #[serde(default = "default_member_memory_bytes")]
-    pub member_memory_bytes: u64,
-    /// CPU per member, percent of one core (enforced with `cgroup_root`).
-    #[serde(default = "default_member_cpu_percent")]
-    pub member_cpu_percent: u32,
-    /// Processes per member (enforced with `cgroup_root`).
-    #[serde(default = "default_member_processes")]
-    pub member_processes: u32,
-    /// Legacy VMs per member, on a worker that advertises `kvm`.
-    #[serde(default = "default_member_legacy_vms")]
-    pub member_legacy_vms: u32,
-    /// A detached session quiet for this long is ended.
-    #[serde(default = "default_idle_timeout_secs")]
-    pub idle_timeout_secs: u64,
-    /// First uid of a range members' supervisors run as, one uid each.
-    /// Requires running as root; absent, members share the relay's uid.
-    #[serde(default)]
-    pub member_uid_first: Option<u32>,
-    /// Uids in that range.
-    #[serde(default)]
-    pub member_uid_count: u32,
-    /// A delegated cgroup v2 directory for per-member CPU, memory and
-    /// process limits.
-    #[serde(default)]
-    pub cgroup_root: Option<PathBuf>,
-    /// OCI references (`host/repo[:tag]`) environment images are fetched
-    /// from when the relay's own stores lack them.
-    #[serde(default = "default_image_sources")]
-    pub image_sources: Vec<String>,
-}
-
-impl Default for EnvironmentsConfig {
-    fn default() -> Self {
-        Self {
-            ush_binary: default_ush_binary(),
-            capacity: default_environment_capacity(),
-            member_sessions: default_member_sessions(),
-            member_disk_bytes: default_member_disk_bytes(),
-            member_memory_bytes: default_member_memory_bytes(),
-            member_cpu_percent: default_member_cpu_percent(),
-            member_processes: default_member_processes(),
-            member_legacy_vms: default_member_legacy_vms(),
-            idle_timeout_secs: default_idle_timeout_secs(),
-            member_uid_first: None,
-            member_uid_count: 0,
-            cgroup_root: None,
-            image_sources: default_image_sources(),
-        }
-    }
-}
-
-fn default_image_sources() -> Vec<String> {
-    vec![
-        "registry.tilo.so/tilo/env-runtime".into(),
-        "registry.tilo.so/tilo/env-tools".into(),
-    ]
-}
-
-fn default_ush_binary() -> PathBuf {
-    PathBuf::from("/usr/bin/tilo-ush")
-}
-const fn default_environment_capacity() -> u32 {
-    32
-}
-const fn default_member_sessions() -> u32 {
-    4
-}
-const fn default_member_disk_bytes() -> u64 {
-    10 * 1024 * 1024 * 1024
-}
-const fn default_member_memory_bytes() -> u64 {
-    2 * 1024 * 1024 * 1024
-}
-const fn default_member_cpu_percent() -> u32 {
-    200
-}
-const fn default_member_processes() -> u32 {
-    512
-}
-const fn default_member_legacy_vms() -> u32 {
-    1
-}
-const fn default_idle_timeout_secs() -> u64 {
-    30 * 60
 }
 
 /// A configured federated peer relay. Two relays that list each
@@ -375,7 +267,6 @@ impl Default for RelayConfig {
             services: default_services(),
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
-            environments: None,
         }
     }
 }
