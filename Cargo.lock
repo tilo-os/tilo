@@ -12832,7 +12832,6 @@ dependencies = [
  "desktop-policy",
  "hex",
  "launcher",
- "mail",
  "os-actions",
  "package-store",
  "quick-xml 0.41.0",
