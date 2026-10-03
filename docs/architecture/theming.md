@@ -311,8 +311,8 @@ Verified against the code at the time of writing:
   colours, stored user choices, colour-math helpers, test fixtures) and 33
   are chrome that should come from `Theme`; see the appendix. That regex
   misses `Color::from_rgba8` (71 sites) and `Color::WHITE`/`BLACK` (150
-  sites); the HIG §9.13 audit covers `ui-core` only, so apps are not ratcheted
-  yet.
+  sites). The HIG §9.13 `theme` and `app-paint` ratchets now count all of
+  these per app, and the counts may only fall.
 - **Trusted-UI frame for permission prompts and portal sheets.** The shell
   paints a seal band on those surfaces and publishes it as
   `tilo.shell.trusted-frame/permission-prompt` or
@@ -327,8 +327,8 @@ Verified against the code at the time of writing:
 1. **Hard-coded chrome colours onto tokens**, one app per change, following
    the appendix. Add a shared role wherever an app had to invent one (a
    distinct-hue series for spreadsheet references, a forced-colours flag for
-   content surfaces) rather than hard-coding it locally. Extend
-   `design_token_audit.rs` to `apps/` with a baseline that can only fall.
+   content surfaces) rather than hard-coding it locally. Each app empties
+   its shards under `crates/sdk/ui-core/tests/baselines/` as it goes.
 2. **Layer resolution.** Landed: `theme::resolve_theme_layers`.
 3. **Forced colours and brand accent.** Landed: `Theme::content_surface` and
    `Theme::brand_accent`. Still open: a compositor-drawn trusted-UI marker no
