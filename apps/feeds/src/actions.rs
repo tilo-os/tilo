@@ -18,9 +18,10 @@
 //!
 //! * **External** — the network fetch itself. The rows it lands in the shared
 //!   document are [`FeedsAction::UpsertFetched`], one batch per frame, so peers
-//!   replay the same articles and history can undo them. Adding a subscription
-//!   stays split: [`FeedsAction::AddSubscription`] creates the record, then the
-//!   fetch fills its title and articles through that batch action.
+//!   replay the same articles; they are the feed's content, not anyone's edit,
+//!   so no undo takes them back. Adding a subscription stays split:
+//!   [`FeedsAction::AddSubscription`] creates the record, then the fetch fills
+//!   its title and articles through that batch action.
 //! * **Presentation** — which article is selected, scroll offsets, the active
 //!   filter, the responsive layout, and the add-subscription modal opening /
 //!   the typing inside it. Only the *commit* of the typed URL is the action.
@@ -176,9 +177,17 @@ pub enum FeedsAction {
     MarkAllRead { ids: Vec<String> },
     /// One frame of a refresh: the feed and article rows the fetch produced.
     /// The network job stays outside the document; these rows are the shared
-    /// state, so they replay and undo with the rest of the library.
+    /// state, so they replay to every collaborator, but they came from the
+    /// feed rather than from anyone's edit: no undo takes them back.
     UpsertFetched {
         articles: Vec<Article>,
+        feeds: Vec<Feed>,
+    },
+    /// Subscribe to everything an OPML file lists that the library does not
+    /// have yet, with the folders those subscriptions go in: one step, which
+    /// one undo takes back.
+    ImportSubscriptions {
+        folders: Vec<Folder>,
         feeds: Vec<Feed>,
     },
 }
@@ -281,12 +290,10 @@ impl Action for FeedsAction {
                 }
             }
             FeedsAction::UpsertFetched { articles, feeds } => {
-                for feed in feeds {
-                    FeedsDoc::upsert_feed(doc, feed);
-                }
-                for article in articles {
-                    FeedsDoc::upsert_article(doc, article);
-                }
+                upsert_rows(doc, &[], feeds, articles);
+            }
+            FeedsAction::ImportSubscriptions { folders, feeds } => {
+                upsert_rows(doc, folders, feeds, &[]);
             }
         }
         Ok(())
@@ -296,14 +303,29 @@ impl Action for FeedsAction {
         ExecutionLocus::ClientLocal
     }
 
-    /// Whether an article was read is state about it, not a change to it.
+    /// Whether an article was read is state about it, not a change to it;
+    /// what a refresh fetched is content from the feed, nobody's edit.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             FeedsAction::MarkRead { .. } | FeedsAction::MarkAllRead { .. } => {
                 tilo_actions::ChangeKind::Housekeeping
             }
+            FeedsAction::UpsertFetched { .. } => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
+    }
+}
+
+/// Write whole folder, feed and article rows, each replacing the row of its id.
+fn upsert_rows(doc: &mut Doc, folders: &[Folder], feeds: &[Feed], articles: &[Article]) {
+    for folder in folders {
+        FeedsDoc::upsert_folder(doc, folder);
+    }
+    for feed in feeds {
+        FeedsDoc::upsert_feed(doc, feed);
+    }
+    for article in articles {
+        FeedsDoc::upsert_article(doc, article);
     }
 }
 

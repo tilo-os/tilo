@@ -51,6 +51,9 @@ part = "tilo-codecs"
 rule = "compatible"
 follows = "gstreamer1"
 
+# The image carries Fedora's `noopenh264` stub instead (Tilo never distributes
+# Cisco's binary). Cisco's library has the stub's exact paths, so this part's
+# overlay shadows it; nothing needs relocating.
 [[components]]
 name = "openh264"
 part = "tilo-codecs"
