@@ -122,6 +122,9 @@ pub struct ToggleGroup {
     last_selected: usize,
     /// Drives the focus ring drawn in place of the standard outer border.
     is_focused: bool,
+    /// Focus came from a press: the ring is kept for keyboard focus and
+    /// returns once the keys are used.
+    pressed_into_focus: bool,
     /// `is_focused` at the last cache emit, so a focus change invalidates
     /// the cached scene.
     last_focused: bool,
@@ -166,6 +169,7 @@ impl ToggleGroup {
             cache_rect: Rect::ZERO,
             last_selected: usize::MAX,
             is_focused: false,
+            pressed_into_focus: false,
             last_focused: false,
             drawn_palette: None,
             flexible_width: false,
@@ -598,6 +602,12 @@ impl<'a> SegmentedFace<'a> {
 }
 
 impl ToggleGroup {
+    /// Focus a person needs to be shown: keyboard focus, not the focus a
+    /// press on a segment gave it.
+    fn focus_visible(&self) -> bool {
+        self.is_focused && !self.pressed_into_focus
+    }
+
     /// Paint the background/border layer for [`Self::paint`]: the filled
     /// segments plus whatever chrome the style calls for (outer border and
     /// separators for `Solid`, nothing extra for `Pill`, an underline bar
@@ -769,6 +779,8 @@ impl ToggleGroup {
         {
             return;
         }
+        // The keys are in use: show where they act.
+        self.pressed_into_focus = false;
         let len = self.segments.len();
         let selection = match key.logical_key {
             Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
@@ -813,6 +825,7 @@ impl ToggleGroup {
             .position(|segment| segment.contains(pos))
         {
             *handled = true;
+            self.pressed_into_focus |= !self.is_focused;
             *focus_target = Some(node_id);
             self.request_selection(index);
         }
@@ -838,6 +851,7 @@ impl ToggleGroup {
                 if self.active_touch.is_none() && self.rect.contains(pos) =>
             {
                 self.active_touch = Some(touch.id);
+                self.pressed_into_focus |= !self.is_focused;
                 *focus_target = Some(node_id);
                 *handled = true;
             }
@@ -976,9 +990,9 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
             self.last_selected = self.selected;
         }
-        if self.is_focused != self.last_focused {
+        if self.focus_visible() != self.last_focused {
             self.cache_dirty = true;
-            self.last_focused = self.is_focused;
+            self.last_focused = self.focus_visible();
         }
         let palette = [
             theme.accent_primary,
@@ -1024,7 +1038,7 @@ impl Widget for ToggleGroup {
 
         // Keyboard focus must remain unmistakable on every style. For Solid,
         // this focus stroke intentionally covers the resting standard border.
-        if self.is_focused {
+        if self.last_focused {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -1040,7 +1054,7 @@ impl Widget for ToggleGroup {
     fn needs_redraw(&self) -> bool {
         self.cache_dirty
             || self.selected != self.last_selected
-            || self.is_focused != self.last_focused
+            || self.focus_visible() != self.last_focused
     }
 
     fn mark_drawn(&mut self) {
@@ -1125,6 +1139,7 @@ impl Widget for ToggleGroup {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.pressed_into_focus &= focused;
         self.is_focused = focused;
     }
     fn is_focused(&self) -> bool {

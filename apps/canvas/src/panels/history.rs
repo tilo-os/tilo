@@ -65,6 +65,11 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
     entries
 }
 
+/// Whether `author` is an identity key rather than a name.
+fn is_key(author: &str) -> bool {
+    author.len() >= 32 && author.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// "3 minutes ago".
 fn ago(time_ms: i64) -> String {
     let Ok(ms) = u64::try_from(time_ms) else {
@@ -97,60 +102,66 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         }
         newest.replace(latest.map(|version| version.change.clone()));
         let entries = entries(versions);
-        let checkpoints = versions
-            .iter()
-            .flat_map(|version| version.checkpoints.iter())
-            .count();
         let mut list = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(2.0)
             .push(now_row(&tools));
+        // A rule where the hand changes, between a person's steps and an
+        // agent's run or one run and the next, so each reads as its own.
+        let mut hand: Option<(Option<&str>, &str)> = None;
         for entry in &entries {
+            let this = (entry.run.as_deref(), entry.author.as_str());
+            if hand.is_some_and(|before| before != this) {
+                list = list.push(Box::new(ui::widget::Divider::horizontal()));
+            }
+            hand = Some(this);
             list = list.push(entry_row(cx, &tools, entry));
         }
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(6.0)
-                .push(header(cx, checkpoints))
+                .with_gap(0.0)
                 .push(viewing(cx, &tools))
-                .push(Box::new(list)),
+                .push(Box::new(
+                    Scrollable::new_vertical()
+                        .with_max_height(LIST_HEIGHT)
+                        .with_child(Box::new(
+                            Column::new()
+                                .with_intrinsic_height()
+                                .with_vertical_padding(4.0)
+                                .with_horizontal_padding(8.0, 8.0)
+                                .push(Box::new(list)),
+                        )),
+                )),
         )
     })
 }
 
-/// Undo, redo and naming the current version.
-fn header(cx: &ViewCx<ArtworkResource>, checkpoints: usize) -> Element {
-    let name = ui::i18n::I18nManager::format(
-        "canvas-checkpoint-name",
-        &[("number", checkpoints.saturating_add(1).into())],
-    );
-    Box::new(
-        Row::new()
-            .with_gap(4.0)
-            .no_wrap()
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(Box::new(icon_button(
-                cx,
-                Icon::Undo2,
-                &ui::i18n::I18nManager::lookup_plain("canvas-undo"),
-                ArtworkResource::UNDO.invoke(),
-            )))
-            .push(Box::new(icon_button(
-                cx,
-                Icon::Redo2,
-                &ui::i18n::I18nManager::lookup_plain("canvas-redo"),
-                ArtworkResource::REDO.invoke(),
-            )))
-            .push(super::filler())
-            .push(Box::new(
-                cx.button("canvas-checkpoint", ArtworkResource::CHECKPOINT.with(name))
-                    .with_icon(Icon::Flag)
-                    .ghost(),
-            )),
-    )
+/// How tall the list of versions grows before it scrolls.
+const LIST_HEIGHT: f32 = 300.0; // a share of the sidebar for the dock: a layout size, not spacing
+
+/// Naming the current version, beside the history tab. Its name counts
+/// the checkpoints there are.
+pub fn checkpoint_button(cx: &ViewCx<ArtworkResource>) -> Element {
+    let versions = cx.history(LISTED);
+    cx.switch(&versions, |cx, versions| {
+        let checkpoints = versions
+            .iter()
+            .flat_map(|version| version.checkpoints.iter())
+            .count();
+        let name = ui::i18n::I18nManager::format(
+            "canvas-checkpoint-name",
+            &[("number", checkpoints.saturating_add(1).into())],
+        );
+        Box::new(icon_button(
+            cx,
+            Icon::Flag,
+            &ui::i18n::I18nManager::lookup_plain("canvas-checkpoint"),
+            ArtworkResource::CHECKPOINT.with(name),
+        ))
+    })
 }
 
 /// While a past version is shown: what it is, and restoring it.
@@ -161,13 +172,14 @@ fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         };
         Box::new(
             Row::new()
-                .with_gap(6.0)
+                .with_gap(8.0)
                 .no_wrap()
+                .with_padding(16.0, 6.0)
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(caption(&ui::i18n::I18nManager::lookup_plain(
                     "canvas-viewing-past",
                 )))
-                .push(super::filler())
+                .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     cx.button(
                         "canvas-restore",
@@ -206,7 +218,11 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
     };
     let title = Text::new(&action);
     let title = if entry.undone { title.dimmed() } else { title };
-    let mut byline = vec![entry.author.clone()];
+    // A raw identity key says nothing to a reader: the person icon does.
+    let mut byline: Vec<String> = Some(entry.author.clone())
+        .filter(|author| !is_key(author))
+        .into_iter()
+        .collect();
     if entry.steps > 1 {
         byline.push(ui::i18n::I18nManager::format(
             "canvas-history-steps",
@@ -270,7 +286,7 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
             .on_raised()
             .choosing(&tools.preview, Some(entry.change.clone()))
             .with_id(format!("canvas-version-{}", entry.change))
-            .with_accessible_name(byline),
+            .with_accessible_name(format!("{action}, {byline}")),
     )
 }
 
