@@ -23,6 +23,19 @@ FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PARSER_PATH = Path("usr/lib/tilo/hardware_profile.py")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
+# Broadcom's sample station address. Vendor NVRAM files (the Orange Pi's
+# AP6256 among them) ship it, and brcmfmac programs whatever the NVRAM names,
+# so every board would share one MAC. The pinned bytes are checked as
+# published; only the installed copy drops this line, and the radio keeps the
+# address it was given.
+SAMPLE_BROADCOM_MAC = b"macaddr=00:90:4c:c5:12:38"
+
+
+def installed_firmware(destination: str, payload: bytes) -> bytes:
+    if not destination.endswith(".txt"):
+        return payload
+    lines = payload.splitlines(keepends=True)
+    return b"".join(line for line in lines if line.rstrip(b"\r\n") != SAMPLE_BROADCOM_MAC)
 
 
 def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
@@ -145,7 +158,7 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         payload = checked_path(firmware_dir, Path(name), required=True).read_bytes()
         if not payload or hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError(f"firmware does not match its pinned SHA-256: {name}")
-        outputs[FIRMWARE_PATH / destination] = payload
+        outputs[FIRMWARE_PATH / destination] = installed_firmware(destination, payload)
 
     document = {
         "schema_version": 1,

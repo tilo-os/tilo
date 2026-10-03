@@ -46,3 +46,6 @@ a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64	dxvk-c3dd74b-LI
 # ARM LSE atomics unavailable on the Graviton 1 native CI hosts.
 4c999e19ffa31afa5aa429c679b665d5e2ca5a6b6832ad4b79668e8dcf3d8ec1	mold-2.40.4-x86_64-linux.tar.gz	https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-x86_64-linux.tar.gz
 c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37	mold-2.40.4-aarch64-linux.tar.gz	https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-aarch64-linux.tar.gz
+3167956a7b2cffc4cfcaf6a282b95728c529eebef18a5d9e6d9ff32de32cc67c	brcmfmac43456-sdio-30d86fc.bin	https://raw.githubusercontent.com/armbian/firmware/30d86fc98f1bac54d4be7046c828a14e588f6fff/brcm/brcmfmac43456-sdio.bin
+2dbd7d22fc9af0eb560ceab45b19646d211bc7b34a1dd00c6bfac5dd6ba25e8a	brcmfmac43456-sdio-30d86fc.clm_blob	https://raw.githubusercontent.com/armbian/firmware/30d86fc98f1bac54d4be7046c828a14e588f6fff/brcm/brcmfmac43456-sdio.clm_blob
+66c71eb53b47c49d42386b66735134578640b0946f3f46e44f384fef5aacfd9e	brcmfmac43456-sdio-67ccb55.txt	https://raw.githubusercontent.com/armbian/firmware/67ccb5550b2aa460212d09403c706b1d962b388e/brcm/brcmfmac43456-sdio.txt

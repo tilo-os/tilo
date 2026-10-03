@@ -431,9 +431,13 @@ fn join_reply_json(reply: tilo_relay_protocol::rooms::JoinReply) -> serde_json::
             name,
             role,
             expires_at_ns,
+            inviter,
         } => serde_json::json!({
             "kind": "invitation", "room": room, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
+            "inviter": inviter.map(|inviter| serde_json::json!({
+                "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
+            })),
         }),
         JoinReply::Challenge { .. } => serde_json::json!({"kind": "challenge"}),
         JoinReply::Waiting => serde_json::json!({"kind": "waiting"}),
@@ -1419,6 +1423,33 @@ impl WasmPeer {
     /// # Errors
     ///
     /// Rejects when not connected or not admitted to the room.
+    /// Administer the host's rooms as this device: `request` is a
+    /// `RoomsRequest` as JSON (serde's external tagging, byte arrays as
+    /// arrays of numbers); resolves to the `RoomsReply` as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Rejects for a malformed request, without a connection, or when the
+    /// host is not reached.
+    pub async fn rooms(&self, request: String) -> Result<String, JsError> {
+        let request: tilo_relay_protocol::rooms::RoomsRequest =
+            serde_json::from_str(&request).map_err(js_error)?;
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .rooms_then(
+                request,
+                Box::new(move |answer| {
+                    let _ = reply.send(answer);
+                }),
+            )
+            .map_err(js_error)?;
+        let answer = receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?;
+        serde_json::to_string(&answer).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = liveGrant)]
     pub async fn live_grant(&self, room: String, agent: Option<String>) -> Result<String, JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();

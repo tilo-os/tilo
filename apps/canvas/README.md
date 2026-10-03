@@ -26,6 +26,16 @@ everything an agent, a script or a screen reader does:
 | `look` | a PNG of the artwork or a region, with an optional coordinate grid |
 | `inspect`, `media`, `history`, `export` | what is on it, what it can use, how it got here |
 
+Lettering uses the fonts Tilo ships (`media` lists them), so it looks the
+same on every machine: any weight between the face's lightest and boldest,
+tracking, line height, alignment, and words set along a path. A mark can
+carry film `grain`, an `inner_shadow` (a light one is a highlight) and a
+`feather`ed edge; a layer's `texture` lets the ground's tooth show through.
+`inspect` with `measure` reports where a mark's ink weighs (its ink box,
+area and centre of mass) and each letter's box, for balancing icons and
+type by eye. Groups nest (`icons/mail`), and SVG export and import keep
+them, their shadows and text set along a path.
+
 Refusals name the mistake and the valid choices (the layers that exist, the
 pigments of the layer's palette), so an agent can correct itself from the
 message.
@@ -38,6 +48,11 @@ scripts/agent-loop/session.py mcp canvas          # the MCP endpoint (see .curso
 scripts/agent-loop/session.py report canvas       # history, inspection and a final look
 scripts/agent-loop/session.py stop canvas
 ```
+
+Besides the actions, the session's agent can use the window like a person:
+`computer` with `app_id: "so.tilo.canvas"` clicks the tools, drags strokes and
+handles, types and Ctrl+scrolls in the window's pixels (a point of `render`
+plus its `window_origin`) and answers with a screenshot of the window.
 
 `tests/agent-surface.json` is what an agent sees of the app; a change to the
 vocabulary shows there as a diff (`tests/agent_surface.rs` explains updating

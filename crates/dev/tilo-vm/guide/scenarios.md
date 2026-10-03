@@ -95,6 +95,24 @@ the observed first-boot surface, and the preserved extents. Sign-in reports
 its composefs digest directly; identity setup proves the target boots but
 does not itself report that digest.
 
+### Retained installation preferences
+
+Use `--hostname laptop --keyboard-layout "German (QWERTZ)" --timezone Europe/Berlin`
+for a German keyboard and Berlin time. The keyboard argument is the installer's
+published display name. `--locale de_DE.UTF-8` is optional; without it the medium's
+language choice stays unchanged. Hostname defaults to `scenario-tilo`; omitted
+keyboard, timezone and locale preserve the medium's choices.
+
+These inputs are recorded in `scenario.json`; `--resume` requires the same inputs.
+The driver checks their installer state before starting the destructive install,
+including when preconfigured media skip a screen. An incompatible skipped screen
+fails before installation. Regular identity OOBE remains for the first user boot.
+
+The installed console and desktop receive the selected keyboard. A prebuilt CI
+initrd is unchanged: its early encrypted-disk unlock can still use US keys until
+the root filesystem is available. Use a layout-neutral passphrase or account for
+that first-unlock layout; changing the signed initrd is a separate image operation.
+
 ## The console channel
 
 The installer and the greeter run under `cage`, straight from greetd, before

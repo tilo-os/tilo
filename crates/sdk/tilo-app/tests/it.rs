@@ -21,3 +21,5 @@ pub mod live_permissions;
 pub mod model_contract;
 #[path = "scenarios.rs"]
 pub mod scenarios;
+#[path = "typed_edit_labels.rs"]
+pub mod typed_edit_labels;

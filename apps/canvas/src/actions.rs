@@ -54,6 +54,8 @@ pub struct AddLayer {
     pub opacity: Option<f64>,
     /// Put the new layer directly above this layer instead of on top.
     pub above: Option<String>,
+    /// `0..=1`: let the ground's tooth show through the layer's marks.
+    pub texture: Option<f64>,
 }
 
 /// Change a layer.
@@ -70,6 +72,8 @@ pub struct EditLayer {
     pub locked: Option<bool>,
     /// `front`, `back`, `forward` or `backward` among the layers.
     pub to: Option<String>,
+    /// `0..=1`: let the ground's tooth show through the layer's marks.
+    pub texture: Option<f64>,
 }
 
 /// Remove a layer and everything on it.
@@ -120,7 +124,14 @@ pub struct NewMark {
     /// `exclusion`, `hue`, `saturation`, `color` or `luminosity`.
     pub blend: Option<String>,
     pub shadow: Option<Shadow>,
-    /// A group id: edits naming it change the members as one.
+    /// Inside the mark from its edge; light colour = highlight.
+    pub inner_shadow: Option<Shadow>,
+    /// `0..=1` film grain.
+    pub grain: Option<f64>,
+    /// Soften the edge outward over this many units.
+    pub feather: Option<f64>,
+    /// A group id: edits naming it change the members as one; `a/b`
+    /// nests group b in a.
     pub group: Option<String>,
     /// Cut to this mark's shape (opacity 0 hides that mark).
     pub clip: Option<String>,
@@ -149,6 +160,9 @@ impl NewMark {
             join: None,
             blend: None,
             shadow: None,
+            inner_shadow: None,
+            grain: None,
+            feather: None,
             group: None,
             clip: None,
             transform: None,
@@ -232,7 +246,13 @@ pub struct EditMarks {
     pub blend: Option<String>,
     /// Zero offset and blur removes it.
     pub shadow: Option<Shadow>,
-    /// Put into this group; empty takes out of any.
+    /// Zero offset and blur removes it.
+    pub inner_shadow: Option<Shadow>,
+    /// 0 removes it.
+    pub grain: Option<f64>,
+    /// 0 removes it.
+    pub feather: Option<f64>,
+    /// Put into this group (`a/b` nests b in a); empty takes out of any.
     pub group: Option<String>,
     /// Cut to this mark's shape; empty uncuts.
     pub clip: Option<String>,
@@ -316,7 +336,8 @@ pub struct Align {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetReference {
-    /// A PNG or JPEG: an absolute file path or a content address.
+    /// A PNG or JPEG: an absolute file path, a content address, or the
+    /// picture itself as `data:image/png;base64,…`.
     pub image: Option<String>,
     /// `[x, y, width, height]`; fitted to the artwork when absent.
     pub frame: Option<[f64; 4]>,
@@ -443,7 +464,7 @@ fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), ActionEr
             )));
         }
     }
-    if let Some(shadow) = &style.shadow {
+    for shadow in style.shadow.iter().chain(&style.inner_shadow) {
         if !shadow
             .offset
             .iter()
@@ -457,6 +478,20 @@ fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), ActionEr
         if let Some(colour) = &shadow.colour {
             check_colour(art, layer, colour, "shadow colour")?;
         }
+    }
+    check_unit(style.grain, "grain")?;
+    if style
+        .feather
+        .is_some_and(|feather| !(0.0..=500.0).contains(&feather))
+    {
+        return Err(refuse("feather is 0 to 500 units"));
+    }
+    if let Some(gradient) = &style.gradient
+        && gradient
+            .focal
+            .is_some_and(|[x, y]| !x.is_finite() || !y.is_finite())
+    {
+        return Err(refuse("a gradient's focal point must be finite"));
     }
     Ok(())
 }
@@ -524,9 +559,9 @@ fn extent(art: &Artwork, unit: &[&Mark]) -> ui::vello::kurbo::Rect {
 
 /// A group id must be valid and not already a mark's id.
 fn check_group(art: &Artwork, group: &str, new_ids: &[String]) -> Result<(), ActionError> {
-    if !valid_id(group) {
+    if !crate::model::valid_group(group) {
         return Err(refuse(format!(
-            "group {group:?} must be 1-48 of a-z, 0-9, '-' and '_'"
+            "group {group:?} must be 1-48 of a-z, 0-9, '-' and '_', or such ids joined by / to nest one group in another"
         )));
     }
     if art.mark(group).is_some() || new_ids.iter().any(|id| id == group) {
@@ -696,6 +731,9 @@ impl Draw {
                     join: mark.join.clone(),
                     blend: mark.blend.clone().filter(|blend| blend != "normal"),
                     shadow: mark.shadow.clone(),
+                    inner_shadow: mark.inner_shadow.clone(),
+                    grain: mark.grain.filter(|grain| *grain > 0.0),
+                    feather: mark.feather.filter(|feather| *feather > 0.0),
                 };
                 let style =
                     if style.fill.is_none() && style.gradient.is_none() && style.stroke.is_none() {
@@ -871,9 +909,19 @@ impl EditMarks {
                 *field = Some(value.clone()).filter(|value| value != "normal");
             }
         }
-        if let Some(shadow) = &self.shadow {
-            mark.style.shadow =
-                (shadow.blur > 0.0 || shadow.offset != [0.0, 0.0]).then(|| shadow.clone());
+        for (edit, field) in [
+            (&self.shadow, &mut mark.style.shadow),
+            (&self.inner_shadow, &mut mark.style.inner_shadow),
+        ] {
+            if let Some(shadow) = edit {
+                *field = (shadow.blur > 0.0 || shadow.offset != [0.0, 0.0]).then(|| shadow.clone());
+            }
+        }
+        if let Some(grain) = self.grain {
+            mark.style.grain = (grain > 0.0).then_some(grain);
+        }
+        if let Some(feather) = self.feather {
+            mark.style.feather = (feather > 0.0).then_some(feather);
         }
         {
             let is_stroke = matches!(mark.shape, Shape::Stroke { .. });
@@ -1191,6 +1239,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
     let medium = add.medium.clone().unwrap_or_default();
     check_medium(art, &medium)?;
     check_unit(add.opacity, "opacity")?;
+    check_unit(add.texture, "texture")?;
     let order = match &add.above {
         Some(above) => {
             let at = art
@@ -1220,6 +1269,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
             medium,
             opacity: add.opacity.unwrap_or(1.0),
             visible: true,
+            texture: add.texture.unwrap_or(0.0),
             locked: false,
         },
     )?;
@@ -1247,6 +1297,10 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     }
     if let Some(visible) = edit.visible {
         layer.visible = visible;
+    }
+    check_unit(edit.texture, "texture")?;
+    if let Some(texture) = edit.texture {
+        layer.texture = texture;
     }
     if let Some(locked) = edit.locked {
         layer.locked = locked;
@@ -1394,7 +1448,7 @@ fn set_reference(doc: &mut Doc, art: &Artwork, set: &SetReference) -> Result<(),
         (_, Some(image)) => {
             if ui::tilo_actions::content_hash(image).is_none() {
                 return Err(refuse(format!(
-                    "image {image:?} must be an absolute path to a PNG or JPEG, or a content address"
+                    "image {image:?} must be an absolute path to a PNG or JPEG, a content address, or data:image/png;base64,…"
                 )));
             }
             Reference {
@@ -1407,7 +1461,7 @@ fn set_reference(doc: &mut Doc, art: &Artwork, set: &SetReference) -> Result<(),
         (Some(existing), None) => existing.clone(),
         (None, None) => {
             return Err(refuse(
-                "there is no reference yet: give image, a PNG or JPEG path or content address",
+                "there is no reference yet: give image, a PNG or JPEG path, content address or data: URI",
             ));
         }
     };

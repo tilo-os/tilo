@@ -13,7 +13,10 @@ sources; every following commit is a reviewable topic change:
   encoding budget/accounting, renderer measurement, atlas diagnostics, the
   clipped-image PTCL floor, the viewport-scaled line floor, and compatibility
   lint cleanup, separation of budget readback from debug-buffer capture, and
-  the upstream lint-format cleanup found by the feature-matrix CI.
+  the upstream lint-format cleanup found by the feature-matrix CI. Later
+  commits sync the maintained source tree and add an API switch for canonical
+  segment order, so exact-pixel oracles render repeatably without
+  `VELLO_CANONICAL_SEGMENT_ORDER`.
   The code is now ported onto current upstream `main` as three
   independently reviewable draft pull requests:
   [adaptive bump budgets and safety floors](https://github.com/linebender/vello/pull/1861),
@@ -249,3 +252,23 @@ wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
 memory stays until JavaScript collects the object. `clear_pool` (run when the
 bump budget grows) and `free_download` now destroy their buffers, so a budget
 growth does not keep every old buffer resident beside its replacement.
+
+## `vendor/vello_shaders/shader/*.wgsl`: no read before a workgroup array
+
+Upstream computes an exclusive prefix as
+`select(0u, counts[ix - 1u], ix > 0u)` in `backdrop_dyn.wgsl`, `coarse.wgsl`
+(twice), `tile_alloc.wgsl` and `fine.wgsl` (twice). WGSL's `select` evaluates
+both arms, so element 0 indexes `counts[-1]`: an out-of-bounds workgroup read
+whose result depends on the driver's bounds policy. A driver that does not
+clamp reads a neighbouring shared variable, which only `select` happens to
+discard; one that faults on the address kills the dispatch. Each site now
+reads the previous count inside an `if`, so index 0 never touches the array.
+Results are unchanged wherever the read was harmless.
+
+## `vendor/vello/src/lib.rs`: one init thread on GL
+
+`Renderer::new` sets `num_init_threads` to one when the device is on the GL
+backend. wgpu-hal's GLES device holds its single context lock for every
+pipeline compile, so parallel initialisation gains nothing there, and on a
+slow driver a queued worker thread exceeds the context lock timeout and
+panics.

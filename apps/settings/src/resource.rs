@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use ui::application::ComponentBehaviour;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
@@ -100,6 +101,12 @@ impl ResourceApp for SettingsShell {
     const TITLE: &'static str = "Settings";
     const ICON: Option<&'static str> = Some("settings");
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
+    // scale, theme, contrast and motion apply live.
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
+        autofocus_on_structure_change: true,
+        appearance_reconcile: true,
+    };
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
         cx.surface(SettingsApp::new())

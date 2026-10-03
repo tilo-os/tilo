@@ -2345,10 +2345,19 @@ impl Widget for CommandPalette {
             .map_or((&self.query_placeholder, &self.query), |arg| {
                 (&arg.placeholder, &arg.buffer)
             });
+        // The caret makes the field a text field for assistive technology
+        // (AT-SPI Text and EditableText), not only a labelled value: a screen
+        // reader can then read and set the query as it would any other input.
+        let (anchor, caret) = if self.arg_state.is_some() {
+            (query.1.len(), query.1.len())
+        } else {
+            (self.query_selection.anchor, self.query_selection.cursor)
+        };
         let query_node = AccessNode::new(Role::TextInput)
             .with_action_target("command-palette:query")
             .with_name(query.0.clone())
             .with_value(query.1.clone())
+            .with_text_selection(anchor, caret)
             .with_bounds(self.input_row_rect())
             .with_state(AccessState {
                 focusable: true,
@@ -3329,6 +3338,10 @@ mod tests {
             assert_eq!(node.children.len(), 2, "query plus its result list");
             let query = &node.children[0];
             assert_eq!(query.role, Role::TextInput);
+            assert!(
+                query.text_selection.is_some(),
+                "the query carries a caret, so AT-SPI exposes it as editable text"
+            );
             assert_eq!(query.value.as_deref(), Some(""));
             assert!(
                 query.action_target.is_some(),

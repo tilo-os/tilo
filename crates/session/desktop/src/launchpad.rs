@@ -158,6 +158,16 @@ pub struct CollaborationLaunchpad {
     hint_line_h: f64,
     /// What this widget painted last differs from what it would paint now.
     dirty: bool,
+    copy: LaunchpadCopy,
+}
+
+/// Words a host puts in place of the launchpad's own: a desktop in the
+/// browser welcomes a new member and names its own keyboard chords.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchpadCopy {
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub keyboard_hint: Option<String>,
 }
 
 /// Top of the keyboard hint, from the bottom of the last card.
@@ -187,7 +197,37 @@ impl CollaborationLaunchpad {
                     .line_height_px(),
             ),
             dirty: true,
+            copy: LaunchpadCopy::default(),
         }
+    }
+
+    /// Show `copy` where it names text, the launchpad's own words elsewhere.
+    #[must_use]
+    pub fn with_copy(mut self, copy: LaunchpadCopy) -> Self {
+        self.copy = copy;
+        self.dirty = true;
+        self
+    }
+
+    fn title(&self) -> String {
+        self.copy
+            .title
+            .clone()
+            .unwrap_or_else(|| t("launchpad-title"))
+    }
+
+    fn subtitle(&self) -> String {
+        self.copy
+            .subtitle
+            .clone()
+            .unwrap_or_else(|| t("launchpad-subtitle"))
+    }
+
+    fn keyboard_hint(&self) -> String {
+        self.copy
+            .keyboard_hint
+            .clone()
+            .unwrap_or_else(|| t("launchpad-keyboard-hint"))
     }
 
     /// Centre on `display` (with the rail's clearance when `beside_rail`)
@@ -507,7 +547,7 @@ impl Widget for CollaborationLaunchpad {
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
         );
-        let keyboard_hint = t("launchpad-keyboard-hint");
+        let keyboard_hint = self.keyboard_hint();
         let (_, hint_h) = text.measure(&keyboard_hint, caption, None);
         self.hint_line_h = f64::from(hint_h);
         self.card_rects = self.cards();
@@ -525,7 +565,7 @@ impl Widget for CollaborationLaunchpad {
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
         let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
         let panel_width = cards[5].x1 - content_left;
-        let title = text.elide_to_width(&t("launchpad-title"), heading, panel_width as f32);
+        let title = text.elide_to_width(&self.title(), heading, panel_width as f32);
         text.draw_text(
             scene,
             &title,
@@ -535,11 +575,7 @@ impl Widget for CollaborationLaunchpad {
             None,
         );
         let (_, title_h) = text.measure(&title, heading, None);
-        let subtitle = text.elide_to_width(
-            &crate::i18n::t("launchpad-subtitle"),
-            small,
-            panel_width as f32,
-        );
+        let subtitle = text.elide_to_width(&self.subtitle(), small, panel_width as f32);
         let (_, subtitle_h) = text.measure(&subtitle, small, None);
         if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
             // On the bare wallpaper, like the hint under the cards: the dim
@@ -706,7 +742,7 @@ impl Widget for CollaborationLaunchpad {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_name(t("launchpad-title"))
+                .with_name(self.title())
                 .with_bounds(self.content_bounds())
                 .with_description(t("launchpad-description"))
                 .with_children(

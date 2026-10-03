@@ -273,14 +273,26 @@ impl<R: Resource> ResourceRoot<R> {
             .map_err(|error| format!("the picture could not be stored: {error}"))?;
         let address = tilo_actions::content_resource(&hash)
             .ok_or_else(|| "the picture has no content address".to_owned())?;
+        let mut value = serde_json::json!({
+            "width": width,
+            "height": height,
+            "theme": theme.name,
+            "revision": shown,
+            "content": address,
+        });
+        // Where the live view sits in the app's window, in window pixels: a
+        // point of the picture plus this is where a person (or the computer
+        // tool, aimed at this app) clicks it.
+        if version.is_none()
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.insert(
+                "window_origin".into(),
+                serde_json::json!([rect.x0.round(), rect.y0.round()]),
+            );
+        }
         Ok(tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({
-                "width": width,
-                "height": height,
-                "theme": theme.name,
-                "revision": shown,
-                "content": address,
-            })),
+            value: Some(value),
             resources: vec![address],
         })
     }

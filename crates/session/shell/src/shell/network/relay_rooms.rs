@@ -88,7 +88,7 @@ impl ShellNetwork {
             .try_send(NetCmd::RoomAdmin {
                 relay,
                 certificate,
-                command,
+                command: Box::new(command),
                 reply,
             })
             .map_err(|_| "the network queue is unavailable")?;
@@ -119,6 +119,7 @@ impl ShellNetwork {
                     recipient_user_public_key: recipient,
                     invitee_name: invitee.map(str::to_owned),
                     expires_at_ns: expiry.saturating_mul(1_000_000_000),
+                    inviter_name: None,
                 },
             },
         )?;

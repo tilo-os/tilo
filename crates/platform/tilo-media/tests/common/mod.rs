@@ -375,13 +375,12 @@ pub fn decode_frame_at(
     target_ms: u64,
     what: &str,
 ) -> tilo_media::Frame {
-    let ok = engine.seek_and_wait(target_ms, tilo_test_env::hang_bound());
-    assert!(
-        ok,
-        "{what}: the pipeline produced no picture for {target_ms}ms. \
-         Decoder: {}",
-        engine.hw_report().describe()
-    );
+    if let Err(error) = engine.seek_and_wait(target_ms, tilo_test_env::hang_bound()) {
+        panic!(
+            "{what}: no picture for {target_ms}ms: {error}. Decoder: {}",
+            engine.hw_report().describe()
+        );
+    }
     engine
         .latest()
         .cloned()

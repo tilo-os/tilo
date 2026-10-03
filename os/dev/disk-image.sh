@@ -855,6 +855,14 @@ if [ -n "$USERSPEC" ]; then
       mount --bind /target-var /var
       useradd -m ${u_groups:+-G '$u_groups'} '$u_name'
       printf '%s:%s\n' '$u_name' '$u_pass' | chpasswd
+      # An always-on board image ships the session template and its marker;
+      # its instance is the account created here.
+      board_wants=/etc/systemd/system/multi-user.target.wants
+      board_session=\"\$board_wants/tilo-board-headless-session@$u_name.service\"
+      if [ -f /usr/share/tilo/board-headless-session ]; then
+        install -d -m 0755 \"\$board_wants\"
+        ln -sfn /usr/lib/systemd/system/tilo-board-headless-session@.service \"\$board_session\"
+      fi
       # Label the new home. A home directory inherited from /var comes out
       # \`var_t\` rather than \`user_home_dir_t\`, which an SELinux-enforcing session
       # does not get to use.
@@ -873,7 +881,10 @@ if [ -n "$USERSPEC" ]; then
         [ -f \"/etc/\$db\" ] || { echo \"missing /etc/\$db after account creation\" >&2; exit 1; }
         setfiles -F \"\$fc\" \"/etc/\$db\"
       done
-      setfiles -F \"\$fc\" /var/home"
+      setfiles -F \"\$fc\" /var/home
+      if [ -L \"\$board_session\" ]; then
+        setfiles -F \"\$fc\" \"\$board_session\"
+      fi"
 fi
 
 # Exercise the same one-use account handoff as the graphical installer. This

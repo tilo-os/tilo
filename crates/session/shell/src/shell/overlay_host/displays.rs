@@ -751,7 +751,9 @@ impl ShellOverlayHost {
     }
 
     /// The groups of the active strip on each display, in the order they
-    /// are laid out, for the state dump.
+    /// are laid out, for the state dump: every connected display, whether or
+    /// not the desktop is partitioned. A device that has only ever had one
+    /// display carries no partition, and that display shows the whole strip.
     pub fn display_partition_summary(&self) -> Vec<(u32, Vec<GroupId>)> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
@@ -768,11 +770,23 @@ impl ShellOverlayHost {
         }) else {
             return Vec::new();
         };
-        let summary = partition
-            .reading_order()
-            .into_iter()
-            .map(|d| (d, partition.groups_on(strip, d)))
-            .collect();
+        let summary = if partition.displays.is_empty() {
+            self.primary_output()
+                .map(|display| {
+                    (
+                        display.id,
+                        strip.window_groups.iter().map(|g| g.id).collect(),
+                    )
+                })
+                .into_iter()
+                .collect()
+        } else {
+            partition
+                .reading_order()
+                .into_iter()
+                .map(|d| (d, partition.groups_on(strip, d)))
+                .collect()
+        };
         drop(tree);
         drop(state);
         summary

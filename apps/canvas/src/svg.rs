@@ -15,7 +15,7 @@
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
 )]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use base64::Engine as _;
@@ -85,13 +85,18 @@ fn matrix(affine: Affine) -> String {
 
 /// The artwork as an SVG document, on its ground when `ground`. `painted`
 /// renders a painted layer alone over transparency as a PNG, which the
-/// document embeds.
+/// document embeds. A text mark with an entry in `outlines` is written as
+/// that geometry instead of as text.
 pub fn export(
     art: &Artwork,
     ground: bool,
     mut painted: impl FnMut(&Layer) -> Option<Vec<u8>>,
+    outlines: BTreeMap<String, BezPath>,
 ) -> String {
-    let mut out = Writer::default();
+    let mut out = Writer {
+        outlines,
+        ..Writer::default()
+    };
     if ground {
         let ground = colour(&art.ground.colour, &[]).unwrap_or(crate::render::BLANK_GROUND);
         let _ = write!(
@@ -122,14 +127,17 @@ pub fn export(
             }
             for mark in art.marks_of(&layer.id) {
                 if matches!(mark.shape, Shape::Text { .. }) {
+                    out.enter_group(&mark.group);
                     out.mark(art, mark, &palette);
                 }
             }
         } else {
             for mark in art.marks_of(&layer.id) {
+                out.enter_group(&mark.group);
                 out.mark(art, mark, &palette);
             }
         }
+        out.enter_group("");
         out.body.push_str("</g>");
     }
     let mut svg = format!(
@@ -153,9 +161,36 @@ struct Writer {
     defs: String,
     body: String,
     clips: BTreeSet<String>,
+    /// Text marks written as their letters' outlines, by id.
+    outlines: BTreeMap<String, BezPath>,
+    /// How many paths text has been set along.
+    text_paths: usize,
+    /// The groups the next element is written in, outermost first.
+    open: Vec<String>,
 }
 
 impl Writer {
+    /// Close and open `<g data-group>` elements so what follows is written
+    /// inside `group` (`a/b`: b inside a); empty is outside every group.
+    fn enter_group(&mut self, group: &str) {
+        let path: Vec<&str> = group.split('/').filter(|part| !part.is_empty()).collect();
+        let kept = self
+            .open
+            .iter()
+            .zip(&path)
+            .take_while(|(open, part)| open.as_str() == **part)
+            .count();
+        for _ in kept..self.open.len() {
+            self.body.push_str("</g>");
+        }
+        self.open.truncate(kept);
+        for depth in kept..path.len() {
+            let whole = path.get(..=depth).unwrap_or_default().join("/");
+            let _ = write!(self.body, r#"<g data-group="{}">"#, escape(&whole));
+            self.open.push((*path.get(depth).unwrap_or(&"")).to_owned());
+        }
+    }
+
     fn mark(&mut self, art: &Artwork, mark: &Mark, palette: &[tilo_wet_media::Pigment]) {
         let style = &mark.style;
         let mut wrap = String::new();
@@ -199,10 +234,63 @@ impl Writer {
         if !wrap.is_empty() {
             let _ = write!(self.body, "<g{wrap}>");
         }
+        let finishes = self.finishes(mark, palette);
+        for filter in &finishes {
+            let _ = write!(self.body, r#"<g filter="url(#{filter})">"#);
+        }
         self.element(mark, style, palette);
+        for _ in &finishes {
+            self.body.push_str("</g>");
+        }
         if !wrap.is_empty() {
             self.body.push_str("</g>");
         }
+    }
+
+    /// The filters that give `mark` its grain, inner shadow and feathered
+    /// edge, outermost first, written into the defs.
+    fn finishes(&mut self, mark: &Mark, palette: &[tilo_wet_media::Pigment]) -> Vec<String> {
+        let style = &mark.style;
+        let mut filters = Vec::new();
+        let region = r#"x="-50%" y="-50%" width="200%" height="200%""#;
+        if let Some(grain) = style.grain {
+            let id = format!("n-{}", mark.id);
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{id}" {region}><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="1" seed="2"/><feColorMatrix type="saturate" values="0"/><feComposite in2="SourceAlpha" operator="in" result="grain"/><feBlend in="grain" in2="SourceGraphic" mode="overlay" result="grained"/><feComposite in="grained" in2="SourceGraphic" operator="arithmetic" k2="{}" k3="{}"/><feComposite in2="SourceAlpha" operator="in"/></filter>"#,
+                num(grain),
+                num(1.0 - grain)
+            );
+            filters.push(id);
+        }
+        if let Some(shadow) = &style.inner_shadow {
+            let id = format!("i-{}", mark.id);
+            let ink = shadow
+                .colour
+                .as_deref()
+                .and_then(|value| colour(value, palette))
+                .unwrap_or(crate::render::SHADOW_INK);
+            let (ink, alpha) = hex(ink);
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{id}" {region}><feComponentTransfer in="SourceAlpha"><feFuncA type="table" tableValues="1 0"/></feComponentTransfer><feGaussianBlur stdDeviation="{}"/><feOffset dx="{}" dy="{}" result="outside"/><feFlood flood-color="{ink}" flood-opacity="{}"/><feComposite in2="outside" operator="in"/><feComposite in2="SourceAlpha" operator="in" result="inner"/><feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="inner"/></feMerge></filter>"#,
+                num(shadow.blur / 2.0),
+                num(shadow.offset[0]),
+                num(shadow.offset[1]),
+                num(alpha)
+            );
+            filters.push(id);
+        }
+        if let Some(feather) = style.feather {
+            let id = format!("f-{}", mark.id);
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{id}" {region}><feGaussianBlur stdDeviation="{}"/></filter>"#,
+                num(feather / 2.0)
+            );
+            filters.push(id);
+        }
+        filters
     }
 
     fn element(&mut self, mark: &Mark, style: &Style, palette: &[tilo_wet_media::Pigment]) {
@@ -259,6 +347,10 @@ impl Writer {
                 let dashes: Vec<String> = style.dash.iter().copied().map(num).collect();
                 let _ = write!(attrs, r#" stroke-dasharray="{}""#, dashes.join(" "));
             }
+        }
+        if let Some(outline) = self.outlines.get(&mark.id) {
+            let _ = write!(self.body, r#"<path{attrs} d="{}"/>"#, path_data(outline));
+            return;
         }
         self.shape(&mark.shape, &attrs);
     }
@@ -328,16 +420,22 @@ impl Writer {
             align,
             line_height,
             width,
+            tracking,
+            path,
         } = shape
         else {
             return;
         };
-        let family = match font.as_deref() {
-            None | Some("sans") => "sans-serif".to_owned(),
-            Some("serif") => "serif".to_owned(),
-            Some("mono") => "monospace".to_owned(),
-            Some(name) => format!("'{}', sans-serif", escape(name)),
+        let generic = match font.as_deref().map(crate::fonts::nearest).as_deref() {
+            Some("serif") => "serif",
+            Some("mono") => "monospace",
+            _ => "sans-serif",
         };
+        let family = font
+            .as_deref()
+            .and_then(crate::fonts::family)
+            .unwrap_or(ui::UI_SANS_FAMILY);
+        let family = format!("'{}', {generic}", escape(family));
         let (anchor, at) = match (align.as_deref(), width) {
             (Some("center"), Some(width)) => ("middle", x + width / 2.0),
             (Some("end"), Some(width)) => ("end", x + width),
@@ -345,9 +443,13 @@ impl Writer {
             (Some("end"), None) => ("end", *x),
             _ => ("start", *x),
         };
+        let spacing = tracking
+            .filter(|tracking| *tracking != 0.0)
+            .map(|tracking| format!(r#" letter-spacing="{}em""#, num(tracking / 1000.0)))
+            .unwrap_or_default();
         let _ = write!(
             self.body,
-            r#"<text{attrs} x="{}" y="{}" font-family="{family}" font-size="{}" font-weight="{}"{} text-anchor="{anchor}">"#,
+            r#"<text{attrs} x="{}" y="{}" font-family="{family}" font-size="{}" font-weight="{}"{}{spacing} text-anchor="{anchor}">"#,
             num(at),
             num(*y),
             num(*size),
@@ -358,6 +460,23 @@ impl Writer {
                 ""
             },
         );
+        if let Some(d) = path {
+            self.text_paths = self.text_paths.saturating_add(1);
+            let id = format!("t-{}", self.text_paths);
+            let _ = write!(self.defs, r#"<path id="{id}" d="{}"/>"#, escape(d));
+            let offset = match anchor {
+                "middle" => "50%",
+                "end" => "100%",
+                _ => "0",
+            };
+            let words = escape(&text.replace('\n', " "));
+            let href = format!("#{id}");
+            let _ = write!(
+                self.body,
+                r#"<textPath href="{href}" startOffset="{offset}">{words}</textPath></text>"#
+            );
+            return;
+        }
         let leading = size * line_height.unwrap_or(1.2);
         for (index, line) in text.split('\n').enumerate() {
             let _ = write!(
@@ -375,9 +494,13 @@ impl Writer {
         let [fx, fy] = gradient.from;
         let [tx, ty] = gradient.to;
         let _ = if gradient.kind == "radial" {
+            let focal = gradient
+                .focal
+                .map(|[x, y]| format!(r#" fx="{}" fy="{}""#, num(x), num(y)))
+                .unwrap_or_default();
             write!(
                 self.defs,
-                r#"<radialGradient id="g-{id}" gradientUnits="userSpaceOnUse" cx="{}" cy="{}" r="{}">"#,
+                r#"<radialGradient id="g-{id}" gradientUnits="userSpaceOnUse" cx="{}" cy="{}" r="{}"{focal}>"#,
                 num(fx),
                 num(fy),
                 num(Point::new(fx, fy).distance(Point::new(tx, ty)))
@@ -448,13 +571,15 @@ pub fn import(request: &ImportSvg) -> Result<Draw, String> {
         .group
         .clone()
         .unwrap_or_else(|| format!("svg-{}", digest.get(..6).unwrap_or_default()));
+    let document = roxmltree::Document::parse(&svg).ok();
     let mut importer = Importer {
         marks: Vec::new(),
         prefix: group.clone(),
+        groups: document.as_ref().map(group_paths).unwrap_or_default(),
     };
     importer.group(tree.root(), 1.0, Context::default());
-    if let Ok(document) = roxmltree::Document::parse(&svg) {
-        importer.texts(&document, tree.size());
+    if let Some(document) = &document {
+        importer.texts(document, tree.size());
     }
     let mut marks = importer.marks;
     if marks.is_empty() {
@@ -481,8 +606,12 @@ pub fn import(request: &ImportSvg) -> Result<Draw, String> {
             refit(mark, fit, scale);
         }
     }
+    // The SVG's own groups nest inside the import's: `logo/mail`.
     for mark in &mut marks {
-        mark.group = Some(group.clone());
+        mark.group = Some(match mark.group.take() {
+            Some(inner) => format!("{group}/{inner}"),
+            None => group.clone(),
+        });
     }
     Ok(Draw {
         layer: request.layer.clone(),
@@ -520,11 +649,64 @@ fn refit(mark: &mut NewMark, fit: Affine, scale: f64) {
 struct Context {
     clip: Option<String>,
     blend: Option<String>,
+    shadow: Option<crate::model::Shadow>,
 }
 
 struct Importer {
     marks: Vec<NewMark>,
     prefix: String,
+    /// The group path of each element with an id: see [`group_paths`].
+    groups: std::collections::BTreeMap<String, String>,
+}
+
+/// A name from another program as a group id segment: `Mail Icon` is
+/// `mail-icon`.
+fn segment(name: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out: String = out.trim_end_matches('-').chars().take(40).collect();
+    (!out.is_empty()).then_some(out)
+}
+
+/// The group each element of `document` with an id sits in: the
+/// `data-group` this canvas writes, else the ids of the `<g>` elements
+/// around it, outermost first (`icons/mail`). Layers are not groups.
+fn group_paths(document: &roxmltree::Document<'_>) -> std::collections::BTreeMap<String, String> {
+    let mut paths = std::collections::BTreeMap::new();
+    for node in document.descendants().filter(roxmltree::Node::is_element) {
+        if let Some(path) = group_path(node)
+            && let Some(id) = node.attribute("id")
+        {
+            paths.insert(id.to_owned(), path);
+        }
+    }
+    paths
+}
+
+fn group_path(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    let groups: Vec<roxmltree::Node<'_, '_>> = node
+        .ancestors()
+        .skip(1)
+        .filter(|step| step.has_tag_name("g") && step.attribute("data-layer").is_none())
+        .collect();
+    if let Some(written) = groups.iter().find_map(|step| step.attribute("data-group")) {
+        let parts: Vec<String> = written.split('/').filter_map(segment).collect();
+        return (!parts.is_empty()).then(|| parts.join("/"));
+    }
+    let parts: Vec<String> = groups
+        .iter()
+        .rev()
+        .filter_map(|step| step.attribute("id"))
+        .filter_map(segment)
+        .take(8)
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 fn affine(transform: usvg::Transform) -> Affine {
@@ -610,6 +792,21 @@ impl Importer {
         if let Some(blend) = blend_name(group.blend_mode()) {
             context.blend = Some(blend.to_owned());
         }
+        let grows = growth(affine(group.abs_transform()));
+        for filter in group.filters() {
+            for primitive in filter.primitives() {
+                if let usvg::filter::Kind::DropShadow(shadow) = primitive.kind() {
+                    context.shadow = Some(crate::model::Shadow {
+                        offset: [
+                            f64::from(shadow.dx()) * grows,
+                            f64::from(shadow.dy()) * grows,
+                        ],
+                        blur: f64::from(shadow.std_dev_x().get()) * 2.0 * grows,
+                        colour: Some(rgba(shadow.color(), f64::from(shadow.opacity().get()))),
+                    });
+                }
+            }
+        }
         if let Some(clip) = group.clip_path() {
             let base = affine(group.abs_transform()) * affine(clip.transform());
             let mut outline = BezPath::new();
@@ -655,6 +852,8 @@ impl Importer {
             opacity: (opacity < 1.0).then_some(opacity),
             blend: context.blend.clone(),
             clip: context.clip.clone(),
+            shadow: context.shadow.clone(),
+            group: self.groups.get(path.id()).cloned(),
             ..NewMark::new(Shape::Path {
                 d: path_data(&outline),
             })
@@ -672,17 +871,20 @@ impl Importer {
                         from: [from.x, from.y],
                         to: [to.x, to.y],
                         stops: stops(gradient.stops(), alpha),
+                        focal: None,
                     });
                 }
                 usvg::Paint::RadialGradient(gradient) => {
                     let to_art = transform * affine(gradient.transform());
                     let centre = to_art * Point::new(gradient.cx().into(), gradient.cy().into());
                     let radius = f64::from(gradient.r().get()) * growth(to_art);
+                    let focal = to_art * Point::new(gradient.fx().into(), gradient.fy().into());
                     mark.gradient = Some(Gradient {
                         kind: "radial".into(),
                         from: [centre.x, centre.y],
                         to: [centre.x + radius, centre.y],
                         stops: stops(gradient.stops(), alpha),
+                        focal: (focal.distance(centre) > 1e-3).then_some([focal.x, focal.y]),
                     });
                 }
                 usvg::Paint::Pattern(_) => {
@@ -758,33 +960,7 @@ impl Importer {
                     transform *= parse_transform(value);
                 }
             }
-            let lines: Vec<String> = {
-                let spans: Vec<String> = node
-                    .children()
-                    .filter(|child| child.has_tag_name("tspan"))
-                    .map(|span| {
-                        span.descendants()
-                            .filter(roxmltree::Node::is_text)
-                            .filter_map(|n| n.text())
-                            .collect()
-                    })
-                    .collect();
-                if spans.is_empty() {
-                    vec![
-                        node.descendants()
-                            .filter(roxmltree::Node::is_text)
-                            .filter_map(|n| n.text())
-                            .collect(),
-                    ]
-                } else {
-                    spans
-                }
-            };
-            let words = lines
-                .iter()
-                .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let words = text_words(node);
             if words.trim().is_empty() || self.marks.len() >= MAX_MARKS_PER_ACTION {
                 continue;
             }
@@ -800,15 +976,20 @@ impl Importer {
                 "normal" => Some(400),
                 other => other.parse::<u16>().ok(),
             });
+            let tracking = tracking_of(node, number("font-size").unwrap_or(16.0));
+            let path = text_path(node, document, transform);
             self.marks.push(NewMark {
                 id: Some(self.next_id()),
                 fill: Some(text_fill(node)),
+                group: group_path(node),
                 ..NewMark::new(Shape::Text {
                     x: at.x,
                     y: at.y,
                     text: words,
                     size: font_size.max(0.5),
-                    font: family.filter(|family| family != "sans"),
+                    font: family
+                        .map(|family| crate::fonts::nearest(&family))
+                        .filter(|family| family != "sans"),
                     weight: weight.filter(|weight| (100..=900).contains(weight)),
                     italic: inherited(node, "font-style").is_some_and(|style| style == "italic"),
                     align: inherited(node, "text-anchor").and_then(|anchor| {
@@ -820,10 +1001,76 @@ impl Importer {
                     }),
                     line_height: None,
                     width: None,
+                    tracking,
+                    path,
                 })
             });
         }
     }
+}
+
+/// A `<text>`'s words, one line per `<tspan>`, spaces collapsed.
+fn text_words(node: roxmltree::Node<'_, '_>) -> String {
+    let spans: Vec<String> = node
+        .children()
+        .filter(|child| child.has_tag_name("tspan"))
+        .map(|span| {
+            span.descendants()
+                .filter(roxmltree::Node::is_text)
+                .filter_map(|n| n.text())
+                .collect()
+        })
+        .collect();
+    let lines = if spans.is_empty() {
+        vec![
+            node.descendants()
+                .filter(roxmltree::Node::is_text)
+                .filter_map(|n| n.text())
+                .collect::<String>(),
+        ]
+    } else {
+        spans
+    };
+    lines
+        .iter()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A text's `letter-spacing` as tracking, thousandths of its size.
+fn tracking_of(node: roxmltree::Node<'_, '_>, size: f64) -> Option<f64> {
+    let spacing = inherited(node, "letter-spacing")?;
+    let amount = leading_number(&spacing)?;
+    let em = if spacing.trim_end().ends_with("em") {
+        amount
+    } else {
+        amount / size.max(0.1)
+    };
+    Some((em * 1000.0).clamp(-300.0, 1000.0)).filter(|tracking| *tracking != 0.0)
+}
+
+/// The path a text's `<textPath>` sets it along, in artwork units.
+fn text_path(
+    node: roxmltree::Node<'_, '_>,
+    document: &roxmltree::Document<'_>,
+    transform: Affine,
+) -> Option<String> {
+    let along = node
+        .descendants()
+        .find(|child| child.has_tag_name("textPath"))?;
+    // `href`, or the older `xlink:href`.
+    let href = along
+        .attributes()
+        .find(|attribute| attribute.name() == "href")?
+        .value();
+    let id = href.strip_prefix('#')?;
+    let target = document
+        .descendants()
+        .find(|n| n.attribute("id") == Some(id))?;
+    let mut path = BezPath::from_svg(target.attribute("d")?).ok()?;
+    path.apply_affine(transform);
+    Some(path_data(&path))
 }
 
 /// The first family a text names, as the canvas names it.
