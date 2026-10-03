@@ -910,6 +910,7 @@ impl App {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
+        let behaviour = component.behaviour;
         let Some(component) = assembly.component.take() else {
             return Err(crate::launch::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
@@ -940,6 +941,8 @@ impl App {
         validation.disarm();
         root_custody.root = Some(root);
         let mut app = retirement_assembly::assemble(root_custody);
+        app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
+        app.appearance_reconcile = behaviour.appearance_reconcile;
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
