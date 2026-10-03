@@ -124,6 +124,7 @@ fn standalone_launch_spec() -> LaunchSpec {
             "archive-menu",
             "context-menu",
             "dropmove",
+            "empty",
             "error",
             "grid",
             "history",
@@ -152,22 +153,26 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
             "this scenario requires the Tilo filesystem projection".into(),
         ));
     }
+    // Every capture without a folder of its own shows the same everyday home
+    // folder, so the default shot is a populated folder rather than whatever
+    // the capturing machine's home happens to hold.
+    let demo_home = args.value("--path").is_none().then(seed_demo_home);
+    let home_root = demo_home
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("tilo-files-demo-home"));
     // Some scenarios seed a demo directory that must exist BEFORE the widget
     // is built (so the sidebar / workspace roots pick it up), so seed here.
     let demo_dir = match scenario {
         Some("sync") => Some(seed_sync_demo()),
-        Some("thumbnails") => Some(seed_thumbnails_demo()),
+        Some("thumbnails") => Some(seed_thumbnails_demo(&home_root)),
         Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
         Some("history") => Some(seed_history_demo()),
-        Some("archive" | "archive-menu") => {
-            Some(seed_archive_demo().map_err(|error| LaunchError::Operation(error.to_string()))?)
-        }
+        Some("archive" | "archive-menu") => Some(
+            seed_archive_demo(&home_root)
+                .map_err(|error| LaunchError::Operation(error.to_string()))?,
+        ),
         _ => None,
     };
-    // Every capture without a folder of its own shows the same everyday home
-    // folder, so the default shot is a populated folder rather than whatever
-    // the capturing machine's home happens to hold.
-    let demo_home = (demo_dir.is_none() && args.value("--path").is_none()).then(seed_demo_home);
     // Keep screenshot state independent of persisted zoom and Places ordering.
     let mut widget = match &demo_home {
         Some(home) => FileExplorerWidget::with_persistence_dirs(
@@ -180,7 +185,13 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     // Optional `--path <dir>` starts the shot in a specific directory
     // (e.g. to capture a deep breadcrumb trail), else the default
     // cold-start location is used.
-    if let Some(d) = demo_dir.or(demo_home) {
+    let start = demo_dir.or_else(|| match scenario {
+        // A folder the person was in, rather than the home they started from.
+        Some("error" | "loading") => demo_home.as_ref().map(|home| home.join("Documents")),
+        Some("empty") => demo_home.as_ref().map(|home| home.join("Notes")),
+        _ => demo_home.clone(),
+    });
+    if let Some(d) = start {
         widget.navigate(d);
     } else if let Some(p) = args.value("--path") {
         widget.navigate(std::path::PathBuf::from(p));
@@ -206,11 +217,6 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
             widget.debug_select(&[3]);
             widget.begin_rename();
         }
-        // Summon the places drawer over the file view (the narrow
-        // layout's hamburger action). Set BEFORE layout so `apply_layout`
-        // places the revealed drawer — snapping post-layout would leave
-        // the panes at their pre-reveal rects.
-        Some("places") => widget.debug_open_places_drawer(),
         // An intentionally non-connected account detail state. This
         // exercises the privacy-preserving remote account surface without
         // reading a developer's real account store or vault in screenshots.
@@ -460,8 +466,12 @@ fn seed_history_demo() -> std::path::PathBuf {
 
 /// Build a believable archive hierarchy for permanent responsive screenshots.
 /// The shot navigates the actual ZIP reader rather than injecting sample rows.
-fn seed_archive_demo() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    let path = std::env::temp_dir().join("tilo-files-archive-demo.zip");
+fn seed_archive_demo(
+    home: &std::path::Path,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let downloads = home.join("Downloads");
+    std::fs::create_dir_all(&downloads)?;
+    let path = downloads.join("Trip archive.zip");
     let file = std::fs::File::create(&path)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
@@ -486,8 +496,8 @@ fn seed_archive_demo() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
 /// actual generator + service path (decode → downscale → cache → paint), not a
 /// mock. A plain local directory (not a workspace root), so previews are
 /// generated client-side by the shared service. Returns the dir.
-fn seed_thumbnails_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("tilo-files-thumbnails-demo");
+fn seed_thumbnails_demo(home: &std::path::Path) -> std::path::PathBuf {
+    let dir = home.join("Downloads");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 
@@ -840,7 +850,7 @@ fn apply_post_layout_scenario(
         Some("pindrag") => {
             // Carry a folder out of the list toward the sidebar — mid-drag, so
             // the floating ghost shows over the Favourites section.
-            let folder = widget.current_path().join("Development");
+            let folder = widget.current_path().join("Projects");
             widget.debug_begin_pin_drag(folder, Point::new(150.0, 300.0));
         }
         Some("dropmove") => {
@@ -888,6 +898,10 @@ fn apply_post_layout_scenario(
         Some("history") => {
             widget.debug_open_history_demo();
         }
+        // Summon the places drawer over the file view (the narrow layout's
+        // toggle). The shell must have laid out once to know it is a drawer;
+        // the capture then lays out again with it open.
+        Some("places") => widget.debug_open_places_drawer(),
         Some("archive-menu" | "undo-trash") => {
             widget.debug_open_view_menu();
         }
@@ -922,6 +936,7 @@ fn render_shot_to_png(
     if widget.take_structure_dirty() {
         frame.sync(&mut widget);
         frame.layout(&mut widget)?;
+        let _settled = frame.draw(&mut widget);
     }
 
     // A live frame paints immediately after layout.  Prime that same phase
@@ -933,6 +948,13 @@ fn render_shot_to_png(
     // Post-layout scenarios need the laid-out geometry.
     if let Some((state, taffy, child)) = frame.layout_parts() {
         apply_post_layout_scenario(&mut widget, scenario, viewport, state, child, taffy);
+    }
+    // A scenario that changed the structure (a drawer opened) is laid out
+    // again, as the live frame loop would.
+    if widget.take_structure_dirty() {
+        frame.sync(&mut widget);
+        frame.layout(&mut widget)?;
+        let _settled = frame.draw(&mut widget);
     }
 
     // Thumbnail scenarios: requests are enqueued during draw, so a throwaway

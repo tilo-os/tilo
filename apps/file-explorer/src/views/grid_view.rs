@@ -9,10 +9,6 @@ use crate::model::ViewMode;
 use crate::views::file_view::FileView;
 use ui::widget::Widget;
 
-/// Default icon-grid cell size (logical px, at zoom level 0).
-pub const GRID_CELL_WIDTH: f64 = 112.0;
-pub const GRID_CELL_HEIGHT: f64 = 104.0;
-
 /// Present `view` — already bound to the live entries, selection, zoom and
 /// in-place rename — as the responsive icon grid.
 pub fn build_grid(view: FileView) -> Box<dyn Widget> {
