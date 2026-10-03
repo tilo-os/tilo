@@ -321,6 +321,33 @@ impl SiteControls {
     pub fn open_command(&self, information: bool) -> impl FnMut() + 'static {
         self.command(Pending::Open(information))
     }
+    /// Review fixture: the panel open on a secure page with the status the
+    /// engine would report for it.
+    pub(crate) fn stage_for_review(&mut self, information: bool) {
+        self.navigation("https://example.com/");
+        self.open = true;
+        self.information = information;
+        self.status = Some(SiteStatus {
+            request_id: 1,
+            origin: "https://example.com".into(),
+            generation: 2,
+            blocked: 14,
+            global_enabled: true,
+            excepted: false,
+            effective: true,
+            security: "secure".into(),
+            certificate_status: 0,
+            tls_version: 6,
+            content_status: 0,
+            subject: "example.com".into(),
+            issuer: "DigiCert Global G2 TLS RSA SHA256 2020 CA1".into(),
+            expires: 13_437_613_041_000_000.0,
+            permissions: ["camera", "microphone", "location", "notifications"]
+                .into_iter()
+                .map(|name| (name.into(), "ask".into()))
+                .collect(),
+        });
+    }
     pub fn launcher(&self) -> Button {
         Button::icon_only("browser.site.info", Icon::Info, "Site information")
             .tooltip("Connection, permissions and stored data")
@@ -345,7 +372,8 @@ impl SiteControls {
         clippy::too_many_lines,
         reason = "the two bounded site-panel pages share their action context"
     )]
-    pub fn panel(&self, width: f32, height: f32) -> Box<dyn Widget> {
+    /// The panel, `width` by `height`, with its content inset by `inset`.
+    pub fn panel(&self, width: f32, height: f32, inset: f32) -> Box<dyn Widget> {
         let line =
             |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
         let note = |text: &str| {
@@ -358,6 +386,7 @@ impl SiteControls {
             "Ads and trackers"
         };
         let mut column = Column::new()
+            .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(
                 Row::new()
@@ -506,7 +535,11 @@ impl SiteControls {
                     Scrollable::new(ScrollAxis::Vertical)
                         .with_focus_reveal()
                         .with_height(height)
-                        .with_child(Box::new(Container::new().with_child(Box::new(column)))),
+                        .with_child(Box::new(
+                            Container::new()
+                                .with_padding(inset)
+                                .with_child(Box::new(column)),
+                        )),
                 )),
         )
     }
@@ -718,7 +751,7 @@ mod tests {
             controls.open = true;
             controls.committed = Some("https://example.test".into());
             let theme = ui::theme::Theme::dark();
-            let mut panel = controls.panel(480.0, 444.0);
+            let mut panel = controls.panel(480.0, 444.0, 16.0);
             let mut tree = taffy::TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
             let mut text = ui::text_render::TextRenderer::new();
