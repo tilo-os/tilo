@@ -297,7 +297,7 @@ radius, an opacity or a tint.
 | `ui::floating_surface::Material::Floating` | The material of every floating surface: menus, popovers, the palette, sheets, toasts/notifications, chrome over media (video controls, photo info). Default. |
 | `ui::floating_surface::Material::Opaque` | A floating surface whose backdrop must not show through (a secret or credential prompt over content the user does not own). |
 | `ui::floating_surface::paint_material(scene, transform, &shape, material, theme)` | Fill a floating surface's body. `shape` is any `kurbo::Shape`, normally `RoundedRect::from_rect(rect, radius)`. |
-| `ui::surface::panel(scene, transform, rect, radius, theme)` | The whole Panel row: `Material::Floating` body plus the `panel_border` edge. Unchanged signature; its body is now the material. |
+| `ui::surface::panel(scene, transform, rect, radius, theme)` | The whole Panel row: `Material::Floating` body plus the `panel_border` edge and, on a dark material, the `floating_edge`. Unchanged signature; its body is now the material. |
 | `Theme::reduce_transparency` / `Theme::with_reduce_transparency(bool)` | The reduced-transparency accessibility setting. Read only by the toolkit; apps do not branch on it. |
 | `AccessibilityLayer::reduce_transparency` | Settings document field `appearance.accessibility.reduce_transparency` (bool, default `false`). |
 
@@ -346,7 +346,7 @@ floating surface's background, before its content.
 - Shell-only constants `POPOVER_SURFACE_ALPHA`, `MODAL_SURFACE_ALPHA` and
   `panel_surface(theme, alpha)` are gone; use `ui::chrome::shell::panel_ground(theme)`
   for colours derived from the panel, `paint_material` for the body.
-- Any app-side blur radius, `glass_blur_px` read, or "fake blur" (a blurred
+- Any app-side blur radius, `material_blur_px` read, or "fake blur" (a blurred
   rounded rect behind a panel, a lowered-alpha copy of the content) — the
   material owns it.
 
