@@ -398,7 +398,7 @@ fn sample_container_api_server() -> Container {
     Container {
         id: "1b77e0a9c3f54d2e8e0c9a1f6b2d3e4f".into(),
         name: "api-server".into(),
-        image: "registry.example.test/api:2.4.1".into(),
+        image: "ghcr.io/northwind/api:2.4.1".into(),
         status: ContainerStatus::Running,
         status_detail: "Up 4 hours (healthy)".into(),
         command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
@@ -518,7 +518,7 @@ fn sample_container_build_runner() -> Container {
     Container {
         id: "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d".into(),
         name: "build-runner".into(),
-        image: "registry.example.test/ci-runner:latest".into(),
+        image: "ghcr.io/northwind/ci-runner:latest".into(),
         status: ContainerStatus::Exited,
         status_detail: "Exited (0) 2 hours ago".into(),
         command: "/runner/entrypoint.sh".into(),
@@ -634,7 +634,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:b7e0d2a4c6f81930e5a7c9b1d3f5a7c9".into(),
-            repository: "registry.example.test/api".into(),
+            repository: "ghcr.io/northwind/api".into(),
             tag: "2.4.1".into(),
             size_bytes: 122_683_392,
             created: "3 days ago".into(),
@@ -666,7 +666,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:f1c4b6d8e0a25374c9e1a3b5d7f9c1e3".into(),
-            repository: "registry.example.test/ci-runner".into(),
+            repository: "ghcr.io/northwind/ci-runner".into(),
             tag: "latest".into(),
             size_bytes: 689_438_720,
             created: "yesterday".into(),
