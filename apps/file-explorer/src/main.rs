@@ -202,6 +202,8 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("grid" | "thumbnails" | "thumbnails-fs") => {
             widget.set_view_mode(file_explorer::model::ViewMode::Grid);
         }
+        // A file's own menu: right-click on a file row.
+        Some("context-menu") => widget.debug_select(&[9]),
         Some("select") => {
             widget.debug_select(&[7, 8]);
             // Surface the floating status bubble for the still (count + N
@@ -805,7 +807,7 @@ fn apply_post_layout_scenario(
         Some("context-menu") => {
             // Separate right-click fixture. Its location is a real pointer
             // anchor in the content pane, deliberately away from toolbar ⋯.
-            widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
+            widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.25));
             // Arm the first row through the menu's real keyboard route so the
             // still shows the armed-row treatment (the accent fill that
             // replaced the invisible dark-theme veneer), not only the resting
