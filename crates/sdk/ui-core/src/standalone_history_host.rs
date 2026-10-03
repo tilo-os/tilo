@@ -32,6 +32,7 @@ use crate::standalone_history_pane::{HistoryPaneIntent, StandaloneHistoryPane};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
+use crate::widget::window_header::HistoryControl;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
 use crate::search::search_resource;
@@ -111,8 +112,8 @@ pub(crate) struct StandaloneHistoryHost {
     toolbar: Option<Button>,
     search: Option<Button>,
     search_enabled: bool,
-    /// The app shows a [`history_button`] in its own toolbar, so the window
-    /// draws no History button of its own.
+    /// The app draws the window's header row, which holds the History
+    /// control, so the window draws no bar of its own.
     app_presents_button: bool,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
@@ -146,20 +147,12 @@ fn restore_message(result: &Result<bool, HistoryError>) -> &'static str {
 }
 
 impl StandaloneHistoryHost {
-    #[expect(
-        clippy::expect_used,
-        reason = "fixed unit View operation and its nullary binding serialize infallibly"
-    )]
     pub(crate) fn new() -> Self {
-        let resource = open_resource();
-        let binding = ActionBinding::unit_for(&resource, "open").expect("unit history action");
         Self {
             session: None,
             session_id: None,
             toolbar: Some(
-                Button::new("standalone-history-open", "standalone-history-title", None)
-                    .on_action(binding)
-                    .with_enabled(false),
+                history_control_button(BAR_BUTTON_ID, HistoryControl::Closed).with_enabled(false),
             ),
             search: None,
             search_enabled: false,
@@ -295,11 +288,33 @@ impl StandaloneHistoryHost {
             .map_or(0, |session| session.selection().len())
     }
 
-    /// Whether the app places a [`history_button`] in its own toolbar. The
-    /// window then draws no History button of its own; the button's action
-    /// is the same.
-    pub(crate) fn set_app_presents_button(&mut self, presents: bool) {
-        self.app_presents_button = presents;
+    /// What the window's History control shows, or `None` where the host's
+    /// own chrome (a menu bar, the Tilo shell) presents History.
+    fn control(&self) -> Option<HistoryControl> {
+        self.toolbar
+            .as_ref()
+            .map(|_| HistoryControl::of(self.is_open()))
+    }
+
+    /// Offer the History control to the app's header row before the app is
+    /// built. Where the app draws one, the window draws no bar of its own.
+    pub(crate) fn place_in_app_header(&mut self, root: &mut dyn Widget) {
+        self.app_presents_button =
+            crate::widget::window_header::offer_history_control(root, self.control());
+    }
+
+    /// Keep the window's own History control in step with the session: on
+    /// and closing while History shows, opening otherwise.
+    fn sync_control(&mut self) {
+        let open = self.is_open();
+        let can_open = self.can_open();
+        if let Some(toolbar) = &mut self.toolbar
+            && toolbar.is_toggled() != open
+        {
+            *toolbar = history_control_button(BAR_BUTTON_ID, HistoryControl::of(open))
+                .with_enabled(open || can_open);
+            self.structure_dirty = true;
+        }
     }
 
     /// The host's own chrome presents History and Search: drop the in-window
@@ -477,6 +492,7 @@ impl StandaloneHistoryHost {
             self.session = Some(session);
             self.session_id = Some(uuid::Uuid::new_v4());
             self.revision = self.revision.wrapping_add(1);
+            self.sync_control();
             return Ok(());
         }
         self.refresh(context)?;
@@ -599,6 +615,7 @@ impl StandaloneHistoryHost {
         self.pane.clear();
         self.restore_focus = self.content_focus.take();
         self.revision = self.revision.wrapping_add(1);
+        self.sync_control();
     }
 
     /// Drain after canonical widget operation/semantic dispatch. Both pointer
@@ -807,6 +824,9 @@ impl StandaloneHistoryHost {
                         height: taffy::LengthPercentage::length(0.0),
                     },
                     align_items: Some(taffy::AlignItems::Center),
+                    // Window controls stand at the trailing edge, where a
+                    // header row holds them.
+                    justify_content: Some(taffy::JustifyContent::FlexEnd),
                     ..Default::default()
                 },
                 &buttons,
@@ -1056,41 +1076,46 @@ impl Widget for PresentationRoots<'_> {
     }
 }
 
-/// The test id of [`history_button`], by which the host finds it in the
-/// app's tree.
-pub(crate) const HISTORY_BUTTON_ID: &str = "history-button";
+/// The test id of the window's own History control, in its bar.
+pub(crate) const BAR_BUTTON_ID: &str = "standalone-history-open";
 
-/// The History button an app places in its own toolbar. It opens History
-/// exactly as the window's History button does, and while the app shows it
-/// the window draws no separate History bar above the app.
+/// The look of the window's History control: the History glyph as a Plain
+/// icon button, announced and tooltipped as "History" with its shortcut,
+/// reading as on while History shows. Every History host draws this one
+/// control, wherever it stands.
+pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button {
+    let platform = crate::platform::PlatformConventions::default();
+    let shortcut = crate::platform::HostShortcut::History
+        .shortcut(platform)
+        .label(platform);
+    Button::icon_only(id, crate::icons::Icon::History, "standalone-history-title")
+        .tooltip(format!(
+            "{} ({shortcut})",
+            I18nManager::lookup_plain("standalone-history-title")
+        ))
+        .toggled(control.is_open())
+}
+
+/// The window's History control, bound to the History door: closed it
+/// opens History, open it closes it, exactly as the History shortcut and
+/// the palette do.
 ///
 /// # Panics
 ///
-/// Never: the History action is a fixed unit operation whose binding always
-/// serializes.
+/// Never: Open and Hide are fixed unit operations whose bindings always
+/// serialize.
 #[must_use]
 #[expect(
     clippy::expect_used,
-    reason = "fixed unit View operation and its nullary binding serialize infallibly"
+    reason = "fixed unit View operations and their nullary bindings serialize infallibly"
 )]
-pub fn history_button() -> Button {
-    let binding = ActionBinding::unit_for(&open_resource(), "open").expect("unit history action");
-    Button::new(HISTORY_BUTTON_ID, "standalone-history-title", None)
-        .with_icon(crate::icons::Icon::History)
-        .role(crate::widget::ButtonRole::Plain)
-        .on_action(binding)
-}
-
-/// Whether `root`'s tree shows a [`history_button`].
-pub(crate) fn presents_history_button(root: &dyn Widget) -> bool {
-    if root.test_id() == Some(HISTORY_BUTTON_ID) {
-        return true;
+pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
+    let binding = match control {
+        HistoryControl::Closed => ActionBinding::unit_for(&open_resource(), "open"),
+        HistoryControl::Open => ActionBinding::unit_for(&history_resource(true, true), "hide"),
     }
-    let mut found = false;
-    root.for_each_child(&mut |child| {
-        found = found || presents_history_button(child);
-    });
-    found
+    .expect("unit history action");
+    history_control_face(id, control).on_action(binding)
 }
 
 /// The edge under a bar of window chrome: the bar stands on the content
@@ -1546,43 +1571,75 @@ mod tests {
     }
 
     #[test]
-    fn an_app_history_button_replaces_the_window_bar() {
-        // Case `the_button_is_found_anywhere_in_the_app_tree`.
+    fn an_app_header_row_takes_the_history_control() {
+        use crate::widget::window_header::offer_history_control;
+
+        // Case `the_header_row_is_found_anywhere_in_the_app_tree`.
         {
-            let plain = crate::widget::Row::new().push(Box::new(Text::new("app")));
-            assert!(!presents_history_button(&plain));
-            let toolbar = crate::widget::Row::new()
-                .push(Box::new(Text::new("Notes")))
-                .push(Box::new(history_button()));
-            let app = crate::widget::Column::new().push(Box::new(toolbar));
-            assert!(presents_history_button(&app));
-            let button = history_button();
-            assert_eq!(
-                Widget::accessibility(&button).and_then(|node| node.name),
-                Some(I18nManager::lookup_plain("standalone-history-title")),
-                "the app's button is named like the window's"
-            );
+            let mut plain = crate::widget::Row::new().push(Box::new(Text::new("app")));
+            assert!(!offer_history_control(
+                &mut plain,
+                Some(HistoryControl::Closed)
+            ));
+            let shell = crate::widget::NavShell::new().content(Box::new(Text::new("Notes")));
+            let mut app = crate::widget::Column::new().push(Box::new(shell));
+            assert!(offer_history_control(
+                &mut app,
+                Some(HistoryControl::Closed)
+            ));
         }
 
-        // Case `the_window_draws_no_bar_while_the_app_shows_the_button`.
+        // Case `the_window_draws_no_bar_while_the_app_has_a_header_row`.
         {
             let mut host = StandaloneHistoryHost::new();
             let mut app = Text::new("app");
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
+            host.place_in_app_header(&mut app);
             let app_node = app.build_layout(&mut tree, &Theme::light(), &mut nodes);
             let with_bar =
                 host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
             assert!(with_bar.toolbar.is_some(), "the window's own History bar");
 
-            host.set_app_presents_button(true);
+            let mut shell = crate::widget::NavShell::new().content(Box::new(Text::new("app")));
+            host.place_in_app_header(&mut shell);
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
-            let app_node = app.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let app_node = shell.build_layout(&mut tree, &Theme::light(), &mut nodes);
             let layout =
                 host.build_layout(app_node, &mut tree, &Theme::light(), &mut nodes, 1100.0);
             assert!(layout.toolbar.is_none(), "no stacked bar above the app");
             assert_eq!(tree.children(layout.root).unwrap(), vec![layout.content]);
+        }
+
+        // Case `the_control_is_one_named_glyph_that_reads_as_on_while_open`.
+        {
+            for control in [HistoryControl::Closed, HistoryControl::Open] {
+                let button = history_control_button(BAR_BUTTON_ID, control);
+                let node = Widget::accessibility(&button).unwrap();
+                assert_eq!(
+                    node.name,
+                    Some(I18nManager::lookup_plain("standalone-history-title")),
+                    "an icon-only control named History"
+                );
+                assert_eq!(node.state.checked, Some(control.is_open()));
+                assert!(
+                    Widget::tooltip(&button).is_some_and(|tip| tip.starts_with("History (")),
+                    "the tooltip names it and its shortcut"
+                );
+                let address = crate::widget::controls::control_action_bindings(&button)
+                    .into_iter()
+                    .find_map(|binding| match binding.kind {
+                        crate::widget::ControlBindingKind::Action(address) => Some(address),
+                        _ => None,
+                    })
+                    .unwrap();
+                let action = if control.is_open() { "hide" } else { "open" };
+                assert_eq!(
+                    address,
+                    tilo_actions::ActionAddress::new(HISTORY_RESOURCE, action)
+                );
+            }
         }
     }
 
