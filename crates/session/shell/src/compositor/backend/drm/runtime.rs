@@ -941,11 +941,13 @@ fn display_set_of<'a>(
 /// remembered monitor.
 ///
 /// A connector already lit keeps its current mode unless its configured
-/// mode changed (see [`hotplug::retained_mode`]), so `live` is the
-/// outputs being driven now (empty at startup).
+/// mode changed (see [`hotplug::retained_mode`]), so `live` is the outputs
+/// being driven now and `lit_for` the set of monitors they were configured
+/// for (empty and `None` at startup).
 fn configured_connectors(
     cards: &BTreeMap<u64, CardHandle>,
     live: &[LiveEntry],
+    lit_for: Option<&settings_store::hardware::DisplaySet>,
 ) -> (
     BTreeMap<u64, Vec<ConnectorSnapshot>>,
     settings_store::hardware::DisplaySet,
@@ -988,6 +990,7 @@ fn configured_connectors(
     }
     let set = display_set_of(snapshots.values().flatten());
     let config = settings_store::hardware::DisplayConfig::load_effective(&set);
+    let set_changed = lit_for.is_some_and(|lit_for| *lit_for != set);
     for (&device_id, outputs) in &mut snapshots {
         for output in outputs {
             let config_key = output.config_key.clone();
@@ -1003,9 +1006,12 @@ fn configured_connectors(
                     mode: entry.mode,
                     intent: entry.mode_intent,
                 });
-            if let Some(mode) =
-                hotplug::retained_mode(lit, output.mode_intent, &output.advertised_modes())
-            {
+            if let Some(mode) = hotplug::retained_mode(
+                lit,
+                output.mode_intent,
+                set_changed,
+                &output.advertised_modes(),
+            ) {
                 output.retain_mode(mode);
             }
         }
@@ -1019,11 +1025,12 @@ fn configured_connectors(
 fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
     live: &[LiveEntry],
+    lit_for: &settings_store::hardware::DisplaySet,
     profiles: &BTreeMap<String, String>,
     signal_status: &BTreeMap<String, OutputSignalStatus>,
     scale_override: Option<f64>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
-    let (snapshots, _) = configured_connectors(cards, live);
+    let (snapshots, _) = configured_connectors(cards, live, Some(lit_for));
     let mut outputs: Vec<_> = cards
         .iter()
         .flat_map(|(&device_id, card)| {
@@ -1250,6 +1257,7 @@ impl DrmDispatchState {
         let mut outputs = display_capabilities(
             &self.cards,
             &self.live,
+            &self.display_set,
             &self.color_profiles,
             &self.signal_status,
             self.scale_override,
@@ -1332,9 +1340,21 @@ impl DrmDispatchState {
         reason: &str,
         removal_ack: Option<(u64, Sender<u64>)>,
     ) {
-        let (snapshots, display_set) = configured_connectors(&self.cards, &self.live);
+        let (snapshots, display_set) =
+            configured_connectors(&self.cards, &self.live, Some(&self.display_set));
         let display_set_changed = self.display_set != display_set;
         self.display_set = display_set;
+        // A surviving output now answers to the configuration of this set
+        // of monitors, whether it kept its mode or is re-modeset below.
+        for entry in &mut self.live {
+            if let Some(snapshot) = snapshots.get(&entry.key.device).and_then(|snapshots| {
+                snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.connector_id == entry.key.connector)
+            }) {
+                entry.mode_intent = snapshot.mode_intent;
+            }
+        }
         let config_keys: BTreeMap<_, _> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
@@ -3568,7 +3588,7 @@ fn bring_up_all_devices(
     // Every card must be open before configuration is selected: a connector
     // name that looked unique on card0 may collide with one on card1. This is
     // the startup counterpart to `rescan_outputs`' card-wide reconciliation.
-    let (snapshots, display_set) = configured_connectors(&cards, &[]);
+    let (snapshots, display_set) = configured_connectors(&cards, &[], None);
     let mut all_builds = Vec::new();
     for (device_id, path) in card_order {
         let Some(card) = cards.get(&device_id) else {
@@ -4054,6 +4074,7 @@ impl DrmRuntime {
                 let descriptors: Vec<_> = display_capabilities(
                     &self.dispatch.cards,
                     &self.dispatch.live,
+                    &self.dispatch.display_set,
                     &self.dispatch.color_profiles,
                     &self.dispatch.signal_status,
                     self.dispatch.scale_override,
