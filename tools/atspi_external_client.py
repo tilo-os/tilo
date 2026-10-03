@@ -296,13 +296,16 @@ def process_command(pid: int) -> str:
 
 
 def app_log(app_name: str) -> str:
-    """The session journal's recent lines about the launch, for a failed open."""
-    lines = command(
-        "journalctl", "--user", "-b", "--no-pager", "-o", "cat", "-n", "400", check=False,
-    ).splitlines()
-    needles = ("launch", "launcher", "file-explorer", app_name.lower(), "accesskit", "at-spi", "atspi")
+    """Why a launch failed, for a failed open. The compositor records each
+    launch and the app's own output in its session log, not the journal."""
+    session_log = Path.home() / ".local/state/tilo/session-logs/latest.log"
+    try:
+        lines = session_log.read_text(errors="replace").splitlines()[-2000:]
+    except OSError as error:
+        return f"(no session log: {error})"
+    needles = ("tilo::app_launch", "[app so.tilo.", app_name.lower())
     relevant = [line for line in lines if any(n in line.lower() for n in needles)]
-    return " | ".join(relevant[-25:]) or "(nothing)"
+    return " | ".join(line[:300] for line in relevant[-12:]) or "(nothing)"
 
 
 def is_app_connection(client: AtspiClient) -> bool:
@@ -346,10 +349,12 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         path for path in AtspiClient.named(tree, row_name)
         if "'click'" in shell.call(path, "org.a11y.atspi.Action.GetActions", check=False)
     ]
+    accepted = False
     for row in rows:
         result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0", check=False)
         if "true" not in result:
             continue
+        accepted = True
         # One accepted activation launches the app; wait for it rather than
         # launching a second copy from another row.
         deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
@@ -371,10 +376,12 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         except GateError as error:
             name = f"no application node: {error}"
         seen.append(f"{bus} (pid {pid}, process {process} {process_command(process)}): {name}")
+    if not accepted:
+        raise GateError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
     raise GateError(
         f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
         f"new connections: {'; '.join(seen) or 'none'}; "
-        f"its session log: {app_log(app_name)}"
+        f"session log: {app_log(app_name)}"
     )
 
 
