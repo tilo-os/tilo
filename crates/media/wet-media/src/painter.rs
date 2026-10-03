@@ -116,6 +116,18 @@ impl LayerPainter {
             .map_or(&[], |(_, pixels)| pixels.as_slice())
     }
 
+    /// The layer with `marks` painted and `wet` laid over them, without
+    /// keeping `wet`: what a stroke still being painted looks like. The
+    /// painted marks stay simulated, so the next preview costs only `wet`.
+    pub fn preview(&mut self, marks: &[Painted], wet: &[Painted]) -> Vec<u8> {
+        self.paint(marks);
+        let mut sim = self.sim.clone_box();
+        for mark in wet {
+            sim.apply(&mark.mark, mark.seed);
+        }
+        sim.composite()
+    }
+
     /// Go back to the state after the first `keep` marks.
     fn rewind(&mut self, keep: usize) {
         self.checkpoints.retain(|(count, _)| *count <= keep);

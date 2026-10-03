@@ -121,6 +121,29 @@ fn engines_are_deterministic_and_incremental_painting_equals_replay() {
 
 /// Oil covers what it touches and leaves the rest bare; a thin dry brush
 /// over a coarse weave leaves broken coverage rather than a solid band.
+/// A stroke still being painted shows as it will once painted, and leaves
+/// the layer as it was.
+#[test]
+fn a_preview_shows_the_wet_stroke_without_keeping_it() {
+    for (engine, texture) in [("oil", Texture::Linen), ("watercolour", Texture::ColdPress)] {
+        let marks = marks();
+        let (done, wet) = marks.split_at(2);
+        let mut layer = painter(engine, texture);
+        let preview = layer.preview(done, wet);
+        assert_eq!(
+            preview,
+            painter(engine, texture).paint(&marks).to_vec(),
+            "{engine}"
+        );
+        assert_eq!(layer.applied(), 2, "{engine}: the wet stroke is not kept");
+        assert_eq!(
+            layer.paint(done).to_vec(),
+            painter(engine, texture).paint(done).to_vec(),
+            "{engine}"
+        );
+    }
+}
+
 #[test]
 fn oil_covers_its_strokes_and_a_dry_brush_breaks_over_the_weave() {
     let mut oil = painter("oil", Texture::Linen);
