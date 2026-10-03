@@ -83,6 +83,8 @@ class Machine:
         self.requests: list[tuple[str, int]] = []
         self.online = "full"
         self.merges = 0
+        self.unmerges = 0
+        self.merged: list[str] = []
         self.revision = 1
         patches = [
             mock.patch.object(ext, "rpm_query_all", lambda layout: list(self.packages)),
@@ -92,6 +94,7 @@ class Machine:
             mock.patch.object(ext, "rpm_header", self.rpm_header),
             mock.patch.object(ext, "extract_rpm", self.extract_rpm),
             mock.patch.object(ext, "sysext_refresh", self.merge),
+            mock.patch.object(ext, "sysext_unmerge", self.unmerge),
             mock.patch.object(ext, "sysext_masked", lambda: True),
             mock.patch.object(ext.os, "uname", lambda: os.uname_result(("Linux", "h", "7", "v", "x86_64"))),
         ]
@@ -128,6 +131,11 @@ class Machine:
 
     def merge(self, layout):
         self.merges += 1
+        self.merged = sorted(p.name for p in layout.extensions.iterdir() if not p.name.startswith("."))
+
+    def unmerge(self, layout):
+        self.unmerges += 1
+        self.merged = []
 
     # -- publishing --------------------------------------------------------
 
@@ -528,9 +536,35 @@ class Lifecycle(unittest.TestCase):
         self.install(machine)
         foreign = machine.layout.extensions / "evil"
         (foreign / "usr/lib/extension-release.d").mkdir(parents=True)
+        merges = machine.merges
         self.assertEqual(machine.run("activate"), 1)
         self.assertFalse(machine.part().exists())
-        self.assertIn("unexpected system extensions", machine.status()["last_error"])
+        self.assertEqual(machine.merges, merges, "a refusal must not merge what it refused")
+        self.assertEqual((machine.unmerges, machine.merged), (1, []))
+        status = machine.status()
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("unexpected system extensions", status["last_error"])
+        # Once the foreign extension is gone, activation merges again and the
+        # refusal no longer shows.
+        import shutil
+        shutil.rmtree(foreign)
+        self.assertEqual(machine.run("activate"), 0)
+        status = machine.status()
+        self.assertEqual((status["state"], status["last_error"]), ("installed", ""))
+        self.assertIn("tilo-codecs", machine.merged)
+
+    def test_verified_downloads_move_across_mounts(self):
+        machine = Machine(self)
+        real_replace = ext.os.replace
+
+        def cross_device(source, target):
+            if "partial" in str(source):
+                raise OSError(ext.errno.EXDEV, "Invalid cross-device link")
+            return real_replace(source, target)
+
+        with mock.patch.object(ext.os, "replace", cross_device):
+            self.install(machine)
+        self.assertTrue(machine.part().is_dir())
 
     def test_development_image_merges_its_own_layers_too(self):
         machine = Machine(self)

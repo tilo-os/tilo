@@ -133,8 +133,8 @@ image, because the image decides which bytes are acceptable:
    (`docs/security/boot-chain.md`). Activation does it on purpose: it verifies
    each kept manifest's signature again, each kept artifact against the
    manifest, rebuilds every part from those bytes alone, refuses to merge at all
-   if anything else is in the sysext search path, and then runs
-   `systemd-sysext refresh`. A file changed in `/var` does not survive the next
+   if anything else is in the sysext search path (it then unmerges
+   everything instead), and then runs `systemd-sysext refresh`. A file changed in `/var` does not survive the next
    activation; a changed artifact or manifest is not merged.
 
 `/usr/libexec/tilo-extension` is the only consumer. It takes exactly one
@@ -266,8 +266,8 @@ Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
 Units: `tilo-extension@<verb>:<id>.service` (polkit lets a local, active
 administrator start only `install`, `remove` and `refresh` instances; it
 downloads into the state above and then starts the activation),
-`tilo-extension-activate.service` (every boot, offline, before the graphical
-target, and after every change; it has no mount namespace of its own, so the
+`tilo-extension-activate.service` (every boot, offline, before the greeter,
+and after every change; it has no mount namespace of its own, so the
 merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
 on every update check), and NetworkManager's `90-tilo-extension` (an opt-in
 made offline installs once the device is online).
