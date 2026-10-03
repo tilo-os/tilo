@@ -171,6 +171,10 @@ pub struct CanvasSurface {
     /// Whether the window was narrower than the compact breakpoint the last
     /// time the canvas looked; `None` before it first did.
     was_narrow: Option<bool>,
+    /// The sidebar's state as last measured against, and the canvas's rect
+    /// when it changed: until the canvas is laid out anew, its width still
+    /// counts the sidebar as it was.
+    sidebar_seen: Option<(bool, Rect)>,
     space: bool,
     modifiers: ModifiersState,
     /// What the pen reported with the pointer's newest move or press; none
@@ -222,6 +226,7 @@ impl CanvasSurface {
             focused: false,
             pressed_into_focus: false,
             was_narrow: None,
+            sidebar_seen: None,
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
@@ -1276,6 +1281,16 @@ impl CanvasSurface {
             return;
         }
         let shown = self.tools.sidebar.with(|shown| *shown);
+        match self.sidebar_seen {
+            Some((seen, _)) if seen != shown => {
+                // Shown or put away just now: wait for the layout that
+                // makes room for it (or takes it back).
+                self.sidebar_seen = Some((shown, self.rect));
+                return;
+            }
+            Some((_, laid_out)) if laid_out == self.rect => return,
+            _ => self.sidebar_seen = Some((shown, Rect::ZERO)),
+        }
         let sidebar = if shown {
             f64::from(crate::SIDEBAR)
         } else {
