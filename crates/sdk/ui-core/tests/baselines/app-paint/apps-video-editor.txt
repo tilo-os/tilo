@@ -1,0 +1,38 @@
+# The app-paint ratchet for apps-video-editor: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/video-editor/src/app.rs desktop_ground 1
+apps/video-editor/src/app.rs glyph_icon 3
+apps/video-editor/src/app.rs literal_alpha 6
+apps/video-editor/src/app.rs literal_radius 2
+apps/video-editor/src/app.rs ramp_slot 9
+apps/video-editor/src/app.rs raw_paint 2
+apps/video-editor/src/app/accessibility.rs glyph_icon 1
+apps/video-editor/src/app/bin_paint.rs literal_alpha 8
+apps/video-editor/src/app/bin_paint.rs literal_radius 1
+apps/video-editor/src/app/bin_paint.rs ramp_slot 3
+apps/video-editor/src/app/bin_paint.rs raw_paint 2
+apps/video-editor/src/app/inspector_paint.rs desktop_ground 1
+apps/video-editor/src/app/inspector_paint.rs glyph_icon 4
+apps/video-editor/src/app/inspector_paint.rs literal_alpha 8
+apps/video-editor/src/app/inspector_paint.rs literal_radius 1
+apps/video-editor/src/app/inspector_paint.rs ramp_slot 7
+apps/video-editor/src/app/inspector_paint.rs raw_paint 7
+apps/video-editor/src/app/paint.rs literal_alpha 2
+apps/video-editor/src/app/paint.rs literal_radius 6
+apps/video-editor/src/app/paint.rs ramp_slot 8
+apps/video-editor/src/app/paint.rs raw_paint 12
+apps/video-editor/src/app/preview_paint.rs desktop_ground 4
+apps/video-editor/src/app/preview_paint.rs glyph_icon 1
+apps/video-editor/src/app/preview_paint.rs literal_alpha 4
+apps/video-editor/src/app/preview_paint.rs literal_radius 1
+apps/video-editor/src/app/preview_paint.rs ramp_slot 1
+apps/video-editor/src/app/preview_paint.rs raw_paint 5
+apps/video-editor/src/app/timeline_paint.rs desktop_ground 6
+apps/video-editor/src/app/timeline_paint.rs literal_alpha 23
+apps/video-editor/src/app/timeline_paint.rs literal_radius 1
+apps/video-editor/src/app/timeline_paint.rs ramp_slot 9
+apps/video-editor/src/app/timeline_paint.rs raw_paint 5
+apps/video-editor/src/gpu/title.rs literal_color_new 1
+apps/video-editor/src/gpu/title.rs raw_paint 1
+apps/video-editor/src/model.rs glyph_icon 2

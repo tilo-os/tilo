@@ -1,0 +1,28 @@
+# The typography ratchet for apps-settings: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/settings/src/panes/accounts.rs literal_font_size 10
+apps/settings/src/panes/accounts/cloud_signin.rs literal_font_size 6
+apps/settings/src/panes/audio.rs literal_font_size 1
+apps/settings/src/panes/bluetooth.rs literal_font_size 1
+apps/settings/src/panes/device_mesh.rs literal_font_size 1
+apps/settings/src/panes/display_arrangement.rs legacy_size_api 7
+apps/settings/src/panes/display_arrangement.rs raw_type_step 2
+apps/settings/src/panes/mouse_keyboard.rs literal_font_size 2
+apps/settings/src/panes/network.rs literal_font_size 4
+apps/settings/src/panes/notifications.rs literal_font_size 1
+apps/settings/src/panes/permissions.rs literal_font_size 7
+apps/settings/src/panes/printers.rs literal_font_size 10
+apps/settings/src/panes/speakers.rs legacy_size_api 2
+apps/settings/src/panes/speakers.rs raw_type_step 2
+apps/settings/src/panes/time_date.rs legacy_size_api 2
+apps/settings/src/panes/updates.rs literal_font_size 7
+apps/settings/src/panes/users.rs literal_font_size 7
+apps/settings/src/settings_app.rs literal_font_size 1
+apps/settings/src/shots.rs legacy_size_api 1
+apps/settings/src/sidebar.rs legacy_size_api 3
+apps/settings/src/sidebar.rs literal_font_size 1
+apps/settings/src/sidebar.rs raw_type_step 2
+apps/settings/src/sidebar.rs renderer_scale_helper 1
+apps/settings/src/widgets.rs font_size_const 2
+apps/settings/src/widgets.rs literal_font_size 12

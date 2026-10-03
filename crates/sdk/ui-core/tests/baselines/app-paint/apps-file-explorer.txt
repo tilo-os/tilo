@@ -1,0 +1,16 @@
+# The app-paint ratchet for apps-file-explorer: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/file-explorer/src/breadcrumb_bar.rs desktop_ground 1
+apps/file-explorer/src/breadcrumb_bar.rs glyph_icon 1
+apps/file-explorer/src/breadcrumb_bar.rs raw_paint 1
+apps/file-explorer/src/files_app.rs desktop_ground 2
+apps/file-explorer/src/files_app.rs legacy_alias 1
+apps/file-explorer/src/files_app.rs literal_alpha 2
+apps/file-explorer/src/files_app.rs raw_paint 8
+apps/file-explorer/src/i18n.rs glyph_icon 2
+apps/file-explorer/src/places_sidebar.rs desktop_ground 1
+apps/file-explorer/src/places_sidebar.rs raw_paint 5
+apps/file-explorer/src/views/file_view.rs desktop_ground 5
+apps/file-explorer/src/views/file_view.rs literal_alpha 2
+apps/file-explorer/src/views/file_view.rs raw_paint 9
