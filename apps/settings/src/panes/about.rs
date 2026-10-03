@@ -19,7 +19,7 @@ use std::time::Duration;
 use ui::widget::{Button, Row, Spacer, Widget};
 
 use crate::i18n::t;
-use crate::widgets::{caption, card, hero, rows, value_row};
+use crate::widgets::{card, hero, rows, value_row};
 
 fn fact(value: &str) -> String {
     if value == "unknown" {
@@ -171,26 +171,20 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         rows(vec![
             value_row(&t("settings-about-person"), &person),
             value_row(&t("settings-about-identity"), &info.fingerprint()),
-            caption(&t("settings-about-identity-caption")),
         ]),
     );
 
     let backup = card(
         &t("settings-about-backup-card"),
-        rows(vec![
-            caption(&t("settings-about-backup-caption")),
-            Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None)
-                            .content_sized()
-                            .on_effect(|| {
-                                let _ = os_actions::open_tool(portable_identity_backup_intent());
-                            }),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ),
-        ]),
+        rows(vec![Box::new(
+            Row::new()
+                .push(Box::new(
+                    Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None).on_effect(|| {
+                        let _ = os_actions::open_tool(portable_identity_backup_intent());
+                    }),
+                ))
+                .push(Box::new(Spacer::new())),
+        )]),
     );
 
     let system = card(

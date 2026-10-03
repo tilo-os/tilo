@@ -80,15 +80,15 @@ pub const KEEP_DISPLAY_KEY: &str = "display.keep";
 pub const REVERT_DISPLAY_KEY: &str = "display.revert";
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
-    ("Subtle · 4500 K", 4_500),
-    ("Warm · 3700 K", 3_700),
-    ("Very warm · 2800 K", 2_800),
+    ("Subtle (4500 K)", 4_500),
+    ("Warm (3700 K)", 3_700),
+    ("Very warm (2800 K)", 2_800),
 ];
 
 fn temperature_ftl(english: &str) -> &'static str {
     match english {
-        "Subtle · 4500 K" => "display-night-light-temp-subtle",
-        "Very warm · 2800 K" => "display-night-light-temp-very-warm",
+        "Subtle (4500 K)" => "display-night-light-temp-subtle",
+        "Very warm (2800 K)" => "display-night-light-temp-very-warm",
         _ => "display-night-light-temp-warm",
     }
 }
@@ -101,7 +101,7 @@ fn temperature_label(kelvin: u32) -> String {
     let english = NIGHT_LIGHT_TEMPERATURES
         .iter()
         .min_by_key(|(_, value)| value.abs_diff(kelvin))
-        .map_or("Warm · 3700 K", |(label, _)| *label);
+        .map_or("Warm (3700 K)", |(label, _)| *label);
     temperature_shown(english)
 }
 
@@ -396,7 +396,7 @@ fn is_virtual_connector(conn: &str) -> bool {
 
 /// Present one compositor descriptor without leaking a persistence collision
 /// into the UI. A unique connector remains the familiar `HDMI-A-1`; two
-/// cards with that label become e.g. `HDMI-A-1 · pci:0000:01:00.0` so every
+/// cards with that label become e.g. `HDMI-A-1, pci:0000:01:00.0` so every
 /// control, mirror target and saved key refers to exactly one display.
 fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
     let monitor_name = descriptor
@@ -404,15 +404,19 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
         .as_ref()
         .map(MonitorIdentity::display_name)
         .filter(|name| !name.is_empty());
-    let base = match (builtin, monitor_name) {
-        (true, _) => "Built-in display".to_string(),
-        // The port stays visible: two identical monitors differ only there.
-        (false, Some(name)) => format!("{name} · {}", descriptor.label()),
-        (false, None) => descriptor.label().to_string(),
-    };
-    descriptor
-        .card_qualifier()
-        .map_or_else(|| base.clone(), |card| format!("{base} · {card}"))
+    if builtin {
+        return "Built-in display".to_string();
+    }
+    // The port stays visible: two identical monitors differ only there, and
+    // two cards with the same port differ only by the card.
+    let mut inner = descriptor.label().to_string();
+    if let Some(card) = descriptor.card_qualifier() {
+        inner = format!("{inner}, {card}");
+    }
+    match monitor_name {
+        Some(name) => format!("{name} ({inner})"),
+        None => inner,
+    }
 }
 
 /// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
@@ -856,7 +860,7 @@ impl DisplayPane {
                             .iter()
                             .find(|output| output.connector == *connector)
                             .and_then(|output| output.color_profile_labels.get(id))
-                            .map_or_else(|| id.clone(), |name| format!("{name} · {id}"))
+                            .map_or_else(|| id.clone(), |name| format!("{name} ({id})"))
                     },
                 );
                 let _ = state.put(root, output_key(connector, "color_profile"), label);
@@ -902,18 +906,14 @@ impl DisplayPane {
         crate::widgets::cards(cards)
     }
 
-    /// The "Displays" arrangement card: a drag-to-arrange canvas of the
-    /// connected outputs with an Identify button, plus a caption about idle
-    /// ports. See [`Self::connected_outputs`] for why disconnected ports
-    /// aren't enumerated.
+    /// The arrangement: a drag-to-arrange canvas of the connected outputs
+    /// with an Identify button. The page's header already names it, so it has
+    /// no heading of its own. See [`Self::connected_outputs`] for why
+    /// disconnected ports aren't enumerated.
     fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> El {
         if connected.is_empty() {
-            return card(
-                &t("display-card-title"),
-                rows(vec![caption(&t("display-none"))]),
-            );
+            return rows(vec![caption(&t("display-none"))]);
         }
-        let disconnected = self.outputs.len() - connected.len();
         let displays = self.arranged_displays(connected);
         let moves = displays
             .iter()
@@ -923,7 +923,7 @@ impl DisplayPane {
                     .map(|binding| (display.connector.clone(), binding))
             })
             .collect();
-        let mut out_rows: Vec<El> = vec![
+        let out_rows: Vec<El> = vec![
             Box::new(super::display_arrangement::DisplayArrangement::new(
                 displays,
                 moves,
@@ -938,7 +938,6 @@ impl DisplayPane {
                         &crate::i18n::t("display-identify"),
                         None,
                     )
-                    .content_sized()
                     .on_action(
                         crate::actions::display_unit_binding("identify")
                             .expect("display identify action is published"),
@@ -946,15 +945,7 @@ impl DisplayPane {
                 ),
             ),
         ];
-        // One honest line about the idle ports rather than a row each.
-        out_rows.push(caption(&if connected.len() > 1 {
-            t("display-caption-switch")
-        } else if disconnected == 0 {
-            t("display-caption-second")
-        } else {
-            t("display-caption-port")
-        }));
-        card(&t("display-card-title"), rows(out_rows))
+        rows(out_rows)
     }
 
     /// The connected outputs as the arrangement canvas draws them: staged
@@ -1107,7 +1098,6 @@ impl DisplayPane {
                         )),
                     ),
                 ),
-                caption(&t("display-night-light-caption")),
             ]),
         )
     }
@@ -1437,7 +1427,7 @@ impl DisplayPane {
                 output
                     .color_profile_labels
                     .get(id)
-                    .map(|label| format!("{label} · {id}"))
+                    .map(|label| format!("{label} ({id})"))
             }));
             let placeholder = config
                 .color_profile
@@ -1446,7 +1436,7 @@ impl DisplayPane {
                     output
                         .color_profile_labels
                         .get(id)
-                        .map(|label| format!("{label} · {id}"))
+                        .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
             out_rows.push(choice_row(
@@ -1493,23 +1483,19 @@ impl DisplayPane {
                         setting_row(
                             &t("display-keep-ok"),
                             Box::new(
-                                Button::new("settings.display.keep", &keep, None)
-                                    .content_sized()
-                                    .on_action(
-                                        crate::actions::display_unit_binding("confirm")
-                                            .expect("display confirm action is published"),
-                                    ),
+                                Button::new("settings.display.keep", &keep, None).on_action(
+                                    crate::actions::display_unit_binding("confirm")
+                                        .expect("display confirm action is published"),
+                                ),
                             ),
                         ),
                         setting_row(
                             &t("display-keep-wrong"),
                             Box::new(
-                                Button::new("settings.display.revert", &revert, None)
-                                    .content_sized()
-                                    .on_action(
-                                        crate::actions::display_unit_binding("revert")
-                                            .expect("display revert action is published"),
-                                    ),
+                                Button::new("settings.display.revert", &revert, None).on_action(
+                                    crate::actions::display_unit_binding("revert")
+                                        .expect("display revert action is published"),
+                                ),
                             ),
                         ),
                     ]),
@@ -1537,12 +1523,10 @@ impl DisplayPane {
                     content.push(setting_row(
                         &t("display-retry"),
                         Box::new(
-                            Button::new("settings.display.apply", &try_again, None)
-                                .content_sized()
-                                .on_action(
-                                    crate::actions::display_unit_binding("apply")
-                                        .expect("display apply action is published"),
-                                ),
+                            Button::new("settings.display.apply", &try_again, None).on_action(
+                                crate::actions::display_unit_binding("apply")
+                                    .expect("display apply action is published"),
+                            ),
                         ),
                     ));
                 }
@@ -1557,12 +1541,10 @@ impl DisplayPane {
                         setting_row(
                             &t("display-apply-row"),
                             Box::new(
-                                Button::new("settings.display.apply", &apply, None)
-                                    .content_sized()
-                                    .on_action(
-                                        crate::actions::display_unit_binding("apply")
-                                            .expect("display apply action is published"),
-                                    ),
+                                Button::new("settings.display.apply", &apply, None).on_action(
+                                    crate::actions::display_unit_binding("apply")
+                                        .expect("display apply action is published"),
+                                ),
                             ),
                         ),
                     ]),
@@ -1657,7 +1639,7 @@ impl DisplayPane {
                     output
                         .color_profile_labels
                         .get(id)
-                        .map(|label| format!("{label} · {id}"))
+                        .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
             let _ = state.put(
@@ -1985,7 +1967,7 @@ impl DisplayPane {
                     output
                         .color_profile_labels
                         .get(id)
-                        .map(|label| format!("{label} · {id}"))
+                        .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
             let _ = state.put(
@@ -2329,7 +2311,7 @@ impl DisplayPane {
                     .color_profile_labels
                     .iter()
                     .find_map(|(id, candidate)| {
-                        (label == format!("{candidate} · {id}")).then(|| id.clone())
+                        (label == format!("{candidate} ({id})")).then(|| id.clone())
                     })
             };
             if selected != cfg.color_profile {
@@ -2839,7 +2821,7 @@ mod tests {
                 color_profiles: vec![],
                 monitor: None,
             };
-            assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
+            assert_eq!(snapshot_label(&first, false), "HDMI-A-1, pci:0000:01:00.0");
             let named = OutputDescriptor {
                 monitor: Some(MonitorIdentity {
                     make: "Dell".into(),
@@ -2850,13 +2832,10 @@ mod tests {
             };
             assert_eq!(
                 snapshot_label(&named, false),
-                "Dell U2720Q · HDMI-A-1 · pci:0000:01:00.0",
+                "Dell U2720Q (HDMI-A-1, pci:0000:01:00.0)",
                 "a monitor is named by its EDID and still told apart by port"
             );
-            assert_eq!(
-                snapshot_label(&second, false),
-                "HDMI-A-1 · pci:0000:03:00.0"
-            );
+            assert_eq!(snapshot_label(&second, false), "HDMI-A-1, pci:0000:03:00.0");
 
             let display = DisplayOutput {
                 label: snapshot_label(&first, false),
@@ -2881,12 +2860,12 @@ mod tests {
                 DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
                     .with_outputs(vec![
                         DisplayOutput {
-                            label: "HDMI-A-1 · pci:0000:01:00.0".into(),
+                            label: "HDMI-A-1, pci:0000:01:00.0".into(),
                             connector: first.into(),
                             ..classify_connector("card0-HDMI-A-1", "connected")
                         },
                         DisplayOutput {
-                            label: "HDMI-A-1 · pci:0000:03:00.0".into(),
+                            label: "HDMI-A-1, pci:0000:03:00.0".into(),
                             connector: second.into(),
                             ..classify_connector("card1-HDMI-A-1", "connected")
                         },
@@ -3590,8 +3569,8 @@ mod tests {
         )
         .with_outputs(vec![
             display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
-            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q (DP-2)", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850 (DP-3)", false, Vec::new()),
         ])
         .with_monitor_brightness(&[level("eDP-1", 0.5), level("DP-2", 0.3)]);
         assert_eq!(

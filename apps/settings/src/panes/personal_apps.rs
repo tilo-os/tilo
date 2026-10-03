@@ -148,7 +148,6 @@ impl PersonalAppsPane {
                     &t("settings-personal-apps-applies-to"),
                     &t("settings-personal-apps-applies-value"),
                 ),
-                caption(&t("settings-personal-apps-scope-caption")),
                 Box::new(
                     Button::new(
                         "open-workspace-app-defaults",

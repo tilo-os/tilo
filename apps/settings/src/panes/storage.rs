@@ -238,10 +238,7 @@ impl StoragePane {
                 );
                 card_with_action(
                     &t("settings-storage-synced-card"),
-                    Box::new(
-                        Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))),
                     rows(sync_rows),
                 )
             } else {
@@ -301,10 +298,8 @@ impl StoragePane {
                     "settings-storage-remove",
                     &[("size", ui::format::bytes_si(preview.total_bytes).into())],
                 );
-                let action = Box::new(
-                    Button::new("storage.clean", &remove, Some(CLEAN_KEY)).content_sized(),
-                );
-                let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
+                let action = Box::new(Button::new("storage.clean", &remove, Some(CLEAN_KEY)));
+                let mut preview_rows = Vec::new();
                 let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
                     value_row(
@@ -337,19 +332,17 @@ impl StoragePane {
                 crate::widgets::setting_row_described(
                     &t("settings-storage-disks"),
                     &t("settings-storage-disks-desc"),
-                    Box::new(
-                        Button::new("storage.disks", &open_disks, Some(DISKS_KEY)).content_sized(),
-                    ),
+                    Box::new(Button::new("storage.disks", &open_disks, Some(DISKS_KEY))),
                 ),
                 crate::widgets::setting_row_described(
                     &t("settings-storage-backups"),
                     &t("settings-storage-backups-desc"),
-                    Box::new(
-                        Button::new("storage.backups", &open_backups, Some(BACKUPS_KEY))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new(
+                        "storage.backups",
+                        &open_backups,
+                        Some(BACKUPS_KEY),
+                    )),
                 ),
-                caption(&t("settings-storage-tools-caption")),
             ]),
         )
     }

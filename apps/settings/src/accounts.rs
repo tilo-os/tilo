@@ -715,7 +715,7 @@ impl AccountDirectory {
                     kind,
                     label: a.label().to_string(),
                     summary: format!(
-                        "{} · {}:{}",
+                        "{} ({}:{})",
                         a.config.email, a.config.imap_host, a.config.imap_port
                     ),
                     enabled: true,
@@ -743,7 +743,7 @@ fn dav_view_caldav(a: &DavAccount) -> AccountView {
         id: a.id.clone(),
         kind: AccountKind::CalDav,
         label: a.label.clone(),
-        summary: format!("CalDAV · {}", short_url(&a.base_url)),
+        summary: short_url(&a.base_url),
         enabled: a.enabled,
         tint: a.tint,
     }
@@ -754,7 +754,7 @@ fn dav_view_webdav(a: &DavAccount) -> AccountView {
         id: a.id.clone(),
         kind: AccountKind::WebDav,
         label: a.label.clone(),
-        summary: format!("WebDAV · {}", short_url(&a.base_url)),
+        summary: short_url(&a.base_url),
         enabled: a.enabled,
         tint: a.tint,
     }
@@ -775,7 +775,7 @@ fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
         id: a.id.clone(),
         kind: AccountKind::Nextcloud,
         label: a.label.clone(),
-        summary: format!("{} · {}", short_url(&a.server_url), svc.join(", ")),
+        summary: format!("{} ({})", short_url(&a.server_url), svc.join(", ")),
         enabled: a.enabled,
         tint: a.tint,
     }
@@ -788,11 +788,9 @@ fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
         .and_then(serde_json::Value::as_str)
         .filter(|identity| !identity.is_empty());
     let summary = match (identity, kind.oauth_cloud()) {
-        (Some(identity), _) => format!("{} · {identity}", kind.label()),
-        (None, Some(cloud)) => {
-            format!("{} · signed in with {}", kind.label(), cloud.sign_in_with())
-        }
-        (None, None) => format!("{} · Apple ID", kind.label()),
+        (Some(identity), _) => identity.to_string(),
+        (None, Some(cloud)) => format!("Signed in with {}", cloud.sign_in_with()),
+        (None, None) => "Apple ID".to_string(),
     };
     AccountView {
         id: account.id.to_string(),

@@ -168,15 +168,12 @@ impl ShortcutPane {
             })
             .collect();
         if !self.config.actions.is_empty() {
-            let mut actions: Vec<Box<dyn Widget>> = self
+            let actions: Vec<Box<dyn Widget>> = self
                 .config
                 .actions
                 .iter()
                 .map(|bound| crate::widgets::value_row(&bound.label, &chord_label(&bound.chord)))
                 .collect();
-            actions.push(crate::widgets::caption(&t(
-                "settings-shortcuts-actions-caption",
-            )));
             cards.push(card(&t("settings-shortcuts-actions"), rows(actions)));
         }
         crate::widgets::cards(cards)

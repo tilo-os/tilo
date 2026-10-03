@@ -2670,7 +2670,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
         "night_light_temperature",
         "Set Night Light warmth",
         DISPLAY_OPERATION_TYPE,
-        vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+        vec!["Subtle (4500 K)", "Warm (3700 K)", "Very warm (2800 K)"]
             .into_iter()
             .map(str::to_string)
             .collect(),
@@ -2954,7 +2954,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
                         output
                             .color_profile_labels
                             .get(id)
-                            .map(|name| format!("{name} · {id}"))
+                            .map(|name| format!("{name} ({id})"))
                     }),
             );
             let operation_connector = connector.clone();
@@ -3100,7 +3100,7 @@ pub fn display_choice_binding(action_id: &str) -> Option<tilo_actions::ActionBin
             action_id,
             "Set Night Light warmth",
             DISPLAY_OPERATION_TYPE,
-            vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+            vec!["Subtle (4500 K)", "Warm (3700 K)", "Very warm (2800 K)"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -5733,7 +5733,7 @@ mod tests {
             .expect("appearance section");
         let appearance_ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(appearance_ids.contains(&"open"), "{appearance_ids:?}");
-        assert!(appearance_ids.contains(&"theme"), "{appearance_ids:?}");
+        assert!(appearance_ids.contains(&"dark_theme"), "{appearance_ids:?}");
         assert!(appearance_ids.contains(&"ui_scale"), "{appearance_ids:?}");
 
         let notifications = published
@@ -5848,7 +5848,7 @@ mod tests {
 
             let appearance = find(&resources, "settings.section:appearance");
             let ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(ids.contains(&"theme"), "{ids:?}");
+            assert!(ids.contains(&"dark_theme"), "{ids:?}");
             assert!(ids.contains(&"ui_scale"), "{ids:?}");
         }
 
@@ -5905,7 +5905,12 @@ mod tests {
                 .publish_resource(&doc, &pane_resource_id(Category::Appearance))
                 .expect("one section resolves without rebuilding every other section");
             assert_eq!(appearance.label, Category::Appearance.label());
-            assert!(appearance.actions.iter().any(|action| action.id == "theme"));
+            assert!(
+                appearance
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "dark_theme")
+            );
         }
 
         // Case `adversarial_account_inventory_is_hard_bounded`.
@@ -6824,7 +6829,11 @@ mod tests {
         {
             let res = provide_resources(&AutoCommit::new());
             let appearance = find(&res, "settings.section:appearance");
-            let theme = appearance.actions.iter().find(|a| a.id == "theme").unwrap();
+            let theme = appearance
+                .actions
+                .iter()
+                .find(|a| a.id == "dark_theme")
+                .unwrap();
             let typo = serde_json::Map::from_iter([(
                 "choice".to_owned(),
                 serde_json::Value::String("not-a-theme".to_owned()),
@@ -6882,7 +6891,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         for action in [
             set_bool_action(panes::notifications::DND_KEY, false),
-            set_text_action(panes::appearance::THEME_KEY, "Dark"),
+            set_text_action(panes::appearance::DARK_THEME_KEY, "Dark"),
         ] {
             tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
         }
@@ -6893,9 +6902,9 @@ mod tests {
         seed: seeded_doc(),
         registry: registry(),
         resources: |doc| provide_resources(doc),
-        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set theme"],
+        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set dark theme"],
         replay: [
-            set_theme => |_| encode(&set_text_action(panes::appearance::THEME_KEY, "Nord")),
+            set_dark_theme => |_| encode(&set_text_action(panes::appearance::DARK_THEME_KEY, "Dark cool")),
         ],
         undo: [
             turn_on_dnd => |_| encode(&set_bool_action(panes::notifications::DND_KEY, true)),
@@ -6904,8 +6913,8 @@ mod tests {
             dnd_flips_the_current_value => ("settings.section:notifications", "dnd", |_, _| {
                 encode(&set_bool_action(panes::notifications::DND_KEY, true))
             }),
-            theme => ("settings.section:appearance", "theme", arg: "Gruvbox", |_, _| {
-                encode(&set_text_action(panes::appearance::THEME_KEY, "Gruvbox"))
+            theme => ("settings.section:appearance", "dark_theme", arg: "Dark soft", |_, _| {
+                encode(&set_text_action(panes::appearance::DARK_THEME_KEY, "Dark soft"))
             }),
         ],
     }

@@ -451,9 +451,8 @@ impl NotificationsPane {
             self.build_focus_card(),
             Self::build_banners_card(),
             Self::build_delivery_card(),
-            Self::build_apps_card(app_cards.is_empty()),
-            Self::build_explainer_card(),
         ];
+        cards.extend(Self::build_apps_card(app_cards.is_empty()));
         cards.extend(app_cards);
         cards.push(Self::build_priority_contacts_card());
         crate::widgets::cards(cards)
@@ -466,9 +465,7 @@ impl NotificationsPane {
         // toggles is legible at the top of the pane.
         let status_row: El = Box::new(
             ui::widget::Row::new()
-                .push(Box::new(
-                    ui::widget::Text::new(&t("notif-delivery")).with_size(13.0),
-                ))
+                .push(Box::new(ui::widget::Text::new(&t("notif-delivery"))))
                 .push(Box::new(ui::widget::Spacer::new()))
                 .push(semantic_status_pill(&status_label, status_tone)),
         );
@@ -567,7 +564,6 @@ impl NotificationsPane {
                             .with_placeholder(focus_time_label(self.prefs.focus.end_minute)),
                     ),
                 ),
-                caption(&t("notif-focus-caption")),
             ]),
         )
     }
@@ -673,37 +669,24 @@ impl NotificationsPane {
         app_cards
     }
 
-    fn build_apps_card(is_empty: bool) -> Box<dyn Widget> {
-        if is_empty {
+    /// The applications section: only its empty state has a card of its own,
+    /// since each installed application brings its own.
+    fn build_apps_card(is_empty: bool) -> Option<Box<dyn Widget>> {
+        is_empty.then(|| {
             card(
                 &t("notif-apps-title"),
                 rows(vec![caption(&t("notif-apps-empty"))]),
             )
-        } else {
-            card(
-                &t("notif-apps-title"),
-                rows(vec![caption(&t("notif-apps-caption"))]),
-            )
-        }
-    }
-
-    fn build_explainer_card() -> Box<dyn Widget> {
-        card(
-            &t("notif-how-title"),
-            rows(vec![caption(&t("notif-how-caption"))]),
-        )
+        })
     }
 
     fn build_priority_contacts_card() -> Box<dyn Widget> {
         card(
             &t("notif-priority-title"),
-            rows(vec![
-                value_row(
-                    &t("notif-priority-source"),
-                    &t("notif-priority-source-value"),
-                ),
-                caption(&t("notif-priority-caption")),
-            ]),
+            rows(vec![value_row(
+                &t("notif-priority-source"),
+                &t("notif-priority-source-value"),
+            )]),
         )
     }
 

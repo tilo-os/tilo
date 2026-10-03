@@ -152,7 +152,7 @@ enum Tint {
 impl Tint {
     fn tone(self) -> StatusTone {
         match self {
-            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Accent,
+            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Neutral,
             Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
             Tint::Network => StatusTone::Success,
         }
@@ -225,7 +225,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             } else {
                 t("perm-verb-ro")
             };
-            ("Files", format!("{p}  ·  {verb}"), Tint::Files)
+            ("Files", format!("{p}, {verb}"), Tint::Files)
         }
         Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
         Scope::Device(d) if d == "microphone" => {
@@ -322,7 +322,11 @@ fn cap_row(view: &CapView) -> El {
     Box::new(
         Row::new()
             .push(semantic_status_pill(&kind, view.tint.tone()))
-            .push(Box::new(Text::new(&view.detail).with_size(12.0).dimmed()))
+            .push(Box::new(
+                Text::new(&view.detail)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
     )
@@ -331,7 +335,7 @@ fn cap_row(view: &CapView) -> El {
 /// One app's block within a workspace card: the app id, then its grants.
 fn app_block(grants: &AppGrants) -> El {
     let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(Text::new(&grants.app).with_size(13.0)));
+    items.push(Box::new(Text::new(&grants.app)));
     for cap in &grants.caps {
         items.push(cap_row(cap));
     }
@@ -392,22 +396,7 @@ fn device_security_card() -> El {
             value_row(&t("perm-disk"), &security.disk_encryption),
             value_row(&t("perm-secure-boot"), &security.secure_boot),
             value_row(&t("perm-firewall"), &security.firewall),
-            caption(&t("perm-security-caption")),
         ]),
-    )
-}
-
-/// Establish the boundary before mixing the two related, but independently
-/// owned, kinds of access below. System Settings reports this device's state;
-/// collaborators, roles, and app access belong to the workspace that owns
-/// them. Keeping the distinction in the first visible card prevents this
-/// cross-workspace overview from looking like an editor for every workspace.
-fn scope_card() -> El {
-    card(
-        &t("perm-this-device"),
-        rows(vec![Box::new(
-            Text::new(&t("perm-this-device-body")).with_size(12.0),
-        )]),
     )
 }
 
@@ -416,18 +405,13 @@ fn workspace_grants_intro_card() -> El {
     let open = t("perm-open-workspace");
     card(
         &t("perm-workspace-intro-title"),
-        rows(vec![
-            Box::new(Text::new(&t("perm-workspace-intro-body")).with_size(12.0)),
-            Box::new(
-                Button::new("open-workspace-privacy", &open, None)
-                    .content_sized()
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                            route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                        });
-                    }),
-            ),
-        ]),
+        rows(vec![Box::new(
+            Button::new("open-workspace-privacy", &open, None).on_effect(|| {
+                let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                    route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                });
+            }),
+        )]),
     )
 }
 
@@ -437,7 +421,7 @@ fn no_workspace_grants_card() -> El {
     card(
         &t("perm-no-grants-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-no-grants-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption)),
             gap(SpacingStep::S1),
             caption(&t("perm-no-grants-caption")),
         ]),
@@ -451,7 +435,7 @@ fn workspace_grants_unavailable_card() -> El {
     card(
         &t("perm-unavailable-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-unavailable-body")).with_size(12.0)),
+            Box::new(Text::new(&t("perm-unavailable-body")).with_role(ui::TextRole::Caption)),
             caption(&t("perm-unavailable-caption")),
         ]),
     )
@@ -467,7 +451,11 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
         "perm-grants-summary",
         &[("grants", grants.into()), ("workspaces", workspaces.into())],
     );
-    panel.push(Box::new(Text::new(&summary).with_size(11.0).dimmed()));
+    panel.push(Box::new(
+        Text::new(&summary)
+            .with_role(ui::TextRole::Caption)
+            .dimmed(),
+    ));
 
     for ws in all {
         let mut body: Vec<El> = Vec::new();
@@ -488,14 +476,6 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
     }
 }
 
-/// Where the compositor enforces the grants.
-fn enforcement_card() -> El {
-    card(
-        &t("perm-enforcement-title"),
-        rows(vec![caption(&t("perm-enforcement-caption"))]),
-    )
-}
-
 /// Core builder, split from [`build`] so it can be exercised against an
 /// explicit state document in tests without touching the real config dir.
 fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
@@ -504,7 +484,6 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     let mut panel: Vec<El> = Vec::new();
 
     let privacy = os_actions::get_privacy_status();
-    panel.push(scope_card());
     panel.push(privacy_hardware_card(&privacy));
     panel.push(active_privacy_use_card(&privacy));
     panel.push(device_security_card());
@@ -518,8 +497,6 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
         }
         Ok(None) | Err(_) => panel.push(workspace_grants_unavailable_card()),
     }
-
-    panel.push(enforcement_card());
 
     cards(panel)
 }
@@ -678,8 +655,8 @@ mod tests {
                 4,
                 "two pills per grant"
             );
-            // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "Card") >= 3);
+            // Device security, the intro and one workspace section are all present.
+            assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
 
