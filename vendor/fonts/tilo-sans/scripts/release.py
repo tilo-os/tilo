@@ -8,7 +8,7 @@
 
 The sources hold everything every area has drawn. Not all of it ships: a
 script or feature that review has not yet approved is held back, so Tilo's
-fallback face (Onest for Cyrillic, Geologica for Greek) keeps drawing it.
+fallback face (Onest for Cyrillic) keeps drawing it.
 
     fonts/TiloSans[wdth,wght].ttf, fonts/TiloSans-Italic[wdth,wght].ttf
         what build.py compiles: everything (the tools and proofs use these)

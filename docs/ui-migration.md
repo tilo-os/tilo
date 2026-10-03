@@ -364,8 +364,8 @@ set it themselves.
 
 ### The UI face
 
-The system UI face is Instrument Sans; Greek and Cyrillic fall back to faces
-matched to its x-height and weight (Geologica, Onest), Vietnamese to Noto Sans
+The system UI face is Tilo Sans, which sets Latin, Vietnamese and Greek;
+Cyrillic falls back to Onest, matched to its x-height and weight
 ([Script fallbacks](typography.md#script-fallbacks)). A theme or the
 accessibility layer may choose the built-in `Hyperlegible` face instead. Code
 never names a family: `TextRole` picks sans, serif (`Reading`) or mono
