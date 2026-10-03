@@ -55,7 +55,11 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
         .collect()
 }
 
-/// The panel.
+/// How tall the list of layers grows before it scrolls.
+const LIST: f32 = 232.0; // about four layer rows: a share of the sidebar, not spacing
+
+/// The panel: the layers, scrolling when there are many, and under them
+/// the chosen layer's own controls, always in view.
 pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let rows = cx.value(rows);
     let list = {
@@ -75,16 +79,30 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     };
     // The chosen layer's own controls, built again when another is chosen.
     let footer = cx.switch(&tools.layer, |cx, id| chosen_layer(cx, id));
-    let adding = LocalState::new("oil".to_owned());
-    let add = add_layer(cx, &adding, tools);
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(10.0)
-            .push(list)
-            .push(footer)
-            .push(add),
+            .with_gap(0.0)
+            .push(Box::new(
+                Scrollable::new_vertical()
+                    .with_max_height(LIST)
+                    .with_child(Box::new(
+                        Column::new()
+                            .with_intrinsic_height()
+                            .with_vertical_padding(4.0)
+                            .with_horizontal_padding(8.0, 8.0)
+                            .push(list),
+                    )),
+            ))
+            .push(Box::new(ui::widget::Divider::horizontal()))
+            .push(Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_vertical_padding(8.0)
+                    .with_horizontal_padding(16.0, 12.0)
+                    .push(footer),
+            )),
     )
 }
 
@@ -247,7 +265,7 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
                     .no_wrap()
                     .with_align_items(ui::taffy::AlignItems::Center)
                     .push(Box::new(label))
-                    .push(super::filler())
+                    .push(Box::new(Spacer::new()))
                     .push(Box::new(raise))
                     .push(Box::new(lower))
                     .push(Box::new(remove)),
@@ -256,9 +274,9 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
     )
 }
 
-/// Adding a layer: the medium to paint it in, and the button that adds it
-/// above the chosen layer.
-fn add_layer(cx: &ViewCx<ArtworkResource>, adding: &LocalState<String>, tools: &Tools) -> Element {
+/// Adding a layer: a menu of the media to paint it in, adding the chosen
+/// one above the chosen layer and naming it for its medium.
+pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let media = cx.read(|art| {
         let mut media = vec![(
             String::new(),
@@ -273,51 +291,33 @@ fn add_layer(cx: &ViewCx<ArtworkResource>, adding: &LocalState<String>, tools: &
         }
         media
     });
-    let mut choice = Dropdown::from_state(Vec::new(), adding)
-        .with_id("canvas-new-layer-medium")
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-            "canvas-new-layer-medium",
-        ));
-    choice.set_value_options(media);
-    let target = tools.layer.clone();
-    let button = cx.switch(adding, move |cx, medium| {
-        let medium = medium.clone();
-        cx.switch(&target, move |cx, above| {
-            let label = cx.read(|art| {
-                art.and_then(|art| crate::media::resolve(art, &medium))
-                    .filter(|_| !medium.is_empty())
-                    .map_or_else(
-                        || ui::i18n::I18nManager::lookup_plain("canvas-medium-plain"),
-                        |medium| medium.label,
-                    )
-            });
-            // "Oil, alla prima" names its layer "Oil".
-            let name = label
-                .split(',')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            let invoke = if above.is_empty() {
-                ArtworkResource::ADD_LAYER.with((name, medium.clone()))
-            } else {
-                ArtworkResource::ADD_LAYER_ABOVE.with((name, medium.clone(), above.clone()))
-            };
-            Box::new(cx.button("canvas-add-layer", invoke).with_icon(Icon::Plus))
-        })
+    let state = LocalState::new(String::new());
+    let mut menu = Dropdown::from_state(Vec::new(), &state)
+        .as_menu(Icon::Plus)
+        .with_id("canvas-add-layer")
+        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-add-layer"));
+    menu.set_value_options(media.clone());
+    let chosen = tools.layer.clone();
+    let add = ArtworkResource::ADD_LAYER_NAMED.map(move |medium: String| {
+        // "Oil, alla prima" names its layer "Oil".
+        let label = media
+            .iter()
+            .find(|(id, _)| *id == medium)
+            .map(|(_, label)| label.as_str())
+            .unwrap_or_default();
+        let name = label
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        // Named here and chosen now, so the new layer is the one drawn on
+        // next even before the artwork has it; it goes above the chosen one.
+        let random = uuid::Uuid::new_v4().simple().to_string();
+        let id = format!("layer-{}", random.get(..8).unwrap_or_default());
+        let above = Some(chosen.with(Clone::clone)).filter(|above| !above.is_empty());
+        chosen.set(id.clone());
+        (id, name, medium, above)
     });
-    Box::new(
-        Row::new()
-            .with_gap(6.0)
-            .no_wrap()
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(0.0)
-                    .with_child(Box::new(choice)),
-            ))
-            .push(button),
-    )
+    Box::new(cx.actions().bind(menu, add))
 }

@@ -54,7 +54,7 @@ const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-scree
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
 
-pub use crate::tools::{Tool, Tools};
+pub use crate::tools::{Tool, Tools, ViewRequest};
 
 fn hex(colour: Color) -> String {
     let rgba = colour.to_rgba8();
@@ -155,6 +155,9 @@ pub struct CanvasSurface {
     /// An area a screenshot scenario asks to be shown, once laid out.
     staged_view: Option<Rect>,
     focused: bool,
+    /// Focus came from a press on the canvas, not the keyboard: the
+    /// pointer already says where the person is, so no ring is drawn.
+    pressed_into_focus: bool,
     space: bool,
     modifiers: ModifiersState,
     results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
@@ -200,6 +203,7 @@ impl CanvasSurface {
             pastes: 0,
             staged_view: None,
             focused: false,
+            pressed_into_focus: false,
             space: false,
             modifiers: ModifiersState::empty(),
             results: HashMap::new(),
@@ -959,6 +963,31 @@ impl CanvasSurface {
             let margin = bounds.width().max(bounds.height()) * 0.1;
             self.viewport.zoom_to_rect(bounds.inflate(margin, margin));
             self.moved_by_hand = true;
+        }
+    }
+
+    /// Carry out a change of view asked for by the zoom buttons, and tell
+    /// them how far the canvas is zoomed now.
+    fn follow_view(&mut self) {
+        if self.rect.width() > 1.0
+            && let Some(request) = self.tools.view.with(|view| *view)
+        {
+            self.tools.view.set(None);
+            match request {
+                ViewRequest::ZoomIn => self.zoom_by(ZOOM_STEP, None),
+                ViewRequest::ZoomOut => self.zoom_by(1.0 / ZOOM_STEP, None),
+                ViewRequest::Fit => self.zoom_to_fit(),
+                ViewRequest::Actual => {
+                    self.viewport.set_zoom(1.0);
+                    self.moved_by_hand = true;
+                }
+            }
+        }
+        let zoom = self.zoom();
+        if self.tools.zoom.with(|shown| (*shown - zoom).abs() > 1e-9) {
+            // The readout is drawn before the canvas: wake the window so it
+            // shows the new zoom in the next frame.
+            self.tools.zoom.writer().set(zoom);
         }
     }
 
@@ -1896,9 +1925,11 @@ impl Widget for CanvasSurface {
         self.spacing = theme.tokens.spacing;
         // Room for a selection frame's handles and the rotation handle.
         let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
+        // The room its parent leaves along either axis: in a column under
+        // the header it takes the width and the height left over.
         let node = taffy.leaf_node(Style {
             size: taffy::Size {
-                width: taffy::Dimension::auto(),
+                width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
             flex_basis: taffy::Dimension::length(0.0),
@@ -1954,6 +1985,7 @@ impl Widget for CanvasSurface {
         _presence: &PresenceCtx,
     ) {
         self.follow_tool();
+        self.follow_view();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -1965,14 +1997,9 @@ impl Widget for CanvasSurface {
         let to_screen = transform * self.viewport.content_to_screen();
         let board = self.art.bounds();
         let zoom = self.zoom();
-        let shadow = theme.border_standard.multiply_alpha(0.5);
-        scene.fill(
-            Fill::NonZero,
-            to_screen,
-            shadow,
-            None,
-            &(board + Vec2::new(3.0 / zoom, 4.0 / zoom)),
-        );
+        // The sheet lies on the table: the theme's own lift under it.
+        let sheet = self.viewport.content_to_screen().transform_rect_bbox(board);
+        ui::surface::shadow(scene, transform, sheet, 0.0, &theme.tokens.elevation.e2);
         let options = Options {
             reference: self
                 .art
@@ -2005,7 +2032,7 @@ impl Widget for CanvasSurface {
             &board,
         );
         self.paint_overlay(scene, to_screen, theme, text_renderer);
-        if self.focused {
+        if self.focused && !self.pressed_into_focus {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -2033,6 +2060,9 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) if self.rect.contains(self.cursor) => {
+                    if !self.focused {
+                        self.pressed_into_focus = true;
+                    }
                     *ctx.focus_target = Some(ctx.node_id);
                     self.modifiers = ctx.modifiers.state();
                     self.press(self.cursor);
@@ -2146,6 +2176,10 @@ impl Widget for CanvasSurface {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if !focused || !self.focused {
+            // Keeps the press's mark when the press is what focused it.
+            self.pressed_into_focus &= focused;
+        }
         self.focused = focused;
         if !focused {
             self.space = false;
@@ -2204,6 +2238,7 @@ impl Widget for CanvasSurface {
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        self.follow_view();
         // The panels show what is selected.
         if self.tools.selection.with(|shown| *shown != self.selection) {
             self.tools.selection.set(self.selection.clone());

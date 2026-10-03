@@ -2931,5 +2931,41 @@
         "nullable": false
       }
     ]
+  },
+  {
+    "resource": "tilo.control:canvas-sidebar",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Show or hide the panels",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-zoom-fit",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Fit to window",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-zoom-in",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Zoom in",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-zoom-out",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Zoom out",
+    "description": null,
+    "operation": "View",
+    "params": []
   }
 ]
