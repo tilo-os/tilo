@@ -71,7 +71,7 @@ The equivalent primitive fixture has the same content, controls, order, themed p
 | 13 | Between sections/actions | gap 32 |
 | 14 | Title/description spacing | gap 8 |
 | 15 | Heading group/form separation | gap 32 |
-| 16 | Complete page surface | filling Container with themed `bg_app` |
+| 16 | Complete page surface | the window ground (`surfaces.content`) under a filling Container |
 
 `account`/`automatic` supply none of those 16 composition settings: **zero caller layout pixel values and zero viewport branches**. The guided source adds **two selected decisions**, compact density and labels above. Both paths use shared Actions, so its internal button sizing/alignment is not counted as a primitive-only decision.
 

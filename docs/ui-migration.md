@@ -112,7 +112,7 @@ framework now does the job.
 | `theme_blind_white` | `surface_white_*`, `border_white_*` | `Colors::lift()` for a raised fill, `Colors::hairline_on(ground, …)` for an edge; in app chrome, delete and use the widget. |
 | `literal_color_new` | `Color::new([0.2, …])` | Same as `literal_color`. |
 | `ramp_slot` | `.neutral[3]`, `accent[5]` | `surfaces.content` / `sidebar` / `inspector` / `raised` / `overlay` and the text tiers. Selection is the lift: delete the fill and use the list or segmented widget. |
-| `legacy_alias` | `.bg_app`, `.bg_primary`, `.bg_hover`, `.bg_active` | Ground fills: delete. Hover and active states: delete; the widget paints them. |
+| `legacy_alias` | `.bg_app`, `.bg_primary`, `.bg_hover`, `.bg_active` | Removed from `Theme`; map each use with [Ground & regions](#ground--regions). Ground fills: delete. Hover and active states: delete when a widget paints the control, else the lift of its ground. |
 | `desktop_ground` | `surfaces.base`, `surfaces.window_card` | Delete the fill and declare the region; `surfaces.base` is the desktop behind tiles. |
 | `literal_radius` | `.to_rounded_rect(8.0)`, `RoundedRect::from_rect(r, 6.0)`, `fill_round(s, r, 4.0, …)`, `.radius(12.0)` | Controls and rows: delete; the widget's role gives the radius (control 8, item 6, chip full). Content drawing: `theme.tokens.radii.*`, concentric (inner = outer − inset, minimum 4). |
 | `literal_alpha` | `with_alpha(0.5)`, `with_alpha_factor(x * 0.4)`, `multiply_alpha(0.6)` | The theme's state, scrim or material token; hover/press washes come from the widget. |
@@ -254,11 +254,9 @@ A label that was hard-coded `Color::WHITE` on an accent fill must become
 
 - An app's background is `surfaces.content` (the framework owns it); a
   navigation column is `surfaces.sidebar`, a detail column
-  `surfaces.inspector`. `surfaces.base` and `theme.bg_app` are the *desktop*
-  ground: in an app, replace every `surfaces.base` / `bg_app` used as the
-  window or pane background with `surfaces.content`, and every
-  `surfaces.base` used as "the ground this widget sits on" (a contrast
-  measurement, a hairline) with the surface it actually sits on.
+  `surfaces.inspector`. `surfaces.base` is the *desktop* ground. The
+  framework paints all of them; [Ground & regions](#ground--regions) says
+  what to delete and what each removed alias becomes.
 
 ### What to delete in an app
 
@@ -346,6 +344,97 @@ serif (`Reading`) or mono (`Code`), and `FontChoice::{SansSerif, Serif,
 Monospace}` remains for the rare explicit choice.
 
 ## Ground & regions
+
+A window has one ground per region and the framework paints it. The window
+ground is `surfaces.content`: the native runner clears to it, the framework
+root fills it under the view, a hosted tile fills it, and `--shots` captures
+land on it. Regions are `Content`, `Sidebar` (navigation) and `Inspector`
+(detail). An app declares regions and paints nothing underneath them.
+
+### Removed APIs
+
+`Theme::{bg_app, bg_primary, bg_hover, bg_active}` are gone. Map each use by
+what the colour *did* at that line, first match wins:
+
+| Old use | New |
+|---|---|
+| `bg_app` (or `surfaces.base`, `surfaces.content`, `window_card`, a literal) filling the whole window, the root widget or a whole pane: a `scene.fill` over the root/pane rect, `Container::with_fill(theme.bg_app)` around the root or a pane | Delete the fill (the whole `scene.fill` call, or the `.with_fill(..)`). |
+| `bg_app` as the background a frame is rendered on (`OffscreenRenderer::render(&scene, theme.bg_app)`, `render_png(&scene, theme.bg_app, out)`, `ShotFrame::with_background(theme.bg_app)`) | `theme.tokens.colors.surfaces.content` |
+| `bg_app` as "the ground this sits on" in a contrast, ink or edge measurement (`contrast_ratio(ink, theme.bg_app)`, `edge_on(theme.bg_app)`, `ink_on_any(&[theme.bg_app, ..])`) | The ground actually under it: `theme.tokens.colors.surfaces.content` on the window, `theme.region(Region::Sidebar)` / `theme.region(Region::Inspector)` in those columns. |
+| `bg_app` cut out of a shape to show the ground (a keyhole, an outline stroke around a glyph) | The ground under it, as in the row above. |
+| `bg_primary` filling a navigation column (folders, mailboxes, channels, collections, places, a library rail) | Delete the fill. With `NavShell`, pass the column to `.with_sidebar(..)`; in a painted app call `ui::surface::region(scene, transform, rect, Region::Sidebar, theme)` once for the column. |
+| `bg_primary` filling a detail/inspector column (properties, metadata, an info panel beside the main view) | Delete the fill; `ui::surface::region(scene, transform, rect, Region::Inspector, theme)`. |
+| `bg_primary` filling a header, toolbar or status band | Delete the fill. The band stands on its region; draw one hairline under it with `ui::surface::separator(scene, transform, x0, x1, band.y1, 0.0, ground)` where `ground` is the region's ground. |
+| `bg_primary` as a card, field, well, key cap, chip, avatar ring or a button's rest face inside content | `theme.tokens.colors.surfaces.raised` (an avatar ring takes the ground it sits on instead). |
+| `bg_hover` / `bg_active` as the hover / pressed (or open, focused, selected) fill of a control with a filled rest face | Use the toolkit control (`Button`, `Checkbox`, `Dropdown`, `TextInput`, `SegmentedControl`, `NavShell`, `Table`) and delete the painter. Where the painter stays: `colors.lift_on(rest, 0.5)` for hover, `colors.lift_on(rest, 1.0)` for pressed/open/selected, with `rest` the face's own fill (normally `surfaces.raised`). |
+| `bg_hover` / `bg_active` under a transparent control or row (a ghost button, an icon button, a list row, a grid cell) on the window ground | `colors.intent.selection_hover` / `colors.intent.selection`. Draw the row with the region's theme (below) and the same tokens are right in a sidebar or inspector too. |
+| the same inside a floating panel (menu, popover, picker) | `colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5)` / `lift_on(.., 1.0)`; a menu's armed row is inverted, see [Choosing the intent](#choosing-the-intent). |
+| `bg_hover.with_alpha_factor(a)` as a wash (current-line band, gutter tint) | `colors.lift_on(ground, 0.5).with_alpha_factor(a)`, with `ground` the surface under the wash. |
+| `Theme { bg_app, bg_primary, bg_hover, bg_active, .. }` struct literal | Delete the four fields; better, build the theme with `Theme::dark()` / `light()` and change tokens. |
+| `theme.bg_app != other.bg_app` as "the theme changed" | `theme.tokens.colors.surfaces.content != other.tokens.colors.surfaces.content` |
+
+### New API
+
+| API | Use |
+|---|---|
+| `ui::surface::Region::{Content, Sidebar, Inspector}` | The region an area of the window is. |
+| `ui::surface::region(scene, transform, rect, region, theme) -> Color` | Paint a region's ground over `rect` (plus the shared-edge hairline where the material gives region and content one ground) and return the ground. For painted apps; `NavShell` calls it for its sidebar. |
+| `Theme::region(region) -> Color` | A region's ground, without painting (to measure against). |
+| `Theme::in_region(region) -> Theme`, `Theme::on_ground(ground) -> Theme` | The theme for what is drawn on that ground: `surfaces.content` re-pointed to it, ink tiers re-measured, `intent.selection` / `selection_hover` stepped from it. Pass it to the children's `draw`. |
+| `ui::surface::region_needs_edge(ground, content)`, `ui::tokens::colors::REGION_MIN_STEP` | Whether a tier is too close to content to separate by tone (only the high-contrast material). |
+| `theme.tokens.spacing.rhythm.{tight, related, sibling, section, group}` (`ui::tokens::Rhythm`) | Gaps by relationship (4 / 8 / 12 / 16 / 24 at 1×), scaled with `ui_scale` and a custom spacing. |
+| `FrameHarness::render_window_png` / `render_window_rgba` | The frame over the window ground; `--shots` and `--responsive-matrix` write this. |
+| `ShotFrame::new(viewport, theme)` | Now clears to the window ground by default; delete a `.with_background(theme.bg_app)` / `.with_background(surfaces.content)`. |
+
+### Choosing the region
+
+- **Sidebar**: the column that navigates the rest of the window: folders,
+  mailboxes, channels, playlists, collections, notebooks, settings
+  categories. At most one per window, at the leading edge.
+- **Inspector**: the column that shows properties or details of the
+  selection beside the main view (file info, layer properties, contact
+  details beside a conversation). At the trailing edge.
+- **Content**: everything else, including a master list that *is* the
+  content (the message list, the file grid, the track list) and the detail
+  view that is the subject of the window (HIG §1c).
+
+### What to delete in an app
+
+1. The window's own background: the first `scene.fill` in the root
+   widget's `draw` whose rect is the root rect, whatever colour it uses;
+   `.with_fill(..)` on the root `Container`.
+2. Each pane's own background fill (`bg_primary`, `surfaces.raised`,
+   `surfaces.base`, `neutral[n]` or a literal over a whole column). Declare
+   the region instead (table above).
+3. Header and toolbar band fills; keep one `separator` hairline under the
+   band.
+4. A hand-drawn divider between a sidebar and content where the app now uses
+   `NavShell` or `surface::region`: the tone separates them (and the region
+   draws the line where it is needed).
+5. App-local rhythm modules: `mod rhythm { TIGHT, RELATED, SIBLING, SECTION,
+   GROUP }` built from `Spacing::BASE` (pdf-viewer, ebook). Delete the module
+   and read `theme.tokens.spacing.rhythm.{tight, related, sibling, section,
+   group}` where a `Theme` is in hand (`f64::from(..)` where an `f64` is
+   needed). The values are the same at 1× and now follow `ui_scale`. A
+   compile-time constant derived from the rhythm (`MENU_ROW_H = … +
+   rhythm::TIGHT`) becomes a function of the theme.
+
+### Painted app with regions
+
+```rust
+use ui::surface::{self, Region};
+
+// No window fill: the framework painted surfaces.content already.
+surface::region(scene, transform, sidebar_rect, Region::Sidebar, theme);
+let sidebar_theme = theme.in_region(Region::Sidebar);
+self.sidebar_rows.draw(scene, transform, text, &sidebar_theme, presence);
+
+self.content.draw(scene, transform, text, theme, presence);
+
+surface::region(scene, transform, inspector_rect, Region::Inspector, theme);
+let inspector_theme = theme.in_region(Region::Inspector);
+self.inspector.draw(scene, transform, text, &inspector_theme, presence);
+```
 
 ## Navigation
 
