@@ -163,7 +163,7 @@ fn the_history_strip_lists_real_versions_in_its_own_band() {
         let band = wp.history.band();
         assert!(band.height() > 100.0, "the strip has a real band: {band:?}");
         assert!(
-            band.y1 <= wp.rect.y1 - LAYOUT_BAR_H,
+            band.y1 <= wp.rect.y1 - wp.layout_bar_height,
             "the strip sits above the bottom layout bar"
         );
         assert_eq!(band.width(), wp.rect.width(), "full-width strip");
