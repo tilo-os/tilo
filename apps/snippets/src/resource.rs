@@ -3,24 +3,23 @@
 //!
 //! Document mutations (`new-snippet` under All Snippets, per-snippet rename /
 //! language / tags / star / delete, …) live on this resource via
-//! [`Resource::declarations`] / [`Resource::children`]. Search focus is a View
-//! ([`Resource::local_operations`]). Hosted [`PublishesResources::resources`]
+//! [`Resource::declarations`] / [`Resource::children`]. Hosted
+//! [`PublishesResources::resources`]
 //! returns only the peer's sidebar-folder create (`snippets.folder`) — never a
 //! second hand-built `snippets.library` root beside [`tilo_resource::publish`].
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
-    Resource as PublishedResource,
+    ActionParam, EncodedAction, PROMPTED_PARAM, ParamType, Resource as PublishedResource,
 };
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, library_view_specs,
-    publish_children, register, snippet_resource_id,
+    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, publish_children, register,
+    snippet_resource_id,
 };
 use crate::app::SnippetsApp;
 use crate::doc::SnippetsDoc;
@@ -75,13 +74,6 @@ impl Resource for Snippets {
 
     fn children(state: &Vec<Snippet>) -> Vec<PublishedResource> {
         publish_children(state)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        library_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     fn search(state: &Vec<Snippet>) -> Vec<SearchEntry> {
@@ -235,12 +227,13 @@ mod tests {
         let published =
             ui::tilo_resource::publish::<Snippets>(LIBRARY_RESOURCE_ID, "Snippets", &state);
         assert_eq!(published.kind, "snippets.library");
-        for id in ["new-snippet", "search"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
-            );
-        }
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "new-snippet"),
+            "new-snippet must be on the framework resource"
+        );
         assert!(
             published
                 .children

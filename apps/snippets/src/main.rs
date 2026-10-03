@@ -61,7 +61,7 @@ fn shot_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.snippets", snippets::app_root)
         .history(&snippets::framework_history::HISTORY)
         .shot_root(shot_root)
-        .scenarios(&["narrow", "detail", "empty"])
+        .scenarios(&["narrow", "detail", "empty", "expand", "language", "more"])
         .configure_app(|app| snippets::actions::register(app.action_registry_mut()))
 }
 
