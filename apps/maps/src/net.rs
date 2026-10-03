@@ -32,6 +32,11 @@ pub enum NetMsg {
         query: String,
         results: Result<Vec<Place>, String>,
     },
+    /// Geocoding for a query the platform search is waiting on.
+    PaletteSearch {
+        query: String,
+        results: Result<Vec<Place>, String>,
+    },
     /// Geocoding for one of the Directions endpoints (From / To). `origin` is
     /// `true` for the "From" field, `false` for "To".
     EndpointSearch {

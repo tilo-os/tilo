@@ -55,23 +55,6 @@ impl Category {
         }
     }
 
-    /// A single glyph used as the marker's pictogram.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Category::Landmark => "★",
-            Category::Cafe => "☕",
-            Category::Restaurant => "🍴",
-            Category::Bar => "🍺",
-            Category::Museum => "🏛",
-            Category::Park => "🌳",
-            Category::Transit => "Ⓜ",
-            Category::Hotel => "🛏",
-            Category::Shop => "🛍",
-            Category::Hospital => "✚",
-            Category::Other => "•",
-        }
-    }
-
     /// Best-effort mapping from a Nominatim `class`/`type` pair.
     pub fn from_osm(class: &str, kind: &str) -> Category {
         match (class, kind) {
@@ -150,6 +133,15 @@ impl Poi {
             self.category.label().to_string()
         }
     }
+
+    /// What the place is, in sentence case: OpenStreetMap's finer kind
+    /// ("Beer garden" for `beer_garden`) when tagged, else the category.
+    pub fn kind_label(&self) -> String {
+        let Some(kind) = self.kind.as_deref().filter(|k| !k.trim().is_empty()) else {
+            return self.category.label().to_string();
+        };
+        ui::format::capitalize_first(&kind.trim().replace(['_', ';'], " "))
+    }
 }
 
 /// Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads
@@ -177,15 +169,6 @@ impl TravelMode {
             TravelMode::Transit => "Transit",
             TravelMode::Bike => "Cycle",
             TravelMode::Foot => "Walk",
-        }
-    }
-
-    pub fn glyph(self) -> &'static str {
-        match self {
-            TravelMode::Car => "🚗",
-            TravelMode::Transit => "🚆",
-            TravelMode::Bike => "🚲",
-            TravelMode::Foot => "🚶",
         }
     }
 
@@ -238,20 +221,17 @@ pub enum Maneuver {
 }
 
 impl Maneuver {
-    /// A directional arrow glyph for the step row.
-    pub fn glyph(self) -> &'static str {
+    /// The icon that shows this manoeuvre in a step row and the
+    /// navigation card.
+    pub fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
         match self {
-            Maneuver::Depart => "◉",
-            Maneuver::Continue | Maneuver::Merge => "↑",
-            Maneuver::SlightLeft => "↖",
-            Maneuver::Left => "←",
-            Maneuver::SharpLeft => "↩",
-            Maneuver::SlightRight => "↗",
-            Maneuver::Right => "→",
-            Maneuver::SharpRight => "↪",
-            Maneuver::Uturn => "⇩",
-            Maneuver::Roundabout => "↻",
-            Maneuver::Arrive => "⚑",
+            Maneuver::Depart | Maneuver::Continue | Maneuver::Merge => Icon::ArrowUp,
+            Maneuver::SlightLeft | Maneuver::Left | Maneuver::SharpLeft => Icon::ArrowLeft,
+            Maneuver::SlightRight | Maneuver::Right | Maneuver::SharpRight => Icon::ArrowRight,
+            Maneuver::Uturn => Icon::Undo2,
+            Maneuver::Roundabout => Icon::RotateCw,
+            Maneuver::Arrive => Icon::Pin,
         }
     }
 
@@ -320,19 +300,7 @@ impl TransitMode {
         }
     }
 
-    pub fn glyph(self) -> &'static str {
-        match self {
-            TransitMode::Walk => "🚶",
-            TransitMode::Bus => "🚌",
-            TransitMode::Tram => "🚊",
-            TransitMode::Subway => "Ⓜ",
-            TransitMode::Rail => "🚆",
-            TransitMode::Ferry => "⛴",
-        }
-    }
-
-    /// Distinct branding hue index hint, resolved against the theme accent
-    /// ramp by the renderer. We avoid hard-coding RGB here.
+    /// The mode a MOTIS leg reports, by its mode name.
     pub fn from_motis(mode: &str) -> TransitMode {
         match mode.to_ascii_uppercase().as_str() {
             "WALK" => TransitMode::Walk,

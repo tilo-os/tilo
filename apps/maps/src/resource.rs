@@ -7,7 +7,7 @@ use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, DiscoveryScope, EncodedAction, ExecutionMode,
     OperationKind, PermissionRequirement, ResultSpec, RetryPolicy,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -126,6 +126,163 @@ impl ResourceApp for MapsShell {
     fn view(cx: &mut ViewCx<Maps>) -> Element {
         cx.surface(MapsApp::new())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.ends_with("-narrow").then_some((520, 820))
+    }
+
+    /// The sample city the captures show, applied through the map's own
+    /// actions: its places (two of them saved), recent searches, travel
+    /// settings, and — where the scenario shows one — the route, the transit
+    /// journeys or the downloaded areas.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Maps>> {
+        let scenario = Scenario::of(name);
+        if scenario == Scenario::Empty {
+            return Vec::new();
+        }
+        let sample = crate::sample::default_model();
+        let mut actions = vec![MapsAction::UpsertPlaces {
+            places: sample.places.clone(),
+        }];
+        for query in sample.recents.iter().rev() {
+            actions.push(MapsAction::CommitSearch {
+                query: query.clone(),
+            });
+        }
+        let transit = matches!(scenario, Scenario::Transit | Scenario::TransitArrive);
+        actions.push(MapsAction::SetTravelMode {
+            mode: if transit {
+                crate::model::TravelMode::Transit
+            } else {
+                sample.mode
+            },
+        });
+        if scenario == Scenario::TransitArrive {
+            actions.push(MapsAction::SetTransitTime {
+                value: crate::model::TransitTime {
+                    mode: crate::model::TransitTimeMode::Arrive,
+                    offset_min: 60,
+                },
+            });
+        }
+        if scenario.has_route()
+            && let Some(route) = sample.route.clone()
+        {
+            actions.push(MapsAction::SetRoute {
+                route,
+                origin: sample.origin,
+                origin_name: sample.origin_name.clone(),
+                dest: sample.dest,
+                dest_name: sample.dest_name.clone(),
+                mode: sample.mode,
+            });
+        }
+        if transit {
+            actions.push(MapsAction::SetTransit {
+                transit: sample.transit.clone(),
+                origin: sample.origin,
+                origin_name: sample.origin_name.clone(),
+                dest: sample.dest,
+                dest_name: sample.dest_name,
+            });
+        }
+        if scenario == Scenario::Offline {
+            actions.extend(
+                crate::sample::regions()
+                    .into_iter()
+                    .map(MapsAction::AddRegion),
+            );
+        }
+        actions
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
+    }
+}
+
+/// Every capture scenario; each also comes `-narrow`, a phone-sized window
+/// where the panel is a drawer.
+const SCENARIOS: &[&str] = &[
+    "directions",
+    "explore",
+    "search",
+    "pois",
+    "transit",
+    "transit-arrive",
+    "edit-origin",
+    "traffic",
+    "offline",
+    "menu",
+    "attribution",
+    "error",
+    "collapsed",
+    "navigation",
+    "empty",
+    "directions-narrow",
+    "explore-narrow",
+    "search-narrow",
+    "pois-narrow",
+    "transit-narrow",
+    "offline-narrow",
+    "navigation-narrow",
+    "empty-narrow",
+];
+
+/// A capture scenario by name; a plain `--shots` is the drive route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scenario {
+    Directions,
+    Explore,
+    Search,
+    Pois,
+    Transit,
+    TransitArrive,
+    EditOrigin,
+    Traffic,
+    Offline,
+    Menu,
+    Attribution,
+    Error,
+    Collapsed,
+    /// The drive route with the turn card over the map, the panel closed
+    /// where it is a drawer.
+    Navigation,
+    Empty,
+}
+
+impl Scenario {
+    pub(crate) fn of(name: Option<&str>) -> Self {
+        let name = name.unwrap_or_default();
+        match name.strip_suffix("-narrow").unwrap_or(name) {
+            "explore" => Self::Explore,
+            "search" => Self::Search,
+            "pois" => Self::Pois,
+            "transit" => Self::Transit,
+            "transit-arrive" => Self::TransitArrive,
+            "edit-origin" => Self::EditOrigin,
+            "traffic" => Self::Traffic,
+            "offline" => Self::Offline,
+            "menu" => Self::Menu,
+            "attribution" => Self::Attribution,
+            "error" => Self::Error,
+            "collapsed" => Self::Collapsed,
+            "navigation" => Self::Navigation,
+            "empty" => Self::Empty,
+            _ => Self::Directions,
+        }
+    }
+
+    /// Whether the scenario shows the sample drive route.
+    pub(crate) fn has_route(self) -> bool {
+        matches!(
+            self,
+            Self::Directions | Self::EditOrigin | Self::Error | Self::Collapsed | Self::Navigation
+        )
+    }
 }
 
 impl ResourceSurface<Maps> for MapsApp {
@@ -135,6 +292,10 @@ impl ResourceSurface<Maps> for MapsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Maps>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_capture(Scenario::of(scenario));
     }
 }
 
