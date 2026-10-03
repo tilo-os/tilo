@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ush::broker::{Request, Response};
-use ush::images::{DirImages, Images};
+use ush::images::{DirImages, Images, NoImages, StoreImages};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -175,23 +175,23 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
     session.run()
 }
 
-/// Where images come from on this device.
+/// Where images come from on this device: the package store, or fixture
+/// trees under `TILO_USH_IMAGES` in tests.
 fn images() -> Arc<dyn Images> {
-    match std::env::var_os("TILO_USH_IMAGES") {
-        Some(root) => Arc::new(DirImages::at(PathBuf::from(root))),
-        None => Arc::new(DirImages::at(default_images_dir())),
+    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
+        return Arc::new(DirImages::at(PathBuf::from(root)));
+    }
+    match StoreImages::from_env() {
+        Ok(images) => Arc::new(images),
+        Err(reason) => Arc::new(NoImages(format!(
+            "the package store cannot be opened: {reason}"
+        ))),
     }
 }
 
 /// How `pkg install` builds tool images on this device.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
     Arc::new(tilo_environment::NoToolBuilder)
-}
-
-fn default_images_dir() -> PathBuf {
-    xdg_paths::data_dir()
-        .unwrap_or_else(|| PathBuf::from("/nonexistent"))
-        .join("ush/images")
 }
 
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
