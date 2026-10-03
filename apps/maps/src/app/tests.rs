@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::Category;
 use tilo_automerge::ApplyIncoming;
 use ui::tilo_actions::{ExecutionMode, ResultSpec};
 
@@ -386,17 +387,17 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
         }
     }
 
-    // Phase `perf_search_typing_stays_under_budget`.
-    // Perf guard for typing into the shared search field — the other
-    // interaction flagged as stuttery. Focuses search, then types a query and
+    // Phase `perf_endpoint_typing_stays_under_budget`.
+    // Perf guard for typing into a Directions field — the other interaction
+    // flagged as stuttery. Focuses the From field, then types a query and
     // asserts the per-keystroke p95 frame stays inside budget.
     {
         use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
         let mut app = MapsApp::offline();
         app.seed_perf_tiles(1280.0, 800.0);
-        app.search.set_focused(true);
+        app.set_demo_edit_origin();
         let scenario = PerfScenario {
-            name: "maps-search-typing".into(),
+            name: "maps-endpoint-typing".into(),
             viewport: (1280, 800),
             warmup: 8,
             steps: vec![PerfStep::Type("Marienplatz coffee".into())],
@@ -487,8 +488,9 @@ fn local_view_state_never_fabricates_or_overwrites_shared_state() {
 )]
 fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
     // Phase `overflow_menu_opens_and_routes_to_its_options`.
-    // The ⋯ overflow menu carries map utilities plus the shared live-navigation
-    // handoff, opens from the bottom-right button, and routes every row.
+    // The overflow menu carries the map's utilities, opens from the
+    // bottom-right button, and routes every row. (The live turn card leaves
+    // for the desktop by being dragged out, not from a menu.)
     {
         let mut a = app_at(1280.0, 800.0);
         let labels: Vec<&str> = a
@@ -497,15 +499,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
             .iter()
             .filter_map(|i| i.label())
             .collect();
-        assert_eq!(
-            labels,
-            vec![
-                "Attribution",
-                "Offline maps",
-                "Licenses",
-                "Float navigation"
-            ]
-        );
+        assert_eq!(labels, vec!["Attribution", "Offline maps", "Licenses"]);
 
         assert!(!a.overflow.is_open());
         tap(&mut a, &Hit::ToggleOverflow);
@@ -529,10 +523,6 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         a.overflow_select(2);
         assert_eq!(a.info_sheet.current(), Some(MapInfo::Licenses));
         a.info_sheet.close();
-        a.overflow_select(3);
-        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut a)
-            .expect("sample route produces a live navigation float");
-        assert_eq!(request.role, ui::floating_surface::FloatingRole::Navigation);
 
         // Toggling again closes it.
         tap(&mut a, &Hit::ToggleOverflow);
@@ -819,37 +809,41 @@ fn place_search_matches_ranks_and_labels_results() {
         );
     }
 
-    // Phase `picking_search_result_sets_place_name_label`.
-    // Picking a result from the overlay puts the proper human place-name in the
-    // search field (not a bare house number), selects it, and dismisses the
-    // overlay. Guards the label bug where the field showed "18".
+    // Phase `opening_a_geocoded_hit_selects_the_named_place`.
+    // Opening a place the geocoder found through the platform search stores
+    // it with its human place-name, selects it and moves the map there.
+    // Guards the label bug where the panel showed a bare house number.
     {
         let mut a = app_at(1280.0, 720.0);
-        a.search.set_focused(true);
-        a.search.replace_results(vec![crate::model::Place::new(
-            "osm-w-1",
-            "Theatinerstraße 18",
-            Category::Shop,
-            "18, Theatinerstraße, München",
-            LatLon::new(48.141, 11.577),
-        )]);
-        a.model.query = "theat".to_string();
-        tap(&mut a, &Hit::Search(SearchHit::Result(0)));
-        assert_eq!(
-            a.model.query, "Theatinerstraße 18",
-            "field shows the human place-name"
+        let mut doc = AutoCommit::new();
+        a.place_search.answer(
+            "theat",
+            vec![crate::model::Place::new(
+                "osm-w-1",
+                "Theatinerstraße 18",
+                Category::Shop,
+                "18, Theatinerstraße, München",
+                LatLon::new(48.141, 11.577),
+            )],
         );
-        assert_ne!(a.model.query, "18", "never the bare house number");
+        a.open_search_hit(PlaceHit::Geocoded("osm-w-1".into()), &mut doc);
         assert_eq!(
             a.model.selected.as_deref(),
             Some("osm-w-1"),
-            "the pick is selected"
+            "the hit is selected"
         );
-        assert!(!a.search.is_focused(), "picking dismisses the overlay");
-        assert!(a.search.results().is_empty(), "overlay clears after a pick");
+        assert_eq!(
+            a.model.selected_place().map(|p| p.name.as_str()),
+            Some("Theatinerstraße 18"),
+            "the place keeps its human name"
+        );
         assert!(
             (a.model.center.lat - 48.141).abs() < 1e-9,
-            "map navigated to the pick"
+            "map navigated to the hit"
+        );
+        assert!(
+            a.model.recents.iter().any(|q| q == "Theatinerstraße 18"),
+            "opening a hit records it as a recent search"
         );
     }
 
@@ -893,120 +887,124 @@ fn place_search_matches_ranks_and_labels_results() {
     }
 }
 
-// --- Search-as-you-type + overlay + ranking ----------------------------
+// --- Platform search ---------------------------------------------------
 
-/// The search field floats as an overlay, is driven by keys and paste, and its
-/// clear/history/recent affordances dispatch canonical actions.
+/// Maps draws no search field: its search buttons open the platform search,
+/// its provider answers from what the map holds, a hit opens the place, and
+/// the recent searches dispatch canonical actions.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn search_field_overlay_keys_and_history_dispatch() {
-    // Phase `search_overlay_floats_and_does_not_reflow_panel`.
-    // The overlay draws as a floating dropdown UNDER the search field, records
-    // clickable pick targets, and never reflows the side panel to make room.
+fn platform_search_opens_finds_and_activates_places() {
+    // Phase `search_buttons_open_the_platform_search`.
     {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 720.0);
-        let panel_before = a.panel_rect();
-        a.set_demo_search();
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-
-        // Overlay records clickable pick rows.
-        let row = a
-            .click_targets
-            .iter()
-            .rev()
-            .find(|(_, h)| matches!(h, Hit::Search(SearchHit::Result(_))))
-            .map(|(r, _)| *r)
-            .expect("overlay records PickSearch hot-regions");
-        // Anchored below the search field (a dropdown, not a reflow).
         assert!(
-            row.y0 >= a.search_rect().y1,
-            "overlay sits under the search field"
+            a.click_targets
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::OpenSearch)),
+            "the docked panel's header carries the search button"
         );
-        // The side panel geometry is unchanged — the overlay floats over it.
-        assert_eq!(
-            a.panel_rect(),
-            panel_before,
-            "overlay must not reflow the panel"
+        tap(&mut a, &Hit::OpenSearch);
+        assert!(a.search_opener.is_pending());
+        assert!(
+            ui::widget::controls::ActionControls::take_control_invocation(&mut a).is_some(),
+            "the button's request reaches the host as one invocation"
         );
-        // The pick row wins the hit-test over the panel it overlays.
+        assert!(!a.search_opener.is_pending());
+
+        // Narrow: the search button sits in the top row beside the drawer
+        // toggle, above the drawer's scrim.
+        a.rect = Rect::new(0.0, 0.0, 520.0, 820.0);
+        a.nav_open = true;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let search = a.search_button_rect().expect("narrow search button");
         let topmost = a
             .click_targets
             .iter()
             .rev()
-            .find(|(r, _)| r.contains(row.center()))
+            .find(|(r, _)| r.contains(search.center()))
             .map(|(_, h)| h.clone());
-        assert!(
-            matches!(topmost, Some(Hit::Search(SearchHit::Result(_)))),
-            "overlay row is the topmost target"
-        );
+        assert!(matches!(topmost, Some(Hit::OpenSearch)));
     }
 
-    // Phase `search_overlay_suppresses_panel_list_behind_it`.
-    // While the floating results overlay is up it is the ONLY place list: the
-    // panel's own rows behind it are suppressed so the same place never appears
-    // in both. Dismissing the results brings the panel back.
+    // Phase `the_provider_finds_saved_places_pois_and_recents`.
     {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut a = app_at(1280.0, 800.0);
-        a.set_demo_search();
+        use ui::search::SearchQuery;
+        let mut a = app_at(1280.0, 720.0);
+        a.pois = vec![crate::model::Poi {
+            category: Category::Bar,
+            ..demo_poi("bar1", a.model.center.lat, a.model.center.lon)
+        }];
+        let providers = ui::search::capability::SearchSource::search_providers(&a);
+        let provider = providers.first().expect("maps provides place search");
+        let recents = provider.search_page(&SearchQuery::new(""), None, 10, 10);
         assert!(
-            a.search_overlay_active(),
-            "the demo raises the results overlay"
+            recents
+                .results
+                .iter()
+                .any(|hit| hit.title == "Marienplatz" && hit.kind == "Recent searches"),
+            "an empty query lists the recent searches"
         );
+        let coffee = provider.search_page(&SearchQuery::new("coffee"), None, 10, 10);
         assert!(
-            !a.model.results.is_empty(),
-            "the panel would otherwise list places"
+            coffee
+                .results
+                .iter()
+                .any(|hit| hit.title == "Café Glück" && hit.kind == "Saved places"),
+            "a keyword finds a saved café"
+        );
+        assert!(coffee.pending.is_none(), "an offline map asks no geocoder");
+        let beer = provider.search_page(&SearchQuery::new("beer"), None, 10, 10);
+        assert!(beer.results.iter().any(|hit| hit.kind == "Nearby"));
+        assert!(
+            provider
+                .search_scopes()
+                .iter()
+                .any(|scope| scope.label == "Saved places")
         );
 
-        let mut scene = Scene::new();
-        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let has_pick = a
-            .click_targets
+        // Activating a hit opens the place exactly as a click in the panel.
+        let hit = coffee
+            .results
             .iter()
-            .any(|(_, h)| matches!(h, Hit::Search(SearchHit::Result(_))));
-        let has_panel_rows = a
-            .click_targets
-            .iter()
-            .any(|(_, h)| matches!(h, Hit::SelectPlace(_) | Hit::Recent(_)));
-        assert!(has_pick, "the results overlay is drawn");
-        assert!(
-            !has_panel_rows,
-            "the panel list behind the results is suppressed"
+            .find(|hit| hit.title == "Café Glück")
+            .expect("café hit")
+            .action_id
+            .clone();
+        let mut doc = AutoCommit::new();
+        ui::search::capability::SearchSource::activate_search_result(
+            &mut a,
+            &hit,
+            &mut doc,
+            &automerge::ROOT,
         );
-
-        // Dismiss the transient results → the panel list returns, without
-        // retaining stale suggestions for the next focus.
-        a.search.dismiss();
-        assert!(!a.search_overlay_active());
-        assert!(a.search.results().is_empty());
-        let mut scene2 = Scene::new();
-        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
-        let panel_rows_back = a
-            .click_targets
-            .iter()
-            .any(|(_, h)| matches!(h, Hit::SelectPlace(_) | Hit::Recent(_)));
-        assert!(
-            panel_rows_back,
-            "the panel list returns once the results dismiss"
-        );
+        assert_eq!(a.model.selected.as_deref(), Some("cafe-glueck"));
     }
 
-    // Phase `ctrl_v_pastes_into_the_search_field`.
-    // Verifies Ctrl+V from the system clipboard reaches the focused search
-    // field through the normal event path.
+    // Phase `a_recent_search_reopens_the_platform_search_with_its_query`.
     {
         let mut a = app_at(1280.0, 720.0);
-        a.model.query.clear();
-        a.search.set_focused(false);
-        key_char(&mut a, "/"); // focus the search field
-        assert!(a.search.is_focused());
+        tap(&mut a, &Hit::Recent("Marienplatz".to_string()));
+        assert!(a.search_opener.is_pending(), "a recent opens the search");
+    }
+
+    // Phase `ctrl_v_pastes_into_a_directions_field`.
+    // Ctrl+V from the system clipboard reaches the focused From field
+    // through the normal event path.
+    {
+        let mut a = app_at(1280.0, 720.0);
+        a.set_demo_edit_origin();
+        a.model.origin_query.clear();
+        a.endpoints
+            .sync_queries(&a.model.origin_query, &a.model.dest_query);
 
         let sentinel = "Alexanderplatz";
         ui::clipboard_copy(sentinel);
@@ -1055,55 +1053,9 @@ fn search_field_overlay_keys_and_history_dispatch() {
         );
 
         assert_eq!(
-            a.model.query, sentinel,
-            "Ctrl+V pasted the clipboard into the search query"
+            a.model.origin_query, sentinel,
+            "Ctrl+V pasted the clipboard into the From field"
         );
-    }
-
-    // Phase `slash_and_typing_drive_search_via_key_event`.
-    // `/` focuses the search field, characters then type into it, Backspace
-    // deletes, and Escape unfocuses — the whole edit loop over the real event
-    // path.
-    {
-        let mut a = app_at(1280.0, 720.0);
-        a.model.query.clear();
-        a.search.set_focused(false);
-        assert!(key_char(&mut a, "/"), "'/' handled");
-        assert!(a.search.is_focused(), "'/' focuses search");
-        key_char(&mut a, "h");
-        key_char(&mut a, "i");
-        assert_eq!(
-            a.model.query, "hi",
-            "characters type into the focused search"
-        );
-        key_named(&mut a, NamedKey::Backspace);
-        assert_eq!(a.model.query, "h", "Backspace deletes a char");
-        a.search.replace_results(vec![crate::model::Place::new(
-            "suggestion",
-            "Helpful suggestion",
-            Category::Museum,
-            "Example address",
-            LatLon::new(48.14, 11.57),
-        )]);
-        key_named(&mut a, NamedKey::Escape);
-        assert!(!a.search.is_focused(), "Escape unfocuses search");
-        assert_eq!(a.model.query, "h", "Escape preserves the query");
-        assert!(
-            a.search.results().is_empty(),
-            "Escape drops transient suggestions"
-        );
-    }
-
-    // Phase `clear_search_dispatch`.
-    // Clearing the search (the × button's `Hit`) empties the query and results.
-    {
-        let mut a = app_at(1280.0, 720.0);
-        a.model.query = "café".to_string();
-        a.run_search(None);
-        assert!(!a.model.results.is_empty(), "search populated results");
-        tap(&mut a, &Hit::Search(SearchHit::Clear));
-        assert!(a.model.query.is_empty(), "clear empties the query");
-        assert!(a.model.results.is_empty(), "clear empties the results");
     }
 
     // Phase `search_history_affordances_dispatch_canonical_actions`.
@@ -1145,12 +1097,13 @@ fn search_field_overlay_keys_and_history_dispatch() {
         assert!(MapsDoc::load(&doc).is_some_and(|model| model.recents.is_empty()));
     }
 
-    // Phase `recent_dispatch_runs_search`.
-    // A recent-search chip re-runs that query.
+    // Phase `a_recent_search_hit_runs_the_search`.
+    // Opening a recent search from the platform search runs it again.
     {
         let mut a = app_at(1280.0, 720.0);
-        tap(&mut a, &Hit::Recent("Marienplatz".to_string()));
-        assert_eq!(a.model.query, "Marienplatz", "recent sets the query");
+        let mut doc = AutoCommit::new();
+        a.open_search_hit(PlaceHit::Recent("Marienplatz".to_string()), &mut doc);
+        assert_eq!(a.model.query, "Marienplatz", "the recent sets the query");
         assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
         assert!(
             !a.model.results.is_empty(),
@@ -1165,36 +1118,19 @@ fn search_field_overlay_keys_and_history_dispatch() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn transit_time_and_journeys_drive_queries_and_map_fit() {
-    // Phase `demo_drive_and_transit_share_base_clock`.
-    // The offline demo Drive and Transit clocks share one coherent base time:
-    // the Drive summary is anchored to the fixed 09:00 demo base (not a
-    // nondeterministic wall clock), matching the bundled Transit departures.
+    // Phase `drive_and_transit_read_the_one_clock`.
+    // The Drive summary and the Transit departures read one clock: the
+    // local time (`ui::clock`), which a capture pins to 10:42, the time the
+    // bundled departures lie just ahead of.
     {
+        ui::clock::freeze_for_capture();
         let a = app_at(1280.0, 800.0);
         let route = a.model.route.clone().expect("demo has a road route");
         let (dep, arr) = a.road_trip_clock(route.duration_s);
-        assert!(
-            dep.starts_with("Leave 09:"),
-            "demo Drive leaves at the demo base hour: {dep}"
-        );
-        assert!(
-            arr.starts_with("Arrive 09:") || arr.starts_with("Arrive 10:"),
-            "arrival derived from the base + trip duration: {arr}"
-        );
+        assert_eq!(dep, "10:42", "a capture leaves at its pinned time");
+        assert!(arr > dep, "arrival derived from now + trip duration: {arr}");
         let first = a.model.transit.first().expect("demo has departures");
-        assert_eq!(
-            first.dep.get(..2).unwrap_or_default(),
-            "09",
-            "Transit departs the same base hour: {}",
-            first.dep
-        );
-        assert_eq!(
-            dep.get("Leave ".len()..)
-                .and_then(|s| s.get(..2))
-                .unwrap_or_default(),
-            "09",
-            "Drive and Transit agree on the base hour"
-        );
+        assert!(first.dep > dep, "the departures lie ahead of now");
     }
 
     // Phase `time_picker_available_for_all_modes_and_road_clock_derives`.
@@ -1231,13 +1167,15 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
         a.set_mode(TravelMode::Car, &mut doc);
         let route = a.model.route.clone().expect("road route present");
         a.model.transit_time = crate::model::TransitTime::default();
+        let is_clock = |s: &str| s.len() == 5 && s.as_bytes().get(2) == Some(&b':');
         let (dep, arr) = a.road_trip_clock(route.duration_s);
-        assert!(dep.starts_with("Leave "), "leave label, got {dep}");
-        assert!(arr.starts_with("Arrive "), "arrive label, got {arr}");
-        // Arrive-by flips which end is anchored.
+        assert!(is_clock(&dep) && is_clock(&arr), "clocks, got {dep} {arr}");
+        // Arrive-by flips which end is anchored: the arrival is now the
+        // anchor, and the departure lies the trip's length before it.
         a.model.transit_time.mode = TransitTimeMode::Arrive;
         let (dep2, arr2) = a.road_trip_clock(route.duration_s);
-        assert!(dep2.starts_with("Leave ") && arr2.starts_with("Arrive "));
+        assert_eq!(arr2, dep, "arrive-by anchors the arrival");
+        assert!(is_clock(&dep2));
     }
 
     // Phase `transit_time_picker_feeds_query`.
@@ -2071,13 +2009,13 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
         let mut a = MapsApp::offline();
 
         // Wide: docked column, no menu button, no drawer toggle target, and the
-        // search bar starts flush at the left margin.
+        // panel starts at the top margin.
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         assert!(!a.overlay_mode());
         assert!(a.panel_visible());
         let docked_w = a.panel_w();
-        assert!((300.0..=384.0).contains(&docked_w));
-        let docked_search_x0 = a.search_rect().x0;
+        assert_eq!(docked_w, f64::from(a.metrics.panel_width_list));
+        let docked_top = a.panel_rect().y0;
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         assert!(a.menu_rect().is_none());
@@ -2087,8 +2025,8 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
                 .any(|(_, h)| matches!(h, Hit::ToggleNav))
         );
 
-        // Narrow: SAME instance → overlay drawer, menu button appears, and the
-        // search bar reflows to make room for the leading menu button.
+        // Narrow: SAME instance → overlay drawer, the menu button appears, and
+        // the drawer reflows under the top row it sits in.
         a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         assert!(a.overlay_mode());
         let mut scene2 = Scene::new();
@@ -2100,16 +2038,15 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
                 .any(|(_, h)| matches!(h, Hit::ToggleNav))
         );
         assert!(
-            a.search_rect().x0 > docked_search_x0 + CTRL_SIZE,
-            "top bar did not reflow: search x0 {} vs docked {docked_search_x0}",
-            a.search_rect().x0
+            a.panel_rect().y0 > docked_top + a.controls().size,
+            "the drawer did not reflow under the top row"
         );
 
         // And back to wide reflows again (no one-way latch).
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         assert!(!a.overlay_mode());
         assert!(a.menu_rect().is_none());
-        assert_eq!(a.search_rect().x0, docked_search_x0);
+        assert_eq!(a.panel_rect().y0, docked_top);
     }
 
     // Phase `narrow_menu_toggles_drawer`.
@@ -2128,8 +2065,8 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
     }
 
     // Phase `drawer_open_hit_layering_is_correct`.
-    // With the drawer open the top-bar chrome must stay hittable above the
-    // dimming scrim: tapping the search field focuses it (does not close the
+    // With the drawer open the top-row chrome must stay hittable above the
+    // dimming scrim: the search button opens search (it does not close the
     // drawer), the menu toggles, and the dimmed map closes.
     {
         let theme = Theme::dark();
@@ -2149,10 +2086,10 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
                 .map(|(_, h)| h.clone())
         };
 
-        let sc = a.search_rect().center();
+        let sc = a.search_button_rect().unwrap().center();
         assert!(
-            matches!(topmost(&a, sc), Some(Hit::Search(SearchHit::Field))),
-            "search tap must focus, not close the drawer"
+            matches!(topmost(&a, sc), Some(Hit::OpenSearch)),
+            "the search button opens search, not close the drawer"
         );
         let mc = a.menu_rect().unwrap().center();
         assert!(matches!(topmost(&a, mc), Some(Hit::ToggleNav)));
@@ -2415,25 +2352,13 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
             "a live geocode is armed on input"
         );
 
-        // Redraw: the floating overlay records pick targets anchored UNDER the
-        // From field, and the mode control below has NOT moved (no reflow).
+        // Redraw: the suggestions float under the From field, and the mode
+        // control below has NOT moved (no reflow).
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
         assert!(
             a.endpoint_overlay_active(),
-            "the endpoint dropdown is showing"
-        );
-        let pick = a
-            .endpoints
-            .test_pick_rect(Endpoint::Origin)
-            .expect("overlay records PickOrigin hot-regions");
-        let field = a
-            .endpoints
-            .test_field_rect(Endpoint::Origin)
-            .expect("From field rect cached");
-        assert!(
-            pick.y0 >= field.y1,
-            "overlay sits under the From field (a dropdown)"
+            "the endpoint suggestions are showing"
         );
         let mode_rect_after = a
             .click_targets
@@ -2443,20 +2368,12 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
             .expect("mode control still recorded");
         assert_eq!(
             mode_rect_before, mode_rect_after,
-            "opening the endpoint dropdown must NOT reflow the panel below it"
+            "opening the endpoint suggestions must NOT reflow the panel below it"
         );
-        // The overlay row wins the hit-test over the panel it overlays.
-        assert!(
-            a.endpoints
-                .test_top_hit_is_pick(pick.center(), Endpoint::Origin),
-            "overlay row is topmost"
-        );
+        // The keyboard picks: the first suggestion, then Enter.
         let expected = a.endpoints.test_results(Endpoint::Origin)[0].clone();
-        move_to(&mut a, pick.center().x, pick.center().y);
-        assert!(
-            press_left(&mut a),
-            "the floating result row handles its click"
-        );
+        assert!(key_named(&mut a, NamedKey::ArrowDown));
+        assert!(key_named(&mut a, NamedKey::Enter));
         assert_eq!(
             a.model.origin,
             Some(expected.pos),
@@ -2795,14 +2712,13 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         assert!(!Widget::needs_animation_frame(&a));
     }
 
-    // Phase `pending_requests_and_a_focused_search_take_no_animation_frames`:
-    // requests that never answer (a failing Overpass, a stalled geocode) and
-    // a focused search field leave an idle map without a frame every vsync;
-    // the reply wakes the app when it lands, and a debounce is a deadline.
+    // Phase `pending_requests_take_no_animation_frames`:
+    // requests that never answer (a failing Overpass, a stalled geocode)
+    // leave an idle map without a frame every vsync; the reply wakes the app
+    // when it lands, and a debounce is a deadline.
     {
         let mut a = app_at(1280.0, 720.0);
         a.pending = 3;
-        a.search.set_focused(true);
         assert!(!Widget::needs_animation_frame(&a));
         assert_eq!(Widget::next_wake_deadline(&a), None);
 
@@ -3167,6 +3083,14 @@ fn semantic_controls_are_stable_modal_and_operable() {
         a.offline_panel.open(0);
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        Widget::draw_overlay(
+            &mut a,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
 
         let node = Widget::accessibility(&a).expect("offline dialog is semantic");
         assert_eq!(node.role, ui::a11y::Role::Dialog);
@@ -3208,43 +3132,21 @@ fn semantic_controls_are_stable_modal_and_operable() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn authored_geometry_keeps_gaps_and_scales_with_text() {
-    // Phase `authored_rows_and_navigation_card_are_exact_at_one_x_and_whole_at_two_x`.
-    // Authored rows and the navigation card are the 1× design exactly and
-    // grow to whole pixels that hold their scaled lines.
+    // Phase `navigation_card_holds_its_stack_and_grows_with_the_text`.
+    // The navigation card is the list-panel width and exactly as tall as
+    // the stack it paints; at 2× it grows to whole pixels.
     {
-        assert_eq!(
-            authored_h(28.0, &[13.0], 1.0),
-            28.0,
-            "not 16.25 + 12 = 28.25"
-        );
-        assert_eq!(authored_h(46.0, &[13.0, 11.0], 1.0), 46.0);
-        for (authored, sizes) in [(30.0, &[13.0][..]), (40.0, &[12.0]), (36.0, &[18.0])] {
-            assert_eq!(authored_h(authored, sizes, 1.0), authored);
-            let two = authored_h(authored, sizes, 2.0);
-            assert_eq!(two.fract(), 0.0);
-            assert!(two >= sizes.iter().map(|&s| line_h(s, 2.0)).sum::<f64>());
-        }
-        let mx = Metrics::BASE;
-        let one = navigation_card_size(&mx, 1.0);
-        assert_eq!(
-            (one.width, one.height),
-            (f64::from(mx.panel_width_list), NAV_CARD_H)
-        );
-        let two = navigation_card_size(&mx, 2.0);
+        let theme = Theme::dark();
+        let one = navigation_card_size(&theme);
+        assert_eq!(one.width, f64::from(theme.tokens.metrics.panel_width_list));
+        let two = navigation_card_size(&Theme::dark().with_text_scale(2.0));
         assert_eq!(two.height.fract(), 0.0);
         assert!(two.height > one.height && two.width > one.width);
-        // The stack the card paints (title, instruction, distance, summary)
-        // fits inside the scaled card with the design's own padding.
-        let stack: f64 = [text_sm(), NAV_INSTR_TEXT, text_sm(), text_lg()]
-            .iter()
-            .map(|&s| line_h(s, 2.0))
-            .sum();
-        assert!(two.height >= stack);
     }
 
-    // Phase `explore_rows_keep_a_related_row_gap`.
-    // The rows of the Explore panel pitch at `ROW_H` with an `s2` between
-    // neighbouring hit rects, so no two rows share an edge.
+    // Phase `explore_rows_never_overlap`.
+    // The rows of the Explore panel stack edge to edge (list rows with inset
+    // separators), never overlapping.
     {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -3263,18 +3165,19 @@ fn authored_geometry_keeps_gaps_and_scales_with_text() {
         for pair in rows.windows(2) {
             let gap = pair[1].y0 - pair[0].y1;
             assert!(
-                gap >= f64::from(theme.tokens.spacing.s2) - 1e-6,
-                "rows {:?} and {:?} are only {gap}px apart",
+                gap >= -1e-6,
+                "rows {:?} and {:?} overlap by {}px",
                 pair[0],
-                pair[1]
+                pair[1],
+                -gap
             );
         }
     }
 
     // Phase `floating_chrome_keeps_one_sibling_gap`.
-    // One rhythm for the floating chrome (HIG §7b): the search bar, the
-    // panel beneath it and the ⋯ overflow button all keep the theme's `s3`
-    // from their neighbours and the `s4` window margin — nothing touches.
+    // One rhythm for the floating chrome (HIG §7b): the panel and the
+    // overflow button keep the `s4` window margin, and the overflow button
+    // clears the panel — nothing touches.
     {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -3282,99 +3185,56 @@ fn authored_geometry_keeps_gaps_and_scales_with_text() {
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         let sp = theme.tokens.spacing;
-        assert_eq!(GAP, f64::from(sp.s3));
-        let search = a.search_rect();
+        assert_eq!(a.gap(), f64::from(sp.s3));
         let panel = a.panel_rect();
-        assert_eq!(
-            panel.y0 - search.y1,
-            GAP,
-            "panel sits an s3 under the search bar"
-        );
-        assert_eq!(
-            search.y0,
-            f64::from(sp.s4),
-            "search bar keeps the window margin"
-        );
-        assert_eq!(search.x0, f64::from(sp.s4));
+        assert_eq!(panel.y0, f64::from(sp.s4), "the panel keeps the margin");
+        assert_eq!(panel.x0, f64::from(sp.s4));
         let overflow = a.overflow_rect();
         assert_eq!(a.rect.x1 - overflow.x1, f64::from(sp.s4));
         assert_eq!(a.rect.y1 - overflow.y1, f64::from(sp.s4));
         assert!(
-            overflow.y0 - panel.y1 >= 0.0 || overflow.x0 - panel.x1 >= GAP,
+            overflow.x0 - panel.x1 >= a.gap(),
             "the overflow button clears the panel by a sibling gap"
         );
     }
 
-    // Phase `panel_width_follows_the_text_scale_and_the_drawer_keeps_its_one_x_width`.
-    // The panel's authored width bounds scale with the text (never below
+    // Phase `panel_width_follows_the_text_scale`.
+    // The panel is the list-panel width, grown with the text (never below
     // 1×) so a 2× panel keeps its 1× character budget; the breakpoint is the
-    // theme's compact breakpoint and is not scaled by the app; and the 1×
-    // drawer is exactly what it was — only a scaled drawer's extra width
-    // stops short of the trailing controls column.
+    // theme's compact breakpoint; and a drawer stops short of the controls.
     {
         let mut a = app_at(1600.0, 900.0);
+        let list = f64::from(a.metrics.panel_width_list);
         a.text_scale = 1.0;
         assert!(!a.overlay_mode());
-        assert_eq!(
-            a.panel_w(),
-            PANEL_MAX_W,
-            "1600 × 0.42 clamps to the authored 384"
-        );
+        assert_eq!(a.panel_w(), list);
         a.text_scale = 2.0;
         assert!(!a.overlay_mode(), "the breakpoint is the theme's, unscaled");
         let two = a.panel_w();
-        assert!(two > PANEL_MAX_W, "a 2× panel is wider than the 1× column");
+        assert!(two > list, "a 2× panel is wider than the 1× column");
         assert!(
             two <= 1600.0 * 0.6,
             "the map keeps at least 40 % of a docked window"
         );
-        assert_eq!(
-            two,
-            (1600.0_f64 * 0.42)
-                .max(PANEL_MIN_W * 2.0)
-                .min(PANEL_MAX_W * 2.0)
-        );
 
-        // The breakpoint is the theme token at every scale.
         let mut mid = app_at(800.0, 900.0);
         mid.text_scale = 2.0;
         assert!(!mid.overlay_mode());
         assert_eq!(f64::from(mid.metrics.compact_breakpoint), 720.0);
 
-        // A 400px drawer at 1× is the authored 368 (window − 2·s4), under the
-        // controls column exactly as before; at 2× it does not shrink below
-        // that, and a drawer that *would* grow past the controls stops short
-        // of them.
         let mut narrow = app_at(400.0, 800.0);
         narrow.text_scale = 1.0;
         assert!(narrow.overlay_mode());
-        let one_x = 400.0 - 2.0 * narrow.margin();
-        assert_eq!(narrow.panel_w(), one_x);
-        narrow.text_scale = 2.0;
-        assert_eq!(narrow.panel_w(), one_x, "the 1× drawer width is the floor");
-        let mut wide_drawer = app_at(700.0, 800.0);
-        wide_drawer.text_scale = 2.0;
-        assert!(wide_drawer.overlay_mode());
         assert_eq!(
-            wide_drawer.panel_w(),
-            700.0 - 2.0 * wide_drawer.margin() - CTRL_SIZE - GAP,
-            "a scaled drawer stops short of the controls column"
+            narrow.panel_w(),
+            400.0 - 2.0 * narrow.margin() - narrow.controls().size - narrow.gap(),
+            "the drawer stops short of the controls column"
         );
-        assert!(wide_drawer.panel_w() >= (700.0 - 2.0 * wide_drawer.margin()).min(PANEL_MAX_W));
 
         // A degenerate rect never panics the docked bounds.
         let mut degenerate = app_at(0.0, 0.0);
         degenerate.text_scale = 1.0;
         let _ = degenerate.panel_w();
-    }
-
-    // Phase `text_vmid_centres_the_scaled_line`.
-    {
-        // At 1× a 12pt line (15px) centred in a 40px band starts at 12.5.
-        assert!((text_vmid(0.0, 40.0, 12.0, 1.0) - 12.5).abs() < 1e-9);
-        // At 2× the same line is 30px tall, so it starts at 5 — not at 12.5,
-        // which would push half the glyphs out of the band.
-        assert!((text_vmid(0.0, 40.0, 12.0, 2.0) - 5.0).abs() < 1e-9);
     }
 }
 
@@ -3493,9 +3353,9 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ToggleTraffic,
         ];
 
-        // Docked, 720×400: beside would overlap the panel, below would run
+        // Docked, 720×360: beside would overlap the panel, below would run
         // past the overflow button.
-        let mut docked = app_at(720.0, 400.0);
+        let mut docked = app_at(720.0, 360.0);
         let mut scene = Scene::new();
         docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());

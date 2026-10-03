@@ -87,29 +87,11 @@ fn cell(nx: f64, ny: f64) -> LatLon {
     LatLon::new(CENTER.lat + ny * DLAT, CENTER.lon + nx * DLON)
 }
 
-/// Minutes-past-midnight base the offline demo / `--shots` clocks all derive
-/// from — a fixed 09:00 local morning. Both the road-trip clock (see the app)
-/// and the sample transit departures below anchor here, so the Drive summary
-/// and the Transit departures read from one coherent time instead of a
-/// nondeterministic wall clock. Live sessions use the real `Local::now()`.
-pub const DEMO_CLOCK_BASE_MIN: i64 = 9 * 60;
-
-/// The demo clock base as a concrete local wall-clock instant (today's date at
-/// [`DEMO_CLOCK_BASE_MIN`]). Only the offline demo/screenshot/test path uses
-/// this; the live app anchors trip times to the real `Local::now()`.
-pub fn demo_clock_base() -> chrono::DateTime<chrono::Local> {
-    use chrono::TimeZone;
-    let today = chrono::Local::now().date_naive();
-    let hh = (DEMO_CLOCK_BASE_MIN / 60) as u32;
-    let mm = (DEMO_CLOCK_BASE_MIN % 60) as u32;
-    let Some(naive) = today.and_hms_opt(hh, mm, 0) else {
-        return chrono::Local::now();
-    };
-    match chrono::Local.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => dt,
-        chrono::LocalResult::None => chrono::Local::now(),
-    }
-}
+/// Minutes past midnight the sample journeys depart from: the time every
+/// capture shows (`ui::clock::CAPTURE_LOCAL_TIME`, 10:42), so the departures
+/// lie just ahead of "now" in a screenshot.
+pub const DEMO_CLOCK_BASE_MIN: i64 =
+    ui::clock::CAPTURE_LOCAL_TIME.3 as i64 * 60 + ui::clock::CAPTURE_LOCAL_TIME.4 as i64;
 
 /// Walk the integer grid lines strictly between `a` and `b` in the travel
 /// direction, then land exactly on `b`. Empty when `a == b`. The building block
@@ -439,7 +421,7 @@ pub fn pois() -> Vec<Poi> {
         Poi {
             address: "Theatinerstraße 12, München".to_string(),
             opening_hours: Some("Mo–Sa 08:00–20:00".to_string()),
-            website: Some("https://cafe-tambosi.example".to_string()),
+            website: Some("https://www.tambosi.de".to_string()),
             phone: Some("+49 89 2900 8600".to_string()),
             kind: Some("coffee".to_string()),
             ..mk("osm-node-201", "Café Tambosi", Category::Cafe, 1.2, 1.6)
@@ -459,7 +441,7 @@ pub fn pois() -> Vec<Poi> {
         Poi {
             address: "Am Platzl 9, München".to_string(),
             opening_hours: Some("09:00–24:00".to_string()),
-            website: Some("https://hofbraeuhaus.example".to_string()),
+            website: Some("https://www.hofbraeuhaus.de".to_string()),
             kind: Some("beer garden".to_string()),
             ..mk("osm-node-203", "Hofbräuhaus", Category::Bar, 1.6, 0.9)
         },
@@ -703,7 +685,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3".to_string(),
-                    headsign: "→ Moosach".to_string(),
+                    headsign: "Moosach".to_string(),
                     from_name: "Goetheplatz".to_string(),
                     to_name: "Marienplatz".to_string(),
                     dep: clk(17),
@@ -743,7 +725,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                 TransitLeg {
                     mode: TransitMode::Tram,
                     line: "17".to_string(),
-                    headsign: "→ Schwanseestraße".to_string(),
+                    headsign: "Schwanseestraße".to_string(),
                     from_name: "Sendlinger Tor".to_string(),
                     to_name: "Reichenbachplatz".to_string(),
                     dep: clk(12),
@@ -759,7 +741,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                 TransitLeg {
                     mode: TransitMode::Bus,
                     line: "52".to_string(),
-                    headsign: "→ Tierpark".to_string(),
+                    headsign: "Tierpark".to_string(),
                     from_name: "Reichenbachplatz".to_string(),
                     to_name: "Marienplatz".to_string(),
                     dep: clk(19),
@@ -799,7 +781,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3/U6".to_string(),
-                    headsign: "→ Garching".to_string(),
+                    headsign: "Garching".to_string(),
                     from_name: "Poccistraße".to_string(),
                     to_name: "Odeonsplatz".to_string(),
                     dep: clk(13),
@@ -815,7 +797,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                 TransitLeg {
                     mode: TransitMode::Rail,
                     line: "S1".to_string(),
-                    headsign: "→ Ostbahnhof".to_string(),
+                    headsign: "Ostbahnhof".to_string(),
                     from_name: "Odeonsplatz".to_string(),
                     to_name: "Marienplatz".to_string(),
                     dep: clk(24),
@@ -1008,33 +990,23 @@ mod tests {
             }
         }
 
-        // Phase `transit_clocks_derive_from_demo_base`.
-        // The sample departures derive from the shared demo base minute, so every
-        // clock reads the same 09:00 morning the Drive summary uses.
+        // Phase `transit_clocks_lie_ahead_of_the_capture_time`.
+        // The sample departures derive from the time a capture shows, so every
+        // journey leaves after "now" in a screenshot and arrives after it leaves.
         {
-            let base_hh = format!("{:02}", DEMO_CLOCK_BASE_MIN / 60);
-            let journeys = sample_transit();
-            for j in &journeys {
-                assert!(
-                    j.dep.starts_with(&base_hh),
-                    "journey departs the base hour: {}",
-                    j.dep
-                );
-                assert!(
-                    j.arr.starts_with(&base_hh),
-                    "journey arrives the base hour: {}",
-                    j.arr
-                );
+            let now = format!(
+                "{:02}:{:02}",
+                DEMO_CLOCK_BASE_MIN / 60,
+                DEMO_CLOCK_BASE_MIN % 60
+            );
+            assert_eq!(now, "10:42");
+            for j in &sample_transit() {
+                assert!(j.dep > now, "journey departs after now: {}", j.dep);
+                assert!(j.arr > j.dep, "journey arrives after it leaves");
                 for leg in &j.legs {
-                    assert!(
-                        leg.dep.starts_with(&base_hh),
-                        "leg departs the base hour: {}",
-                        leg.dep
-                    );
+                    assert!(leg.dep > now, "leg departs after now: {}", leg.dep);
                 }
             }
-            // The concrete base instant reads the same wall clock.
-            assert_eq!(demo_clock_base().format("%H:%M").to_string(), "09:00");
         }
     }
 }
