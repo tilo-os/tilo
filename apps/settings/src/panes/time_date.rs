@@ -12,10 +12,9 @@
 //!
 //! ## Live vs. sample
 //!
-//! - **Current time / date** are read from the real wall clock via
-//!   `os_actions::time::{now_clock, now_date}` at build time, so the panel
-//!   shows the actual time (formatted per the 24-hour toggle), not a frozen
-//!   string.
+//! - **Current time / date** are read through the toolkit clock
+//!   (`ui::clock`) at build time, so the panel shows the actual time
+//!   (formatted per the 24-hour toggle) and a capture its pinned one.
 //! - **Time zone** is read from timedated, falling back to `/etc/timezone`
 //!   (or the `/etc/localtime` symlink target) only when the service does not
 //!   report it. Choices come from `timedatectl list-timezones`; map coordinates

@@ -1705,6 +1705,11 @@ fn account_operation_spec(
             "accounts",
             "network-probe",
         ]));
+    } else if matches!(
+        operation,
+        AccountOperation::SubmitForm | AccountOperation::SubmitReauthentication
+    ) {
+        spec = spec.with_contract(local_operation_contract(&["device-local", "accounts"]));
     }
     Some(spec)
 }
@@ -1752,6 +1757,37 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
             OperationKind::View,
             &AccountOperation::Add { kind: kind.into() },
         ) {
+            section = section.with_action(action);
+        }
+    }
+    // The open form's own buttons: the same doors, on the same surface.
+    for (id, label, kind, operation) in [
+        (
+            "save-form",
+            "Save the account form",
+            OperationKind::Effect,
+            AccountOperation::SubmitForm,
+        ),
+        (
+            "cancel-form",
+            "Close the account form",
+            OperationKind::View,
+            AccountOperation::CancelForm,
+        ),
+        (
+            "save-reauthentication",
+            "Save the new credential",
+            OperationKind::Effect,
+            AccountOperation::SubmitReauthentication,
+        ),
+        (
+            "cancel-reauthentication",
+            "Close the sign-in form",
+            OperationKind::View,
+            AccountOperation::CancelReauthentication,
+        ),
+    ] {
+        if let Some(action) = account_operation_spec(id, label, kind, &operation) {
             section = section.with_action(action);
         }
     }
@@ -5981,6 +6017,25 @@ mod tests {
                     Err(ActionError::Refused(_))
                 ));
             }
+        }
+    }
+
+    /// The account forms' own buttons are bound to the External accounts section, so
+    /// that section has to publish them or they would sit disabled.
+    #[test]
+    fn account_form_buttons_are_published_on_the_accounts_section() {
+        let resources = provide_resources(&AutoCommit::new());
+        let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
+        for id in [
+            "save-form",
+            "cancel-form",
+            "save-reauthentication",
+            "cancel-reauthentication",
+        ] {
+            assert!(
+                accounts.actions.iter().any(|action| action.id == id),
+                "{id} is published"
+            );
         }
     }
 
