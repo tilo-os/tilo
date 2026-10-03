@@ -12,8 +12,9 @@ use ui::tilo_resource::{
 };
 
 use crate::actions::{
-    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, Paint,
-    RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork, SetReference,
+    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, NewArtwork,
+    OpenArtwork, Paint, RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork,
+    SetReference,
 };
 use crate::model::Artwork;
 
@@ -231,6 +232,15 @@ pub struct ExportSvg {
     pub outline_text: Option<bool>,
 }
 
+/// Save the artwork as a `.artwork` file.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveArtwork {
+    /// An absolute path ending in `.artwork` to write it to (replaced when
+    /// there); else it is kept as content and answered by its address.
+    pub path: Option<String>,
+}
+
 /// A view or effect the canvas answers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -242,6 +252,7 @@ pub enum ViewOp {
     Diff(Diff),
     ExportSvg(ExportSvg),
     Compare(Compare),
+    SaveArtwork(SaveArtwork),
 }
 
 /// What changed between two versions of the artwork.
@@ -352,6 +363,36 @@ fn store_inline_picture(data: &str) -> Result<String, String> {
     crate::render::decode_picture(&bytes)
         .map_err(|error| format!("the inline picture is not a PNG or JPEG: {error}"))?;
     store(&bytes)
+}
+
+/// An artwork file to open.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenFile {
+    /// An absolute path to a `.artwork` file, a content address, or the
+    /// file's JSON.
+    pub file: String,
+}
+
+/// The bytes of the artwork file `file` names: its JSON itself, stored
+/// content, or a file.
+///
+/// # Errors
+/// Returns why the file cannot be had.
+fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
+    let trimmed = file.trim_start();
+    if trimmed.starts_with('{') {
+        return Ok(trimmed.as_bytes().to_vec());
+    }
+    if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
+        return tilo_content::ContentStore::for_app()
+            .read(hash)
+            .ok_or_else(|| format!("no stored content {trimmed}"));
+    }
+    if trimmed.starts_with('/') {
+        return read_file(trimmed, crate::document::MAX_FILE_BYTES);
+    }
+    Err("file is an absolute path to a .artwork file, a content address, or its JSON".into())
 }
 
 /// The bytes of the file at `path`, at most `limit` of them.
@@ -496,6 +537,19 @@ impl Resource for ArtworkResource {
                 "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
                 CanvasAction::SetArtwork,
             ),
+            decl::<NewArtwork>(
+                "new-artwork",
+                "New artwork",
+                "Start over on a blank artwork (the old one stays one undo away): a size (screen, a4, letter, square, poster, icon; landscape turns it) or width and height, and a start: paper, white, watercolour, oil, panel or dark (its ground and its first layer's medium).",
+                CanvasAction::NewArtwork,
+            ),
+            ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenFile>(), |args, _now| {
+                let open: OpenFile = read_args(args)?;
+                let bytes = artwork_bytes(&open.file)?;
+                let artwork = crate::document::ArtworkFile::parse(&bytes)?;
+                Ok(CanvasAction::OpenArtwork(Box::new(OpenArtwork { artwork })))
+            })
+            .describe("Replace the artwork with a saved .artwork file (an absolute path, a content address, or its JSON); the old one stays one undo away."),
             decl::<SaveMedium>(
                 "save-medium",
                 "Save medium",
@@ -606,7 +660,20 @@ impl Resource for ArtworkResource {
             schema: serde_json::json!({"type": "object"}),
         };
         let [compare, svg] = vector_operations();
-        vec![look, inspect, media, export, diff, compare, svg]
+        let mut save = operation(
+            "save-artwork",
+            "Save artwork",
+            OperationKind::Effect,
+            params_of::<SaveArtwork>(),
+            |args| ViewOp::SaveArtwork(read_args(args).unwrap_or_default()),
+        )
+        .with_description(
+            "Save the artwork as a .artwork file (title, size, ground, layers, marks, media) that open-artwork reads back: to a path in Files, or kept as content.",
+        );
+        save.contract.result = ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
+        vec![look, inspect, media, export, diff, compare, svg, save]
     }
 
     fn search(art: &Artwork) -> Vec<SearchEntry> {

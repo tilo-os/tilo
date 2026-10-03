@@ -19,6 +19,8 @@ use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 pub const MAX_SIDE: f64 = 8192.0; // a document limit in artwork units, not on-screen spacing
 /// The most marks one action may add.
 pub const MAX_MARKS_PER_ACTION: usize = 2000;
+/// The most marks an artwork opened from a file may hold.
+pub const MAX_MARKS: usize = 100_000;
 /// The most points one stroke or outline may have.
 pub const MAX_POINTS: usize = 4096;
 
