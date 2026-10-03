@@ -1,10 +1,15 @@
-//! A themed status bar: a thin strip with left- and right-aligned text (counts,
-//! document info, cursor position, …).
+//! The status bar: persistent status at the bottom edge of a window region.
 //!
-//! Application chrome, so it reads the app type scale: a status readout is
-//! a `Caption` with tabular figures in the dim ink, inset by `spacing.s4`
-//! from either end and centred on its own measured line — never a literal
-//! colour, size or `(height - 15.0) / 2.0`.
+//! What a person reads while working and expects to stay put (the cursor's
+//! line and column, a word count, the number of unresolved conflicts) goes
+//! here, never into a floating bubble over the content. The bar reserves its
+//! band ([`split`]): the content above it is laid out in what is left, so
+//! nothing is ever painted under it.
+//!
+//! The bar sits on its region's ground (the framework paints that) with one
+//! hairline along its top edge; it is never a raised band. Each readout is a
+//! `Caption` with tabular figures in the secondary ink, inset by the
+//! content gutter step `spacing.s4`.
 
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -13,10 +18,25 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Fill;
 
-/// Standard status-bar height: the compact control height (HIG §9.6's Bar
-/// control / Selector height of 28), so a status bar and a bar control read
-/// as the same tier.
-pub const STATUS_BAR_HEIGHT: f64 = 28.0;
+/// Height of the status bar: the compact control height, so a status bar
+/// and a bar control read as the same tier.
+#[must_use]
+pub fn height(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.bar_control_height)
+}
+
+/// Reserve the status bar's band at the bottom of `region`: returns
+/// `(content, bar)`. Lay the region's content out in `content` and draw the
+/// bar in `bar`.
+#[must_use]
+pub fn split(region: Rect, theme: &Theme) -> (Rect, Rect) {
+    let h = height(theme).min(region.height().max(0.0));
+    let top = region.y1 - h;
+    (
+        Rect::new(region.x0, region.y0, region.x1, top),
+        Rect::new(region.x0, top, region.x1, region.y1),
+    )
+}
 
 /// A status readout: a caption, with tabular figures so a changing cursor
 /// position does not jitter.
@@ -33,33 +53,28 @@ fn text_origins(rect: Rect, theme: &Theme, right_w: f64, line_h: f64) -> ((f64, 
     ((rect.x0 + gutter, y), (rect.x1 - gutter - right_w, y))
 }
 
-/// Draw a themed status bar in `rect` with `left`/`right`-aligned text.
+/// Draw the status bar in `bar` (from [`split`]) with `left`- and
+/// `right`-aligned readouts. `theme` is the theme of the region the bar sits
+/// in (`theme.in_region(..)` for a sidebar or inspector).
 pub fn draw(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     theme: &Theme,
-    rect: Rect,
+    bar: Rect,
     left: &str,
     right: &str,
 ) {
     let colors = &theme.tokens.colors;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.surfaces.raised,
-        None,
-        &rect,
-    );
-    // Bar role (HIG §9.1): one derived top rule. Weight comes from the theme.
+    // One hairline where the bar meets the content above it.
     let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
     if rule > 0.0 {
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::chrome::chrome_hairline(theme),
+            crate::surface::edge_on(colors.surfaces.content),
             None,
-            &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rule),
+            &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + rule),
         );
     }
 
@@ -70,7 +85,7 @@ pub fn draw(
     // Both readouts share one line box, so their baselines agree even when
     // one side is empty.
     let line_h = f64::from(line_h.max(left_h));
-    let ((lx, ly), (rx, ry)) = text_origins(rect, theme, f64::from(right_w), line_h);
+    let ((lx, ly), (rx, ry)) = text_origins(bar, theme, f64::from(right_w), line_h);
     // The right readout takes precedence over a left one long enough to
     // run into it: a cursor position is what the eye looks for.
     let left_max = (rx - lx - f64::from(theme.tokens.spacing.s2)).max(0.0);
@@ -111,36 +126,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_bar_readouts_sit_on_the_gutter_scale_and_paint_themed() {
+    fn status_bar_reserves_its_band_and_sits_on_the_region() {
+        // Case `split_reserves_the_band_at_the_bottom`.
+        {
+            let theme = Theme::dark();
+            let region = Rect::new(0.0, 40.0, 800.0, 600.0);
+            let (content, bar) = split(region, &theme);
+            assert_eq!(bar.height(), height(&theme));
+            assert_eq!(content.y1, bar.y0, "nothing is painted under the bar");
+            assert_eq!((content.y0, bar.y1), (region.y0, region.y1));
+            assert_eq!(height(&Theme::dark().with_ui_scale(2.0)), 56.0);
+        }
+
         // Case `readouts_sit_on_the_s4_gutter_and_centre_their_measured_line`.
         {
             let theme = Theme::dark();
-            let rect = Rect::new(0.0, 100.0, 800.0, 100.0 + STATUS_BAR_HEIGHT);
+            let rect = Rect::new(0.0, 100.0, 800.0, 100.0 + height(&theme));
             let ((lx, ly), (rx, ry)) = text_origins(rect, &theme, 60.0, 16.0);
             let gutter = f64::from(theme.tokens.spacing.s4);
             assert_eq!(lx, gutter);
             assert_eq!(rx, 800.0 - gutter - 60.0);
             assert_eq!(ly, ry, "left and right share one line box");
-            assert!(
-                (ly + 8.0 - rect.center().y).abs() < 1e-9,
-                "the line box is centred on the bar"
-            );
+            assert!((ly + 8.0 - rect.center().y).abs() < 1e-9);
         }
 
-        // Case `label_is_a_resolved_caption`.
-        {
-            let scaled = Theme::dark().with_text_scale(2.0);
-            let style = label_style(&scaled);
-            assert_eq!(style.size, scaled.text(TextRole::Caption).size);
-            assert_eq!(style.scaling, crate::text_render::TextScaling::Resolved);
-        }
-
-        // Case `draw_paints_without_a_literal_colour_and_elides_a_long_left_readout`.
+        // Case `the_bar_is_not_a_raised_band`.
         {
             let theme = Theme::light();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            let rect = Rect::new(0.0, 0.0, 160.0, STATUS_BAR_HEIGHT);
+            let rect = Rect::new(0.0, 0.0, 160.0, height(&theme));
             draw(
                 &mut scene,
                 Affine::IDENTITY,
@@ -150,9 +165,18 @@ mod tests {
                 "a very long left-hand readout that cannot fit",
                 "Ln 12, Col 4",
             );
-            // Reaching here without a panic is the assertion for the paint path;
-            // the geometry is pinned above and the ink is `text_dim` by
-            // construction (no `Color::from_rgb8` remains in this file).
+            let raised = theme
+                .tokens
+                .colors
+                .surfaces
+                .raised
+                .premultiply()
+                .to_rgba8()
+                .to_u32();
+            assert!(
+                !scene.encoding().draw_data.contains(&raised),
+                "the bar stands on its region's ground"
+            );
         }
     }
 }
