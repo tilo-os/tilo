@@ -241,6 +241,9 @@ impl Args {
                 args.outputs = Some(outputs);
             }
             "--list-scenarios" => args.list_scenarios = true,
+            "--theme" => {
+                shell::shell::frame::request_shots_theme(take_value(rest, "--theme")?);
+            }
             "--sweep" => args.sweep = Some(apply_sweep_flag(rest)?),
             "--per-frame" => args.per_frame = Some(apply_per_frame_flag(rest)?),
             "--baseline" => args.baseline = Some(PathBuf::from(take_value(rest, "--baseline")?)),
@@ -415,6 +418,8 @@ Common flags:\n\
                         the topbar clock + system monitor which update from\n\
                         live data and produce a small per-frame delta\n\
   --list-scenarios      print the built-in catalogue and exit\n\
+  --theme NAME          dark (default), light or high-contrast; the same as\n\
+                        TILO_SHOTS_THEME=NAME\n\
 \n\
 Scene catalogue (legacy):\n  {scene_list}\n\
 \n\
