@@ -261,6 +261,13 @@ fn luminance(c: Color) -> f64 {
 }
 
 const PAGE_TOP: f64 = 28.0;
+/// The window width (at 1×) from which the outline docks beside a page it
+/// leaves readable; below it the outline is a drawer over the page.
+const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64 + 600.0;
+/// The width from which the inspector docks beside a whole page; below it
+/// the inspector is a sheet over the page.
+const INSPECTOR_DOCKS_FROM: f64 =
+    ui::tokens::Metrics::BASE.inspector_width as f64 + MAX_PAGE_W + 48.0;
 const MAX_PAGE_W: f64 = 820.0;
 /// Body blocks retained as rich views for a large imported document. The
 /// canonical CRDT remains complete; this is strictly the renderer's bounded
@@ -1165,9 +1172,14 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    /// The inspector's and the outline's widths, from this frame's theme.
-    inspector_w: f64,
-    sidebar_w: f64,
+    /// The outline (the leading sidebar) and the inspector (the trailing
+    /// panel): docked beside the page in a wide window, floating drawers
+    /// over a scrim in a narrow one.
+    outline_drawer: ui::widget::SidebarDrawer,
+    inspector_drawer: ui::widget::SidebarDrawer,
+    /// Their show/hide buttons at the ends of the toolbar band.
+    outline_toggle: Rect,
+    inspector_toggle: Rect,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
     /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
@@ -1249,16 +1261,6 @@ impl WordProcessorWidget {
         widget.refresh_blocks(&mut state.clone());
         widget.sheet = widget.inner.stylesheet(state);
         Ok(widget)
-    }
-
-    /// The inspector's width: the theme's inspector metric.
-    fn styles_panel_width(&self) -> f64 {
-        self.inspector_w
-    }
-
-    /// The outline's width: the theme's sidebar metric.
-    fn outline_panel_width(&self) -> f64 {
-        self.sidebar_w
     }
 
     #[allow(
@@ -1399,8 +1401,18 @@ impl WordProcessorWidget {
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
-            inspector_w: f64::from(ui::tokens::Metrics::BASE.inspector_width),
-            sidebar_w: f64::from(ui::tokens::Metrics::BASE.sidebar_width),
+            outline_drawer: ui::widget::SidebarDrawer::new()
+                .left()
+                .closed()
+                .breakpoint(OUTLINE_DOCKS_FROM),
+            inspector_drawer: ui::widget::SidebarDrawer::new()
+                .right()
+                .closed()
+                .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
+                .overlay_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
+                .breakpoint(INSPECTOR_DOCKS_FROM),
+            outline_toggle: Rect::ZERO,
+            inspector_toggle: Rect::ZERO,
             recovery: RecoveryBanner::default(),
             template_picker: TemplatePicker::default(),
             unsaved_changes: UnsavedChanges::default(),
@@ -4668,8 +4680,7 @@ impl WordProcessorWidget {
     /// windows reserve space for it. This keeps the document useful at
     /// phone/three-column widths without making advanced formatting unreachable.
     fn styles_panel_overlay(&self) -> bool {
-        self.view.styles_panel_visible
-            && self.rect.width() < self.styles_panel_width() + MAX_PAGE_W + 48.0
+        self.view.styles_panel_visible && self.inspector_drawer.is_overlay()
     }
 
     /// The contextual inspector. Docked, it is the window's inspector region;
@@ -4685,23 +4696,8 @@ impl WordProcessorWidget {
         panel: Rect,
     ) {
         self.panel_hits.clear();
-        let overlay = self.styles_panel_overlay();
-        let sp = &theme.tokens.spacing;
-        let (panel, local) = if overlay {
-            let inset = f64::from(sp.s2);
-            let sheet = panel.inset(-inset);
-            ui::widget::floating_surface::paint(scene, transform, sheet, theme);
-            (sheet, theme.on_ground(ui::chrome::panel_ground(theme)))
-        } else {
-            ui::surface::region(
-                scene,
-                transform,
-                panel,
-                ui::surface::Region::Inspector,
-                theme,
-            );
-            (panel, theme.in_region(ui::surface::Region::Inspector))
-        };
+        let local = theme.clone();
+        let sp = &local.tokens.spacing;
         self.panel_rect = panel;
         let pad = f64::from(local.tokens.spacing.s4);
         let x0 = panel.x0 + pad;
@@ -5912,7 +5908,6 @@ struct FrameGeometry {
     canvas_clip: Rect,
     canvas_left: f64,
     canvas_right: f64,
-    tb_h: f64,
     layout_bar_top: f64,
     history_top: f64,
     history_h: f64,
@@ -6109,15 +6104,15 @@ impl WordProcessorWidget {
         theme: &Theme,
         full: Rect,
     ) -> FrameGeometry {
-        self.inspector_w = f64::from(theme.tokens.metrics.inspector_width);
-        self.sidebar_w = f64::from(theme.tokens.metrics.sidebar_width);
-        let mut available = full.width();
-        if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            available -= self.styles_panel_width();
-        }
-        if self.outline.is_open() {
-            available -= self.outline_panel_width();
-        }
+        let tb_h = Self::toolbar_band_height(theme);
+        let below = Rect::new(
+            full.x0,
+            full.y0 + tb_h,
+            full.x1,
+            full.y1.max(full.y0 + tb_h),
+        );
+        let column = self.resolve_drawers(theme, below);
+        let available = column.width();
         let mobile_page = available < 600.0;
         let accessible_page = self.text_scale > 1.01;
         if self.view.auto_fit_page {
@@ -6133,7 +6128,6 @@ impl WordProcessorWidget {
             };
             self.zoom.set(fit);
         }
-        let tb_h = Self::toolbar_band_height(theme);
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.tool_band = tb;
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
@@ -6148,21 +6142,9 @@ impl WordProcessorWidget {
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
-        // Reserve the styles panel out of the canvas so the page re-centers in the
-        // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
-        // styles panel on the right) so the page re-centers and scrolled content
-        // never paints under the pane.
-        let canvas_left = if self.outline.is_open() {
-            (full.x0 + self.outline_panel_width()).min(canvas_right - 1.0)
-        } else {
-            full.x0
-        };
+        // The page's column: what the docked outline and inspector leave.
+        let canvas_left = column.x0;
+        let canvas_right = column.x1.max(canvas_left + 1.0);
         // Reserve + draw the crash-recovery banner (when staged) and the Find
         // bar (when open), stacked directly under the toolbar. The find bar
         // is measured against the canvas width it will span first, so the
@@ -6253,7 +6235,6 @@ impl WordProcessorWidget {
             canvas_clip: transform.transform_rect_bbox(canvas),
             canvas_left,
             canvas_right,
-            tb_h,
             layout_bar_top,
             history_top,
             history_h,
@@ -8615,10 +8596,18 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // A narrow-window inspector is a modal-ish rail: clicking the dimmed
-        // document dismisses it instead of placing a caret through the overlay.
-        if self.styles_panel_overlay() && !self.panel_rect.contains(self.pointer) {
+        // A drawer over the page dismisses on a press on its scrim, instead
+        // of placing a caret through it.
+        if self.inspector_drawer.press_dismisses(self.pointer) {
             self.view.styles_panel_visible = false;
+            self.lifecycle.dirty = true;
+            *handled = true;
+            return true;
+        }
+        if self.outline_drawer.press_dismisses(self.pointer) {
+            if self.outline.is_open() {
+                self.outline.toggle();
+            }
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
@@ -9894,9 +9883,9 @@ impl Widget for WordProcessorWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Status is persistent bottom chrome, so it has no independent fade
-        // lifecycle to animate while the editor is otherwise idle.
-        false
+        // Only the outline and inspector drawers move, while they open or
+        // close.
+        self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
     }
 
     fn wants_tab_input(&self) -> bool {
@@ -10021,64 +10010,25 @@ impl Widget for WordProcessorWidget {
 
         self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
 
-        // Document outline / navigation pane on the left (between toolbar and
-        // layout bar). Drawn after `self.laid` is set so the active-heading
-        // highlight reflects this frame's pagination.
-        if self.outline.is_open() {
-            let outline_band =
-                Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
-            let entries = self.outline_entries();
-            let active = self.active_outline_block();
-            self.outline.draw(
-                &mut PaintContext::new(scene, transform, text_renderer),
-                theme,
-                outline_band,
-                &entries,
-                active.as_deref(),
-            );
-        } else {
-            self.outline.clear_frame();
-        }
-
         if fg.history_h > 0.0 {
-            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
+            let band = Rect::new(
+                fg.canvas_left,
+                fg.history_top,
+                fg.canvas_right,
+                fg.layout_bar_top,
+            );
             self.history
                 .draw(scene, transform, text_renderer, theme, presence, band);
         }
 
-        let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
+        let lbar = Rect::new(
+            fg.canvas_left,
+            fg.layout_bar_top,
+            fg.canvas_right,
+            fg.content_bottom,
+        );
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
-
-        // The contextual inspector: docked beside the page between the
-        // toolbar and the status band, or as a sheet over a scrim that
-        // covers everything below the toolbar.
-        if self.styles_panel_visible() {
-            let top = full.y0 + fg.tb_h;
-            let panel = if self.styles_panel_overlay() {
-                let below = Rect::new(full.x0, top, full.x1, full.y1);
-                ui::overlay::scrim::modal(scene, transform, below, 1.0, theme);
-                // The sheet floats `s2` inside the window and keeps the
-                // docked inspector's inner width.
-                let inset = 2.0 * f64::from(theme.tokens.spacing.s2);
-                Rect::new(
-                    (full.x1 - self.styles_panel_width() - inset).max(full.x0),
-                    top,
-                    full.x1,
-                    full.y1,
-                )
-            } else {
-                Rect::new(fg.canvas_right, top, full.x1, fg.layout_bar_top)
-            };
-            self.draw_styles_panel(scene, transform, text_renderer, theme, panel);
-        } else {
-            self.panel_rect = Rect::ZERO;
-            self.panel_body = Rect::ZERO;
-            self.panel_hits.clear();
-            for slot in &mut self.num_inputs {
-                slot.rect = Rect::ZERO;
-            }
-            self.line_spacing_rect = Rect::ZERO;
-        }
+        self.draw_drawers(scene, transform, text_renderer, theme);
     }
 
     #[expect(
@@ -11633,9 +11583,21 @@ impl WordProcessorWidget {
             | ToolAction::TableDelete) => self.apply_table_tool(state, table_action),
             ToolAction::ToggleStyles => {
                 self.view.styles_panel_visible = !self.view.styles_panel_visible;
+                if self.view.styles_panel_visible {
+                    self.inspector_drawer.open();
+                } else {
+                    self.inspector_drawer.close();
+                }
             }
             ToolAction::ToggleRuler => self.view.ruler_visible = !self.view.ruler_visible,
-            ToolAction::ToggleOutline => self.outline.toggle(),
+            ToolAction::ToggleOutline => {
+                self.outline.toggle();
+                if self.outline.is_open() {
+                    self.outline_drawer.open();
+                } else {
+                    self.outline_drawer.close();
+                }
+            }
             ToolAction::ToggleHistory if self.hosted() => {}
             ToolAction::ToggleHistory => {
                 self.history.toggle();
@@ -13140,19 +13102,9 @@ impl WordProcessorWidget {
             ToolEntry::command(ToolAction::InsertToc, t("toolbar-toc")),
             ToolEntry::Spacer,
             ToolEntry::toggle(
-                ToolAction::ToggleStyles,
-                t("toolbar-styles"),
-                self.view.styles_panel_visible,
-            ),
-            ToolEntry::toggle(
                 ToolAction::ToggleRuler,
                 t("toolbar-ruler"),
                 self.view.ruler_visible,
-            ),
-            ToolEntry::toggle(
-                ToolAction::ToggleOutline,
-                t("toolbar-outline"),
-                self.outline.is_open(),
             ),
         ]);
         // Hosted, History is the framework's surface; one control opens it.
@@ -13219,6 +13171,67 @@ impl WordProcessorWidget {
         self.tool_entries = entries;
     }
 
+    /// Paint the outline and the inspector on their drawers: the region
+    /// beside the page when docked, the floating material over a scrim when
+    /// a drawer covers the page. The outline is drawn after `self.laid` is
+    /// set so its current heading reflects this frame's pagination.
+    fn draw_drawers(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.outline_drawer.sidebar_rect().width() > 0.5 {
+            self.outline_drawer.draw_scrim(scene, transform, theme);
+            let local = self.outline_drawer.paint_panel(scene, transform, theme);
+            let entries = self.outline_entries();
+            let active = self.active_outline_block();
+            self.outline.draw(
+                &mut PaintContext::new(scene, transform, text_renderer),
+                &local,
+                self.outline_drawer.sidebar_rect(),
+                &entries,
+                active.as_deref(),
+            );
+        } else {
+            self.outline.clear_frame();
+        }
+        if self.inspector_drawer.sidebar_rect().width() > 0.5 {
+            self.inspector_drawer.draw_scrim(scene, transform, theme);
+            let local = self.inspector_drawer.paint_panel(scene, transform, theme);
+            let panel = self.inspector_drawer.sidebar_rect();
+            self.draw_styles_panel(scene, transform, text_renderer, &local, panel);
+        } else {
+            self.panel_rect = Rect::ZERO;
+            self.panel_body = Rect::ZERO;
+            self.panel_hits.clear();
+            for slot in &mut self.num_inputs {
+                slot.rect = Rect::ZERO;
+            }
+            self.line_spacing_rect = Rect::ZERO;
+        }
+    }
+
+    /// Bring the outline and inspector drawers in line with what is shown,
+    /// advance their reveal, and lay them out in `below` (everything under
+    /// the toolbar). Returns the page's column.
+    fn resolve_drawers(&mut self, theme: &Theme, below: Rect) -> Rect {
+        for (drawer, open) in [
+            (&mut self.outline_drawer, self.outline.is_open()),
+            (&mut self.inspector_drawer, self.view.styles_panel_visible),
+        ] {
+            drawer.scale_for(theme);
+            drawer.resolve(below);
+            if drawer.is_open() != open {
+                drawer.snap(open);
+            }
+            drawer.tick(theme);
+        }
+        let column = self.outline_drawer.resolve(below);
+        self.inspector_drawer.resolve(column)
+    }
+
     /// The toolbar band's height: one pointer-target control with the
     /// band's padding (`s1`, as `toolbar::band_padding`) above and below.
     fn toolbar_band_height(theme: &Theme) -> f64 {
@@ -13240,13 +13253,51 @@ impl WordProcessorWidget {
         self.sync_toolbar();
         ui::widget::toolbar::paint_band(scene, transform, theme, tb);
         let across = f64::from(theme.tokens.spacing.s3);
-        let along = (tb.height() - f64::from(theme.tokens.metrics.min_pointer_target)) / 2.0;
-        let inner = Rect::new(tb.x0 + across, tb.y0 + along, tb.x1 - across, tb.y1 - along);
+        let target = f64::from(theme.tokens.metrics.min_pointer_target);
+        let along = (tb.height() - target) / 2.0;
+        // The outline's toggle at the leading corner, the inspector's at the
+        // trailing one, the commands between them.
+        self.outline_toggle = Rect::new(
+            tb.x0 + across,
+            tb.y0 + along,
+            tb.x0 + across + target,
+            tb.y1 - along,
+        );
+        self.inspector_toggle = Rect::new(
+            tb.x1 - across - target,
+            tb.y0 + along,
+            tb.x1 - across,
+            tb.y1 - along,
+        );
+        self.outline_drawer.draw_toggle(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.outline_toggle,
+            self.outline_toggle.contains(self.pointer),
+        );
+        self.inspector_drawer.draw_toggle(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.inspector_toggle,
+            self.inspector_toggle.contains(self.pointer),
+        );
+        let inner = Rect::new(
+            self.outline_toggle.x1 + across,
+            tb.y0 + along,
+            self.inspector_toggle.x0 - across,
+            tb.y1 - along,
+        );
         self.tool_bar.lay_out_in(inner, tr, theme);
         let presence = PresenceCtx::empty();
         presence.viewport.set(Some(self.rect));
         Widget::draw(&mut self.tool_bar, scene, transform, tr, theme, &presence);
         self.toolbar.clear();
+        self.toolbar
+            .push((ToolAction::ToggleOutline, self.outline_toggle));
         let mut target = 0usize;
         for entry in self.tool_entries.iter().take(self.tool_bar.visible_count()) {
             if let ToolEntry::Command { action, .. } = entry {
@@ -13256,6 +13307,8 @@ impl WordProcessorWidget {
                 target += 1;
             }
         }
+        self.toolbar
+            .push((ToolAction::ToggleStyles, self.inspector_toggle));
     }
 
     /// Route an event to the toolbar: hover always, presses inside its band,
@@ -13294,6 +13347,29 @@ impl WordProcessorWidget {
         if !claims {
             return false;
         }
+        if !menu_open
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            let toggle = if self.outline_toggle.contains(in_band) {
+                Some(ToolAction::ToggleOutline)
+            } else if self.inspector_toggle.contains(in_band) {
+                Some(ToolAction::ToggleStyles)
+            } else {
+                None
+            };
+            if let Some(action) = toggle {
+                self.tool_clicked(ctx.state, action);
+                *ctx.handled = true;
+                return true;
+            }
+        }
         let mut handled = false;
         Widget::handle_event(
             &mut self.tool_bar,
@@ -13303,7 +13379,11 @@ impl WordProcessorWidget {
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
         );
-        if handled {
+        if handled
+            || (matches!(event, WindowEvent::CursorMoved { .. })
+                && (self.outline_toggle.contains(in_band)
+                    || self.inspector_toggle.contains(in_band)))
+        {
             self.lifecycle.dirty = true;
         }
         if let Some(action) = self.tool_fired.take() {
