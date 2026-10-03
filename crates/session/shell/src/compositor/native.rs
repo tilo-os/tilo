@@ -6821,6 +6821,30 @@ pub fn run() {
     } else {
         !backend.needs_idle_poll()
     };
+    // Move presentation onto its own thread where the backend supports it.
+    // Headless declines: its bytes are read back synchronously by `snapshot`.
+    // Spawned as soon as the backend exists: the render thread builds its
+    // renderer while the rest of the compositor starts, not when the first
+    // frame arrives.
+    let mut present_pipe = backend.take_presenter().map(|p| {
+        eprintln!("tilo compositor: presenting on a dedicated render thread");
+        // Wake the loop when a frame retires — otherwise a tick that declined to
+        // paint for lack of pipe capacity would park out the whole interval, halving throughput.
+        let (ping, ping_source) = match calloop::ping::make_ping() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("tilo compositor: create present-retire ping failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
+            // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
+        }) {
+            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
+            std::process::exit(1);
+        }
+        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
+    });
     let (capture_ping, capture_ping_source) = match calloop::ping::make_ping() {
         Ok(pair) => pair,
         Err(error) => {
@@ -7654,27 +7678,6 @@ pub fn run() {
     let frame_period = frame_clock.interval();
     let mut projection_capture = super::projection_capture::ProjectionCapture::default();
 
-    // Move presentation onto its own thread where the backend supports it.
-    // Headless declines: its bytes are read back synchronously by `snapshot`.
-    let mut present_pipe = backend.take_presenter().map(|p| {
-        eprintln!("tilo compositor: presenting on a dedicated render thread");
-        // Wake the loop when a frame retires — otherwise a tick that declined to
-        // paint for lack of pipe capacity would park out the whole interval, halving throughput.
-        let (ping, ping_source) = match calloop::ping::make_ping() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("tilo compositor: create present-retire ping failed: {e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
-            // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
-        }) {
-            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
-            std::process::exit(1);
-        }
-        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
-    });
     // Reused per-iteration scratch so backend events process *after*
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
     let mut pending_events: std::collections::VecDeque<BackendEvent> =
