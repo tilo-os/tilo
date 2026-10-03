@@ -104,8 +104,8 @@ pub struct HistoryHost {
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
     open_button: bool,
-    /// The live app shows a `history_button` in its own toolbar, so this
-    /// toolbar draws none while History is closed.
+    /// The live app draws the window's header row, which holds the History
+    /// control while History is closed, so this toolbar draws none then.
     app_presents_button: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
@@ -224,14 +224,10 @@ impl HistoryHost {
             _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
-        let clicked = request.clone();
         let toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
-            .with_intrinsic_height()
-            .push(Box::new(Row::new().push(Box::new(
-                Button::new("history-open", "History", None).on_click(move || clicked.set(true)),
-            ))));
+            .with_intrinsic_height();
         let mut host = Self {
             enclosing_owner: None,
             embedded: false,
@@ -1272,10 +1268,15 @@ impl HistoryHost {
             if (self.open_button && !self.app_presents_button) || self.open {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
-                    Row::new().push(Box::new(
-                        Button::new("history-open", "history-mode-title", None)
+                    Row::new()
+                        .with_justify(taffy::JustifyContent::FlexEnd)
+                        .push(Box::new(
+                            crate::standalone_history_host::history_control_face(
+                                "history-open",
+                                crate::widget::window_header::HistoryControl::of(self.open),
+                            )
                             .on_click(move || clicked.set(true)),
-                    )),
+                        )),
                 ));
             }
             for review in self.pending_controls.review() {
