@@ -11,7 +11,7 @@ use ui::widget::EditableLabel;
 use super::icon_button;
 use crate::model::Artwork;
 use crate::resource::ArtworkResource;
-use crate::tools::{Tools, ViewRequest};
+use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
 /// The least room the title keeps, so it reads as a title, not a field.
 const TITLE: f32 = 96.0; // about ten letters of the title face: a text width, not spacing
@@ -57,6 +57,7 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .with_min_width(TITLE)
                     .with_child(title),
             ))
+            .push(notice(tools))
             .push(Box::new(icon_button(
                 cx,
                 Icon::Undo2,
@@ -76,7 +77,14 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 &tools.sidebar,
                 "canvas-sidebar",
                 Icon::PanelRight,
-            ))),
+            )))
+            .push(Box::new(sheet_button(
+                tools,
+                "canvas-export-open",
+                Icon::Download,
+                Sheet::Export,
+            )))
+            .push(menu(tools)),
     )
 }
 
@@ -187,6 +195,67 @@ fn combine_buttons(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         ));
     }
     Box::new(row)
+}
+
+/// What the last open, save or export came to, in a caption beside the
+/// title.
+fn notice(tools: &Tools) -> Element {
+    let notice = tools.notice.clone();
+    Box::new(
+        Text::dynamic(move || notice.with(|notice| notice.clone().unwrap_or_default()))
+            .with_role(TextRole::Caption)
+            .dimmed()
+            .with_live(ui::a11y::Politeness::Polite),
+    )
+}
+
+/// A button opening one of the window's dialogs.
+fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
+    let sheet = tools.sheet.clone();
+    let name = ui::i18n::I18nManager::lookup_plain(id);
+    Button::new(id, "", None)
+        .with_icon(icon)
+        .ghost()
+        .with_accessible_name(&name)
+        .tooltip(name.clone())
+        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        .on_view(move || sheet.set(Some(which)))
+}
+
+/// The artwork's menu: new, open, save, a copy, export, and the keys.
+fn menu(tools: &Tools) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let items = [
+        ("new", "canvas-menu-new"),
+        ("open", "canvas-menu-open"),
+        ("save", "canvas-menu-save"),
+        ("save-as", "canvas-menu-save-as"),
+        ("duplicate", "canvas-menu-duplicate"),
+        ("export", "canvas-menu-export"),
+        ("keys", "canvas-menu-keys"),
+    ];
+    let state = LocalState::new(String::new());
+    let mut menu = Dropdown::from_state(Vec::new(), &state)
+        .as_menu(Icon::Menu)
+        .with_id("canvas-menu")
+        .with_accessible_name(lookup("canvas-menu"));
+    menu.set_value_options(
+        items
+            .iter()
+            .map(|(value, id)| ((*value).to_owned(), lookup(id)))
+            .collect(),
+    );
+    let tools = tools.clone();
+    Box::new(menu.on_change(move |chosen| match chosen {
+        "new" => tools.sheet.set(Some(Sheet::NewArtwork)),
+        "open" => tools.files.set(Some(FileRequest::Open)),
+        "save" => tools.files.set(Some(FileRequest::Save)),
+        "save-as" => tools.files.set(Some(FileRequest::SaveAs)),
+        "duplicate" => tools.files.set(Some(FileRequest::Duplicate)),
+        "export" => tools.sheet.set(Some(Sheet::Export)),
+        "keys" => tools.sheet.set(Some(Sheet::Shortcuts)),
+        _ => {}
+    }))
 }
 
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the

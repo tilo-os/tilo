@@ -32,3 +32,113 @@ fn naming_the_artwork_is_one_step_of_history() {
         "typing a title and pressing Enter is one step: {after:#?}"
     );
 }
+
+#[test]
+fn a_new_artwork_starts_from_the_dialog() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().click_named("canvas-welcome-new").unwrap();
+    app.harness().click_named("canvas-new-size-a4").unwrap();
+    app.harness()
+        .click_named("canvas-new-start-watercolour")
+        .unwrap();
+    app.harness().click_named("canvas-new-title").unwrap();
+    app.harness().type_text("Harbour");
+    app.harness().key("Enter");
+    let art = app.state();
+    assert_eq!(
+        (art.title.as_str(), art.width, art.height),
+        ("Harbour", 3508.0, 2480.0)
+    );
+    assert_eq!(art.ground.texture, "cold-press");
+    assert_eq!(art.layers.len(), 1);
+    assert_eq!(art.layers[0].medium, "watercolour");
+    assert_eq!(art.layers[0].name, "Watercolour");
+}
+
+/// What an artwork is, without the orders its marks and layers were given
+/// where they were written.
+fn content(art: &canvas::Artwork) -> serde_json::Value {
+    let mut file = serde_json::to_value(canvas::document::ArtworkFile::of(art)).unwrap();
+    file.as_object_mut().unwrap().remove("format");
+    file
+}
+
+#[test]
+fn an_agent_saves_starts_over_and_opens_the_artwork_again() {
+    let mut app = TestApp::<App>::new().unwrap();
+    for action in canvas::sample::landscape() {
+        app.invoke(ui::prelude::Invoke::apply(&action).unwrap())
+            .unwrap();
+    }
+    app.call("set-artwork", serde_json::json!({"title": "Valley"}))
+        .unwrap();
+    let painted = app.state();
+    let saved = app
+        .call("save-artwork", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    let address = saved["content"].as_str().unwrap().to_owned();
+
+    // A path in Files, too.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Valley.artwork");
+    app.call(
+        "save-artwork",
+        serde_json::json!({"path": path.display().to_string()}),
+    )
+    .unwrap();
+    assert!(path.exists());
+
+    app.call(
+        "new-artwork",
+        serde_json::json!({"size": "square", "start": "oil", "title": "Fresh"}),
+    )
+    .unwrap();
+    let fresh = app.state();
+    assert_eq!(
+        (
+            fresh.title.as_str(),
+            fresh.width,
+            fresh.height,
+            fresh.marks.len()
+        ),
+        ("Fresh", 2048.0, 2048.0, 0)
+    );
+    assert_eq!(fresh.ground.texture, "linen");
+    assert_eq!(fresh.layers[0].medium, "oil");
+
+    // One undo brings the painting back.
+    assert!(app.undo());
+    assert_eq!(content(&app.state()), content(&painted));
+
+    app.call("new-artwork", serde_json::json!({})).unwrap();
+    app.call("open-artwork", serde_json::json!({"file": address}))
+        .unwrap();
+    assert_eq!(content(&app.state()), content(&painted));
+
+    app.call("new-artwork", serde_json::json!({})).unwrap();
+    app.call(
+        "open-artwork",
+        serde_json::json!({"file": path.display().to_string()}),
+    )
+    .unwrap();
+    assert_eq!(content(&app.state()), content(&painted));
+}
+
+#[test]
+fn a_wrong_file_or_size_says_what_is_wrong() {
+    let mut app = TestApp::<App>::new().unwrap();
+    let error = app
+        .call("new-artwork", serde_json::json!({"size": "a3"}))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("screen, a4, letter"), "{error}");
+    let error = app
+        .call(
+            "open-artwork",
+            serde_json::json!({"file": "{\"format\": \"other\"}"}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not a Canvas artwork"), "{error}");
+}

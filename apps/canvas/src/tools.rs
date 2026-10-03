@@ -181,6 +181,52 @@ pub struct Tools {
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+    /// The dialog open over the window, if any.
+    pub sheet: LocalState<Option<Sheet>>,
+    /// What the person asked of Files, carried out by the file desk.
+    pub files: LocalState<Option<FileRequest>>,
+    /// The file this window's artwork was last opened from or saved to.
+    pub file: LocalState<Option<String>>,
+    /// What the last file request came to, said beside the title.
+    pub notice: LocalState<Option<String>>,
+    /// The artworks opened or saved lately, newest first.
+    pub recents: LocalState<Vec<crate::document::Recent>>,
+    /// The welcome over a blank artwork was put away.
+    pub welcomed: LocalState<bool>,
+    /// What the export dialog is set to.
+    pub export: crate::panels::export::Choices,
+    /// What the new-artwork dialog is set to.
+    pub new: crate::panels::start::Choices,
+    /// The part of the artwork the canvas shows, in artwork units.
+    pub visible: LocalState<Option<ui::vello::kurbo::Rect>>,
+}
+
+/// A dialog over the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sheet {
+    /// A size, a ground and a medium to start a new artwork on.
+    NewArtwork,
+    /// Exporting the artwork as a picture.
+    Export,
+    /// The keyboard shortcuts.
+    Shortcuts,
+}
+
+/// Something asked of Files.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileRequest {
+    /// Choose an artwork or SVG to open in place of this one.
+    Open,
+    /// Open the artwork at this path.
+    OpenRecent(String),
+    /// Save to the file the artwork came from, or choose one.
+    Save,
+    /// Choose a file to save the artwork to, and keep working on it there.
+    SaveAs,
+    /// Save a copy to a file of its own and keep working on this one.
+    Duplicate,
+    /// Export a picture as set in the export dialog.
+    Export(crate::panels::export::Settings),
 }
 
 /// The brush's paint and the chosen layer, apart from the rest of the
@@ -262,6 +308,15 @@ impl Default for Tools {
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
             renderer: Rc::default(),
+            sheet: LocalState::new(None),
+            files: LocalState::new(None),
+            file: LocalState::new(None),
+            notice: LocalState::new(None),
+            recents: LocalState::new(Vec::new()),
+            welcomed: LocalState::new(false),
+            export: crate::panels::export::Choices::default(),
+            new: crate::panels::start::Choices::default(),
+            visible: LocalState::new(None),
         }
     }
 }
