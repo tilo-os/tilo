@@ -104,7 +104,13 @@ impl Widget for StatusLog {
         _presence: &PresenceCtx,
     ) {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &shape,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,

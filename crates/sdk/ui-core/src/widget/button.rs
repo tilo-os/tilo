@@ -491,8 +491,9 @@ impl Button {
     }
 }
 
-/// `Ghost` is borderless and transparent at rest, tinting to `bg_hover` /
-/// `bg_active` only on interaction with a dim label/icon — the look a
+/// `Ghost` is borderless and transparent at rest, lifting its ground
+/// (`intent.selection_hover` / `intent.selection`) only on interaction,
+/// with a dim label/icon — the look a
 /// close-`X`, toolbar icon, or overlay affordance wants, replacing the
 /// per-app "draw a bare icon and hit-test the rect" pattern.
 ///
@@ -615,16 +616,18 @@ pub fn face_colors(
 
     match style {
         ButtonStyle::Neutral => {
-            let rest = theme.tokens.colors.surfaces.raised;
+            let colors = &theme.tokens.colors;
+            let rest = colors.surfaces.raised;
+            let (hover, active) = (colors.lift_on(rest, 0.5), colors.lift_on(rest, 1.0));
             let bg = if interact.pressed {
-                theme.bg_active
+                active
             } else if interact.hovered {
-                theme.bg_hover
+                hover
             } else {
                 rest
             };
             let fg = theme.tokens.colors.ink_on_any(
-                &[rest, theme.bg_hover, theme.bg_active],
+                &[rest, hover, active],
                 theme.tokens.colors.text_primary,
                 ON_FILL_MIN_CONTRAST,
             );
@@ -654,22 +657,23 @@ pub fn face_colors(
         }
         ButtonStyle::Danger => danger_face_colors(theme, interact),
         ButtonStyle::Ghost => {
+            let intent = &theme.tokens.colors.intent;
             let bg = if interact.pressed {
-                theme.bg_active
+                intent.selection
             } else if interact.hovered {
-                theme.bg_hover
+                intent.selection_hover
             } else {
                 Color::TRANSPARENT
             };
-            // At rest the ghost paints nothing, so the base surface is
-            // the closest the widget can know as "the ground". The label
-            // is most at risk on `bg_hover`, close enough to the dim
-            // tier that it can all but vanish.
+            // At rest the ghost paints nothing: it stands on the ground its
+            // container handed it (`surfaces.content`, re-pointed by
+            // `Theme::on_ground` inside a region), and hover and press are
+            // that ground's lift.
             let fg = theme.tokens.colors.ink_on_any(
                 &[
-                    theme.tokens.colors.surfaces.base,
-                    theme.bg_hover,
-                    theme.bg_active,
+                    theme.tokens.colors.surfaces.content,
+                    intent.selection_hover,
+                    intent.selection,
                 ],
                 theme.tokens.colors.text_dim,
                 ON_FILL_MIN_CONTRAST,
@@ -682,18 +686,19 @@ pub fn face_colors(
             // ink can be measured against every fill it will sit on. A
             // translucent danger tint (what apps hand-painted here) has no
             // measurable ground; the shared face uses the opaque tiers.
+            let intent = &theme.tokens.colors.intent;
             let bg = if interact.pressed {
-                theme.bg_active
+                intent.selection
             } else if interact.hovered {
-                theme.bg_hover
+                intent.selection_hover
             } else {
                 Color::TRANSPARENT
             };
             let ink = theme.tokens.colors.ink_on_any(
                 &[
-                    theme.tokens.colors.surfaces.base,
-                    theme.bg_hover,
-                    theme.bg_active,
+                    theme.tokens.colors.surfaces.content,
+                    intent.selection_hover,
+                    intent.selection,
                 ],
                 theme.tokens.colors.semantic.danger,
                 ON_FILL_MIN_CONTRAST,
@@ -1848,7 +1853,6 @@ impl Button {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ColorCompat;
     use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::sync::Arc;
@@ -2666,13 +2670,14 @@ mod tests {
                 "neutral shows an edge derived from its rest surface"
             );
             assert_eq!(fg, theme.tokens.colors.text_primary);
+            let raised = theme.tokens.colors.surfaces.raised;
             assert_eq!(
                 face_colors(&theme, ButtonStyle::Neutral, hover).0,
-                theme.bg_hover
+                theme.tokens.colors.lift_on(raised, 0.5)
             );
             assert_eq!(
                 face_colors(&theme, ButtonStyle::Neutral, press).0,
-                theme.bg_active
+                theme.tokens.colors.lift_on(raised, 1.0)
             );
         }
 
@@ -2697,22 +2702,24 @@ mod tests {
             assert_eq!(border, None, "ghost has no border");
             // Quiet is a rank, not a licence to be unreadable: the tone starts
             // at `text_dim` and steps out only as far as the hover surface demands.
-            let base = theme.tokens.colors.surfaces.base;
+            let ground = theme.tokens.colors.surfaces.content;
+            let intent = &theme.tokens.colors.intent;
             assert!(
-                contrast_ratio(fg, base) < contrast_ratio(theme.tokens.colors.text_primary, base),
+                contrast_ratio(fg, ground)
+                    < contrast_ratio(theme.tokens.colors.text_primary, ground),
                 "ghost label must stay quieter than the primary tier",
             );
             assert!(
-                contrast_ratio(fg, theme.bg_hover) >= ON_FILL_MIN_CONTRAST,
+                contrast_ratio(fg, intent.selection_hover) >= ON_FILL_MIN_CONTRAST,
                 "ghost label must survive the surface hover paints under it",
             );
             assert_eq!(
                 face_colors(&theme, ButtonStyle::Ghost, hover).0,
-                theme.bg_hover
+                intent.selection_hover
             );
             assert_eq!(
                 face_colors(&theme, ButtonStyle::Ghost, press).0,
-                theme.bg_active
+                intent.selection
             );
         }
 
@@ -2802,10 +2809,11 @@ mod tests {
                     "{}: outline is the label ink",
                     theme.name
                 );
-                let ratio = crate::a11y::contrast_ratio(rest.2, theme.tokens.colors.surfaces.base);
+                let ratio =
+                    crate::a11y::contrast_ratio(rest.2, theme.tokens.colors.surfaces.content);
                 assert!(
                     ratio >= ON_FILL_MIN_CONTRAST,
-                    "{}: danger ink {ratio:.2}:1 on the base surface",
+                    "{}: danger ink {ratio:.2}:1 on the window ground",
                     theme.name
                 );
                 let hovered = face_colors(
@@ -2817,7 +2825,7 @@ mod tests {
                     },
                 );
                 assert_eq!(
-                    hovered.0, theme.bg_hover,
+                    hovered.0, theme.tokens.colors.intent.selection_hover,
                     "{}: hover tints the fill",
                     theme.name
                 );
@@ -2881,7 +2889,6 @@ mod tests {
         #[ignore = "developer visual audit writes /tmp/tilo-button-disabled-audit"]
         fn disabled_button_visual_audit() {
             use std::path::Path;
-            use vello::peniko::Color;
 
             let output = Path::new("/tmp/tilo-button-disabled-audit");
             std::fs::create_dir_all(output).expect("visual-audit output directory");
@@ -2913,7 +2920,7 @@ mod tests {
                 let mut renderer = crate::offscreen::OffscreenRenderer::new(440, 480);
                 renderer.render_png(
                     &scene,
-                    Color::from_rgba8(theme.bg_app.r(), theme.bg_app.g(), theme.bg_app.b(), 255),
+                    theme.tokens.colors.surfaces.content,
                     output.join(format!("{name}.png")),
                 );
             }

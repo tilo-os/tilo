@@ -774,12 +774,12 @@ impl SidebarDrawer {
         let radius = f64::from(theme.tokens.radii.control).min(rect.height() * 0.5);
 
         // Rest face and edge follow the Neutral button (HIG §9.5): the
-        // raised surface with its derived edge, `bg_hover` under the
+        // raised surface with its derived edge, its half lift under the
         // pointer. Open is the toggle's "on" state: a lift with primary ink.
         let bg = if open {
             c.lift_on(c.surfaces.raised, 1.0)
         } else if hovered {
-            theme.bg_hover
+            c.lift_on(c.surfaces.raised, 0.5)
         } else {
             c.surfaces.raised
         };

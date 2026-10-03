@@ -21,7 +21,7 @@ pub use palette::{
     DEFAULT_NEUTRAL_HUE, Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone,
 };
 pub use radii::Radii;
-pub use spacing::{Spacing, SpacingStep};
+pub use spacing::{Rhythm, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
 pub use typography::{FontFamily, REFERENCE_BODY_PX, TextRole, Typography};

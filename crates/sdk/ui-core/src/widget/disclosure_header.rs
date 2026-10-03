@@ -137,7 +137,13 @@ impl<'a> DisclosureHeaderFace<'a> {
         let colors = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(self.rect, 5.0);
         if self.interact.hovered && !self.interact.disabled {
-            scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &shape);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.intent.selection_hover,
+                None,
+                &shape,
+            );
         }
         if self.interact.focused && !self.interact.disabled {
             scene.stroke(

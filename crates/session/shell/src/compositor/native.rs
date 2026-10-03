@@ -6330,7 +6330,7 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
             };
             // Match the FrameBuilder's configured theme so the host window
             // clears to chrome background before the first frame paints.
-            b.set_base_color(ui::theme::Theme::configured().bg_app);
+            b.set_base_color(ui::theme::Theme::configured().tokens.colors.surfaces.base);
             Box::new(b)
         }
         BackendKind::Drm => match DrmBackend::new() {

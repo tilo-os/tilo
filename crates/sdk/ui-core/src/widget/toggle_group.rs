@@ -350,12 +350,14 @@ pub fn selected_segment_ink(theme: &Theme) -> Color {
     theme.tokens.colors.text_primary
 }
 
-/// Resolved across both the resting ground and the hover surface at once,
-/// since `bg_hover` sits close enough to the dim tier that a label all but
-/// dissolves on hover — so a tab must not change colour under the pointer.
+/// Resolved across both the resting ground and the hover lift at once, so
+/// a tab does not change colour under the pointer.
 pub fn unselected_segment_ink(theme: &Theme) -> Color {
     theme.tokens.colors.ink_on_any(
-        &[theme.tokens.colors.surfaces.base, theme.bg_hover],
+        &[
+            theme.tokens.colors.surfaces.content,
+            theme.tokens.colors.intent.selection_hover,
+        ],
         theme.tokens.colors.text_dim,
         ON_FILL_MIN_CONTRAST,
     )
@@ -398,7 +400,10 @@ pub fn segment_colors(
                     selected_segment_ink(theme),
                 )
             } else if hovered {
-                (Some(theme.bg_hover), unselected_segment_ink(theme))
+                (
+                    Some(colors.intent.selection_hover),
+                    unselected_segment_ink(theme),
+                )
             } else {
                 (None, unselected_segment_ink(theme))
             }
@@ -833,9 +838,9 @@ impl Widget for ToggleGroup {
                 .tokens
                 .colors
                 .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
-            theme.bg_hover,
+            theme.tokens.colors.intent.selection_hover,
             theme.tokens.colors.text_primary,
-            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.surfaces.content,
         ];
         if self.drawn_palette != Some(palette) {
             self.drawn_palette = Some(palette);
@@ -1525,16 +1530,18 @@ mod tests {
             let theme = Theme::dark();
             let (fill, fg) = segment_colors(&theme, SegmentedStyle::Pill, false, false);
             assert_eq!(fill, None, "an idle unselected pill paints no background");
-            let base = theme.tokens.colors.surfaces.base;
+            let ground = theme.tokens.colors.surfaces.content;
+            let hover = theme.tokens.colors.intent.selection_hover;
             assert!(
-                contrast_ratio(fg, base) < contrast_ratio(theme.tokens.colors.text_primary, base),
+                contrast_ratio(fg, ground)
+                    < contrast_ratio(theme.tokens.colors.text_primary, ground),
                 "inactive tab label must stay quieter than the selected tier",
             );
-            assert!(contrast_ratio(fg, theme.bg_hover) >= ON_FILL_MIN_CONTRAST);
+            assert!(contrast_ratio(fg, hover) >= ON_FILL_MIN_CONTRAST);
             // Hover must not repaint the label — a colour change under the
             // pointer reads as a bug.
             let (hfill, hfg) = segment_colors(&theme, SegmentedStyle::Pill, false, true);
-            assert_eq!(hfill, Some(theme.bg_hover));
+            assert_eq!(hfill, Some(hover));
             assert_eq!(hfg, fg, "the inactive label holds its colour on hover");
             let (sfill, sfg) = segment_colors(&theme, SegmentedStyle::Pill, true, false);
             assert_eq!(

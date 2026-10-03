@@ -2517,7 +2517,13 @@ impl OnboardingView {
             // competes with the tour's own keyboard focus.
             return;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
         if theme.name.eq_ignore_ascii_case("high contrast") {
             return;
         }

@@ -97,7 +97,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
         (f64::from(HEIGHT) * scale).round() as u32,
     );
     let mut r = OffscreenRenderer::new(phys_w, phys_h);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());
 }
 
