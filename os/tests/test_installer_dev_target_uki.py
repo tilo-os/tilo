@@ -73,6 +73,12 @@ class DevelopmentTarget(unittest.TestCase):
                               f'initrd /EFI/Linux/bootc_composefs-{DIGEST}/initrd\n'
                               f'options quiet root=tilo-auto composefs={DIGEST} tilo.install\n')
         self.selected = {'target_digest': MANIFEST, 'update_origin': ORIGIN}
+        # Split-kernel tests model the constructor alongside the fake build()
+        # output. Do not depend on ukify being installed on the CI test runner.
+        # Sealed/no-constructor tests override this lookup to return None.
+        constructor = patch.object(dev.shutil, 'which', return_value='/fixture/bin/ukify')
+        constructor.start()
+        self.addCleanup(constructor.stop)
         self.dtb = self.kdir / 'dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb'
         self.dtb.write_bytes(DTB)
         tools = self.root / 'runtime/usr/lib/tilo'
@@ -161,12 +167,34 @@ class DevelopmentTarget(unittest.TestCase):
         self.origin.write_text(self.origin.read_text().replace('boot_type=bls', 'boot_type=uki'))
         self.entry.write_text(f'title Tilo\nversion {DIGEST}\nsort-key bootc-tilo-0\nefi /EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi\n')
         old_origin, old_entry = self.origin.read_bytes(), self.entry.read_bytes()
-        with patch.object(dev, 'command', side_effect=self.build):
+        with patch.object(dev, 'command', side_effect=AssertionError('sealed projection must not invoke a constructor')), patch.object(dev.shutil, 'which', return_value=None):
             self.assertEqual(dev.promote(self.image, self.target, self.esp, self.selected), DIGEST)
         self.assertEqual(self.origin.read_bytes(), old_origin)
         self.assertEqual(self.entry.read_bytes(), old_entry)
         self.assertEqual(image_uki.read_bytes(), original)
         self.assertIn(dev.MOUNT.encode(), dev.sections(target_uki)['.cmdline'])
+        tool = dev.load_module(UKI_TOOL, 'test_editor')
+        hdr, raw, raw_size, _, _ = tool.find_cmdline_room(original)
+        unchanged = bytearray(target_uki.read_bytes())
+        unchanged[raw:raw + raw_size] = original[raw:raw + raw_size]
+        unchanged[hdr + 8:hdr + 12] = original[hdr + 8:hdr + 12]
+        self.assertEqual(bytes(unchanged), original)
+        # A full command-line section refuses growth without touching the
+        # installed UKI, origin or loader; no constructor fallback is allowed.
+        full = pe({'.linux': KERNEL, '.initrd': INITRD,
+                   '.cmdline': (words + ' x=' + 'z' * (512 - len(words) - 3)).encode(), '.dtb': DTB})
+        target_uki.write_bytes(full)
+        with self.assertRaisesRegex(SystemExit, 'only 512 are available'):
+            dev.promote(self.image, self.target, self.esp, self.selected)
+        self.assertEqual(target_uki.read_bytes(), full)
+        self.assertEqual(self.origin.read_bytes(), old_origin)
+        self.assertEqual(self.entry.read_bytes(), old_entry)
+
+    def test_split_constructor_missing_fails_during_image_preflight(self):
+        with patch.object(dev.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'runtime ukify constructor before installation'):
+                dev.image_inputs(self.image)
+        self.assertFalse((self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi').exists())
 
     def test_wrong_payload_or_ci_manifest_fails_before_mutation(self):
         original_entry, original_origin = self.entry.read_bytes(), self.origin.read_bytes()
