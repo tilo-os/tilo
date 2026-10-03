@@ -383,6 +383,7 @@ mod tests {
                 visible: true,
                 texture: 0.0,
                 locked: false,
+                ..Layer::default()
             }],
             marks: vec![
                 mark("a", 0.0, "pair"),

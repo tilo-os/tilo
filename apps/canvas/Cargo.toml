@@ -37,6 +37,9 @@ image = { workspace = true, features = ["png", "jpeg"] }
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
 base64.workspace = true
+# Selections and shapes are combined (union, subtract, intersect, exclude)
+# exactly, as polygons.
+i_overlay = { version = "9.0", default-features = false }
 # An SVG or reference picture named by a path is read where files have one.
 tilo-files = { path = "../../crates/platform/tilo-files" }
 
