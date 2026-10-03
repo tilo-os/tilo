@@ -1,6 +1,6 @@
 //! The header bar an SDK app draws where the desktop leaves decorations to
 //! the client (GNOME, and any Wayland compositor without server-side
-//! `xdg-decoration`): History as a menu button, a search toggle, the title
+//! `xdg-decoration`): History as an icon menu button, a search toggle, the title
 //! and the window controls, in one bar that replaces the fallback frame.
 //!
 //! It presents the host command model and nothing else. A chosen History
@@ -111,9 +111,7 @@ impl HeaderBar {
         }
 
         let open_menu = menu_requested.clone();
-        let history_button = Button::new("host-header-history", "host-menu-history", None)
-            .with_icon(Icon::ChevronDown)
-            .control_size(ControlSize::Small)
+        let history_button = control("host-header-history", Icon::History, "host-menu-history")
             .with_enabled(!history.is_empty())
             .on_click(move || *open_menu.borrow_mut() = true);
         let mut row = Row::new().no_wrap().push(Box::new(history_button));
@@ -542,8 +540,8 @@ mod tests {
             assert!(rect.width() >= height * 0.75, "{id} is squeezed: {rect:?}");
         }
         assert!(
-            controls[0].1.width() > controls[1].1.width(),
-            "History carries its label: {controls:?}"
+            (controls[0].1.width() - controls[1].1.width()).abs() < 0.5,
+            "History is a glyph like the others: {controls:?}"
         );
         assert!(
             controls.windows(2).all(|pair| pair[0].1.x1 <= pair[1].1.x0),
