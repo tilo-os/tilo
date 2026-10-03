@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use ui::tokens::TextRole;
-use ui::widget::{Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
+use ui::widget::{Banner, Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
 
 use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED};
 
@@ -72,6 +72,13 @@ fn beside_scroll(widget: Box<dyn Widget>) -> Box<dyn Widget> {
             .with_horizontal_padding(0.0, ui::tokens::Metrics::BASE.scrollbar_gutter)
             .push(widget),
     )
+}
+
+/// The page's notice: a problem the person has to act on. What merely
+/// happened is not repeated here; the page already shows it.
+pub(crate) fn notice(status: &str, is_error: bool) -> Option<Box<dyn Widget>> {
+    (is_error && !status.is_empty())
+        .then(|| Box::new(Banner::error(status.to_string())) as Box<dyn Widget>)
 }
 
 /// The id of the control holding keyboard focus in `root`, if it has one.
@@ -149,7 +156,6 @@ impl Frame {
     pub(crate) fn build(self) -> Box<dyn Widget> {
         let mut scroll = Scrollable::new_vertical()
             .fill_parent_height()
-            .always_visible()
             .with_focus_reveal()
             .with_child(Box::new(self.body));
         if let Some(offset) = self.offset {
