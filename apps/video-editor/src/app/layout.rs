@@ -16,9 +16,6 @@ pub(super) struct Regions {
     pub(super) menu_btn: Rect,
     /// The inspector's show/hide toggle, at the topbar's trailing corner.
     pub(super) inspector_btn: Rect,
-    /// The window's History button, placed in this toolbar so the window
-    /// draws no History bar of its own above the editor.
-    pub(super) history_btn: Rect,
     /// The project button: what is open, whether it is saved, and the menu
     /// that opens / saves one. Zero-sized when the topbar's leading area has
     /// no room for it — a control that overlaps Import is worse than one that
@@ -74,11 +71,10 @@ impl VideoEditorApp {
         // hide either panel, wherever the window's width puts them.
         let menu_btn = slot(r.x0 + edge, target);
         let inspector_btn = slot(r.x1 - edge - target, target);
-        // The trailing group, right to left: History beside the inspector
-        // toggle, then the commands, each as wide as its label.
-        let history_btn = slot(inspector_btn.x0 - gap - widths.history, widths.history);
+        // The trailing group, right to left from the inspector toggle: the
+        // commands, each as wide as its label.
         let export_w = if compact { target } else { widths.export };
-        let export_btn = slot(history_btn.x0 - gap - export_w, export_w);
+        let export_btn = slot(inspector_btn.x0 - gap - export_w, export_w);
         let split_btn = if compact {
             Rect::ZERO
         } else {
@@ -217,7 +213,6 @@ impl VideoEditorApp {
             topbar,
             menu_btn,
             inspector_btn,
-            history_btn,
             project_btn,
             export_btn,
             export_chip,
