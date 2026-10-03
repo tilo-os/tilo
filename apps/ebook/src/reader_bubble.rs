@@ -9,11 +9,16 @@ use ui::time::Instant;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 
-const TEXT_SIZE: f32 = 12.5;
-const CHEVRON_SLOT: f64 = 26.0;
+/// The leading and trailing control slot of the bubble: one pointer target
+/// for each page arrow.
+fn control_slot(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.min_pointer_target)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReaderBubbleAction {
@@ -107,17 +112,20 @@ impl ReaderBubble {
         }
         self.shown_position = Some(current);
 
-        let label = label(ctx.text, column.x0, column.x1, position);
-        let (pill_w, pill_h) =
-            ui::status_bubble::pill_size(&label, ctx.text, TEXT_SIZE, CHEVRON_SLOT);
+        let theme = ctx.theme;
+        let slot = control_slot(theme);
+        let label = label(ctx.text, theme, column.x0, column.x1, position);
+        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, ctx.text, theme, slot);
+        let gutter = f64::from(theme.tokens.spacing.s4);
         let cx = f64::midpoint(column.x0, column.x1);
-        let by = column.y1 - 16.0 - pill_h;
+        let by = column.y1 - gutter - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
+        let zone = f64::from(theme.tokens.spacing.s8);
         let reveal_zone = Rect::new(
-            rect.x0 - 40.0,
-            column.y1 - (pill_h + 32.0),
-            rect.x1 + 40.0,
+            rect.x0 - zone,
+            column.y1 - (pill_h + zone),
+            rect.x1 + zone,
             column.y1,
         );
         self.animation.set_hover(
@@ -131,67 +139,60 @@ impl ReaderBubble {
         }
 
         self.rect = rect;
-        self.previous_rect = Rect::new(rect.x0, rect.y0, rect.x0 + CHEVRON_SLOT + 8.0, rect.y1);
-        self.next_rect = Rect::new(rect.x1 - CHEVRON_SLOT - 8.0, rect.y0, rect.x1, rect.y1);
+        self.previous_rect = Rect::new(rect.x0, rect.y0, rect.x0 + slot, rect.y1);
+        self.next_rect = Rect::new(rect.x1 - slot, rect.y0, rect.x1, rect.y1);
         self.draw_pill(ctx, &label, alpha, cursor);
     }
 
     fn draw_pill(&self, ctx: &mut PaintCtx<'_>, label: &str, alpha: f32, cursor: Point) {
         let (transform, theme) = (ctx.transform, ctx.theme);
         let PaintCtx { scene, text, .. } = ctx;
+        let shadow = f64::from(theme.tokens.spacing.s4);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             alpha,
             transform,
-            &self.rect.inflate(12.0, 14.0),
+            &self.rect.inflate(shadow, shadow),
         );
-        ui::status_bubble::draw_pill(scene, transform, text, theme, self.rect, label, TEXT_SIZE);
-        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
-        let previous_icon = Rect::new(self.rect.x0 + 8.0, cy - 8.0, self.rect.x0 + 24.0, cy + 8.0);
-        let next_icon = Rect::new(self.rect.x1 - 24.0, cy - 8.0, self.rect.x1 - 8.0, cy + 8.0);
-        ui::status_bubble::draw_chevron(
-            scene,
-            transform,
-            previous_icon,
-            if self.previous_rect.contains(cursor) {
-                theme.text_primary
+        ui::status_bubble::draw_pill(scene, transform, text, theme, self.rect, label);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let icon = f64::from(theme.tokens.metrics.icon_md);
+        for (slot, glyph) in [
+            (self.previous_rect, Icon::ChevronLeft),
+            (self.next_rect, Icon::ChevronRight),
+        ] {
+            let color = if slot.contains(cursor) {
+                ink.text_primary
             } else {
-                theme.text_dim
-            },
-            true,
-        );
-        ui::status_bubble::draw_chevron(
-            scene,
-            transform,
-            next_icon,
-            if self.next_rect.contains(cursor) {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            false,
-        );
+                ink.text_dim
+            };
+            glyph.draw(
+                scene,
+                transform,
+                Rect::from_center_size(slot.center(), (icon, icon)),
+                color,
+            );
+        }
         scene.pop_layer();
     }
 }
 
+/// "Chapter 2, page 3 of 12" when the column has room, else "3 of 12".
 fn label(
     text: &mut TextRenderer,
+    theme: &Theme,
     center_x0: f64,
     center_x1: f64,
     position: ReaderPosition,
 ) -> String {
-    let base = format!("{} / {}", position.page + 1, position.page_count.max(1));
-    let rich = format!(
-        "{}   ·   Chapter {} of {}",
-        base,
-        position.chapter + 1,
-        position.chapter_count.max(1)
-    );
-    let column_width = (center_x1 - center_x0).max(120.0);
-    let (rich_width, _) = ui::status_bubble::pill_size(&rich, text, TEXT_SIZE, CHEVRON_SLOT);
-    if position.chapter_count > 0 && rich_width <= column_width - 48.0 {
+    let page = position.page + 1;
+    let pages = position.page_count.max(1);
+    let base = format!("{page} of {pages}");
+    let rich = format!("Chapter {}, page {page} of {pages}", position.chapter + 1);
+    let column_width = center_x1 - center_x0;
+    let (rich_width, _) = ui::status_bubble::pill_size(&rich, text, theme, control_slot(theme));
+    if position.chapter_count > 0 && rich_width <= column_width - 2.0 * control_slot(theme) {
         rich
     } else {
         base

@@ -478,7 +478,8 @@ impl EbookAction {
             Self::SetReadingSettings { before, settings } => {
                 for value in [before, settings] {
                     if !value.font_scale.is_finite()
-                        || !(Settings::FONT_MIN..=Settings::FONT_MAX).contains(&value.font_scale)
+                        || !(Settings::READING_SCALE_MIN..=Settings::READING_SCALE_MAX)
+                            .contains(&value.font_scale)
                         || !value.line_spacing.is_finite()
                         || !(Settings::SPACING_MIN..=Settings::SPACING_MAX)
                             .contains(&value.line_spacing)
@@ -1589,11 +1590,7 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             preview.pop();
         }
         ResourcePresentation {
-            detail: Some(format!(
-                "Chapter {} · {}",
-                annotation.chapter + 1,
-                annotation.color.as_str()
-            )),
+            detail: Some(format!("Chapter {}", annotation.chapter + 1)),
             badge: Some(annotation.kind.label().into()),
             preview: (!preview.is_empty()).then_some(preview),
         }
