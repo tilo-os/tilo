@@ -307,8 +307,125 @@ impl PackageStore {
         F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
     {
         let _lock = self.lock()?;
+        let admit = |meta: &PackageMeta| {
+            let kind = meta.manifest.package.kind;
+            if kind.is_image() {
+                return Err(format!(
+                    "{} is a {kind} image, which environments stack and nothing launches; \
+                     it is not installed as an application",
+                    meta.manifest.package.id
+                ));
+            }
+            admit(meta)
+        };
+        let (meta, admission, blobs_already_stored, blobs_fetched) =
+            self.ingest(tapp, admit, fetcher, false)?;
+        let blobs = meta.payload_hashes().len();
+        let (package, replaced) = self.commit(&meta, admission)?;
+        self.collect_garbage_locked()?;
+        Ok(Installed {
+            package,
+            replaced,
+            blobs,
+            blobs_already_stored,
+            blobs_fetched,
+        })
+    }
+
+    /// Install the environment image streamed from `tapp`: an `env-runtime`
+    /// or `tool` package, which gets no registry row — nothing launches it —
+    /// and is kept, read-only, at [`Layout::payload`] until removed with
+    /// [`Self::remove_image`]. Installing an image that is already present
+    /// changes nothing, so a tree a running environment stacks is never
+    /// replaced underneath it.
+    ///
+    /// `admit` decides trust exactly as for [`Self::install`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Refused`] for a package that is not an image or
+    /// that `admit` refuses, [`StoreError::Payload`] for a malformed image
+    /// tree, and otherwise what [`Self::install`] returns.
+    pub fn install_image<F>(
+        &self,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+    ) -> Result<PackageMeta, StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        let _lock = self.lock()?;
+        let admit = |meta: &PackageMeta| {
+            let kind = meta.manifest.package.kind;
+            if !kind.is_image() {
+                return Err(format!(
+                    "{} is a {kind} package, not an environment image",
+                    meta.manifest.package.id
+                ));
+            }
+            admit(meta)
+        };
+        let (meta, ..) = self.ingest(tapp, admit, fetcher, true)?;
+        Ok(meta)
+    }
+
+    /// The image `id`, when this store holds it complete: its signed
+    /// record and its materialised tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::CorruptPackage`] when a record is present but
+    /// does not form the package `id`.
+    pub fn image(&self, id: PackageId) -> Result<Option<PackageMeta>, StoreError> {
+        crate::image::read_image(&self.layout, id)
+    }
+
+    /// Every image this store holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the package directory cannot be read or an
+    /// image's record is corrupt.
+    pub fn images(&self) -> Result<Vec<PackageMeta>, StoreError> {
+        crate::image::list_images(&self.layout)
+    }
+
+    /// Remove the image `id` and evict the blobs nothing else references.
+    /// Removing an image that is not held does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or content-store error.
+    pub fn remove_image(&self, id: PackageId) -> Result<Removed, StoreError> {
+        let _lock = self.lock()?;
+        if self.image(id)?.is_some() {
+            remove_tree(&self.layout.meta_dir(id))?;
+            remove_tree(&self.layout.payload(id))?;
+        }
+        let evicted_blobs = self.collect_garbage_locked()?;
+        Ok(Removed {
+            package: None,
+            evicted_blobs,
+        })
+    }
+
+    /// Decode `tapp`, admit it, store its payload and materialise it.
+    /// With `keep_present`, a package already materialised in full is left
+    /// exactly as it is. Returns the package, its admission, how many blobs
+    /// were already stored and how many were fetched. Call with the lock.
+    fn ingest<F>(
+        &self,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+        keep_present: bool,
+    ) -> Result<(PackageMeta, Admission, usize, usize), StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
         let layout = self.layout.clone();
-        let staged = content::session(&layout.content(), &layout.tmp(), |content| {
+        content::session(&layout.content(), &layout.tmp(), |content| {
             let mut sink = IngestSink {
                 content,
                 admit: Some(admit),
@@ -332,6 +449,10 @@ impl PackageStore {
                 .admission
                 .take()
                 .ok_or_else(|| StoreError::Refused("package was not admitted".into()))?;
+            if keep_present && crate::image::read_image(&self.layout, tapp.meta.id)?.is_some() {
+                let blobs = tapp.meta.payload_hashes().len();
+                return Ok((tapp.meta, admission, blobs, 0));
+            }
             let mut already = sink.already;
             let (delivered, missing) =
                 Self::fill_missing(content, &tapp.meta, &mut already, &sink.ingested, fetcher)?;
@@ -341,17 +462,6 @@ impl PackageStore {
             Self::check_budget(content, &tapp.meta)?;
             self.materialise(content, &tapp.meta)?;
             Ok((tapp.meta, admission, already.len(), delivered))
-        })?;
-        let (meta, admission, blobs_already_stored, blobs_fetched) = staged;
-        let blobs = meta.payload_hashes().len();
-        let (package, replaced) = self.commit(&meta, admission)?;
-        self.collect_garbage_locked()?;
-        Ok(Installed {
-            package,
-            replaced,
-            blobs,
-            blobs_already_stored,
-            blobs_fetched,
         })
     }
 
@@ -424,21 +534,26 @@ impl PackageStore {
         let result = (|| -> Result<(), StoreError> {
             std::fs::create_dir_all(&tree)?;
             let executable = meta.executable_path();
+            let image = Self::image_tree(content, meta, &tree)?;
             for (rel, hash) in &meta.collection.entries {
                 let target = tree.join(rel);
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                content.export(hash, &target)?;
+                if !(image.is_some() && rel == tilo_app_package::TREE_FILE) {
+                    content.export(hash, &target)?;
+                }
                 // Read-only: a materialised file is a view of stored
                 // content, and the integrity check replays it against the
                 // signed collection.
-                let mode = if executable.as_deref() == Some(rel.as_str()) {
-                    0o555
-                } else {
-                    0o444
+                let runs = match &image {
+                    Some(spec) => spec.is_executable(rel),
+                    None => executable.as_deref() == Some(rel.as_str()),
                 };
-                set_mode(&target, mode)?;
+                set_mode(&target, if runs { 0o555 } else { 0o444 })?;
+            }
+            if let Some(spec) = &image {
+                spec.apply(&tree)?;
             }
             std::fs::create_dir_all(&record)?;
             tilo_files::native::atomic::write(
@@ -467,6 +582,32 @@ impl PackageStore {
             let _ = remove_tree(&record);
         }
         result
+    }
+
+    /// For an image, export its tree file into `tree` and return the checked
+    /// tree it describes; `None` for every other kind.
+    fn image_tree(
+        content: &Content<'_>,
+        meta: &PackageMeta,
+        tree: &Path,
+    ) -> Result<Option<tilo_app_package::TreeSpec>, StoreError> {
+        if !meta.manifest.package.kind.is_image() {
+            return Ok(None);
+        }
+        let payload = |error: tilo_app_package::ImageError| StoreError::Payload(error.to_string());
+        let hash = meta
+            .collection
+            .entries
+            .get(tilo_app_package::TREE_FILE)
+            .ok_or_else(|| {
+                StoreError::Payload(format!("image has no {}", tilo_app_package::TREE_FILE))
+            })?;
+        let path = tree.join(tilo_app_package::TREE_FILE);
+        content.export(hash, &path)?;
+        let spec =
+            tilo_app_package::TreeSpec::from_bytes(&std::fs::read(&path)?).map_err(payload)?;
+        spec.check(&meta.collection).map_err(payload)?;
+        Ok(Some(spec))
     }
 
     /// Publish the row for `meta` and retire what it replaced.
@@ -641,6 +782,9 @@ impl PackageStore {
             )
             .map_err(|error| StoreError::CorruptPackage(row.id.clone(), error.to_string()))?;
             live.extend(record.collection.entries.values().copied());
+        }
+        for image in self.images()? {
+            live.extend(image.collection.entries.values().copied());
         }
         Ok(live)
     }
