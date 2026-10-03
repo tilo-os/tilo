@@ -181,9 +181,11 @@ impl CameraApp {
         let caption = f64::from(theme.text(TextRole::Caption).line_height_px());
         let field_h = caption + f64::from(spacing.s1) + ControlSize::Regular.height(theme);
         let control = ControlSize::Regular.height(theme);
+        // Under the top band that holds the corner cluster, above the mode
+        // switcher.
         let content = Rect::new(
             full.x0 + gutter,
-            full.y0 + gutter,
+            full.y0 + m.edge + m.bar() + m.gap,
             full.x1 - gutter,
             full.y1 - m.edge - m.bar() - gutter,
         );
@@ -191,6 +193,12 @@ impl CameraApp {
         let wide = content.width() >= column + gutter + f64::from(metrics.detail_min_width);
         let mut fields = [Rect::ZERO; 5];
         if wide {
+            // The settings and the page stay one composition, centred,
+            // with the page no wider than a sheet.
+            let page_w =
+                (content.width() - column - gutter).min(f64::from(metrics.panel_width_sheet));
+            let x0 = content.center().x - (column + gutter + page_w) / 2.0;
+            let content = Rect::new(x0, content.y0, x0 + column + gutter + page_w, content.y1);
             let mut y = content.y0;
             for field in &mut fields {
                 *field = Rect::new(content.x0, y, content.x0 + column, y + field_h);
@@ -238,7 +246,7 @@ impl CameraApp {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
         full: Rect,
-    ) {
+    ) -> Rect {
         let layout = Self::document_layout(full, theme);
         for (field, rect) in self.document_controls.fields.iter_mut().zip(layout.fields) {
             field.apply_layout_external(rect);
@@ -251,25 +259,25 @@ impl CameraApp {
         } else {
             "Scan page"
         };
+        let scan = ButtonFace::new(layout.scan, label).role(ButtonRole::Primary);
+        let hit = scan.hit_rect(theme);
+        let hovered = scan.contains(theme, self.last_mouse);
         Button::paint(
             scene,
             t,
             tr,
             theme,
-            &ButtonFace::new(layout.scan, label)
-                .role(ButtonRole::Primary)
-                .hovered(layout.scan.contains(self.last_mouse))
-                .disabled(!can_scan),
+            &scan.hovered(hovered).disabled(!can_scan),
         );
         if can_scan {
-            self.push_region(layout.scan, Action::CaptureDocument);
+            self.push_region(hit, Action::CaptureDocument);
         }
 
         if self.document_scan.pages.is_empty() {
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             let content = EmptyStateContent {
                 icon: Some(Icon::FileText),
-                message: Some("Scanned pages appear here, ready to crop, reorder and save."),
+                message: Some("Scanned pages appear here."),
                 ..EmptyStateContent::new("No pages yet")
             };
             let _ = EmptyState::paint(&mut ctx, layout.page, &content, Point::new(-1.0, -1.0));
@@ -277,6 +285,7 @@ impl CameraApp {
             self.draw_document_page(scene, t, tr, theme, layout.page);
         }
         self.draw_mode_switcher(scene, t, tr, theme, full);
+        self.draw_corner_actions(scene, t, tr, theme, full)
     }
 
     /// The selected page: which page it is and its text status, the reorder
@@ -507,8 +516,8 @@ impl CameraApp {
         }
     }
 
-    /// What can be done with the page, centred under it. Returns the top of
-    /// the action row.
+    /// What can be done with the page, centred under it on as many rows as
+    /// it needs. Returns the top of the first row.
     fn draw_page_actions(
         &mut self,
         scene: &mut Scene,
@@ -532,44 +541,46 @@ impl CameraApp {
                     .intrinsic_width(tr, theme)
             })
             .collect();
-        let labelled = widths.iter().sum::<f64>() + gap * (widths.len().saturating_sub(1)) as f64;
-        let icons_only = labelled > area.width();
-        let total = if icons_only {
-            (control + gap) * actions.len() as f64 - gap
-        } else {
-            labelled
-        };
-        let footer_y = area.y1 - control;
-        let mut x = area.center().x - total / 2.0;
-        for ((label, icon, action, role), w) in actions.into_iter().zip(widths) {
-            let w = if icons_only { control } else { w };
-            let rect = Rect::new(x, footer_y, x + w, footer_y + control);
-            let face = if icons_only {
-                self.tooltip_targets.push((rect, label.to_owned()));
-                ButtonFace::icon_only(rect, icon, label).role(if role == ButtonRole::Destructive {
-                    ButtonRole::Destructive
-                } else {
-                    ButtonRole::Secondary
-                })
-            } else {
-                ButtonFace::new(rect, label).icon(icon).role(role)
-            };
-            let enabled = !busy || cropping;
+        // The labelled buttons wrap onto as many centred rows as they need,
+        // so no action loses its name on a narrow window.
+        // Each row's total width, and the row every action lands on.
+        let mut totals: Vec<f64> = Vec::new();
+        let mut row_of = Vec::with_capacity(widths.len());
+        for w in &widths {
+            match totals.last_mut() {
+                Some(total) if *total + gap + w <= area.width() => *total += gap + w,
+                _ => totals.push(*w),
+            }
+            row_of.push(totals.len() - 1);
+        }
+        let top = area.y1 - (control + gap) * totals.len() as f64 + gap;
+        let enabled = !busy || cropping;
+        let mut row = usize::MAX;
+        let mut x = 0.0;
+        for (((label, icon, action, role), w), r) in actions.into_iter().zip(widths).zip(row_of) {
+            if r != row {
+                row = r;
+                let total = totals.get(r).copied().unwrap_or(w);
+                x = area.center().x - total / 2.0;
+            }
+            let y = top + (control + gap) * r as f64;
+            let rect = Rect::new(x, y, x + w, y + control);
+            let face = ButtonFace::new(rect, label).icon(icon).role(role);
+            let hit = face.hit_rect(theme);
+            let hovered = face.contains(theme, self.last_mouse);
             Button::paint(
                 scene,
                 t,
                 tr,
                 theme,
-                &face
-                    .hovered(rect.contains(self.last_mouse))
-                    .disabled(!enabled),
+                &face.hovered(hovered).disabled(!enabled),
             );
             if enabled {
-                self.push_region(rect, action);
+                self.push_region(hit, action);
             }
-            x += w + gap;
+            x = rect.x1 + gap;
         }
-        footer_y
+        top
     }
 
     /// The page, as large as `room` allows, or the crop editor over it.

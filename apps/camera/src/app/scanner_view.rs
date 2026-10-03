@@ -11,10 +11,10 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use super::hud::{HudItem, HudMetrics, cluster_width, on_panel};
+use super::hud::{HudMetrics, on_panel};
 use super::{Action, CameraApp, SCAN_PAYLOAD, Storage, frame_image_cover, frame_image_fill};
 use crate::frame;
-use crate::model::{CodeKind, ScanEntry, ScannedCode, Screen, classify};
+use crate::model::{CodeKind, ScanEntry, ScannedCode, classify};
 use crate::paint as p;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -27,7 +27,12 @@ pub(super) struct ScannerLayout {
     pub guide: Rect,
     /// The result card, when a code is decoded and not dismissed.
     pub card: Option<Rect>,
-    /// The band above the guide that holds the hint.
+    /// Where the recent scans may grow: under the card in the side column
+    /// on a wide window, under the card or the guide otherwise. `None`
+    /// when not even one scan fits.
+    pub recent: Option<Rect>,
+    /// The band above the guide that holds the hint, or the tag naming a
+    /// detected code.
     pub hint: Rect,
 }
 
@@ -61,6 +66,15 @@ struct CardContent {
     actions: Vec<&'static str>,
 }
 
+/// The first action a code offers is the card's main one.
+fn action_role(index: usize) -> ButtonRole {
+    if index == 0 {
+        ButtonRole::Primary
+    } else {
+        ButtonRole::Secondary
+    }
+}
+
 impl CardContent {
     fn of(code: &ScannedCode) -> Self {
         Self {
@@ -72,6 +86,7 @@ impl CardContent {
 }
 
 impl CameraApp {
+    /// Paint the scanner. Returns the top-trailing cluster's panel.
     pub(super) fn draw_scanner(
         &mut self,
         scene: &mut Scene,
@@ -79,25 +94,9 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
-    ) {
+    ) -> Rect {
         let m = HudMetrics::of(theme);
         let live = self.feed_active();
-        let trailing = [
-            HudItem {
-                label: "",
-                icon: Some(Icon::Image),
-                name: "Open Photos",
-                on: None,
-                action: Action::OpenPhotos,
-            },
-            HudItem {
-                label: "",
-                icon: Some(Icon::Settings),
-                name: "Camera settings",
-                on: None,
-                action: Action::Nav(Screen::Settings),
-            },
-        ];
         let code = self.scanned.clone().filter(|_| !self.scan_dismissed);
         let mut layout = Self::scanner_layout(tr, theme, full, code.as_ref());
         let mut code = code;
@@ -115,68 +114,54 @@ impl CameraApp {
             self.paint_scan_feed(scene, t, full);
             Self::draw_scan_guide(scene, t, theme, full, layout.guide);
             if code.is_some() {
-                self.draw_detected_overlay(scene, t, tr, theme, full);
-            }
-            let hint = ui::i18n!("Point the camera at a QR code or barcode");
-            let local = theme.on_ground(theme.tokens.colors.media.scrim);
-            let mut ctx = PaintCtx::new(scene, t, tr, &local);
-            let size = ctx.measure_role(&hint, TextRole::Label, None);
-            if size.width <= layout.hint.width() {
-                ctx.text_role(
-                    &hint,
-                    TextRole::Label,
-                    theme.tokens.colors.media.ink,
-                    Point::new(
-                        layout.hint.center().x - size.width / 2.0,
-                        layout.hint.y1 - size.height,
-                    ),
-                    None,
-                );
+                self.draw_detected_overlay(scene, t, tr, theme, full, layout.hint);
+            } else {
+                let hint = ui::i18n!("Point the camera at a QR code or barcode");
+                let local = theme.on_ground(theme.tokens.colors.media.scrim);
+                let mut ctx = PaintCtx::new(scene, t, tr, &local);
+                let size = ctx.measure_role(&hint, TextRole::Label, None);
+                if size.width <= layout.hint.width() {
+                    ctx.text_role(
+                        &hint,
+                        TextRole::Label,
+                        theme.tokens.colors.media.ink,
+                        Point::new(
+                            layout.hint.center().x - size.width / 2.0,
+                            layout.hint.center().y - size.height / 2.0,
+                        ),
+                        None,
+                    );
+                }
             }
         } else {
             p::fill_rect(scene, t, full, theme.tokens.colors.media.letterbox);
+            let below = match layout.side {
+                Some(_) => None,
+                None => layout.card.or(layout.recent).map(|rect| rect.y0),
+            };
             let area = Rect::new(
                 full.x0,
                 full.y0 + m.edge + m.bar(),
                 layout.side.map_or(full.x1, |side| side.x0),
-                match (layout.card, layout.side) {
-                    (Some(card), None) => card.y0,
-                    _ => full.y1 - m.edge - m.bar(),
-                },
+                below.unwrap_or_else(|| full.y1 - m.edge - m.bar()),
             );
             self.draw_scanner_offline(scene, t, tr, theme, area);
         }
 
-        let width = cluster_width(&trailing, tr, theme);
-        self.draw_cluster(
-            scene,
-            t,
-            tr,
-            theme,
-            Point::new(full.x1 - m.edge - width, full.y0 + m.edge),
-            &trailing,
-        );
+        let corner = self.draw_corner_actions(scene, t, tr, theme, full);
         if let (Some(code), Some(card)) = (code.as_ref(), layout.card) {
             self.draw_scan_card(scene, t, tr, theme, card, code);
         }
-        if let Some(side) = layout.side {
-            let top = layout
-                .card
-                .map_or(side.y0, |card| card.y1 + f64::from(theme.tokens.spacing.s4));
-            self.draw_recent_scans(
-                scene,
-                t,
-                tr,
-                theme,
-                Rect::new(side.x0, top, side.x1, side.y1),
-            );
+        if let Some(recent) = layout.recent {
+            self.draw_recent_scans(scene, t, tr, theme, recent);
         }
         self.draw_mode_switcher(scene, t, tr, theme, full);
+        corner
     }
 
-    /// The guide, the hint and the result card for `full`, keeping the
-    /// card clear of the guide: beside it on a wide window, under it
-    /// otherwise.
+    /// The guide, the hint, the result card and the recent scans for
+    /// `full`, none of them overlapping: the card and the recent scans
+    /// beside the guide on a wide window, under it otherwise.
     pub(super) fn scanner_layout(
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -187,57 +172,78 @@ impl CameraApp {
         let metrics = &theme.tokens.metrics;
         let spacing = &theme.tokens.spacing;
         let group = f64::from(spacing.s6);
+        let stack = f64::from(spacing.s4);
         let top = full.y0 + m.edge + m.bar() + m.gap;
         let bottom = full.y1 - m.edge - m.bar() - group;
-        // The side column holds text, so it and the width that fits it grow
-        // with the text.
+        // The side column holds text, so it grows with the text. It goes
+        // beside the guide while the stage left of it is at least as wide.
         let growth = f64::from(theme.text_growth());
         let column = f64::from(metrics.inspector_width) * growth;
-        let wide = full.width() >= f64::from(metrics.compact_breakpoint) * growth + column;
-        let side = wide.then(|| {
-            let width = column;
-            Rect::new(full.x1 - m.edge - width, top, full.x1 - m.edge, bottom)
-        });
+        let wide = full.width() - column - 3.0 * m.edge >= column;
+        let side =
+            wide.then(|| Rect::new(full.x1 - m.edge - column, top, full.x1 - m.edge, bottom));
         let stage_x1 = side.map_or(full.x1, |side| side.x0 - m.edge);
-        let card = code.map(|code| {
-            let width = side.map_or_else(
-                || (full.width() - 2.0 * m.edge).min(f64::from(metrics.panel_width_sheet)),
-                |side| side.width(),
-            );
-            let height = Self::scan_card_height(tr, theme, width, code);
-            if let Some(side) = side {
-                Rect::new(side.x0, side.y0, side.x1, side.y0 + height)
-            } else {
-                let x0 = full.center().x - width / 2.0;
-                Rect::new(x0, bottom - height, x0 + width, bottom)
-            }
-        });
-        let hint_h = theme.text(TextRole::Label).line_height_px();
-        let guide_top = top + f64::from(hint_h) + f64::from(spacing.s3);
-        let guide_bottom = match (side, card) {
-            (None, Some(card)) => card.y0 - group,
-            _ => bottom,
-        };
-        let stage_w = stage_x1 - full.x0 - 2.0 * group;
-        let side_len = (stage_w.min(full.height()) * 0.62)
-            .min(guide_bottom - guide_top)
-            .min(stage_w)
-            .max(0.0);
-        let centre = Point::new(
-            f64::midpoint(full.x0, stage_x1),
-            f64::midpoint(guide_top, guide_bottom),
+        let card_w = side.map_or_else(
+            || (full.width() - 2.0 * m.edge).min(f64::from(metrics.panel_width_sheet)),
+            |side| side.width(),
         );
-        let guide = Rect::from_center_size(centre, (side_len, side_len)).round();
+        let card_h = code.map(|code| Self::scan_card_height(tr, theme, card_w, code));
+        let hint_h =
+            f64::from(theme.text(TextRole::Label).line_height_px()).max(BadgeFace::height(theme));
+        let hint_gap = f64::from(spacing.s3);
+        let guide_top = top + hint_h + hint_gap;
+        let stage_w = stage_x1 - full.x0 - 2.0 * group;
+        let wanted = (stage_w.min(full.height()) * 0.62).min(stage_w).max(0.0);
+
+        let (guide, card, recent) = if let Some(side) = side {
+            let side_len = wanted.min(bottom - guide_top).max(0.0);
+            let centre = Point::new(
+                f64::midpoint(full.x0, stage_x1),
+                f64::midpoint(guide_top, bottom),
+            );
+            let guide = Rect::from_center_size(centre, (side_len, side_len)).round();
+            let card = card_h.map(|h| Rect::new(side.x0, side.y0, side.x1, side.y0 + h));
+            let recent_top = card.map_or(side.y0, |card| card.y1 + stack);
+            let recent = Rect::new(side.x0, recent_top, side.x1, side.y1);
+            (guide, card, Some(recent))
+        } else {
+            // Under the guide: the card, then as many recent scans as fit.
+            let below_card = card_h.map_or(0.0, |h| h + group);
+            let one_scan = Self::recent_scans_min_height(tr, theme);
+            let room = bottom - guide_top - group - below_card;
+            let with_recent = room - one_scan - stack >= wanted.min(room) * 0.75;
+            let guide_room = if with_recent {
+                room - one_scan - stack
+            } else {
+                room
+            };
+            let side_len = wanted.min(guide_room).max(0.0);
+            let guide = Rect::from_origin_size(
+                (full.center().x - side_len / 2.0, guide_top),
+                (side_len, side_len),
+            )
+            .round();
+            let x0 = full.center().x - card_w / 2.0;
+            let card = card_h.map(|h| {
+                let y0 = guide.y1 + group;
+                Rect::new(x0, y0, x0 + card_w, y0 + h)
+            });
+            let recent_top = card.map_or(guide.y1 + group, |card| card.y1 + stack);
+            let recent =
+                with_recent.then(|| Rect::new(x0, recent_top, x0 + card_w, bottom.max(recent_top)));
+            (guide, card, recent)
+        };
         let hint = Rect::new(
             full.x0 + group,
-            top,
+            guide.y0 - hint_gap - hint_h,
             stage_x1 - group,
-            guide.y0 - f64::from(spacing.s3),
+            guide.y0 - hint_gap,
         );
         ScannerLayout {
             side,
             guide,
             card,
+            recent,
             hint,
         }
     }
@@ -360,8 +366,9 @@ impl CameraApp {
         }
     }
 
-    /// The decoded code's outline in the success colour and a tag naming it,
-    /// mapped from decode space onto the picture.
+    /// The decoded code's outline in the success colour, mapped from decode
+    /// space onto the picture, and a tag naming it in the hint's place above
+    /// the guide, clear of whatever the code is printed on.
     fn draw_detected_overlay(
         &self,
         scene: &mut Scene,
@@ -369,6 +376,7 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
+        band: Rect,
     ) {
         let Some(code) = self.scanned.as_ref() else {
             return;
@@ -392,16 +400,7 @@ impl CameraApp {
         let label = detected_label(&code.symbology);
         let width = BadgeFace::intrinsic_width(&label, tr, theme);
         let height = BadgeFace::height(theme);
-        let (cx, _) = code.center();
-        let centre_x = full.x0 + f64::from(cx) * sx;
-        let top = points.iter().map(|q| q.y).fold(f64::MAX, f64::min);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let rect = Rect::new(
-            centre_x - width / 2.0,
-            top - gap - height,
-            centre_x + width / 2.0,
-            top - gap,
-        );
+        let rect = Rect::from_center_size(band.center(), (width, height));
         BadgeFace::new(rect, &label)
             .style(ChipStyle::Tinted(Tone::Success))
             .paint(scene, t, tr, theme);
@@ -467,27 +466,42 @@ impl CameraApp {
         let spacing = &theme.tokens.spacing;
         let control = ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         let gap = f64::from(spacing.s2);
-        let mut y = Self::scan_card_header(theme) + f64::from(spacing.s4);
-        let mut x = 0.0;
-        let mut rects = Vec::new();
-        for (i, label) in content.actions.iter().enumerate() {
-            let role = if i == 0 {
-                ButtonRole::Primary
+        let y = Self::scan_card_header(theme) + f64::from(spacing.s4);
+        let count = content.actions.len();
+        let widest = content
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                ButtonFace::new(Rect::ZERO, label)
+                    .role(action_role(i))
+                    .intrinsic_width(tr, theme)
+            })
+            .fold(0.0_f64, f64::max);
+        // One action keeps its own width. Several share one row at equal
+        // widths when each fits, and otherwise each spans the card.
+        let rects: Vec<Rect> = if count == 1 {
+            vec![Rect::new(0.0, y, widest.min(width), y + control)]
+        } else {
+            let share = (width - gap * (count.saturating_sub(1)) as f64) / count.max(1) as f64;
+            if share >= widest {
+                (0..count)
+                    .map(|i| {
+                        let x = (share + gap) * i as f64;
+                        Rect::new(x, y, x + share, y + control)
+                    })
+                    .collect()
             } else {
-                ButtonRole::Secondary
-            };
-            let w = ButtonFace::new(Rect::ZERO, label)
-                .role(role)
-                .intrinsic_width(tr, theme)
-                .min(width);
-            if x > 0.0 && x + w > width {
-                x = 0.0;
-                y += control + gap;
+                (0..count)
+                    .map(|i| {
+                        let top = y + (control + gap) * i as f64;
+                        Rect::new(0.0, top, width, top + control)
+                    })
+                    .collect()
             }
-            rects.push(Rect::new(x, y, x + w, y + control));
-            x += w + gap;
-        }
-        (y + control, rects)
+        };
+        let bottom = rects.last().map_or(y, |rect| rect.y1);
+        (bottom, rects)
     }
 
     fn draw_scan_card(
@@ -516,25 +530,27 @@ impl CameraApp {
                 body.x1 - control,
                 body.y0 + Self::scan_card_header(theme),
             );
+            let title_style = theme
+                .text(TextRole::Subheading)
+                .with_kind(ui::TextKind::Identifier);
+            let detail_style = theme.text(TextRole::Caption);
+            // The icon, the two-line title block and the dismiss control
+            // share one centre line.
+            let block = f64::from(title_style.line_height_px() + detail_style.line_height_px());
+            let top = header.center().y - block / 2.0;
             let icon = Rect::from_center_size(
-                Point::new(header.x0 + icon_size / 2.0, header.center().y),
+                Point::new(header.x0 + icon_size / 2.0, top + block / 2.0),
                 (icon_size, icon_size),
             );
             code_icon(&code.kind).draw(ctx.scene, t, icon, colors.text_dim);
             let text_x = icon.x1 + f64::from(spacing.s3);
             let room = ui::num::f32_of_f64((header.x1 - text_x - f64::from(spacing.s2)).max(1.0));
-            let title_style = theme
-                .text(TextRole::Subheading)
-                .with_kind(ui::TextKind::Identifier);
             let title = ctx
                 .text
                 .elide_to_width_style(&content.title, room, &title_style);
-            let detail_style = theme.text(TextRole::Caption);
             let detail = ctx
                 .text
                 .elide_to_width_style(&content.detail, room, &detail_style);
-            let block = f64::from(title_style.line_height_px() + detail_style.line_height_px());
-            let top = header.center().y - block / 2.0;
             ctx.text(
                 &title,
                 &title_style,
@@ -550,39 +566,45 @@ impl CameraApp {
                 None,
             );
         }
-        let close = Rect::new(body.x1 - control, body.y0, body.x1, body.y0 + control);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::icon_only(close, Icon::X, "Dismiss")
-                .hovered(close.contains(self.last_mouse)),
+        let header_mid = body.y0 + Self::scan_card_header(theme) / 2.0;
+        let close = Rect::new(
+            body.x1 - control,
+            header_mid - control / 2.0,
+            body.x1,
+            header_mid + control / 2.0,
         );
-        self.tooltip_targets.push((close, "Dismiss".to_owned()));
-        self.push_region(close, Action::DismissScan);
+        let close = ButtonFace::icon_only(close, Icon::X, "Dismiss");
+        let hit = close.hit_rect(theme);
+        let hovered = close.contains(theme, self.last_mouse);
+        Button::paint(scene, t, tr, theme, &close.hovered(hovered));
+        self.tooltip_targets.push((hit, "Dismiss".to_owned()));
+        self.push_region(hit, Action::DismissScan);
         for (i, (label, rect)) in content.actions.iter().zip(actions).enumerate() {
             let rect = rect + body.origin().to_vec2();
-            let role = if i == 0 {
-                ButtonRole::Primary
-            } else {
-                ButtonRole::Secondary
-            };
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::new(rect, label)
-                    .role(role)
-                    .hovered(rect.contains(self.last_mouse)),
-            );
-            self.push_region(rect, Action::Scan(i));
+            let face = ButtonFace::new(rect, label).role(action_role(i));
+            let hit = face.hit_rect(theme);
+            let hovered = face.contains(theme, self.last_mouse);
+            Button::paint(scene, t, tr, theme, &face.hovered(hovered));
+            self.push_region(hit, Action::Scan(i));
         }
     }
 
-    /// The codes scanned most recently, newest first, on a floating panel in
-    /// the side column.
+    /// The height of the recent scans holding their heading and one scan.
+    fn recent_scans_min_height(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let local = on_panel(theme);
+        let spacing = &theme.tokens.spacing;
+        let heading = f64::from(local.text(TextRole::Subheading).line_height_px())
+            + 2.0 * f64::from(spacing.s3);
+        let row = ListRowFace::new("Scan")
+            .secondary("Kind")
+            .meta("now")
+            .leading(RowLeading::Icon(Icon::Globe))
+            .height(tr, &local);
+        heading + row + f64::from(spacing.s2)
+    }
+
+    /// The codes scanned most recently, newest first, on a floating panel at
+    /// the top of `column`, as many as fit.
     fn draw_recent_scans(
         &self,
         scene: &mut Scene,
@@ -677,7 +699,7 @@ impl CameraApp {
         let now = super::now_secs();
         vec![
             ScanEntry {
-                raw: "https://tilo.so/docs/getting-started".into(),
+                raw: "https://tilo.so/help".into(),
                 ts: now - 4 * 60,
             },
             ScanEntry {
