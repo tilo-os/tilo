@@ -5,21 +5,83 @@ use std::hash::{Hash, Hasher};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::widget::{AppModel, ModelPath};
 use ui::{
+    icons::{AppImage, AppImageSource, Icon},
     presence::PresenceCtx,
     text_render::TextRenderer,
     theme::Theme,
-    widget::{AppKind, TabBar, TabDescriptor, Widget},
+    widget::{
+        AppKind, Button, ButtonFace, ButtonRole, Spinner, TabBar, TabDescriptor, Widget,
+        tabs::{TAB_BAR_HEIGHT, TAB_PILL_INSET_Y},
+    },
 };
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Point, Rect, Stroke},
-    peniko::{Fill, ImageBrush},
+    kurbo::{Affine, Point, Rect},
 };
 use winit::event::{ElementState, MouseButton, WindowEvent};
-const PINNED_WIDTH: f64 = 44.0;
-const MIN_TAB_WIDTH: f64 = 120.0;
-const NEW_TAB_WIDTH: f64 = 36.0;
-const OVERFLOW_WIDTH: f64 = 32.0;
+
+/// The widths the strip lays tabs out in, from the theme: a pinned tab, the
+/// narrowest a tab may get before the window scrolls, the new-tab chip and one
+/// overflow paddle.
+#[derive(Clone, Copy, Debug)]
+struct StripMetrics {
+    pinned: f64,
+    min_tab: f64,
+    new_tab: f64,
+    overflow: f64,
+    /// Inset of a tab's leading glyph from the tab's edge, and the glyph's size.
+    glyph_inset: f64,
+    glyph: f64,
+}
+
+impl StripMetrics {
+    fn of(theme: &Theme) -> Self {
+        let metrics = &theme.tokens.metrics;
+        let spacing = &theme.tokens.spacing;
+        Self {
+            pinned: f64::from(metrics.bar_height + spacing.s1),
+            min_tab: f64::from(spacing.s16) * 2.0,
+            new_tab: f64::from(metrics.min_pointer_target + spacing.s1),
+            overflow: f64::from(metrics.min_pointer_target),
+            glyph_inset: f64::from(spacing.s3),
+            glyph: f64::from(metrics.icon_sm),
+        }
+    }
+}
+
+/// A tab's favicon, as the artwork the tab bar paints in the leading slot.
+struct Favicon {
+    key: String,
+    image: vello::peniko::ImageData,
+}
+
+impl AppImageSource for Favicon {
+    fn key(&self) -> &str {
+        &self.key
+    }
+    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
+        Some(self.image.clone())
+    }
+}
+
+/// An empty leading slot: the tab keeps its glyph column while a state mark
+/// (busy, playing, muted) is painted over it.
+struct EmptySlot;
+
+impl AppImageSource for EmptySlot {
+    fn key(&self) -> &'static str {
+        "browser.tab.empty-slot"
+    }
+    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
+        Some(vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![0, 0, 0, 0])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+            width: 1,
+            height: 1,
+        })
+    }
+}
 #[derive(Clone, Default)]
 pub(crate) struct TabVisual {
     pub favicon: Option<vello::peniko::ImageData>,
@@ -39,7 +101,9 @@ pub struct BrowserTabStrip {
     visuals: HashMap<u64, TabVisual>,
     pending_toggle_mute: Option<u64>,
     reduced_motion: bool,
-    spinner_started: ui::time::Instant,
+    /// One spinner per busy tab, so each keeps its own phase.
+    spinners: HashMap<u64, Spinner>,
+    metrics: StripMetrics,
     rect: Rect,
 }
 impl BrowserTabStrip {
@@ -58,7 +122,8 @@ impl BrowserTabStrip {
             visuals: HashMap::new(),
             pending_toggle_mute: None,
             reduced_motion: false,
-            spinner_started: ui::time::now(),
+            spinners: HashMap::new(),
+            metrics: StripMetrics::of(&Theme::dark()),
             rect: Rect::ZERO,
         }
     }
@@ -128,6 +193,7 @@ impl BrowserTabStrip {
     }
     pub(crate) fn set_visual(&mut self, id: u64, visual: TabVisual) {
         self.visuals.insert(id, visual);
+        self.refresh_visible();
     }
     pub fn set_fixture_visual(
         &mut self,
@@ -215,30 +281,38 @@ impl BrowserTabStrip {
             .filter(|t| !self.pinned.contains(&t.id))
             .cloned()
             .collect();
+        let StripMetrics {
+            pinned: pinned_width,
+            min_tab: min_tab_width,
+            new_tab: new_tab_width,
+            overflow: overflow_width,
+            ..
+        } = self.metrics;
         let available =
-            (self.viewport_width - NEW_TAB_WIDTH - 2.0 * OVERFLOW_WIDTH).max(PINNED_WIDTH);
+            (self.viewport_width - new_tab_width - 2.0 * overflow_width).max(pinned_width);
         // Reserve a normal-tab slot consistently; selection must not change
         // the pinned prefix length beneath an in-progress pointer gesture.
         let max_pinned = if normal.is_empty() {
-            (available / PINNED_WIDTH).floor() as usize
+            (available / pinned_width).floor() as usize
         } else {
-            ((available - MIN_TAB_WIDTH).max(PINNED_WIDTH) / PINNED_WIDTH).floor() as usize
+            ((available - min_tab_width).max(pinned_width) / pinned_width).floor() as usize
         };
         if pinned.len() > max_pinned {
             let start = self.window_start(&pinned, max_pinned, active);
             pinned = pinned.into_iter().skip(start).take(max_pinned).collect();
         }
-        let budget = (available - pinned.len() as f64 * PINNED_WIDTH).max(if normal.is_empty() {
+        let budget = (available - pinned.len() as f64 * pinned_width).max(if normal.is_empty() {
             0.0
         } else {
-            MIN_TAB_WIDTH
+            min_tab_width
         });
-        let slots = ((budget / MIN_TAB_WIDTH).floor() as usize).max(1);
+        let slots = ((budget / min_tab_width).floor() as usize).max(1);
         let start = self.window_start(&normal, slots, active);
         let mut visible = pinned;
         visible.extend(normal.into_iter().skip(start).take(slots));
         for tab in &mut visible {
             tab.app_kind = Some(AppKind::Browser);
+            tab.icon = self.leading_art(tab.id);
         }
         self.visible_ids = visible.iter().map(|t| t.id).collect();
         *self.inner.tabs_mut() = visible;
@@ -251,10 +325,24 @@ impl BrowserTabStrip {
         }
         self.inner.set_active(active);
     }
+    /// What the tab bar paints in a tab's leading slot: its favicon, an empty
+    /// slot while a state mark covers it, or the browser glyph.
+    fn leading_art(&self, id: u64) -> Option<AppImage> {
+        let visual = self.visuals.get(&id)?;
+        if visual.loading || visual.media_playing || visual.muted {
+            return Some(AppImage::new(EmptySlot));
+        }
+        visual.favicon.as_ref().map(|image| {
+            AppImage::new(Favicon {
+                key: format!("favicon:{}", image.data.id()),
+                image: image.clone(),
+            })
+        })
+    }
     #[cfg(any(test, debug_assertions))]
     pub fn debug_layout(&mut self, w: f64) {
         self.set_viewport_width(w);
-        self.rect = Rect::new(0.0, 0.0, w, 44.0);
+        self.rect = Rect::new(0.0, 0.0, w, TAB_BAR_HEIGHT);
     }
     pub fn set_viewport_width(&mut self, w: f64) {
         self.viewport_width = w;
@@ -284,9 +372,10 @@ impl BrowserTabStrip {
     #[cfg(any(test, debug_assertions))]
     pub fn overflow_targets_meet_minimum_size(&self) -> bool {
         let (before, after) = self.overflow_rects();
+        let minimum = self.metrics.overflow;
         [before, after]
             .into_iter()
-            .all(|target| target.width() >= 32.0 && target.height() >= 32.0)
+            .all(|target| target.width() >= minimum && target.height() >= minimum)
     }
     #[cfg(any(test, debug_assertions))]
     pub fn media_control_precedes_title(&self, id: u64) -> bool {
@@ -325,16 +414,12 @@ impl BrowserTabStrip {
     }
     fn overflow_rects(&self) -> (Rect, Rect) {
         let anchor = self.rect.x1;
-        let y0 = self.rect.y0 + 6.0;
-        let y1 = self.rect.y1 - 6.0;
+        let width = self.metrics.overflow;
+        let y0 = self.rect.y0 + TAB_PILL_INSET_Y;
+        let y1 = self.rect.y1 - TAB_PILL_INSET_Y;
         (
-            Rect::new(
-                anchor - 2.0 * OVERFLOW_WIDTH,
-                y0,
-                anchor - OVERFLOW_WIDTH,
-                y1,
-            ),
-            Rect::new(anchor - OVERFLOW_WIDTH, y0, anchor, y1),
+            Rect::new(anchor - 2.0 * width, y0, anchor - width, y1),
+            Rect::new(anchor - width, y0, anchor, y1),
         )
     }
     fn media_rect(&self, index: usize) -> Rect {
@@ -347,12 +432,18 @@ impl BrowserTabStrip {
         let Some(tab) = self.inner.tab_rects().get(index) else {
             return Rect::ZERO;
         };
+        let glyph = self.metrics.glyph;
         let x0 = if self.pinned.contains(&id) {
-            tab.center().x - 8.0
+            tab.center().x - glyph / 2.0
         } else {
-            tab.x0 + 9.0
+            tab.x0 + self.metrics.glyph_inset
         };
-        Rect::new(x0, tab.center().y - 8.0, x0 + 16.0, tab.center().y + 8.0)
+        Rect::new(
+            x0,
+            tab.center().y - glyph / 2.0,
+            x0 + glyph,
+            tab.center().y + glyph / 2.0,
+        )
     }
     fn has_hidden_before(&self) -> bool {
         self.partition_has_hidden(false, true) || self.partition_has_hidden(true, true)
@@ -391,44 +482,33 @@ impl BrowserTabStrip {
                 }
             })
     }
-    fn draw_overflow_controls(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let ink = theme.tokens.colors.text_primary;
+    fn draw_overflow_controls(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let (left, right) = self.overflow_rects();
-        for (rect, enabled, forward) in [
-            (left, self.has_hidden_before(), false),
-            (right, self.has_hidden_after(), true),
+        for (rect, enabled, icon, name) in [
+            (
+                left,
+                self.has_hidden_before(),
+                Icon::ChevronLeft,
+                "Previous hidden tab",
+            ),
+            (
+                right,
+                self.has_hidden_after(),
+                Icon::ChevronRight,
+                "Next hidden tab",
+            ),
         ] {
-            // The overflow paddles are raised faces with their derived rest
-            // edge, not bare fills that dissolve into the strip on dark.
-            ui::surface::card(
-                scene,
-                transform,
-                rect,
-                6.0,
-                theme.tokens.colors.surfaces.raised,
-            );
-            let center = rect.center();
-            let mut arrow = BezPath::new();
-            if forward {
-                arrow.move_to((center.x - 2.0, center.y - 5.0));
-                arrow.line_to((center.x + 3.0, center.y));
-                arrow.line_to((center.x - 2.0, center.y + 5.0));
-            } else {
-                arrow.move_to((center.x + 2.0, center.y - 5.0));
-                arrow.line_to((center.x - 3.0, center.y));
-                arrow.line_to((center.x + 2.0, center.y + 5.0));
-            }
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                if enabled {
-                    ink
-                } else {
-                    theme.tokens.colors.text_dim
-                },
-                None,
-                &arrow,
-            );
+            let face = ButtonFace::icon_only(rect, icon, name)
+                .role(ButtonRole::Plain)
+                .hovered(enabled && rect.contains(self.cursor))
+                .disabled(!enabled);
+            Button::paint(scene, transform, text, theme, &face);
         }
     }
 }
@@ -451,6 +531,13 @@ impl Widget for BrowserTabStrip {
         theme: &Theme,
         n: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let metrics = StripMetrics::of(theme);
+        let metrics_changed = (metrics.min_tab - self.metrics.min_tab).abs() > f64::EPSILON
+            || (metrics.overflow - self.metrics.overflow).abs() > f64::EPSILON;
+        self.metrics = metrics;
+        if metrics_changed {
+            self.viewport_dirty = true;
+        }
         self.refresh_visible();
         let child = self.inner.build_layout(t, theme, n);
         let _ = t.set_style(
@@ -458,11 +545,11 @@ impl Widget for BrowserTabStrip {
             Style {
                 size: Size {
                     width: Dimension::auto(),
-                    height: Dimension::length(44.0),
+                    height: Dimension::length(TAB_BAR_HEIGHT as f32),
                 },
                 min_size: Size {
                     width: Dimension::length(0.0),
-                    height: Dimension::length(44.0),
+                    height: Dimension::length(TAB_BAR_HEIGHT as f32),
                 },
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
@@ -474,8 +561,8 @@ impl Widget for BrowserTabStrip {
             t,
             Style {
                 size: Size {
-                    width: Dimension::length(2.0 * OVERFLOW_WIDTH as f32),
-                    height: Dimension::length(44.0),
+                    width: Dimension::length((2.0 * self.metrics.overflow) as f32),
+                    height: Dimension::length(TAB_BAR_HEIGHT as f32),
                 },
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
@@ -489,7 +576,7 @@ impl Widget for BrowserTabStrip {
                 flex_direction: taffy::FlexDirection::Row,
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(44.0),
+                    height: Dimension::length(TAB_BAR_HEIGHT as f32),
                 },
                 ..Style::default()
             },
@@ -527,86 +614,31 @@ impl Widget for BrowserTabStrip {
     ) {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
-        let ink = theme.tokens.colors.text_primary;
-        for (index, id) in self.visible_ids.iter().copied().enumerate() {
+        for (index, id) in self.visible_ids.clone().into_iter().enumerate() {
             let Some(visual) = self.visuals.get(&id) else {
                 continue;
             };
-            let icon = self.leading_rect(index, id);
-            if visual.loading || visual.favicon.is_some() || visual.media_playing || visual.muted {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.base,
-                    None,
-                    &icon.inflate(3.0, 3.0).to_rounded_rect(10.0),
-                );
-            }
+            let slot = self.leading_rect(index, id);
             if visual.media_playing || visual.muted {
-                let center = icon.center();
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    ink,
-                    None,
-                    &Rect::new(
-                        center.x - 7.0,
-                        center.y - 4.0,
-                        center.x - 3.0,
-                        center.y + 4.0,
-                    ),
-                );
-                let mut wave = BezPath::new();
-                wave.move_to((center.x - 3.0, center.y - 4.0));
-                wave.line_to((center.x + 2.0, center.y - 7.0));
-                wave.line_to((center.x + 2.0, center.y + 7.0));
-                wave.line_to((center.x - 3.0, center.y + 4.0));
-                wave.close_path();
-                scene.fill(Fill::NonZero, transform, ink, None, &wave);
-                if visual.muted {
-                    let mut slash = BezPath::new();
-                    slash.move_to((center.x - 7.0, center.y - 7.0));
-                    slash.line_to((center.x + 7.0, center.y + 7.0));
-                    // The muted slash reads in the theme'scene danger tone, so it
-                    // follows the palette (and stays legible in high contrast)
-                    // rather than angle red chosen for one theme.
-                    scene.stroke(
-                        &Stroke::new(2.0),
-                        transform,
-                        theme.tokens.colors.semantic.danger,
-                        None,
-                        &slash,
-                    );
-                }
-            } else if visual.loading {
-                let phase = if self.reduced_motion {
-                    0.0
+                // A muted tab is quieter than one that is playing.
+                let (icon, ink) = if visual.muted {
+                    (Icon::VolumeX, theme.tokens.colors.text_dim)
                 } else {
-                    (self.spinner_started.elapsed().as_millis() % 1000) as f64 / 1000.0
+                    (Icon::Volume2, theme.tokens.colors.text_primary)
                 };
-                let mut arc = BezPath::new();
-                let center = icon.center();
-                let start = phase * std::f64::consts::TAU;
-                for step in 0..=12 {
-                    let angle = start + (f64::from(step) / 12.0) * std::f64::consts::TAU * 0.72;
-                    let point =
-                        Point::new(center.x + angle.cos() * 6.5, center.y + angle.sin() * 6.5);
-                    if step == 0 {
-                        arc.move_to(point);
-                    } else {
-                        arc.line_to(point);
-                    }
-                }
-                scene.stroke(&Stroke::new(2.0), transform, ink, None, &arc);
-            } else if let Some(image) = &visual.favicon {
-                let brush = ImageBrush::new(image.clone());
-                let sx = icon.width() / f64::from(image.width.max(1));
-                let sy = icon.height() / f64::from(image.height.max(1));
-                let bx = Affine::translate((icon.x0, icon.y0)) * Affine::scale_non_uniform(sx, sy);
-                scene.fill(Fill::NonZero, transform, &brush, Some(bx), &icon);
+                icon.draw(scene, transform, slot, ink);
+            } else if visual.loading {
+                let spinner = self
+                    .spinners
+                    .entry(id)
+                    .or_insert_with(|| Spinner::with_size(self.metrics.glyph as f32));
+                spinner.set_rect(slot);
+                spinner.draw(scene, transform, text_renderer, theme, presence);
+            } else {
+                self.spinners.remove(&id);
             }
         }
-        self.draw_overflow_controls(scene, transform, theme);
+        self.draw_overflow_controls(scene, transform, text_renderer, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.is_focused()

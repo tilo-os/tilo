@@ -1,6 +1,7 @@
 //! Device-local find and zoom state, retained with each browser tab.
 use ui::{
     LocalState,
+    icons::Icon,
     tokens::TextRole,
     webview::{SharedEngine, WebViewCommand, WebViewEvent},
     widget::{Button, Container, Row, Text, TextInput, Widget},
@@ -149,39 +150,33 @@ impl DailyControls {
             _ => false,
         }
     }
-    /// `text_scale` is the theme's; these are labelled controls, so their
-    /// explicit width grows with the text it has to hold.
-    fn button(&self, id: &str, label: &str, action: Action, text_scale: f32) -> Button {
+    /// The closure a command's menu row or button runs: it queues `action`
+    /// for the next `sync`, the same hand-off every control here uses.
+    pub fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.pending.clone();
-        // As tall as the address field and the find field these sit beside,
-        // so the toolbar row and the find bar each keep one top and one
-        // bottom edge. The 32px face left a step down on either side of them.
-        Button::new(id, label, None)
-            .with_size(
-                crate::browser_widget::labelled_width(72.0, text_scale),
-                crate::browser_widget::toolbar_control_height(text_scale),
-            )
-            .on_effect(move || pending.set(Some(action)))
+        move || pending.set(Some(action))
     }
-    pub fn launcher(&self, text_scale: f32) -> Button {
-        self.button("browser.find", "Find", Action::Open, text_scale)
-            .tooltip("Find in page (⌘F / Ctrl+F)")
+    /// The zoom row's label: the page's zoom level is always stated while it
+    /// is not the default.
+    pub fn zoom_label(&self) -> String {
+        if self.zoom.abs() < f64::EPSILON {
+            "Actual size".into()
+        } else {
+            format!("Actual size ({:.0}%)", 100.0 * 1.2_f64.powf(self.zoom))
+        }
     }
-    pub fn zoom_reset(&self, text_scale: f32) -> Button {
-        self.button(
-            "browser.zoom.reset",
-            &format!("{:.0}%", 100.0 * 1.2_f64.powf(self.zoom)),
-            Action::Zoom(0),
-            text_scale,
-        )
-        .tooltip("Zoom: ⌘/Ctrl + Plus or Minus; reset: ⌘/Ctrl+0")
-    }
-    pub fn bar(&self, text_scale: f32) -> Box<dyn Widget> {
-        // `no_wrap`, as the toolbar row above it: a wrapping row let the
-        // full-width find field claim the line and pushed the match count,
-        // Previous, Next and Done onto a second line beneath it, so the bar
-        // read as a field with a stray button row rather than one control
-        // cluster on one centre line.
+    pub fn bar(&self) -> Box<dyn Widget> {
+        // `no_wrap` keeps the field, the match count and the commands on one
+        // centre line: a wrapping row let the full-width field claim the
+        // line and pushed the commands onto a second one.
+        let counter = if self.sent.is_empty() {
+            String::new()
+        } else {
+            format!("{} of {}", self.active.max(0), self.count.max(0))
+        };
+        let icon = |id: &str, icon: Icon, name: &str, action: Action| {
+            Button::icon_only(id, icon, name).on_effect(self.command(action))
+        };
         let row = Row::new()
             .no_wrap()
             .push(Box::new(
@@ -192,26 +187,28 @@ impl DailyControls {
                     .with_placeholder("Find in page"),
             ))
             .push(Box::new(
-                Text::new(&format!("{} / {}", self.active.max(0), self.count.max(0)))
-                    .with_role(TextRole::Body),
+                Text::new(&counter)
+                    .with_role(TextRole::Caption)
+                    .numeric()
+                    .dimmed(),
             ))
-            .push(Box::new(self.button(
+            .push(Box::new(icon(
                 "browser.find.previous",
-                "Previous",
+                Icon::ChevronUp,
+                "Previous match",
                 Action::Next(false),
-                text_scale,
             )))
-            .push(Box::new(self.button(
+            .push(Box::new(icon(
                 "browser.find.next",
-                "Next",
+                Icon::ChevronDown,
+                "Next match",
                 Action::Next(true),
-                text_scale,
             )))
-            .push(Box::new(self.button(
+            .push(Box::new(icon(
                 "browser.find.close",
-                "Done",
+                Icon::X,
+                "Close find",
                 Action::Close,
-                text_scale,
             )));
         Box::new(Container::new().with_child(Box::new(row)))
     }

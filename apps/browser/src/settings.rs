@@ -26,12 +26,14 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
-    Toggle, Widget,
+    Banner, Button, ButtonRole, Column, Container, Field, Form, FormSection, ListRow, Row,
+    ScrollAxis, Scrollable, Section, Spacer, Text, TextInput, Toggle, Widget,
 };
 
 use crate::actions::BrowserAction;
@@ -47,6 +49,11 @@ pub struct SettingsActionBindings {
     pub search_engine: Option<tilo_actions::ActionBinding<String>>,
     pub clear_history: Option<tilo_actions::ActionBinding<()>>,
     pub clear_site_data: Option<tilo_actions::ActionBinding<()>>,
+    /// The autofill panels and a new private window, reached from rows of the
+    /// settings page.
+    pub open_passwords: Option<tilo_actions::ActionBinding<()>>,
+    pub open_addresses: Option<tilo_actions::ActionBinding<()>>,
+    pub new_private_window: Option<tilo_actions::ActionBinding<()>>,
     /// Close is presentation-only, but it is still a canonical Browser view
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
@@ -264,7 +271,6 @@ pub struct SettingsPane {
     /// action. It is deliberately not a CRDT value: other collaborators
     /// cannot diagnose this profile's disk permissions or free space.
     history_clear_error: Option<String>,
-    private_window_request: Option<ui::LocalState<bool>>,
 }
 
 impl SettingsPane {
@@ -281,7 +287,6 @@ impl SettingsPane {
             composed: None,
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
-            private_window_request: None,
         }
     }
 
@@ -307,126 +312,130 @@ impl SettingsPane {
         self
     }
 
-    /// Keep New Private Window discoverable when compact chrome moves the
-    /// dedicated toolbar button into Settings.
-    #[must_use]
-    pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
-        self.private_window_request = Some(request);
-        self
-    }
-
     /// Build the composed widget tree from the CRDT-backed controls.
     ///
-    /// The layout follows the Tilo settings grammar: a header, then a stack
-    /// of titled "cards", each a group of label/control rows. Vertical
-    /// rhythm is done with explicit spacer rows because an intrinsic-height
-    /// column lays out as a block stack that ignores taffy's inter-child
-    /// gap — a plain `.push().push()` renders the rows touching.
+    /// A page title over a form: sections on the ground, separated by space,
+    /// never boxed. The form owns label placement, rows and separators.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
-        let large_text = theme.text_scale >= 1.5;
-        let action_height = if large_text { 56.0 } else { 36.0 };
         let header = Row::new()
+            .no_wrap()
             .push(Box::new(
-                Text::new("Settings").with_size(24.0).with_heading_level(1),
+                Text::new("Settings")
+                    .with_role(TextRole::LargeTitle)
+                    .with_heading_level(1),
             ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done", None)
-                    .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
+                Button::new("settings.close", "Done", None),
                 self.actions.close.clone(),
             )));
 
-        let general = card(
-            "General",
-            rows(vec![
-                field_block(
-                    "Homepage",
-                    &self.presentation.homepage,
-                    "settings.homepage_input",
-                    DEFAULT_HOMEPAGE,
-                    self.actions.homepage.clone(),
-                    hosted_text(self.actions.document_edits.clone(), homepage_action),
-                ),
-                field_block(
-                    "Search engine",
-                    &self.presentation.search_engine,
-                    "settings.search_engine_input",
-                    DEFAULT_SEARCH_ENGINE,
-                    self.actions.search_engine.clone(),
-                    hosted_text(self.actions.document_edits.clone(), search_engine_action),
-                ),
-            ]),
-        );
+        let general = FormSection::new("General")
+            .field(field_block(
+                "Homepage",
+                &self.presentation.homepage,
+                "settings.homepage_input",
+                DEFAULT_HOMEPAGE,
+                self.actions.homepage.clone(),
+                hosted_text(self.actions.document_edits.clone(), homepage_action),
+            ))
+            .field(field_block(
+                "Search engine",
+                &self.presentation.search_engine,
+                "settings.search_engine_input",
+                DEFAULT_SEARCH_ENGINE,
+                self.actions.search_engine.clone(),
+                hosted_text(self.actions.document_edits.clone(), search_engine_action),
+            ));
 
-        let browsing_controls = browsing_data_controls(&self.actions, large_text, action_height);
-        let mut privacy_rows = vec![
-            setting_row_described(
-                "Block ads & trackers",
-                "Blocks ads, trackers, and YouTube video ads.",
-                Box::new(preference_toggle(
-                    Toggle::from_state(&self.presentation.adblock)
-                        .with_id("settings.adblock")
-                        .with_accessible_name("Block ads & trackers"),
+        let mut privacy = FormSection::new("Privacy and security")
+            .grouped()
+            .field(Field::new(
+                "Block ads and trackers",
+                preference_toggle(
+                    Toggle::from_state(&self.presentation.adblock).with_id("settings.adblock"),
                     self.actions.adblock.clone(),
                     self.actions.document_edits.as_ref(),
                     adblock_action,
-                )),
-                large_text,
-            ),
-            setting_row_described(
-                "Clear data when the browser closes",
-                "Wipe history and cookies on exit.",
-                Box::new(preference_toggle(
+                ),
+            ))
+            .field(Field::new(
+                "Clear history and cookies when Browser closes",
+                preference_toggle(
                     Toggle::from_state(&self.presentation.clear_on_exit)
-                        .with_id("settings.clear_on_exit")
-                        .with_accessible_name("Clear data when the browser closes"),
+                        .with_id("settings.clear_on_exit"),
                     self.actions.clear_on_exit.clone(),
                     self.actions.document_edits.as_ref(),
                     clear_on_exit_action,
-                )),
-                large_text,
-            ),
-            setting_row_described(
-                "Browsing data",
-                "Clear stored history, or request a local engine site-data clear.",
-                browsing_controls,
-                large_text,
-            ),
-        ];
+                ),
+            ))
+            .content(browsing_data_controls(
+                &self.actions,
+                theme.tokens.spacing.s3,
+            ));
         if let Some(error) = &self.history_clear_error {
-            privacy_rows.push(Box::new(Text::new(error).with_size(12.0)));
+            privacy = privacy.content(Box::new(Banner::error(error)));
         }
-        let privacy = card("Privacy & Security", rows(privacy_rows));
 
-        let mut body = Column::new()
+        let row = |id: &str,
+                   title: &str,
+                   secondary: &str,
+                   binding: &Option<tilo_actions::ActionBinding<()>>| {
+            let row = ListRow::new(id, title)
+                .icon(Icon::Shield)
+                .secondary(secondary)
+                .disclosure();
+            Box::new(match binding {
+                Some(binding) => row.on_action(binding.clone()),
+                None => row,
+            }) as El
+        };
+        let form = Form::new()
+            .section(general)
+            .section(privacy)
+            .section(
+                FormSection::new("Autofill").content(Box::new(Section::new(vec![
+                    row(
+                        "browser.credentials.open",
+                        "Passwords",
+                        "Saved logins for the page you are on",
+                        &self.actions.open_passwords,
+                    ),
+                    row(
+                        "browser.address.open",
+                        "Addresses",
+                        "Profiles stay on this device",
+                        &self.actions.open_addresses,
+                    ),
+                ]))),
+            )
+            .section(
+                FormSection::new("Windows").content(Box::new(Section::new(vec![row(
+                    "settings.new_private_window",
+                    "New private window",
+                    "Browsing data is removed when the window closes",
+                    &self.actions.new_private_window,
+                )]))),
+            );
+
+        // A page: a title over the form, bounded to a readable width,
+        // inset from the window edges and scrolled when the window is short.
+        let page = Column::new()
             .with_intrinsic_height()
             .push(Box::new(header))
-            .push(vgap(20.0))
-            .push(general)
-            .push(vgap(CARD_GAP))
-            .push(privacy);
-        if let Some(request) = self.private_window_request.clone() {
-            body = body.push(vgap(CARD_GAP)).push(card(
-                "Windows",
-                rows(vec![setting_row_described(
-                    "Private browsing",
-                    "Open a separate private window with memory-only browsing state.",
-                    Box::new(
-                        Button::new("settings.new_private_window", "New Private Window", None)
-                            .with_size(180.0, 36.0)
-                            .on_effect(move || request.set(true)),
-                    ),
-                    large_text,
-                )]),
-            ));
-        }
-
-        // Inset from the window edges (a Container's default padding) and
-        // scroll if the window is short.
+            .push(Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)))
+            .push(Box::new(form));
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
-                .with_child(Box::new(Container::new().with_child(Box::new(body)))),
+                .with_child(Box::new(
+                    Container::new()
+                        .with_centered_max_width(
+                            theme.tokens.metrics.panel_width_sheet
+                                + theme.tokens.metrics.panel_width_utility,
+                        )
+                        .with_child(Box::new(page)),
+                )),
         )
     }
 }
@@ -437,108 +446,33 @@ impl Default for SettingsPane {
     }
 }
 
-// === composition helpers (Tilo settings grammar) ======================
-// Bundle the recurring shapes — titled card, label/control row, labelled
-// field — so the pane reads consistently. Repeated vertical rhythm comes from
-// the shared `Section`, matching the system Settings app.
+// === composition helpers =============================================
 
-/// Gap between stacked cards.
-const CARD_GAP: f32 = 16.0;
-/// Gap between a card's title and its body.
-const CARD_TITLE_GAP: f32 = 12.0;
-/// Gap between rows inside one card.
-const ROW_GAP: f32 = 12.0;
-
-/// The dim foreground colour, read from the OS dark theme (the builders
-/// run before `draw`, where the live `Theme` would otherwise supply it).
-/// A fixed-height empty box, to inject deliberate vertical space.
-fn vgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_height(px))
-}
-
-/// A titled card: a heading above a bordered, padded surface holding the
-/// body. Keeping the title inside the background `Container` makes it draw
-/// reliably (a bare `Text` in a column can be dropped by the cached draw).
-fn card(title: &str, body: El) -> El {
-    let inner = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Row::new().push(Box::new(
-            Text::new(title).with_size(16.0).with_heading_level(2),
-        ))))
-        .push(vgap(CARD_TITLE_GAP))
-        .push(body);
+/// The two browsing-data commands, destructive and explicit.
+fn browsing_data_controls(actions: &SettingsActionBindings, gap: f32) -> El {
     Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(inner)),
+        Container::new().with_no_padding().with_child(Box::new(
+            Row::new()
+                .with_padding(0.0, gap)
+                .push(Box::new(
+                    button_with_action(
+                        Button::new("settings.clear_history", "Clear history", None),
+                        actions.clear_history.clone(),
+                    )
+                    .role(ButtonRole::Destructive),
+                ))
+                .push(Box::new(
+                    button_with_action(
+                        Button::new("settings.clear_cookies", "Clear site data", None),
+                        actions.clear_site_data.clone(),
+                    )
+                    .role(ButtonRole::Destructive),
+                )),
+        )),
     )
 }
 
-/// A vertical stack of rows with explicit inter-row spacing.
-fn rows(items: Vec<El>) -> El {
-    Box::new(Section::with_gap(items, ROW_GAP))
-}
-
-/// A label with a dim helper line beneath it, paired with a trailing
-/// control. The `Spacer` pushes the control to the trailing edge.
-fn setting_row_described(label: &str, description: &str, control: El, large_text: bool) -> El {
-    let text_block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Text::new(label).with_size(14.0)))
-        .push(vgap(2.0))
-        .push(Box::new(Text::new(description).with_size(12.0).dimmed()));
-    if large_text {
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(text_block))
-                .push(vgap(10.0))
-                .push(control),
-        )
-    } else {
-        Box::new(
-            Row::new()
-                .push(Box::new(text_block))
-                .push(Box::new(Spacer::new()))
-                .push(control),
-        )
-    }
-}
-
-fn browsing_data_controls(
-    actions: &SettingsActionBindings,
-    large_text: bool,
-    action_height: f32,
-) -> El {
-    let clear_history = Box::new(button_with_action(
-        Button::new("settings.clear_history", "Clear history", None)
-            .with_size(if large_text { 240.0 } else { 140.0 }, action_height),
-        actions.clear_history.clone(),
-    ));
-    let clear_site_data = Box::new(button_with_action(
-        Button::new("settings.clear_cookies", "Request site-data clear", None)
-            .with_size(if large_text { 300.0 } else { 200.0 }, action_height),
-        actions.clear_site_data.clone(),
-    ));
-    if large_text {
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(clear_history)
-                .push(vgap(8.0))
-                .push(clear_site_data),
-        )
-    } else {
-        Box::new(Row::new().push(clear_history).push(clear_site_data))
-    }
-}
-
-/// A labelled full-width text field: a caption above a [`TextInput`]
-/// bound to the CRDT `Text` object at `path`.
+/// A labelled text field bound to the CRDT `Text` object at `path`.
 #[allow(
     clippy::type_complexity,
     reason = "hosted LocalState+builder pair is local to settings chrome"
@@ -553,9 +487,10 @@ fn field_block(
         ui::LocalState<Vec<BrowserAction>>,
         fn(String) -> BrowserAction,
     )>,
-) -> El {
+) -> Field {
     let input = TextInput::from_state(state)
         .with_id(id)
+        .with_kind(ui::widget::TextInputKind::Url)
         .with_placeholder(placeholder);
     let input = if let Some(binding) = action {
         input.on_action(binding)
@@ -567,14 +502,7 @@ fn field_block(
     } else {
         input
     };
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(label).with_size(14.0)))
-            .push(vgap(6.0))
-            .push(Box::new(input)),
-    )
+    Field::new(label, input)
 }
 
 fn preference_toggle(
