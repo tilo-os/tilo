@@ -291,6 +291,7 @@ impl VideoEditorApp {
             Some(NARROW_CAPTURE) => {
                 // The collapsed bin revealed over the editor behind its scrim;
                 // the animation never runs in a one-shot render.
+                self.reconcile_flaps();
                 self.bin_flap.snap(true);
                 self.navigation.flap_settled = true;
                 ShotScenario::Live
@@ -338,7 +339,7 @@ impl VideoEditorApp {
         match self.shot_scenario {
             ShotScenario::Live => {}
             ShotScenario::HelpSheet => self.navigation.help_open = true,
-            ShotScenario::GotoTimecode => self.goto_entry = Some("1:30".into()),
+            ShotScenario::GotoTimecode => self.goto_entry = Some(interaction::goto_field("1:30")),
             ShotScenario::ProjectMenu => {
                 // Recents the menu can list. Fabricated only for the capture —
                 // the live app reads them off disk and never invents one.
@@ -718,6 +719,7 @@ impl VideoEditorApp {
                 | ShotScenario::Mix
         ) {
             self.reveal_inspector();
+            self.reconcile_flaps();
             self.inspector_flap.snap(true);
         }
         match self.shot_scenario {
@@ -840,8 +842,20 @@ impl VideoEditorApp {
                     self.selected_media = Some(c.media);
                 }
                 self.playhead = 6.0;
-                // Scroll the inspector so the effects stack + actions are in view.
-                self.inspector_scroll = self.inspector_max_scroll(r);
+                // Scroll the inspector so the effects stack starts at the top
+                // of the body, its header and every row whole.
+                self.inspector_scroll = 0.0;
+                let top = self.inspector_viewport(r).y0;
+                let header = self
+                    .inspector_layout(r)
+                    .sections
+                    .iter()
+                    .find(|(s, _)| *s == Section::Effects)
+                    .map(|(_, rect)| rect.y0);
+                self.inspector_scroll = header.map_or_else(
+                    || self.inspector_max_scroll(r),
+                    |y| (y - top - S2).clamp(0.0, self.inspector_max_scroll(r)),
+                );
             }
             // A clip that has actually been placed, re-timed and keyframed,
             // with the inspector scrolled to the controls that did it. Every

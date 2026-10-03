@@ -4,13 +4,44 @@
 )]
 use super::*;
 
+/// A control's label above it, and the readout beside it: `Label`, the role
+/// the system sets every control label in.
+fn label_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Label)
+}
+
+/// One caption line above a control, its line box's top `line_h` plus a
+/// tight step above `y`, where `y` is the top of the control it labels.
+fn caption_above(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    tf: Affine,
+    theme: &Theme,
+    words: &str,
+    x: f64,
+    y: f64,
+) {
+    let style = label_style(theme);
+    let h = line_height(tr, &style);
+    text(
+        scene,
+        tr,
+        tf,
+        words,
+        &style,
+        theme.tokens.colors.text_dim,
+        x,
+        y - h - S1,
+    );
+}
+
 impl VideoEditorApp {
     /// Draw the tone-curve editor: the grid, the "unchanged" diagonal, the
     /// curve, and its control points.
     ///
     /// This is canvas drawing rather than a toolkit widget for the same
     /// reason the timeline and the waveform are: a 2D control-point editor
-    /// is content, not a control the fleet shares. Everything around it —
+    /// is content, not a control the system shares. Everything around it —
     /// the channel chooser, the amount slider, the reset — goes through the
     /// shared widgets.
     #[expect(
@@ -30,11 +61,18 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let ch = self.curve_channel;
         let spline = clip.curves.spline(ch);
-        well(scene, tf, theme, canvas, 8.0);
+        well(
+            scene,
+            tf,
+            theme,
+            canvas,
+            f64::from(theme.tokens.radii.control),
+        );
+        let ground = c.surfaces.raised;
 
         // Quarter grid. Faint, because it is a reading aid and the curve is
         // the content.
-        let grid = with_alpha(c.text_dim, 0.22);
+        let grid = ui::surface::edge_on(ground);
         for i in 1..4 {
             let f = f64::from(i) / 4.0;
             let x = canvas.x0 + canvas.width() * f;
@@ -56,7 +94,7 @@ impl VideoEditorApp {
         scene.stroke(
             &Stroke::new(1.0),
             tf,
-            with_alpha(c.text_dim, 0.45),
+            ui::surface::edge_on_with(ground, ui::chrome::PANEL_BORDER_ALPHA),
             None,
             &diag,
         );
@@ -98,11 +136,7 @@ impl VideoEditorApp {
             scene.stroke(
                 &Stroke::new(1.5),
                 tf,
-                if live {
-                    c.text_primary
-                } else {
-                    c.surfaces.base
-                },
+                if live { c.text_primary } else { ground },
                 None,
                 &Circle::new(at, r),
             );
@@ -113,22 +147,21 @@ impl VideoEditorApp {
         let hint = if dragging.is_some() {
             "Drag out of the box to remove"
         } else {
-            "Click to add a point · drag to shape"
+            "Click to add a point, drag to shape it"
         };
+        let style = theme.text(TextRole::Caption);
         text(
             scene,
             tr,
             tf,
             hint,
-            10.5,
+            &style,
             c.text_dim,
             canvas.x0,
-            canvas.y1 + 12.0,
+            canvas.y1 + S2,
         );
     }
 
-    /// Draw the marker list: one row per marked instant, with rename and
-    /// delete revealed under the pointer. Shared by both inspector states.
     /// Paint the project's format section: what the frame is now, the size
     /// and rate presets with the one in force marked, and the match button.
     fn draw_project_section(
@@ -145,14 +178,16 @@ impl VideoEditorApp {
             // The cached words, not a fresh format!: `draw` runs for every
             // animation frame and this string only changes when the project's
             // format does.
-            text_w(
+            let style = theme.text(TextRole::Body).numeric();
+            text(
                 scene,
                 tr,
                 tf,
                 &self.project_format_shown,
-                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
+                &style,
                 c.text_primary,
-                Point::new(x0, l.project_format_y),
+                x0,
+                l.project_format_y,
             );
         }
         if !l.project_frames.is_empty() {
@@ -168,17 +203,8 @@ impl VideoEditorApp {
                 .unwrap_or(usize::MAX);
             draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
         }
-        if l.project_rate_y > 0.0 {
-            text(
-                scene,
-                tr,
-                tf,
-                "Rate",
-                INSPECTOR_LABEL_SIZE,
-                c.text_dim,
-                x0,
-                l.project_rate_y,
-            );
+        if let Some((_, first)) = l.project_rates.first() {
+            caption_above(scene, tr, tf, theme, "Frame rate", x0, first.y0);
         }
         if !l.project_rates.is_empty() {
             let rects: Vec<Rect> = l.project_rates.iter().map(|(_, r)| *r).collect();
@@ -198,15 +224,14 @@ impl VideoEditorApp {
                 || "Match media".to_string(),
                 |m| format!("Match {}", m.name),
             );
-            let shown = elide_w(&label, (rect.width() - 20.0) as f32, tr);
             draw_button(
                 scene,
                 tf,
                 tr,
                 theme,
                 rect,
-                &shown,
-                false,
+                &label,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
         }
@@ -226,7 +251,9 @@ impl VideoEditorApp {
         x0: f64,
     ) {
         let c = &theme.tokens.colors;
-        let inspector_scale = self.inspector_ui_scale();
+        let name_style = theme.text(TextRole::Label);
+        let stamp_style = theme.text(TextRole::Caption).numeric();
+        let note_style = theme.text(TextRole::Caption);
         for (m, row) in &l.marker_rows {
             let (name_rect, note_btn, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
@@ -235,7 +262,6 @@ impl VideoEditorApp {
                 tf,
                 theme,
                 *row,
-                6.0,
                 ui::chrome::SelectionState::new(false, hovered, false),
             );
             let Some((_, mk, _)) = self
@@ -246,13 +272,14 @@ impl VideoEditorApp {
             else {
                 continue;
             };
+            let first_line = Rect::new(row.x0, row.y0, row.x1, name_rect.y1);
             let col = clip_color(theme, mk.palette);
             scene.fill(
                 Fill::NonZero,
                 tf,
                 col,
                 None,
-                &Circle::new(Point::new(row.x0 + 7.0, row.y0 + 13.0), 4.0),
+                &Circle::new(Point::new(row.x0 + 7.0, first_line.center().y), 4.0),
             );
             let editing = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
             let renaming = editing && self.marker_field == MarkerField::Name;
@@ -262,109 +289,106 @@ impl VideoEditorApp {
                 } else {
                     mk.name.as_str()
                 };
-                let shown = elide_w(name, name_rect.width() as f32, tr);
-                let baseline = text_baseline(name_rect, 12.0, tr);
+                let shown = elide_at(name, name_rect.width() as f32, &name_style, tr);
+                let top = text_baseline(first_line, &name_style, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     &shown,
-                    12.0,
+                    &name_style,
                     c.text_primary,
                     name_rect.x0,
-                    baseline,
+                    top,
                 );
                 // A clip marker says which clip it travels with, because
                 // moving that clip moves the marker and nothing else would
                 // explain why the time changed.
                 let stamp = timecode(m.at, self.project.fps);
-                let (sw2, _) = tr.measure(&stamp, 11.0, None);
+                let sw = text_width(tr, &stamp, &stamp_style);
                 let stamp_col = if m.clip.is_some() {
                     c.text_tertiary
                 } else {
                     c.text_dim
                 };
+                let stamp_top = text_baseline(first_line, &stamp_style, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     &stamp,
-                    11.0,
+                    &stamp_style,
                     stamp_col,
-                    note_btn.x0 - 8.0 - f64::from(sw2),
-                    baseline,
+                    note_btn.x0 - S2 - sw,
+                    stamp_top,
                 );
             }
             // The note, on its own line under the name. Present only when
             // there is one, so an unannotated list stays a list of names.
             let editing_note = editing && self.marker_field == MarkerField::Note;
             if !mk.note.trim().is_empty() && !editing_note {
-                let shown = elide_w(mk.note.trim(), (row.width() - 34.0) as f32, tr);
-                let line = Rect::new(row.x0 + 16.0, row.y0 + 26.0, row.x1, row.y0 + 44.0);
-                let base = text_baseline(line, 11.0, tr);
-                text(scene, tr, tf, &shown, 11.0, c.text_tertiary, line.x0, base);
+                let shown = elide_at(mk.note.trim(), (row.width() - 34.0) as f32, &note_style, tr);
+                let line = Rect::new(row.x0 + 16.0, name_rect.y1, row.x1, row.y1);
+                let top = text_baseline(line, &note_style, tr);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &shown,
+                    &note_style,
+                    c.text_tertiary,
+                    line.x0,
+                    top,
+                );
             }
-            // Rename and delete only appear under the pointer, so a resting
-            // list reads as names and times rather than as a wall of icons.
+            // Note, rename and delete only appear under the pointer, so a
+            // resting list reads as names and times rather than as a wall of
+            // icons.
             if hovered {
-                for (rect, icon, tint) in [
-                    (note_btn, ui::icons::Icon::FileText, c.text_primary),
-                    (rename, ui::icons::Icon::Pencil, c.text_primary),
-                    (del, ui::icons::Icon::X, c.semantic.danger),
+                for (rect, icon, name) in [
+                    (note_btn, Icon::FileText, "Edit note"),
+                    (rename, Icon::Pencil, "Rename"),
+                    (del, Icon::Trash2, "Delete"),
                 ] {
-                    selection_row(
-                        scene,
-                        tf,
-                        theme,
+                    draw_icon_button(
+                        &mut PaintCtx::new(scene, tf, tr, theme),
                         rect,
-                        4.0,
-                        ui::chrome::SelectionState::new(
-                            false,
-                            rect.contains(self.last_mouse),
-                            false,
-                        ),
-                    );
-                    let g = 11.0;
-                    let box_ = Rect::new(
-                        rect.center().x - g / 2.0,
-                        rect.center().y - g / 2.0,
-                        rect.center().x + g / 2.0,
-                        rect.center().y + g / 2.0,
-                    );
-                    ui::icons::draw_icon(
-                        scene,
-                        tf,
-                        box_,
                         icon,
-                        tint,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                        name,
+                        ButtonRole::Plain,
+                        rect.contains(self.last_mouse),
+                        true,
                     );
                 }
             }
         }
         if let Some(rect) = l.add_marker {
             if l.marker_rows.is_empty() {
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    "Nothing marked yet",
-                    INSPECTOR_LABEL_SIZE,
-                    c.text_dim,
-                    x0,
-                    rect.y0 - 16.0 * inspector_scale,
-                );
+                caption_above(scene, tr, tf, theme, "Nothing marked yet.", x0, rect.y0);
             }
-            draw_button(
+            let face = ButtonFace::new(rect, ADD_MARKER_LABEL)
+                .icon(Icon::Plus)
+                .control_size(control_size_for(rect, theme))
+                .hovered(rect.contains(self.last_mouse));
+            Button::paint(scene, tf, tr, theme, &face);
+        }
+    }
+
+    /// The inspector's ground — the inspector region docked, the floating
+    /// material when it is summoned over a narrow window — and the theme for
+    /// what is drawn on it.
+    fn paint_inspector_panel(scene: &mut Scene, tf: Affine, theme: &Theme, r: &Regions) -> Theme {
+        if r.inspector_overlay {
+            bin_paint::paint_floating_panel(scene, tf, r.inspector, theme)
+        } else {
+            ui::surface::region(
                 scene,
                 tf,
-                tr,
+                r.inspector,
+                ui::surface::Region::Inspector,
                 theme,
-                rect,
-                ADD_MARKER_LABEL,
-                false,
-                rect.contains(self.last_mouse),
             );
+            theme.in_region(ui::surface::Region::Inspector)
         }
     }
 
@@ -376,31 +400,25 @@ impl VideoEditorApp {
         theme: &Theme,
         r: &Regions,
     ) {
-        let c = &theme.tokens.colors;
-        fill_rect(scene, tf, r.inspector, c.surfaces.raised);
-        stroke_line(
-            scene,
-            tf,
-            pane_hairline(theme),
-            r.inspector.x0 + 0.5,
-            r.inspector.y0,
-            r.inspector.x0 + 0.5,
-            r.inspector.y1,
-            1.0,
-        );
-        // Clip everything to the inspector rect so controls never bleed into
-        // the timeline if the selected clip's control stack runs tall.
+        let panel = Self::paint_inspector_panel(scene, tf, theme, r);
+        let theme = &panel;
+        let ground = theme.tokens.colors.surfaces.content;
+        let clip_shape = if r.inspector_overlay {
+            RoundedRect::from_rect(r.inspector, f64::from(theme.tokens.radii.panel))
+        } else {
+            RoundedRect::from_rect(r.inspector, 0.0)
+        };
+        // Clip everything to the inspector so controls never bleed into the
+        // timeline if the selected clip's control stack runs tall.
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             tf,
-            &r.inspector,
+            &clip_shape,
         );
-        // The scroll body gets its own clip, below the fixed identity card.
-        // Painting an opaque header over it is not enough: antialiased glyph
-        // edges and controls halfway through a translate can otherwise still
-        // show through at the seam.
+        // The scroll body gets its own clip, below the fixed header, so a row
+        // scrolled up is cut at the header's foot rather than drawn under it.
         let body_view = self.inspector_viewport(r);
         scene.push_layer(
             Fill::NonZero,
@@ -410,82 +428,38 @@ impl VideoEditorApp {
             &body_view,
         );
         self.draw_inspector_body(scene, tf, tr, theme, r);
-        scene.pop_layer();
-        // The body may be translated all the way to its final action row.
-        // Paint the persistent context last, over that translated content, so
-        // a clipped control can never masquerade as part of the header.
-        self.draw_inspector_fixed_header(scene, tf, tr, theme, r);
         // A clip on a locked track has inert controls — every edit path checks
         // the lock — so they are veiled rather than left looking live. The
         // header above stays crisp, because that is where the reason is
-        // written ("on V2 · locked").
+        // written ("On V2, locked").
         let locked = self
             .selected()
             .is_some_and(|id| !self.project.clip_editable(id));
         if locked {
-            let l = self.inspector_layout(r);
-            let top = l
-                .opacity
-                .or(l.volume)
-                .map_or(r.inspector.y0 + 170.0, |t| t.y0 - 24.0);
-            let veil = Rect::new(
-                r.inspector.x0,
-                top.max(r.inspector.y0),
-                r.inspector.x1,
-                r.inspector.y1,
-            );
-            fill_rect(scene, tf, veil, with_alpha(c.surfaces.raised, 0.6));
+            fill_rect(scene, tf, body_view, with_alpha(ground, 0.6));
         }
         // The keyboard cursor, drawn over the lock veil rather than under it:
         // where the keyboard *is* stays legible even where the controls are
-        // inert, because the walk still visits them. Inside the pane's clip
-        // layer, so a row scrolled out of view keeps its ring off the timeline.
+        // inert, because the walk still visits them.
         if self.shows_focus_cursor(Pane::Inspector) {
             let rows = self.a11y_inspector_rows();
             if let Some(row) = rows.get(self.focus.inspector).copied()
                 && let Some(band) = Self::inspector_focus_band(&self.inspector_layout(r), row)
-                && band.intersect(self.inspector_viewport(r)).area() > 0.0
+                && band.intersect(body_view).area() > 0.0
             {
-                draw_focus_ring(scene, tf, theme, band, 5.0);
+                draw_focus_ring(scene, tf, theme, band, f64::from(theme.tokens.radii.item));
             }
-        }
-        // Soft edges where the pane cuts its content. A row sliced in half by
-        // a hard boundary reads as a broken control; the same row fading out
-        // reads as "this scrolls", which is what it is. Only drawn on the edge
-        // that actually has content beyond it.
-        let max = self.inspector_max_scroll(r);
-        let fade = |scene: &mut Scene, from_y: f64, dir: f64| {
-            const STEPS: i32 = 14;
-            const H: f64 = 22.0;
-            for i in 0..STEPS {
-                let f = f64::from(i) / f64::from(STEPS);
-                let y0 = from_y + dir * H * f;
-                let y1 = y0 + dir * (H / f64::from(STEPS));
-                let band = Rect::new(r.inspector.x0, y0.min(y1), r.inspector.x1, y0.max(y1));
-                fill_rect(
-                    scene,
-                    tf,
-                    band,
-                    with_alpha(c.surfaces.raised, 0.10 + 0.9 * f),
-                );
-            }
-        };
-        if self.inspector_scroll > 0.5 {
-            fade(scene, self.inspector_viewport(r).y0, 1.0);
-        }
-        if self.inspector_scroll < max - 0.5 {
-            fade(scene, self.inspector_viewport(r).y1, -1.0);
         }
         scene.pop_layer();
-        // Real, grabbable scrollbar. What stood here was a painted indicator
-        // with no hit-test, so the EFFECTS section below the fold could be
-        // seen to exist and never reached.
+        self.draw_inspector_fixed_header(scene, tf, tr, theme, r);
+        scene.pop_layer();
+        // Real, grabbable scrollbar.
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Inspector, r);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the fixed identity card's measured text, clip metadata, and viewport boundary must be composed together"
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "the paint pass's shorthands: colours c, regions r, the panel's scale s and the y pen"
     )]
     fn draw_inspector_fixed_header(
         &self,
@@ -496,116 +470,106 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
+        let header = self.inspector_header(r);
+        if header.height <= 0.0 {
+            return;
+        }
+        let clip = self.selected().and_then(|id| self.project.clip(id));
         let s = self.inspector_ui_scale();
-        let header_bottom = self.inspector_body_origin(r);
-        let header = Rect::new(
+        let header_rect = Rect::new(
             r.inspector.x0,
             r.inspector.y0,
             r.inspector.x1,
-            header_bottom,
+            r.inspector.y0 + header.height,
         );
-        fill_rect(scene, tf, header, c.surfaces.raised);
+        // Clipped to its own measured extent: whatever the window height, the
+        // header never reaches into the body under it.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &header_rect,
+        );
         let x0 = r.inspector.x0 + PAD * s;
         let x1 = r.inspector.x1 - PAD * s;
-        let top = r.inspector.y0;
-        text_w(
-            scene,
-            tr,
-            tf,
-            "INSPECTOR",
-            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            c.text_dim,
-            Point::new(x0, top + 14.0 * s),
-        );
-        if self.selection.len() > 1 {
-            let label = format!("{} clips selected", self.selection.len());
-            let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
-            let pillr = Rect::new(
-                x1 - f64::from(lw) - 14.0 * s,
-                top + 4.0 * s,
-                x1,
-                top + 24.0 * s,
-            );
-            fill_round(scene, tf, pillr, 10.0 * s, with_alpha(c.accent[5], 0.22));
-            text_w(
-                scene,
-                tr,
-                tf,
-                &label,
-                &TextStyle::new(10.5).with_weight(TextWeight::Medium),
-                c.accent[5],
-                Point::new(pillr.x0 + 7.0 * s, top + 9.0 * s),
-            );
-        }
-        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+        let mut y = r.inspector.y0 + S3;
+        let name_style = theme.text(TextRole::Heading);
+        let name_h = line_height(tr, &name_style);
+        let sub_style = theme.text(TextRole::Caption);
+        let Some(clip) = clip else {
+            // The empty state: what is (not) selected, and the one thing to
+            // do about it.
+            let shown = elide_at(INSPECTOR_EMPTY_TITLE, (x1 - x0) as f32, &name_style, tr);
+            text(scene, tr, tf, &shown, &name_style, c.text_dim, x0, y);
+            y += name_h + S1;
+            let shown = elide_at(INSPECTOR_EMPTY_HINT, (x1 - x0) as f32, &sub_style, tr);
+            text(scene, tr, tf, &shown, &sub_style, c.text_dim, x0, y);
+            scene.pop_layer();
             return;
         };
-        let tag = Rect::new(x0, top + 36.0 * s, x0 + 6.0 * s, top + 68.0 * s);
-        fill_round(scene, tf, tag, 3.0 * s, clip_color(theme, clip.palette));
         let name = self
             .project
             .media(clip.media)
             .map_or("Missing media", |item| item.name.as_str());
-        let shown = elide_w(name, (x1 - x0 - 16.0 * s) as f32, tr);
-        text_w(
-            scene,
-            tr,
-            tf,
-            &shown,
-            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-            Point::new(x0 + 14.0 * s, top + 39.0 * s),
-        );
-        let track_name = self
-            .project
-            .track(clip.track)
-            .map_or("track", |track| track.name.as_str());
-        let sub = if self.selection_has_locked() {
-            format!("on {track_name} · locked")
-        } else {
-            format!("on {track_name}")
-        };
+        let name_x = x0;
+        let shown = elide_at(name, (x1 - name_x) as f32, &name_style, tr);
         text(
             scene,
             tr,
             tf,
-            &sub,
-            11.5,
-            if self.selection_has_locked() {
-                c.semantic.warning
-            } else {
-                c.text_dim
-            },
-            x0 + 14.0 * s,
-            top + 62.0 * s,
+            &shown,
+            &name_style,
+            c.text_primary,
+            name_x,
+            y,
         );
-        let mut prop = |label: &str, value: String, y: f64| {
-            text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
-            let (w, _) = tr.measure_weighted(&value, 12.0, None, TextWeight::Medium);
-            text_w(
-                scene,
-                tr,
-                tf,
-                &value,
-                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
-                c.text_primary,
-                Point::new(x1 - f64::from(w), y),
-            );
+        y += name_h + S1;
+        let track_name = self
+            .project
+            .track(clip.track)
+            .map_or("its track", |track| track.name.as_str());
+        let n = self.selection.len();
+        let sub = match (n > 1, self.selection_has_locked()) {
+            (true, true) => format!("{n} clips selected, some locked"),
+            (true, false) => format!("{n} clips selected"),
+            (false, true) => format!("On {track_name}, locked"),
+            (false, false) => format!("On {track_name}"),
         };
-        let fps = self.project.fps;
-        prop("Position", timecode(clip.start, fps), top + 84.0 * s);
-        prop("Duration", timecode(clip.duration(), fps), top + 106.0 * s);
-        prop("Source In", timecode(clip.in_point, fps), top + 128.0 * s);
-        prop("Source Out", timecode(clip.out_point, fps), top + 150.0 * s);
-        stroke_line(
+        let sub_col = if self.selection_has_locked() {
+            c.semantic.warning
+        } else {
+            c.text_dim
+        };
+        let shown = elide_at(&sub, (x1 - name_x) as f32, &sub_style, tr);
+        text(scene, tr, tf, &shown, &sub_style, sub_col, name_x, y);
+        y += line_height(tr, &sub_style) + S3;
+        if header.properties {
+            let fps = self.project.fps;
+            let values = [
+                timecode(clip.start, fps),
+                timecode(clip.duration(), fps),
+                timecode(clip.in_point, fps),
+                timecode(clip.out_point, fps),
+            ];
+            let rows = inspector_property_rows(&values);
+            let face = ui::widget::PropertyListFace::new(&rows);
+            let h = face.height(tr, theme, x1 - x0);
+            face.paint(
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                Rect::new(x0, y, x1, y + h),
+            );
+        }
+        scene.pop_layer();
+        // Where the fixed part ends and the scrolling part begins.
+        ui::surface::separator(
             scene,
             tf,
-            c.border_standard,
             r.inspector.x0,
-            header_bottom,
             r.inspector.x1,
-            header_bottom,
-            1.0,
+            header_rect.y1,
+            0.0,
+            c.surfaces.content,
         );
     }
 
@@ -613,10 +577,6 @@ impl VideoEditorApp {
         clippy::indexing_slicing,
         clippy::too_many_lines,
         reason = "inspector controls index fixed option tables and share one scroll coordinate system with their validated hit targets"
-    )]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "the paint pass's shorthands: colours c, regions r, layout l, value v and the y pen"
     )]
     fn draw_inspector_body(
         &self,
@@ -630,52 +590,9 @@ impl VideoEditorApp {
         let inspector_scale = self.inspector_ui_scale();
         let x0 = r.inspector.x0 + PAD * inspector_scale;
         let x1 = r.inspector.x1 - PAD * inspector_scale;
-        // The whole body scrolls together by `inspector_scroll` (clamped to 0
-        // when nothing is selected, so the empty state stays put).
-        let top = r.inspector.y0;
-        // One size for every control label and caption in the panel. The rows
-        // used to mix 12, 11.5 and 11: the fade and transition-length labels
-        // read as a different, smaller kind of row from the opacity and grade
-        // labels directly above them.
-        let label_size = INSPECTOR_LABEL_SIZE;
-        // The heading row shares the media bin's band and centre line, so the
-        // two panes' headings — and the chips beside them — line up.
-        let heading = Rect::new(
-            x0,
-            top + PANE_HEADING_Y0,
-            x1,
-            top + PANE_HEADING_Y0 + PANE_HEADING_H,
-        );
-        let heading_y = text_baseline(heading, 11.0, tr);
-        text_w(
-            scene,
-            tr,
-            tf,
-            "INSPECTOR",
-            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            c.text_dim,
-            Point::new(x0, heading_y),
-        );
-        // With more than one clip selected, say so where the count matters —
-        // every edit below applies to all of them.
-        if self.selection.len() > 1 {
-            let label = format!("{} clips selected", self.selection.len());
-            let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
-            let pillr = Rect::new(x1 - f64::from(lw) - 14.0, heading.y0, x1, heading.y1);
-            // A quiet capsule with its derived edge; the count keeps the
-            // accent in its words, not as a wash under them.
-            well(scene, tf, theme, pillr, PANE_HEADING_H / 2.0);
-            let pill_y = text_baseline(pillr, 10.5, tr);
-            text_w(
-                scene,
-                tr,
-                tf,
-                &label,
-                &TextStyle::new(10.5).with_weight(TextWeight::Medium),
-                c.accent[5],
-                Point::new(pillr.x0 + 7.0, pill_y),
-            );
-        }
+        let label = label_style(theme);
+        let readout_style = label_style(theme).numeric();
+        let label_h = line_height(tr, &label);
 
         let selected = self
             .selected()
@@ -685,35 +602,6 @@ impl VideoEditorApp {
             // with nothing selected. Everything else here edits a clip.
             let l = self.inspector_layout(r);
             let blank = Clip::default();
-            // The empty state gets the room above the first section header,
-            // not the whole pane — the sections below are real controls and
-            // must not be drawn through.
-            let floor = l
-                .sections
-                .first()
-                .map_or(r.inspector.y1, |(_, rect)| rect.y0 - 8.0);
-            let area = Rect::new(
-                x0,
-                top + INSPECTOR_HEADER_H,
-                x1,
-                floor.max(top + INSPECTOR_HEADER_H),
-            );
-            // The shared empty state, so this pane says nothing is selected in
-            // the same voice — icon, title, one line of what to do — that the
-            // rest of the fleet uses. It was a pair of bare left-aligned lines
-            // that read as a label for the sections beneath them rather than
-            // as the state of the pane.
-            ui::widget::EmptyState::paint(
-                &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
-                area,
-                &ui::widget::EmptyStateContent {
-                    icon: Some(ui::icons::Icon::Layers),
-                    title: INSPECTOR_EMPTY_TITLE,
-                    message: Some(INSPECTOR_EMPTY_HINT),
-                    action_label: None,
-                },
-                Point::new(f64::MIN, f64::MIN),
-            );
             for (s, rect) in &l.sections {
                 self.draw_section_header(
                     &mut PaintCtx::new(scene, tf, tr, theme),
@@ -729,104 +617,47 @@ impl VideoEditorApp {
         };
         let media = self.project.media(clip.media).cloned();
         let is_video = media.as_ref().is_none_or(|m| m.kind.is_visual());
-        let track_name = self
-            .project
-            .track(clip.track)
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
-
-        // Header card with color tag + name (scrolls with the body).
-        let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
-        fill_round(scene, tf, tag, 3.0, clip_color(theme, clip.palette));
-        let name = media
-            .as_ref()
-            .map_or_else(|| "clip".into(), |m| m.name.clone());
-        let shown_name = elide_w(&name, (x1 - x0 - 14.0) as f32, tr);
-        text_w(
-            scene,
-            tr,
-            tf,
-            &shown_name,
-            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-            Point::new(x0 + 14.0, top + 38.0),
-        );
-        // Name the lane, and say plainly when it refuses edits — the same
-        // reason the timeline hatches it.
-        let sub = if self.selection_has_locked() {
-            format!("on {track_name} · locked")
-        } else {
-            format!("on {track_name}")
-        };
-        let sub_col = if self.selection_has_locked() {
-            c.semantic.warning
-        } else {
-            c.text_dim
-        };
-        text(scene, tr, tf, &sub, 11.5, sub_col, x0 + 14.0, top + 58.0);
-
-        // Property rows.
-        let mut y = top + 78.0;
-        let fps = self.project.fps;
-        let prop = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, value: &str, y: f64| {
-            text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
-            let (vw, _) = tr.measure_weighted(value, 12.0, None, TextWeight::Medium);
-            text_w(
-                scene,
-                tr,
-                tf,
-                value,
-                &TextStyle::new(12.0).with_weight(TextWeight::Medium),
-                c.text_primary,
-                Point::new(x1 - f64::from(vw), y),
-            );
-        };
-        prop(scene, tr, "Position", &timecode(clip.start, fps), y);
-        y += 18.0;
-        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y);
-        y += 18.0;
-        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y);
-        y += 18.0;
-        prop(scene, tr, "Source Out", &timecode(clip.out_point, fps), y);
 
         let l = self.inspector_layout(r);
         // Every slider row: a label, a right-aligned readout measured like all
         // the others, and the shared slider face carrying hover / drag state.
+        // The label line sits clear above the knob's reach.
+        let label_top = |track: Rect| track.y0 - S1 - label_h;
         let row = |scene: &mut Scene,
                    tr: &mut TextRenderer,
                    track: Option<Rect>,
-                   label: &str,
+                   words: &str,
                    readout: String,
                    v: f64,
-                   size: f32,
                    drag: bool,
                    // `Some` when this row carries a key control, whose box
                    // the label starts after. The indent is unconditional
                    // so keying a parameter does not shuffle its row
-                   // sideways; an animated one takes the accent instead.
+                   // sideways; an animated one reads in primary ink.
                    keyed: Option<bool>| {
             let Some(track) = track else { return };
             let lx = if keyed.is_some() {
-                track.x0 + KEY_BOX + 6.0
+                track.x0 + KEY_BOX + S1
             } else {
                 track.x0
             };
             let col = if keyed == Some(true) {
-                c.accent[5]
+                c.text_primary
             } else {
                 c.text_dim
             };
-            text(scene, tr, tf, label, size, col, lx, track.y0 - 20.0);
-            let (pw, _) = tr.measure(&readout, size, None);
+            let top = label_top(track);
+            text(scene, tr, tf, words, &label, col, lx, top);
+            let pw = text_width(tr, &readout, &readout_style);
             text(
                 scene,
                 tr,
                 tf,
                 &readout,
-                size,
+                &readout_style,
                 c.text_primary,
-                track.x1 - f64::from(pw),
-                track.y0 - 20.0,
+                track.x1 - pw,
+                top,
             );
             draw_track(
                 scene,
@@ -852,7 +683,6 @@ impl VideoEditorApp {
             "Opacity",
             format!("{:.0}%", opacity * 100.0),
             opacity,
-            label_size,
             dragging(self.drag, Drag::Opacity),
             Some(animated(Param::Opacity)),
         );
@@ -864,13 +694,12 @@ impl VideoEditorApp {
             "Volume",
             format!("{:.0}%", volume * 100.0),
             volume,
-            label_size,
             dragging(self.drag, Drag::Volume),
             Some(animated(Param::Volume)),
         );
         // Colour-grade rows. The readout shows the multiplier (0.5 == 1.00×,
         // the identity).
-        for (track, label, p, d) in [
+        for (track, words, p, d) in [
             (
                 l.brightness,
                 "Brightness",
@@ -890,26 +719,22 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 track,
-                label,
+                words,
                 format!("{:.2}×", Filters::gain(v)),
                 v,
-                label_size,
                 dragging(self.drag, d),
                 Some(animated(p)),
             );
         }
-        // Fade in / out (seconds). Two half-width tracks share a row; their
-        // readouts right-align by measurement like every other row, rather
-        // than by a magic inset that only fitted one string.
+        // Fade in / out (seconds). Two half-width tracks share a row.
         let cd = clip.duration().max(1e-6);
         row(
             scene,
             tr,
             l.fade_in,
-            "Fade In",
+            "Fade in",
             format!("{:.1}s", clip.fade_in),
             (clip.fade_in / cd).clamp(0.0, 1.0),
-            label_size,
             dragging(self.drag, Drag::FadeIn),
             None,
         );
@@ -917,25 +742,15 @@ impl VideoEditorApp {
             scene,
             tr,
             l.fade_out,
-            "Fade Out",
+            "Fade out",
             format!("{:.1}s", clip.fade_out),
             (clip.fade_out / cd).clamp(0.0, 1.0),
-            label_size,
             dragging(self.drag, Drag::FadeOut),
             None,
         );
         // Transition segmented control, through the shared painter.
-        if !l.transitions.is_empty() {
-            text(
-                scene,
-                tr,
-                tf,
-                "Transition",
-                label_size,
-                c.text_dim,
-                x0,
-                l.transition_y - 20.0,
-            );
+        if let Some((_, first)) = l.transitions.first() {
+            caption_above(scene, tr, tf, theme, "Transition", x0, first.y0);
             let rects: Vec<Rect> = l.transitions.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.transitions.iter().map(|(t, _)| t.label()).collect();
             let sel = l
@@ -955,59 +770,35 @@ impl VideoEditorApp {
                 "Transition length",
                 format!("{:.2}s", clip.transition_len()),
                 (clip.transition_len() / max).clamp(0.0, 1.0),
-                label_size,
                 self.drag == Some(Drag::TransitionLen),
                 None,
             );
         }
-        // Colour swatches.
-        if !l.colors.is_empty() {
-            text(
-                scene,
-                tr,
-                tf,
-                "Label",
-                label_size,
-                c.text_dim,
-                x0,
-                l.colors_y - 20.0,
-            );
+        // Label colour swatches: the toolkit's swatch face, ringed when chosen.
+        if let Some((_, first)) = l.colors.first() {
+            caption_above(scene, tr, tf, theme, "Label", x0, first.y0);
             for (pal, rect) in &l.colors {
-                let sw = clip_color(theme, *pal);
-                ui::surface::card(scene, tf, *rect, 6.0, sw);
-                if rect.contains(self.last_mouse) && clip.palette != *pal {
-                    stroke_round(scene, tf, *rect, 6.0, with_alpha(c.text_primary, 0.5), 1.5);
-                }
-                if clip.palette == *pal {
-                    // The selection ring has to read against whichever colour
-                    // it rings, so it comes from the focus token rather than
-                    // a hardcoded white that vanishes on the pale swatches.
-                    stroke_round(scene, tf, rect.inset(1.5), 7.0, c.border_focus, 2.0);
-                }
+                let face =
+                    ui::widget::ColorSwatchFace::new(*rect, clip_color(theme, *pal), "Label")
+                        .selected(clip.palette == *pal)
+                        .hovered(rect.contains(self.last_mouse));
+                face.paint(scene, tf, tr, theme);
             }
         }
         // Link / unlink. The caption names the state so the button can name
         // the *change*: a control labelled only "Unlink" leaves a reader
         // guessing whether it describes what is true or what will happen.
         if let (Some(rect), Some(offer)) = (l.link, self.link_affordance()) {
-            let linked = offer == LinkAffordance::Unlink;
-            text(
+            caption_above(scene, tr, tf, theme, offer.state(), x0, rect.y0);
+            draw_button(
                 scene,
-                tr,
                 tf,
-                offer.state(),
-                12.0,
-                if linked { c.accent[5] } else { c.text_dim },
-                x0,
-                l.link_label_y - 15.0,
-            );
-            draw_button_enabled(
-                &mut PaintCtx::new(scene, tf, tr, theme),
+                tr,
+                theme,
                 rect,
                 offer.label(),
-                false,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
-                true,
             );
         }
         // ---- collapsible sections ------------------------------------
@@ -1028,61 +819,24 @@ impl VideoEditorApp {
             let Some(v) = self.num_value(*f) else {
                 continue;
             };
-            let keyed = f
-                .param()
-                .is_some_and(|p| self.key_state(p) != KeyState::Off);
-            let lx = if f.param().is_some() {
-                track.x0 + KEY_BOX + 6.0
-            } else {
-                track.x0
-            };
-            let label_col = if keyed { c.accent[5] } else { c.text_dim };
-            text(
+            let keyed = f.param().map(|p| self.key_state(p) != KeyState::Off);
+            row(
                 scene,
                 tr,
-                tf,
+                Some(*track),
                 f.label(),
-                label_size,
-                label_col,
-                lx,
-                track.y0 - 20.0,
-            );
-            let readout = f.readout(v);
-            let (pw, _) = tr.measure(&readout, label_size, None);
-            text(
-                scene,
-                tr,
-                tf,
-                &readout,
-                label_size,
-                c.text_primary,
-                track.x1 - f64::from(pw),
-                track.y0 - 20.0,
-            );
-            draw_track(
-                scene,
-                tf,
-                theme,
-                *track,
+                f.readout(v),
                 f.to_frac(v),
-                hit_slider(*track, self.last_mouse),
                 self.drag == Some(Drag::Num(*f)),
+                keyed,
             );
         }
-        // Picture-in-picture presets. The glyph is the corner it puts the
-        // picture in, which is the whole of what the button does.
+        // Picture-in-picture presets: each button carries a miniature frame
+        // with the inset drawn in the corner it puts the picture in, which is
+        // the whole of what the button does.
         if !l.pip.is_empty() {
             let top = l.pip[0].2;
-            text(
-                scene,
-                tr,
-                tf,
-                "Picture in picture",
-                label_size,
-                c.text_dim,
-                x0,
-                top.y0 - 16.0 * inspector_scale,
-            );
+            caption_above(scene, tr, tf, theme, "Picture in picture", x0, top.y0);
             let inset = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
             let is_pip = (clip.transform.scale_x - inset.scale_x).abs() < 1e-6;
             for (_, corner, rect) in &l.pip {
@@ -1090,28 +844,21 @@ impl VideoEditorApp {
                     && (clip.transform.pos_x.signum() - corner.0).abs() < 1e-6
                     && (clip.transform.pos_y.signum() - corner.1).abs() < 1e-6;
                 let hovered = rect.contains(self.last_mouse);
-                // The shared button face — Primary for the preset in force —
-                // with the corner glyph painted over it in the face's ink.
-                let mut face = ui::widget::ButtonFace::new(*rect, "")
-                    .radius(6.0)
-                    .hovered(hovered);
-                if on {
-                    face = face.primary();
-                }
-                ui::widget::Button::paint(scene, tf, tr, theme, &face);
-                // A miniature frame with the inset drawn in the named corner.
-                let fg = if on {
-                    on_fill(theme, theme.accent_primary).1
-                } else {
-                    c.text_primary
-                };
+                draw_toggle_button(
+                    &mut PaintCtx::new(scene, tf, tr, theme),
+                    *rect,
+                    ToggleContent::Label(""),
+                    on,
+                    hovered,
+                );
+                let fg = if on { c.text_primary } else { c.text_dim };
                 let g = Rect::new(
                     rect.center().x - 11.0,
                     rect.center().y - 7.0,
                     rect.center().x + 11.0,
                     rect.center().y + 7.0,
                 );
-                stroke_round(scene, tf, g, 2.0, with_alpha(fg, 0.5), 1.0);
+                stroke_round(scene, tf, g, 2.0, fg, 1.0);
                 let iw = g.width() * 0.42;
                 let ih = g.height() * 0.42;
                 let ix = if corner.0 < 0.0 {
@@ -1133,7 +880,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Crop",
-                label_size,
+                &label,
                 c.text_dim,
                 x0,
                 l.crop_label_y,
@@ -1145,7 +892,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Anchor",
-                label_size,
+                &label,
                 c.text_dim,
                 x0,
                 l.anchor_label_y,
@@ -1186,24 +933,18 @@ impl VideoEditorApp {
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 "Fill frame",
-                false,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 !plain,
             );
         }
-        // Rate presets + the reverse toggle.
+        // Rate presets + the reverse switch.
         if !l.speed_presets.is_empty() {
             let rects: Vec<Rect> = l.speed_presets.iter().map(|(_, r)| *r).collect();
             let labels: Vec<String> = l
                 .speed_presets
                 .iter()
-                .map(|(rate, _)| {
-                    if (rate - rate.round()).abs() < 1e-6 {
-                        format!("{}×", rate.round() as i64)
-                    } else {
-                        format!("{rate}×")
-                    }
-                })
+                .map(|(rate, _)| speed_words(*rate))
                 .collect();
             let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             // No preset is "selected" unless the rate is exactly on one —
@@ -1217,19 +958,11 @@ impl VideoEditorApp {
             draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
         }
         if let Some(rect) = l.reverse {
-            let on = clip.speed.reverse;
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
+            draw_switch_row(
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                if on {
-                    "Playing backwards"
-                } else {
-                    "Play backwards"
-                },
-                on,
+                "Play backwards",
+                clip.speed.reverse,
                 rect.contains(self.last_mouse),
             );
         }
@@ -1242,21 +975,12 @@ impl VideoEditorApp {
             if l.mix_track_y > 0.0 {
                 let others = self.project.clips_on(t.id).len().saturating_sub(1);
                 let words = match others {
-                    0 => format!("{} — this lane", t.name),
-                    1 => format!("{} — this lane, 1 other clip", t.name),
-                    n => format!("{} — this lane, {n} other clips", t.name),
+                    0 => format!("Lane {}, this clip only", t.name),
+                    1 => format!("Lane {}, with 1 other clip", t.name),
+                    n => format!("Lane {}, with {n} other clips", t.name),
                 };
-                let words = elide_at(&words, (x1 - x0) as f32, label_size, tr);
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    &words,
-                    label_size,
-                    c.text_dim,
-                    x0,
-                    l.mix_track_y,
-                );
+                let words = elide_at(&words, (x1 - x0) as f32, &label, tr);
+                text(scene, tr, tf, &words, &label, c.text_dim, x0, l.mix_track_y);
             }
             if let Some(meter) = l.mix_meter {
                 draw_level_meter(
@@ -1278,7 +1002,7 @@ impl VideoEditorApp {
                 theme,
                 rect,
                 "Reset to 0.0 dB, centre",
-                false,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
         }
@@ -1303,26 +1027,18 @@ impl VideoEditorApp {
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 &format!("Reset {}", ch.label()),
-                false,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 shaped,
             );
         }
         // ---- colour key -----------------------------------------------
         if let Some(rect) = l.key_enable {
-            let on = clip.key.enabled;
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
+            draw_switch_row(
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                if on {
-                    "Keying this colour out"
-                } else {
-                    "Key a colour out"
-                },
-                on,
+                "Key a colour out",
+                clip.key.enabled,
                 rect.contains(self.last_mouse),
             );
         }
@@ -1332,7 +1048,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Key colour",
-                label_size,
+                &label,
                 c.text_dim,
                 x0,
                 l.key_color_y,
@@ -1345,15 +1061,13 @@ impl VideoEditorApp {
                 .iter()
                 .zip(col)
                 .all(|(a, b)| (a - b).abs() < 1e-6);
+            // The key colour is the footage's own colour, so it is shown as it
+            // is, on the toolkit's swatch.
             let swatch = Color::new([col[0] as f32, col[1] as f32, col[2] as f32, 1.0]);
-            ui::surface::card(scene, tf, *rect, 5.0, swatch);
-            // The chosen swatch takes a ring rather than a tick, so the
-            // colour it names is never covered by the mark that selects it.
-            if on {
-                stroke_round(scene, tf, rect.inflate(2.0, 2.0), 7.0, c.text_primary, 2.0);
-            } else if rect.contains(self.last_mouse) {
-                stroke_round(scene, tf, rect.inflate(1.0, 1.0), 6.0, c.border_focus, 1.0);
-            }
+            let face = ui::widget::ColorSwatchFace::new(*rect, swatch, "Key colour")
+                .selected(on)
+                .hovered(rect.contains(self.last_mouse));
+            face.paint(scene, tf, tr, theme);
         }
         if let Some(rect) = l.key_pick {
             // Sampling needs a picture to sample: with no decoded frame the
@@ -1368,7 +1082,7 @@ impl VideoEditorApp {
                 } else {
                     "No frame to sample"
                 },
-                false,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 have,
             );
@@ -1392,20 +1106,16 @@ impl VideoEditorApp {
                 theme,
                 rect,
                 "Fit to picture",
-                false,
+                ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
         }
         if let Some(rect) = l.mask_invert {
-            let on = clip.mask.invert;
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
+            draw_switch_row(
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                if on { "Keeping outside" } else { "Invert" },
-                on,
+                "Invert",
+                clip.mask.invert,
                 rect.contains(self.last_mouse),
             );
         }
@@ -1415,82 +1125,68 @@ impl VideoEditorApp {
                 .as_ref()
                 .and_then(|m| m.text.clone())
                 .unwrap_or_default();
-            text(
-                scene,
-                tr,
-                tf,
-                "Words",
-                label_size,
-                c.text_dim,
-                rect.x0,
-                rect.y0 - 16.0,
-            );
+            caption_above(scene, tr, tf, theme, "Words", rect.x0, rect.y0);
             let editing = self
                 .title_edit
                 .as_ref()
                 .map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
-            // A field: the well with its derived rest edge, and the focus
-            // ring over it while the inline editor owns the words.
-            well(scene, tf, theme, rect, 6.0);
+            let radius = f64::from(theme.tokens.radii.control);
+            // A field: the raised well with its derived rest edge, and the
+            // focus ring over it while the inline editor owns the words.
+            well(scene, tf, theme, rect, radius);
             if editing == Some(true) {
-                stroke_round(scene, tf, rect, 6.0, c.border_focus, FOCUS_RING_W);
+                draw_focus_ring(scene, tf, theme, rect, radius);
             }
+            let body = theme.text(TextRole::Body);
+            let body_h = line_height(tr, &body);
             // While the inline editor owns this box it draws the words itself
             // (with a caret); otherwise show them, or say plainly that there
             // are none rather than leaving an empty box that looks broken.
             if editing == Some(true) {
                 // While the field is open, say what ends the edit — Enter is
                 // a line break here, so it cannot also be Accept.
+                let hint = theme.text(TextRole::Caption);
                 text(
                     scene,
                     tr,
                     tf,
-                    "Ctrl+Enter to accept · Esc to cancel",
-                    10.5,
+                    "Ctrl+Enter to accept, Esc to cancel",
+                    &hint,
                     c.text_dim,
                     rect.x0,
-                    rect.y1 + 14.0,
+                    rect.y1 + S1,
                 );
             } else if text_src.content.trim().is_empty() {
-                let baseline = text_baseline(rect, 13.0, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     "Click to type a title",
-                    13.0,
-                    c.text_dim,
-                    rect.x0 + 10.0,
-                    baseline,
+                    &body,
+                    c.text_tertiary,
+                    rect.x0 + S2,
+                    rect.y0 + S2,
                 );
             } else {
-                // Real line breaks, on their own lines. The field used to
-                // fold them into a `⏎` glyph because it could not carry
-                // one; it can now, so showing the words as written is
-                // both honest and what the frame will look like.
-                for (i, line) in text_src.content.lines().take(3).enumerate() {
-                    let shown = elide_w(line, (rect.width() - 20.0) as f32, tr);
+                // Real line breaks, on their own lines.
+                let lines: Vec<&str> = text_src.content.lines().collect();
+                for (i, line) in lines.iter().take(3).enumerate() {
+                    let more = i == 2 && lines.len() > 3;
+                    let line = if more {
+                        format!("{line}…")
+                    } else {
+                        (*line).to_string()
+                    };
+                    let shown = elide_at(&line, (rect.width() - S4) as f32, &body, tr);
                     text(
                         scene,
                         tr,
                         tf,
                         &shown,
-                        13.0,
+                        &body,
                         c.text_primary,
-                        rect.x0 + 10.0,
-                        rect.y0 + 18.0 + i as f64 * 18.0,
-                    );
-                }
-                if text_src.content.lines().count() > 3 {
-                    text(
-                        scene,
-                        tr,
-                        tf,
-                        "…",
-                        13.0,
-                        c.text_dim,
-                        rect.x0 + 10.0,
-                        rect.y0 + 18.0 + 3.0 * 18.0,
+                        rect.x0 + S2,
+                        rect.y0 + S2 + i as f64 * body_h,
                     );
                 }
             }
@@ -1516,78 +1212,41 @@ impl VideoEditorApp {
                 .and_then(|m| m.text.as_ref())
                 .map(|t| t.font.clone())
                 .unwrap_or_default();
-            text(
-                scene,
-                tr,
-                tf,
-                "Font",
-                label_size,
-                c.text_dim,
-                rect.x0,
-                rect.y0 - 16.0,
-            );
+            caption_above(scene, tr, tf, theme, "Font", rect.x0, rect.y0);
             // The open list is drawn later, over the panel, because it floats
-            // above everything under it. Here is the resting control: a
-            // button naming the family in force. "The system's default sans"
-            // is a real answer, not a missing one, so it is named rather than
-            // left as an empty field.
+            // above everything under it. Here is the resting control: the
+            // shared dropdown face naming the family in force.
             if self.font_picker.is_none() {
-                let label = if current.trim().is_empty() {
+                let words = if current.trim().is_empty() {
                     Self::DEFAULT_FONT_LABEL.to_string()
                 } else {
                     current
                 };
-                draw_button(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
-                    rect,
-                    &label,
-                    false,
-                    rect.contains(self.last_mouse),
-                );
+                let face = ButtonFace::new(rect, &words)
+                    .control_size(control_size_for(rect, theme))
+                    .hovered(rect.contains(self.last_mouse));
+                Button::paint(scene, tf, tr, theme, &face);
             }
         }
-        if !l.title_colors.is_empty() {
+        if let Some((_, first)) = l.title_colors.first() {
             let cur = media
                 .as_ref()
                 .and_then(|m| m.text.as_ref())
                 .map_or([1.0; 4], |t| t.color);
-            text(
-                scene,
-                tr,
-                tf,
-                "Colour",
-                label_size,
-                c.text_dim,
-                x0,
-                l.title_colors[0].1.y0 - 16.0,
-            );
+            caption_above(scene, tr, tf, theme, "Colour", x0, first.y0);
             for (col, rect) in &l.title_colors {
-                let sw = title_color(*col);
-                // A swatch can be white, near-black or translucent, so it is
-                // drawn on a chequer-free plate with a border: without one the
-                // white swatch vanishes on a light theme and the dark one on a
-                // dark theme.
-                // A plate under a swatch that may be translucent, then the
-                // swatch with an edge derived against its own colour — so the
-                // white swatch shows on a light pane and the black one on a
-                // dark pane without a theme-blind ink wash.
-                fill_round(scene, tf, *rect, 6.0, c.lift(0.35));
-                ui::surface::card(scene, tf, *rect, 6.0, sw);
-                if col
+                let chosen = col
                     .iter()
                     .zip(cur.iter())
-                    .all(|(a, b)| (a - b).abs() < 1e-6)
-                {
-                    stroke_round(scene, tf, rect.inset(1.5), 7.0, c.border_focus, 2.0);
-                } else if rect.contains(self.last_mouse) {
-                    stroke_round(scene, tf, *rect, 6.0, with_alpha(c.text_primary, 0.6), 1.5);
-                }
+                    .all(|(a, b)| (a - b).abs() < 1e-6);
+                let face =
+                    ui::widget::ColorSwatchFace::new(*rect, title_color(*col), "Title colour")
+                        .selected(chosen)
+                        .hovered(rect.contains(self.last_mouse));
+                face.paint(scene, tf, tr, theme);
             }
         }
-        for (rect, on, label) in [
+        for (rect, on, words) in [
             (
                 l.title_bold,
                 media
@@ -1606,91 +1265,52 @@ impl VideoEditorApp {
             ),
         ] {
             let Some(rect) = rect else { continue };
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
+            draw_toggle_button(
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                label,
+                ToggleContent::Label(words),
                 on,
                 rect.contains(self.last_mouse),
             );
         }
         self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
         self.draw_project_section(scene, tf, tr, theme, &l, x0);
-        // ---- key controls ---------------------------------------------
-        // Drawn last so a diamond sits over its row rather than under it.
-        for (param, rect) in &l.keys {
-            draw_key_control(
-                scene,
-                tf,
-                theme,
-                *rect,
-                self.key_state(*param),
-                rect.contains(self.last_mouse),
-            );
-        }
         // Effects stack (video only).
         if is_video {
-            for (i, row) in l.effect_rows.iter().enumerate() {
+            for (i, row_rect) in l.effect_rows.iter().enumerate() {
                 let Some(e) = clip.effects.get(i) else {
                     continue;
                 };
-                let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
-                well(scene, tf, theme, *row, 6.0);
-                // Reorder / remove: real icons on hover-lit hit targets, sized to
-                // the pointer rather than to the glyph. These were raw Unicode
-                // arrows in 16x18px boxes with no hover state at all.
+                let (_key, up, down, slider, remove) = Self::effect_row_parts(*row_rect);
+                well(
+                    scene,
+                    tf,
+                    theme,
+                    *row_rect,
+                    f64::from(theme.tokens.radii.item),
+                );
+                // Reorder / remove: the toolkit's icon buttons.
                 let last = i + 1 == clip.effects.len();
-                for (rect, icon, enabled) in [
-                    (up, ui::icons::Icon::ChevronUp, i > 0),
-                    (down, ui::icons::Icon::ChevronDown, !last),
+                for (rect, icon, name, enabled) in [
+                    (up, Icon::ChevronUp, "Move up", i > 0),
+                    (down, Icon::ChevronDown, "Move down", !last),
+                    (remove, Icon::X, "Remove effect", true),
                 ] {
-                    selection_row(
-                        scene,
-                        tf,
-                        theme,
+                    draw_icon_button(
+                        &mut PaintCtx::new(scene, tf, tr, theme),
                         rect,
-                        4.0,
-                        ui::chrome::SelectionState::new(
-                            false,
-                            enabled && rect.contains(self.last_mouse),
-                            false,
-                        ),
-                    );
-                    let col = if enabled {
-                        c.text_primary
-                    } else {
-                        c.text_tertiary
-                    };
-                    let g = 12.0;
-                    let box_ = Rect::new(
-                        rect.center().x - g / 2.0,
-                        rect.center().y - g / 2.0,
-                        rect.center().x + g / 2.0,
-                        rect.center().y + g / 2.0,
-                    );
-                    ui::icons::draw_icon(
-                        scene,
-                        tf,
-                        box_,
                         icon,
-                        col,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                        name,
+                        ButtonRole::Plain,
+                        rect.contains(self.last_mouse),
+                        enabled,
                     );
                 }
                 // Name.
-                let name_y = text_baseline(*row, 12.0, tr);
-                text_w(
-                    scene,
-                    tr,
-                    tf,
-                    e.kind.label(),
-                    &TextStyle::new(12.0).with_weight(TextWeight::Medium),
-                    c.text_primary,
-                    Point::new(down.x1 + 8.0, name_y),
-                );
+                let top = text_baseline(*row_rect, &label, tr);
+                let name_x = down.x1 + S2;
+                let shown = elide_at(e.kind.label(), (slider.x0 - S2 - name_x) as f32, &label, tr);
+                text(scene, tr, tf, &shown, &label, c.text_primary, name_x, top);
                 // Intensity slider.
                 draw_track(
                     scene,
@@ -1701,47 +1321,28 @@ impl VideoEditorApp {
                     hit_slider(slider, self.last_mouse),
                     matches!(self.drag, Some(Drag::EffectAmount { idx, .. }) if idx == i),
                 );
-                // Remove.
-                selection_row(
-                    scene,
-                    tf,
-                    theme,
-                    remove,
-                    4.0,
-                    ui::chrome::SelectionState::new(false, remove.contains(self.last_mouse), false),
-                );
-                let g = 12.0;
-                let xbox = Rect::new(
-                    remove.center().x - g / 2.0,
-                    remove.center().y - g / 2.0,
-                    remove.center().x + g / 2.0,
-                    remove.center().y + g / 2.0,
-                );
-                ui::icons::draw_icon(
-                    scene,
-                    tf,
-                    xbox,
-                    ui::icons::Icon::X,
-                    c.semantic.danger,
-                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
             }
-            // Add-effect button, through the shared face like every other
-            // button in the panel. It was a local fill-and-stroke with its
-            // label pinned to a font-size offset, and read as a different
-            // control from the "+ Marker at playhead" button two rows down.
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                l.add_effect,
-                "+ Add effect",
-                false,
-                l.add_effect.contains(self.last_mouse),
-            );
+            let add = l.add_effect;
+            let face = ButtonFace::new(add, "Add effect")
+                .icon(Icon::Plus)
+                .control_size(control_size_for(add, theme))
+                .hovered(add.contains(self.last_mouse));
+            Button::paint(scene, tf, tr, theme, &face);
         }
 
+        // ---- key controls ---------------------------------------------
+        // Drawn after the rows and effect wells so a diamond sits over its row
+        // rather than under it.
+        for (param, rect) in &l.keys {
+            draw_key_control(
+                scene,
+                tf,
+                theme,
+                *rect,
+                self.key_state(*param),
+                rect.contains(self.last_mouse),
+            );
+        }
         if l.valid {
             draw_button(
                 scene,
@@ -1750,22 +1351,23 @@ impl VideoEditorApp {
                 theme,
                 l.split,
                 "Split",
-                false,
+                ButtonRole::Secondary,
                 l.split.contains(self.last_mouse),
             );
-            draw_danger_button(
+            draw_button(
                 scene,
                 tf,
                 tr,
                 theme,
                 l.delete,
                 "Delete",
+                ButtonRole::Destructive,
                 l.delete.contains(self.last_mouse),
             );
         }
     }
 
-    /// One collapsible section header: a fold arrow, the name, and — when it
+    /// One collapsible section header: a fold chevron, the name, and — when it
     /// is folded — a summary of what is inside it.
     ///
     /// The summary is the point. Folding a section away is a view choice, but
@@ -1788,37 +1390,33 @@ impl VideoEditorApp {
             ctx.transform,
             theme,
             rect,
-            5.0,
             ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
         );
-        let g = 11.0;
+        let g = f64::from(theme.tokens.metrics.icon_sm);
         let arrow = Rect::new(
-            rect.x0 + 1.0,
+            rect.x0,
             rect.center().y - g / 2.0,
-            rect.x0 + 1.0 + g,
+            rect.x0 + g,
             rect.center().y + g / 2.0,
         );
-        ui::icons::draw_icon(
-            ctx.scene,
-            ctx.transform,
-            arrow,
-            if open {
-                ui::icons::Icon::ChevronDown
-            } else {
-                ui::icons::Icon::ChevronRight
-            },
-            c.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let baseline = text_baseline(rect, 11.0, ctx.text);
-        text_w(
+        let icon = if open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        };
+        icon.draw(ctx.scene, ctx.transform, arrow, c.text_dim);
+        let heading = theme.text(TextRole::Subheading);
+        let top = text_baseline(rect, &heading, ctx.text);
+        let name_x = arrow.x1 + S2;
+        text(
             ctx.scene,
             ctx.text,
             ctx.transform,
             section.label(),
-            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            c.text_dim,
-            Point::new(rect.x0 + 18.0, baseline),
+            &heading,
+            c.text_primary,
+            name_x,
+            top,
         );
         if open {
             return;
@@ -1826,18 +1424,20 @@ impl VideoEditorApp {
         let Some(summary) = self.section_summary(section, clip, media) else {
             return;
         };
-        let (w, _) = ctx.text.measure(&summary, 11.0, None);
-        // A summary that reports something other than the default is worth
-        // reading, so it takes the accent rather than the dim tone.
+        let style = theme.text(TextRole::Caption);
+        let room = rect.x1 - name_x - text_width(ctx.text, section.label(), &heading) - S3;
+        let summary = elide_at(&summary, room.max(0.0) as f32, &style, ctx.text);
+        let w = text_width(ctx.text, &summary, &style);
+        let top = text_baseline(rect, &style, ctx.text);
         text(
             ctx.scene,
             ctx.text,
             ctx.transform,
             &summary,
-            11.0,
-            c.accent[5],
-            rect.x1 - f64::from(w),
-            baseline,
+            &style,
+            c.text_dim,
+            rect.x1 - w,
+            top,
         );
     }
 
@@ -1861,15 +1461,7 @@ impl VideoEditorApp {
                 // reader, so a folded header reading `transform.scale_x`
                 // reported 1.00× beside a canvas that was pushing in.
                 let g = self.geometry_at_playhead(clip);
-                // `is_identity()` on the constants alone was the whole gate,
-                // and keying a parameter from its default leaves that constant
-                // exactly at the aspect-fit — so a clip whose picture swings
-                // across the frame between two keys reported nothing at all.
                 let animated = Self::transform_is_animated(clip);
-                // `is_identity()` still carries the crop and the anchor, which
-                // the model does not animate; the two new disjuncts are what it
-                // could never see — a keyed channel away from its rest value,
-                // and the existence of a curve at all.
                 if clip.transform.is_identity() && !g.is_placed() && !animated {
                     return None;
                 }
@@ -1889,7 +1481,7 @@ impl VideoEditorApp {
                 if parts.is_empty() {
                     parts.push("moved".into());
                 }
-                Some(parts.join(" · "))
+                Some(parts.join(", "))
             }
             Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
             // The lane's fader, and whether it has been caught clipping. The
@@ -1898,25 +1490,25 @@ impl VideoEditorApp {
             // section exists to end.
             Section::Mix => {
                 let t = self.project.track(clip.track)?;
-                let clipped = if self.mix.track(t.id).is_some_and(|level| level.clipped) {
-                    " · CLIP"
-                } else {
-                    ""
-                };
-                if !t.mix_is_set() && clipped.is_empty() {
+                let clipped = self.mix.track(t.id).is_some_and(|level| level.clipped);
+                if !t.mix_is_set() && !clipped {
                     return None;
                 }
-                Some(format!("{} {}{clipped}", t.gain_words(), t.pan_words()))
+                let level = format!("{} {}", t.gain_words(), t.pan_words());
+                Some(if clipped {
+                    format!("{level}, clipping")
+                } else {
+                    level
+                })
             }
             // A key that is switched on but keying nothing still has to
             // say so: "on" and "removing something" are different states,
             // and a fold that reported neither would hide both. The tolerance
-            // is read at the playhead, because it is animatable: a key ramping
-            // on read as "keys nothing" for the whole clip.
+            // is read at the playhead, because it is animatable.
             Section::Key => clip.key.enabled.then(|| {
                 let tolerance = clip.param_at(Param::KeyTolerance, self.playhead);
                 if tolerance <= 1e-6 {
-                    "on · keys nothing".to_string()
+                    "on, keys nothing".to_string()
                 } else {
                     format!("keyed {:.0}%", tolerance * 100.0)
                 }
@@ -1924,7 +1516,7 @@ impl VideoEditorApp {
             Section::Mask => clip.mask.is_active().then(|| {
                 let shape = clip.mask.shape.label().to_lowercase();
                 if clip.mask.invert {
-                    format!("{shape} · inverted")
+                    format!("{shape}, inverted")
                 } else {
                     shape
                 }
@@ -1955,7 +1547,7 @@ impl VideoEditorApp {
                     }
                 })
             }
-            // A folded PROJECT header is where the frame most needs stating:
+            // A folded Project header is where the frame most needs stating:
             // the format is a fact about every clip below it, and this is the
             // one line that carries it when the section is away.
             Section::Project => Some(self.project_format_shown.clone()),

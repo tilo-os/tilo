@@ -24,16 +24,18 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::{
-    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, ModalAction, ModalFrame,
-    ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
+    Button, ButtonFace, ButtonRole, ContextMenu, ControlSize, EditOutcome, EditableLabel,
+    FlapState, MenuItem, ModalAction, ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
+    modal_dialog,
 };
 
 use crate::actions::{
@@ -69,7 +71,7 @@ mod project_workflow;
 mod scenario;
 mod selection;
 mod timeline_paint;
-use crate::layout::{self as chrome_layout, S1, S2, S3};
+use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
 use inspector_layout::InspectorLayout;
 use layout::Regions;
 #[allow(
@@ -94,14 +96,6 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 const GOTO_CARD_W: f64 = 260.0;
 
 const ADD_TRACK_H: f64 = 24.0;
-
-const TOPBAR_BTN_W: f64 = 110.0;
-
-const PANE_HEADING_Y0: f64 = 6.0;
-
-const PANE_HEADING_H: f64 = 26.0;
-
-const INSPECTOR_LABEL_SIZE: f32 = 12.0;
 
 // ---- layout constants ----------------------------------------------------
 const TOPBAR_H: f64 = 48.0;
@@ -180,30 +174,11 @@ const PIP_INSET: f64 = 0.04;
 /// Width of the key control at the head of an animatable inspector row.
 const KEY_BOX: f64 = 20.0;
 
-/// The keyboard cursor's ring, in the width every shared widget in `ui` draws
-/// focus at (`Button`, `DataTable`, `IconGrid`, `ToggleGroup` all stroke 2px in
-/// `Theme::border_focus`). The colour is always read from the theme — in the
-/// high-contrast theme it is a yellow nothing else uses, which is the whole
-/// point of a focus colour being a token rather than a literal.
-const FOCUS_RING_W: f64 = 2.0;
-/// How far inside a control's own outline the ring is drawn where the two would
-/// otherwise land on the same edge.
-///
-/// A palette declares one accent and its focus colour normally follows it, so
-/// `border_focus` and `accent[5]` are the same colour in most themes. The bin's
-/// selected row already carries an accent outline on its edge; a ring laid on
-/// that edge would disappear into it, so the cursor's ring sits inside and the
-/// two read as concentric. Around the transport's round buttons the offset goes
-/// the other way — see [`draw_focus_ring_circle`].
-const FOCUS_RING_INSET: f64 = 3.0;
-
 const BIN_BREAKPOINT: f64 = 900.0;
 
-/// A top-bar command needs a target a finger can reliably acquire. The old
-/// 28px icon targets were especially easy to miss on a narrow timeline, where
-/// the collapsed-bin and collapsed-inspector controls are the only way back to
-/// those panes.
-const TOPBAR_TOUCH_TARGET: f64 = 36.0;
+/// A top-bar command's height before a theme is known: the pointer target a
+/// Regular control is built to.
+const TOPBAR_TOUCH_TARGET: f64 = 32.0;
 const TOPBAR_EDGE: f64 = S3;
 const TOPBAR_GAP: f64 = S3;
 /// At this width the Split button is redundant with its stable `S` shortcut
@@ -228,6 +203,23 @@ const TOPBAR_EXPORT_KEY: &str = "topbar.export";
 const PROJECT_BTN_W: f64 = 210.0;
 const PROJECT_BTN_MIN_W: f64 = 120.0;
 
+/// The topbar's labelled commands. "Import" and "Export" open a dialog of
+/// their own, so they carry the ellipsis that says so.
+const IMPORT_LABEL: &str = "Import…";
+const SPLIT_LABEL: &str = "Split";
+const EXPORT_LABEL: &str = "Export…";
+
+/// How wide the topbar's labelled commands are; see
+/// [`VideoEditorApp::topbar_widths`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TopbarWidths {
+    pub(super) import: f64,
+    pub(super) split: f64,
+    pub(super) export: f64,
+    pub(super) history: f64,
+    pub(super) project: f64,
+}
+
 /// What the project button's dot means, spelled out wherever the dot cannot
 /// be seen. Not a warning — the autosave still holds the work; what the user
 /// does not have is a file of their own.
@@ -242,7 +234,7 @@ const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
 const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
 /// The marker list's add button, shared by the paint and the accessibility
 /// tree so a reader is offered the control the screen actually shows.
-const ADD_MARKER_LABEL: &str = "+ Marker at playhead (M)";
+const ADD_MARKER_LABEL: &str = "Add marker at playhead";
 /// The key the add button is addressed by, before hashing. A constant rather
 /// than a literal at each site so the node and the router cannot drift apart.
 const ADD_MARKER_KEY: &str = "add marker";
@@ -260,10 +252,6 @@ const MIX_METER_KEY: &str = "mix meter";
 
 const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
 const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
-
-/// Height of the inspector's own "INSPECTOR" heading row, which the empty
-/// state starts below.
-const INSPECTOR_HEADER_H: f64 = 26.0;
 
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.
@@ -309,14 +297,21 @@ enum NoticeLevel {
 }
 
 impl NoticeLevel {
-    /// The tint this level paints in, read from the theme like every other
-    /// colour in the app.
-    fn tint(self, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
+    /// The banner this level is told in.
+    fn banner_kind(self) -> ui::widget::BannerKind {
         match self {
-            Self::Ok => c.accent[5],
-            Self::Warning => c.semantic.warning,
-            Self::Failed => c.semantic.danger,
+            Self::Ok => ui::widget::BannerKind::Info,
+            Self::Warning => ui::widget::BannerKind::Warning,
+            Self::Failed => ui::widget::BannerKind::Error,
+        }
+    }
+
+    /// The tone a badge or a progress fill takes at this level.
+    fn tone(self) -> ui::widget::Tone {
+        match self {
+            Self::Ok => ui::widget::Tone::Neutral,
+            Self::Warning => ui::widget::Tone::Warning,
+            Self::Failed => ui::widget::Tone::Danger,
         }
     }
 }
@@ -404,6 +399,7 @@ impl Notice {
         }
     }
 
+    #[cfg(test)]
     fn is_failure(&self) -> bool {
         self.level == NoticeLevel::Failed
     }
@@ -522,16 +518,16 @@ enum Section {
 impl Section {
     fn label(self) -> &'static str {
         match self {
-            Section::Curves => "CURVES",
-            Section::Transform => "TRANSFORM",
-            Section::Speed => "SPEED",
-            Section::Mix => "MIX",
-            Section::Key => "CHROMA KEY",
-            Section::Mask => "MASK",
-            Section::Title => "TITLE",
-            Section::Effects => "EFFECTS",
-            Section::Markers => "MARKERS",
-            Section::Project => "PROJECT",
+            Section::Curves => "Curves",
+            Section::Transform => "Transform",
+            Section::Speed => "Speed",
+            Section::Mix => "Mix",
+            Section::Key => "Chroma key",
+            Section::Mask => "Mask",
+            Section::Title => "Title",
+            Section::Effects => "Effects",
+            Section::Markers => "Markers",
+            Section::Project => "Project",
         }
     }
 }
@@ -1276,7 +1272,10 @@ pub struct VideoEditorApp {
     /// the only way a reader user learns the editor has shortcuts at all.
     /// An in-progress timecode entry, or `None`. Typing a timecode and
     /// pressing Enter jumps the playhead there.
-    goto_entry: Option<String>,
+    goto_entry: Option<ui::widget::TextInput>,
+    /// The window's History button, in the editor's own header row; while
+    /// the editor shows it the window draws no History bar above it.
+    history_button: ui::widget::Button,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
@@ -1356,6 +1355,9 @@ pub struct VideoEditorApp {
     /// A project waiting for the user to say what to do about unsaved work.
     /// Opening a file must never silently discard an unsaved project.
     pending_open: Option<PendingOpen>,
+    /// The theme the chrome was last drawn with: the default theme until the
+    /// first frame, so geometry measured before that frame (an event, a
+    /// test) agrees with what it paints.
     chrome_theme: Option<Theme>,
     hit_text: std::cell::RefCell<Option<TextRenderer>>,
     help_scroll: f64,
@@ -1549,6 +1551,7 @@ impl VideoEditorApp {
             focus: PaneCursor::default(),
             bin_focus_before_open: None,
             goto_entry: None,
+            history_button: ui::widget::history_button(),
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             projected_media: HashSet::new(),
@@ -1568,7 +1571,7 @@ impl VideoEditorApp {
             project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
             pending_open: None,
-            chrome_theme: None,
+            chrome_theme: Some(Theme::dark()),
             hit_text: std::cell::RefCell::new(None),
             help_scroll: 0.0,
             save_then_open: None,
@@ -1758,12 +1761,67 @@ impl VideoEditorApp {
     /// what a deep control edits and prevents a partially scrolled row from
     /// ever painting beneath the editor chrome.
     fn inspector_body_origin(&self, r: &Regions) -> f64 {
-        // Four 2× property lines need substantially more air than their 1×
-        // baselines suggest; reserve a body viewport of at least 160px even
-        // in a short window rather than allowing the last value to cross the
-        // first scrolled control.
-        let max_header = (r.inspector.height() - 160.0).max(90.0);
-        r.inspector.y0 + (190.0 * self.inspector_ui_scale()).min(max_header)
+        r.inspector.y0 + self.inspector_header(r).height
+    }
+
+    /// The fixed header's measured extent: the clip's name and lane, and —
+    /// while the panel is tall enough to leave the controls a usable body
+    /// under it — the four facts about where the clip sits. Measured in the
+    /// roles it is drawn in, so the header and the body below it can never
+    /// overlap at any text size or window height; a panel too short for the
+    /// facts keeps the name and drops them rather than drawing over the body.
+    fn inspector_header(&self, r: &Regions) -> InspectorHeader {
+        let scale = self.inspector_ui_scale();
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+            // Nothing selected: the header says so in the same two lines a
+            // clip's name and lane take, and the project's sections follow.
+            return self
+                .with_dialog_layout(|_, tr, theme| {
+                    let name = line_height(tr, &theme.text(TextRole::Heading));
+                    let sub = line_height(tr, &theme.text(TextRole::Caption));
+                    InspectorHeader {
+                        height: (S3 + name + S1 + sub + S3).min(r.inspector.height()),
+                        properties: false,
+                    }
+                })
+                .unwrap_or(InspectorHeader {
+                    height: 64.0 * scale,
+                    properties: false,
+                });
+        };
+        let width = r.inspector.width() - 2.0 * PAD * scale;
+        let fps = self.project.fps;
+        self.with_dialog_layout(|_, tr, theme| {
+            let name = line_height(tr, &theme.text(TextRole::Heading));
+            let sub = line_height(tr, &theme.text(TextRole::Caption));
+            let values = [
+                timecode(clip.start, fps),
+                timecode(clip.duration(), fps),
+                timecode(clip.in_point, fps),
+                timecode(clip.out_point, fps),
+            ];
+            let rows = inspector_property_rows(&values);
+            let props = ui::widget::PropertyListFace::new(&rows).height(tr, theme, width);
+            let compact = S3 + name + S1 + sub + S3;
+            let full = compact + props + S2;
+            // The body keeps at least this much room for its controls.
+            let body_floor = (r.inspector.height() / 2.0).min(160.0 * scale);
+            if r.inspector.height() - full >= body_floor {
+                InspectorHeader {
+                    height: full,
+                    properties: true,
+                }
+            } else {
+                InspectorHeader {
+                    height: compact.min(r.inspector.height()),
+                    properties: false,
+                }
+            }
+        })
+        .unwrap_or(InspectorHeader {
+            height: 64.0 * scale,
+            properties: false,
+        })
     }
 
     fn inspector_viewport(&self, r: &Regions) -> Rect {
@@ -1782,14 +1840,52 @@ impl VideoEditorApp {
     /// wide.  Treating only the latter as compact left the scaled labels to
     /// run into one another.
     fn topbar_is_compact(&self) -> bool {
-        self.rect.width()
-            < TOPBAR_COMPACT_BREAKPOINT.max(
-                2.0 * TOPBAR_EDGE
-                    + 3.0 * TOPBAR_BTN_W
-                    + 2.0 * TOPBAR_TOUCH_TARGET
-                    + 4.0 * TOPBAR_GAP,
-            )
+        let w = self.topbar_widths();
+        let target = self.topbar_target();
+        let gap = TOPBAR_GAP * self.chrome_scale();
+        let needed = 2.0 * TOPBAR_EDGE * self.chrome_scale()
+            + 2.0 * target
+            + w.history
+            + w.import
+            + w.split
+            + w.export
+            + PROJECT_BTN_MIN_W.min(w.project)
+            + 6.0 * gap;
+        self.rect.width() < TOPBAR_COMPACT_BREAKPOINT.max(needed)
             || (self.text_scale > 1.25 && self.rect.width() / self.text_scale < 800.0)
+    }
+
+    /// How wide each labelled topbar command is: as wide as its label, by
+    /// the toolkit's own button measure.
+    pub(super) fn topbar_widths(&self) -> TopbarWidths {
+        let project = self.project_label();
+        self.with_dialog_layout(|app, tr, theme| {
+            let mut w = |label: &str| ButtonFace::new(Rect::ZERO, label).intrinsic_width(tr, theme);
+            let import = w(IMPORT_LABEL);
+            let split = w(SPLIT_LABEL);
+            let export = w(EXPORT_LABEL);
+            let history = ButtonFace::new(Rect::ZERO, "History")
+                .icon(Icon::History)
+                .intrinsic_width(tr, theme);
+            let project = ButtonFace::new(Rect::ZERO, &project)
+                .icon(Icon::Film)
+                .intrinsic_width(tr, theme)
+                .min(PROJECT_BTN_W * app.chrome_scale());
+            TopbarWidths {
+                import,
+                split,
+                export,
+                history,
+                project,
+            }
+        })
+        .unwrap_or(TopbarWidths {
+            import: 96.0,
+            split: 72.0,
+            export: 96.0,
+            history: 96.0,
+            project: PROJECT_BTN_W,
+        })
     }
 
     /// Canvas chrome has fixed logical geometry, whereas text is scaled by
@@ -1799,12 +1895,19 @@ impl VideoEditorApp {
         self.text_scale.clamp(1.0, 1.35)
     }
 
+    /// The editor's one header row: the window's header height.
     fn topbar_height(&self) -> f64 {
-        TOPBAR_H * self.chrome_scale()
+        self.chrome_theme
+            .as_ref()
+            .map_or(TOPBAR_H, |t| f64::from(t.tokens.metrics.header_height))
+            * self.chrome_scale()
     }
 
+    /// A topbar control: a Regular control's height.
     fn topbar_target(&self) -> f64 {
-        TOPBAR_TOUCH_TARGET * self.chrome_scale()
+        self.chrome_theme.as_ref().map_or(TOPBAR_TOUCH_TARGET, |t| {
+            ButtonFace::height(ControlSize::Regular, t)
+        })
     }
 
     fn timeline_height(&self) -> f64 {
@@ -1838,7 +1941,8 @@ impl VideoEditorApp {
     /// Whether the inspector is on screen right now: always when docked,
     /// only while the flap is open when it is an overlay.
     fn inspector_is_visible(&self, r: &Regions) -> bool {
-        !r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split())
+        r.inspector.width() > 1.0
+            && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
     }
 
     // ---- region geometry -------------------------------------------------
@@ -2038,39 +2142,48 @@ impl VideoEditorApp {
     }
 
     /// The clip flag inside it: what is clicked to walk the overloads.
-    fn clip_flag_rect(r: &Regions) -> Rect {
+    fn clip_flag_rect(&self, r: &Regions) -> Rect {
         let m = chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r));
-        Rect::new(
-            m.readout.x1 - 52.0,
-            m.readout.y0,
-            m.readout.x1,
-            m.readout.y1,
-        )
+        let words = self.clip_flag_words();
+        let w = self
+            .with_dialog_layout(|_, tr, theme| {
+                ui::widget::BadgeFace::intrinsic_width(&words, tr, theme)
+            })
+            .unwrap_or(64.0)
+            .min(m.readout.width());
+        Rect::new(m.readout.x1 - w, m.readout.y0, m.readout.x1, m.readout.y1)
     }
 
-    /// The two "add track" buttons in the gutter footer, if there is room below
-    /// the last lane: `(kind, rect)` for a Video and an Audio add.
+    /// What the master strip's clip flag says: that the mix clipped, and by
+    /// how much at worst.
+    fn clip_flag_words(&self) -> String {
+        format!("Clip {:+.1}", self.mix.worst_over_db())
+    }
+
+    /// The two "add track" buttons under the last lane: `(kind, rect)` for a
+    /// Video and an Audio add, each as wide as its label, starting at the
+    /// gutter's edge and running out under the lanes when the gutter is
+    /// narrower than the two of them.
     fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
         let lanes = self.lane_rects(r);
         let y = lanes.last().map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
-        if y + (ADD_TRACK_H * self.chrome_scale()) > r.timeline.y1 {
+        let (h, widths) = self
+            .with_dialog_layout(|_, tr, theme| {
+                let h = ButtonFace::height(ControlSize::Small, theme);
+                let mut width = |kind| {
+                    ButtonFace::new(Rect::ZERO, timeline_paint::add_track_label(kind))
+                        .icon(Icon::Plus)
+                        .control_size(ControlSize::Small)
+                        .intrinsic_width(tr, theme)
+                };
+                (h, [width(TrackKind::Video), width(TrackKind::Audio)])
+            })
+            .unwrap_or_else(|| (ADD_TRACK_H, [r.gutter.width() / 2.0; 2]));
+        if y + h > r.timeline.y1 {
             return Vec::new();
         }
-        // Two related buttons in one footer: `S2` between them and to the
-        // gutter's edges, the same step the bin's rows keep.
-        let w = (r.gutter.width() - S2 * 3.0) / 2.0;
-        let vbtn = Rect::new(
-            r.gutter.x0 + S2,
-            y,
-            r.gutter.x0 + S2 + w,
-            y + (ADD_TRACK_H * self.chrome_scale()),
-        );
-        let abtn = Rect::new(
-            vbtn.x1 + S2,
-            y,
-            vbtn.x1 + S2 + w,
-            y + (ADD_TRACK_H * self.chrome_scale()),
-        );
+        let vbtn = Rect::new(r.gutter.x0 + S2, y, r.gutter.x0 + S2 + widths[0], y + h);
+        let abtn = Rect::new(vbtn.x1 + S2, y, vbtn.x1 + S2 + widths[1], y + h);
         vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
@@ -2200,20 +2313,26 @@ impl VideoEditorApp {
     /// The bin row's metadata line. Unknown is written as unknown: a source
     /// that carries no dimensions or no length must not be rendered as
     /// "0p · 0:00", which reads as a probed fact and is not one.
-    fn bin_subtitle(m: &MediaItem) -> String {
-        let dur = if m.duration > 0.0 {
-            clock(m.duration)
-        } else {
-            "length unknown".to_string()
-        };
+    /// What a bin source is: its picture size, or the kind of thing it is
+    /// when it has none.
+    fn bin_kind_words(m: &MediaItem) -> String {
         match m.kind {
-            MediaKind::Audio => format!("Audio · {dur}"),
+            MediaKind::Audio => "Audio".to_string(),
             // A title is drawn at whatever the project frame is, so it has
             // no size of its own. That is not the same as "we could not
             // read the size", which is what an unreadable file gets.
-            MediaKind::Text => format!("Title · {dur}"),
-            _ if m.height == 0 => format!("size unknown · {dur}"),
-            _ => format!("{}p · {}", m.height, dur),
+            MediaKind::Text => "Title".to_string(),
+            _ if m.height == 0 => "Size unknown".to_string(),
+            _ => format!("{}p", m.height),
+        }
+    }
+
+    /// How long a bin source runs.
+    fn bin_length(m: &MediaItem) -> String {
+        if m.duration > 0.0 {
+            clock(m.duration)
+        } else {
+            "Length unknown".to_string()
         }
     }
 
@@ -2232,7 +2351,7 @@ impl VideoEditorApp {
     }
 
     /// Row pitch of the media bin list, and where the first row starts.
-    const BIN_ROW_BODY: f64 = 50.0;
+    const BIN_ROW_BODY: f64 = 56.0;
     const BIN_ROW_H: f64 = Self::BIN_ROW_BODY + S2;
     const BIN_LIST_TOP: f64 = 40.0;
 
@@ -2248,9 +2367,20 @@ impl VideoEditorApp {
     /// it at the playhead and opens its words for typing.
     fn add_title_rect(&self, r: &Regions) -> Rect {
         let scale = self.bin_ui_scale();
-        let x1 = r.bin.x0 + 152.0 * scale;
-        let y0 = r.bin.y0 + PANE_HEADING_Y0 * scale;
-        Rect::new(x1 - 62.0 * scale, y0, x1, y0 + PANE_HEADING_H * scale)
+        let (w, h) = self
+            .with_dialog_layout(|_, tr, theme| {
+                let face = ButtonFace::new(Rect::ZERO, "Title")
+                    .icon(Icon::Plus)
+                    .control_size(ControlSize::Small);
+                (
+                    face.intrinsic_width(tr, theme),
+                    ButtonFace::height(ControlSize::Small, theme),
+                )
+            })
+            .unwrap_or((62.0 * scale, 28.0 * scale));
+        let x1 = r.bin.x1 - S2 * scale;
+        let y0 = r.bin.y0 + (self.bin_list_top() - h) / 2.0;
+        Rect::new(x1 - w, y0, x1, y0 + h)
     }
 
     fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
@@ -2273,12 +2403,17 @@ impl VideoEditorApp {
 
     /// Whether the media bin is on screen: docked, or an open overlay flap.
     fn bin_is_visible(&self, r: &Regions) -> bool {
-        !r.bin_overlay || self.bin_flap.is_open(self.bin_layout())
+        r.bin.width() > 1.0 && (!r.bin_overlay || self.bin_flap.is_open(self.bin_layout()))
     }
 
     /// The bin's visible list viewport — everything below the header band.
     fn bin_viewport(r: &Regions) -> Rect {
-        Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1)
+        Rect::new(
+            r.bin.x0,
+            r.bin.y0 + Self::BIN_LIST_TOP - S1,
+            r.bin.x1,
+            r.bin.y1,
+        )
     }
 
     /// Total height the bin list wants, in px.
@@ -2620,12 +2755,26 @@ impl VideoEditorApp {
         let now = ui::time::now();
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
         self.flap_tick = now;
-        self.bin_flap.tick(layout, dt);
-        self.inspector_flap.tick(insp, dt);
+        // The panels slide over the theme's own base duration.
+        let duration = self.chrome_theme.as_ref().map_or_else(
+            || ui::tokens::motion::Durations::default().base(),
+            |theme| theme.tokens.motion.durations.base(),
+        );
+        self.bin_flap.tick(layout, dt, duration);
+        self.inspector_flap.tick(insp, dt, duration);
     }
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
+    /// Tell both side panels which layout the window is in now, so a show,
+    /// hide or choice lands in the size class it was made in rather than
+    /// the one the panel last saw (a resize with no frame drawn since).
+    fn reconcile_flaps(&mut self) {
+        self.bin_flap.reconcile(self.bin_layout());
+        self.inspector_flap.reconcile(self.inspector_split());
+    }
+
     fn toggle_bin(&mut self) {
+        self.reconcile_flaps();
         let layout = self.bin_layout();
         if layout != SplitLayout::Overlay {
             self.bin_flap.toggle(layout);
@@ -2652,6 +2801,7 @@ impl VideoEditorApp {
     /// it. This is shared by the toggle, Escape, and scrim click so every
     /// close path has the same focus-return behaviour.
     fn close_bin_overlay(&mut self) {
+        self.reconcile_flaps();
         self.bin_flap.close();
         if let Some(previous) = self.bin_focus_before_open.take() {
             self.focus.pane = previous;
@@ -2667,6 +2817,7 @@ impl VideoEditorApp {
     /// window the inspector is docked and this collapses it away, which is
     /// the same affordance the bin's hamburger offers there.
     fn toggle_inspector(&mut self) {
+        self.reconcile_flaps();
         self.inspector_flap.toggle(self.inspector_split());
     }
 
@@ -2675,6 +2826,7 @@ impl VideoEditorApp {
     /// second click on a toggle the user has to find first.
     fn reveal_inspector(&mut self) {
         if self.inspector_split() == SplitLayout::Overlay {
+            self.reconcile_flaps();
             self.inspector_flap.open();
         }
     }
@@ -2700,19 +2852,19 @@ impl VideoEditorApp {
     /// doing, or `None` when it is standing still.
     fn motion_words(&self) -> Option<String> {
         if self.playback.playing {
-            return Some("PLAYING".to_string());
+            return Some("Playing".to_string());
         }
         if self.shuttle == 0.0 {
             return None;
         }
         // Direction as well as rate: "8×" alone does not say which way the
         // footage is running, and reverse is half of what J/L are for.
-        let arrows = if self.shuttle > 0.0 {
-            "\u{25B6}\u{25B6}"
+        let way = if self.shuttle > 0.0 {
+            "forward"
         } else {
-            "\u{25C0}\u{25C0}"
+            "backward"
         };
-        Some(format!("SHUTTLE {arrows} {:.0}\u{d7}", self.shuttle.abs()))
+        Some(format!("Shuttling {way} {:.0}\u{d7}", self.shuttle.abs()))
     }
 
     fn toggle_play(&mut self) {
@@ -4074,7 +4226,7 @@ impl VideoEditorApp {
             })
             .unwrap_or_default();
         let mut label = EditableLabel::new(&current)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Label)
             .with_id("marker_rename");
         label.begin_edit();
         self.marker_field = field;
@@ -4343,7 +4495,7 @@ impl VideoEditorApp {
         let mut field = ui::widget::TextInput::local()
             .multiline(true)
             .with_initial_value(&content)
-            .with_font_size(13.0)
+            .with_text_role(TextRole::Body)
             .with_id("title_text");
         field.set_focus(true);
         self.title_edit = Some((mid, field));
@@ -4750,7 +4902,7 @@ impl VideoEditorApp {
     fn open_bin_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         let bin_visible = self.bin_is_visible(r);
-        if !bin_visible {
+        if !bin_visible || !VideoEditorApp::bin_viewport(r).contains(p) {
             return false;
         }
         for (mid, rect) in self.bin_item_rects(r) {
@@ -4934,7 +5086,7 @@ impl VideoEditorApp {
             return;
         };
         let mut label = EditableLabel::new(&m.name)
-            .with_font_size(13.0)
+            .with_text_role(TextRole::Body)
             .with_id("bin_rename");
         label.begin_edit();
         self.bin_rename = Some((mid, label));
@@ -5185,6 +5337,7 @@ impl VideoEditorApp {
                 }
                 self.selected_media = Some(id);
                 self.selection.clear();
+                self.reconcile_flaps();
                 self.bin_flap.open();
             }
             VideoEditorOperation::ImportMedia { path: None } => self.trigger_import(),
@@ -5416,9 +5569,17 @@ impl VideoEditorApp {
         if !self.project.media.is_empty() {
             return None;
         }
+        let (w, h) = self
+            .with_dialog_layout(|_, tr, theme| {
+                (
+                    ButtonFace::new(Rect::ZERO, "Import media").intrinsic_width(tr, theme),
+                    ButtonFace::height(ControlSize::Regular, theme),
+                )
+            })
+            .unwrap_or((184.0, 32.0));
         let cx = r.bin.center().x;
-        let cy = r.bin.y0 + 150.0;
-        Some(Rect::new(cx - 92.0, cy, cx + 92.0, cy + 34.0))
+        let cy = r.bin.y0 + self.bin_list_top() + 80.0;
+        Some(Rect::new(cx - w / 2.0, cy, cx + w / 2.0, cy + h))
     }
 
     /// Pump the real preview decoder for the clip under the playhead. No-op
@@ -5556,14 +5717,22 @@ impl VideoEditorApp {
     /// far edge the chip is still in the ruler, still one click, and out of
     /// the way of both.
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
-        let y = r.ruler.y0 + 4.0;
-        // TextRenderer applies the accessibility scale, while this custom
-        // chip's old 84px width did not.  At 2× the value was painted through
-        // its border and over the final ruler label.  Reserve proportional
-        // room; the ruler intentionally omits ticks behind this control.
-        let width = (84.0 * self.text_scale).min((r.ruler.width() - 8.0).max(0.0));
-        let x1 = r.ruler.x1 - 8.0;
-        Rect::new(x1 - width, y, x1, y + 22.0)
+        // As wide as the reading it carries, a Small control centred on the
+        // ruler band; the ruler omits ticks behind it.
+        let (w, h) = self
+            .with_dialog_layout(|app, tr, theme| {
+                let words = app.zoom_words();
+                let face = ButtonFace::new(Rect::ZERO, &words).control_size(ControlSize::Small);
+                (
+                    face.intrinsic_width(tr, theme),
+                    ButtonFace::height(ControlSize::Small, theme),
+                )
+            })
+            .unwrap_or((84.0 * self.text_scale, ADD_TRACK_H));
+        let width = w.min((r.ruler.width() - S2).max(0.0));
+        let x1 = r.ruler.x1 - S2;
+        let y = r.ruler.y0 + ((r.ruler.height() - h) / 2.0).max(0.0);
+        Rect::new(x1 - width, y, x1, y + h)
     }
 
     fn zoom_by(&mut self, factor: f64) {
@@ -5592,7 +5761,7 @@ impl VideoEditorApp {
         reason = "the export card's geometry is one top-to-bottom stack of measured rows"
     )]
     fn export_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> ExportLayout {
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let sp = &theme.tokens.spacing;
         let (s1, s2, s3, s4) = (
             f64::from(sp.s1),
@@ -5600,8 +5769,8 @@ impl VideoEditorApp {
             f64::from(sp.s3),
             f64::from(sp.s4),
         );
-        let line_sm = line_height(tr, type_sizes.sm);
-        let line_xs = line_height(tr, type_sizes.xs);
+        let line_sm = line_height(tr, &type_sizes.sm);
+        let line_xs = line_height(tr, &type_sizes.xs);
         // Every option is a pointer target: the theme's minimum, or taller
         // when its label needs the room.
         let seg_target = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
@@ -5624,16 +5793,10 @@ impl VideoEditorApp {
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
         let body_h = header_h + groups_h + footer_h;
         let actions = self.export_actions();
-        let spec = ModalSpec::new("Export Project")
+        let spec = ModalSpec::new("Export project")
             .actions(&actions)
             .max_width(EXPORT_CARD_W);
-        let modal = modal_layout_with_stacking_actions(
-            self.rect,
-            &spec,
-            body_h / f64::from(theme.text_scale),
-            tr,
-            theme,
-        );
+        let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
         let body = modal.body;
         let (x0, x1) = (body.x0, body.x1);
 
@@ -5937,7 +6100,16 @@ const RATE_PRESETS: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
 /// the numbers it was built from (see `VideoEditorApp::project_format_words`)
 /// rather than being formatted per frame.
 fn format_words(width: u32, height: u32, fps: f64) -> String {
-    format!("{width} \u{d7} {height} \u{b7} {} fps", rate_words(fps))
+    format!("{width}\u{d7}{height}, {} fps", rate_words(fps))
+}
+
+/// A speed preset as its segment says it: "2×", "0.5×".
+fn speed_words(rate: f64) -> String {
+    if (rate - rate.round()).abs() < 1e-6 {
+        format!("{}\u{d7}", rate.round() as i64)
+    } else {
+        format!("{rate}\u{d7}")
+    }
 }
 
 /// A frame rate with no trailing zeros: "30", not "30.00", and "23.98" for a
@@ -5953,14 +6125,38 @@ fn rate_words(fps: f64) -> String {
     format!("{fps:.2}")
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct DialogType {
-    /// The type scale's `sm` step: body lines, segment labels.
-    sm: f32,
-    /// The type scale's `xs` step: captions, status lines, hints.
-    xs: f32,
-    /// The type scale's `xl` step: the go-to field's timecode entry.
-    xl: f32,
+    /// `Body`: the sheets' lines and their segment labels.
+    sm: TextStyle,
+    /// `Caption`: captions, status lines, hints.
+    xs: TextStyle,
+    /// `Title`, in tabular figures: the go-to field's timecode.
+    xl: TextStyle,
+}
+
+/// What the inspector's fixed header holds this frame; see
+/// [`VideoEditorApp::inspector_header`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct InspectorHeader {
+    /// From the panel's top edge to where the scrolling body starts.
+    pub(super) height: f64,
+    /// Whether the clip's position and source facts fit above the body.
+    pub(super) properties: bool,
+}
+
+/// The four facts the inspector's header states about the selected clip.
+fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>; 4] {
+    fn row<'a>(label: &'a str, value: &'a str) -> ui::widget::PropertyRow<'a> {
+        ui::widget::PropertyRow::new(label, value).with_kind(ui::TextKind::Numeric)
+    }
+    let [position, duration, source_in, source_out] = values;
+    [
+        row("Position", position),
+        row("Duration", duration),
+        row("Source in", source_in),
+        row("Source out", source_out),
+    ]
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -6031,12 +6227,13 @@ struct HelpGroupLayout {
     rows: Vec<Rect>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct GotoLayout {
     card: Rect,
     type_sizes: DialogType,
     label_top: f64,
-    entry_top: f64,
+    /// The text field the timecode is typed into.
+    entry: Rect,
     hint_top: f64,
 }
 
@@ -6452,6 +6649,9 @@ impl Widget for VideoEditorApp {
         // `draw_preview` only has to blit it.
         self.pump_compositor(&r);
         self.draw_chrome(scene, transform, tr, theme, &r);
+        self.history_button.apply_layout_external(r.history_btn);
+        self.history_button
+            .draw(scene, transform, tr, theme, presence);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
         // behind a scrim.
@@ -6498,7 +6698,7 @@ impl Widget for VideoEditorApp {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
         if self.goto_entry.is_some() {
-            self.draw_goto(scene, transform, tr, theme, &r);
+            self.draw_goto(scene, transform, tr, theme, presence, &r);
         }
         if self.navigation.help_open {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
@@ -6706,6 +6906,42 @@ impl Widget for VideoEditorApp {
                 }
                 self.project_menu.close();
             }
+            if *ctx.handled {
+                return;
+            }
+        }
+        // The go-to field owns typing while it is open: Enter and Esc are the
+        // card's (see `handle_key`), every other key and pointer press edits
+        // the toolkit's text field.
+        if self.goto_entry.is_some() {
+            let card_key = matches!(
+                event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if matches!(key.logical_key, Key::Named(NamedKey::Enter | NamedKey::Escape))
+            );
+            if !card_key {
+                let entry =
+                    self.with_dialog_layout(|app, tr, theme| app.goto_layout(&r, tr, theme).entry);
+                if let Some(field) = self.goto_entry.as_mut() {
+                    if let Some(rect) = entry {
+                        field.apply_layout_external(rect);
+                    }
+                    let before = field.value().to_string();
+                    field.handle_event(event, ctx);
+                    if field.value() != before {
+                        self.navigation.goto_notice = false;
+                    }
+                }
+                if *ctx.handled {
+                    return;
+                }
+            }
+        }
+        // The History button in the header row is the toolkit's own button:
+        // it takes its own pointer events and raises the window's History.
+        if !self.is_modal() && !bin_overlay_open {
+            self.history_button.apply_layout_external(r.history_btn);
+            self.history_button.handle_event(event, ctx);
             if *ctx.handled {
                 return;
             }
@@ -6990,10 +7226,11 @@ impl Widget for VideoEditorApp {
         }
         // Bin rows can be dragged onto the timeline.
         if self.bin_is_visible(&r) && r.bin.contains(point) {
-            if self
-                .bin_item_rects(&r)
-                .iter()
-                .any(|(_, rect)| rect.contains(point))
+            if VideoEditorApp::bin_viewport(&r).contains(point)
+                && self
+                    .bin_item_rects(&r)
+                    .iter()
+                    .any(|(_, rect)| rect.contains(point))
             {
                 return Some(CursorIcon::Grab);
             }
@@ -7216,7 +7453,10 @@ impl Widget for VideoEditorApp {
     /// or an in-flight rename is something a reader can find rather than an
     /// invisible mode.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = Vec::new();
+        let mut v: Vec<&dyn Widget> = vec![&self.history_button];
+        if let Some(field) = &self.goto_entry {
+            v.push(field);
+        }
         if self.bin_menu.is_open() {
             v.push(&self.bin_menu);
         }
@@ -7236,7 +7476,10 @@ impl Widget for VideoEditorApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        let mut v: Vec<&mut (dyn Widget + '_)> = vec![&mut self.history_button];
+        if let Some(field) = &mut self.goto_entry {
+            v.push(field);
+        }
         if self.bin_menu.is_open() {
             v.push(&mut self.bin_menu);
         }
@@ -7999,13 +8242,13 @@ impl VideoEditorApp {
                     _ => (l.saturation, Param::Saturation),
                 };
                 if let Some(track) = track {
-                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let v = slider_value_at(track, p.x);
                     self.preview_param(param, v);
                 }
             }
             Drag::FadeIn => {
                 if let Some(track) = self.inspector_layout(r).fade_in {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     let max = self
                         .selected()
                         .and_then(|id| self.project.clip(id))
@@ -8015,14 +8258,14 @@ impl VideoEditorApp {
             }
             Drag::TransitionLen => {
                 if let Some(track) = self.inspector_layout(r).transition_len {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     let max = self.transition_len_max();
                     self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
                 }
             }
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     let max = self
                         .selected()
                         .and_then(|id| self.project.clip(id))
@@ -8037,7 +8280,7 @@ impl VideoEditorApp {
                     .get(idx)
                     .map(|row| Self::effect_row_parts(*row).3)
                 {
-                    let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
+                    let v = slider_value_at(slider, p.x);
                     self.preview_edit(move |c| {
                         if let Some(e) = c.effects.get_mut(idx) {
                             e.amount = v;
@@ -8047,7 +8290,7 @@ impl VideoEditorApp {
             }
             Drag::Num(f) => {
                 if let Some(track) = self.inspector_layout(r).num(f) {
-                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let frac = slider_value_at(track, p.x);
                     self.set_num(f, f.at_frac(frac));
                 }
             }
@@ -8206,7 +8449,7 @@ impl VideoEditorApp {
         if scrub.width() <= 1.0 {
             return;
         }
-        let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
+        let frac = slider_value_at(scrub, p.x);
         self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
         self.playback.playing = false;
         // The transport scrubber spans the whole project, so it can land the
@@ -8228,7 +8471,7 @@ impl VideoEditorApp {
             }
         }
         let bin_visible = self.bin_is_visible(r);
-        self.hover_media = if bin_visible {
+        self.hover_media = if bin_visible && VideoEditorApp::bin_viewport(r).contains(p) {
             self.bin_item_rects(r)
                 .into_iter()
                 .find(|(_, rect)| rect.contains(p))
@@ -8257,10 +8500,10 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "chrome composition keeps the top-bar's shared geometry and semantic controls in one paint pass"
-    )]
+    /// The editor's one header row: the bin toggle and the project at the
+    /// leading end, the commands, History and the inspector toggle at the
+    /// trailing end. It stands on the window's ground with one hairline under
+    /// it; the OS names the app, so nothing here does.
     fn draw_chrome(
         &self,
         scene: &mut Scene,
@@ -8269,129 +8512,85 @@ impl VideoEditorApp {
         theme: &Theme,
         r: &Regions,
     ) {
-        let c = &theme.tokens.colors;
-        fill_rect(scene, tf, self.rect, c.surfaces.base);
-        // Top bar.
-        fill_rect(scene, tf, r.topbar, c.surfaces.raised);
-        // The bar's foot, on its own last pixel row: derived against the
-        // raised bar, so it still shows where the raised side panes meet it.
-        stroke_line(
-            scene,
-            tf,
-            pane_hairline(theme),
-            r.topbar.x0,
-            r.topbar.y1 - 0.5,
-            r.topbar.x1,
-            r.topbar.y1 - 0.5,
-            1.0,
+        ui::widget::toolbar::paint_band(scene, tf, theme, r.topbar);
+        let hovered = |rect: Rect| rect.contains(self.last_mouse);
+        // The two panel toggles: the toolkit's plain panel buttons, lifted
+        // while their panel is shown.
+        let bin_open = self.bin_flap.is_open(self.bin_layout());
+        draw_toggle_button(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            r.menu_btn,
+            ToggleContent::Icon(Icon::PanelLeft, "Media"),
+            bin_open && r.bin_overlay,
+            hovered(r.menu_btn),
         );
-        // Leading slot: a hamburger toggle when the bin is collapsed to an
-        // overlay flap. The OS owns the window title/app-name/logo, so the app
-        // draws no glyph or wordmark here.
-        if r.bin_overlay {
-            self.draw_hamburger(scene, tf, tr, theme, r.menu_btn);
-        }
-        // Inspector toggle, present only while the inspector is collapsed.
-        if r.inspector_overlay && r.inspector_btn.width() > 0.0 {
-            let rect = r.inspector_btn;
-            let open = self.inspector_flap.is_open(self.inspector_split());
-            let hovered = rect.contains(self.last_mouse);
-            let fg = paint_icon_toggle(scene, tf, tr, theme, rect, open, hovered);
-            // A panel glyph: the pane outline with its right column filled,
-            // which is where the inspector lives and what the toggle reveals.
-            let g = rect.inset(-8.0);
-            stroke_round(scene, tf, g, 2.0, fg, 1.4);
-            fill_rect(
-                scene,
-                tf,
-                Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1),
-                fg,
-            );
-        }
-        // The project button. The frame size and rate still live in the
-        // transport beside the timecode they belong with — this is a *control*
-        // (it opens Open / Save / Save As / recents) that happens to be
-        // labelled with what it acts on, not the project meta that used to be
-        // centred here and collided with the buttons on the right.
-        //
-        // The app name and the window title remain the OS's, and this is
-        // neither: which *file* is open, and whether it is written down, are
-        // things only the app knows.
+        let inspector_open = self.inspector_flap.is_open(self.inspector_split());
+        draw_toggle_button(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            r.inspector_btn,
+            ToggleContent::Icon(Icon::PanelRight, "Inspector"),
+            inspector_open && r.inspector_overlay,
+            hovered(r.inspector_btn),
+        );
+        // The project button: which file is open, whether it is written down,
+        // and the way to open or save one. The app name and the window title
+        // remain the OS's, and this is neither.
         self.draw_project_button(scene, tf, tr, theme, r);
-        if self.topbar_is_compact() {
+        let compact = self.topbar_is_compact();
+        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+        if compact {
             draw_icon_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                IconButtonSpec {
-                    rect: r.import_btn,
-                    icon: ui::icons::Icon::FolderOpen,
-                    accessible_name: "Import media",
-                    primary: false,
-                    hovered: r.import_btn.contains(self.last_mouse),
-                },
-            );
-        } else {
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
+                &mut ctx,
                 r.import_btn,
-                "Import…",
-                false,
-                r.import_btn.contains(self.last_mouse),
+                Icon::FolderOpen,
+                "Import media",
+                ButtonRole::Plain,
+                hovered(r.import_btn),
+                true,
             );
-        }
-        if r.split_btn.width() > 0.0 {
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                r.split_btn,
-                "Split (S)",
-                false,
-                r.split_btn.contains(self.last_mouse),
-            );
-        }
-        if self.topbar_is_compact() {
             draw_icon_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                IconButtonSpec {
-                    rect: r.export_btn,
-                    icon: ui::icons::Icon::ArrowUp,
-                    accessible_name: "Export video",
-                    primary: true,
-                    hovered: r.export_btn.contains(self.last_mouse),
-                },
+                &mut ctx,
+                r.export_btn,
+                Icon::ArrowUp,
+                "Export video",
+                ButtonRole::Primary,
+                hovered(r.export_btn),
+                true,
             );
         } else {
-            draw_button(
-                scene,
-                tf,
-                tr,
-                theme,
-                r.export_btn,
-                "Export…",
+            draw_button_enabled(
+                &mut ctx,
+                r.import_btn,
+                IMPORT_LABEL,
+                ButtonRole::Secondary,
+                hovered(r.import_btn),
                 true,
-                r.export_btn.contains(self.last_mouse),
+            );
+            if r.split_btn.width() > 0.0 {
+                draw_button_enabled(
+                    &mut ctx,
+                    r.split_btn,
+                    SPLIT_LABEL,
+                    ButtonRole::Secondary,
+                    hovered(r.split_btn),
+                    true,
+                );
+            }
+            draw_button_enabled(
+                &mut ctx,
+                r.export_btn,
+                EXPORT_LABEL,
+                ButtonRole::Primary,
+                hovered(r.export_btn),
+                true,
             );
         }
     }
 
     /// The project button: which project is open, whether it has been written
-    /// to a file, and the way to open or save one.
-    ///
-    /// Painted through the shared [`ui::widget::Button`] face so it carries
-    /// the same fill, border, hover and press treatment as every other button
-    /// in the fleet. The unsaved dot is a corner badge rather than part of the
-    /// label, because the label is centred and a marker inside it would sit
-    /// wherever the name's width happened to put it.
+    /// to a file, and the way to open or save one — the toolkit's own button
+    /// face, with the unsaved dot as a corner mark rather than part of the
+    /// label.
     fn draw_project_button(
         &self,
         scene: &mut Scene,
@@ -8406,48 +8605,48 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.last_mouse) || self.project_menu.is_open();
-        // Room for the leading icon, the padding either side, and the badge.
         let label = if self.topbar_is_compact() {
             String::new()
         } else {
-            elide_at(
-                &self.project_label(),
-                (rect.width() - 52.0) as f32,
-                13.0,
-                tr,
-            )
+            self.project_label()
         };
-        let face = ui::widget::ButtonFace::new(rect, &label)
-            .style(ui::widget::ButtonStyle::Neutral)
-            .icon(ui::icons::Icon::Film)
-            .radius(7.0)
-            .text_size(13.0)
-            .hovered(hovered)
-            .pressed(self.project_menu.is_open());
-        ui::widget::Button::paint(scene, tf, tr, theme, &face);
+        let face = if label.is_empty() {
+            ButtonFace::icon_only(rect, Icon::Film, PROJECT_UNSAVED)
+        } else {
+            ButtonFace::new(rect, &label)
+                .icon(Icon::Film)
+                .role(ButtonRole::Plain)
+        }
+        .hovered(hovered)
+        .pressed(self.project_menu.is_open());
+        Button::paint(scene, tf, tr, theme, &face);
 
         if self.project_is_dirty() {
-            // A filled dot on the corner, ringed in the topbar's own colour so
-            // it reads as a badge on the button rather than a speck in it.
-            let ctr = Point::new(rect.x1 - 7.0, rect.y0 + 7.0);
+            // A dot on the corner, ringed in the ground it stands on so it
+            // reads as a mark on the button rather than a speck in it.
+            let ctr = Point::new(rect.x1 - S1, rect.y0 + S1);
             scene.fill(
                 Fill::NonZero,
                 tf,
-                c.surfaces.raised,
+                c.surfaces.content,
                 None,
-                &Circle::new(ctr, 5.0),
+                &Circle::new(ctr, S1 + 1.0),
             );
-            scene.fill(Fill::NonZero, tf, c.accent[5], None, &Circle::new(ctr, 3.5));
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                c.text_primary,
+                None,
+                &Circle::new(ctr, S1 - 0.5),
+            );
         }
     }
 
     /// Invite an external file drop, over the whole window.
     ///
     /// `DroppedFile` is accepted anywhere in the window, so the invitation has
-    /// to cover the same ground the handler does. Highlighting the media bin
-    /// alone said "drop here", which is narrower than the truth, and when the
-    /// bin was collapsed to a closed flap it said nothing at all — a drop that
-    /// would have worked looked like one that would not.
+    /// to cover the same ground the handler does: the window dims, and one
+    /// line on a floating panel at its centre says what a drop will do.
     fn draw_file_drop_invite(
         &self,
         scene: &mut Scene,
@@ -8458,39 +8657,37 @@ impl VideoEditorApp {
         if !self.presentation.file_hovering {
             return;
         }
-        let c = &theme.tokens.colors;
         let w = self.rect;
-        fill_rect(scene, tf, w, with_alpha(c.accent[5], 0.10));
-        stroke_round(scene, tf, w.inset(-4.0), 10.0, c.accent[5], 3.0);
-        // One label, centred on the window, on a plate so it stays readable
-        // over the timeline and the preview alike.
+        ui::overlay::scrim::modal(scene, tf, w, 1.0, theme);
         let hint = "Drop to import";
-        let (hw, _) = tr.measure_weighted(hint, 15.0, None, TextWeight::Semibold);
+        let style = theme.text(TextRole::Heading);
+        let hw = text_width(tr, hint, &style);
+        let hh = line_height(tr, &style);
         let ctr = w.center();
         let plate = Rect::new(
-            ctr.x - f64::from(hw) / 2.0 - 18.0,
-            ctr.y - 20.0,
-            ctr.x + f64::from(hw) / 2.0 + 18.0,
-            ctr.y + 20.0,
+            ctr.x - hw / 2.0 - S6,
+            ctr.y - hh / 2.0 - S4,
+            ctr.x + hw / 2.0 + S6,
+            ctr.y + hh / 2.0 + S4,
         );
-        fill_round(scene, tf, plate, 10.0, c.surfaces.raised);
-        stroke_round(scene, tf, plate, 10.0, c.accent[5], 1.5);
-        let baseline = text_baseline(plate, 15.0, tr);
-        text_w(
+        ui::widget::floating_surface::paint(scene, tf, plate, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        text(
             scene,
             tr,
             tf,
             hint,
-            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
-            c.accent[5],
-            Point::new(plate.x0 + 18.0, baseline),
+            &style,
+            ink.text_primary,
+            plate.x0 + S6,
+            plate.y0 + S4,
         );
     }
 
-    /// The last thing that happened to the project file, on a strip under the
-    /// topbar. Full width and above the panes, because it is not about the bin
-    /// or the timeline — and because a save that failed must not be findable
-    /// only by opening a panel.
+    /// The last thing that happened to the project file, as a status badge
+    /// in the strip under the topbar: full width and above the panes,
+    /// because it is not about the bin or the timeline — and because a save
+    /// that failed must not be findable only by opening a panel.
     fn draw_project_notice(
         &self,
         scene: &mut Scene,
@@ -8502,45 +8699,30 @@ impl VideoEditorApp {
         let Some(notice) = &self.project_notice else {
             return;
         };
-        let c = &theme.tokens.colors;
-        // The severity was decided where the outcome was known and travels
-        // with the message, so a notice in any language is tinted correctly.
-        let tint = notice.level.tint(theme);
-        // A floating plate, not a full-width band. A translucent band across
-        // the whole window let the media bin's own header show through it, so
-        // "Saved to …" and "MEDIA BIN · 7 clips" were painted on top of each
-        // other; this is opaque, sized to its words, and plainly a transient
-        // thing sitting over the editor rather than a row of the layout.
+        let gap = TOPBAR_GAP * self.chrome_scale();
         let x0 = if r.project_btn.width() > 0.0 {
-            r.project_btn.x0
+            r.project_btn.x1
         } else {
-            r.topbar.x0 + 12.0
-        };
-        let room = (self.project_notice_limit(r) - x0).max(80.0);
-        let shown = elide_at(&notice.text, (room - 24.0) as f32, 11.5, tr);
-        let (w, _) = tr.measure(&shown, 11.5, None);
-        // The same band the export chip and the pane headings use, so the
-        // three centre on one line across the strip under the topbar.
-        let plate = Rect::new(
-            x0,
-            r.topbar.y1 + PANE_HEADING_Y0,
-            (x0 + f64::from(w) + 24.0).min(self.project_notice_limit(r)),
-            r.topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
-        );
-        fill_round(scene, tf, plate, 7.0, c.surfaces.raised);
-        fill_round(scene, tf, plate, 7.0, with_alpha(tint, 0.18));
-        stroke_round(scene, tf, plate, 7.0, with_alpha(tint, 0.55), 1.0);
-        let baseline = text_baseline(plate, 11.5, tr);
-        text(
-            scene,
+            r.menu_btn.x1
+        } + gap;
+        let room = self.project_notice_limit(r) - x0;
+        let pad = ui::widget::BadgeFace::intrinsic_width("", tr, theme);
+        if room <= pad + S6 {
+            return;
+        }
+        let shown = elide_at(
+            &notice.text,
+            (room - pad) as f32,
+            &theme.text(TextRole::Caption),
             tr,
-            tf,
-            &shown,
-            11.5,
-            c.text_primary,
-            plate.x0 + 12.0,
-            baseline,
         );
+        let w = ui::widget::BadgeFace::intrinsic_width(&shown, tr, theme).min(room);
+        let h = ui::widget::BadgeFace::height(theme);
+        let cy = r.topbar.center().y;
+        let plate = Rect::new(x0, cy - h / 2.0, x0 + w, cy + h / 2.0);
+        ui::widget::BadgeFace::new(plate, &shown)
+            .style(ui::widget::ChipStyle::Tinted(notice.level.tone()))
+            .paint(scene, tf, tr, theme);
     }
 
     /// Whether a render has anything to report right now. A job that is still
@@ -8579,7 +8761,12 @@ impl VideoEditorApp {
     /// A render keeps animation frames coming for its whole duration, so this
     /// is on the hot path: the text is rebuilt when the whole-percent figure
     /// moves (or the window width does), not on every encoded frame.
-    fn export_chip_text(&mut self, chip: Rect, tr: &mut TextRenderer) -> Option<&ExportChipText> {
+    fn export_chip_text(
+        &mut self,
+        chip: Rect,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<&ExportChipText> {
         if !self.export_chip_is_shown() {
             self.export_chip_text = None;
             return None;
@@ -8591,17 +8778,20 @@ impl VideoEditorApp {
             // Only on a real change: the format and the elision both live
             // behind this branch, so a steady render costs neither.
             let notice = self.export_chip_notice()?;
+            let style = theme.text(TextRole::Caption).numeric();
             self.export_chip_text = Some(ExportChipText {
                 from: self.export_status.clone(),
                 width: chip.width(),
                 level: notice.level,
-                shown: elide_at(&notice.text, (chip.width() - 20.0) as f32, 11.0, tr),
+                shown: elide_at(&notice.text, (chip.width() - S4) as f32, &style, tr),
             });
         }
         self.export_chip_text.as_ref()
     }
 
-    /// Paint the render's own state into the window chrome.
+    /// Paint the render's own state into the window chrome: a floating chip
+    /// under the Export button with its words, filled from the leading edge
+    /// as the render encodes.
     ///
     /// The worker was built to run while the editor stays editable — it clones
     /// the project precisely so the UI thread can keep working — so closing
@@ -8616,7 +8806,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let chip = r.export_chip;
-        if chip.width() <= 0.0 {
+        if chip.width() <= S6 {
             self.export_chip_text = None;
             return;
         }
@@ -8624,71 +8814,71 @@ impl VideoEditorApp {
             ExportStatus::Rendering { progress } => Some(progress.clamp(0.0, 1.0)),
             _ => None,
         };
-        let Some(cached) = self.export_chip_text(chip, tr) else {
+        let Some(cached) = self.export_chip_text(chip, tr, theme) else {
             return;
         };
         let level = cached.level;
         // Cloned off the cache so the scene draws below can borrow `tr` again;
         // one short string, and only while a render has something to say.
         let shown = cached.shown.clone();
-        let c = &theme.tokens.colors;
-        let tint = level.tint(theme);
-        fill_round(scene, tf, chip, 7.0, c.surfaces.raised);
-        fill_round(scene, tf, chip, 7.0, with_alpha(tint, 0.18));
-        // A render in flight fills the chip as it encodes: the progress bar
-        // the dialog used to hold alone, in a place that survives the dialog.
-        // Clipped to the chip's own shape so the fill's leading edge is a
-        // straight line rather than a second pill nested inside the first.
-        if let Some(p) = progress {
-            let done = chip.width() * p;
-            if done > 0.5 {
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    tf,
-                    &RoundedRect::from_rect(chip, 7.0),
-                );
-                fill_rect(
-                    scene,
-                    tf,
-                    Rect::new(chip.x0, chip.y0, chip.x0 + done, chip.y1),
-                    with_alpha(tint, 0.34),
-                );
-                scene.pop_layer();
-            }
+        if level == NoticeLevel::Failed {
+            // A failed render is a status, in danger: the toolkit's badge.
+            ui::widget::BadgeFace::new(chip, &shown)
+                .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Danger))
+                .paint(scene, tf, tr, theme);
+            return;
         }
-        stroke_round(scene, tf, chip, 7.0, with_alpha(tint, 0.55), 1.0);
-        let baseline = text_baseline(chip, 11.0, tr);
-        text(
-            scene,
-            tr,
-            tf,
-            &shown,
-            11.0,
-            c.text_primary,
-            chip.x0 + 10.0,
-            baseline,
-        );
+        // Otherwise it is the way back into the dialog: a raised well that
+        // fills from its leading edge as the render encodes, with a plain
+        // button over it whose label is the render's state.
+        let c = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.control);
+        let well = c.surfaces.raised;
+        ui::surface::card(scene, tf, chip, radius, well);
+        if let Some(p) = progress {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                tf,
+                &RoundedRect::from_rect(chip, radius),
+            );
+            let done = Rect::new(chip.x0, chip.y0, chip.x0 + chip.width() * p, chip.y1);
+            fill_rect(scene, tf, done, c.lift_on(well, 1.0));
+            scene.pop_layer();
+        }
+        let face = ButtonFace::new(chip, &shown)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .hovered(chip.contains(self.last_mouse));
+        Button::paint(scene, tf, tr, theme, &face);
     }
 
     /// How far right the project-notice plate may run. It shares the strip
     /// under the topbar with the export chip, which is anchored to the right;
     /// a plate that ran to the window edge would be drawn straight through it.
     fn project_notice_limit(&self, r: &Regions) -> f64 {
+        let gap = TOPBAR_GAP * self.chrome_scale();
         if self.export_chip_is_shown() {
-            r.export_chip.x0 - 8.0
+            r.export_chip.x0 - gap
         } else {
-            r.topbar.x1 - 12.0
+            r.import_btn.x0 - gap
         }
+    }
+
+    /// A Small control's height, for the statuses in the header row.
+    fn topbar_small_height(&self) -> f64 {
+        self.chrome_theme
+            .as_ref()
+            .map_or(28.0, |t| ButtonFace::height(ControlSize::Small, t))
     }
 
     /// Card and buttons for the unsaved-work question.
     fn discard_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<DiscardLayout> {
         let pending = self.pending_open.as_ref()?;
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let s1 = f64::from(theme.tokens.spacing.s1);
-        let line_sm = line_height(tr, type_sizes.sm);
+        let line_sm = line_height(tr, &type_sizes.sm);
         let (title, _) = Self::discard_words(pending);
         let actions = Self::discard_actions();
         let spec = ModalSpec::new(&title)
@@ -8697,13 +8887,7 @@ impl VideoEditorApp {
             .closable(false)
             .dismiss_on_scrim(false);
         let body_h = line_sm * 2.0 + s1;
-        let modal = modal_layout_with_stacking_actions(
-            self.rect,
-            &spec,
-            body_h / f64::from(theme.text_scale),
-            tr,
-            theme,
-        );
+        let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
         let lines = [modal.body.y0, modal.body.y0 + line_sm + s1];
         let at = |i: usize| modal.actions.get(i).copied().unwrap_or_default();
         Some(DiscardLayout {
@@ -8740,8 +8924,8 @@ impl VideoEditorApp {
             .max_width(DISCARD_CARD_W)
             .closable(false)
             .dismiss_on_scrim(false);
-        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (_, dim) = ModalFrame::ink(theme);
+        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (_, dim) = modal_dialog::ink(theme);
         let width = l.modal.body.width() as f32;
         // Clipped to the body, as the other dialogs are: when the verbs stack
         // on a small window the body is what is left above them, and the
@@ -8754,44 +8938,20 @@ impl VideoEditorApp {
             &l.modal.body,
         );
         for (line, top) in lines.iter().zip(l.lines) {
-            let shown = elide_at(line, width, l.type_sizes.sm, tr);
+            let shown = elide_at(line, width, &l.type_sizes.sm, tr);
             text(
                 scene,
                 tr,
                 tf,
                 &shown,
-                l.type_sizes.sm,
+                &l.type_sizes.sm,
                 dim,
                 l.modal.body.x0,
                 top,
             );
         }
         scene.pop_layer();
-        ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
-    }
-
-    /// Three-bar hamburger that summons the collapsed media bin. Highlights
-    /// while the flap is open so it reads as a pressed toggle.
-    fn draw_hamburger(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        if rect.width() <= 0.0 {
-            return;
-        }
-        let open = self.bin_flap.is_open(self.bin_layout());
-        let hovered = rect.contains(self.last_mouse);
-        let bar = paint_icon_toggle(scene, tf, tr, theme, rect, open, hovered);
-        let bx0 = rect.x0 + 7.0;
-        let bx1 = rect.x1 - 7.0;
-        for i in 0..3 {
-            let by = rect.center().y - 5.0 + f64::from(i) * 5.0;
-            fill_round(scene, tf, Rect::new(bx0, by - 1.0, bx1, by + 1.0), 1.0, bar);
-        }
+        modal_dialog::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
     }
 
     /// The shortcut sheet.
@@ -8811,10 +8971,9 @@ impl VideoEditorApp {
         let l = self.help_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
         let spec = ModalSpec::new("Keyboard shortcuts").close_hovered(hit == Some(ModalHit::Close));
-        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (ink, dim) = ModalFrame::ink(theme);
-        let c = &theme.tokens.colors;
-        let ty = l.type_sizes;
+        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (ink, dim) = modal_dialog::ink(theme);
+        let ty = &l.type_sizes;
         let body = l.modal.body;
         // The rows are clipped to the body above the scroll hint's band: a
         // body the window cannot hold scrolls, and the rows must not paint
@@ -8838,38 +8997,40 @@ impl VideoEditorApp {
             tr,
             tf,
             "Esc or ? to close",
-            ty.sm,
+            &ty.sm,
             dim,
             body.x0,
             l.hint_top,
         );
         for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
-            text_w(
+            text(
                 scene,
                 tr,
                 tf,
                 group,
-                &TextStyle::new(ty.xs).with_weight(TextWeight::Bold),
-                dim,
-                Point::new(g.heading.x0, g.heading.y0),
+                &ty.xs.clone().strong(),
+                ink,
+                g.heading.x0,
+                g.heading.y0,
             );
             for ((combo, what), row) in rows.iter().zip(&g.rows) {
-                text_w(
+                text(
                     scene,
                     tr,
                     tf,
                     combo,
-                    &TextStyle::new(ty.sm).with_weight(TextWeight::Bold),
-                    c.accent[6],
-                    Point::new(row.x0, row.y0),
+                    &ty.sm.clone().strong(),
+                    ink,
+                    row.x0,
+                    row.y0,
                 );
-                let shown = elide_at(what, (row.width() - l.what_dx) as f32, ty.sm, tr);
+                let shown = elide_at(what, (row.width() - l.what_dx) as f32, &ty.sm, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     &shown,
-                    ty.sm,
+                    &ty.sm,
                     ink,
                     row.x0 + l.what_dx,
                     row.y0,
@@ -8883,115 +9044,53 @@ impl VideoEditorApp {
             } else {
                 "Scroll up for earlier shortcuts ↑"
             };
-            text(scene, tr, tf, label, ty.xs, dim, body.x0, hint_top);
+            text(scene, tr, tf, label, &ty.xs, dim, body.x0, hint_top);
         }
     }
 
     /// The go-to-timecode field: type a time, press Enter, land there.
     ///
-    /// Typing a timecode is table stakes in an editor and there was no way to
-    /// do it — the playhead could only be dragged or stepped. A value that
-    /// cannot be read keeps the field open and says so, rather than closing and
-    /// silently going nowhere.
+    /// A floating panel over the transport holding the toolkit's text field.
+    /// A value that cannot be read keeps the field open and says so under it
+    /// in danger ink, rather than closing and silently going nowhere.
     fn draw_goto(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         r: &Regions,
     ) {
-        let Some(entry) = self.goto_entry.clone() else {
+        if self.goto_entry.is_none() {
             return;
-        };
+        }
         let c = &theme.tokens.colors;
         let l = self.goto_layout(r, tr, theme);
-        let ty = l.type_sizes;
-        // A floating Panel (HIG §9.1): the panel ground with its derived
-        // border — and, because the card *is* the focused field, the focus
-        // ring over it, in danger while the entry cannot be read.
-        let radius = f64::from(theme.tokens.radii.lg);
-        fill_round(scene, tf, l.card, radius, ui::chrome::panel_ground(theme));
-        stroke_round(
-            scene,
-            tf,
-            l.card.inset(-0.5),
-            radius - 0.5,
-            ui::chrome::panel_border(theme),
-            1.0,
-        );
-        stroke_round(
-            scene,
-            tf,
-            l.card,
-            radius,
-            if self.navigation.goto_notice {
-                c.semantic.danger
-            } else {
-                c.border_focus
-            },
-            FOCUS_RING_W,
-        );
-        let x = l.card.x0 + f64::from(theme.tokens.spacing.s4);
+        let ty = &l.type_sizes;
+        ui::widget::floating_surface::paint(scene, tf, l.card, theme);
+        let panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let x = l.entry.x0;
         text(
             scene,
             tr,
             tf,
             "Go to timecode",
-            ty.xs,
-            c.text_dim,
+            &ty.xs,
+            panel.text_dim,
             x,
             l.label_top,
         );
-        let shown = if entry.is_empty() {
-            "0:00"
-        } else {
-            entry.as_str()
-        };
-        let col = if entry.is_empty() {
-            c.text_dim
-        } else {
-            c.text_primary
-        };
-        text_w(
-            scene,
-            tr,
-            tf,
-            shown,
-            &TextStyle::new(ty.xl).with_weight(TextWeight::Bold),
-            col,
-            Point::new(x, l.entry_top),
-        );
-        // A caret, so an empty field reads as "type here" rather than as a
-        // placeholder someone forgot to remove. Measured at the weight the
-        // digits are drawn in, so it stands at their end rather than inside
-        // the last one.
-        if !entry.is_empty() {
-            let (tw, th) = tr.measure_weighted(shown, ty.xl, None, TextWeight::Bold);
-            let caret_x = x + f64::from(tw) + f64::from(theme.tokens.spacing.s1) / 2.0;
-            fill_rect(
-                scene,
-                tf,
-                Rect::new(
-                    caret_x,
-                    l.entry_top,
-                    caret_x + theme.caret_width,
-                    l.entry_top + f64::from(th),
-                ),
-                c.accent[6],
-            );
+        if let Some(field) = self.goto_entry.as_mut() {
+            field.apply_layout_external(l.entry);
+            field.draw(scene, tf, tr, &panel, presence);
         }
-        let hint = if self.navigation.goto_notice {
-            "Not a timecode — try 1:30"
+        let (hint, hc) = if self.navigation.goto_notice {
+            ("Not a timecode, try 1:30", c.semantic.danger)
         } else {
-            "Enter to jump, Esc to cancel"
+            ("Enter to jump, Esc to cancel", panel.text_dim)
         };
-        let hc = if self.navigation.goto_notice {
-            c.semantic.danger
-        } else {
-            c.text_dim
-        };
-        text(scene, tr, tf, hint, ty.xs, hc, x, l.hint_top);
+        text(scene, tr, tf, hint, &ty.xs, hc, x, l.hint_top);
     }
 
     #[allow(
@@ -9017,20 +9116,20 @@ impl VideoEditorApp {
         for (i, action) in actions.iter_mut().enumerate() {
             action.hovered = hit == Some(ModalHit::Action(i));
         }
-        let spec = ModalSpec::new("Export Project")
+        let spec = ModalSpec::new("Export project")
             .actions(&actions)
             .max_width(EXPORT_CARD_W)
             .close_hovered(hit == Some(ModalHit::Close));
-        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (_, dim) = ModalFrame::ink(theme);
+        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (_, dim) = modal_dialog::ink(theme);
         let c = &theme.tokens.colors;
-        let ty = l.type_sizes;
+        let ty = &l.type_sizes;
         let body = l.modal.body;
         let x0 = body.x0;
         let width = body.width() as f32;
         let sp = &theme.tokens.spacing;
         let (s1, s2) = (f64::from(sp.s1), f64::from(sp.s2));
-        let line_xs = line_height(tr, ty.xs);
+        let line_xs = line_height(tr, &ty.xs);
         // Clipped to the body: on a window too small for the card the frame
         // clamps it and reports the overflow, and the content must not paint
         // through the action row.
@@ -9044,10 +9143,10 @@ impl VideoEditorApp {
         let filename = elide_at(
             &self.export.suggested_filename(&self.project.name),
             width,
-            ty.sm,
+            &ty.sm,
             tr,
         );
-        text(scene, tr, tf, &filename, ty.sm, dim, x0, l.filename_top);
+        text(scene, tr, tf, &filename, &ty.sm, dim, x0, l.filename_top);
         // What the levels did, stated **here**, before the button that
         // renders them. A mix that clipped and only said so in the file is
         // the fault this whole surface exists to end, and the dialog is the
@@ -9058,8 +9157,8 @@ impl VideoEditorApp {
             } else {
                 dim
             };
-            let words = elide_at(&words, width, ty.xs, tr);
-            text(scene, tr, tf, &words, ty.xs, tint, x0, top);
+            let words = elide_at(&words, width, &ty.xs, tr);
+            text(scene, tr, tf, &words, &ty.xs, tint, x0, top);
         }
 
         let cursor = self.last_mouse;
@@ -9068,7 +9167,7 @@ impl VideoEditorApp {
                          caption: &str,
                          top: f64,
                          items: &[(String, Rect, bool)]| {
-            text(scene, tr, tf, caption, ty.xs, dim, x0, top);
+            text(scene, tr, tf, caption, &ty.xs, dim, x0, top);
             // The shared segmented face, as the inspector's transition and
             // preset rows already use — so the dialog's option groups look
             // like every other segmented control in the fleet instead of a
@@ -9080,27 +9179,20 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
-            draw_segmented_sized(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                &rects,
-                &labels,
-                selected,
-                cursor,
-                ty.sm,
-            );
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, selected, cursor);
         };
         let res: Vec<_> = l
             .resolution
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
             .collect();
-        seg_group(scene, tr, "RESOLUTION", l.captions[0], &res);
+        seg_group(scene, tr, "Resolution", l.captions[0], &res);
         let con: Vec<_> = l
             .container
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
             .collect();
-        seg_group(scene, tr, "FORMAT", l.captions[1], &con);
+        seg_group(scene, tr, "Format", l.captions[1], &con);
         let fps: Vec<_> = l
             .fps
             .iter()
@@ -9112,7 +9204,7 @@ impl VideoEditorApp {
                 )
             })
             .collect();
-        seg_group(scene, tr, "FRAME RATE", l.captions[2], &fps);
+        seg_group(scene, tr, "Frame rate", l.captions[2], &fps);
 
         // Estimate + status.
         // One source of truth for the size line: the export module knows which
@@ -9126,21 +9218,21 @@ impl VideoEditorApp {
         // And how long it will run — the marked range when there is one,
         // which is the whole reason for marking one.
         let info = format!(
-            "{est}   ·   {w}×{h}   ·   {}{}",
+            "{w}×{h} for {}{}, {est}",
             timecode(self.project.export_duration(), self.project.fps),
             if self.project.has_marks() {
-                " (marked)"
+                " (marked range)"
             } else {
                 ""
             }
         );
-        let info = elide_at(&info, width, ty.sm, tr);
-        text(scene, tr, tf, &info, ty.sm, dim, x0, l.info_top);
+        let info = elide_at(&info, width, &ty.sm, tr);
+        text(scene, tr, tf, &info, &ty.sm, dim, x0, l.info_top);
         let status = l.status;
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
                 let bar = Rect::new(status.x0, status.y0, status.x1, status.y0 + s2);
-                let radius = f64::from(theme.tokens.radii.sm);
+                let radius = f64::from(theme.tokens.radii.detail);
                 well(scene, tf, theme, bar, radius);
                 let f = Rect::new(
                     bar.x0,
@@ -9148,17 +9240,17 @@ impl VideoEditorApp {
                     bar.x0 + bar.width() * progress.max(0.04),
                     bar.y1,
                 );
-                fill_round(scene, tf, f, radius, c.accent[5]);
-                text(scene, tr, tf, "Rendering…", ty.xs, dim, x0, bar.y1 + s1);
+                fill_round(scene, tf, f, radius, c.intent.inverted);
+                text(scene, tr, tf, "Rendering…", &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
-                let done = elide_at(&format!("Done: {path}"), width, ty.xs, tr);
+                let done = elide_at(&format!("Done: {path}"), width, &ty.xs, tr);
                 text(
                     scene,
                     tr,
                     tf,
                     &done,
-                    ty.xs,
+                    &ty.xs,
                     c.semantic.success,
                     x0,
                     status.y0,
@@ -9169,14 +9261,14 @@ impl VideoEditorApp {
                 // slot is deliberately bounded so an encoder's untrusted
                 // error cannot paint through the buttons; the full, unelided
                 // reason remains in the dialog's accessible static-text node.
-                let lines = tr.clamp_to_lines(reason, ty.xs, width, 2);
+                let lines = tr.clamp_to_lines(reason, &ty.xs, width, 2);
                 for (line, words) in lines.iter().enumerate() {
                     text(
                         scene,
                         tr,
                         tf,
                         words,
-                        ty.xs,
+                        &ty.xs,
                         c.semantic.danger,
                         x0,
                         status.y0 + line as f64 * line_xs,
@@ -9187,19 +9279,19 @@ impl VideoEditorApp {
                 // One source of truth for the availability copy — the export
                 // module knows what it can actually do, this dialog does not.
                 if let Some(reason) = crate::export::unavailable_reason() {
-                    let reason = elide_at(reason, width, ty.xs, tr);
-                    text(scene, tr, tf, &reason, ty.xs, dim, x0, status.y0);
+                    let reason = elide_at(reason, width, &ty.xs, tr);
+                    text(scene, tr, tf, &reason, &ty.xs, dim, x0, status.y0);
                 }
             }
         }
         // The flow's own status (choosing a destination, a portal refusal)
         // sits under the render status, so an action is never silent.
         if let Some(notice) = &self.export_notice {
-            let shown = elide_at(notice, width, ty.xs, tr);
-            text(scene, tr, tf, &shown, ty.xs, dim, x0, l.notice_top);
+            let shown = elide_at(notice, width, &ty.xs, tr);
+            text(scene, tr, tf, &shown, &ty.xs, dim, x0, l.notice_top);
         }
         scene.pop_layer();
-        ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
+        modal_dialog::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
     }
 }
 
@@ -9221,29 +9313,35 @@ impl VideoEditorApp {
         f: impl FnOnce(&Self, &mut TextRenderer, &Theme) -> T,
     ) -> Option<T> {
         let theme = self.chrome_theme.as_ref()?;
-        let mut slot = self.hit_text.borrow_mut();
+        // A layout measured inside another one (the inspector's header while
+        // the go-to card is being placed) gets its own renderer rather than a
+        // second borrow of the shared one.
+        let Ok(mut slot) = self.hit_text.try_borrow_mut() else {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(theme.text_scale);
+            return Some(f(self, &mut tr, theme));
+        };
         let tr = slot.get_or_insert_with(TextRenderer::new);
         tr.set_text_scale(theme.text_scale);
         Some(f(self, tr, theme))
     }
 
     fn help_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> HelpLayout {
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let sp = &theme.tokens.spacing;
         let (s2, s3, s4) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
-        let m = HelpMetrics::measure(tr, theme, type_sizes);
-        let line_sm = line_height(tr, type_sizes.sm);
-        let line_xs = line_height(tr, type_sizes.xs);
+        let m = HelpMetrics::measure(tr, theme, &type_sizes);
+        let line_sm = line_height(tr, &type_sizes.sm);
+        let line_xs = line_height(tr, &type_sizes.xs);
         let scale = f64::from(theme.text_scale.max(1.0));
         let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
         let content_h = line_sm + s3 + tallest;
-        let mut spec = ModalSpec::new("Keyboard shortcuts")
-            .body_height(content_h / f64::from(theme.text_scale));
+        let mut spec = ModalSpec::new("Keyboard shortcuts").body_height(content_h);
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
-        let modal = ModalFrame::layout(self.rect, &spec, tr, theme);
+        let modal = modal_dialog::layout(self.rect, &spec, tr, theme);
         let body = modal.body;
         // A body shorter than the table scrolls, and keeps a band at its foot
         // for the line that says so.
@@ -9264,7 +9362,7 @@ impl VideoEditorApp {
             .flat_map(|(_, rows)| rows.iter())
             .map(|(combo, _)| {
                 f64::from(
-                    tr.measure_weighted(combo, type_sizes.sm, None, TextWeight::Bold)
+                    tr.measure_style(combo, None, &type_sizes.sm.clone().strong())
                         .0,
                 )
             })
@@ -9304,11 +9402,11 @@ impl VideoEditorApp {
 }
 
 impl HelpMetrics {
-    fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: DialogType) -> Self {
+    fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: &DialogType) -> Self {
         let s1 = f64::from(theme.tokens.spacing.s1);
         Self {
-            header_h: line_height(tr, type_sizes.xs) + s1,
-            row_h: line_height(tr, type_sizes.sm) + s1,
+            header_h: line_height(tr, &type_sizes.xs) + s1,
+            row_h: line_height(tr, &type_sizes.sm) + s1,
             group_gap: f64::from(theme.tokens.spacing.s2),
         }
     }

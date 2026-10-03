@@ -9,37 +9,32 @@ pub(super) use ui::paint::{fill_rect, fill_round, stroke_round};
 
 /// A label colour guaranteed legible on `fill`, and the (possibly deepened)
 /// fill to paint under it — the toolkit's own contrast rule, so a clip name on
-/// an amber body reads in light and dark alike. Replaces the bare
-/// `Color::WHITE` this file used on every coloured surface, which was chosen
-/// for one palette and was already weak on the pale ones.
+/// a label colour reads in light and dark alike. The preferred ink is the
+/// media ink: these fills are the person's own label colours, which sit on
+/// the timeline like footage does.
 pub(super) fn on_fill(theme: &Theme, fill: Color) -> (Color, Color) {
-    theme.tokens.colors.legible_fill(fill, Color::WHITE)
+    let c = &theme.tokens.colors;
+    c.legible_fill(fill, c.media.ink)
 }
 
-/// The `y` to pass to [`text`] so one line of `size` sits vertically centred
+/// The `y` to pass to [`text`] so one line of `style` sits vertically centred
 /// in `rect`, measured from the font's real line height.
-///
-/// Replaces the hand-tuned `center().y - 8.0` / `- 6.0` / `- 7.0` constants
-/// this file used to carry at every call site, which were each correct for
-/// exactly one font size and drifted the moment one changed.
-pub(super) fn text_baseline(rect: Rect, size: f32, tr: &mut TextRenderer) -> f64 {
-    let (_, h) = tr.measure("Hg", size, None);
-    rect.center().y - f64::from(h) / 2.0
+pub(super) fn text_baseline(rect: Rect, style: &TextStyle, tr: &mut TextRenderer) -> f64 {
+    rect.center().y - line_height(tr, style) / 2.0
 }
 
 /// Top-left corner for `s` drawn centred both ways inside `rect`.
-pub(super) fn text_centre(
-    rect: Rect,
-    s: &str,
-    size: f32,
-    weight: TextWeight,
-    tr: &mut TextRenderer,
-) -> Point {
-    let (w, h) = tr.measure_weighted(s, size, None, weight);
+pub(super) fn text_centre(rect: Rect, s: &str, style: &TextStyle, tr: &mut TextRenderer) -> Point {
+    let (w, h) = tr.measure_style(s, None, style);
     Point::new(
         rect.center().x - f64::from(w) / 2.0,
         rect.center().y - f64::from(h) / 2.0,
     )
+}
+
+/// The width `s` takes set in `style`.
+pub(super) fn text_width(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
+    f64::from(tr.measure_style(s, None, style).0)
 }
 
 /// Cell width and count for a filmstrip drawn across `inner`. Shared by the
@@ -222,42 +217,23 @@ pub(super) fn stroke_line(
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
 }
+/// One line of `s` in `style`, its line box's top-left at (`x`, `y`).
 pub(super) fn text(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    tf: Affine,
-    s: &str,
-    size: f32,
-    color: Color,
-    x: f64,
-    y: f64,
-) {
-    tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
-}
-pub(super) fn text_w(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     tf: Affine,
     s: &str,
     style: &TextStyle,
     color: Color,
-    origin: Point,
+    x: f64,
+    y: f64,
 ) {
-    tr.draw_style(
-        scene,
-        s,
-        color,
-        tf * Affine::translate(origin.to_vec2()),
-        None,
-        style,
-    );
+    tr.draw_style(scene, s, color, tf * Affine::translate((x, y)), None, style);
 }
 
-/// A themed button face. Delegates to the toolkit's shared
-/// [`ui::widget::Button::paint`], which is provided exactly for canvas apps
-/// that own their own hit-testing — so these buttons get the fleet's fill,
-/// border, hover, press and disabled treatment instead of a local
-/// approximation that had no hover state at all.
+/// A button in the editor's painted chrome: the toolkit's own face for the
+/// role, at the control size the editor's rows lay out, so every command in
+/// the window is the same button the rest of the system draws.
 pub(super) fn draw_button(
     scene: &mut Scene,
     tf: Affine,
@@ -265,113 +241,148 @@ pub(super) fn draw_button(
     theme: &Theme,
     rect: Rect,
     label: &str,
-    primary: bool,
+    role: ButtonRole,
     hovered: bool,
 ) {
     draw_button_enabled(
         &mut PaintCtx::new(scene, tf, tr, theme),
         rect,
         label,
-        primary,
+        role,
         hovered,
         true,
     );
 }
 
-/// A compact command keeps the same shared button face and semantic name as
-/// its labelled sibling.  The canvas app owns the accessibility tree, while
-/// `accessible_name` keeps the immediate-mode face truthful to inspectors and
-/// makes the intent explicit at the drawing call site.
-#[derive(Clone, Copy)]
-pub(super) struct IconButtonSpec<'a> {
-    pub(super) rect: Rect,
-    pub(super) icon: ui::icons::Icon,
-    pub(super) accessible_name: &'a str,
-    pub(super) primary: bool,
-    pub(super) hovered: bool,
-}
-
-pub(super) fn draw_icon_button(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    spec: IconButtonSpec<'_>,
-) {
-    use ui::widget::{Button, ButtonFace, ButtonStyle};
-    let face = ButtonFace::new(spec.rect, "")
-        .style(if spec.primary {
-            ButtonStyle::Primary
-        } else {
-            ButtonStyle::Neutral
-        })
-        .icon(spec.icon)
-        .accessible_name(spec.accessible_name)
-        .radius(7.0)
-        .hovered(spec.hovered);
-    Button::paint(scene, tf, tr, theme, &face);
-}
-
 /// [`draw_button`] plus an explicit enabled flag, so a control the app cannot
-/// actually perform is painted with the toolkit's own disabled treatment
-/// instead of an inviting primary fill it will only refuse.
+/// actually perform is painted with the toolkit's own disabled treatment.
 pub(super) fn draw_button_enabled(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
     label: &str,
-    primary: bool,
+    role: ButtonRole,
     hovered: bool,
     enabled: bool,
 ) {
-    use ui::widget::{Button, ButtonFace, ButtonStyle};
     let theme = ctx.theme;
     let face = ButtonFace::new(rect, label)
-        .style(if primary {
-            ButtonStyle::Primary
-        } else {
-            ButtonStyle::Neutral
-        })
-        .radius(7.0)
-        .text_size(13.0)
+        .role(role)
+        .control_size(control_size_for(rect, theme))
         .hovered(hovered && enabled)
         .disabled(!enabled);
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// A danger-styled button face (the inspector's Delete).
-pub(super) fn draw_danger_button(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+/// An icon-only command (a compact topbar slot, a row's reorder arrow).
+pub(super) fn draw_icon_button(
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    label: &str,
+    icon: Icon,
+    name: &str,
+    role: ButtonRole,
     hovered: bool,
+    enabled: bool,
 ) {
-    use ui::widget::{Button, ButtonFace, ButtonStyle};
-    let face = ButtonFace::new(rect, label)
-        .style(ButtonStyle::Danger)
-        .radius(7.0)
-        .text_size(13.0)
-        .hovered(hovered);
-    Button::paint(scene, tf, tr, theme, &face);
+    let theme = ctx.theme;
+    let face = ButtonFace::icon_only(rect, icon, name)
+        .role(role)
+        .control_size(control_size_for(rect, theme))
+        .hovered(hovered && enabled)
+        .disabled(!enabled);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// Draw an inspector slider for a 0..1 value, through the toolkit's shared
-/// [`ui::widget::Slider::paint`]. The knob was a bare white circle here, which
-/// is invisible on a light theme; the shared face carries the fleet's track,
-/// fill, knob, hover, press and focus treatment instead.
-///
-/// `track` is the 9px band the inspector lays out; the face wants a taller box
-/// to centre its knob in, so it is grown symmetrically about the same centre —
-/// the hit-test in `hit_slider` already allows that much slop.
+/// A command that stays down while its state is on (mute, lock, solo, the
+/// bin and inspector toggles): a plain button standing on the selection
+/// lift while it is on, exactly as a toolbar toggle is drawn.
+pub(super) fn draw_toggle_button(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    content: ToggleContent<'_>,
+    on: bool,
+    hovered: bool,
+) {
+    let theme = ctx.theme;
+    let ground = theme.tokens.colors.surfaces.content;
+    if on {
+        ui::chrome::paint_row_selection(
+            ctx.scene,
+            ctx.transform,
+            rect,
+            ui::chrome::SelectionState::new(true, false, false),
+            ground,
+            theme,
+        );
+    }
+    let face = match content {
+        ToggleContent::Icon(icon, name) => ButtonFace::icon_only(rect, icon, name),
+        ToggleContent::Label(label) => ButtonFace::new(rect, label).role(ButtonRole::Plain),
+    }
+    .control_size(control_size_for(rect, theme))
+    .hovered(hovered && !on);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+}
+
+/// What a [`draw_toggle_button`] shows.
+#[derive(Clone, Copy)]
+pub(super) enum ToggleContent<'a> {
+    /// An icon and the name a reader hears for it.
+    Icon(Icon, &'a str),
+    /// A short label.
+    Label(&'a str),
+}
+
+/// The control size whose height a laid-out rect was given: the editor lays
+/// its rows out before it paints, so the face is told which size it is in.
+pub(super) fn control_size_for(rect: Rect, theme: &Theme) -> ControlSize {
+    let regular = ButtonFace::height(ControlSize::Regular, theme);
+    if rect.height() + 0.5 < regular {
+        ControlSize::Small
+    } else {
+        ControlSize::Regular
+    }
+}
+
+/// A switch beside its label across `rect`: the on/off settings of a clip
+/// (play backwards, key a colour out, invert the mask) read as a state, not
+/// as a button whose wording flips.
+pub(super) fn draw_switch_row(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    label: &str,
+    on: bool,
+    hovered: bool,
+) {
+    let theme = ctx.theme;
+    let track = switch_rect(rect, theme);
+    let ink = theme.tokens.colors.text_primary;
+    let role = TextRole::Label;
+    let room = (track.x0 - rect.x0 - f64::from(theme.tokens.spacing.s2)).max(0.0);
+    let style = theme.text(role);
+    let shown = elide_at(label, room as f32, &style, ctx.text);
+    ctx.text_role_in_band(&shown, role, ink, rect.x0, rect, None);
+    let face = ui::widget::ToggleFace::new(track, on).hovered(hovered);
+    ui::widget::Toggle::paint(ctx.scene, ctx.transform, theme, &face);
+}
+
+/// Where a [`draw_switch_row`]'s switch sits: trailing, vertically centred,
+/// in the retained switch's 44×24 proportions — the knob (`icon_md`) plus
+/// its edge gap either side.
+pub(super) fn switch_rect(rect: Rect, theme: &Theme) -> Rect {
+    let knob = f64::from(theme.tokens.metrics.icon_md);
+    let h = (knob * 1.2).min(rect.height());
+    let w = h * 44.0 / 24.0;
+    let cy = rect.center().y;
+    Rect::new(rect.x1 - w, cy - h / 2.0, rect.x1, cy + h / 2.0)
+}
+
 /// The keyboard cursor: a ring around the control the next key will reach.
 ///
 /// The editor paints its own panes, so it has no child widgets to inherit a
-/// focus treatment from — this is the same one the shared widgets draw
-/// (`Stroke::new(2.0)` in `border_focus`, over a rounded box the shape of the
-/// control), so the cursor reads the same here as it does anywhere else in the
-/// fleet.
+/// focus treatment from — this is the toolkit's own ring for a painted
+/// surface, so the cursor reads the same here as anywhere else. It is drawn
+/// just inside `rect`, so a row or band that butts against its neighbour
+/// never lends the ring to the next one.
 pub(super) fn draw_focus_ring(
     scene: &mut Scene,
     tf: Affine,
@@ -379,38 +390,42 @@ pub(super) fn draw_focus_ring(
     rect: Rect,
     radius: f64,
 ) {
-    if rect.width() <= FOCUS_RING_W || rect.height() <= FOCUS_RING_W {
+    if rect.width() <= 1.0 || rect.height() <= 1.0 {
         return;
     }
-    scene.stroke(
-        &Stroke::new(FOCUS_RING_W),
+    let inset = 2.0;
+    ui::widget::paint_focus_ring(
+        scene,
         tf,
-        theme.tokens.colors.border_focus,
-        None,
-        &RoundedRect::from_rect(rect, radius.max(0.0)),
+        rect.inflate(-inset, -inset),
+        (radius - inset).max(0.0),
+        theme,
     );
 }
 
-/// The same cursor around a round control. The transport's buttons are filled
-/// circles carrying a glyph, so the ring goes *outside* them: a rounded
-/// rectangle would read as a second, squarer control, and an inset ring would
-/// draw a line through the icon.
-pub(super) fn draw_focus_ring_circle(
-    scene: &mut Scene,
-    tf: Affine,
-    theme: &Theme,
-    centre: Point,
-    r: f64,
-) {
-    scene.stroke(
-        &Stroke::new(FOCUS_RING_W),
-        tf,
-        theme.tokens.colors.border_focus,
-        None,
-        &Circle::new(centre, r + FOCUS_RING_INSET),
-    );
+/// How far a slider's rail stays inside the row it is laid out across: the
+/// knob at its largest (pressed) reaches past the rail's end by its radius,
+/// and must stay inside the inspector's column rather than overhang it.
+pub(super) fn slider_rail(track: Rect) -> Rect {
+    let reach = S3;
+    Rect::new(
+        track.x0 + reach,
+        track.y0,
+        (track.x1 - reach).max(track.x0 + reach),
+        track.y1,
+    )
 }
 
+/// The 0..1 value a pointer at `x` sets on the slider laid out across
+/// `track`: measured along the same rail the knob travels.
+pub(super) fn slider_value_at(track: Rect, x: f64) -> f64 {
+    let rail = slider_rail(track);
+    ((x - rail.x0) / rail.width().max(1e-6)).clamp(0.0, 1.0)
+}
+
+/// Draw a slider across `track` through the toolkit's shared
+/// [`ui::widget::Slider::paint`]. The knob travels [`slider_rail`], so at
+/// either end it stays inside the row it belongs to.
 pub(super) fn draw_track(
     scene: &mut Scene,
     tf: Affine,
@@ -420,8 +435,13 @@ pub(super) fn draw_track(
     hovered: bool,
     dragging: bool,
 ) {
+    let rail = slider_rail(track);
     let cy = track.center().y;
-    let box_rect = Rect::new(track.x0 - 5.0, cy - 11.0, track.x1 + 5.0, cy + 11.0);
+    let half = f64::from(theme.tokens.metrics.icon_md) / 2.0 + 1.0;
+    // The face insets its own track by a fixed padding; hand it the rail
+    // grown by exactly that much so its track *is* the rail.
+    let pad = 5.0;
+    let box_rect = Rect::new(rail.x0 - pad, cy - half, rail.x1 + pad, cy + half);
     let face = ui::widget::SliderFace::new(box_rect, value)
         .hovered(hovered)
         .dragging(dragging);
@@ -430,8 +450,7 @@ pub(super) fn draw_track(
 
 /// Draw a segmented control over caller-owned rects through the toolkit's
 /// shared [`ui::widget::ToggleGroup::paint`], so the transition row and the
-/// export dialog's option groups look like every other segmented control in
-/// the fleet — including a hover state, which the local painter had none of.
+/// export dialog's option groups look like every other segmented control.
 pub(super) fn draw_segmented(
     scene: &mut Scene,
     tf: Affine,
@@ -442,14 +461,14 @@ pub(super) fn draw_segmented(
     selected: usize,
     cursor: Point,
 ) {
-    draw_segmented_sized(
-        &mut PaintCtx::new(scene, tf, tr, theme),
-        segments,
-        labels,
-        selected,
-        cursor,
-        11.5,
-    );
+    let hovered = segments.iter().position(|r| r.contains(cursor));
+    let size = segments
+        .first()
+        .map_or(ControlSize::Regular, |r| control_size_for(*r, theme));
+    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
+        .hovered(hovered)
+        .control_size(size);
+    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
 }
 
 /// Where each part of the transport's readout goes, or `None` for a part
@@ -528,8 +547,8 @@ pub(super) fn readout_fit(
 ///
 /// Its three states have to be told apart at a glance, so they differ in
 /// **two** ways each rather than only in colour: not animated is a small dim
-/// outline, animated-but-between-keys is a larger accent outline, and a key
-/// on the playhead is a filled accent diamond with a ring. A control that
+/// outline, animated-but-between-keys is a larger primary-ink outline, and a key
+/// on the playhead is a filled diamond with a ring. A control that
 /// only changed hue would be unreadable to anyone who cannot separate those
 /// hues, and indistinguishable in a screenshot.
 pub(super) fn draw_key_control(
@@ -547,13 +566,12 @@ pub(super) fn draw_key_control(
         tf,
         theme,
         rect,
-        5.0,
         ui::chrome::SelectionState::new(false, hovered, false),
     );
     let (r, col, filled) = match state {
         KeyState::Off => (4.0, c.text_tertiary, false),
-        KeyState::Between => (5.5, c.accent[5], false),
-        KeyState::OnKey => (5.5, c.accent[5], true),
+        KeyState::Between => (5.5, c.text_primary, false),
+        KeyState::OnKey => (5.5, c.text_primary, true),
     };
     let mut d = BezPath::new();
     d.move_to((ctr.x, ctr.y - r));
@@ -616,7 +634,7 @@ pub(super) const ANCHOR_GLYPHS: [&str; 9] = ["↖", "↑", "↗", "←", "•", 
 ///
 /// One function so the folded header and the reader's summary cannot drift
 /// apart. It reports which channels have been shaped, and says plainly when
-/// a shaped curve is turned down or bypassed: "RGB" and "RGB · bypassed" are
+/// a shaped curve is turned down or bypassed: "RGB" and "RGB, bypassed" are
 /// different states, and a summary that showed only the first would hide the
 /// second.
 pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
@@ -633,10 +651,10 @@ pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
     // length while the canvas beside it graded.
     let mix = clip.param_at(Param::CurveMix, at);
     if mix <= 1e-9 {
-        s.push_str(" · bypassed");
+        s.push_str(", bypassed");
     } else if mix < 0.999 {
         // Writing into a `String` cannot fail.
-        let _ = write!(s, " · {:.0}%", mix * 100.0);
+        let _ = write!(s, " at {:.0}%", mix * 100.0);
     }
     Some(s)
 }
@@ -676,7 +694,7 @@ pub(super) fn curve_coords(canvas: Rect, p: Point) -> (f64, f64) {
 pub(super) fn curve_channel_color(theme: &Theme, ch: crate::curve::Channel) -> Color {
     let c = &theme.tokens.colors;
     match ch {
-        crate::curve::Channel::Master => c.accent[5],
+        crate::curve::Channel::Master => c.text_primary,
         crate::curve::Channel::Red => c.semantic.danger,
         crate::curve::Channel::Green => c.semantic.success,
         crate::curve::Channel::Blue => c.semantic.info,
@@ -754,7 +772,7 @@ pub(super) fn draw_level_meter(
         (area.x1 - flag_w - 2.0).max(area.x0),
         area.y1,
     );
-    fill_round(scene, tf, bars, 1.5, c.neutral[3]);
+    fill_round(scene, tf, bars, 1.5, c.intent.selection);
     let h = ((area.height() - 2.0) / 2.0).max(1.0);
     let thresholds = meter_thresholds();
     for (i, l) in level.iter().enumerate() {
@@ -789,7 +807,7 @@ pub(super) fn draw_level_meter(
     let (fill, _) = if clipped {
         on_fill(theme, c.semantic.danger)
     } else {
-        (c.neutral[3], c.text_dim)
+        (c.intent.selection, c.text_dim)
     };
     fill_round(scene, tf, flag, 1.5, fill);
 }
@@ -894,43 +912,16 @@ pub(super) fn triangle_corner(x: f64, y: f64, s: f64) -> BezPath {
     p
 }
 
+/// A clip's, marker's or media item's label colour: the person's own tag on
+/// their content, drawn from the presence series so every label is as
+/// legible and as loud as every other.
 pub(super) fn clip_color(theme: &Theme, palette: u8) -> Color {
-    let c = &theme.tokens.colors;
-    match palette % 7 {
-        0 => c.accent[5],
-        1 => c.semantic.info,
-        2 => c.semantic.success,
-        3 => c.semantic.warning,
-        4 => c.accent[6],
-        5 => c.semantic.danger,
-        _ => c.neutral[5],
-    }
+    theme.tokens.colors.presence.series(usize::from(palette))
 }
 
 pub(super) fn with_alpha(c: Color, a: f64) -> Color {
-    Color::from_rgba8(
-        c.r(),
-        c.g(),
-        c.b(),
-        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
-    )
-}
-pub(super) fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
-    (f64::from(a) + (f64::from(b) - f64::from(a)) * t.clamp(0.0, 1.0)).round() as u8
-}
-pub(super) fn lighten(c: Color, t: f64) -> Color {
-    Color::from_rgb8(
-        lerp_u8(c.r(), 255, t),
-        lerp_u8(c.g(), 255, t),
-        lerp_u8(c.b(), 255, t),
-    )
-}
-pub(super) fn darken(c: Color, t: f64) -> Color {
-    Color::from_rgb8(
-        lerp_u8(c.r(), 0, t),
-        lerp_u8(c.g(), 0, t),
-        lerp_u8(c.b(), 0, t),
-    )
+    let alpha = a.clamp(0.0, 1.0) as f32;
+    c.with_alpha(alpha)
 }
 
 /// Everything needed to paint one sampled window of an audio waveform.
@@ -1018,15 +1009,10 @@ pub(super) fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
     Rect::new(cx - rw / 2.0, cy - rh / 2.0, cx + rw / 2.0, cy + rh / 2.0)
 }
 
-pub(super) fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
-    elide_at(s, max_px, 11.0, tr)
-}
-
-/// [`elide_w`] at an explicit text size. The size matters: measuring at 11px
-/// and drawing at 13px under-elides, and the overflow lands wherever the
-/// caller's clip happens to be.
-pub(super) fn elide_at(s: &str, max_px: f32, size: f32, tr: &mut TextRenderer) -> String {
-    tr.elide_to_width(s, size, max_px)
+/// `s` elided to `max_px` in `style`. Measured in the style it is drawn in:
+/// measuring in one size and drawing in another under-elides.
+pub(super) fn elide_at(s: &str, max_px: f32, style: &TextStyle, tr: &mut TextRenderer) -> String {
+    tr.elide_to_width_style(s, max_px, style)
 }
 
 /// Choose a ruler tick spacing (seconds) so labels stay ~70px apart.
@@ -1041,21 +1027,18 @@ pub(super) fn nice_tick(px_per_sec: f64) -> f64 {
     600.0
 }
 
-pub(super) fn type_size(tr: &TextRenderer, px: f32) -> f32 {
-    tr.renderer_input_style(&TextStyle::new(px)).size
-}
-
-pub(super) fn dialog_type(tr: &TextRenderer, theme: &Theme) -> DialogType {
-    let scale = &theme.tokens.typography.scale;
+/// The roles the editor's sheets set their text in.
+pub(super) fn dialog_type(theme: &Theme) -> DialogType {
     DialogType {
-        sm: type_size(tr, scale.sm),
-        xs: type_size(tr, scale.xs),
-        xl: type_size(tr, scale.xl),
+        sm: theme.text(TextRole::Body),
+        xs: theme.text(TextRole::Caption),
+        xl: theme.text(TextRole::Title).numeric(),
     }
 }
 
-pub(super) fn line_height(tr: &mut TextRenderer, size: f32) -> f64 {
-    f64::from(tr.measure("Hg", size, None).1)
+/// The measured height of one line set in `style`.
+pub(super) fn line_height(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+    f64::from(tr.measure_style("Hg", None, style).1)
 }
 
 pub(super) fn modal_layout_with_stacking_actions(
@@ -1066,7 +1049,7 @@ pub(super) fn modal_layout_with_stacking_actions(
     theme: &Theme,
 ) -> ModalLayout {
     let spec = spec.clone().body_height(body_height);
-    let mut layout = ModalFrame::layout(viewport, &spec, tr, theme);
+    let mut layout = modal_dialog::layout(viewport, &spec, tr, theme);
     let overflows = layout.actions.iter().any(|r| r.x0 < layout.body.x0 - 0.5);
     if !overflows || layout.actions.len() < 2 {
         return layout;
@@ -1075,12 +1058,7 @@ pub(super) fn modal_layout_with_stacking_actions(
     let n = layout.actions.len() as f64;
     let height = layout.actions.first().map_or(0.0, Rect::height);
     let extra = (height + gap) * (n - 1.0);
-    layout = ModalFrame::layout(
-        viewport,
-        &spec.body_height(body_height + extra / f64::from(theme.text_scale)),
-        tr,
-        theme,
-    );
+    layout = modal_dialog::layout(viewport, &spec.body_height(body_height + extra), tr, theme);
     let bottom = layout.actions.first().map_or(layout.card.y1, |r| r.y1);
     // A grown card the viewport had to clamp shares what is left between
     // the stacked actions rather than letting them consume the whole body.
@@ -1095,94 +1073,30 @@ pub(super) fn modal_layout_with_stacking_actions(
     layout
 }
 
-pub(super) fn pane_hairline(theme: &Theme) -> Color {
-    ui::surface::edge_on(theme.tokens.colors.surfaces.raised)
-}
-
+/// A well inside content (the curve box, an effect row, the title's words):
+/// the raised surface with the edge derived from it.
 pub(super) fn well(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, radius: f64) {
-    ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.lift(0.35));
+    ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.surfaces.raised);
 }
 
+/// The hover and selection lift of a row in one of the editor's lists.
 pub(super) fn selection_row(
     scene: &mut Scene,
     tf: Affine,
     theme: &Theme,
     rect: Rect,
-    radius: f64,
     state: ui::chrome::SelectionState,
 ) {
-    let tier = ui::chrome::selection_tier(theme, state);
-    if tier.fill.components[3] > 0.0 {
-        fill_round(scene, tf, rect, radius, tier.fill);
-    }
-    if let Some(border) = tier.border {
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            border,
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
-    }
-    if let Some(glow) = tier.inner_glow {
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            glow,
-            None,
-            &RoundedRect::from_rect(rect.inset(-1.5), (radius - 1.5).max(0.0)),
-        );
-    }
+    ui::chrome::paint_row_selection(
+        scene,
+        tf,
+        rect,
+        state,
+        theme.tokens.colors.surfaces.content,
+        theme,
+    );
 }
 
-pub(super) fn paint_icon_toggle(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    open: bool,
-    hovered: bool,
-) -> Color {
-    let mut face = ui::widget::ButtonFace::new(rect, "")
-        .radius(7.0)
-        .hovered(hovered)
-        .pressed(open);
-    if open {
-        face = face.primary();
-    }
-    ui::widget::Button::paint(scene, tf, tr, theme, &face);
-    if open {
-        on_fill(theme, theme.accent_primary).1
-    } else {
-        theme.tokens.colors.text_primary
-    }
-}
-
-pub(super) fn draw_segmented_sized(
-    ctx: &mut PaintCtx<'_>,
-    segments: &[Rect],
-    labels: &[&str],
-    selected: usize,
-    cursor: Point,
-    text_size: f32,
-) {
-    let theme = ctx.theme;
-    let hovered = segments.iter().position(|r| r.contains(cursor));
-    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
-        .hovered(hovered)
-        .radius(6.0)
-        .text_size(text_size);
-    ui::widget::ToggleGroup::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-}
-
-pub(super) fn tinted(base: Color, tint: Color, t: f64) -> Color {
-    Color::from_rgb8(
-        lerp_u8(base.r(), tint.r(), t),
-        lerp_u8(base.g(), tint.g(), t),
-        lerp_u8(base.b(), tint.b(), t),
-    )
-}
 pub(super) fn readout_tops(transport: Rect, cy: f64, heights: [f64; 4]) -> [f64; 4] {
     let [big, total, motion, meta] = heights;
     let big_top = (cy - big / 2.0).max(transport.y0 + 2.0);
