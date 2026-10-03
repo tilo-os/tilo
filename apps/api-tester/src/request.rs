@@ -14,8 +14,8 @@ use ui::icons::Icon;
 use ui::tokens::{Metrics, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Dropdown, Element, Field, Row, Scrollable,
-    SegmentedStyle, Text, TextInput, TextInputKind, ToggleGroup,
+    Button, ButtonRole, Column, Container, Dropdown, Element, Field, Row, Scrollable, Text,
+    TextInput, TextInputKind, ToggleGroup,
 };
 
 use crate::commands::{AuthField, Cmd, FormMode, FormTarget, Sink, Table};
@@ -299,7 +299,7 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
 }
 
 fn auth_fields(auth: &Auth, sink: &Sink) -> Element {
-    let column = Column::new().with_no_padding();
+    let column = Column::new().with_no_padding().with_intrinsic_height();
     match auth {
         Auth::None => Box::new(column.push(body("This request does not use authentication."))),
         Auth::Bearer { token } => Box::new(column.push(Box::new(Field::new(
@@ -345,13 +345,13 @@ fn auth_panel(request: &Request, sink: &Sink) -> Panel {
             .collect(),
         auth_kind_index(&request.auth),
     )
-    .with_style(SegmentedStyle::Quiet)
     .on_view("api.auth-kind", move |i| {
         kind_sink.borrow_mut().push(Cmd::SetAuthKind(i));
     });
     let (slot, handle) = Swap::new(auth_fields(&request.auth, sink));
     let column = Column::new()
         .with_no_padding()
+        .with_intrinsic_height()
         .push(Box::new(kind))
         .push(Box::new(slot));
     Panel {
@@ -408,7 +408,6 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
             .position(|mode| *mode == request.body_mode)
             .unwrap_or(0),
     )
-    .with_style(SegmentedStyle::Quiet)
     .on_view("api.body-mode", move |i| {
         mode_sink.borrow_mut().push(Cmd::SetBodyMode(i));
     });

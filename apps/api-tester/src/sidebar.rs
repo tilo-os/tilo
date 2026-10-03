@@ -1,9 +1,10 @@
 //! The navigation column: saved requests by collection, and history.
 //!
-//! Every request is a [`ListRow`] with its method as the leading code, so a
-//! person scans for the verb first; history rows carry the status in their
-//! meta and a status dot. The column is composed from the toolkit's content
-//! widgets and holds no colour, size or padding of its own.
+//! Every request is a [`ListRow`] titled with its name and carrying its method
+//! as the row's meta, so the titles of a collection share one edge whatever
+//! the verb; history rows are titled with the request line and carry the
+//! status in their meta and a status dot. The column is composed from the
+//! toolkit's content widgets and holds no colour, size or padding of its own.
 
 use ui::icons::Icon;
 use ui::tokens::{Spacing, TextRole};
@@ -109,7 +110,7 @@ fn collection_section(
             request: Some(request.id),
         };
         let row = ListRow::new(format!("api.nav.request.{ci}.{ri}"), &request.name)
-            .badge(request.method.as_str())
+            .meta(request.method.as_str())
             .selected(view.selected == Some((ci, ri)))
             .on_activate(pusher(sink, Cmd::LoadRequest(ci, ri)))
             .action(
@@ -124,11 +125,7 @@ fn collection_section(
             );
         rows.push(Box::new(row));
     }
-    Section::new(rows).with_header(
-        SectionHeader::group(&collection.name)
-            .count(collection.requests.len())
-            .action(rename),
-    )
+    Section::new(rows).with_header(SectionHeader::group(&collection.name).action(rename))
 }
 
 fn history(view: &SidebarView<'_>, sink: &Sink) -> Section {
@@ -137,8 +134,8 @@ fn history(view: &SidebarView<'_>, sink: &Sink) -> Section {
         rows.push(quiet("No requests sent yet."));
     }
     for (hi, entry) in view.history.iter().enumerate() {
-        let row = ListRow::new(format!("api.nav.history.{hi}"), short_path(&entry.url))
-            .badge(entry.method.as_str())
+        let line = format!("{} {}", entry.method.as_str(), short_path(&entry.url));
+        let row = ListRow::new(format!("api.nav.history.{hi}"), line)
             .meta(entry.status.to_string())
             .on_activate(pusher(sink, Cmd::ReplayHistory(hi)));
         let row = match status_class(entry.status) {

@@ -4,7 +4,8 @@
 //! Each table is a [`DataTable`] with real controls in its cells: a checkbox
 //! that includes or excludes the row, a field for the key, a field for the
 //! value and a button that removes the row. The last row is always blank and
-//! is where the next pair is typed.
+//! is where the next pair is typed; it holds only the two fields, and gains
+//! the checkbox and the remove button once it becomes a pair.
 //!
 //! Every cell is bound to process-local state held by its row, so a cell never
 //! has to be rebuilt for an edit and keeps its caret while the person types.
@@ -12,19 +13,25 @@
 //! through a queue its model drains.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use ui::LocalState;
 use ui::icons::Icon;
+use ui::tokens::{Metrics, Spacing, SpacingStep};
 use ui::widget::data_table::{
     ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
 };
-use ui::widget::{Button, ButtonRole, Checkbox, Element, TextInput, TextInputKind};
+use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, Spacer, TextInput, TextInputKind};
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
+use crate::swap::Swap;
+
+/// What a row's controls do once the row holds a pair: put them in place of
+/// the empty cell they replace, by the column they belong to.
+type Reveal = Rc<RefCell<HashMap<&'static str, Box<dyn Fn()>>>>;
 
 /// One row as the table shows it. The states are shared with the cells.
 #[derive(Clone)]
@@ -33,6 +40,10 @@ pub(crate) struct KvRow {
     pub(crate) key: LocalState<String>,
     pub(crate) value: LocalState<String>,
     pub(crate) enabled: LocalState<bool>,
+    /// The row is the blank one: nothing typed yet, so no checkbox and no
+    /// remove button.
+    pending: LocalState<bool>,
+    reveal: Reveal,
 }
 
 impl KvRow {
@@ -42,16 +53,20 @@ impl KvRow {
             key: LocalState::new(row.key.clone()),
             value: LocalState::new(row.value.clone()),
             enabled: LocalState::new(row.enabled),
+            pending: LocalState::new(false),
+            reveal: Reveal::default(),
         }
     }
 
-    /// The trailing row: empty, and unchecked until something is typed.
+    /// The trailing row: empty, and without controls until something is typed.
     pub(crate) fn blank(id: String) -> Self {
         Self {
             id,
             key: LocalState::new(String::new()),
             value: LocalState::new(String::new()),
             enabled: LocalState::new(false),
+            pending: LocalState::new(true),
+            reveal: Reveal::default(),
         }
     }
 }
@@ -61,10 +76,9 @@ impl KvRow {
 pub(crate) enum KvChange {
     /// A blank row appended at the end.
     Append(String),
-    /// The blank row became a pair: it is checked from now on.
+    /// The blank row became a pair: it is checked from now on and gets its
+    /// checkbox and remove button.
     Activate(String),
-    /// A row emptied (the blank row's remove control).
-    Clear(String),
     /// A row removed.
     Remove(String),
 }
@@ -134,12 +148,10 @@ impl TableModel for KvModel {
                 KvChange::Activate(id) => {
                     if let Some(row) = self.rows.iter().find(|row| row.id == id) {
                         row.enabled.set(true);
-                    }
-                }
-                KvChange::Clear(id) => {
-                    if let Some(row) = self.rows.iter().find(|row| row.id == id) {
-                        row.key.set(String::new());
-                        row.value.set(String::new());
+                        row.pending.set(false);
+                        for reveal in row.reveal.take().values() {
+                            reveal();
+                        }
                     }
                 }
                 KvChange::Remove(id) => {
@@ -180,7 +192,40 @@ fn text_cell(
                 edit: edit(text.to_owned()),
             });
         });
-    Box::new(input)
+    // The plain field draws its text at its own edge; the inset lines the
+    // text up under the column's header.
+    Box::new(
+        Column::new()
+            .with_horizontal_padding(Spacing::BASE.s2, Spacing::BASE.s2)
+            .with_vertical_padding(0.0)
+            .with_intrinsic_height()
+            .push(Box::new(input)),
+    )
+}
+
+/// A control that sits at the top of a field-high row, moved down to the
+/// field's middle.
+fn centred(control: Element) -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_extra_top_padding(Spacing::BASE.s1)
+            .with_intrinsic_height()
+            .push(control),
+    )
+}
+
+/// The control of a cell that only a pair has. The blank row's cell is empty
+/// until the row becomes a pair, when `control` takes its place.
+fn gated(row: &KvRow, column: &'static str, control: impl Fn() -> Element + 'static) -> Element {
+    if !row.pending.get() {
+        return centred(control());
+    }
+    let (slot, handle) = Swap::new(Box::new(Spacer::token(SpacingStep::S0)));
+    row.reveal
+        .borrow_mut()
+        .insert(column, Box::new(move || handle.set(centred(control()))));
+    Box::new(slot)
 }
 
 /// A built table and the queue its rows change through.
@@ -205,22 +250,29 @@ pub(crate) fn build(
     let key_sink = sink.clone();
     let value_sink = sink.clone();
     let remove_sink = sink.clone();
+    // The two control columns are as wide as a control's pointer target.
+    let control = Metrics::BASE.min_pointer_target;
     let columns = vec![
-        ColumnDef::new("enabled", "", ColumnWidth::Fixed(48.0)).with_widget(
+        ColumnDef::new("enabled", "", ColumnWidth::Fixed(control)).with_widget(
             move |row: &KvRow, _| -> Element {
                 let sink = enabled_sink.clone();
                 let id = row.id.clone();
-                Box::new(
-                    Checkbox::from_state(&row.enabled)
-                        .with_accessible_name("Use this row")
-                        .on_change(move |enabled| {
-                            sink.borrow_mut().push(Cmd::Edit {
-                                table,
-                                row: id.clone(),
-                                edit: RowEdit::Enabled(enabled),
-                            });
-                        }),
-                )
+                let state = row.enabled.clone();
+                gated(row, "enabled", move || -> Element {
+                    let sink = sink.clone();
+                    let id = id.clone();
+                    Box::new(
+                        Checkbox::from_state(&state)
+                            .with_accessible_name("Use this row")
+                            .on_change(move |enabled| {
+                                sink.borrow_mut().push(Cmd::Edit {
+                                    table,
+                                    row: id.clone(),
+                                    edit: RowEdit::Enabled(enabled),
+                                });
+                            }),
+                    )
+                })
             },
         ),
         ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0)).with_widget(
@@ -233,21 +285,25 @@ pub(crate) fn build(
                 text_cell(&value_sink, table, row, &row.value, "Value", RowEdit::Value)
             },
         ),
-        ColumnDef::new("remove", "", ColumnWidth::Fixed(48.0)).with_widget(
+        ColumnDef::new("remove", "", ColumnWidth::Fixed(control)).with_widget(
             move |row: &KvRow, _| -> Element {
                 let sink = remove_sink.clone();
                 let id = row.id.clone();
-                Box::new(
-                    Button::icon_only(&format!("api.kv-remove.{}", row.id), Icon::X, "Remove row")
-                        .role(ButtonRole::Plain)
-                        .on_effect(move || {
-                            sink.borrow_mut().push(Cmd::Edit {
-                                table,
-                                row: id.clone(),
-                                edit: RowEdit::Remove,
-                            });
-                        }),
-                )
+                gated(row, "remove", move || -> Element {
+                    let sink = sink.clone();
+                    let row = id.clone();
+                    Box::new(
+                        Button::icon_only(&format!("api.kv-remove.{id}"), Icon::X, "Remove row")
+                            .role(ButtonRole::Plain)
+                            .on_effect(move || {
+                                sink.borrow_mut().push(Cmd::Edit {
+                                    table,
+                                    row: row.clone(),
+                                    edit: RowEdit::Remove,
+                                });
+                            }),
+                    )
+                })
             },
         ),
     ];

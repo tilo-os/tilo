@@ -664,3 +664,27 @@ fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
         "the performs one indexed address lookup"
     );
 }
+
+/// The document returns records in the order of their ids, so a pick or a
+/// rename that re-reads it must not shuffle the lists a person arranged.
+#[test]
+fn rereading_the_document_keeps_the_order_on_screen() {
+    let (mut app, mut doc) = demo();
+    let names = |app: &ApiTesterApp| -> Vec<String> {
+        app.environments.iter().map(|e| e.name.clone()).collect()
+    };
+    let collections = |app: &ApiTesterApp| -> Vec<String> {
+        app.collections.iter().map(|c| c.name.clone()).collect()
+    };
+    let before = (names(&app), collections(&app));
+    for _ in 0..8 {
+        app.adopt_workspace(&doc, &ROOT);
+        assert_eq!((names(&app), collections(&app)), before);
+    }
+    let first = app.environments[0].id;
+    let second = app.environments[1].id;
+    app.pick_environment(&mut doc, &ROOT, "Staging");
+    assert_eq!(app.active_env, Some(second));
+    assert_ne!(app.active_env, Some(first));
+    assert_eq!((names(&app), collections(&app)), before);
+}
