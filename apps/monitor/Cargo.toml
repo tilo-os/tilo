@@ -29,6 +29,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 sysinfo.workspace = true
+tracing.workspace = true
 host-info = { path = "../../crates/system/host-info" }
 workspace-hack = { version = "0.1" }
 
