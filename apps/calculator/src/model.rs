@@ -162,9 +162,9 @@ pub const DEMO_HISTORY: [(&str, &str); 5] = [
 /// The curves a lived-in Graph 2D shows.
 pub const DEMO_CURVES: [&str; 4] = ["(x^2+1)/(x-3)", "0.25*x^2-2", "sqrt(x+6)", "sin(x)"];
 
-/// The surfaces a lived-in Graph 3D shows: sheets at different heights, so the
-/// plot reads as several surfaces rather than a lone one.
-pub const DEMO_SURFACES: [&str; 3] = [DEFAULT_SURFACE, "0.05*(x^2+y^2)-3", "3-0.06*(x^2+y^2)"];
+/// The surfaces a lived-in Graph 3D shows: sheets at different heights that
+/// never cross, so the plot reads as several surfaces rather than a lone one.
+pub const DEMO_SURFACES: [&str; 2] = [DEFAULT_SURFACE, "sin(x)*cos(y)-3"];
 
 impl CalcModel {
     /// Rich starting content for tests and offline demos: a populated,

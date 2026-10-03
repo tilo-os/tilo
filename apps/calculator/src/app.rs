@@ -180,10 +180,8 @@ impl CalculatorApp {
         // The drawer decides docked or floating from the window it has been
         // laid out in, so lay the mode out before staging its panel.
         self.relayout();
-        match name {
-            "calculator-error" => self.model.apply_error_demo(),
-            "graph-2d-long-formula" => self.g2.set_park(crate::plot_panel::Park::End),
-            _ => {}
+        if name == "calculator-error" {
+            self.model.apply_error_demo();
         }
         if mode == Mode::Calc && name != "calculator-error" {
             self.model.expr = "sin(0.5)+cos(0.5)".to_string();
@@ -328,7 +326,7 @@ impl CalculatorApp {
         // Full labels where they fit; the mode strip condenses first, then
         // the unit strip.
         let s = self.strips;
-        let room = (right - left).max(0.0) - h.gap;
+        let room = (right - left).max(0.0) - h.cluster_gap;
         (self.seg_short, self.unit_short) = if s.mode_full + s.unit_full <= room {
             (false, false)
         } else if s.mode_short + s.unit_full <= room {
@@ -349,7 +347,7 @@ impl CalculatorApp {
             Rect::new(unit_x0 + half, y0, right, y1),
         ];
 
-        let region = Rect::new(left, y0, (unit_x0 - h.gap).max(left), y1);
+        let region = Rect::new(left, y0, (unit_x0 - h.cluster_gap).max(left), y1);
         let wide = if self.seg_short {
             s.mode_short
         } else {
@@ -1457,8 +1455,14 @@ impl Widget for CalculatorApp {
         self.draw_header(scene, t, tr, theme);
         match self.model.mode {
             Mode::Calc => self.calc.draw_panel(scene, t, tr, theme, &self.model),
-            Mode::Graph2d => self.g2.draw_panel(scene, t, tr, theme, &self.model),
-            Mode::Graph3d => self.g3.draw_panel(scene, t, tr, theme, &self.model),
+            Mode::Graph2d => {
+                self.g2
+                    .draw_panel(scene, t, tr, theme, &self.model, self.host_focused);
+            }
+            Mode::Graph3d => {
+                self.g3
+                    .draw_panel(scene, t, tr, theme, &self.model, self.host_focused);
+            }
         }
 
         // Remote collaborators' carets, mapped into the active formula field's

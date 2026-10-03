@@ -20,6 +20,9 @@ pub struct Header {
     pub inset: f64,
     /// Between neighbouring controls.
     pub gap: f64,
+    /// Between two clusters of controls on the row (the mode strip and the
+    /// angle-unit strip), far enough apart to read as separate controls.
+    pub cluster_gap: f64,
     /// Side of an icon button.
     pub chip: f64,
 }
@@ -38,6 +41,7 @@ impl Header {
             height: f64::from(theme.tokens.metrics.header_height).max(chip + 2.0 * inset),
             inset,
             gap: f64::from(theme.tokens.spacing.s2),
+            cluster_gap: f64::from(theme.tokens.spacing.rhythm.group),
             chip,
         }
     }
