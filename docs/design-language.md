@@ -128,10 +128,10 @@ shadow plus, on dark themes, a 1 px light inner edge.
 
 ## Type
 
-The UI face is Instrument Sans, one face for the whole system (why, and its
-provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). Greek and
-Cyrillic fall back to faces matched to it, at its x-height and stem weight
-(Geologica, Onest); Vietnamese and every other script fall back to Noto. A
+The UI face is Tilo Sans, one face for the whole system (why, and its
+provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). It sets Latin,
+Vietnamese and Greek; Cyrillic falls back to Onest, matched to its x-height
+and stem weight, and every other script to Noto. A
 theme or the accessibility layer may choose the built-in Hyperlegible face
 (Atkinson Hyperlegible Next) instead.
 Reading text is serif and code is mono, both from the font catalog.

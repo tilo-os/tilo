@@ -1,40 +1,42 @@
 schema = 1
-catalog_id = "tilo-fonts-fedora44-instrument-sans-matched-fallbacks-2026-10-03"
-product_bytes = 44606380
-fixture_bytes = 45486176
+catalog_id = "tilo-fonts-fedora44-tilo-sans-2026-10-03"
+product_bytes = 44743200
+fixture_bytes = 45622996
 
 [[font]]
 scope = "product"
 browser_startup = true
-file = "InstrumentSans[wdth,wght].ttf"
-bytes = 194336
-sha256 = "b24f1812584816958afcf22e22d08e44318c5e51651e25d2438efdde389b33b1"
-source_url = "https://github.com/google/fonts/blob/2fc9491da70cf3e1bafd3c3da49244c5a496e9d5/ofl/instrumentsans/InstrumentSans[wdth,wght].ttf"
-source_metadata = "Instrument Sans; Regular; PS `InstrumentSans-Regular`; v1.000; axes in native order `wdth` 75/100/100, `wght` 400/400/700"
-reserved_aliases = ["Instrument Sans"]
+file = "TiloSans[wdth,wght].ttf"
+bytes = 298140
+sha256 = "a2a38f9f9898610aee0cc0f9e5bc984d30b0da0d4c89a171a459445a0ed5e45f"
+source_path = "vendor/fonts/tilo-sans/fonts/default/TiloSans[wdth,wght].ttf"
+source_commit = "cf769051cc76431fe21f17e5c22cb938c826ca60"
+source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
+reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
-license_files = ["LICENSES/Instrument-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
 [[font.faces]]
 index = 0
-family = "Instrument Sans"
-post_script_name = "InstrumentSans-Regular"
+family = "Tilo Sans"
+post_script_name = "TiloSans-Regular"
 style = "normal"
 
 [[font]]
 scope = "product"
 browser_startup = true
-file = "InstrumentSans-Italic[wdth,wght].ttf"
-bytes = 202128
-sha256 = "a74203cc5066a3b2f8de1a7b0887ef897773c2319dc86c911f8e85350cde0d07"
-source_url = "https://github.com/google/fonts/blob/2fc9491da70cf3e1bafd3c3da49244c5a496e9d5/ofl/instrumentsans/InstrumentSans-Italic[wdth,wght].ttf"
-source_metadata = "Instrument Sans; Italic; PS `InstrumentSans-Italic`; v1.000; axes in native order `wdth` 75/100/100, `wght` 400/400/700"
-reserved_aliases = ["Instrument Sans"]
+file = "TiloSans-Italic[wdth,wght].ttf"
+bytes = 308180
+sha256 = "5b255ff718cee4c24b3a98e4af3b0750502d01d80d2c1c5c44e56ee06e09c3cb"
+source_path = "vendor/fonts/tilo-sans/fonts/default/TiloSans-Italic[wdth,wght].ttf"
+source_commit = "cf769051cc76431fe21f17e5c22cb938c826ca60"
+source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
+reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
-license_files = ["LICENSES/Instrument-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
 [[font.faces]]
 index = 0
-family = "Instrument Sans"
-post_script_name = "InstrumentSans-Italic"
+family = "Tilo Sans"
+post_script_name = "TiloSans-Italic"
 style = "italic"
 
 [[font]]
@@ -84,23 +86,6 @@ license_files = ["LICENSES/Onest-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
 index = 0
 family = "Onest"
 post_script_name = "Onest-Regular"
-style = "normal"
-
-[[font]]
-scope = "product"
-browser_startup = true
-file = "Geologica-Greek[wght].ttf"
-bytes = 73036
-sha256 = "12678d2e4e09df7856cc3f66dbcbea1c94f1ca4c93e2d7993e86cba7f41edeb9"
-source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/geologica/Geologica[CRSV,SHRP,slnt,wght].ttf"
-source_metadata = "Geologica; Thin default; PS `Geologica-Thin`; `wght` 100/100/900, `CRSV` 0, `SHRP` 0 and `slnt` 0 pinned; Greek subset built by tools/font-fallback-subsets.py from the upstream file (SHA-256 9124d9e88ac6c11d761f35241713a51d68e2c4ebedce0edaca834717a00959ec)"
-reserved_aliases = ["Geologica", "Geologica Thin"]
-license_spdx = "OFL-1.1"
-license_files = ["LICENSES/Geologica-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
-[[font.faces]]
-index = 0
-family = "Geologica"
-post_script_name = "Geologica-Thin"
 style = "normal"
 
 [[font]]
@@ -461,19 +446,15 @@ source_in_license_scratch = "licenses/adwaita-fonts-50.0/LICENSE"
 sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
 
 [[license]]
-file = "LICENSES/Instrument-Sans-OFL.txt"
-source_url = "https://github.com/google/fonts/blob/2fc9491da70cf3e1bafd3c3da49244c5a496e9d5/ofl/instrumentsans/OFL.txt"
-sha256 = "9e27a72ed30eb49a08678f6a5d6ed98ec7ba5368f541637ee0683ec9134ef966"
+file = "LICENSES/Tilo-Sans-OFL.txt"
+source_path = "vendor/fonts/tilo-sans/OFL.txt"
+source_commit = "cf769051cc76431fe21f17e5c22cb938c826ca60"
+sha256 = "63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98"
 
 [[license]]
 file = "LICENSES/Onest-OFL.txt"
 source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/onest/OFL.txt"
 sha256 = "071195d8806e226faeee60259c28ca67b458227af5195a73f5cfcab06e3003bc"
-
-[[license]]
-file = "LICENSES/Geologica-OFL.txt"
-source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/geologica/OFL.txt"
-sha256 = "778186245840aea0e60bec6a46e7fb1442e0cd78e41afeadffcd3e8824b379e0"
 
 [[license]]
 file = "LICENSES/Atkinson-Hyperlegible-Next-OFL.txt"
@@ -483,4 +464,4 @@ sha256 = "aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030"
 [[license]]
 file = "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
 source_in_license_scratch = "licenses/../font-name-notices.txt"
-sha256 = "fdaf280d14438dcee2c1eeaafc0b55a366bb97fe2a23c30b40ba84221a46288f"
+sha256 = "899cbfa63616a743b34c88fd14e7c6063ade6b8a9398da9c01fd16309fe31634"
