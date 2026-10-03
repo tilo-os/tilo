@@ -910,7 +910,13 @@ if [ -n "$ETC_OVERLAY" ]; then
   sudo -n mount -o remount,rw "$MNT"
   mapfile -t overlay_entries < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort)
   msg "adding validation access to this disk's /etc: ${overlay_entries[*]}"
-  sudo -n cp -a --no-preserve=ownership "$ETC_OVERLAY/." "$t_etc/"
+  # Add the entries without touching the directories that already exist: a
+  # `cp -a SRC/. DST/` also copies SRC's own mode, timestamps and SELinux
+  # context onto DST, which left the deployment's /etc labelled
+  # `unconfined_u:object_r:var_t` (the runner's work directory) instead of
+  # `etc_t`, so confined services (ldconfig, accounts-daemon) could not use it.
+  sudo -n tar -C "$ETC_OVERLAY" --no-xattrs --no-selinux -cf - . \
+    | sudo -n tar -C "$t_etc" --no-same-owner --no-overwrite-dir -xf -
   overlay_label_args=(--rm --privileged -v "$t_etc:/target-etc")
   if [ -n "$SRC_REF" ]; then
     overlay_label_args+=(--network host
