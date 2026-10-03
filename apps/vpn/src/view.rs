@@ -12,23 +12,20 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use taffy::{NodeId, TaffyTree};
+use vello::peniko::Color;
 
 use ui::LocalState;
-use ui::charts::{Chart, ChartLabels, ChartStyle, Series, TrendRange};
 use ui::icons::Icon;
-use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
-use ui::text_render::{TextKind, TextRenderer};
+use ui::text_render::TextKind;
 use ui::theme::Theme;
 use ui::tokens::{SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Badge, Banner, Button, ButtonRole, ChipStyle, Column, Container, Element, EmptyState, Field,
-    FormSection, ListRow, Property, PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer,
-    StatGroup, StatTile, TaffyTreeExt, Text, Toggle, ToggleGroup, Tone, Widget,
+    AxisTick, Badge, Banner, Button, ButtonRole, CartesianPlot, CartesianStyle, ChipStyle, Column,
+    Container, ControlSize, Element, EmptyState, Field, FormSection, LegendPosition, ListRow,
+    PlotAxis, PlotDatum, PlotSeries, Property, PropertyList, Row, Scrollable, Section, SeriesKind,
+    Spacer, StatGroup, StatTile, Text, Toggle, ToggleGroup, Tone, Widget,
 };
 
 use crate::model::{ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, human_ago};
@@ -154,7 +151,7 @@ pub(crate) struct OverviewModel<'a> {
     pub tor_global: bool,
 }
 
-/// The saved connections, then the window-wide routing preference.
+/// The saved connections, then the preference that applies to all of them.
 pub(crate) fn overview(
     model: &OverviewModel<'_>,
     intents: &Intents,
@@ -171,9 +168,9 @@ pub(crate) fn overview(
             let intents = intents.clone();
             move |_| intents.push(Intent::ToggleTorGlobal)
         });
-    let routing = FormSection::new("Routing")
+    let routing = FormSection::new("Tor")
         .grouped()
-        .field(Field::new("Route all traffic over Tor", tor));
+        .field(Field::new("Route all connections over Tor", tor));
     let page = Column::new()
         .with_intrinsic_height()
         .push(Box::new(Section::new(rows)))
@@ -187,18 +184,38 @@ pub(crate) fn overview(
     )
 }
 
-/// One saved connection: its protocol, endpoint, when it was last used and
-/// whether it is up.
+/// The server part of an endpoint: `vpn.example.net:1194 (UDP)` and
+/// `[2001:db8::1]:51820` name `vpn.example.net` and `2001:db8::1`. The port
+/// and the transport are details of the connection, not how a person tells
+/// one connection from another.
+fn endpoint_host(endpoint: &str) -> &str {
+    let address = endpoint.split(" (").next().unwrap_or(endpoint).trim();
+    if let Some(bracketed) = address.strip_prefix('[') {
+        return bracketed.split(']').next().unwrap_or(bracketed);
+    }
+    match address.rsplit_once(':') {
+        Some((host, port))
+            if !host.contains(':')
+                && !port.is_empty()
+                && port.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            host
+        }
+        _ => address,
+    }
+}
+
+/// One saved connection: where it goes (or that it still has to be set up
+/// here) and whether it is up.
 fn connection_row(entry: &ListEntry<'_>, selected: Option<ConnId>, intents: &Intents) -> ListRow {
     let connection = entry.connection;
     let id = connection.id;
     let secondary = entry
         .details
         .map_or("Not set up on this device", |details| {
-            details.endpoint.as_str()
+            endpoint_host(&details.endpoint)
         });
     let row = ListRow::new(format!("vpn-connection-{id}"), &connection.name)
-        .badge(connection.kind.badge())
         .secondary(secondary)
         .selected(selected == Some(id))
         .on_activate(intents.sender(Intent::Select(id)));
@@ -295,24 +312,49 @@ fn notice(notice: &Notice<'_>, intents: &Intents) -> Element {
             kind.ext()
         ))),
         NoticeKind::Error => {
-            let mut actions = Row::new().no_wrap();
-            if notice.retry {
-                actions = actions.push(Box::new(
-                    Button::new("vpn-retry-import", "Try again", None)
-                        .control_size(ui::widget::ControlSize::Small)
-                        .on_click(intents.sender(Intent::RetryImport)),
-                ));
+            let banner: Element = Box::new(DismissOnClose {
+                banner: Banner::error(notice.message).dismissible(),
+                intents: intents.clone(),
+            });
+            if !notice.retry {
+                return banner;
             }
-            actions = actions.push(Box::new(
-                Button::new("vpn-dismiss-error", "Dismiss", None)
-                    .role(ButtonRole::Plain)
-                    .control_size(ui::widget::ControlSize::Small)
-                    .on_click(intents.sender(Intent::DismissError)),
-            ));
+            let retry = Button::new("vpn-retry-import", "Try again", None)
+                .control_size(ControlSize::Small)
+                .on_click(intents.sender(Intent::RetryImport));
             Box::new(Section::new(vec![
-                Box::new(Banner::error(notice.message)),
-                Box::new(actions),
+                banner,
+                Box::new(Row::new().no_wrap().push(Box::new(retry))),
             ]))
+        }
+    }
+}
+
+/// An error banner whose close control dismisses the error it shows.
+struct DismissOnClose {
+    banner: Banner,
+    intents: Intents,
+}
+
+impl ui::widget::Decorator for DismissOnClose {
+    type Inner = Banner;
+
+    fn inner(&self) -> &Banner {
+        &self.banner
+    }
+
+    fn inner_mut(&mut self) -> &mut Banner {
+        &mut self.banner
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        Widget::handle_event(&mut self.banner, event, ctx);
+        if self.banner.take_dismissed() {
+            self.intents.push(Intent::DismissError);
         }
     }
 }
@@ -321,11 +363,12 @@ fn notice(notice: &Notice<'_>, intents: &Intents) -> Element {
 pub(crate) struct DetailModel<'a> {
     pub connection: &'a Connection,
     pub details: Option<&'a LocalProfileDetails>,
-    pub provisioned: bool,
     pub tab: DetailTab,
     pub rates: &'a Rates,
     pub activity: Vec<String>,
     pub notice: Option<Notice<'a>>,
+    /// Every connection goes over Tor, whatever this one's own preference.
+    pub tor_global: bool,
 }
 
 /// The selected connection: where it stands, its main action, and one tab
@@ -339,7 +382,7 @@ pub(crate) fn detail(
     if let Some(n) = &model.notice {
         page = page.push(notice(n, intents));
     }
-    page = page.push(Box::new(summary(model, intents)));
+    page = page.push(Box::new(summary(model)));
     page = page.push(Box::new(tabs(model.tab, intents)));
     page = page.push(match model.tab {
         DetailTab::Status => status(model, intents),
@@ -373,8 +416,8 @@ fn status_badge(status: ConnStatus) -> Badge {
     Badge::text(status.label()).style(ChipStyle::Tinted(tone))
 }
 
-/// The status and protocol at a glance, and the connection's main action.
-fn summary(model: &DetailModel<'_>, intents: &Intents) -> Row {
+/// The status and protocol at a glance.
+fn summary(model: &DetailModel<'_>) -> Row {
     let connection = model.connection;
     let mut row = Row::new()
         .no_wrap()
@@ -383,20 +426,124 @@ fn summary(model: &DetailModel<'_>, intents: &Intents) -> Row {
         .push(Box::new(
             Badge::text(connection.kind.long_name()).style(ChipStyle::Neutral),
         ));
-    if connection.tor {
+    if connection.tor || model.tor_global {
         row = row.push(Box::new(Badge::text("Tor").style(ChipStyle::Neutral)));
     }
-    let action = MainAction::of(connection, model.provisioned);
-    let role = match action {
-        MainAction::Disconnect => ButtonRole::Secondary,
-        _ => ButtonRole::Primary,
-    };
-    row.push(Box::new(Spacer::new())).push(Box::new(
-        Button::new("vpn-main-action", action.label(), None)
-            .role(role)
-            .with_enabled(action != MainAction::Connecting)
-            .on_click(intents.sender(Intent::MainAction(connection.id))),
-    ))
+    row
+}
+
+/// The selected connection's main action, as the detail toolbar shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ToolbarAction {
+    pub id: ConnId,
+    pub action: MainAction,
+}
+
+/// Where the app says what the detail toolbar's main action is; the
+/// toolbar button follows it.
+#[derive(Clone, Default)]
+pub(crate) struct ToolbarActionSlot(Rc<Cell<Option<ToolbarAction>>>);
+
+impl ToolbarActionSlot {
+    pub(crate) fn set(&self, action: Option<ToolbarAction>) {
+        self.0.set(action);
+    }
+
+    fn get(&self) -> Option<ToolbarAction> {
+        self.0.get()
+    }
+}
+
+/// The detail toolbar's main action: Connect, Disconnect or Set up on this
+/// device for the selected connection, and nothing while it is changing
+/// state (its status says so).
+pub(crate) struct MainActionButton {
+    slot: ToolbarActionSlot,
+    intents: Intents,
+    shown: Option<ToolbarAction>,
+    row: Row,
+    changed: bool,
+}
+
+impl MainActionButton {
+    pub(crate) fn new(slot: &ToolbarActionSlot, intents: &Intents) -> Self {
+        Self {
+            slot: slot.clone(),
+            intents: intents.clone(),
+            shown: None,
+            row: Row::new().no_wrap(),
+            changed: false,
+        }
+    }
+
+    /// Rebuild the button when the main action changed since it was built.
+    fn follow(&mut self) -> bool {
+        let wanted = self.slot.get();
+        if wanted == self.shown {
+            return false;
+        }
+        self.shown = wanted;
+        let mut row = Row::new().no_wrap();
+        if let Some(ToolbarAction { id, action }) =
+            wanted.filter(|toolbar| toolbar.action != MainAction::Connecting)
+        {
+            let role = match action {
+                MainAction::Disconnect => ButtonRole::Secondary,
+                _ => ButtonRole::Primary,
+            };
+            row = row.push(Box::new(
+                Button::new("vpn-main-action", action.label(), None)
+                    .role(role)
+                    .control_size(ControlSize::Small)
+                    .on_click(self.intents.sender(Intent::MainAction(id))),
+            ));
+        }
+        self.row = row;
+        self.changed = true;
+        true
+    }
+}
+
+impl ui::widget::Decorator for MainActionButton {
+    type Inner = Row;
+
+    fn inner(&self) -> &Row {
+        &self.row
+    }
+
+    fn inner_mut(&mut self) -> &mut Row {
+        &mut self.row
+    }
+
+    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.follow();
+        Widget::sync(&mut self.row, state, path);
+    }
+
+    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let changed = self.follow();
+        Widget::update(&mut self.row, state, path) || changed
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.follow();
+        self.changed = false;
+        Widget::build_layout(&mut self.row, taffy, theme, node_map)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let changed = self.follow() || self.changed;
+        Widget::take_structure_dirty(&mut self.row) || changed
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.changed || self.slot.get() != self.shown || Widget::is_layout_dirty(&self.row)
+    }
 }
 
 fn tabs(selected: DetailTab, intents: &Intents) -> ToggleGroup {
@@ -412,7 +559,6 @@ fn tabs(selected: DetailTab, intents: &Intents) -> ToggleGroup {
             .collect(),
         index,
     )
-    .with_style(SegmentedStyle::Tabs)
     .with_id("vpn-tabs")
     .on_change(move |i| {
         if let Some(tab) = DetailTab::ALL.get(i) {
@@ -448,18 +594,26 @@ fn status(model: &DetailModel<'_>, intents: &Intents) -> Element {
         "Details",
         vec![Box::new(PropertyList::new(facts(connection, details)))],
     )));
-    let tor = Toggle::from_state(&LocalState::new(connection.tor))
-        .with_id("vpn-tor")
-        .on_change({
-            let intents = intents.clone();
-            let id = connection.id;
-            move |_| intents.push(Intent::ToggleTor(id))
-        });
-    page = page.push(Box::new(
-        FormSection::new("Routing")
+    // While every connection goes over Tor this one does too; its own
+    // preference only matters once that is turned off.
+    let routing = FormSection::new("Routing");
+    let routing = if model.tor_global {
+        routing.content(Box::new(
+            Text::new("All connections are routed over Tor.").with_role(TextRole::Body),
+        ))
+    } else {
+        let tor = Toggle::from_state(&LocalState::new(connection.tor))
+            .with_id("vpn-tor")
+            .on_change({
+                let intents = intents.clone();
+                let id = connection.id;
+                move |_| intents.push(Intent::ToggleTor(id))
+            });
+        routing
             .grouped()
-            .field(Field::new("Route over Tor", tor)),
-    ));
+            .field(Field::new("Route this connection over Tor", tor))
+    };
+    page = page.push(Box::new(routing));
     Box::new(page)
 }
 
@@ -530,11 +684,7 @@ fn throughput(rates: &Rates) -> Element {
         };
         return Box::new(Text::new(note).with_role(TextRole::Body).dimmed());
     }
-    Box::new(ThroughputChart {
-        down: rates.down.iter().map(|r| *r as f32).collect(),
-        up: rates.up.iter().map(|r| *r as f32).collect(),
-        rect: Rect::ZERO,
-    })
+    Box::new(ThroughputPlot::new(rates.down.clone(), rates.up.clone()))
 }
 
 // ---- Configuration and activity ---------------------------------------------
@@ -549,14 +699,26 @@ fn config(model: &DetailModel<'_>) -> Element {
             .with_role(TextRole::Body),
         );
     };
-    Box::new(code_block(&render_config(model.connection, details)))
+    // The file reads as the provider wrote it, on the page itself.
+    Box::new(
+        Text::new(&render_config(model.connection, details))
+            .with_role(TextRole::Code)
+            .with_kind(TextKind::Code),
+    )
 }
 
+/// What happened to this connection on this device, newest first.
 fn activity(model: &DetailModel<'_>) -> Element {
-    Box::new(code_block(&model.activity.join("\n")))
+    Box::new(Section::new(
+        model
+            .activity
+            .iter()
+            .map(|line| -> Element { Box::new(Text::new(line).with_role(TextRole::Body)) })
+            .collect(),
+    ))
 }
 
-/// Monospaced text on a well: configuration and activity read as they are.
+/// The exact command a sheet is about to run, on a well.
 fn code_block(text: &str) -> Container {
     Container::new().with_background().with_child(Box::new(
         Text::new(text)
@@ -624,120 +786,182 @@ pub(crate) fn confirm_body(summary: &str, command: &str) -> Column {
         .with_intrinsic_height()
         .with_no_padding()
         .push(Box::new(Text::new(summary).with_role(TextRole::Body)))
-        .push(Box::new(code_block(command)))
+        .push(Box::new(code_block(&shell_lines(command))))
+}
+
+/// A command as a shell would accept it. An argument longer than everything
+/// before it (a profile id, a path) continues on its own line after a `\`,
+/// so the sheet never has to break inside it.
+fn shell_lines(command: &str) -> String {
+    match command.rsplit_once(' ') {
+        Some((head, last)) if last.chars().count() > head.chars().count() => {
+            format!("{head} \\\n  {last}")
+        }
+        _ => command.to_owned(),
+    }
 }
 
 // ---- Throughput chart ---------------------------------------------------------
 
-/// The measured download and upload rates on one shared scale, drawn by the
-/// library chart from theme values.
-struct ThroughputChart {
-    down: Vec<f32>,
-    up: Vec<f32>,
-    rect: Rect,
+/// A rate axis that ends on a round number of one binary unit, with the
+/// ticks it is labelled at: `(ceiling, ticks)` in bytes per second.
+fn rate_axis(peak: f64) -> (f64, Vec<AxisTick>) {
+    const UNITS: [&str; 4] = ["B/s", "KiB/s", "MiB/s", "GiB/s"];
+    const DIVISIONS: u32 = 4;
+    let peak = peak.max(1.0);
+    let (mut unit, mut scale) = (0, 1.0_f64);
+    while peak / scale >= 1024.0 && unit + 1 < UNITS.len() {
+        unit += 1;
+        scale *= 1024.0;
+    }
+    // A step of 1, 2, 2.5 or 5 times a power of ten, so every tick reads
+    // as a round number of the unit.
+    let raw = peak / scale / f64::from(DIVISIONS);
+    let magnitude = 10_f64.powf(raw.log10().floor());
+    let step = [1.0, 2.0, 2.5, 5.0, 10.0]
+        .into_iter()
+        .map(|m| m * magnitude)
+        .find(|step| *step >= raw)
+        .unwrap_or(10.0 * magnitude);
+    let name = UNITS.get(unit).copied().unwrap_or("B/s");
+    let ticks = (0..=DIVISIONS)
+        .map(|i| {
+            let value = step * f64::from(i);
+            let label = if value == 0.0 {
+                "0".to_owned()
+            } else if value.fract() == 0.0 {
+                format!("{value:.0} {name}")
+            } else {
+                format!("{value:.1} {name}")
+            };
+            AxisTick::new(value * scale, label)
+        })
+        .collect();
+    (step * f64::from(DIVISIONS) * scale, ticks)
 }
 
-impl ThroughputChart {
-    fn peak(&self) -> f64 {
-        f64::from(
-            self.down
-                .iter()
-                .chain(&self.up)
-                .copied()
-                .fold(1.0_f32, f32::max),
-        )
+/// The measured download and upload rates on one shared scale, the newest at
+/// the trailing edge. The library plot draws axes, legend and inspection;
+/// the series take the theme's ink, so a measurement reads as content and
+/// not as a person or a status.
+struct ThroughputPlot {
+    down: Vec<f64>,
+    up: Vec<f64>,
+    plot: CartesianPlot,
+    /// The ink the plot was built in; a new theme rebuilds it.
+    ink: Option<(Color, Color)>,
+    /// Whether keyboard focus is on the plot.
+    focused: bool,
+}
+
+impl ThroughputPlot {
+    fn new(down: Vec<f64>, up: Vec<f64>) -> Self {
+        Self {
+            down,
+            up,
+            plot: CartesianPlot::new(Vec::new()),
+            ink: None,
+            focused: false,
+        }
+    }
+
+    fn series(id: &str, name: &str, color: Color, rates: &[f64]) -> PlotSeries {
+        let data = rates
+            .iter()
+            .enumerate()
+            .map(|(i, rate)| {
+                PlotDatum::new(format!("{id}-{i}"), i as f64, *rate)
+                    .with_detail(ui::format::rate(*rate))
+            })
+            .collect();
+        PlotSeries::new(id, name, color, data)
+            .kind(SeriesKind::Area)
+            .sorted_by_x()
+    }
+
+    fn build(&self, theme: &Theme) -> CartesianPlot {
+        let colors = &theme.tokens.colors;
+        let peak = self
+            .down
+            .iter()
+            .chain(&self.up)
+            .copied()
+            .fold(0.0, f64::max);
+        let (ceiling, ticks) = rate_axis(peak);
+        let last = self.down.len().max(self.up.len()).saturating_sub(1) as f64;
+        let x_axis = PlotAxis {
+            grid: false,
+            ..PlotAxis::default()
+        }
+        .fixed(0.0, last.max(1.0))
+        .with_ticks([AxisTick::new(last, "Now")]);
+        // Every rate tick is labelled, the rules one heading apart at least.
+        let y_axis = PlotAxis::default()
+            .fixed(0.0, ceiling)
+            .with_ticks(ticks)
+            .with_tick_density(5, f64::from(theme.tokens.spacing.s8));
+        let style = CartesianStyle {
+            x_axis,
+            y_axis,
+            legend: LegendPosition::Top,
+            interactive_legend: false,
+            ..CartesianStyle::default()
+        };
+        CartesianPlot::new(vec![
+            Self::series("download", "Download", colors.text_primary, &self.down),
+            Self::series("upload", "Upload", colors.text_dim, &self.up),
+        ])
+        .styled(style)
+        .with_height(theme.tokens.metrics.header_height * 5.0)
     }
 }
 
-impl Widget for ThroughputChart {
+impl ui::widget::Decorator for ThroughputPlot {
+    type Inner = CartesianPlot;
+
+    fn inner(&self) -> &CartesianPlot {
+        &self.plot
+    }
+
+    fn inner_mut(&mut self) -> &mut CartesianPlot {
+        &mut self.plot
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let height = theme.tokens.metrics.header_height * 3.0;
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
         let colors = &theme.tokens.colors;
-        let series = [
-            Series::new(self.down.clone(), colors.presence.series(0)).with_legend("Download"),
-            Series::new(self.up.clone(), colors.presence.series(1)).with_legend("Upload"),
-        ];
-        // Headroom over the peak so the newest reading never rides the top rule.
-        let ceiling = self.peak() * 1.2;
-        let top = ui::format::rate(ceiling);
-        let style = ChartStyle::default().with_grid(
-            ChartStyle::default().grid_divisions,
-            Some(ui::surface::edge_on(colors.surfaces.content)),
-        );
-        Chart::draw_styled(
-            &mut PaintCtx::new(scene, transform, text, theme),
-            self.rect,
-            &series,
-            TrendRange::up_to(ceiling),
-            ChartLabels {
-                title: "",
-                axis_hi: &top,
-                axis_lo: "0",
-            },
-            &style,
-        );
+        let ink = (colors.text_primary, colors.text_dim);
+        if self.ink != Some(ink) {
+            self.plot = self.build(theme);
+            self.ink = Some(ink);
+        }
+        Widget::build_layout(&mut self.plot, taffy, theme, node_map)
     }
 
-    fn name(&self) -> &'static str {
-        "ThroughputChart"
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        Widget::set_focus(&mut self.plot, focused);
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+    fn is_focused(&self) -> bool {
+        self.focused
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let last = |series: &[f32]| {
-            series.last().map_or_else(
-                || ui::format::rate(0.0),
-                |r| ui::format::rate(f64::from(*r)),
-            )
-        };
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Image)
-                .with_name("Throughput")
-                .with_description(format!(
-                    "Download {}, upload {}",
-                    last(&self.down),
-                    last(&self.up)
-                ))
-                .with_bounds(self.rect),
-        )
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        // The plot steps through its readings with the arrows, Escape and
+        // Enter; those keys belong to the window unless the plot has focus.
+        if !self.focused && matches!(event, ui::winit::event::WindowEvent::KeyboardInput { .. }) {
+            return;
+        }
+        Widget::handle_event(&mut self.plot, event, ctx);
     }
 }
 
@@ -749,5 +973,42 @@ mod tests {
     fn a_formatted_rate_splits_into_value_and_unit() {
         assert_eq!(split_unit("6.4 MiB/s"), ("6.4".into(), "MiB/s".into()));
         assert_eq!(split_unit("Never"), ("Never".into(), String::new()));
+    }
+
+    #[test]
+    fn a_row_names_the_server_without_port_or_transport() {
+        assert_eq!(
+            endpoint_host("lab.kestrel-research.org:443 (TCP)"),
+            "lab.kestrel-research.org"
+        );
+        assert_eq!(
+            endpoint_host("home.vandenberg.net:51820"),
+            "home.vandenberg.net"
+        );
+        assert_eq!(endpoint_host("[2001:db8::1]:51820"), "2001:db8::1");
+        assert_eq!(endpoint_host("2001:db8::1"), "2001:db8::1");
+        assert_eq!(endpoint_host("vpn.example.net"), "vpn.example.net");
+    }
+
+    #[test]
+    fn a_long_command_breaks_between_words_only() {
+        let uuid = "8b1e47d2-0c93-4f6a-b5d8-71e2a9c34f60";
+        let lines = shell_lines(&format!("nmcli connection up uuid {uuid}"));
+        assert_eq!(lines, format!("nmcli connection up uuid \\\n  {uuid}"));
+        assert_eq!(
+            shell_lines("systemctl start tor.service"),
+            "systemctl start tor.service"
+        );
+    }
+
+    #[test]
+    fn the_rate_axis_ends_on_a_round_number_of_one_unit() {
+        const MIB: f64 = 1024.0 * 1024.0;
+        let (ceiling, ticks) = rate_axis(7.6 * MIB);
+        assert!((ceiling - 8.0 * MIB).abs() < 1.0);
+        let labels: Vec<&str> = ticks.iter().map(|tick| tick.label.as_str()).collect();
+        assert_eq!(labels, ["0", "2 MiB/s", "4 MiB/s", "6 MiB/s", "8 MiB/s"]);
+        let (ceiling, _) = rate_axis(300.0 * 1024.0);
+        assert!((ceiling - 400.0 * 1024.0).abs() < 1.0);
     }
 }
