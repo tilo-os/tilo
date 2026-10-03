@@ -526,7 +526,8 @@ impl Catalog {
                 name: "Backblaze B2".into(),
                 kind: DestKind::RemoteRestic,
                 used_bytes: 88 * GB,
-                total_bytes: Some(200 * GB),
+                // Cloud storage grows with what it holds: no capacity.
+                total_bytes: None,
                 encrypted: true,
                 health: Health::Warning,
             },
@@ -729,7 +730,7 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             64 * MB,
             97,
         ),
-        // Yesterday: the nightly home run and the workspace's offsite copy.
+        // Yesterday: the nightly home run.
         auto(
             "h-1-1800",
             "home",
@@ -740,16 +741,20 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             820 * MB,
             1_320,
         ),
-        auto(
-            "w-1-1200",
-            "workspace",
-            "b2",
-            DAY - HOUR - 18,
-            Daily,
-            9_000 * MB,
-            120 * MB,
-            88,
-        ),
+        // Yesterday's offsite copy of the workspace failed.
+        SampleSnapshot {
+            status: Failed,
+            ..auto(
+                "w-1-1200",
+                "workspace",
+                "b2",
+                DAY - HOUR - 18,
+                Daily,
+                9_000 * MB,
+                120 * MB,
+                88,
+            )
+        },
         // Sunday: the weekly system run and photos pinned after an import.
         auto(
             "h-2-1800",
@@ -785,7 +790,7 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             4 * MB,
             23,
         ),
-        // Earlier in the week; Saturday's offsite copy failed.
+        // Earlier in the week.
         auto(
             "h-3-1800",
             "home",
@@ -796,19 +801,16 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             700 * MB,
             1_110,
         ),
-        SampleSnapshot {
-            status: Failed,
-            ..auto(
-                "w-3-1200",
-                "workspace",
-                "b2",
-                3 * DAY - HOUR - 18,
-                Daily,
-                8_800 * MB,
-                70 * MB,
-                51,
-            )
-        },
+        auto(
+            "w-3-1200",
+            "workspace",
+            "b2",
+            3 * DAY - HOUR - 18,
+            Daily,
+            8_800 * MB,
+            70 * MB,
+            51,
+        ),
         auto(
             "h-4-1800",
             "home",

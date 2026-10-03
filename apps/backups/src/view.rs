@@ -17,18 +17,18 @@ use ui::text_render::TextKind;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, ControlSize, Element, EmptyState, Field, FormSection,
-    ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput, ProgressBar, ProgressRing,
-    ProgressRingSize, Property, PropertyList, Row, Scrollable, Section, SectionHeader, Spacer,
-    StatGroup, StatTile, Text, ToggleGroup, Tone, TreeNode, TreeRowDecoration, TreeRowTone,
-    TreeView, Widget,
+    Banner, Button, ButtonRole, Column, Container, ControlSize, Element, EmptyState, Field,
+    FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput, ProgressBar,
+    ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
+    SectionHeader, Spacer, StatGroup, StatTile, Text, ToggleGroup, Tone, TreeNode,
+    TreeRowDecoration, TreeRowTone, TreeView, Widget,
 };
 
 use crate::doc::PolicyField;
 use crate::i18n;
 use crate::model::{
-    Catalog, DestKind, Destination, Filter, Health, Schedule, SnapFile, SnapStatus, Snapshot,
-    Source, SourceKind,
+    Catalog, DestKind, Destination, Filter, Health, Retention, Schedule, SnapFile, SnapStatus,
+    SnapType, Snapshot, Source, SourceKind,
 };
 
 /// A place in the sidebar, and the page the content shows for it.
@@ -302,6 +302,19 @@ fn snapshot_title(snapshot: &Snapshot, catalog: &Catalog) -> String {
         .map_or_else(|| "Snapshot".into(), |source| source.name.clone())
 }
 
+/// What an unlabelled snapshot is, on a page that already names its source:
+/// taken by hand, or the retention class that keeps it.
+fn kind_title(snapshot: &Snapshot) -> &'static str {
+    match (snapshot.kind, snapshot.retention) {
+        (SnapType::Manual, _) => "Manual snapshot",
+        (SnapType::Auto, Retention::Hourly) => "Hourly snapshot",
+        (SnapType::Auto, Retention::Daily) => "Daily snapshot",
+        (SnapType::Auto, Retention::Weekly) => "Weekly snapshot",
+        (SnapType::Auto, Retention::Monthly) => "Monthly snapshot",
+        (SnapType::Auto, Retention::Keep) => "Kept snapshot",
+    }
+}
+
 // ---- sidebar ------------------------------------------------------------
 
 /// The places: every backup, each source, each destination, the policy.
@@ -368,28 +381,25 @@ pub fn page_title(catalog: &Catalog, page: &Page) -> String {
     }
 }
 
-/// The content header's controls: the one main action of the window, and
-/// History.
+/// The content header's control: the one main action of the window. History
+/// is the window's own glyph at the end of the same row.
 pub fn header_actions(job: Option<JobKind>, can_back_up: bool, intents: &Intents) -> Vec<Element> {
     let back_up = intents.clone();
-    vec![
-        Box::new(
-            Button::new(
-                "backups-back-up-now",
-                if job == Some(JobKind::Backup) {
-                    "Backing up…"
-                } else {
-                    "Back up now"
-                },
-                None,
-            )
-            .role(ButtonRole::Primary)
-            .control_size(ControlSize::Small)
-            .with_enabled(can_back_up && job.is_none())
-            .on_effect(move || back_up.push(Intent::BackUpNow)),
-        ),
-        Box::new(ui::widget::history_button()),
-    ]
+    vec![Box::new(
+        Button::new(
+            "backups-back-up-now",
+            if job == Some(JobKind::Backup) {
+                "Backing up…"
+            } else {
+                "Back up now"
+            },
+            None,
+        )
+        .role(ButtonRole::Primary)
+        .control_size(ControlSize::Small)
+        .with_enabled(can_back_up && job.is_none())
+        .on_effect(move || back_up.push(Intent::BackUpNow)),
+    )]
 }
 
 /// The timeline's heading, with its order beside it.
@@ -431,7 +441,11 @@ pub fn content(
     offset: &Rc<Cell<(f32, f32)>>,
     retention: &[LocalState<f64>; 4],
 ) -> Element {
-    let mut page = Column::new().with_intrinsic_height();
+    // The banner, the job, the tiles, the details and the timeline are
+    // separate groups of the page, a group step apart.
+    let mut page = Column::new()
+        .with_intrinsic_height()
+        .with_gap(ui::tokens::Spacing::BASE.rhythm.group);
     if let Some((title, message)) = model.failure {
         page = page.push(failure_banner(title, message, intents));
     }
@@ -661,7 +675,7 @@ fn snapshot_row(
     let title = match (&snapshot.label, show_source) {
         (Some(label), _) => label.clone(),
         (None, true) => snapshot_title(snapshot, catalog),
-        (None, false) => format!("{} snapshot", snapshot.kind.label()),
+        (None, false) => kind_title(snapshot).into(),
     };
     let dest = catalog
         .destination(&snapshot.dest_id)
@@ -689,7 +703,7 @@ fn snapshot_row(
 }
 
 /// How many snapshots each class keeps.
-fn retention_page(states: &[LocalState<f64>; 4]) -> Column {
+fn retention_page(states: &[LocalState<f64>; 4]) -> Row {
     let mut keep = FormSection::new("Snapshots to keep").grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
@@ -708,11 +722,21 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Column {
     })
     .with_role(TextRole::Body)
     .dimmed();
-    Column::new()
+    let form = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
         .push(Box::new(keep))
-        .push(Box::new(total))
+        .push(Box::new(total));
+    // A form is bounded to a readable measure, so each count sits near its
+    // label; the spacer keeps it on the page's leading edge.
+    Row::new()
+        .push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_max_width(ui::tokens::Metrics::BASE.panel_width_sheet)
+                .with_child(Box::new(form)),
+        ))
+        .push(Box::new(Spacer::new()))
 }
 
 // ---- the selected snapshot ----------------------------------------------
@@ -835,7 +859,7 @@ pub fn restore_dialog(
     let dismiss = intents.clone();
     ModalDialog::new(title, body)
         .with_test_id("backups-restore")
-        .with_max_width(560.0)
+        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
         .open(true)
         .primary_action("Choose folder…", move || {
             choose.push(Intent::ChooseRestoreFolder);
