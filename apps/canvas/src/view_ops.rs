@@ -251,7 +251,6 @@ pub fn compare(
         "region": [region.x0, region.y0, region.width(), region.height()],
         "difference": (score * 1000.0).round() / 1000.0,
         "worst_regions": worst,
-        "reading": "difference is the mean colour distance 0..1 within the reference's frame, its transparent parts read as the ground; lower is closer. side-by-side shows the artwork left, the reference right.",
     });
     Ok((encode(&combined, (out_width, height), true)?, info))
 }
@@ -505,7 +504,15 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         if !mark.name.is_empty() {
             fields.insert("name".into(), mark.name.clone().into());
         }
-        if let Some(fill) = &mark.style.fill {
+        if let Some(gradient) = &mark.style.gradient {
+            // Its colours, first stop to last; `full` gives the whole.
+            let colours: Vec<&str> = gradient
+                .stops
+                .iter()
+                .map(|(_, colour)| colour.as_str())
+                .collect();
+            fields.insert("gradient".into(), colours.into());
+        } else if let Some(fill) = &mark.style.fill {
             fields.insert("fill".into(), fill.clone().into());
         }
         if let Some(stroke) = &mark.style.stroke {
@@ -532,6 +539,65 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         }
     }
     entry
+}
+
+/// The marks or groups `ids` (and the marks they are cut to) as an artwork
+/// of their own, cropped to what they show, shadows included.
+///
+/// # Errors
+/// Returns an id that names no mark or group.
+pub fn part(art: &Artwork, ids: &[String]) -> Result<Artwork, String> {
+    let mut chosen = std::collections::BTreeSet::new();
+    for id in ids {
+        let before = chosen.len();
+        if art.mark(id).is_some() {
+            chosen.insert(id.as_str());
+        }
+        chosen.extend(art.members(id).map(|mark| mark.id.as_str()));
+        if chosen.len() == before && !chosen.contains(id.as_str()) {
+            return Err(format!(
+                "there is no mark or group {id:?}; inspect lists them"
+            ));
+        }
+    }
+    let clips: Vec<&str> = art
+        .marks
+        .iter()
+        .filter(|mark| chosen.contains(mark.id.as_str()) && !mark.clip.is_empty())
+        .map(|mark| mark.clip.as_str())
+        .collect();
+    chosen.extend(clips);
+    let marks: Vec<&Mark> = art
+        .marks
+        .iter()
+        .filter(|mark| chosen.contains(mark.id.as_str()))
+        .collect();
+    let shown = marks
+        .iter()
+        .filter(|mark| mark.style.opacity() > 0.0)
+        .map(|mark| {
+            let bounds = art.visible_bounds(mark);
+            mark.style.shadow.as_ref().map_or(bounds, |shadow| {
+                bounds.union(
+                    bounds
+                        .with_origin((bounds.x0 + shadow.offset[0], bounds.y0 + shadow.offset[1]))
+                        .inflate(shadow.blur, shadow.blur),
+                )
+            })
+        })
+        .reduce(|a, b| a.union(b))
+        .ok_or("those marks show nothing to export")?
+        .expand();
+    Ok(Artwork {
+        width: shown.width().max(1.0),
+        height: shown.height().max(1.0),
+        marks: marks
+            .into_iter()
+            .map(|mark| mark.moved(-shown.x0, -shown.y0))
+            .collect(),
+        reference: None,
+        ..art.clone()
+    })
 }
 
 /// The layers and marks, as an agent reads them.

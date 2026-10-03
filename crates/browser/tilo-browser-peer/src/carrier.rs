@@ -91,6 +91,18 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
     postcard::to_allocvec(value).map_err(|error| LinkError::Malformed(error.to_string()))
 }
 
+/// What the host publishes before any session: its certificate, the
+/// WebTransport port and a development certificate's hash.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or answers badly.
+pub async fn host_info(
+    client: &dyn HttpClient,
+) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
+    call(client, "/host", None, Vec::new()).await
+}
+
 /// Ask the host to queue `request` for its root holder. Returns the pairing
 /// code, or the final answer when the host refused at once.
 ///

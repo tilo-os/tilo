@@ -87,7 +87,7 @@ def direct_fixture():
     return plan, copy.normalized(preserve + final), final, disk_size
 
 
-def write_gpt(stream, rows, disk_size=SIZE):
+def write_gpt(stream, rows, disk_size=SIZE, disk_guid=uuid.UUID(int=99)):
     sectors = disk_size // 512
     entries = bytearray(128 * 128)
     for row in rows:
@@ -103,7 +103,7 @@ def write_gpt(stream, rows, disk_size=SIZE):
         raw = bytearray(512)
         struct.pack_into("<8sIIIIQQQQ16sQIII", raw, 0, b"EFI PART", 0x10000,
                          92, 0, 0, current, backup, 34, sectors - 34,
-                         uuid.UUID(int=99).bytes_le, table, 128, 128, table_crc)
+                         disk_guid.bytes_le, table, 128, 128, table_crc)
         struct.pack_into("<I", raw, 16, zlib.crc32(raw[:92]))
         return raw
     mbr = bytearray(512); mbr[450] = 0xEE; mbr[510:] = b"\x55\xaa"
@@ -131,6 +131,25 @@ def disks(directory, rows, final, disk_size=SIZE, staged=True):
 
 
 class DirectFinalTests(unittest.TestCase):
+    def test_readback_binds_hardware_id_and_independent_gpt_guid(self):
+        plan, rows, final, size = direct_fixture()
+        plan["windows_disk"]["unique_id"] = "eui.002538A441BE8A46"
+        expected = str(uuid.UUID(int=99))
+        with tempfile.TemporaryDirectory() as tmp:
+            _, target_path = disks(Path(tmp), rows, final, size, staged=False)
+            with target_path.open("r+b") as target:
+                current = {**plan["windows_disk"], "partitions": rows}
+                self.assertEqual(copy.validate_physical(plan, None, current, target)[2], expected)
+                reviewed = copy.verified_disk_readback(plan, target, rows, expected)
+                self.assertEqual(reviewed["unique_id"], "eui.002538A441BE8A46")
+                self.assertEqual(reviewed["disk_guid"], expected)
+                changed = {**current, "unique_id": "eui.different"}
+                with self.assertRaisesRegex(ValueError, "identity"):
+                    copy.validate_physical(plan, None, changed, target)
+                write_gpt(target, rows, size, uuid.UUID(int=100))
+                with self.assertRaisesRegex(ValueError, "disk GUID changed"):
+                    copy.verified_disk_readback(plan, target, rows, expected)
+
     def test_slot_numbering_and_partition_count(self):
         with self.subTest(phase="raw_gpt_slot_numbers_can_differ_from_windows_numbers"):
             plan, rows, final, disk_size = direct_fixture()
@@ -150,7 +169,7 @@ class DirectFinalTests(unittest.TestCase):
                 self.assertEqual(copy.source_preflight(source_path, receipt, rows, final, disk_size), hashes)
                 with target_path.open("rb") as target:
                     current = {"partitions": rows, **plan["windows_disk"]}
-                    self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final))
+                    self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final, str(uuid.UUID(int=99))))
         with self.subTest(phase="separate_live_disk_needs_only_seven_physical_partitions"):
             plan, rows, final, disk_size = direct_fixture()
             with tempfile.TemporaryDirectory() as tmp:
@@ -169,7 +188,7 @@ class DirectFinalTests(unittest.TestCase):
                 self.assertEqual(copy.source_preflight(source_path, receipt, rows, final, disk_size), hashes)
                 with source_path.open("rb") as source, target_path.open("r+b") as target:
                     current = {"partitions": rows, **plan["windows_disk"]}
-                    self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final))
+                    self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final, str(uuid.UUID(int=99))))
                     result = copy.transfer(source, target, rows, final, hashes, write=True,
                                            live_windows_partition_number=3)
                     self.assertEqual(len(result), 3)
@@ -194,7 +213,7 @@ class DirectFinalTests(unittest.TestCase):
                                                         physical_final, disk_size), hashes)
                 with target_path.open("rb") as target:
                     self.assertEqual(copy.validate_physical(plan, None, current, target),
-                                     (physical_rows, physical_final))
+                                     (physical_rows, physical_final, str(uuid.UUID(int=99))))
                 changed = json.loads(json.dumps(plan))
                 changed["target_partitions"][2]["size_bytes"] -= MIB
                 plan_path.write_text(json.dumps(changed))
