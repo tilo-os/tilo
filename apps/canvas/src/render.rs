@@ -25,8 +25,10 @@ use ui::vello::peniko::{
     ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix,
 };
 
+use crate::adjust::Grade;
 use crate::media;
-use crate::model::{Artwork, Gradient, Layer, Mark, Shape};
+use crate::model::{Adjust, Artwork, Gradient, Layer, Mark, Shape};
+use crate::picture::{Pictures, Placement, Treatment};
 
 /// The longest side of a painted layer's simulation grid, in cells. Painted
 /// layers simulate at most this finely; an export scales the result.
@@ -75,15 +77,17 @@ struct PaintedLayer {
     painter: LayerPainter,
     key: blake3::Hash,
     image: Option<ImageData>,
+    /// The painting graded by the layer's adjustments, and what they were.
+    graded: Option<(String, ImageData)>,
 }
 
 /// Keeps what is expensive between frames: the lit ground, each painted
-/// layer's simulation and the decoded reference picture.
+/// layer's simulation and the decoded and graded pictures.
 #[derive(Default)]
 pub struct Renderer {
     ground: Option<(String, Arc<Heightfield>, ImageData)>,
     painted: HashMap<String, PaintedLayer>,
-    reference: Option<(String, Option<ImageData>)>,
+    pub pictures: Pictures,
     wet: Option<WetPreview>,
     tooth: Option<(String, ImageData)>,
 }
@@ -121,39 +125,12 @@ pub struct Options {
     pub marks: Option<Vec<String>>,
 }
 
-/// The largest reference picture, in bytes.
-pub const MAX_REFERENCE_BYTES: usize = 40 << 20;
 /// The ground where an artwork's colour cannot be read: white primed
 /// canvas, the artwork's own colour, the same in every theme.
 pub const BLANK_GROUND: Color = Color::WHITE; // document colour
 /// A shadow's colour where its mark names none; the artwork's, not the
 /// theme's.
 pub const SHADOW_INK: Color = Color::from_rgba8(0, 0, 0, 96); // document colour
-
-/// A PNG or JPEG decoded to straight RGBA, at most 8192 pixels a side.
-///
-/// # Errors
-/// Returns why the bytes are not a picture.
-pub fn decode_picture(bytes: &[u8]) -> Result<ImageData, String> {
-    let format = image::guess_format(bytes).map_err(|error| error.to_string())?;
-    if !matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg) {
-        return Err(format!("{format:?} is not PNG or JPEG"));
-    }
-    let decoded =
-        image::load_from_memory_with_format(bytes, format).map_err(|error| error.to_string())?;
-    if decoded.width().max(decoded.height()) > 8192 {
-        return Err("the picture is over 8192 pixels a side".into());
-    }
-    let rgba = decoded.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(ImageData {
-        data: Blob::new(Arc::new(rgba.into_raw())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width,
-        height,
-    })
-}
 
 impl Renderer {
     /// Draw `art` into `scene`, artwork units mapped by `transform`.
@@ -210,9 +187,13 @@ impl Renderer {
                         mark,
                         &palette,
                         scene,
-                        (transform, text),
+                        (transform, text, &mut self.pictures),
                         tooth.as_ref(),
+                        layer.adjust.as_ref(),
                     );
+                }
+                if let Some(amount) = layer.adjust.as_ref().and_then(|adjust| adjust.vignette) {
+                    vignette(scene, transform, board, amount);
                 }
                 scene.pop_layer();
             }
@@ -251,8 +232,14 @@ impl Renderer {
             let palette = media::palette_for(art, &layer.id);
             let hit = art
                 .marks_of(&layer.id)
-                .filter(|mark| mark.hit(at) && art.clip_of(mark).is_none_or(|clip| clip.hit(at)));
-            if let Some(mark) = hit.last() {
+                .filter(|mark| mark.hit(at) && art.clip_of(mark).is_none_or(|clip| clip.hit(at)))
+                .last();
+            if let Some(mark) = hit
+                && let Some(colour) = self.picture_colour(layer, mark, at)
+            {
+                return colour;
+            }
+            if let Some(mark) = hit {
                 let style = &mark.style;
                 let named = if mark.shape.closed() || matches!(mark.shape, Shape::Text { .. }) {
                     style.fill.as_ref().or(style.stroke.as_ref())
@@ -283,17 +270,29 @@ impl Renderer {
     /// The reference picture, decoded once per picture.
     pub fn reference_image(&mut self, art: &Artwork) -> Option<ImageData> {
         let address = &art.reference.as_ref()?.image;
-        if self
-            .reference
-            .as_ref()
-            .is_none_or(|(have, _)| have != address)
+        self.pictures.full(address)
+    }
+
+    /// The colour of an image mark's picture at `at`, graded as shown.
+    fn picture_colour(&mut self, layer: &Layer, mark: &Mark, at: Point) -> Option<Color> {
+        let Shape::Image { src, .. } = &mark.shape else {
+            return None;
+        };
+        let placement = Placement::of(&mark.shape)?;
+        let image = self.pictures.full(src)?;
+        let local = mark.affine().inverse() * at;
+        let rgba = crate::picture::pixel_at(&image, &placement, local)?;
+        let mut rgba = rgba;
+        for adjust in [mark.style.adjust.as_ref(), layer.adjust.as_ref()]
+            .into_iter()
+            .flatten()
         {
-            let image = ui::tilo_actions::content_hash(address)
-                .and_then(|hash| tilo_content::ContentStore::for_app().read(hash))
-                .and_then(|bytes| decode_picture(&bytes).ok());
-            self.reference = Some((address.clone(), image));
+            if let Some(grade) = adjust.grade() {
+                rgba = grade.colour(rgba);
+            }
         }
-        self.reference.as_ref().and_then(|(_, image)| image.clone())
+        let [r, g, b, _] = rgba;
+        Some(Color::from_rgba8(r, g, b, 255))
     }
 
     /// Where the reference lies: its frame, or fitted to the artwork with
@@ -442,6 +441,7 @@ impl Renderer {
                 painter: LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone()),
                 key,
                 image: None,
+                graded: None,
             });
         if !entry.painter.matches(engine.id(), &canvas, &settings) {
             entry.painter = LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings);
@@ -477,7 +477,13 @@ impl Renderer {
             {
                 self.wet = None;
             }
-            entry.image.clone()
+            graded_painting(
+                entry,
+                layer.adjust.as_ref(),
+                canvas.width,
+                canvas.height,
+                scale,
+            )
         };
         let blend = match engine.blend() {
             Blend::Normal => BlendMode::default(),
@@ -491,6 +497,15 @@ impl Renderer {
             transform,
             &board,
         );
+        // Pictures on a painted layer lie under its paint.
+        unpainted(
+            art,
+            layer,
+            &palette,
+            scene,
+            (transform, text, &mut self.pictures),
+            true,
+        );
         if let Some(image) = shown {
             scene.fill(
                 Fill::NonZero,
@@ -501,13 +516,225 @@ impl Renderer {
             );
         }
         // Lettering is not paint: it stays crisp on a painted layer.
-        for mark in art.marks_of(&layer.id) {
-            if matches!(mark.shape, Shape::Text { .. }) {
-                draw_vector(mark, &palette, scene, transform, text);
-            }
+        unpainted(
+            art,
+            layer,
+            &palette,
+            scene,
+            (transform, text, &mut self.pictures),
+            false,
+        );
+        if let Some(amount) = layer.adjust.as_ref().and_then(|adjust| adjust.vignette) {
+            vignette(scene, transform, board, amount);
         }
         scene.pop_layer();
     }
+}
+
+/// The marks of a painted layer its medium does not paint: its pictures
+/// (`pictures`), or its lettering, graded by their own and the layer's
+/// adjustments.
+fn unpainted(
+    art: &Artwork,
+    layer: &Layer,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    (transform, text, store): (Affine, &mut TextRenderer, &mut Pictures),
+    pictures: bool,
+) {
+    for mark in art.marks_of(&layer.id) {
+        match &mark.shape {
+            Shape::Image { .. } if pictures => {
+                draw_picture(mark, layer.adjust.as_ref(), scene, transform, store);
+            }
+            Shape::Text { .. } if !pictures => {
+                let mark = graded_mark(
+                    mark,
+                    palette,
+                    &grades_of(&[mark.style.adjust.as_ref(), layer.adjust.as_ref()]),
+                );
+                draw_vector(&mark, palette, scene, transform, text);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The per-pixel grades of `adjusts`, those given, in order.
+pub(crate) fn grades_of(adjusts: &[Option<&Adjust>]) -> Vec<Grade> {
+    adjusts
+        .iter()
+        .flatten()
+        .filter_map(|adjust| adjust.grade())
+        .collect()
+}
+
+/// `mark` with its colours graded by `grades`, as a grade of the pixels
+/// would show a flat colour: fill, outline, gradient stops and shadows.
+pub(crate) fn graded_mark(mark: &Mark, palette: &[Pigment], grades: &[Grade]) -> Mark {
+    let mut mark = mark.clone();
+    if grades.is_empty() {
+        return mark;
+    }
+    let grade = |text: &mut String| {
+        if let Some(named) = colour(text, palette) {
+            let rgba = named.to_rgba8();
+            let mut channels = [rgba.r, rgba.g, rgba.b, rgba.a];
+            for grade in grades {
+                channels = grade.colour(channels);
+            }
+            let [r, g, b, a] = channels;
+            *text = format!("#{r:02x}{g:02x}{b:02x}{a:02x}");
+        }
+    };
+    let style = &mut mark.style;
+    for text in [&mut style.fill, &mut style.stroke].into_iter().flatten() {
+        grade(text);
+    }
+    if let Some(gradient) = &mut style.gradient {
+        for (_, stop) in &mut gradient.stops {
+            grade(stop);
+        }
+    }
+    for shadow in [&mut style.shadow, &mut style.inner_shadow]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(ink) = &mut shadow.colour {
+            grade(ink);
+        }
+    }
+    mark
+}
+
+/// A painted layer's painting as its adjustments show it, graded once per
+/// painting and adjustment.
+fn graded_painting(
+    entry: &mut PaintedLayer,
+    adjust: Option<&Adjust>,
+    width: usize,
+    height: usize,
+    cells_per_unit: f64,
+) -> Option<ImageData> {
+    let image = entry.image.clone()?;
+    let Some(adjust) = adjust else {
+        return Some(image);
+    };
+    let treatment = Treatment::of(&[adjust], cells_per_unit);
+    if treatment.is_empty() {
+        return Some(image);
+    }
+    let key = format!("{}|{}", entry.key.to_hex(), treatment.key);
+    if let Some((have, graded)) = &entry.graded
+        && *have == key
+    {
+        return Some(graded.clone());
+    }
+    let mut pixels = image.data.data().to_vec();
+    treatment.run(&mut pixels, width, height, 1.0);
+    let graded = crate::picture::image_of(pixels, width, height);
+    entry.graded = Some((key, graded.clone()));
+    Some(graded)
+}
+
+/// The scale a transform draws at: device pixels per unit.
+fn pixels_per_unit(transform: Affine) -> f64 {
+    transform.determinant().abs().sqrt()
+}
+
+/// Draw an image mark's picture into its frame: cropped, turned, graded by
+/// its own adjustments then its layer's, at the resolution it is shown at,
+/// with its own vignette over it.
+fn draw_picture(
+    mark: &Mark,
+    layer_adjust: Option<&Adjust>,
+    scene: &mut Scene,
+    transform: Affine,
+    pictures: &mut Pictures,
+) {
+    let (Shape::Image { src, .. }, Some(placement)) = (&mark.shape, Placement::of(&mark.shape))
+    else {
+        return;
+    };
+    let at = transform * mark.affine();
+    let frame = placement.frame;
+    let Some(size) = pictures.size(src) else {
+        // The picture's bytes are not here (yet): its frame stays visible
+        // as a neutral placeholder.
+        scene.fill(Fill::NonZero, at, MISSING_PICTURE, None, &frame);
+        return;
+    };
+    let per_unit = placement.pixels_per_unit(size);
+    let adjusts: Vec<&Adjust> = [mark.style.adjust.as_ref(), layer_adjust]
+        .into_iter()
+        .flatten()
+        .collect();
+    let treatment = Treatment::of(&adjusts, per_unit);
+    let device = pixels_per_unit(at) / per_unit.max(1e-9);
+    let Some((image, step)) = pictures.shown(src, device, &treatment) else {
+        return;
+    };
+    let brush = ImageBrush::new(image).with_alpha(narrow(mark.style.opacity()));
+    let to_frame = placement.picture_to_local(size) * Affine::scale(step);
+    let vignetted = mark
+        .style
+        .adjust
+        .as_ref()
+        .and_then(|adjust| adjust.vignette);
+    if vignetted.is_some() {
+        // The vignette lands only on the picture: both in a group of their
+        // own.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, at, &frame);
+    }
+    scene.fill(Fill::NonZero, at, &brush, Some(to_frame), &frame);
+    if let Some(amount) = vignetted {
+        vignette(scene, at, frame, amount);
+        scene.pop_layer();
+    }
+}
+
+/// A picture's frame while its bytes are missing.
+const MISSING_PICTURE: Color = Color::from_rgba8(128, 128, 128, 96); // document colour
+
+/// A vignette over what is already drawn in the current layer within
+/// `area`: black (or, below zero, white) growing toward its edges, only
+/// where something is drawn.
+fn vignette(scene: &mut Scene, transform: Affine, area: Rect, amount: f64) {
+    if amount == 0.0 || area.width() <= 0.0 || area.height() <= 0.0 {
+        return;
+    }
+    let ink = if amount > 0.0 {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    let reach = crate::adjust::VIGNETTE_REACH;
+    let stops: Vec<ColorStop> = (0..=12)
+        .map(|step| {
+            let distance = reach * f64::from(step) / 12.0;
+            ColorStop {
+                offset: narrow(distance / reach),
+                color: ink
+                    .with_alpha(narrow(crate::adjust::vignette_alpha(amount, distance)))
+                    .into(),
+            }
+        })
+        .collect();
+    let gradient = PenikoGradient::new_radial((0.0, 0.0), narrow(reach))
+        .with_extend(Extend::Pad)
+        .with_stops(&stops[..]);
+    // The unit circle stretched over the area: 1 at the middle of each edge.
+    let to_area = Affine::translate(area.center().to_vec2())
+        * Affine::scale_non_uniform(area.width() / 2.0, area.height() / 2.0);
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Normal, Compose::SrcAtop),
+        1.0,
+        transform,
+        &area,
+    );
+    scene.fill(Fill::NonZero, transform, &gradient, Some(to_area), &area);
+    scene.pop_layer();
 }
 
 /// The straight-alpha pixel of `image` at `at` (pixel coordinates).
@@ -620,7 +847,7 @@ fn wet_marks(mark: &Mark, clip: Option<&Mark>, palette: &[Pigment], scale: f64) 
                 ));
             }
         }
-        Shape::Text { .. } => {}
+        Shape::Text { .. } | Shape::Image { .. } => {}
         shape => {
             let path = shape.path();
             if shape.closed()
@@ -871,9 +1098,22 @@ fn draw_mark(
     mark: &Mark,
     palette: &[Pigment],
     scene: &mut Scene,
-    (transform, text): (Affine, &mut TextRenderer),
+    (transform, text, pictures): (Affine, &mut TextRenderer, &mut Pictures),
     tooth: Option<&Speckle>,
+    layer_adjust: Option<&Adjust>,
 ) {
+    let picture = matches!(mark.shape, Shape::Image { .. });
+    let graded;
+    let mark = if picture {
+        mark
+    } else {
+        graded = graded_mark(
+            mark,
+            palette,
+            &grades_of(&[mark.style.adjust.as_ref(), layer_adjust]),
+        );
+        &graded
+    };
     let mut layers = 0;
     if let Some(clip) = art.mark(&mark.clip).filter(|_| !mark.clip.is_empty()) {
         scene.push_layer(
@@ -921,6 +1161,10 @@ fn draw_mark(
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &reach);
     }
     match style.feather {
+        _ if picture => {
+            draw_picture(mark, layer_adjust, scene, transform, pictures);
+            draw_vector(mark, palette, scene, transform, text);
+        }
         Some(feather) if feather > 0.0 => draw_feathered(mark, palette, scene, transform, feather),
         _ => draw_vector(mark, palette, scene, transform, text),
     }

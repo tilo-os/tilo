@@ -86,15 +86,18 @@ fn matrix(affine: Affine) -> String {
 /// The artwork as an SVG document, on its ground when `ground`. `painted`
 /// renders a painted layer alone over transparency as a PNG, which the
 /// document embeds. A text mark with an entry in `outlines` is written as
-/// that geometry instead of as text.
+/// that geometry instead of as text; an image mark with one in `pictures`
+/// embeds that picture (its crop, turn and grade as shown) in its frame.
 pub fn export(
     art: &Artwork,
     ground: bool,
     mut painted: impl FnMut(&Layer) -> Option<Vec<u8>>,
     outlines: BTreeMap<String, BezPath>,
+    pictures: BTreeMap<String, Embedded>,
 ) -> String {
     let mut out = Writer {
         outlines,
+        pictures,
         ..Writer::default()
     };
     if ground {
@@ -134,7 +137,12 @@ pub fn export(
         } else {
             for mark in art.marks_of(&layer.id) {
                 out.enter_group(&mark.group);
-                out.mark(art, mark, &palette);
+                // Shapes' colours as their adjustments grade them; a
+                // picture comes graded.
+                let steps =
+                    crate::render::grades_of(&[mark.style.adjust.as_ref(), layer.adjust.as_ref()]);
+                let graded = crate::render::graded_mark(mark, &palette, &steps);
+                out.mark(art, &graded, &palette);
             }
         }
         out.enter_group("");
@@ -156,6 +164,13 @@ pub fn export(
     svg
 }
 
+/// A picture embedded in the document: its bytes and their type.
+pub struct Embedded {
+    pub bytes: Vec<u8>,
+    /// `image/png` or `image/jpeg`.
+    pub mime: &'static str,
+}
+
 #[derive(Default)]
 struct Writer {
     defs: String,
@@ -163,6 +178,8 @@ struct Writer {
     clips: BTreeSet<String>,
     /// Text marks written as their letters' outlines, by id.
     outlines: BTreeMap<String, BezPath>,
+    /// Image marks' pictures as shown, by id.
+    pictures: BTreeMap<String, Embedded>,
     /// How many paths text has been set along.
     text_paths: usize,
     /// The groups the next element is written in, outermost first.
@@ -302,6 +319,43 @@ impl Writer {
             let _ = write!(attrs, r#" opacity="{}""#, num(style.opacity()));
         }
         let named = |text: &Option<String>| text.as_deref().and_then(|text| colour(text, palette));
+        if let Shape::Image {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = &mark.shape
+        {
+            let place = format!(
+                r#" x="{}" y="{}" width="{}" height="{}""#,
+                num(*x),
+                num(*y),
+                num(*width),
+                num(*height)
+            );
+            let _ = write!(self.body, "<g{attrs}>");
+            if let Some(picture) = self.pictures.get(&mark.id) {
+                let _ = write!(
+                    self.body,
+                    r#"<image{place} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
+                    picture.mime,
+                    base64::engine::general_purpose::STANDARD.encode(&picture.bytes)
+                );
+            }
+            if style.stroke_width > 0.0
+                && let Some(line) = named(&style.stroke)
+            {
+                let _ = write!(
+                    self.body,
+                    r#"<rect{place} fill="none"{} stroke-width="{}"/>"#,
+                    paint_attr("stroke", line),
+                    num(style.stroke_width)
+                );
+            }
+            self.body.push_str("</g>");
+            return;
+        }
         if let Shape::Stroke { .. } = mark.shape {
             if let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) {
                 let _ = write!(
@@ -404,7 +458,7 @@ impl Writer {
                 self.text(shape, attrs);
                 Ok(())
             }
-            Shape::Stroke { .. } => Ok(()),
+            Shape::Stroke { .. } | Shape::Image { .. } => Ok(()),
         };
     }
 

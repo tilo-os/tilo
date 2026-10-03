@@ -196,6 +196,11 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
+    /// The door the root's views submit their edits through.
+    pub(crate) fn dispatcher(&self) -> Dispatcher<R> {
+        self.dispatch.clone()
+    }
+
     pub(crate) fn live(&self) -> &Live<R> {
         &self.live
     }

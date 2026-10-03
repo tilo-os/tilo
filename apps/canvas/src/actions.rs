@@ -19,8 +19,8 @@ use ui::tilo_resource::{self, Doc, JsonSchema, order};
 use crate::doc;
 use crate::media::{self, MediumSpec};
 use crate::model::{
-    Artwork, BLENDS, Gradient, Layer, MAX_MARKS_PER_ACTION, MAX_SIDE, Mark, Reference, Shadow,
-    Shape, StrokePoint, Style, valid_id,
+    Adjust, Artwork, BLENDS, Gradient, Layer, MAX_MARKS_PER_ACTION, MAX_SIDE, Mark, Reference,
+    Shadow, Shape, StrokePoint, Style, valid_id,
 };
 
 pub const ACTION_TYPE: &str = "canvas.artwork";
@@ -38,6 +38,11 @@ pub struct SetArtwork {
     pub texture: Option<String>,
     /// Ground colour, `#rrggbb`.
     pub ground_colour: Option<String>,
+    /// Crop to `[x, y, width, height]`: that corner becomes 0, 0 and every
+    /// mark moves with it.
+    pub crop: Option<[f64; 4]>,
+    /// Crop to what this mark or group shows (a photo after its crop).
+    pub fit: Option<String>,
 }
 
 /// Add a layer on top, or above another.
@@ -74,6 +79,8 @@ pub struct EditLayer {
     pub to: Option<String>,
     /// `0..=1`: let the ground's tooth show through the layer's marks.
     pub texture: Option<f64>,
+    /// Colour and tone of everything on it; given steps replace.
+    pub adjust: Option<Adjust>,
 }
 
 /// Remove a layer and everything on it.
@@ -278,6 +285,15 @@ pub struct EditMarks {
     /// An affine `[a, b, c, d, e, f]` in artwork units applied after the
     /// rest, to all the marks as one: a stretch or turn about any point.
     pub transform: Option<[f64; 6]>,
+    /// `horizontal` or `vertical`: mirror about each centre.
+    pub flip: Option<String>,
+    /// Images: `[x, y, w, h]` fractions of the picture to show; the picture
+    /// stays put, its frame follows. `[]` shows it whole.
+    pub crop: Option<Vec<f64>>,
+    /// Images: degrees to turn the picture in its frame (-45 to 45).
+    pub straighten: Option<f64>,
+    /// Colour and tone; given steps replace.
+    pub adjust: Option<Adjust>,
 }
 
 /// Remove marks by id, or every mark of a layer.
@@ -354,7 +370,7 @@ pub struct SetReference {
 pub enum CanvasAction {
     SetArtwork(SetArtwork),
     AddLayer(AddLayer),
-    EditLayer(EditLayer),
+    EditLayer(Box<EditLayer>),
     RemoveLayer(RemoveLayer),
     Draw(Draw),
     Paint(Paint),
@@ -365,6 +381,20 @@ pub enum CanvasAction {
     RemoveMedium(RemoveMedium),
     Align(Align),
     SetReference(SetReference),
+    Open(Open),
+}
+
+/// Start a new artwork from a picture: sized to it, the picture its first
+/// mark (`picture`) on its one layer. Everything the artwork held before is
+/// replaced, as one step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Open {
+    /// The picture's content address.
+    pub src: String,
+    /// Its size in pixels.
+    pub pixels: [u32; 2],
+    pub title: String,
 }
 
 impl CanvasAction {
@@ -734,19 +764,24 @@ impl Draw {
                     inner_shadow: mark.inner_shadow.clone(),
                     grain: mark.grain.filter(|grain| *grain > 0.0),
                     feather: mark.feather.filter(|feather| *feather > 0.0),
+                    adjust: None,
                 };
-                let style =
-                    if style.fill.is_none() && style.gradient.is_none() && style.stroke.is_none() {
-                        // An uncoloured shape would be invisible: draw it in ink.
-                        Style {
-                            fill: mark.shape.closed().then(|| "#1d1b19".to_owned()),
-                            stroke: (!mark.shape.closed()).then(|| "#1d1b19".to_owned()),
-                            stroke_width: if mark.shape.closed() { 0.0 } else { 2.0 },
-                            ..style
-                        }
-                    } else {
-                        style
-                    };
+                let picture = matches!(mark.shape, Shape::Image { .. });
+                let style = if !picture
+                    && style.fill.is_none()
+                    && style.gradient.is_none()
+                    && style.stroke.is_none()
+                {
+                    // An uncoloured shape would be invisible: draw it in ink.
+                    Style {
+                        fill: mark.shape.closed().then(|| "#1d1b19".to_owned()),
+                        stroke: (!mark.shape.closed()).then(|| "#1d1b19".to_owned()),
+                        stroke_width: if mark.shape.closed() { 0.0 } else { 2.0 },
+                        ..style
+                    }
+                } else {
+                    style
+                };
                 Mark {
                     group: mark.group.clone().unwrap_or_default(),
                     clip: mark.clip.clone().unwrap_or_default(),
@@ -846,11 +881,35 @@ impl EditMarks {
         if let Some(transform) = self.transform {
             check_transform(transform)?;
         }
+        let mirror = match self.flip.as_deref() {
+            None => ui::vello::kurbo::Affine::IDENTITY,
+            Some("horizontal") => ui::vello::kurbo::Affine::FLIP_X,
+            Some("vertical") => ui::vello::kurbo::Affine::FLIP_Y,
+            Some(other) => {
+                return Err(refuse(format!(
+                    "flip {other:?} must be horizontal or vertical"
+                )));
+            }
+        };
+        if let Some(problem) = self.adjust.as_ref().and_then(Adjust::problem) {
+            return Err(refuse(problem));
+        }
+        let crop = match self.crop.as_deref() {
+            None => None,
+            Some([]) => Some([0.0, 0.0, 1.0, 1.0]),
+            Some(&[x, y, w, h]) => Some([x, y, w, h]),
+            Some(_) => {
+                return Err(refuse(
+                    "crop is [x, y, w, h] fractions of the picture, or [] for all of it",
+                ));
+            }
+        };
         for unit in units {
             let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
                 * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
                 * ui::vello::kurbo::Affine::scale(scale)
+                * mirror
                 * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
             for original in unit {
                 let mut mark = original.clone();
@@ -875,10 +934,11 @@ impl EditMarks {
                     mark.clip.clone_from(clip);
                 }
                 self.restyle(&mut mark);
+                self.reframe(&mut mark, crop)?;
                 if dx != 0.0 || dy != 0.0 {
                     mark = mark.moved(dx, dy);
                 }
-                if self.scale.is_some() || self.rotate.is_some() {
+                if self.scale.is_some() || self.rotate.is_some() || self.flip.is_some() {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
                 }
                 if let Some(transform) = self.transform {
@@ -888,6 +948,31 @@ impl EditMarks {
                     .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
                 doc::write_mark(doc, &mark)?;
             }
+        }
+        Ok(())
+    }
+
+    /// An image's crop and straightening, onto `mark`.
+    fn reframe(&self, mark: &mut Mark, crop: Option<[f64; 4]>) -> Result<(), ActionError> {
+        if crop.is_none() && self.straighten.is_none() {
+            return Ok(());
+        }
+        let Some(mut placement) = crate::picture::Placement::of(&mark.shape) else {
+            return Err(refuse(format!(
+                "mark {:?} is a {}; crop and straighten are for images",
+                mark.id,
+                mark.shape.kind()
+            )));
+        };
+        if let Some(crop) = crop {
+            placement = placement.with_crop(crop);
+        }
+        if let Some(angle) = self.straighten {
+            placement.straighten = angle;
+        }
+        placement.apply(&mut mark.shape);
+        if let Some(problem) = mark.shape.problem() {
+            return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
         }
         Ok(())
     }
@@ -959,6 +1044,9 @@ impl EditMarks {
             }
             if let Some(params) = &self.params {
                 mark.style.params.extend(params.clone());
+            }
+            if let Some(adjust) = &self.adjust {
+                mark.style.adjust = mark.style.adjust.clone().unwrap_or_default().merged(adjust);
             }
         }
     }
@@ -1101,7 +1189,7 @@ impl tilo_actions::Action for CanvasAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let art = doc::read(doc);
         match self {
-            Self::SetArtwork(set) => set_artwork(doc, set),
+            Self::SetArtwork(set) => set_artwork(doc, &art, set),
             Self::AddLayer(add) => add_layer(doc, &art, add),
             Self::EditLayer(edit) => edit_layer(doc, &art, edit),
             Self::RemoveLayer(remove) => {
@@ -1164,6 +1252,7 @@ impl tilo_actions::Action for CanvasAction {
             }
             Self::Align(align) => align.apply(doc, &art),
             Self::SetReference(set) => set_reference(doc, &art, set),
+            Self::Open(open) => open.apply(doc, &art),
         }
     }
 
@@ -1172,9 +1261,20 @@ impl tilo_actions::Action for CanvasAction {
     }
 }
 
-fn set_artwork(doc: &mut Doc, set: &SetArtwork) -> Result<(), ActionError> {
+fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), ActionError> {
     use ui::automerge::ROOT;
     use ui::automerge::transaction::Transactable as _;
+    let crop = match (&set.crop, &set.fit) {
+        (Some(_), Some(_)) => return Err(refuse("give crop or fit, not both")),
+        (Some([x, y, width, height]), None) => {
+            Some(ui::vello::kurbo::Rect::new(*x, *y, x + width, y + height))
+        }
+        (None, Some(id)) => Some(extent(art, &units_of(art, id)?)),
+        (None, None) => None,
+    };
+    if let Some(crop) = crop {
+        crop_artwork(doc, art, crop)?;
+    }
     for (value, what) in [(set.width, "width"), (set.height, "height")] {
         if let Some(value) = value {
             if !(16.0..=MAX_SIDE).contains(&value) {
@@ -1207,6 +1307,113 @@ fn set_artwork(doc: &mut Doc, set: &SetArtwork) -> Result<(), ActionError> {
         doc::put_text(doc, &ROOT, "ground", &encoded)?;
     }
     Ok(())
+}
+
+/// The artwork cut down to `area`: its corner becomes the origin, every
+/// mark and the reference moving with it.
+fn crop_artwork(
+    doc: &mut Doc,
+    art: &Artwork,
+    area: ui::vello::kurbo::Rect,
+) -> Result<(), ActionError> {
+    use ui::automerge::ROOT;
+    use ui::automerge::transaction::Transactable as _;
+    // Whole units, so the picture an export makes is exactly the area.
+    let (x0, y0) = (area.x0.round(), area.y0.round());
+    let (width, height) = ((area.x1.round() - x0), (area.y1.round() - y0));
+    if ![x0, y0, width, height]
+        .iter()
+        .all(|value| value.is_finite())
+        || !(16.0..=MAX_SIDE).contains(&width)
+        || !(16.0..=MAX_SIDE).contains(&height)
+    {
+        return Err(refuse(format!(
+            "a crop is [x, y, width, height] with width and height 16 to {MAX_SIDE}"
+        )));
+    }
+    doc.put(&ROOT, "width", width)?;
+    doc.put(&ROOT, "height", height)?;
+    if x0 != 0.0 || y0 != 0.0 {
+        for mark in &art.marks {
+            doc::write_mark(doc, &mark.moved(-x0, -y0))?;
+        }
+        if let Some(reference) = &art.reference
+            && let Some([x, y, w, h]) = reference.frame
+        {
+            let moved = Reference {
+                frame: Some([x - x0, y - y0, w, h]),
+                ..reference.clone()
+            };
+            doc::write_reference(doc, Some(&moved))?;
+        }
+    }
+    Ok(())
+}
+
+impl Open {
+    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+        use ui::automerge::ROOT;
+        use ui::automerge::transaction::Transactable as _;
+        let [width, height] = self.pixels.map(f64::from);
+        if width < 1.0 || height < 1.0 {
+            return Err(refuse("the picture has no pixels"));
+        }
+        // A unit to a pixel, unless the picture is larger than an artwork
+        // may be; never smaller than an artwork may be.
+        let fit = (MAX_SIDE / width.max(height)).min(1.0);
+        let fit = fit.max(16.0 / width.min(height));
+        let (width, height) = ((width * fit).round(), (height * fit).round());
+        for mark in &art.marks {
+            doc::remove(doc, doc::MARKS, &mark.id)?;
+        }
+        for layer in &art.layers {
+            doc::remove(doc, doc::LAYERS, &layer.id)?;
+        }
+        for medium in art.media.keys() {
+            doc::remove(doc, doc::MEDIA, medium)?;
+        }
+        doc::write_reference(doc, None)?;
+        doc.put(&ROOT, "width", width.clamp(16.0, MAX_SIDE))?;
+        doc.put(&ROOT, "height", height.clamp(16.0, MAX_SIDE))?;
+        doc::put_text(doc, &ROOT, "title", &self.title)?;
+        let ground = crate::model::Ground {
+            texture: "smooth".into(),
+            colour: "#ffffff".into(),
+        };
+        let encoded = serde_json::to_string(&ground).unwrap_or_default();
+        doc::put_text(doc, &ROOT, "ground", &encoded)?;
+        let fresh = doc::read(doc);
+        add_layer(
+            doc,
+            &fresh,
+            &AddLayer {
+                id: Some("layer-1".into()),
+                name: "Layer 1".into(),
+                ..AddLayer::default()
+            },
+        )?;
+        let fresh = doc::read(doc);
+        let shape = Shape::Image {
+            src: self.src.clone(),
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            crop: None,
+            straighten: None,
+        };
+        add_marks(
+            doc,
+            &fresh,
+            "layer-1",
+            vec![placed(
+                "picture".into(),
+                self.title.clone(),
+                shape,
+                Style::default(),
+            )],
+        )
+    }
 }
 
 fn check_medium(art: &Artwork, medium: &str) -> Result<(), ActionError> {
@@ -1271,6 +1478,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
             visible: true,
             texture: add.texture.unwrap_or(0.0),
             locked: false,
+            adjust: None,
         },
     )?;
     Ok(())
@@ -1304,6 +1512,12 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     }
     if let Some(locked) = edit.locked {
         layer.locked = locked;
+    }
+    if let Some(adjust) = &edit.adjust {
+        if let Some(problem) = adjust.problem() {
+            return Err(refuse(problem));
+        }
+        layer.adjust = layer.adjust.clone().unwrap_or_default().merged(adjust);
     }
     if let Some(to) = &edit.to {
         let all: Vec<(String, String)> = art

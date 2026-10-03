@@ -68,7 +68,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 }
 
 /// Groups of controls, kept apart so each reads as one thing.
-fn spaced(groups: Vec<Element>) -> Element {
+pub(super) fn spaced(groups: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -80,7 +80,7 @@ fn spaced(groups: Vec<Element>) -> Element {
 }
 
 /// A label and the control it names, close together.
-fn tight(children: Vec<Element>) -> Element {
+pub(super) fn tight(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -91,7 +91,7 @@ fn tight(children: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-fn section(children: Vec<Element>) -> Element {
+pub(super) fn section(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -103,7 +103,7 @@ fn section(children: Vec<Element>) -> Element {
 }
 
 /// A label on the left and its value on the right.
-fn labelled(label: &str, value: Element) -> Element {
+pub(super) fn labelled(label: &str, value: Element) -> Element {
     Box::new(
         Row::new()
             .with_gap(8.0)
@@ -136,7 +136,7 @@ fn field(label: &str, control: Element) -> Element {
 }
 
 /// A control taking the width a row leaves.
-fn grow(control: Element) -> Element {
+pub(super) fn grow(control: Element) -> Element {
     Box::new(
         Container::new()
             .with_no_padding()
@@ -372,15 +372,13 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
             .filter_map(|id| art.mark(id).cloned())
             .collect::<Vec<Mark>>()
     });
-    let stop = tools.stop.clone();
-    cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &stop))
+    let tools = tools.clone();
+    cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &tools))
 }
 
-fn marks_inspector(
-    cx: &ViewCx<ArtworkResource>,
-    marks: &[Mark],
-    stop: &LocalState<usize>,
-) -> Element {
+fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) -> Element {
+    tools.live.borrow_mut().clear();
+    let stop = &tools.stop;
     let Some(first) = marks.first() else {
         return Box::new(Spacer::fixed(0.0));
     };
@@ -410,7 +408,14 @@ fn marks_inspector(
             .push(Box::new(Spacer::new()))
             .push(caption(&summary)),
     )];
-    let lines_only = matches!(first.shape, Shape::Line { .. } | Shape::Stroke { .. });
+    let picture = matches!(first.shape, Shape::Image { .. });
+    if picture {
+        parts.push(super::picture::panel(cx, &ids, first, tools));
+    }
+    let lines_only = matches!(
+        first.shape,
+        Shape::Line { .. } | Shape::Stroke { .. } | Shape::Image { .. }
+    );
     if !lines_only {
         let mut fill = vec![
             heading("canvas-fill"),
