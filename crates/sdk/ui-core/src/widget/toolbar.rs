@@ -11,7 +11,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1127,22 +1127,13 @@ impl Toolbar {
             return;
         };
         let theme = ctx.theme;
-        if active {
-            let radius = f64::from(theme.tokens.radii.control);
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                theme.tokens.colors.intent.selection,
-                None,
-                &RoundedRect::from_rect(rect, radius),
-            );
-        }
         let face = match icon {
             Some(icon) => crate::widget::ButtonFace::icon_only(rect, icon, label),
             None => crate::widget::ButtonFace::new(rect, label),
         }
         .role(crate::widget::ButtonRole::Plain)
-        .hovered(self.hovered == Some(target) && !active)
+        .toggled(active)
+        .hovered(self.hovered == Some(target))
         .pressed(self.pressed == Some(target))
         .focused(self.focused && self.focus == Some(target) && !self.menu.is_open());
         crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
