@@ -29,8 +29,7 @@ use crate::paint::with_alpha;
 use vello::peniko::Color;
 
 pub use super::palette::{
-    DEFAULT_NEUTRAL_HUE, Emphasis, NEUTRAL_MAX_CHROMA, Palette, STATUS_HUES, STATUS_MAX_CHROMA,
-    TINTED_LIFT_CHROMA, Tone,
+    Emphasis, NEUTRAL_MAX_CHROMA, Palette, STATUS_HUES, STATUS_MAX_CHROMA, TINTED_LIFT_CHROMA, Tone,
 };
 
 /// How far [`Colors::legible_fill`] may deepen a filled chip toward black
@@ -659,8 +658,7 @@ impl Colors {
         presence: Tone,
         you: PresenceHue,
     ) -> Self {
-        let hue = palette.hue.rem_euclid(360.0);
-        let chroma = palette.chroma.clamp(0.0, NEUTRAL_MAX_CHROMA);
+        let (hue, chroma) = palette.temperature();
         let n = |lightness: f32| oklch(lightness, chroma, hue);
         let ladder = palette.surfaces;
         let content = n(ladder.content);
@@ -829,7 +827,7 @@ impl Colors {
             return self.clone();
         }
         let palette = Palette {
-            hue,
+            hue: Some(hue),
             ..self.palette
         };
         let presence = Tone::new(self.presence.lightness, self.presence.chroma);
@@ -881,7 +879,10 @@ impl Colors {
     pub fn lift_on(&self, ground: Color, t: f32) -> Color {
         let g = Oklch::from_color(ground);
         let (chroma, hue) = match self.emphasis {
-            Emphasis::Inverted => (self.palette.chroma, self.palette.hue),
+            Emphasis::Inverted => {
+                let (hue, chroma) = self.palette.temperature();
+                (chroma, hue)
+            }
             Emphasis::Tinted { hue } => (TINTED_LIFT_CHROMA, hue),
         };
         let step = self.palette.lift();
@@ -1274,7 +1275,10 @@ mod tests {
     }
 
     fn at_hue(palette: &Palette, hue: f32) -> Colors {
-        Colors::stock(&Palette { hue, ..*palette })
+        Colors::stock(&Palette {
+            hue: Some(hue),
+            ..*palette
+        })
     }
 
     fn surfaces(c: &Colors) -> [(&'static str, Color); 6] {
@@ -1484,7 +1488,7 @@ mod tests {
     #[test]
     fn every_shipped_palette_needs_no_repair_at_any_temperature_or_emphasis() {
         for (label, palette) in palettes() {
-            for hue in hues() {
+            for hue in std::iter::once(None).chain(hues().map(Some)) {
                 let palette = Palette { hue, ..palette };
                 let mut emphases = vec![Emphasis::Inverted];
                 emphases.extend(hues().map(|tint| Emphasis::Tinted { hue: tint }));
@@ -1498,7 +1502,7 @@ mod tests {
                     let findings = crate::tokens::contrast::audit(&authored);
                     assert!(
                         findings.is_empty(),
-                        "{label}@{hue} {emphasis:?}: {}",
+                        "{label}@{hue:?} {emphasis:?}: {}",
                         findings
                             .iter()
                             .map(ToString::to_string)
@@ -1661,7 +1665,7 @@ mod tests {
             let mut cool = Colors::stock(&Palette::dark_cool());
             cool.set_you(PresenceHue::Orange);
             let warm = cool.with_neutral_hue(40.0);
-            assert!((warm.palette.hue - 40.0).abs() < f32::EPSILON);
+            assert_eq!(warm.palette.hue, Some(40.0));
             let h = Oklch::from_color(warm.surfaces.content).h;
             assert!((h - 40.0).abs() <= 25.0, "content hue {h:.0}");
             assert_ne!(rgba(warm.surfaces.content), rgba(cool.surfaces.content));
@@ -1680,7 +1684,27 @@ mod tests {
             let grey = Colors::dark();
             let warm = grey.with_neutral_hue(40.0);
             assert_eq!(rgba(warm.surfaces.content), rgba(grey.surfaces.content));
-            assert!((warm.palette.hue - grey.palette.hue).abs() < f32::EPSILON);
+            assert_eq!(warm.palette.hue, grey.palette.hue);
+        }
+        // phase: light_is_pure_grey_until_a_workspace_gives_it_a_hue
+        {
+            let light = Colors::light();
+            for (name, surface) in [
+                ("base", light.surfaces.base),
+                ("content", light.surfaces.content),
+                ("sidebar", light.surfaces.sidebar),
+                ("ink", light.text_primary),
+            ] {
+                let rgb = rgba(surface);
+                assert!(
+                    rgb[0] == rgb[1] && rgb[1] == rgb[2],
+                    "{name} is pure grey without a workspace hue: {rgb:?}"
+                );
+            }
+            let warm = light.with_neutral_hue(40.0);
+            let h = Oklch::from_color(warm.surfaces.base);
+            assert!(h.c > 0.005, "a known hue adds temperature");
+            assert!((h.h - 40.0).abs() <= 25.0, "base hue {:.0}", h.h);
         }
         // phase: your_colour_is_focus_caret_and_selection
         {
