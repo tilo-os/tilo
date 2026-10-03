@@ -95,6 +95,9 @@ struct StageGeometry {
     index: usize,
     path: BezPath,
     bounds: Rect,
+    /// The stage's narrower and wider edge.
+    narrow_width: f64,
+    wide_width: f64,
     conversion: f64,
 }
 
@@ -271,12 +274,108 @@ impl FunnelChart {
                 index: *index,
                 path,
                 bounds,
+                narrow_width: top_width.min(bottom_width),
+                wide_width: top_width.max(bottom_width),
                 conversion: stage.value / previous.max(f64::EPSILON),
             });
             y += height + self.style.gap;
         }
         output
     }
+    /// A stage's name, and its value under it where there is room: inside
+    /// the stage where both fit its narrower edge, otherwise beside the
+    /// funnel on the leading side, shortened to the room there and dropped
+    /// (the tooltip names the stage) only where not even a short name fits.
+    fn draw_stage_label(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geometry: &StageGeometry,
+        color: Color,
+    ) {
+        let Some(stage) = self.stages.get(geometry.index) else {
+            return;
+        };
+        let name_style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Semibold);
+        let value_style = theme.text(TextRole::Caption);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let value = self.style.show_values.then(|| format_compact(stage.value));
+        let (nw, nh) = tr.measure_style(&stage.label, None, &name_style);
+        let (nw, nh) = (f64::from(nw), f64::from(nh));
+        let (vw, vh) = value.as_deref().map_or((0.0, 0.0), |v| {
+            let (w, h) = tr.measure_style(v, None, &value_style);
+            (f64::from(w), f64::from(h))
+        });
+        let bounds = geometry.bounds;
+        // The narrower of the stage's two edges is the room inside it.
+        let narrow = geometry.narrow_width;
+        let inside_ink = theme
+            .tokens
+            .colors
+            .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+        let two_lines = vh > 0.0 && nh + vh + pad <= bounds.height();
+        let block_h = if two_lines { nh + vh } else { nh };
+        let top = bounds.center().y - block_h / 2.0;
+        if nw.max(if two_lines { vw } else { 0.0 }) + 2.0 * pad <= narrow
+            && nh + pad <= bounds.height()
+        {
+            let cx = bounds.center().x;
+            tr.draw_style(
+                scene,
+                &stage.label,
+                inside_ink,
+                transform * Affine::translate((cx - nw / 2.0, top)),
+                None,
+                &name_style,
+            );
+            if two_lines && let Some(value) = value.as_deref() {
+                tr.draw_style(
+                    scene,
+                    value,
+                    inside_ink,
+                    transform * Affine::translate((cx - vw / 2.0, top + nh)),
+                    None,
+                    &value_style,
+                );
+            }
+            return;
+        }
+        // Beside the stage, trailing-aligned to its leading edge at its middle.
+        let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
+        let room = edge - pad - self.rect.x0 - pad;
+        let Some((name, w, _)) =
+            crate::widget::chart_labels::fit_label(tr, &stage.label, room, &name_style)
+        else {
+            return;
+        };
+        let x1 = edge - pad;
+        tr.draw_style(
+            scene,
+            &name,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((x1 - w, top)),
+            None,
+            &name_style,
+        );
+        if two_lines
+            && let Some(value) = value.as_deref()
+            && vw <= room
+        {
+            tr.draw_style(
+                scene,
+                value,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x1 - vw, top + nh)),
+                None,
+                &value_style,
+            );
+        }
+    }
+
     fn palette(theme: &Theme, index: usize) -> Color {
         theme.tokens.colors.presence.series(index)
     }
@@ -363,40 +462,7 @@ impl Widget for FunnelChart {
                     &geometry.path,
                 );
             }
-            let ink = theme
-                .tokens
-                .colors
-                .ink_on(color, theme.tokens.colors.text_primary, 4.5);
-            let value = if self.style.show_values {
-                format!("{}  ·  {}", stage.label, format_compact(stage.value))
-            } else {
-                stage.label.clone()
-            };
-            let (width, height) = tr.measure_style(
-                &value,
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            if f64::from(width) + 24.0 <= geometry.bounds.width()
-                && f64::from(height) + 8.0 <= geometry.bounds.height()
-            {
-                tr.draw_style(
-                    scene,
-                    &value,
-                    ink,
-                    transform
-                        * Affine::translate((
-                            geometry.bounds.center().x - f64::from(width) / 2.0,
-                            geometry.bounds.center().y - f64::from(height) / 2.0,
-                        )),
-                    None,
-                    &theme
-                        .text(TextRole::Label)
-                        .with_weight(TextWeight::Semibold),
-                );
-            }
+            self.draw_stage_label(scene, transform, tr, theme, &geometry, color);
             if self.style.show_conversion && geometry.conversion < 0.999 {
                 let label = format!("{:.0}%", geometry.conversion * 100.0);
                 tr.draw_style(
