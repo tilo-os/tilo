@@ -94,6 +94,7 @@ impl GuestLauncher for EchoLauncher {
                 stop: Mutex::new(Some(stop)),
                 sizes: Arc::clone(&self.sizes),
             }),
+            built_tools: Vec::new(),
         })
     }
 }
@@ -110,7 +111,14 @@ impl Metering for RecordingMeter {
 pub(crate) fn spec() -> EnvironmentSpec {
     EnvironmentSpec {
         name: "dev".into(),
-        runtime: "so.tilo.env.fedora".into(),
+        runtime: tilo_relay_protocol::environment::RuntimeImages {
+            release: "2026.10".into(),
+            images: [(
+                tilo_relay_protocol::environment::this_architecture().to_owned(),
+                "tapp:01".to_owned(),
+            )]
+            .into(),
+        },
         tools: Vec::new(),
         grants: vec![DirectoryGrant {
             path: "/home/alice/Projects".into(),
@@ -519,8 +527,12 @@ async fn tools_built_on_the_worker_reach_the_members_terminal() {
     let alice = member(1, 10);
     let session = [4; 16];
     let tool = |id: &str| ToolImage {
-        id: id.into(),
         packages: vec!["pandoc".into()],
+        images: [(
+            tilo_relay_protocol::environment::this_architecture().to_owned(),
+            id.to_owned(),
+        )]
+        .into(),
     };
     let mut first = Terminal::connect(&fixture.host, alice, session, open_request());
     assert!(matches!(

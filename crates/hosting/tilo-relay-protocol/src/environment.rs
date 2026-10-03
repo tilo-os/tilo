@@ -27,6 +27,8 @@
 //! Frames are postcard, length-prefixed with the relay frame codec, at most
 //! [`MAX_ENVIRONMENT_FRAME_BYTES`] each.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::legacy_window::{InputEvent, MAX_INPUT_EVENTS};
@@ -77,13 +79,41 @@ pub enum HomePolicy {
     Ephemeral,
 }
 
-/// One tool image an environment mounts over its runtime.
+/// Image ids per architecture (`x86_64`, `aarch64`, as Rust names them).
+pub type ArchImages = BTreeMap<String, String>;
+
+/// Architectures one image map may name.
+pub const MAX_ARCHITECTURES: usize = 8;
+
+/// The `env-runtime` release an environment runs on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeImages {
+    /// The release, e.g. `2026.10`: the same userland on every architecture.
+    pub release: String,
+    /// The `env-runtime` image per architecture.
+    pub images: ArchImages,
+}
+
+/// One tool an environment mounts over its runtime.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolImage {
-    /// The tool image's package id.
-    pub id: String,
     /// What the member asked for, e.g. `["pandoc"]`.
     pub packages: Vec<String>,
+    /// The tool image per architecture, built for the runtime release.
+    pub images: ArchImages,
+}
+
+/// The architecture this machine's images are for.
+#[must_use]
+pub fn this_architecture() -> &'static str {
+    std::env::consts::ARCH
+}
+
+fn valid_images(images: &ArchImages) -> bool {
+    images.len() <= MAX_ARCHITECTURES
+        && images
+            .iter()
+            .all(|(arch, id)| bounded(arch) && !arch.is_empty() && bounded(id) && !id.is_empty())
 }
 
 /// A directory granted into the guest, at the same path it has for the
@@ -101,10 +131,11 @@ pub struct DirectoryGrant {
 pub struct EnvironmentSpec {
     /// Display name.
     pub name: String,
-    /// The `env-runtime` image's package id.
-    pub runtime: String,
-    /// Tool images built for `runtime`, in the record's order (topmost
-    /// last).
+    /// The `env-runtime` release and its images.
+    pub runtime: RuntimeImages,
+    /// Tools built for that release, in the record's order (topmost
+    /// last). A tool may lack an image for some architecture; a node of
+    /// that architecture builds it.
     pub tools: Vec<ToolImage>,
     /// Directories granted into the guest.
     pub grants: Vec<DirectoryGrant>,
@@ -181,12 +212,13 @@ impl EnvironmentSpec {
     #[must_use]
     pub fn valid(&self) -> bool {
         bounded(&self.name)
-            && bounded(&self.runtime)
-            && !self.runtime.is_empty()
+            && bounded(&self.runtime.release)
+            && !self.runtime.images.is_empty()
+            && valid_images(&self.runtime.images)
             && self.tools.len() <= MAX_TOOLS
             && self.tools.iter().all(|tool| {
-                bounded(&tool.id)
-                    && !tool.id.is_empty()
+                valid_images(&tool.images)
+                    && !tool.packages.is_empty()
                     && tool.packages.len() <= MAX_TOOL_PACKAGES
                     && tool.packages.iter().all(|package| bounded(package))
             })
@@ -306,12 +338,14 @@ pub enum ServerFrame {
         /// Human-readable detail, at most [`MAX_DETAIL_BYTES`].
         detail: String,
     },
-    /// A tool was built for this environment on the relay; the member's
-    /// device applies the record's `add-tool` action with it.
+    /// A tool image was built for this environment on the relay, for the
+    /// relay's architecture: installed in the session, or built because the
+    /// record had no image of this tool for that architecture. The member's
+    /// device records it.
     ToolBuilt {
         /// The environment the tool was built for.
         record: EnvironmentRecordRef,
-        /// The built (or cached) tool image.
+        /// The tool, with the image built here.
         tool: ToolImage,
     },
 }
@@ -524,13 +558,23 @@ pub fn bounded_detail(detail: impl Into<String>) -> String {
 mod tests {
     use super::*;
 
+    fn images(id: &str) -> ArchImages {
+        ArchImages::from([
+            ("x86_64".into(), id.into()),
+            ("aarch64".into(), format!("{id}-arm")),
+        ])
+    }
+
     fn spec() -> EnvironmentSpec {
         EnvironmentSpec {
             name: "dev".into(),
-            runtime: "so.tilo.env.fedora".into(),
+            runtime: RuntimeImages {
+                release: "2026.10".into(),
+                images: images("tapp:01"),
+            },
             tools: vec![ToolImage {
-                id: "so.tilo.tool.pandoc".into(),
                 packages: vec!["pandoc".into()],
+                images: images("tapp:02"),
             }],
             grants: vec![DirectoryGrant {
                 path: "/home/alice/Projects".into(),
@@ -680,8 +724,11 @@ mod tests {
             cases.push(spec);
         }
         let mut no_runtime = spec();
-        no_runtime.runtime.clear();
+        no_runtime.runtime.images.clear();
         cases.push(no_runtime);
+        let mut nameless = spec();
+        nameless.tools[0].packages.clear();
+        cases.push(nameless);
         let mut many_grants = spec();
         many_grants.grants = vec![many_grants.grants[0].clone(); MAX_GRANTS + 1];
         cases.push(many_grants);
