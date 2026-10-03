@@ -12,7 +12,7 @@
     uv run vendor/fonts/tilo-sans/proof.py --set latin --fallback instrument   # regression vs upstream
 
 Pages (each a PNG under proofs/work/<name>/, or proofs/sheets/<name>/ with
---final, the only proof directory git tracks):
+--final; proofs are generated and never tracked):
 
   grid-<instance>.png  every glyph at 160 px with its advance box, metric
                        lines and name; one page per instance (Regular, Medium,
@@ -420,7 +420,7 @@ def main() -> int:
     parser.add_argument("--pages", default="grid,text,compare,context", help="comma list of grid,text,compare,context")
     parser.add_argument("--instances", default="", help="comma list of instance names; default all six")
     parser.add_argument("--name", help="output folder name; default the set name")
-    parser.add_argument("--final", action="store_true", help="write to proofs/sheets/<name>/ (tracked in git)")
+    parser.add_argument("--final", action="store_true", help="write to proofs/sheets/<name>/")
     parser.add_argument("--keep-html", action="store_true", help="also keep the generated HTML next to the PNGs")
     args = parser.parse_args()
     args_keep_html = args.keep_html
