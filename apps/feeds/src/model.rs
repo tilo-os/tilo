@@ -168,25 +168,32 @@ pub enum Filter {
 // ---------------------------------------------------------------------
 // Reading settings (article reader pane)
 //
-// Mirrors the ebook reader's reading-mode model so the two apps stay
-// consistent. The *page tint* (light/sepia/dark) is deliberately distinct
-// from the OS theme: people read on warm "paper" even in a dark desktop. All
-// chrome reads from the OS `Theme`; only the reader pane uses these.
+// The reader's paper follows the system theme unless the person picks a
+// fixed paper (light, sepia or dark) for long-form reading. All chrome reads
+// from the system `Theme`; only the article page uses these.
 // ---------------------------------------------------------------------
 
-/// Page tint for the article reader. Distinct from the OS theme on purpose.
+/// Paper of the article reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadTheme {
+    /// The page is the window ground: it follows the system theme.
+    System,
     Light,
     Sepia,
     Dark,
 }
 
 impl ReadTheme {
-    pub const ALL: [ReadTheme; 3] = [ReadTheme::Light, ReadTheme::Sepia, ReadTheme::Dark];
+    pub const ALL: [ReadTheme; 4] = [
+        ReadTheme::System,
+        ReadTheme::Light,
+        ReadTheme::Sepia,
+        ReadTheme::Dark,
+    ];
     pub fn label(self) -> &'static str {
         match self {
+            ReadTheme::System => "System",
             ReadTheme::Light => "Light",
             ReadTheme::Sepia => "Sepia",
             ReadTheme::Dark => "Dark",
@@ -194,6 +201,7 @@ impl ReadTheme {
     }
     pub fn as_str(self) -> &'static str {
         match self {
+            ReadTheme::System => "system",
             ReadTheme::Light => "light",
             ReadTheme::Sepia => "sepia",
             ReadTheme::Dark => "dark",
@@ -201,18 +209,16 @@ impl ReadTheme {
     }
     pub fn from_key(s: &str) -> Self {
         match s {
+            "light" => ReadTheme::Light,
             "sepia" => ReadTheme::Sepia,
             "dark" => ReadTheme::Dark,
-            _ => ReadTheme::Light,
+            _ => ReadTheme::System,
         }
     }
 }
 
-/// Reading face. Unlike the ebook reader (which only offered Sans/Mono because
-/// it draws through the proportional/monospace `draw_style` path), the
-/// feeds reader renders the body through `ui::richtext::RichTextLayout`, which
-/// exposes a real `FontFamily::Serif`. So we offer a genuine serif option for
-/// long-form reading, plus the proportional sans and a fixed-width mono.
+/// Face of the article body: the serif reading face, the UI sans or the
+/// monospace face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadFont {
@@ -259,7 +265,8 @@ impl ReadFont {
 /// together (and the same user across sessions) share a consistent layout.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReadSettings {
-    /// Body font-size multiplier; 1.0 == `BASE_SIZE` px. Clamped to [0.8, 1.8].
+    /// How much larger than its text role the article is set (1.0 is the
+    /// role's own size), clamped to [`Self::SCALE_MIN`, `Self::SCALE_MAX`].
     pub font_scale: f32,
     pub font: ReadFont,
     pub theme: ReadTheme,
@@ -269,33 +276,26 @@ impl Default for ReadSettings {
     fn default() -> Self {
         Self {
             font_scale: 1.0,
-            font: ReadFont::Sans,
-            theme: ReadTheme::Dark,
+            font: ReadFont::Serif,
+            theme: ReadTheme::System,
         }
     }
 }
 
 impl ReadSettings {
-    pub const FONT_MIN: f32 = 0.8;
-    pub const FONT_MAX: f32 = 1.8;
-    /// Base body size in logical px before the scale multiplier.
-    pub const BASE_SIZE: f32 = 16.0;
+    /// Smallest reading scale.
+    pub const SCALE_MIN: f32 = 0.8;
+    /// Largest reading scale.
+    pub const SCALE_MAX: f32 = 1.8;
 
-    pub fn body_size(&self) -> f32 {
-        Self::BASE_SIZE * self.font_scale
+    /// The reading scale as a whole percentage (`110` for 1.1).
+    pub fn percent(&self) -> f64 {
+        (f64::from(self.font_scale) * 100.0).round()
     }
-    /// Heading sizes scale with the body so a larger body keeps proportion.
-    pub fn heading_size(&self, level: u8) -> f32 {
-        let mult = match level {
-            1 => 1.7,
-            2 => 1.35,
-            _ => 1.12,
-        };
-        (Self::BASE_SIZE * mult * self.font_scale).round()
-    }
+
     #[must_use]
     pub fn clamped(mut self) -> Self {
-        self.font_scale = self.font_scale.clamp(Self::FONT_MIN, Self::FONT_MAX);
+        self.font_scale = self.font_scale.clamp(Self::SCALE_MIN, Self::SCALE_MAX);
         self
     }
 }
@@ -743,8 +743,10 @@ mod tests {
             for f in ReadFont::ALL {
                 assert_eq!(ReadFont::from_key(f.as_str()), f);
             }
-            // Serif is a first-class option (the differentiator vs the ebook reader).
             assert_eq!(ReadFont::from_key("serif"), ReadFont::Serif);
+            // An unknown or missing paper follows the system theme.
+            assert_eq!(ReadTheme::from_key(""), ReadTheme::System);
+            assert_eq!(ReadSettings::default().theme, ReadTheme::System);
             // Cycle visits all three faces.
             assert_eq!(ReadFont::Sans.next(), ReadFont::Serif);
             assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);
@@ -755,19 +757,18 @@ mod tests {
                 ..Default::default()
             }
             .clamped();
-            assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
+            assert_eq!(s.font_scale, ReadSettings::SCALE_MAX);
             let s = ReadSettings {
                 font_scale: 0.1,
                 ..Default::default()
             }
             .clamped();
-            assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
-            // Body size scales with the multiplier.
+            assert_eq!(s.font_scale, ReadSettings::SCALE_MIN);
             let s = ReadSettings {
-                font_scale: 1.5,
+                font_scale: 1.1,
                 ..Default::default()
             };
-            assert!((s.body_size() - ReadSettings::BASE_SIZE * 1.5).abs() < 0.01);
+            assert_eq!(s.percent(), 110.0);
         }
 
         // --- phase: relative_time_buckets ---

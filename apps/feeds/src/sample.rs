@@ -7,7 +7,6 @@
 //! live app never seeds this — it starts empty on the user's persisted
 //! subscriptions and fetches real feeds over HTTP once the user adds one.
 
-use chrono::Utc;
 use uuid::Uuid;
 
 use crate::gemtext;
@@ -40,7 +39,7 @@ const DAY: i64 = 24 * HOUR;
               relocate the sample data, not shrink what a reader must trace for one entry"
 )]
 pub fn store() -> Store {
-    let now = Utc::now().timestamp();
+    let now = ui::clock::local_now().timestamp();
     let mut s = Store::new();
 
     // --- folders ---------------------------------------------------------
