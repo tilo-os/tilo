@@ -23,7 +23,7 @@ use crate::document::{self, ArtworkFile, EXTENSION, Recent, recents};
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::resource::ArtworkResource;
-use crate::tools::{FileRequest, Tools, ViewRequest};
+use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
 /// What a chooser was opened for.
 enum Pending {
@@ -65,6 +65,8 @@ impl FileDesk {
         }
     }
 
+    /// Say how a request went, in a line short enough to sit beside the
+    /// title; the whole of it is what a screen reader hears.
     fn say(&self, id: &str, args: &[(&str, ui::i18n::ArgValue)]) {
         self.tools
             .notice
@@ -76,8 +78,33 @@ impl FileDesk {
             .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
     }
 
+    /// Carry out what was chosen from the artwork's menu.
+    fn take_menu(&self) {
+        let chosen = self.tools.menu.get();
+        if chosen.is_empty() {
+            return;
+        }
+        self.tools.menu.set(String::new());
+        let (sheet, files) = (&self.tools.sheet, &self.tools.files);
+        match chosen.as_str() {
+            "new" => sheet.set(Some(Sheet::NewArtwork)),
+            "open" => files.set(Some(FileRequest::Open)),
+            "save" => files.set(Some(FileRequest::Save)),
+            "save-as" => files.set(Some(FileRequest::SaveAs)),
+            "duplicate" => files.set(Some(FileRequest::Duplicate)),
+            "export" => sheet.set(Some(Sheet::Export)),
+            "keys" => sheet.set(Some(Sheet::Shortcuts)),
+            other => {
+                if let Some(path) = other.strip_prefix(crate::panels::header::RECENT) {
+                    files.set(Some(FileRequest::OpenRecent(path.to_owned())));
+                }
+            }
+        }
+    }
+
     /// Take a request the controls left, if any, and carry it out.
     fn take(&mut self) {
+        self.take_menu();
         let Some(request) = self.tools.files.with(Clone::clone) else {
             return;
         };
@@ -241,9 +268,9 @@ impl FileDesk {
             open_svg(path).map(|actions| (actions, None))
         } else {
             document::read(path).map(|artwork| {
-                let action = CanvasAction::OpenArtwork(Box::new(OpenArtwork {
-                    artwork: artwork.clone(),
-                }));
+                let action = CanvasAction::OpenArtwork(OpenArtwork {
+                    file: String::from_utf8_lossy(&artwork.to_bytes()).into_owned(),
+                });
                 (vec![action], Some(artwork))
             })
         };
@@ -325,11 +352,12 @@ pub fn window_key(
     key: &str,
     modifiers: ui::winit::keyboard::ModifiersState,
 ) -> bool {
-    use crate::tools::{Sheet, Tool};
+    use crate::tools::Tool;
     let command = modifiers.control_key() || modifiers.super_key();
     let shift = modifiers.shift_key();
     let request = match (key, command, shift) {
-        ("?", false, _) => {
+        // A keyboard may report the slash with Shift held rather than `?`.
+        ("?", false, _) | ("/", false, true) => {
             tools.sheet.set(Some(Sheet::Shortcuts));
             return true;
         }
@@ -452,7 +480,9 @@ impl ui::widget::Decorator for FileDesk {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.content.needs_redraw() || self.tools.files.with(Option::is_some)
+        self.content.needs_redraw()
+            || self.tools.files.with(Option::is_some)
+            || self.tools.menu.with(|chosen| !chosen.is_empty())
     }
 
     fn needs_animation_frame(&self) -> bool {

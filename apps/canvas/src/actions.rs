@@ -68,10 +68,13 @@ pub struct NewArtwork {
 
 /// Replace the artwork with one saved as a file: its title, size, ground,
 /// layers, marks and media.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpenArtwork {
-    /// The artwork file's content.
-    pub artwork: crate::document::ArtworkFile,
+    /// An absolute path to a `.artwork` file, a content address, or the
+    /// file's JSON. The action keeps the file's JSON, so every replica
+    /// opens the same artwork.
+    pub file: String,
 }
 
 /// Add a layer on top, or above another.
@@ -429,7 +432,7 @@ pub struct SetReference {
 pub enum CanvasAction {
     SetArtwork(SetArtwork),
     NewArtwork(NewArtwork),
-    OpenArtwork(Box<OpenArtwork>),
+    OpenArtwork(OpenArtwork),
     AddLayer(AddLayer),
     EditLayer(EditLayer),
     RemoveLayer(RemoveLayer),
@@ -1337,7 +1340,11 @@ impl tilo_actions::Action for CanvasAction {
         match self {
             Self::SetArtwork(set) => set_artwork(doc, set),
             Self::NewArtwork(new) => replace(doc, &new.file()?),
-            Self::OpenArtwork(open) => replace(doc, &open.artwork),
+            Self::OpenArtwork(open) => {
+                let file =
+                    crate::document::ArtworkFile::parse(open.file.as_bytes()).map_err(refuse)?;
+                replace(doc, &file)
+            }
             Self::AddLayer(add) => add_layer(doc, &art, add),
             Self::EditLayer(edit) => edit_layer(doc, &art, edit),
             Self::RemoveLayer(remove) => {

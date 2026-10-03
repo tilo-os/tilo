@@ -180,6 +180,8 @@
                   "type": "string",
                   "enum": [
                     "set-artwork",
+                    "new-artwork",
+                    "open-artwork",
                     "add-layer",
                     "edit-layer",
                     "remove-layer",
@@ -2151,6 +2153,8 @@
                       "edit-layer",
                       "remove-layer",
                       "set-artwork",
+                      "new-artwork",
+                      "open-artwork",
                       "save-medium",
                       "remove-medium",
                       "align",
@@ -2200,6 +2204,8 @@
                                 "type": "string",
                                 "enum": [
                                   "set-artwork",
+                                  "new-artwork",
+                                  "open-artwork",
                                   "add-layer",
                                   "edit-layer",
                                   "remove-layer",
@@ -2552,6 +2558,161 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "new-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "New artwork",
+    "description": "Start over on a blank artwork (the old one stays one undo away): a size (screen, a4, letter, square, poster, icon; landscape turns it) or width and height, and a start: paper, white, watercolour, oil, panel or dark (its ground and its first layer's medium).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "title",
+        "ty": "text",
+        "required": false,
+        "description": "title",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "size",
+        "ty": "text",
+        "required": false,
+        "description": "A size: `screen`, `a4`, `letter`, `square`, `poster` or `icon`; `width` and `height` set it exactly.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A size: `screen`, `a4`, `letter`, `square`, `poster` or `icon`; `width` and `height` set it exactly."
+        },
+        "nullable": true
+      },
+      {
+        "name": "landscape",
+        "ty": "boolean",
+        "required": false,
+        "description": "Turn the size on its side.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Turn the size on its side."
+        },
+        "nullable": true
+      },
+      {
+        "name": "width",
+        "ty": "number",
+        "required": false,
+        "description": "Width in units, 16 to 8192.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Width in units, 16 to 8192."
+        },
+        "nullable": true
+      },
+      {
+        "name": "height",
+        "ty": "number",
+        "required": false,
+        "description": "Height in units, 16 to 8192.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Height in units, 16 to 8192."
+        },
+        "nullable": true
+      },
+      {
+        "name": "start",
+        "ty": "text",
+        "required": false,
+        "description": "What it is painted on and with: `paper`, `white`, `watercolour`, `oil`, `panel` or `dark`; `texture`, `ground_colour` and `medium` set it exactly.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What it is painted on and with: `paper`, `white`, `watercolour`, `oil`, `panel` or `dark`; `texture`, `ground_colour` and `medium` set it exactly."
+        },
+        "nullable": true
+      },
+      {
+        "name": "texture",
+        "ty": "text",
+        "required": false,
+        "description": "texture",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "ground_colour",
+        "ty": "text",
+        "required": false,
+        "description": "Ground colour, `#rrggbb`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Ground colour, `#rrggbb`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "medium",
+        "ty": "text",
+        "required": false,
+        "description": "The first layer's medium (see `media`); empty for plain vector art.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The first layer's medium (see `media`); empty for plain vector art."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "open-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "Open artwork",
+    "description": "Replace the artwork with a saved .artwork file (an absolute path, a content address, or its JSON); the old one stays one undo away.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "file",
+        "ty": "text",
+        "required": true,
+        "description": "An absolute path to a `.artwork` file, a content address, or the file's JSON. The action keeps the file's JSON, so every replica opens the same artwork.",
+        "schema": {
+          "type": "string",
+          "description": "An absolute path to a `.artwork` file, a content address, or the file's JSON. The action keeps the file's JSON, so every replica opens the same artwork."
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
@@ -2870,6 +3031,30 @@
           "items": {
             "type": "string"
           }
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "save-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "Save artwork",
+    "description": "Save the artwork as a .artwork file (title, size, ground, layers, marks, media) that open-artwork reads back: to a path in Files, or kept as content.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "path",
+        "ty": "text",
+        "required": false,
+        "description": "An absolute path ending in `.artwork` to write it to (replaced when there); else it is kept as content and answered by its address.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An absolute path ending in `.artwork` to write it to (replaced when there); else it is kept as content and answered by its address."
         },
         "nullable": true
       }
@@ -3451,10 +3636,46 @@
     "params": []
   },
   {
+    "resource": "tilo.control:canvas-export-open",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Export a picture",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "tilo.control:canvas-sidebar",
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Show or hide the panels",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-welcome-close",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Put the welcome away",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-welcome-new",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "New artwork…",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-welcome-open",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Open…",
     "description": null,
     "operation": "View",
     "params": []

@@ -182,3 +182,41 @@ fn a_tools_key_works_after_a_click_in_the_rail_and_a_tool_click_after_a_drag_lan
         "the ellipse tool clicked right after a drag drew an ellipse"
     );
 }
+
+#[test]
+fn a_person_opens_a_recent_artwork_from_the_welcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Valley.artwork");
+    {
+        let mut painter = TestApp::<App>::new().unwrap();
+        for action in canvas::sample::landscape() {
+            painter
+                .invoke(ui::prelude::Invoke::apply(&action).unwrap())
+                .unwrap();
+        }
+        painter
+            .call(
+                "save-artwork",
+                serde_json::json!({"path": path.display().to_string()}),
+            )
+            .unwrap();
+    }
+    let painted = canvas::document::read(&path).unwrap();
+    canvas::document::recents::remember(canvas::document::Recent {
+        path: path.display().to_string(),
+        title: "Valley".into(),
+        width: painted.width,
+        height: painted.height,
+        at_ms: 1,
+        thumbnail: None,
+    });
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().click_named("canvas-recent-1").unwrap();
+    app.harness().key("Shift");
+    assert_eq!(
+        app.state().marks.len(),
+        painted.marks.len(),
+        "the recent artwork opened"
+    );
+    assert_eq!(app.versions().len(), 2, "opening is one step");
+}
