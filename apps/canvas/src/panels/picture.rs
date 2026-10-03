@@ -366,11 +366,22 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: 
             }
         }),
     });
-    let shown = {
-        let state = state.clone();
-        Text::dynamic(move || format!("{:.1}°", to_value(state.with(|t| *t))))
-            .with_role(TextRole::Caption)
-    };
+    // Typed to a tenth of a degree; the slider moves a tenth as fast with
+    // Shift held.
+    let degrees = LocalState::new(angle);
+    let typed = cx.actions().bind(
+        NumberInput::from_state(&degrees)
+            .with_range(-45.0, 45.0)
+            .with_size(96.0, 32.0)
+            .with_step(0.1)
+            .with_precision(1)
+            .with_id("canvas-straighten-degrees")
+            .with_accessible_name(ui::i18n::I18nManager::lookup_plain(ID)),
+        ArtworkResource::SET_STRAIGHTEN.map({
+            let ids = ids.to_vec();
+            move |value: f64| (ids.clone(), (value * 10.0).round() / 10.0)
+        }),
+    );
     let slider = cx.actions().bind(
         Slider::from_state(&state)
             .with_id(ID)
@@ -382,7 +393,7 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: 
         }),
     );
     tight(vec![
-        labelled(&ui::i18n::I18nManager::lookup_plain(ID), Box::new(shown)),
+        labelled(&ui::i18n::I18nManager::lookup_plain(ID), Box::new(typed)),
         Box::new(slider),
     ])
 }

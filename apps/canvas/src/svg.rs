@@ -135,6 +135,16 @@ pub fn export(
                 }
             }
         } else {
+            // A painted layer's picture comes with its vignette; a plain
+            // layer's is laid over what the layer draws.
+            let vignette = layer
+                .adjust
+                .as_ref()
+                .and_then(|adjust| adjust.vignette)
+                .filter(|amount| *amount != 0.0);
+            if vignette.is_some() {
+                let _ = write!(out.body, r#"<g id="lc-{}">"#, escape(&layer.id));
+            }
             for mark in art.marks_of(&layer.id) {
                 out.enter_group(&mark.group);
                 // Shapes' colours as their adjustments grade them; a
@@ -143,6 +153,11 @@ pub fn export(
                     crate::render::grades_of(&[mark.style.adjust.as_ref(), layer.adjust.as_ref()]);
                 let graded = crate::render::graded_mark(mark, &palette, &steps);
                 out.mark(art, &graded, &palette);
+            }
+            if let Some(amount) = vignette {
+                out.enter_group("");
+                out.body.push_str("</g>");
+                out.vignette(art, &layer.id, amount);
             }
         }
         out.enter_group("");
@@ -206,6 +221,40 @@ impl Writer {
             let _ = write!(self.body, r#"<g data-group="{}">"#, escape(&whole));
             self.open.push((*path.get(depth).unwrap_or(&"")).to_owned());
         }
+    }
+
+    /// A layer's vignette over what it draws (`lc-<layer>`): black (or,
+    /// below zero, white) growing toward the artwork's edges, as the
+    /// canvas draws it, kept to the layer's own paint by an alpha mask.
+    fn vignette(&mut self, art: &Artwork, layer: &str, amount: f64) {
+        let ink = if amount > 0.0 { "#000000" } else { "#ffffff" };
+        let reach = crate::adjust::VIGNETTE_REACH;
+        let mut stops = String::new();
+        for step in 0..=12 {
+            let distance = reach * f64::from(step) / 12.0;
+            let _ = write!(
+                stops,
+                r#"<stop offset="{}" stop-color="{ink}" stop-opacity="{}"/>"#,
+                num(distance / reach),
+                num(crate::adjust::vignette_alpha(amount, distance))
+            );
+        }
+        let id = escape(layer);
+        let _ = write!(
+            self.defs,
+            r##"<radialGradient id="vg-{id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="{}" gradientTransform="translate({} {}) scale({} {})">{stops}</radialGradient><mask id="vm-{id}" style="mask-type:alpha"><use href="#lc-{id}"/></mask>"##,
+            num(reach),
+            num(art.width / 2.0),
+            num(art.height / 2.0),
+            num(art.width / 2.0),
+            num(art.height / 2.0)
+        );
+        let _ = write!(
+            self.body,
+            r#"<rect width="{}" height="{}" fill="url(#vg-{id})" mask="url(#vm-{id})"/>"#,
+            num(art.width),
+            num(art.height)
+        );
     }
 
     fn mark(&mut self, art: &Artwork, mark: &Mark, palette: &[tilo_wet_media::Pigment]) {
