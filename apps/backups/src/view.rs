@@ -455,11 +455,7 @@ pub fn content(
         },
         Page::Destination(id) => match model.catalog.destination(id) {
             Some(dest) => page
-                .push(Box::new(destination_summary(
-                    dest,
-                    model.catalog,
-                    model.now,
-                )))
+                .push(destination_summary(dest, model.catalog, model.now))
                 .push(snapshot_list(model, intents)),
             None => page.push(Box::new(EmptyState::new(
                 "This destination is no longer set up",
@@ -560,9 +556,38 @@ fn source_details(source: &Source) -> PropertyList {
     PropertyList::new(facts)
 }
 
-/// A destination's capacity, and what it holds.
-fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime) -> Row {
-    let frac = dest.used_fraction();
+/// A destination's capacity, and what it holds. The ring shows only where
+/// the destination reports a capacity; nothing is estimated.
+fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime) -> Element {
+    let mut facts = vec![
+        Property::new("Kind", dest.kind.label()),
+        Property::new("Used", size(dest.used_bytes)).with_kind(TextKind::Numeric),
+    ];
+    if let Some(total) = dest.total_bytes {
+        facts.push(
+            Property::new("Free", size(total.saturating_sub(dest.used_bytes)))
+                .with_kind(TextKind::Numeric),
+        );
+        facts.push(Property::new("Capacity", size(total)).with_kind(TextKind::Numeric));
+    }
+    facts.push(Property::new(
+        "Encryption",
+        if dest.encrypted {
+            "Encrypted"
+        } else {
+            "Not encrypted"
+        },
+    ));
+    if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
+        facts.push(Property::new("Last backup", when(last.taken, now)));
+    }
+    if dest.health != Health::Ok {
+        facts.push(Property::new("Status", "Last run failed"));
+    }
+    let facts = PropertyList::new(facts);
+    let Some(frac) = dest.used_fraction() else {
+        return Box::new(facts);
+    };
     let mut ring = ProgressRing::new(frac)
         .value(format!("{:.0}%", frac * 100.0))
         .caption("used")
@@ -570,35 +595,13 @@ fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime
     if frac > 0.85 {
         ring = ring.tone(Tone::Warning);
     }
-    let mut facts = vec![
-        Property::new("Kind", dest.kind.label()),
-        Property::new("Used", size(dest.used_bytes)).with_kind(TextKind::Numeric),
-        Property::new(
-            "Free",
-            size(dest.total_bytes.saturating_sub(dest.used_bytes)),
-        )
-        .with_kind(TextKind::Numeric),
-        Property::new("Capacity", size(dest.total_bytes)).with_kind(TextKind::Numeric),
-        Property::new(
-            "Encryption",
-            if dest.encrypted {
-                "Encrypted"
-            } else {
-                "Not encrypted"
-            },
-        ),
-    ];
-    if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
-        facts.push(Property::new("Last backup", when(last.taken, now)));
-    }
-    if dest.health != Health::Ok {
-        facts.push(Property::new("Status", "Last run failed"));
-    }
-    Row::new()
-        .no_wrap()
-        .align_start()
-        .push(Box::new(ring))
-        .push(Box::new(PropertyList::new(facts)))
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .align_start()
+            .push(Box::new(ring))
+            .push(Box::new(facts)),
+    )
 }
 
 /// The snapshots of the page, grouped by day.
