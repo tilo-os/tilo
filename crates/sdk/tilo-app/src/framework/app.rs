@@ -336,7 +336,7 @@ fn prepare_definition(
                 None,
                 inputs,
             )
-            .map(|prepared| with_settings_file(prepared, settings));
+            .map(|prepared| super::testing::with_settings_file(prepared, settings));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -353,7 +353,12 @@ fn prepare_definition(
                 None,
                 inputs,
             )
-            .map(|prepared| with_settings_file(prepared, data_dir_settings(directory.as_ref())));
+            .map(|prepared| {
+                super::testing::with_settings_file(
+                    prepared,
+                    super::testing::data_dir_settings(directory.as_ref()),
+                )
+            });
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
@@ -364,27 +369,6 @@ fn prepare_definition(
         None,
         inputs,
     )
-}
-
-/// A component prepared on a private or explicit profile keeps its settings
-/// in that profile too, never in the person's session document.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn with_settings_file(
-    mut prepared: PreparedComponentInputs,
-    file: std::path::PathBuf,
-) -> PreparedComponentInputs {
-    prepared
-        .context
-        .provide_settings(ui_core::storage::SettingsDocument::File(file));
-    prepared
-}
-
-/// The settings document of a `--data-dir` profile.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
-    std::path::absolute(directory)
-        .unwrap_or_else(|_| directory.to_path_buf())
-        .join("settings.json")
 }
 
 #[cfg(not(target_arch = "wasm32"))]

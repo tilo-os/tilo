@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use tilo_resource::{Invoke, Resource};
-use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
+use ui_core::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
@@ -21,8 +21,7 @@ const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, data_dir_settings, default_record, definition,
-    role_permissions, with_settings_file,
+    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, default_record, definition, role_permissions,
 };
 
 const INSTANCE: u64 = 7;
@@ -32,6 +31,25 @@ enum Profile {
     Temporary(Rc<tempfile::TempDir>),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
+}
+
+/// A component prepared on a private or explicit profile keeps its settings
+/// in that profile too, never in the person's session document.
+pub(crate) fn with_settings_file(
+    mut prepared: PreparedComponentInputs,
+    file: std::path::PathBuf,
+) -> PreparedComponentInputs {
+    prepared
+        .context
+        .provide_settings(ui_core::storage::SettingsDocument::File(file));
+    prepared
+}
+
+/// The settings document of a `--data-dir` profile.
+pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(directory)
+        .unwrap_or_else(|_| directory.to_path_buf())
+        .join("settings.json")
 }
 
 impl Profile {

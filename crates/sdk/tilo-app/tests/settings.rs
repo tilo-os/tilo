@@ -148,7 +148,7 @@ fn settings_follow_writes_from_elsewhere_and_persist_outside_the_document() {
     );
 
     // A control writes through the setting: the view follows at once.
-    app.harness().click_named("Toggle confirmation").unwrap();
+    app.harness().click_named("toggle").unwrap();
     app.harness().relayout();
     assert!(
         app.harness()
