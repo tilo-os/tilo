@@ -293,21 +293,21 @@ impl VideoEditorApp {
         let scale = self.inspector_ui_scale();
         // Each label at the weight a chosen segment is set in, so choosing
         // one never makes it elide.
-        let labelled: Option<Vec<f64>> = self.with_dialog_layout(|_, tr, theme| {
+        let labelled: Vec<f64> = self.with_dialog_layout(|_, tr, theme| {
             let style = theme.text(TextRole::Label).strong();
             labels
                 .iter()
                 .map(|label| text_width(tr, label, &style) / scale)
                 .collect()
         });
-        let widths: Vec<f64> = match labelled {
-            Some(labelled) if labelled.iter().sum::<f64>() < avail => {
-                // The room the labels leave, shared equally: every segment
-                // gets the same padding around its own label.
-                let spare = (avail - labelled.iter().sum::<f64>()) / n;
-                labelled.iter().map(|w| w + spare).collect()
-            }
-            _ => vec![avail / n; labels.len()],
+        let total: f64 = labelled.iter().sum();
+        let widths: Vec<f64> = if total < avail {
+            // The room the labels leave, shared equally: every segment gets
+            // the same padding around its own label.
+            let spare = (avail - total) / n;
+            labelled.iter().map(|w| w + spare).collect()
+        } else {
+            vec![avail / n; labels.len()]
         };
         let mut x = x0;
         widths
@@ -381,14 +381,11 @@ impl VideoEditorApp {
         let top = body_origin - self.inspector_scroll / scale;
         let mut y = top + S3;
         // The clip's facts first, as tall as the property list draws them.
-        let facts_h = self
-            .with_dialog_layout(|_, tr, theme| {
-                let values = Self::inspector_property_values(clip, self.project.fps);
-                let rows = inspector_property_rows(&values);
-                ui::widget::PropertyListFace::new(&rows).height(tr, theme, (x1 - x0) * scale)
-                    / scale
-            })
-            .unwrap_or(128.0);
+        let facts_h = self.with_dialog_layout(|_, tr, theme| {
+            let values = Self::inspector_property_values(clip, self.project.fps);
+            let rows = inspector_property_rows(&values);
+            ui::widget::PropertyListFace::new(&rows).height(tr, theme, (x1 - x0) * scale) / scale
+        });
         l.properties = Some(Rect::new(x0, y, x1, y + facts_h));
         y += facts_h + S2;
         let row = 40.0; // the label line at y, the 8px track under it with room for the knob
