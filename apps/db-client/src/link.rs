@@ -30,7 +30,7 @@ pub struct ConnectionRow {
 }
 
 /// A dialog the workspace presents over the window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dialog {
     /// The new-connection form.
     Connect,
