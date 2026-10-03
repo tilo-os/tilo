@@ -1,16 +1,21 @@
-//! `SearchField` — a search-styled text box: a rounded pill with a leading
-//! magnifier, an editable [`TextInput`] in the middle, and a trailing "×"
-//! that clears the query. Composes the toolkit's own [`TextInput`] so caret,
-//! selection, IME, and CRDT binding are shared.
+//! `SearchField` — the in-content filter: a field with a leading magnifier,
+//! an editable [`TextInput`], a trailing clear button and a reserved slot for
+//! the match count.
 //!
-//! ## Launcher mode — search does not live in the app
+//! It narrows what a view already shows (a sidebar list, a table, a set of
+//! cards); it never searches the app. Searching is the platform's: Enter, or
+//! the "Search everywhere" action shown when nothing matches, hands the same
+//! query to the platform search ([`SearchRequest`]), and an app's search
+//! launcher is [`search_button`](crate::search::search_button), not a field.
 //!
-//! Built with [`SearchField::opens_palette`], the field becomes a
-//! non-editable affordance that raises the shared command-search shortcut
-//! `CommandPalette` instead: a click
-//! latches a request the host polls with [`SearchField::take_palette_request`]
-//! and opens its own `CommandPalette`. Search UI and ranking thus live in
-//! one shared toolkit widget, not in every app's bespoke search bar.
+//! Bind a field to a list through the [`Filterable`] capability: the list
+//! narrows to the query and reports how many rows remain, which the field
+//! shows as "3 of 120". [`Filtered`] places a field above any content and
+//! wires both, with Ctrl+F focusing the field; a navigation shell's filter
+//! slot uses [`sync_filter`] the same way.
+//!
+//! Composes the toolkit's own [`TextInput`] so caret, selection, IME, and
+//! CRDT binding are shared.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -19,40 +24,111 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
-use crate::platform::{PlatformConventions, Shortcut};
+use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
+use crate::search::{ScopeDecl, SearchOpener, SearchRequest, SearchRequestScope};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
+use crate::widget::capability::capability_mut;
 use crate::widget::text::centered_text_top;
+use crate::widget::{ControlSize, TaffyTreeExt};
 use crate::widget::{TextInput, TextInputKind, Widget};
 
-const HEIGHT: f64 = 38.0;
-const ICON_GUTTER: f64 = 34.0;
-const CLEAR_GUTTER: f64 = 30.0;
+/// Leading gutter holding the magnifier, and the trailing clear gutter.
+const ICON_GUTTER: f64 = 32.0;
+const CLEAR_GUTTER: f64 = 28.0;
 const ICON_D: f64 = 16.0;
-const CLEAR_D: f64 = 16.0;
+const CLEAR_D: f64 = 14.0;
+/// Space between the trailing slot's text and the clear button or edge.
+const SLOT_PAD: f64 = 8.0;
 
-/// The palette-shortcut key cap drawn at the trailing edge when the field
-/// opens the palette instead of editing. A 20 px cap with a 7 px inset each
-/// side around an 11 px label, set 10 px in from the pill's edge so it
-/// clears the pill's curvature; the label is centred on its measured line.
-const KBD_HEIGHT: f64 = 20.0;
-const KBD_PAD_X: f64 = 7.0;
-const KBD_INSET: f64 = 10.0;
-const KBD_RADIUS: f64 = 5.0;
+/// How many rows a filtered view shows out of how many it has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FilterCount {
+    pub shown: usize,
+    pub total: usize,
+}
 
-/// A search-styled input: magnifier + editable text + clear button.
+impl FilterCount {
+    #[must_use]
+    pub const fn new(shown: usize, total: usize) -> Self {
+        Self { shown, total }
+    }
+}
+
+/// A view a [`SearchField`] can narrow: a list, a table, a grid of cards.
+pub trait Filterable {
+    /// Show only what matches `query`; an empty query shows everything.
+    /// Match the way search does ([`crate::search::ListIndex`]) so a filter
+    /// and the platform search agree on what "matches" means.
+    fn set_filter(&mut self, query: &str);
+
+    /// How many rows the current filter leaves, for the field's counter.
+    fn filter_count(&self) -> Option<FilterCount> {
+        None
+    }
+
+    /// The part of the app the view shows, which "Search everywhere"
+    /// narrows the platform search to. `None` searches the whole app.
+    fn search_scope(&self) -> Option<ScopeDecl> {
+        None
+    }
+}
+
+/// Narrow the first [`Filterable`] in `widget`'s subtree to `query`, and
+/// return its count.
+pub fn apply_filter(widget: &mut dyn Widget, query: &str) -> Option<FilterCount> {
+    let mut count = None;
+    visit_filterable(widget, &mut |target| {
+        target.set_filter(query);
+        count = target.filter_count();
+    });
+    count
+}
+
+/// Run `visit` on the first [`Filterable`] in `widget`'s subtree; whether
+/// there was one.
+fn visit_filterable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Filterable)) -> bool {
+    if let Some(target) = capability_mut::<dyn Filterable>(&mut *widget) {
+        visit(target);
+        return true;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| visit_filterable(child, visit))
+}
+
+/// Carry `field`'s edits to the [`Filterable`] in `content`: call after
+/// routing each event. The field shows the count the view reports, and its
+/// "Search everywhere" escalation narrows to the view's scope.
+pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
+    if field.applied.as_deref() != Some(field.value()) {
+        let query = field.value().to_owned();
+        let count = apply_filter(content, &query);
+        field.set_count(count.filter(|_| !query.is_empty()));
+        field.applied = Some(query);
+    }
+    if field.escalation.is_some() {
+        let mut scope = None;
+        if visit_filterable(content, &mut |target| scope = target.search_scope()) {
+            field.escalation =
+                Some(scope.map_or(SearchRequestScope::ThisApp, SearchRequestScope::Resource));
+        }
+    }
+}
+
+/// A search-styled input: magnifier + editable text + count slot + clear.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag is an independent mode/dirty marker (clearable, cleared, \
-              opens_palette, palette_requested) set and read on its own schedule, never \
-              combined into a state machine, so a bitflags/enum encoding would not simplify \
-              the call sites"
+    reason = "each flag is an independent option or dirty marker (clearable, cleared, \
+              reserves the count slot, a removed scope token), set and read on its own \
+              schedule, so an enum encoding would not simplify the call sites"
 )]
 pub struct SearchField {
     input: TextInput,
@@ -61,18 +137,42 @@ pub struct SearchField {
     cleared: bool,
     rect: Rect,
     clear_rect: Rect,
+    /// The "Search everywhere" action's hit rect, when it shows.
+    escalate_rect: Rect,
     last_cursor: Point,
-    /// See [`SearchField::opens_palette`].
-    opens_palette: bool,
-    /// Latched when the (non-editable) launcher pill is activated;
-    /// drained by the host via [`SearchField::take_palette_request`].
-    palette_requested: bool,
     platform: PlatformConventions,
+    /// Where Enter and "Search everywhere" send the query; `None` keeps the
+    /// field a plain input (the palette's own query field).
+    escalation: Option<SearchRequestScope>,
+    opener: SearchOpener,
+    count: Option<FilterCount>,
+    reserve_count: bool,
+    /// A scope token drawn before the text ("Only Inbox"), removable.
+    scope_token: Option<String>,
+    scope_token_rect: Rect,
+    scope_cleared: bool,
+    size: ControlSize,
+    /// The query the bound view was last narrowed to ([`sync_filter`]).
+    applied: Option<String>,
+    /// The placeholder as written; the input shows it elided to its width.
+    placeholder: String,
 }
 
 impl SearchField {
+    /// A plain search input. Use [`Self::filter`] for a field that narrows a
+    /// view.
     pub fn new() -> Self {
         Self::with_input(TextInput::local())
+    }
+
+    /// The in-content filter: Enter and "Search everywhere" escalate the
+    /// query to the platform search of this app, and the count slot is
+    /// reserved so the text never runs under the count.
+    pub fn filter() -> Self {
+        let mut field = Self::new().with_placeholder("Filter");
+        field.escalation = Some(SearchRequestScope::ThisApp);
+        field.reserve_count = true;
+        field
     }
 
     #[doc(hidden)]
@@ -85,53 +185,106 @@ impl SearchField {
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
+                .with_persistent_placeholder()
                 .with_placeholder("Search"),
             leading: Icon::Search,
             clearable: true,
             cleared: false,
             rect: Rect::ZERO,
             clear_rect: Rect::ZERO,
+            escalate_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            opens_palette: false,
-            palette_requested: false,
             platform: PlatformConventions::default(),
+            escalation: None,
+            opener: SearchOpener::new(),
+            count: None,
+            reserve_count: false,
+            scope_token: None,
+            scope_token_rect: Rect::ZERO,
+            scope_cleared: false,
+            size: ControlSize::Regular,
+            applied: None,
+            placeholder: "Search".to_owned(),
         }
     }
 
+    /// The field's height: `Regular` in content, `Large` where the field is
+    /// the point of the surface (the palette's query field).
     #[must_use]
-    pub fn opens_palette(mut self) -> Self {
-        self.opens_palette = true;
-        self.clearable = false;
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.size = size;
         self
     }
 
-    pub fn is_palette_launcher(&self) -> bool {
-        self.opens_palette
+    /// Escalate to the platform search of one part of the app instead of
+    /// the whole app.
+    #[must_use]
+    pub fn escalates_within(mut self, scope: ScopeDecl) -> Self {
+        self.escalation = Some(SearchRequestScope::Resource(scope));
+        self
     }
 
-    /// `true` exactly once after the launcher pill was clicked. Always
-    /// `false` for a non-launcher field.
-    pub fn take_palette_request(&mut self) -> bool {
-        std::mem::take(&mut self.palette_requested)
+    /// Reserve the trailing count slot even before a count is known.
+    #[must_use]
+    pub fn with_count_slot(mut self) -> Self {
+        self.reserve_count = true;
+        self
     }
 
-    /// Keep pointer and semantic activation on one latched request path.
-    fn request_palette(&mut self) -> bool {
-        if !self.opens_palette {
-            return false;
-        }
-        self.palette_requested = true;
-        true
+    /// Show `count` in the trailing slot ("3 of 120"), or nothing.
+    pub fn set_count(&mut self, count: Option<FilterCount>) {
+        self.count = count;
+    }
+
+    #[must_use]
+    pub fn count(&self) -> Option<FilterCount> {
+        self.count
+    }
+
+    /// Show a removable scope token before the text, e.g. "Only Inbox".
+    pub fn set_scope_token(&mut self, token: Option<String>) {
+        self.scope_token = token;
+        self.scope_token_rect = Rect::ZERO;
+    }
+
+    #[must_use]
+    pub fn scope_token(&self) -> Option<&str> {
+        self.scope_token.as_deref()
+    }
+
+    /// `true` once after the user removed the scope token (its × or
+    /// Backspace in an empty field).
+    pub fn take_scope_cleared(&mut self) -> bool {
+        std::mem::take(&mut self.scope_cleared)
     }
 
     #[must_use]
     pub fn with_placeholder(mut self, hint: &str) -> Self {
-        self.input.set_placeholder(hint);
+        self.set_placeholder(hint);
         self
     }
 
     pub fn set_placeholder(&mut self, hint: &str) {
+        hint.clone_into(&mut self.placeholder);
         self.input.set_placeholder(hint);
+    }
+
+    /// Give the input the placeholder elided to the room it has, so a long
+    /// one ends in an ellipsis instead of running under the trailing slot.
+    fn fit_placeholder(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let room = (self.input.get_rect().width() - SLOT_PAD).max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a field's width in logical pixels is far inside f32's range"
+        )]
+        let fitted = text_renderer.elide_to_width_style(
+            &crate::i18n!(&self.placeholder),
+            room as f32,
+            &theme.text(TextRole::Body),
+        );
+        if fitted != self.input.placeholder() {
+            self.input.set_placeholder(&fitted);
+        }
     }
 
     #[must_use]
@@ -147,6 +300,7 @@ impl SearchField {
         self.input = std::mem::replace(&mut self.input, TextInput::local())
             .with_plain_chrome()
             .with_kind(TextInputKind::Search)
+            .with_persistent_placeholder()
             .with_on_change_path(path);
         self
     }
@@ -172,18 +326,13 @@ impl SearchField {
         self.input.set_text(text);
     }
 
-    /// Never focuses a launcher pill (it is not editable).
     pub fn set_focused(&mut self, on: bool) {
-        if !self.opens_palette {
-            self.input.set_focus(on);
-        }
+        self.input.set_focus(on);
     }
 
     /// Select the current query for conventional Find/Search re-entry.
     pub fn select_all(&mut self) {
-        if !self.opens_palette {
-            self.input.select_all();
-        }
+        self.input.select_all();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -202,18 +351,22 @@ impl SearchField {
         None
     }
 
+    /// Hand the current query to the platform search, as Enter does.
+    pub fn escalate(&mut self) -> bool {
+        let Some(scope) = self.escalation.clone() else {
+            return false;
+        };
+        self.opener
+            .open(SearchRequest { scope, query: None }.with_query(self.input.value()));
+        true
+    }
+
     /// Place the field at `rect` for a host that lays out by hand instead of
-    /// through the taffy tree. The text sits between the magnifier and clear
-    /// gutters, exactly as `apply_layout` would put it.
+    /// through the taffy tree.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
-        let text_x1 = (rect.x1 - CLEAR_GUTTER).max(rect.x0 + ICON_GUTTER);
-        self.input.apply_layout_external(Rect::new(
-            rect.x0 + ICON_GUTTER,
-            rect.y0,
-            text_x1,
-            rect.y1,
-        ));
+        self.input
+            .apply_layout_external(self.text_rect_in(rect, 0.0));
     }
 
     /// Empty until laid out + drawn.
@@ -221,65 +374,148 @@ impl SearchField {
         self.clear_rect
     }
 
-    /// Never in launcher mode — the trailing slot holds the `Ctrl+K` chip.
-    fn clear_visible(&self) -> bool {
-        self.clearable && !self.opens_palette && !self.input.value().is_empty()
+    /// Where the input's text sits inside `rect`, past the leading gutter
+    /// (and a scope token `token_w` wide) and before the trailing gutters.
+    fn text_rect_in(&self, rect: Rect, token_w: f64) -> Rect {
+        let x0 = rect.x0 + ICON_GUTTER + token_w;
+        let x1 = (rect.x1 - self.trailing_gutter()).max(x0);
+        Rect::new(x0, rect.y0, x1, rect.y1)
     }
 
-    fn draw_kbd_chip(
-        &self,
+    /// The clear button plus the reserved count slot. The slot is measured
+    /// at draw time; layout reserves a fixed share so the caret never runs
+    /// under the count.
+    fn trailing_gutter(&self) -> f64 {
+        let slot = if self.reserve_count || self.count.is_some() {
+            72.0
+        } else {
+            0.0
+        };
+        CLEAR_GUTTER + slot
+    }
+
+    fn clear_visible(&self) -> bool {
+        self.clearable && !self.input.value().is_empty()
+    }
+
+    /// Narrow and idle: draw only the magnifier, as an icon button.
+    fn collapsed(&self, theme: &Theme) -> bool {
+        let threshold =
+            ICON_GUTTER + self.trailing_gutter() + 3.0 * ControlSize::Regular.height(theme);
+        self.rect.width() < threshold && !self.input.is_focused() && self.input.value().is_empty()
+    }
+
+    fn escalation_shows(&self) -> bool {
+        self.escalation.is_some()
+            && !self.input.value().is_empty()
+            && self.count.is_some_and(|count| count.shown == 0)
+    }
+
+    fn draw_trailing_slot(
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let label = Shortcut::command("K").label(self.platform);
-        let (tw, th) = text_renderer.measure_style(&label, None, &theme.text(TextRole::Caption));
-        let chip_w = f64::from(tw) + 2.0 * KBD_PAD_X;
-        let cy = self.rect.center().y;
-        let chip = Rect::new(
-            self.rect.x1 - KBD_INSET - chip_w,
-            cy - KBD_HEIGHT / 2.0,
-            self.rect.x1 - KBD_INSET,
-            cy + KBD_HEIGHT / 2.0,
-        );
-        let rounded = RoundedRect::from_rect(chip, KBD_RADIUS);
-        // Keycap body and edge derived against the pill it sits in (HIG
-        // §9.5): a literal white wash was invisible on the light preset.
-        let pill_fill = theme.tokens.colors.surfaces.raised;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::tokens::colors::Colors::hairline_on(pill_fill, crate::chrome::HAIRLINE_ALPHA),
-            None,
-            &rounded,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::surface::edge_on(pill_fill),
-            None,
-            &rounded,
-        );
-        // Centre the measured line in the chip; the former `cy - 6.5` was a
-        // hand-tuned offset for an 11 px face that left the label a fraction
-        // low and could not follow a text-scale change.
-        let label_top = centered_text_top(chip.y0, KBD_HEIGHT, f64::from(th));
+        self.escalate_rect = Rect::ZERO;
+        let right = if self.clear_visible() {
+            self.rect.x1 - CLEAR_GUTTER
+        } else {
+            self.rect.x1 - SLOT_PAD
+        };
+        if self.escalation_shows() {
+            let style = theme.text(TextRole::Label);
+            let label = "Search everywhere";
+            let (w, h) = text_renderer.measure_style(label, None, &style);
+            let x0 = (right - f64::from(w)).max(self.rect.x0 + ICON_GUTTER);
+            let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
+            self.escalate_rect = Rect::new(x0 - SLOT_PAD / 2.0, self.rect.y0, right, self.rect.y1);
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is float matrix math and cannot overflow"
+            )]
+            let at = transform * Affine::translate((x0, top));
+            let ink = if self.escalate_rect.contains(self.last_cursor) {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            };
+            text_renderer.draw_style(scene, label, ink, at, None, &style);
+            return;
+        }
+        let Some(count) = self.count else {
+            return;
+        };
+        let style = theme.text(TextRole::Caption).numeric();
+        let text = format!("{} of {}", count.shown, count.total);
+        let (w, h) = text_renderer.measure_style(&text, None, &style);
+        let x0 = right - f64::from(w);
+        if x0 < self.rect.x0 + ICON_GUTTER {
+            return;
+        }
+        let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
         #[allow(
             clippy::arithmetic_side_effects,
-            reason = "Affine composition is float matrix multiplication; it cannot overflow \
-                      or panic"
+            reason = "Affine composition is float matrix math and cannot overflow"
         )]
-        let label_transform = transform * Affine::translate((chip.x0 + KBD_PAD_X, label_top));
-        text_renderer.draw_style(
-            scene,
-            &label,
-            theme.text_dim,
-            label_transform,
-            None,
-            &theme.text(TextRole::Caption),
-        );
+        let at = transform * Affine::translate((x0, top));
+        text_renderer.draw_style(scene, &text, theme.text_tertiary, at, None, &style);
     }
+
+    /// Draw the scope token chip and return the width it takes.
+    fn draw_scope_token(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let Some(token) = self.scope_token.clone() else {
+            self.scope_token_rect = Rect::ZERO;
+            return 0.0;
+        };
+        let height = ControlSize::Small.height(theme) - 6.0;
+        let lead = crate::widget::ChipLead::Glyph(Icon::X);
+        let natural =
+            crate::widget::ChipFace::intrinsic_width(&token, lead, false, text_renderer, theme);
+        let max = (self.rect.width() * 0.5).max(height);
+        let width = natural.min(max);
+        let cy = self.rect.center().y;
+        let chip = Rect::new(
+            self.rect.x0 + ICON_GUTTER - 4.0,
+            cy - height / 2.0,
+            self.rect.x0 + ICON_GUTTER - 4.0 + width,
+            cy + height / 2.0,
+        );
+        crate::widget::ChipFace::new(chip, &token).lead(lead).paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        );
+        self.scope_token_rect = chip;
+        width + 4.0
+    }
+
+    fn press_at(&self, point: Point) -> Press {
+        if self.scope_token_rect.contains(point) {
+            Press::ScopeToken
+        } else if self.escalate_rect.contains(point) {
+            Press::Escalate
+        } else if self.clear_visible() && self.clear_rect.contains(point) {
+            Press::Clear
+        } else {
+            Press::Field
+        }
+    }
+}
+
+enum Press {
+    ScopeToken,
+    Escalate,
+    Clear,
+    Field,
 }
 
 impl Default for SearchField {
@@ -289,7 +525,10 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
-    crate::provides!(dyn crate::undo::UndoPoints);
+    crate::provides!(
+        dyn crate::undo::UndoPoints,
+        dyn crate::widget::controls::ActionControls
+    );
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -298,7 +537,7 @@ impl Widget for SearchField {
 
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "these are widget-geometry constants — small, bounded pixel values — so \
+        reason = "these are widget-geometry values — small, bounded pixel values — so \
                   narrowing to f32 for Taffy's layout math loses no meaningful precision"
     )]
     fn build_layout(
@@ -308,32 +547,28 @@ impl Widget for SearchField {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.input.build_layout(taffy, theme, node_map);
+        let height = self.size.height(theme);
         // A fluid control: it asks for the row's width and, when the row
         // overflows, it is the item that gives — never the fixed targets
-        // beside it. With `flex_shrink: 0` a `percent(100%)` item claimed
-        // the whole row and pushed every later sibling to zero width (the
-        // F2-16 shape recorded against `Dropdown`). The floor keeps the two
-        // gutters plus two pointer targets of text, so it cannot vanish.
-        let min_width =
-            ICON_GUTTER + CLEAR_GUTTER + 2.0 * f64::from(theme.tokens.metrics.min_pointer_target);
+        // beside it. At its narrowest it is the magnifier icon button.
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
                 align_items: Some(taffy::AlignItems::Center),
                 flex_shrink: 1.0,
                 min_size: taffy::Size {
-                    width: length(min_width as f32),
+                    width: length(height as f32),
                     height: taffy::Dimension::auto(),
                 },
                 padding: taffy::Rect {
                     left: length(ICON_GUTTER as f32),
-                    right: length(CLEAR_GUTTER as f32),
+                    right: length(self.trailing_gutter() as f32),
                     top: length(0.0_f32),
                     bottom: length(0.0_f32),
                 },
                 size: taffy::Size {
                     width: percent(1.0_f32),
-                    height: length(HEIGHT as f32),
+                    height: length(height as f32),
                 },
                 ..Default::default()
             },
@@ -368,29 +603,51 @@ impl Widget for SearchField {
         if self.rect.width() <= 0.0 {
             return;
         }
+        let radius = f64::from(theme.tokens.radii.control);
+        if self.collapsed(theme) {
+            // The icon button: a square target at the leading edge, lifted
+            // on hover like any quiet control.
+            let side = self.rect.height();
+            let target = Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x0 + side,
+                self.rect.y1,
+            );
+            if target.contains(self.last_cursor) {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(target, radius),
+                );
+            }
+            let icon = Rect::from_center_size(target.center(), (ICON_D, ICON_D));
+            self.leading
+                .draw_with_stroke(scene, transform, icon, theme.text_dim, 1.5);
+            self.clear_rect = Rect::ZERO;
+            self.escalate_rect = Rect::ZERO;
+            self.scope_token_rect = Rect::ZERO;
+            return;
+        }
         let focused = self.input.is_focused();
-        let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
-        let pill_fill = theme.tokens.colors.surfaces.raised;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            pill_fill,
-            None,
-            &pill,
-        );
-        // Rest edge derived from the pill (HIG §9.5); focus keeps `border_focus`.
+        let shape = RoundedRect::from_rect(self.rect, radius);
+        let fill = theme.tokens.colors.surfaces.raised;
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        // Rest edge derived from the field (HIG §9.5); focus is the user's
+        // colour, on one half-pixel-inset outline.
         let border = if focused {
             theme.border_focus
         } else {
-            crate::surface::edge_on(pill_fill)
+            crate::surface::edge_on(fill)
         };
-        // Rest edge and focus ring share one half-pixel-inset outline.
         scene.stroke(
             &Stroke::new(if focused { 1.5 } else { 1.0 }),
             transform,
             border,
             None,
-            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.full)),
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         let icon_rect = Rect::from_center_size(
@@ -398,27 +655,31 @@ impl Widget for SearchField {
             (ICON_D, ICON_D),
         );
         self.leading
-            .draw_with_stroke(scene, transform, icon_rect, theme.text_dim, 1.6);
+            .draw_with_stroke(scene, transform, icon_rect, theme.text_dim, 1.5);
 
+        let token_w = self.draw_scope_token(scene, transform, text_renderer, theme);
+        if token_w > 0.0 {
+            // The text starts after the token; the input re-lays its line.
+            self.input
+                .apply_layout_external(self.text_rect_in(self.rect, token_w));
+        }
+        self.fit_placeholder(text_renderer, theme);
         self.input
             .draw(scene, transform, text_renderer, theme, presence);
 
-        if self.opens_palette {
-            self.clear_rect = Rect::ZERO;
-            self.draw_kbd_chip(scene, transform, text_renderer, theme);
-        } else if self.clear_visible() {
+        self.draw_trailing_slot(scene, transform, text_renderer, theme);
+        if self.clear_visible() {
             let cr = Rect::from_center_size(
                 Point::new(self.rect.x1 - CLEAR_GUTTER / 2.0, self.rect.center().y),
                 (CLEAR_D, CLEAR_D),
             );
-            self.clear_rect = cr;
-            let hovered = cr.contains(self.last_cursor);
-            let col = if hovered {
+            self.clear_rect = cr.inflate(4.0, 4.0);
+            let col = if self.clear_rect.contains(self.last_cursor) {
                 theme.text_primary
             } else {
                 theme.text_dim
             };
-            Icon::X.draw_with_stroke(scene, transform, cr, col, 1.6);
+            Icon::X.draw_with_stroke(scene, transform, cr, col, 1.5);
         } else {
             self.clear_rect = Rect::ZERO;
         }
@@ -429,35 +690,6 @@ impl Widget for SearchField {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        // A left press anywhere latches a palette-open request and never
-        // reaches the inner input.
-        if self.opens_palette {
-            if let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-                && self.rect.contains(self.last_cursor)
-            {
-                self.request_palette();
-                *ctx.handled = true;
-            }
-            return;
-        }
-        // Intercept a click on the clear button before the input sees it.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.clear_visible()
-            && self.clear_rect.contains(self.last_cursor)
-        {
-            self.input.set_text("");
-            self.cleared = true;
-            *ctx.handled = true;
-            return;
-        }
         // A field placed by `apply_layout_external` has no child node; the
         // input only uses the node to report a focus target.
         let child_node = ctx
@@ -467,22 +699,86 @@ impl Widget for SearchField {
             .first()
             .copied()
             .unwrap_or(ctx.node_id);
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && self.rect.contains(self.last_cursor)
+        {
+            match self.press_at(self.last_cursor) {
+                Press::ScopeToken => {
+                    self.scope_token = None;
+                    self.scope_cleared = true;
+                    *ctx.handled = true;
+                    return;
+                }
+                Press::Escalate => {
+                    self.escalate();
+                    *ctx.handled = true;
+                    return;
+                }
+                Press::Clear => {
+                    self.input.set_text("");
+                    self.cleared = true;
+                    *ctx.handled = true;
+                    return;
+                }
+                Press::Field => {
+                    // The collapsed icon button focuses the field.
+                    if !self.input.is_focused() && self.input.value().is_empty() {
+                        *ctx.focus_target = Some(child_node);
+                    }
+                }
+            }
+        }
+        if self.input.is_focused()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+        {
+            match logical_key {
+                Key::Named(NamedKey::Enter) if self.escalate() => {
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Backspace)
+                    if self.input.value().is_empty() && self.scope_token.is_some() =>
+                {
+                    self.scope_token = None;
+                    self.scope_cleared = true;
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Escape) if !self.input.value().is_empty() => {
+                    self.input.set_text("");
+                    self.cleared = true;
+                    *ctx.handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         self.input
             .handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        // The whole launcher pill is a click target.
-        if self.opens_palette {
-            if self.rect.contains(point) {
-                return Some(winit::window::CursorIcon::Pointer);
-            }
+        if !self.rect.contains(point) {
             return None;
         }
-        if self.clear_visible() && self.clear_rect.contains(point) {
-            return Some(winit::window::CursorIcon::Pointer);
+        match self.press_at(point) {
+            Press::ScopeToken | Press::Escalate | Press::Clear => {
+                Some(winit::window::CursorIcon::Pointer)
+            }
+            Press::Field => self.input.cursor_shape(point),
         }
-        self.input.cursor_shape(point)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -514,19 +810,28 @@ impl Widget for SearchField {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        // A button that opens the shared palette, not an editable field.
-        if self.opens_palette {
-            let shortcut = Shortcut::command("K").label(self.platform);
-            return Some(
-                AccessNode::new(Role::Button)
-                    .with_name(format!("Open search ({shortcut})"))
-                    .with_state(AccessState::new().focusable(true)),
-            );
+        let mut node = self
+            .input
+            .accessibility()?
+            .with_name(if self.escalation.is_some() {
+                "Filter"
+            } else {
+                "Search"
+            });
+        let mut description = Vec::new();
+        if !self.placeholder.is_empty() {
+            description.push(crate::i18n!(&self.placeholder));
         }
-        self.input
-            .accessibility()
-            .map(|node| node.with_name("Search"))
+        if let Some(token) = &self.scope_token {
+            description.push(token.clone());
+        }
+        if let Some(count) = self.count {
+            description.push(format!("{} of {}", count.shown, count.total));
+        }
+        if !description.is_empty() {
+            node = node.with_description(description.join(", "));
+        }
+        Some(node)
     }
 
     fn perform_action(
@@ -536,9 +841,6 @@ impl Widget for SearchField {
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
-        if self.opens_palette {
-            return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
-        }
         Widget::perform_action(&mut self.input, action, state, path)
     }
 }
@@ -552,6 +854,231 @@ impl crate::undo::UndoPoints for SearchField {
     }
 }
 
+impl crate::widget::controls::ActionControls for SearchField {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.opener
+            .take()
+            .or_else(|| crate::widget::controls::take_control_invocation(&mut self.input))
+    }
+
+    fn has_pending_control_invocation(&self) -> bool {
+        self.opener.is_pending()
+            || crate::widget::controls::has_pending_control_invocation(&self.input)
+    }
+}
+
+/// Content with a filter: a [`SearchField::filter`] in a band above the
+/// content, narrowing the first [`Filterable`] inside it. Ctrl+F (⌘F)
+/// focuses the field. A navigation shell's filter slot is the same field
+/// wired with [`sync_filter`].
+pub struct Filtered {
+    field: SearchField,
+    content: crate::widget::Element,
+    rect: Rect,
+    field_node: Option<NodeId>,
+    content_node: Option<NodeId>,
+    platform: PlatformConventions,
+}
+
+impl Filtered {
+    pub fn new(content: crate::widget::Element) -> Self {
+        Self {
+            field: SearchField::filter(),
+            content,
+            rect: Rect::ZERO,
+            field_node: None,
+            content_node: None,
+            platform: PlatformConventions::default(),
+        }
+    }
+
+    /// Name what the field filters ("Filter people").
+    #[must_use]
+    pub fn with_placeholder(mut self, placeholder: &str) -> Self {
+        self.field.set_placeholder(placeholder);
+        self
+    }
+
+    #[must_use]
+    pub fn field(&self) -> &SearchField {
+        &self.field
+    }
+
+    pub fn field_mut(&mut self) -> &mut SearchField {
+        &mut self.field
+    }
+}
+
+impl Widget for Filtered {
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.platform = conventions;
+        self.field.set_platform_conventions(conventions);
+        self.content.set_platform_conventions(conventions);
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "band paddings are small logical-pixel values"
+    )]
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let field = self.field.build_layout(taffy, theme, node_map);
+        let gutter = f64::from(theme.tokens.spacing.s3) as f32;
+        let pad = f64::from(theme.tokens.spacing.s2) as f32;
+        let band = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_shrink: 0.0,
+                padding: taffy::Rect {
+                    left: length(gutter),
+                    right: length(gutter),
+                    top: length(pad),
+                    bottom: length(pad),
+                },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &[field],
+        );
+        let content = self.content.build_layout(taffy, theme, node_map);
+        if let Ok(mut style) = taffy.style(content).cloned() {
+            style.flex_grow = 1.0;
+            style.flex_shrink = 1.0;
+            style.min_size.height = length(0.0_f32);
+            let _ = taffy.set_style(content, style);
+        }
+        self.field_node = Some(field);
+        self.content_node = Some(content);
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                flex_grow: 1.0,
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
+                },
+                ..Default::default()
+            },
+            &[band, content],
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+        let inner = Point::new(self.rect.x0, self.rect.y0);
+        if let Some(field) = self.field_node {
+            let band = taffy.parent(field);
+            let band_origin =
+                band.and_then(|band| taffy.layout(band).ok())
+                    .map_or(inner, |layout| {
+                        Point::new(
+                            inner.x + f64::from(layout.location.x),
+                            inner.y + f64::from(layout.location.y),
+                        )
+                    });
+            self.field.apply_layout(taffy, field, band_origin);
+        }
+        if let Some(content) = self.content_node {
+            self.content.apply_layout(taffy, content, inner);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.field
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(c),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && c.eq_ignore_ascii_case("f")
+            && self.platform.command_modifier_down(ctx.modifiers.state())
+            && !ctx.modifiers.state().shift_key()
+            && let Some(field) = self.field_node
+        {
+            let input = ctx
+                .taffy
+                .children(field)
+                .unwrap_or_default()
+                .first()
+                .copied();
+            *ctx.focus_target = Some(input.unwrap_or(field));
+            self.field.select_all();
+            *ctx.handled = true;
+            return;
+        }
+        if let Some(field) = self.field_node {
+            self.field
+                .handle_event(event, &mut ctx.reborrow(ctx.path, field));
+        }
+        sync_filter(&mut self.field, self.content.as_mut());
+        if *ctx.handled {
+            return;
+        }
+        if let Some(content) = self.content_node {
+            self.content
+                .handle_event(event, &mut ctx.reborrow(ctx.path, content));
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.field, self.content.as_ref()]
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.field);
+        visitor(self.content.as_ref());
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.field, self.content.as_mut()]
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.content.wants_pointer_capture()
+    }
+
+    fn name(&self) -> &'static str {
+        "Filtered"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn observed_language(field: &SearchField) -> &str {
     field.input.spell_language()
@@ -562,173 +1089,68 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
 
-    #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test-only layout size is a small pixel value; f32 precision loss is \
-immaterial"
-    )]
-    fn search_input_geometry_clear_button_and_semantics() {
-        // Case `palette_keycap_label_centres_its_measured_line`.
-        // The palette key cap centres its label on the measured 11 px line
-        // inside the 20 px cap — not on the former hand-tuned `cy - 6.5`.
-        {
-            let mut field = SearchField::new().opens_palette();
-            lay_out(&mut field, 400.0);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            field.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
-            let label = Shortcut::command("K").label(field.platform);
-            // The cap is painted after the (empty) input, so its label is the
-            // last glyph run of the frame.
-            let runs = scene.encoding().resources.glyph_runs.len();
-            assert!(runs > 0, "key cap label glyphs");
-            crate::widget::text::assert_glyph_run_centred_in_band(
-                &scene,
-                runs - 1,
-                &label,
-                &theme.text(TextRole::Caption),
-                field.rect.center().y - KBD_HEIGHT / 2.0,
-                KBD_HEIGHT,
-                &mut tr,
-                theme.text_dim,
-            );
+    fn ctx_event(
+        field: &mut SearchField,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
+    ) -> (bool, Option<NodeId>) {
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let mods = winit::event::Modifiers::default();
+        field.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy,
+            },
+        );
+        (handled, focus)
+    }
+
+    fn move_to(point: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
         }
+    }
 
-        // Case `embedded_input_sits_inside_the_icon_gutter`.
-        {
-            let mut sf = SearchField::new();
-            let _ = lay_out(&mut sf, 320.0);
-            assert!(
-                (sf.get_rect().width() - 320.0).abs() < 1.0,
-                "pill fills width"
-            );
-            let input_rect = sf.input.get_rect();
-            assert!(
-                input_rect.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5,
-                "the editable text starts past the magnifier gutter ({} vs {})",
-                input_rect.x0,
-                sf.get_rect().x0 + ICON_GUTTER
-            );
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
         }
+    }
 
-        // Case `clear_button_hidden_when_empty_shown_when_typed`.
-        {
-            let mut sf = SearchField::new();
-            let _ = lay_out(&mut sf, 320.0);
-            draw(&mut sf);
-            assert_eq!(sf.clear_rect(), Rect::ZERO, "empty query ⇒ no clear button");
-            sf.input.set_text("hello");
-            draw(&mut sf);
-            assert_ne!(
-                sf.clear_rect(),
-                Rect::ZERO,
-                "non-empty query ⇒ a clear button appears"
-            );
-        }
-
-        // Case `clicking_clear_empties_query_and_reports_dirty`.
-        {
-            let theme = Theme::dark();
-            let mut sf = SearchField::new();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let mut tr = TextRenderer::new();
-            let node = sf.build_layout(&mut taffy, &theme, &mut nm);
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(320.0),
-                        height: taffy::AvailableSpace::Definite(HEIGHT as f32),
-                    },
-                    |k, a, id, _, _| {
-                        nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                            (*p).measure(k, a, &mut tr)
-                        })
-                    },
-                )
-                .unwrap();
-            sf.apply_layout(&taffy, node, Point::ZERO);
-            sf.input.set_text("query text");
-            draw(&mut sf);
-            assert!(!sf.is_empty());
-            let target = sf.clear_rect().center();
-            assert!(target.x > 0.0, "clear button resolves after draw");
-
-            let mut handled = false;
-            let mut ft = None;
-            let mut doc = AutoCommit::new();
-            let rootid = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            sf.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(target.x, target.y),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &rootid,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            sf.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &rootid,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled, "clear click consumed");
-            assert!(sf.is_empty(), "clear empties the query");
-            assert_eq!(
-                sf.take_dirty().as_deref(),
-                Some(""),
-                "clear reports an empty-string edit"
-            );
-            assert_eq!(sf.take_dirty(), None, "dirty drains after one read");
-        }
-
-        // Case `accessibility_is_a_text_input_with_the_query_as_value`.
-        {
-            use crate::a11y::Role;
-            let mut sf = SearchField::new();
-            sf.input.set_text("abc");
-            let node = Widget::accessibility(&sf).expect("search field exposes a11y");
-            assert_eq!(node.role, Role::TextInput);
-            assert_eq!(node.value.as_deref(), Some("abc"));
-            assert!(node.state.focusable);
+    pub(crate) fn key(named: NamedKey) -> WindowEvent {
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
         }
     }
 
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "test-only layout size is a small pixel value; f32 precision loss is \
-                  immaterial"
+        reason = "test-only layout size is a small pixel value"
     )]
-    fn lay_out(w: &mut dyn Widget, vw: f32) -> TaffyTree<()> {
+    fn lay_out(w: &mut SearchField, vw: f32) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -739,7 +1161,9 @@ immaterial"
                 node,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(vw),
-                    height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+                    height: taffy::AvailableSpace::Definite(
+                        ControlSize::Regular.height(&theme) as f32
+                    ),
                 },
                 |k, a, id, _, _| {
                     node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
@@ -749,144 +1173,228 @@ immaterial"
             )
             .unwrap();
         w.apply_layout(&taffy, node, Point::ZERO);
-        taffy
+        (taffy, node)
     }
 
-    fn draw(w: &mut dyn Widget) {
+    fn draw(w: &mut dyn Widget) -> Scene {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
         w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        scene
     }
 
     #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test-only layout size is a small pixel value; f32 precision loss is \
-immaterial"
-    )]
-    fn launcher_is_a_button_that_latches_one_palette_request() {
-        // Case `launcher_accessibility_uses_the_platform_shortcut_label`.
-        {
-            use crate::platform::{Platform, PlatformConventions};
+    fn the_field_is_a_control_with_its_text_inside_the_gutters() {
+        let theme = Theme::dark();
+        let mut sf = SearchField::new();
+        let _ = lay_out(&mut sf, 320.0);
+        assert!((sf.get_rect().width() - 320.0).abs() < 1.0, "fills its row");
+        assert!(
+            (sf.get_rect().height() - ControlSize::Regular.height(&theme)).abs() < 0.5,
+            "a regular control's height"
+        );
+        let input = sf.input.get_rect();
+        assert!(input.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5);
 
-            let mut field = SearchField::new().opens_palette();
-            field.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
-            let node = Widget::accessibility(&field).expect("launcher exposes a11y");
-            assert_eq!(node.name.as_deref(), Some("Open search (⌘K)"));
+        let mut filter = SearchField::filter();
+        let _ = lay_out(&mut filter, 320.0);
+        assert!(
+            filter.input.get_rect().x1 <= filter.get_rect().x1 - CLEAR_GUTTER - 60.0,
+            "a filter reserves the count slot before any count is known"
+        );
+    }
 
-            field.set_platform_conventions(PlatformConventions::new(Platform::Windows));
-            let node = Widget::accessibility(&field).expect("launcher exposes a11y");
-            assert_eq!(node.name.as_deref(), Some("Open search (Ctrl+K)"));
+    #[test]
+    fn clear_appears_with_text_and_empties_the_query() {
+        let mut sf = SearchField::new();
+        let (taffy, node) = lay_out(&mut sf, 320.0);
+        draw(&mut sf);
+        assert_eq!(
+            sf.clear_rect(),
+            Rect::ZERO,
+            "empty query has no clear button"
+        );
+        sf.input.set_text("query text");
+        draw(&mut sf);
+        let target = sf.clear_rect().center();
+        assert!(target.x > 0.0);
+        let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        assert!(handled);
+        assert!(sf.is_empty());
+        assert_eq!(sf.take_dirty().as_deref(), Some(""));
+        assert_eq!(sf.take_dirty(), None);
+    }
+
+    #[test]
+    fn a_narrow_idle_field_is_an_icon_button_that_focuses_the_field() {
+        let mut sf = SearchField::filter();
+        let (taffy, node) = lay_out(&mut sf, 90.0);
+        assert!(sf.collapsed(&Theme::dark()));
+        draw(&mut sf);
+        let _ = ctx_event(&mut sf, &taffy, node, &move_to(Point::new(10.0, 10.0)));
+        let (_, focus) = ctx_event(&mut sf, &taffy, node, &press());
+        let input_node = taffy.children(node).unwrap()[0];
+        assert_eq!(focus, Some(input_node), "the icon button focuses the field");
+        sf.input.set_focus(true);
+        assert!(
+            !sf.collapsed(&Theme::dark()),
+            "a focused field is a field again"
+        );
+
+        let mut wide = SearchField::filter();
+        let _ = lay_out(&mut wide, 400.0);
+        assert!(!wide.collapsed(&Theme::dark()));
+    }
+
+    #[test]
+    fn enter_and_search_everywhere_escalate_the_query_to_platform_search() {
+        use crate::widget::controls::take_control_invocation;
+
+        let mut plain = SearchField::new();
+        plain.input.set_text("x");
+        assert!(!plain.escalate(), "the palette's own field never escalates");
+        assert!(take_control_invocation(&mut plain).is_none());
+
+        let mut sf =
+            SearchField::filter().escalates_within(ScopeDecl::new("folder:inbox", "Inbox"));
+        let (taffy, node) = lay_out(&mut sf, 360.0);
+        sf.input.set_text("invoice");
+        sf.input.set_focus(true);
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Enter));
+        assert!(handled);
+        let invocation = take_control_invocation(&mut sf).expect("Enter escalates");
+        let request = SearchRequest::from_invocation(&invocation).expect("a search request");
+        assert_eq!(request.query.as_deref(), Some("invoice"));
+        assert_eq!(
+            request.resource_scope().map(|s| s.label.as_str()),
+            Some("Inbox")
+        );
+        assert!(
+            take_control_invocation(&mut sf).is_none(),
+            "one request per Enter"
+        );
+
+        // With nothing matching, the count slot offers the same escalation.
+        sf.set_count(Some(FilterCount::new(0, 12)));
+        sf.input.set_focus(false);
+        draw(&mut sf);
+        assert_ne!(sf.escalate_rect, Rect::ZERO, "Search everywhere shows");
+        let target = sf.escalate_rect.center();
+        let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        assert!(handled);
+        assert!(take_control_invocation(&mut sf).is_some());
+        sf.set_count(Some(FilterCount::new(3, 12)));
+        draw(&mut sf);
+        assert_eq!(sf.escalate_rect, Rect::ZERO, "a count shows instead");
+    }
+
+    #[test]
+    fn the_scope_token_is_removed_by_its_cross_or_backspace() {
+        let mut sf = SearchField::new();
+        let (taffy, node) = lay_out(&mut sf, 400.0);
+        sf.set_scope_token(Some("Only Inbox".into()));
+        draw(&mut sf);
+        assert!(sf.scope_token_rect.width() > 0.0);
+        assert!(
+            sf.input.get_rect().x0 >= sf.scope_token_rect.x1,
+            "the text starts after the token"
+        );
+        sf.input.set_focus(true);
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &key(NamedKey::Backspace));
+        assert!(handled);
+        assert!(sf.take_scope_cleared());
+        assert!(sf.scope_token().is_none());
+
+        sf.set_scope_token(Some("Only Inbox".into()));
+        draw(&mut sf);
+        let target = sf.scope_token_rect.center();
+        let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        assert!(handled);
+        assert!(sf.take_scope_cleared());
+    }
+
+    #[test]
+    fn the_placeholder_stays_while_focused_and_empty() {
+        let mut sf = SearchField::filter().with_placeholder("Filter containers");
+        let _ = lay_out(&mut sf, 320.0);
+        sf.input.set_focus(true);
+        assert!(sf.input.shows_placeholder());
+        sf.input.set_text("a");
+        assert!(!sf.input.shows_placeholder());
+    }
+
+    #[test]
+    fn accessibility_names_the_field_and_reads_its_count() {
+        use crate::a11y::Role;
+        let mut sf = SearchField::filter();
+        sf.input.set_text("abc");
+        sf.set_count(Some(FilterCount::new(2, 9)));
+        let node = Widget::accessibility(&sf).expect("a11y");
+        assert_eq!(node.role, Role::TextInput);
+        assert_eq!(node.value.as_deref(), Some("abc"));
+        assert_eq!(node.name.as_deref(), Some("Filter"));
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|d| d.contains("2 of 9"))
+        );
+    }
+
+    struct Rows {
+        all: Vec<&'static str>,
+        query: String,
+    }
+
+    impl Filterable for Rows {
+        fn set_filter(&mut self, query: &str) {
+            self.query = query.to_owned();
         }
-
-        // Case `launcher_click_latches_a_palette_request_and_stays_non_editable`.
-        {
-            let theme = Theme::dark();
-            let mut sf = SearchField::new()
-                .opens_palette()
-                .with_placeholder("Search containers…");
-            assert!(sf.is_palette_launcher());
-            let mut taffy = TaffyTree::<()>::new();
-            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let mut tr = TextRenderer::new();
-            let node = sf.build_layout(&mut taffy, &theme, &mut nm);
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(320.0),
-                        height: taffy::AvailableSpace::Definite(HEIGHT as f32),
-                    },
-                    |k, a, id, _, _| {
-                        nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                            (*p).measure(k, a, &mut tr)
-                        })
-                    },
-                )
-                .unwrap();
-            sf.apply_layout(&taffy, node, Point::ZERO);
-            draw(&mut sf);
-
-            assert!(!sf.take_palette_request());
-
-            let center = sf.get_rect().center();
-            let mut handled = false;
-            let mut ft = None;
-            let mut doc = AutoCommit::new();
-            let rootid = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            sf.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &rootid,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            sf.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &rootid,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled, "the launcher consumes the click");
-            assert!(!sf.input.is_focused(), "launcher pill stays non-editable");
-            assert!(
-                sf.take_palette_request(),
-                "click latches a palette-open request"
-            );
-            assert!(
-                !sf.take_palette_request(),
-                "the request drains after one read"
-            );
+        fn filter_count(&self) -> Option<FilterCount> {
+            let shown = self
+                .all
+                .iter()
+                .filter(|row| row.contains(self.query.as_str()))
+                .count();
+            Some(FilterCount::new(shown, self.all.len()))
         }
-
-        // Case `launcher_reports_button_role_for_accessibility`.
-        {
-            use crate::a11y::Role;
-            let sf = SearchField::new().opens_palette();
-            let node = Widget::accessibility(&sf).expect("launcher exposes a11y");
-            assert_eq!(
-                node.role,
-                Role::Button,
-                "launcher is a button, not a text field"
-            );
-            assert!(node.state.focusable);
+        fn search_scope(&self) -> Option<ScopeDecl> {
+            Some(ScopeDecl::new("list:people", "People"))
         }
+    }
 
-        // Case `launcher_semantic_activate_latches_the_same_palette_request_as_click`.
-        {
-            let mut sf = SearchField::new().opens_palette();
-            let mut doc = AutoCommit::new();
-            assert!(Widget::perform_action(
-                &mut sf,
-                &crate::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert!(sf.take_palette_request());
-            assert!(!sf.take_palette_request(), "semantic request drains once");
+    impl Widget for Rows {
+        crate::provides!(dyn Filterable);
+        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        fn name(&self) -> &'static str {
+            "rows"
         }
+    }
+
+    #[test]
+    fn a_filter_field_narrows_a_filterable_view_and_escalates_to_its_scope() {
+        let mut rows = Rows {
+            all: vec!["ada", "alan", "grace"],
+            query: String::new(),
+        };
+        let mut sf = SearchField::filter();
+        sf.input.set_text("a");
+        sync_filter(&mut sf, &mut rows);
+        assert_eq!(rows.query, "a");
+        assert_eq!(sf.count(), Some(FilterCount::new(3, 3)));
+        assert_eq!(
+            sf.escalation,
+            Some(SearchRequestScope::Resource(ScopeDecl::new(
+                "list:people",
+                "People"
+            )))
+        );
+        sf.input.set_text("");
+        sync_filter(&mut sf, &mut rows);
+        assert_eq!(sf.count(), None, "an empty filter shows no count");
     }
 }

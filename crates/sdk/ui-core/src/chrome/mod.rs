@@ -23,4 +23,3 @@ pub use shell::{
     paint_row_selection, panel_border, panel_ground, panel_shadow, scrim_maps,
     selection_floor_ramp, selection_tier, selection_tier_on,
 };
-pub use status_bar::STATUS_BAR_HEIGHT;

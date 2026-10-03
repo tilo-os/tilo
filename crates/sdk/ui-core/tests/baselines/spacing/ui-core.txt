@@ -3,10 +3,8 @@
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 crates/sdk/ui-core/src/chrome/page.rs pixel_const 1
 crates/sdk/ui-core/src/chrome/shell.rs pixel_const 10
-crates/sdk/ui-core/src/chrome/status_bar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 13
 crates/sdk/ui-core/src/widget/autocomplete.rs pixel_const 5
-crates/sdk/ui-core/src/widget/banner.rs pixel_const 6
 crates/sdk/ui-core/src/widget/block_editor.rs pixel_const 11
 crates/sdk/ui-core/src/widget/button.rs pixel_const 2
 crates/sdk/ui-core/src/widget/card.rs pixel_const 3
@@ -18,7 +16,7 @@ crates/sdk/ui-core/src/widget/checkbox.rs pixel_const 2
 crates/sdk/ui-core/src/widget/collaboration_overview.rs pixel_const 2
 crates/sdk/ui-core/src/widget/color_picker.rs pixel_const 10
 crates/sdk/ui-core/src/widget/command_palette.rs pixel_const 13
-crates/sdk/ui-core/src/widget/conflict_banner.rs pixel_const 6
+crates/sdk/ui-core/src/widget/conflict_banner.rs pixel_const 5
 crates/sdk/ui-core/src/widget/conflict_picker.rs pixel_const 11
 crates/sdk/ui-core/src/widget/context_menu.rs pixel_const 3
 crates/sdk/ui-core/src/widget/data_table.rs pixel_const 5
@@ -39,8 +37,7 @@ crates/sdk/ui-core/src/widget/identity_flow/sheet.rs pixel_const 2
 crates/sdk/ui-core/src/widget/image_viewer.rs pixel_const 1
 crates/sdk/ui-core/src/widget/input_hint.rs pixel_const 4
 crates/sdk/ui-core/src/widget/link_popover.rs pixel_const 6
-crates/sdk/ui-core/src/widget/modal_dialog.rs pixel_const 3
-crates/sdk/ui-core/src/widget/modal_frame.rs pixel_const 11
+crates/sdk/ui-core/src/widget/modal_dialog.rs pixel_const 2
 crates/sdk/ui-core/src/widget/modal_prompt.rs pixel_const 4
 crates/sdk/ui-core/src/widget/native_view.rs taffy_length 1
 crates/sdk/ui-core/src/widget/number_input.rs pixel_const 2
@@ -48,8 +45,6 @@ crates/sdk/ui-core/src/widget/page_palette.rs pixel_const 4
 crates/sdk/ui-core/src/widget/page_preview.rs pixel_const 2
 crates/sdk/ui-core/src/widget/page_sidebar.rs pixel_const 13
 crates/sdk/ui-core/src/widget/permission_prompt.rs pixel_const 6
-crates/sdk/ui-core/src/widget/popover.rs pixel_const 6
-crates/sdk/ui-core/src/widget/popover_widget.rs pixel_const 3
 crates/sdk/ui-core/src/widget/progress_bar.rs pixel_const 2
 crates/sdk/ui-core/src/widget/qr.rs taffy_length 2
 crates/sdk/ui-core/src/widget/resizable_split.rs pixel_const 2
@@ -58,7 +53,7 @@ crates/sdk/ui-core/src/widget/rich_text_editor.rs pixel_const 2
 crates/sdk/ui-core/src/widget/screenshot_markup.rs pixel_const 6
 crates/sdk/ui-core/src/widget/scrollable.rs pixel_const 5
 crates/sdk/ui-core/src/widget/scrollbar.rs pixel_const 1
-crates/sdk/ui-core/src/widget/search_field.rs pixel_const 9
+crates/sdk/ui-core/src/widget/search_field.rs pixel_const 5
 crates/sdk/ui-core/src/widget/search_results.rs pixel_const 9
 crates/sdk/ui-core/src/widget/section.rs literal_gap 1
 crates/sdk/ui-core/src/widget/section.rs pixel_const 1
@@ -74,7 +69,7 @@ crates/sdk/ui-core/src/widget/tabs.rs pixel_const 22
 crates/sdk/ui-core/src/widget/text_input.rs pixel_const 4
 crates/sdk/ui-core/src/widget/tile_host.rs pixel_const 6
 crates/sdk/ui-core/src/widget/time_picker.rs pixel_const 3
-crates/sdk/ui-core/src/widget/toast.rs pixel_const 10
+crates/sdk/ui-core/src/widget/toast.rs pixel_const 9
 crates/sdk/ui-core/src/widget/toggle.rs pixel_const 3
 crates/sdk/ui-core/src/widget/toolbar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/tooltip.rs pixel_const 8

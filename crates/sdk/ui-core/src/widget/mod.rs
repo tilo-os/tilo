@@ -2299,7 +2299,7 @@ pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
-mod floating_surface;
+pub mod floating_surface;
 pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
 mod virtual_table_semantics;
@@ -2354,14 +2354,11 @@ pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
-pub mod popover_widget;
-pub use popover_widget::PopoverWidget;
 pub mod popover;
-pub use popover::Popover;
+pub use crate::standalone_history_host::history_button;
+pub use popover::{Popover, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::ModalDialog;
-pub mod modal_frame;
-pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
@@ -2473,8 +2470,12 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // widget tree.
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent};
+pub mod find_bar;
+pub use find_bar::{
+    FindBar, FindMatch, FindMode, FindOptions, FindScope, Findable, paint_find_match, with_findable,
+};
 pub mod search_field;
-pub use search_field::SearchField;
+pub use search_field::{FilterCount, Filterable, Filtered, SearchField, apply_filter, sync_filter};
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;

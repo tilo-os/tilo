@@ -506,7 +506,7 @@ impl FrameHarness {
                 continue;
             };
             let page = provider.search_page(
-                &needle,
+                &crate::search::SearchQuery::new(needle.as_str()),
                 None,
                 SearchBudget::PALETTE.max_work,
                 SearchBudget::PALETTE.max_results,

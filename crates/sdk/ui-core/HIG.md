@@ -195,6 +195,44 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 - Never present fabricated content as live data (no synthesized "video feed"
   gradients, no invented data on an empty state).
 
+### 4a. Search, filter and find
+
+Search belongs to the platform. An app never draws a search field, a result
+list or its own palette. There are three different jobs, and each has one
+answer:
+
+| The person wants to… | The app provides | The person sees |
+|---|---|---|
+| **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
+| **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
+| **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
+
+- **The launcher is a button, not a field.** The toolbar's magnifier is
+  `search::search_button(SearchRequest::this_app())`; a part of the app gets
+  its own (`SearchRequest::within(ScopeDecl::new(anchor, "Inbox"))`, the scope
+  pill reading "Only Inbox"). A pill that looks like a field but opens the
+  palette is gone.
+- **Opening search is an action.** Every opener — the button, `/`, Ctrl+K,
+  Enter in a filter, an agent — invokes the host's `tilo.host:search` `open`
+  action. A standalone window opens its palette; inside the shell the shell
+  opens the system palette scoped to the app's tab. The app does the same
+  thing either way.
+- **A hit opens the app at that item.** A framework app shows the item in
+  `ViewCx::on_open`; the same handler answers the resource's `open` action,
+  so an agent opens the app where a person's search hit would.
+- **Slow sources do not block.** A provider answering from a server returns
+  what it has with `SearchPage::pending` and the rest from `poll_page`; the
+  palette appends it under a "Searching…" row.
+- **A filter field is a control.** Regular control height, `radii.control`,
+  the raised field fill, the person's own colour as the focus ring, the
+  placeholder visible while the field is focused and empty and elided when it
+  does not fit, and a reserved slot for the count so text never runs under it.
+  Narrow, it is the magnifier icon button until it is used.
+- **Find marks spans, not blocks.** Every match is painted with
+  `paint_find_match` over the matched glyphs; the current one is stronger and
+  outlined. The bar shows "n of m", Match case and Whole word, previous/next,
+  and replace or a text/hex mode when the view supports them.
+
 ---
 
 ## 5. System integration (file access, host services)
@@ -412,6 +450,48 @@ A theme's density (`ThemeDocument::density.spacing`) is built inside
 whole scale is proportional to it, and half the scale would put `s1` at two
 pixels.
 
+### 7c. Overlays, status and captures
+
+**One modal, one popover, one top layer.** A modal is a `ModalDialog`; an
+anchored transient (an option menu, a small form next to its control) is a
+`Popover`. Both are floating Panels (§9.1) and both paint only in the window's
+top layer (`Widget::draw_overlay`), which the host runs after the app *and*
+after the window's own chrome. So a modal's `surfaces.scrim` scrim covers the
+whole window, the History bar and the sidebars included, wherever the dialog
+is mounted, and a popover is never clipped by the pane it was opened from. A
+modal sheet's height follows its content, its title is a `Title`, and its
+actions are Regular buttons anchored to its footer in the platform's order.
+Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
+`paint_backdrop` and `paint_actions`.
+
+**Status has two homes.** What a person reads while working and expects to
+stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
+`chrome::status_bar`, which reserves its band (`status_bar::split`) so it
+never covers content. A change worth noticing once (a page turn, "Saved") is
+the transient `StatusBubble`: it shows on change, hides by itself and floats
+in its area's bottom-trailing corner. An error the person must act on is a
+`Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
+button).
+
+**Chrome over media uses the material on the media.** Video controls are a
+floating Panel over the picture; text drawn straight onto media sits on
+`overlay::scrim::vertical_fade` in `colors.media.ink`; a letterbox is
+`colors.media.letterbox` in every theme. No stepped bands, no theme surface
+behind a frame.
+
+**The History bar is the window's, unless the app owns the button.** It sits
+on the content region with one hairline under it and shows the History
+button only. An app that places `ui::widget::history_button()` in its own
+toolbar gets the same action and no separate bar.
+
+**Captures are the live window, exactly.** `--shots` writes the frame on
+`surfaces.content` after it has settled (`FrameHarness::settle_for_capture`:
+animations finished, image loads drained, within a bound), with the wall
+clock pinned to 30 June 2026, 10:42 local (`ui::clock::local_now`). Stage a
+state through the framework scenario hooks (`ResourceApp::scenario`,
+`scenario_viewport`, `ResourceSurface::stage`), never through a separate
+capture root.
+
 ---
 
 ## 8. Never hand-roll an interactive primitive
@@ -445,15 +525,19 @@ widget already gets right:
 
 This generalises §3 (text editing) to **all** interactive primitives. Concretely:
 
-- Editable field → `TextInput` (or `SearchField` / `NumberInput` /
-  `EditableLabel`). Never keep a per-app cursor index and splice characters into
-  a `String` on `Key::Character` / `Backspace`.
+- Editable field → `TextInput` (or `NumberInput` / `EditableLabel`). Never keep
+  a per-app cursor index and splice characters into a `String` on
+  `Key::Character` / `Backspace`.
+- Narrowing a list → `SearchField::filter()` bound to `Filterable`; find in a
+  document → `FindBar` over `Findable`; searching the app → the platform
+  palette (§4a). Never a hand-drawn search box.
 - Clickable → `Button` (a canvas host paints `ButtonFace` and hit-tests
   `ButtonFace::contains`). Never `draw_*_button` + a `contains()` hit-test.
   A glyph that does something is `Button::icon_only(id, icon, name)`, never a
   text glyph.
 - Confirm / prompt / sheet → `ModalDialog` (scrim, focus capture, Esc, a11y are
-  built in). Never paint your own overlay + scrim rect.
+  built in; it is presented in the window's top layer, §7c). Never paint your
+  own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
   `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
@@ -469,8 +553,8 @@ the accessible / themed / clipboard-correct version stays the default. Forking a
 private copy re-earns every bug above and guarantees drift. The only sanctioned
 "hand-rolled" text surfaces are genuine document engines whose buffer *is* the
 app (the terminal grid, a code/rich-text/cell editor) — and even those must route
-their **side** fields (find bar, rename box, cell entry, command line) through the
-shared widgets, and are themselves candidates for a shared editor primitive
+their **side** fields (find bar → `FindBar`, rename box, cell entry, command
+line) through the shared widgets, and are themselves candidates for a shared editor primitive
 (§ toolkit gaps) rather than N private forks.
 
 > Enforcement: a new painted control is a toolkit gap, not an app feature. Grep
@@ -595,7 +679,7 @@ one ground:
   paints it in every path an app can be seen through: the native runner
   clears to it, `ResourceRoot` fills it under the view, `TileHost` fills it
   under a hosted tile, and `--shots` captures land on it
-  (`FrameHarness::render_window_png`). An app that paints nothing (a clock, a
+  (`FrameHarness::render_png`). An app that paints nothing (a clock, a
   print queue) stands on it; floating surfaces stay transparent around their
   material.
 - **Sidebar** (navigation, leading edge) and **Inspector** (detail,
@@ -810,10 +894,12 @@ edge kept at full strength, so rest and disabled never look the same.
 | Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
 | Button `Primary` | `intent.inverted` (hover `inverted_hover`) | none; label `intent.on_inverted` |
 | Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toolbar toggle that is on is `intent.selection` |
-| Destructive confirmation (`ModalDialog` / `ModalFrame` danger action only) | `semantic.danger` | none |
+| Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
 | Card / Container / ContentCard (objects only) | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
+| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating` | `panel_border`, `floating_edge` on dark |
+| Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
+| Banner, ConflictBanner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
 | Tooltip | as today | `edge_on(fill)` |
 | Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a thumb `selection_tier_on(raised)` inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track, a 2 px primary-ink underline. `Quiet`: no track, a lift of the ground |
 | Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
@@ -826,7 +912,8 @@ edge kept at full strength, so rest and disabled never look the same.
 | Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
 | TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
 | Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
-| App chrome Toolbar band (`toolbar::paint_band`) / StatusBar | none: the region's ground | `chrome_hairline` along the bottom |
+| App chrome Toolbar band (`toolbar::paint_band`) | none: the region's ground | `chrome_hairline` along the bottom |
+| StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
 A declared border or ramp token (`border_standard`, `border_strong`,

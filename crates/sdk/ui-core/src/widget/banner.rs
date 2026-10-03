@@ -6,7 +6,7 @@
 //! Four severities ([`BannerKind`]) map onto the semantic colour ramp so the
 //! tint, border, and default leading icon all stay OS-controlled. A banner
 //! carries a **title** plus an optional secondary **message**, and can be made
-//! dismissible — the little "×" surfaces its click through
+//! dismissible: its close icon button surfaces the click through
 //! [`Banner::take_dismissed`], the toolkit's drain channel, so a CRDT-native
 //! host can react without a callback.
 
@@ -15,11 +15,10 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -29,12 +28,29 @@ use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-const PAD_X: f64 = 14.0;
-const PAD_Y: f64 = 12.0;
-const ICON_D: f64 = 18.0;
-const ACCENT_BAR_W: f64 = 4.0;
-const DISMISS_D: f64 = 18.0;
-const GAP: f64 = 10.0;
+/// The banner's metrics, from the theme.
+struct Metrics {
+    pad_x: f64,
+    pad_y: f64,
+    icon: f64,
+    dismiss: f64,
+    gap: f64,
+    min_height: f64,
+}
+
+impl Metrics {
+    fn of(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        Self {
+            pad_x: f64::from(t.spacing.s4),
+            pad_y: f64::from(t.spacing.s3),
+            icon: f64::from(t.metrics.icon_md),
+            dismiss: f64::from(t.metrics.bar_control_height),
+            gap: f64::from(t.spacing.s3),
+            min_height: f64::from(t.metrics.panel_row_height),
+        }
+    }
+}
 
 /// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
 /// title, optional secondary message and whether the "×" is offered.
@@ -99,31 +115,27 @@ fn paint_banner(
     } = *content;
     let theme = ctx.theme;
     let transform = ctx.transform;
-    let accent = kind.color(theme);
+    let m = Metrics::of(theme);
+    let status = kind.color(theme);
     let radius = f64::from(theme.tokens.radii.control);
 
-    ctx.fill_round(rect, radius, accent.with_alpha_factor(0.13));
-    ctx.stroke_round(rect, radius, accent.with_alpha_factor(0.4), 1.0);
+    // A well in the content: the raised surface under its derived rest
+    // edge. The severity is the icon's colour, never a tinted wash.
+    let well = theme.tokens.colors.surfaces.raised;
+    ctx.fill_round(rect, radius, well);
+    ctx.stroke_round(rect, radius, crate::surface::edge_on(well), 1.0);
+    let on_well = theme.on_ground(well);
 
-    let bar = RoundedRect::new(
-        rect.x0,
-        rect.y0,
-        rect.x0 + ACCENT_BAR_W,
-        rect.y1,
-        (radius, 0.0, 0.0, radius),
+    let icon_rect = Rect::from_center_size(
+        Point::new(rect.x0 + m.pad_x + m.icon / 2.0, rect.center().y),
+        (m.icon, m.icon),
     );
-    ctx.scene.fill(Fill::NonZero, transform, accent, None, &bar);
+    icon.draw(ctx.scene, transform, icon_rect, status);
 
-    let icon_x = rect.x0 + PAD_X;
-    let icon_cy = rect.center().y;
-    let icon_rect =
-        Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
-    icon.draw_with_stroke(ctx.scene, transform, icon_rect, accent, 1.6);
-
-    let text_x = icon_rect.x1 + GAP;
+    let text_x = icon_rect.x1 + m.gap;
     let title_style = theme.text(TextRole::Body).strong();
     let message_style = theme.text(TextRole::Caption);
-    let text_width = banner_text_width(rect, dismissible);
+    let text_width = banner_text_width(rect, dismissible, theme);
     let (_, title_h) = ctx
         .text
         .measure_style(title, Some(text_width), &title_style);
@@ -138,7 +150,7 @@ fn paint_banner(
     ctx.text(
         title,
         &title_style,
-        theme.text_primary,
+        on_well.text_primary,
         Point::new(text_x, ty),
         Some(text_width),
     );
@@ -147,43 +159,43 @@ fn paint_banner(
         ctx.text(
             msg,
             &message_style,
-            theme.text_dim,
+            on_well.text_dim,
             Point::new(text_x, ty),
             Some(text_width),
         );
     }
 
     if dismissible {
-        let dx = rect.x1 - PAD_X - DISMISS_D;
-        let dr = Rect::from_center_size(
-            Point::new(dx + DISMISS_D / 2.0, rect.center().y),
-            (DISMISS_D, DISMISS_D),
+        let x1 = rect.x1 - m.pad_x + (m.dismiss - m.icon) / 2.0;
+        let dr = Rect::new(
+            x1 - m.dismiss,
+            rect.center().y - m.dismiss / 2.0,
+            x1,
+            rect.center().y + m.dismiss / 2.0,
         );
-        let hovered = dr.contains(hover);
-        let col = if hovered {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        Icon::X.draw_with_stroke(ctx.scene, transform, dr, col, 1.6);
+        let face = crate::widget::ButtonFace::icon_only(dr, Icon::X, "Dismiss")
+            .control_size(crate::widget::control_size::ControlSize::Small)
+            .hovered(dr.contains(hover));
+        crate::widget::Button::paint(ctx.scene, transform, ctx.text, &on_well, &face);
         dr
     } else {
         Rect::ZERO
     }
 }
 
-fn banner_text_width(rect: Rect, dismissible: bool) -> f32 {
+fn banner_text_width(rect: Rect, dismissible: bool, theme: &Theme) -> f32 {
+    let m = Metrics::of(theme);
     let trailing = if dismissible {
-        PAD_X + DISMISS_D + GAP
+        m.pad_x + m.dismiss + m.gap
     } else {
-        PAD_X
+        m.pad_x
     };
     #[allow(
         clippy::cast_possible_truncation,
         reason = "banner geometry is an ordinary logical-pixel value"
     )]
     {
-        (rect.width() - PAD_X - ICON_D - GAP - trailing).max(1.0) as f32
+        (rect.width() - m.pad_x - m.icon - m.gap - trailing).max(1.0) as f32
     }
 }
 
@@ -212,7 +224,8 @@ impl BannerKind {
     /// [`Banner::with_icon`]).
     pub fn default_icon(self) -> Icon {
         match self {
-            BannerKind::Info | BannerKind::Warning => Icon::Info,
+            BannerKind::Info => Icon::Info,
+            BannerKind::Warning => Icon::TriangleAlert,
             BannerKind::Success => Icon::Check,
             BannerKind::Error => Icon::Ban,
         }
@@ -324,7 +337,7 @@ impl Banner {
     /// Intrinsic content height for the current title/message, in logical px.
     fn content_height(&self, theme: &Theme, text_renderer: &mut TextRenderer, width: f32) -> f64 {
         let rect = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), 1.0);
-        let text_width = banner_text_width(rect, self.dismissible);
+        let text_width = banner_text_width(rect, self.dismissible, theme);
         let title_style = theme.text(TextRole::Body).strong();
         let (_, title_h) = text_renderer.measure_style(&self.title, Some(text_width), &title_style);
         let message_h = self.message.as_ref().map_or(0.0, |message| {
@@ -338,7 +351,8 @@ impl Banner {
         } else {
             0.0
         };
-        (f64::from(title_h + message_h) + gap + PAD_Y * 2.0).max(44.0)
+        let m = Metrics::of(theme);
+        (f64::from(title_h + message_h) + gap + m.pad_y * 2.0).max(m.min_height)
     }
 }
 
@@ -559,7 +573,7 @@ mod tests {
             let width = 700.0;
             let height = banner.content_height(&theme, &mut text, width);
             let text_width =
-                banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
+                banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false, &theme);
             let (_, message_height) =
                 text.measure_style(message, Some(text_width), &theme.text(TextRole::Caption));
 
@@ -568,12 +582,12 @@ mod tests {
                 "the recovery copy must wrap instead of escaping the banner"
             );
             assert!(
-                height >= f64::from(message_height) + PAD_Y * 2.0,
+                height >= f64::from(message_height) + Metrics::of(&theme).pad_y * 2.0,
                 "the banner must reserve the same wrapped height that it paints"
             );
         }
 
-        fn draws_accent_bar_and_text() {
+        fn draws_well_icon_and_text() {
             let mut b = Banner::error("Upload failed")
                 .with_message("Check your connection")
                 .dismissible();
@@ -596,7 +610,7 @@ mod tests {
         icon_override_wins();
         message_makes_the_banner_taller();
         long_message_wraps_and_grows_to_its_painted_height();
-        draws_accent_bar_and_text();
+        draws_well_icon_and_text();
     }
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {

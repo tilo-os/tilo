@@ -3,7 +3,9 @@
 //! records in a [`tilo_search::SearchIndex`].
 
 use super::body::{BodyIndex, SearchBody};
+use super::query::{Facet, SearchQuery};
 use super::rank::FieldWeight;
+use super::row::SearchRow;
 use crate::icons::Icon;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
@@ -90,14 +92,19 @@ impl SearchCursor {
     }
 }
 
-/// One bounded page returned by [`SearchCatalog::query_page`].
+/// One bounded page of a provider's answer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPage {
     pub results: Vec<SearchResult>,
-    /// Pass this back to `query_page` to continue. `None` means exhausted.
+    /// Pass this back to `search_page` to continue. `None` means exhausted.
     pub next: Option<SearchCursor>,
     /// Hits materialised for this page.
     pub inspected: usize,
+    /// More results for this query are on their way from a slow source (a
+    /// mail server, a video service, a catalogue): the palette keeps a
+    /// loading row and asks [`SearchProvider::poll_page`] with this token
+    /// until they arrive, then appends them to the same list.
+    pub pending: Option<PendingToken>,
 }
 
 impl SearchPage {
@@ -108,8 +115,58 @@ impl SearchPage {
             results: Vec::new(),
             next: None,
             inspected: 0,
+            pending: None,
         }
     }
+
+    /// A finished page: these results, continuing at `next`.
+    #[must_use]
+    pub fn of(results: Vec<SearchResult>, next: Option<SearchCursor>) -> Self {
+        Self {
+            inspected: results.len(),
+            results,
+            next,
+            pending: None,
+        }
+    }
+
+    /// A page whose results are still coming: show `results` now and poll
+    /// `token` for the rest.
+    #[must_use]
+    pub fn pending(results: Vec<SearchResult>, token: PendingToken) -> Self {
+        Self {
+            inspected: results.len(),
+            results,
+            next: None,
+            pending: Some(token),
+        }
+    }
+}
+
+/// A provider's handle on one outstanding request to a slow source. Opaque
+/// to the palette, which only hands it back to [`SearchProvider::poll_page`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PendingToken(u64);
+
+impl PendingToken {
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.0
+    }
+}
+
+/// The answer to [`SearchProvider::poll_page`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PagePoll {
+    /// Still waiting; ask again on a later frame.
+    Pending,
+    /// The awaited page. It may carry its own `next` or another `pending`.
+    Ready(SearchPage),
 }
 
 /// Cheap diagnostics used by contract and performance tests.
@@ -649,6 +706,7 @@ impl SearchCatalog {
                 offset: offset.saturating_add(inspected),
             }),
             inspected,
+            pending: None,
         }
     }
 }
@@ -693,6 +751,9 @@ pub struct SearchResult {
     pub action_id: String,
     /// Optional leading glyph drawn at the start of the row.
     pub icon: Option<Icon>,
+    /// What the hit is (a message, a video, a match in a file) and that
+    /// row's slots. `None` draws the generic row.
+    pub row: Option<SearchRow>,
     /// Provider-supplied relevance bias — a nudge, not an override, since the
     /// registry adds a query-match bonus on top. `0` ranks by query match
     /// alone; raise it to float pinned/recent/favourite hits.
@@ -713,6 +774,7 @@ impl SearchResult {
             kind: kind.into(),
             action_id: action_id.into(),
             icon: None,
+            row: None,
             score: 0,
         }
     }
@@ -776,6 +838,22 @@ impl SearchResult {
     pub fn with_score(mut self, score: i32) -> Self {
         self.score = score;
         self
+    }
+
+    /// Draw this hit as `row` (a message, a video, a file hit) instead of
+    /// the generic row.
+    #[must_use]
+    pub fn with_row(mut self, row: SearchRow) -> Self {
+        self.row = Some(row);
+        self
+    }
+
+    /// The anchor the hit lies at, for scope checks: the resource its action
+    /// addresses, or the opaque navigation id.
+    #[must_use]
+    pub fn anchor(&self) -> String {
+        self.action_address()
+            .map_or_else(|| self.action_id.clone(), |address| address.resource)
     }
 }
 
@@ -868,13 +946,16 @@ impl SearchProvider for OpenResourceSearch {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        let mut page = self
+            .catalog
+            .query_page(query.text(), cursor, work_budget, result_limit);
+        page.results.retain(|hit| query.in_scope(&hit.anchor()));
+        page
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
@@ -951,31 +1032,53 @@ pub trait SearchProvider {
 
     /// Return one bounded continuation page for an interactive search.
     ///
+    /// `query` carries the free text, the facet filters the platform parsed
+    /// out of it or the user picked as chips, and the resource scope the
+    /// search is narrowed to. A provider that cannot apply a filter or the
+    /// scope ignores it; the palette still drops hits outside the scope.
+    ///
     /// Providers backed by a durable namespace should override this method so
     /// callers can eventually reach every exact match without scanning the
-    /// whole corpus on the UI thread. Tiny legacy providers remain a single
-    /// page: a non-empty cursor therefore means they are exhausted.
+    /// whole corpus on the UI thread. Tiny providers remain a single page: a
+    /// non-empty cursor therefore means they are exhausted.
+    ///
+    /// A provider whose source answers slowly (a mail server, a web service)
+    /// returns what it has now with [`SearchPage::pending`] and answers the
+    /// rest from [`poll_page`](Self::poll_page). It never blocks here.
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
         if cursor.is_some() || work_budget == 0 || result_limit == 0 {
-            return SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            };
+            return SearchPage::empty();
         }
         let limit = work_budget.min(result_limit);
-        let results = self.search_limited(query, limit);
-        SearchPage {
-            inspected: results.len(),
-            results,
-            next: None,
-        }
+        SearchPage::of(self.search_limited(query.text(), limit), None)
+    }
+
+    /// The page a [`SearchPage::pending`] token stands for, once its source
+    /// has answered. Called on later frames, never in a loop; return
+    /// [`PagePoll::Pending`] until the answer is in. A token the provider no
+    /// longer knows (the query moved on) answers an empty ready page.
+    fn poll_page(&self, _token: &PendingToken) -> PagePoll {
+        PagePoll::Ready(SearchPage::empty())
+    }
+
+    /// The dimensions this provider filters by. The palette offers their
+    /// values as chips and parses typed `key:value` tokens for them into
+    /// [`SearchQuery::filters`].
+    fn facets(&self) -> Vec<Facet> {
+        Vec::new()
+    }
+
+    /// The parts of the app this provider's hits can be narrowed to (see
+    /// [`ScopeDecl`](super::ScopeDecl)). An unscoped palette offers each as a
+    /// "Search in" row that narrows the search to it.
+    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+        Vec::new()
     }
 
     /// Lazily resolve a canonical search address that is intentionally absent
@@ -1028,6 +1131,18 @@ pub trait CatalogSearchProvider {
     fn resolve_action_address(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
         None
     }
+
+    /// As [`SearchProvider::facets`].
+    fn facets(&self) -> Vec<Facet> {
+        Vec::new()
+    }
+
+    /// Whether `hit` passes `query`'s facet filters. The catalogue matches
+    /// text only; a provider with facets checks the hit's values here
+    /// (`query.admits("language", &[..])`). The default admits every hit.
+    fn admits(&self, _hit: &SearchResult, _query: &SearchQuery) -> bool {
+        true
+    }
 }
 
 impl<T: CatalogSearchProvider> SearchProvider for T {
@@ -1050,7 +1165,7 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         self.search_page(
-            query,
+            &SearchQuery::new(query),
             None,
             self.limited_work_budget(limit),
             limit.min(T::RESULT_LIMIT),
@@ -1060,24 +1175,27 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        match self.catalog() {
-            Some(catalog) => catalog.query_page(
-                &self.catalog_query(query),
-                cursor,
-                work_budget,
-                result_limit,
-            ),
-            None => SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            },
-        }
+        let Some(catalog) = self.catalog() else {
+            return SearchPage::empty();
+        };
+        let mut page = catalog.query_page(
+            &self.catalog_query(query.text()),
+            cursor,
+            work_budget,
+            result_limit,
+        );
+        page.results
+            .retain(|hit| query.in_scope(&hit.anchor()) && self.admits(hit, query));
+        page
+    }
+
+    fn facets(&self) -> Vec<Facet> {
+        CatalogSearchProvider::facets(self)
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
@@ -1170,7 +1288,7 @@ mod tests {
             assert_eq!(provider.search_limited("row", 100).len(), 5);
             assert_eq!(provider.search_limited("row", 3).len(), 3);
 
-            let page = provider.search_page("row", None, 4, 10);
+            let page = provider.search_page(&"row".into(), None, 4, 10);
             assert_eq!(page.inspected, 4);
             let next = page.next.expect("a broad query continues by cursor");
             assert!(provider.action_directory_cursor_is_current(&next));
@@ -1193,7 +1311,7 @@ mod tests {
             // than it returns.
             assert_eq!(generous.search_limited("abcde", 2).len(), 2);
             assert_eq!(frugal.search_limited("abcde", 2).len(), 2);
-            assert_eq!(frugal.search_page("row", None, 2, 5).inspected, 2);
+            assert_eq!(frugal.search_page(&"row".into(), None, 2, 5).inspected, 2);
         }
         // phase: catalog_provider_without_a_catalogue_is_empty_and_has_no_generation
         {
@@ -1203,7 +1321,7 @@ mod tests {
             };
             assert_eq!(provider.action_directory_generation(), None);
             assert!(provider.search("row").is_empty());
-            let page = provider.search_page("row", None, 10, 10);
+            let page = provider.search_page(&"row".into(), None, 10, 10);
             assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
         }
     }
@@ -1274,7 +1392,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let provider = OpenResourceSearch::new(&resources);
-            let page = provider.search_page("", None, 3, 2);
+            let page = provider.search_page(&"".into(), None, 3, 2);
             assert!(page.inspected <= 3);
             assert!(page.results.len() <= 2);
             assert!(page.next.is_some());

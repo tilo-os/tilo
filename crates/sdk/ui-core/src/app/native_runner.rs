@@ -2507,6 +2507,13 @@ impl AppHandler {
 
         app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
 
+        // `/` that no field typed opens search of this app.
+        if !handled && modal_rect.is_none() && app.handle_unconsumed_search_key(&event) {
+            handled = true;
+            app.layout.layout_dirty = true;
+            window.request_redraw();
+        }
+
         if app.dispatch_control_invocations() != 0 {
             handled = true;
             app.needs_sync = true;

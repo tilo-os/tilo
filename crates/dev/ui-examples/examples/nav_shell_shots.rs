@@ -203,7 +203,7 @@ fn shoot(
             std::process::exit(1);
         }
     }
-    harness.render_window_png(out);
+    harness.render_png(out);
     println!("wrote {}", out.display());
 }
 

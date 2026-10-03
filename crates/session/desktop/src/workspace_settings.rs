@@ -22,7 +22,7 @@ use vello::peniko::{Color, Fill};
 
 use ui::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use ui::overlay::{FocusTrap, Modal};
+use ui::overlay::FocusTrap;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -669,7 +669,6 @@ impl WsTab {
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
-    modal: Modal,
     focus_trap: FocusTrap,
 }
 
@@ -679,13 +678,8 @@ impl WorkspaceSettings {
         Self {
             ws_id,
             active_tab: WsTab::General,
-            modal: Modal::new("workspace-settings"),
             focus_trap: FocusTrap::new(members),
         }
-    }
-
-    pub fn modal(&self) -> &Modal {
-        &self.modal
     }
 
     pub fn focus_trap(&self) -> &FocusTrap {

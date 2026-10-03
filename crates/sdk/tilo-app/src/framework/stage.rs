@@ -27,41 +27,83 @@ use super::root::ResourceRoot;
 
 type Stage = Box<dyn FnMut(Option<&str>)>;
 type StageList = Vec<(Weak<()>, Stage)>;
+type Opener = Box<dyn FnMut(&str)>;
+type OpenerList = Vec<(Weak<()>, Opener)>;
 
-/// The stage callbacks of one app's views, each tied to the view scope that
-/// registered it (a row of an `Each` drops its callbacks with the row).
-pub(crate) struct Stages(Rc<RefCell<StageList>>);
+/// The view-state callbacks of one app's views — how each stages a
+/// screenshot scenario, and how each shows the item a search hit opens —
+/// tied to the view scope that registered it (a row of an `Each` drops its
+/// callbacks with the row).
+pub(crate) struct Stages {
+    stages: Rc<RefCell<StageList>>,
+    openers: Rc<RefCell<OpenerList>>,
+}
 
 impl Clone for Stages {
     fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self {
+            stages: Rc::clone(&self.stages),
+            openers: Rc::clone(&self.openers),
+        }
     }
+}
+
+/// Run every live callback of `list`, in registration order. The list is
+/// taken first so a callback may register another without a reentrant
+/// borrow.
+fn run_live<F: ?Sized>(
+    list: &RefCell<Vec<(Weak<()>, Box<F>)>>,
+    mut call: impl FnMut(&mut F),
+) -> bool {
+    let mut current = std::mem::take(&mut *list.borrow_mut());
+    let mut ran = false;
+    current.retain_mut(|(alive, callback)| {
+        if alive.strong_count() == 0 {
+            return false;
+        }
+        call(callback);
+        ran = true;
+        true
+    });
+    let mut kept = list.borrow_mut();
+    current.append(&mut kept);
+    *kept = current;
+    ran
 }
 
 impl Stages {
     pub(crate) fn new() -> Self {
-        Self(Rc::default())
+        Self {
+            stages: Rc::default(),
+            openers: Rc::default(),
+        }
     }
 
     pub(crate) fn push(&self, alive: Weak<()>, stage: Stage) {
-        self.0.borrow_mut().push((alive, stage));
+        self.stages.borrow_mut().push((alive, stage));
     }
 
     /// Run every live callback for `scenario`, in registration order.
     pub(crate) fn run(&self, scenario: Option<&str>) {
-        // Take the list so a callback may register another without a
-        // reentrant borrow.
-        let mut current = std::mem::take(&mut *self.0.borrow_mut());
-        current.retain_mut(|(alive, stage)| {
-            if alive.strong_count() == 0 {
-                return false;
-            }
-            stage(scenario);
-            true
-        });
-        let mut list = self.0.borrow_mut();
-        current.append(&mut list);
-        *list = current;
+        run_live(&self.stages, |stage| stage(scenario));
+    }
+
+    pub(crate) fn push_opener(&self, alive: Weak<()>, opener: Opener) {
+        self.openers.borrow_mut().push((alive, opener));
+    }
+
+    /// Whether any live view shows the items search hits open.
+    pub(crate) fn opens(&self) -> bool {
+        self.openers
+            .borrow()
+            .iter()
+            .any(|(alive, _)| alive.strong_count() > 0)
+    }
+
+    /// Show the item at `anchor` in every view that opens items. Returns
+    /// whether any did.
+    pub(crate) fn open(&self, anchor: &str) -> bool {
+        run_live(&self.openers, |open| open(anchor))
     }
 }
 

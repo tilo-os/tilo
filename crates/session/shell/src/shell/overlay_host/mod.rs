@@ -442,6 +442,9 @@ pub struct ShellOverlayHost {
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
     search_registry: crate::shell::search::SearchRegistry,
+    /// The live application directory, kept to narrow search to one part of
+    /// an app when the app asks (`AppHostIntent::OpenSearch`).
+    app_actions: Option<std::rc::Rc<crate::shell::search::providers::LiveAppActionsProvider>>,
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,
@@ -1773,9 +1776,10 @@ impl ShellOverlayHost {
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
-        self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
-        ));
+        let app_actions =
+            std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
+        self.app_actions = Some(std::rc::Rc::clone(&app_actions));
+        self.search_registry.register(app_actions);
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
@@ -2020,6 +2024,7 @@ impl ShellOverlayHost {
             sidebar: None,
             outputs: Vec::new(),
             palette,
+            app_actions: None,
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
@@ -4341,6 +4346,9 @@ impl ShellOverlayHost {
                             ..crate::shell::chrome_state::ActivityFocus::default()
                         },
                     ));
+                }
+                ui::widget::AppHostIntent::OpenSearch(request) => {
+                    self.open_app_search(source_tab, &request);
                 }
                 ui::widget::AppHostIntent::OpenDocument {
                     path,
@@ -7096,6 +7104,71 @@ impl ShellOverlayHost {
 
     pub fn member_sheet_is_open_for_tests(&self) -> bool {
         self.workspace_settings_overlay.member_sheet_is_open()
+    }
+
+    /// Open search the way an app asked (`AppHostIntent::OpenSearch`): focus
+    /// the app's tab, open the palette scoped to that app — or drilled into
+    /// the part of it the request names — and start with its query. Unlike
+    /// the shortcut, a repeated request never closes the palette.
+    pub(crate) fn open_app_search(
+        &mut self,
+        source_tab: crate::shell::state::TabId,
+        request: &ui::search::SearchRequest,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let location = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|group| group.tabs.iter().any(|tab| tab.id == source_tab))
+                        .map(|group| (workspace.id, strip.id, group.id))
+                })
+            })
+        };
+        // A tab outside the workspace in front asks for nothing the person
+        // can see; drop the request rather than switch workspaces.
+        let Some((workspace, strip, group)) = location else {
+            return;
+        };
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, strip, group, source_tab);
+        let resource_scope = request.resource_scope().and_then(|scope| {
+            let state = chrome.borrow();
+            let app_id = state.tab_app_id(strip, group, source_tab)?;
+            self.app_actions.as_ref()?.resource_scope_for(
+                &state,
+                &app_id,
+                &scope.anchor,
+                &scope.label,
+            )
+        });
+        if !self.palette_visible || chrome.borrow().search_scope != SearchScope::ActiveApp {
+            self.open_palette_with_scope(SearchScope::ActiveApp);
+        }
+        let query = request.query.clone().unwrap_or_default();
+        if let Some(scope) = resource_scope {
+            let label = scope.label.clone();
+            {
+                let mut state = chrome.borrow_mut();
+                state.search_resource_scope = Some(scope);
+                state.bump();
+            }
+            self.palette.set_query_placeholder(t_args(
+                "host-search-in",
+                &[("scope", label.as_str().into())],
+            ));
+            self.last_search_query = "\0resource-scope-enter\0".into();
+        }
+        self.palette.set_query(&query);
+        self.palette_visible = true;
     }
 
     /// Open the palette in `scope`, or close it if the same scope fires
@@ -15611,8 +15684,33 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
+            // `/` the app did not type opens search of that app, as Ctrl+K
+            // does. A focused field or terminal takes `/` as text.
+            if !*ctx.handled
+                && !self.palette_visible
+                && is_plain_slash(event, ctx.modifiers.state())
+                && self.content.ime_cursor_rect().is_none()
+            {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
+                *ctx.handled = true;
+            }
         }
     }
+}
+
+/// An unmodified `/` press (Shift allowed: some layouts type `/` with it).
+fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: winit::event::KeyEvent {
+                logical_key: winit::keyboard::Key::Character(character),
+                state: ElementState::Pressed,
+                ..
+            },
+            ..
+        } if character.as_str() == "/"
+    ) && !(modifiers.control_key() || modifiers.alt_key() || modifiers.super_key())
 }
 
 /// The tab right-click menu: request harvest, routing, actions, semantics

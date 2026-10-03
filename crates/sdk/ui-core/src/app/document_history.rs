@@ -2,10 +2,9 @@
 
 use super::App;
 use crate::history_source::HistoryComparison;
+use crate::search::request::SEARCH_OPERATION;
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
-use crate::standalone_history_host::{
-    HISTORY_OPERATION, HistoryCommand, SEARCH_OPERATION, StandaloneHistoryHost,
-};
+use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
 
 #[derive(Clone, Debug)]
@@ -207,7 +206,7 @@ impl App {
             let mut resources = self.close_admission.resources();
             resources.extend(self.framework_history_resource());
             if self.document_history.has_search() {
-                resources.push(crate::standalone_history_host::search_resource());
+                resources.push(crate::search::search_resource());
             }
             return resources;
         }
@@ -269,9 +268,9 @@ impl App {
             if !self.document_history.has_search() {
                 return Err("Search host is unavailable".into());
             }
-            serde_json::from_slice::<()>(&encoded.payload)
+            let request = crate::search::SearchRequest::decode(&encoded.payload)
                 .map_err(|_| "Invalid Search operation")?;
-            self.open_action_palette();
+            self.open_search(request);
             return Ok(());
         }
         if encoded.type_id == HISTORY_OPERATION && !self.history_chrome_enabled {
@@ -547,6 +546,9 @@ impl App {
         let _ = self.history_local_resources();
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
+        self.document_history.set_app_presents_button(
+            crate::standalone_history_host::presents_history_button(self.root_widget.as_ref()),
+        );
         let layout = self.document_history.build_layout(
             app,
             &mut self.layout.taffy,

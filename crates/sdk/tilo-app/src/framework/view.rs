@@ -158,6 +158,28 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         LocalState::new(initial)
     }
 
+    /// Show the item a search hit opens: `open` runs with the hit's anchor
+    /// (a [`SearchEntry`](tilo_resource::SearchEntry)'s `anchor`) when the
+    /// person picks the hit, or when an agent invokes the resource's `open`
+    /// action. Select the item, switch to its page, scroll it into view:
+    /// set the [`LocalState`]s that show it, as the person's own input would.
+    pub fn on_open(&self, open: impl FnMut(&str) + 'static) {
+        self.stages.push_opener(self.alive.clone(), Box::new(open));
+    }
+
+    /// Open the platform search with `request`, narrowed to this app or one
+    /// part of it. Usually a control does this ([`Self::search_button`]); a
+    /// custom handler calls [`Dispatcher::open_search`] on its dispatcher.
+    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+        self.dispatch.open_search(request);
+    }
+
+    /// The search launcher for this view's chrome: an icon button that opens
+    /// the platform search with `request`. Apps never draw a search field.
+    pub fn search_button(&self, request: ui_core::search::SearchRequest) -> Button {
+        ui_core::search::search_button(request)
+    }
+
     /// Stage view state for a screenshot scenario: `stage` runs with the
     /// scenario's name (`None` for a plain `--shots`) after the scenario's
     /// actions applied and before the frame is captured. Set the
