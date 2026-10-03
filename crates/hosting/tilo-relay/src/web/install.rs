@@ -4,7 +4,8 @@
 //! The host's device key exists already (its public half was handed out of
 //! band to whoever holds the person's root). The root's holder — a page that
 //! holds the root — signs a `DeviceCert` for it and posts it to
-//! `/peer/v1/install` with the install token the host was provisioned with.
+//! `/peer/v1/install` (as JSON or its canonical encoding) with the install
+//! token the host was provisioned with.
 //! The certificate must be for this key, verify, let this device host and
 //! not admit devices; it is then written as a joined device's
 //! ([`tilo_user_identity::install_device_cert`]) and [`await_certificate`]
@@ -243,8 +244,18 @@ async fn install(
         return Err(status(StatusCode::FORBIDDEN, "wrong install token"));
     }
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
-    let cert: DeviceCert = serde_json::from_slice(&bytes)
-        .map_err(|_| status(StatusCode::BAD_REQUEST, "expected a DeviceCert as JSON"))?;
+    // JSON as a page's root issues it, or its canonical encoding.
+    let cert: Option<DeviceCert> = if bytes.first() == Some(&b'{') {
+        serde_json::from_slice(&bytes).ok()
+    } else {
+        tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok()
+    };
+    let cert = cert.ok_or_else(|| {
+        status(
+            StatusCode::BAD_REQUEST,
+            "expected a DeviceCert as JSON or canonical bytes",
+        )
+    })?;
     if !cert.capabilities.can_act_as_host {
         return Err(status(
             StatusCode::BAD_REQUEST,
@@ -304,14 +315,16 @@ mod tests {
         method: &str,
         path: &str,
         headers: &str,
-        body: &str,
+        body: impl AsRef<[u8]>,
     ) -> String {
+        let body = body.as_ref();
         let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         socket.write_all(request.as_bytes()).await.unwrap();
+        socket.write_all(body).await.unwrap();
         let mut reply = Vec::new();
         socket.read_to_end(&mut reply).await.unwrap();
         String::from_utf8_lossy(&reply).into_owned()
@@ -390,7 +403,14 @@ mod tests {
         }
         assert!(!paths.device_cert.exists());
 
-        let reply = request(addr, "POST", "/peer/v1/install", &token, &good).await;
+        let reply = request(addr, "POST", "/peer/v1/install", &token, [7_u8, 7, 7]).await;
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+        // The canonical encoding installs as the JSON does.
+        let canonical = tilo_user_identity::canonical::canonical_bytes(
+            &serde_json::from_str::<DeviceCert>(&good).unwrap(),
+        )
+        .unwrap();
+        let reply = request(addr, "POST", "/peer/v1/install", &token, canonical).await;
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
         assert!(reply.contains(&hex::encode(own)), "{reply}");
         let installed = listener.installed().await.unwrap();

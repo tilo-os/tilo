@@ -386,19 +386,24 @@ async function pageRuntime() {
  * reads and owns them; admits no devices; one year). `browser`: a member
  * for 30 days. `devicePublicKey` is the device's Ed25519 key (hex or
  * bytes), delivered out of band; never the root's own. Takes the key alone
- * or `{devicePublicKey, identity?, runtime?, label?, role?}`; `identity`
- * defaults to the current one, `runtime` to the page host's. Resolves to the
- * `DeviceCert` JSON.
+ * or `{devicePublicKey, identity?, runtime?, label?, role?, encoding?}`;
+ * `identity` defaults to the current one, `runtime` to the page host's.
+ * Resolves to the certificate's canonical encoding as base64 (what a native
+ * device keeps on disk), or with `encoding: 'json'` to its JSON.
  */
 export async function certifyDevice(options) {
   if (typeof options === 'string' || ArrayBuffer.isView(options)) options = {devicePublicKey: options};
-  const {identity = currentIdentity(), devicePublicKey, label = 'Tilo node', role = 'node'} = options ?? {};
+  const {identity = currentIdentity(), devicePublicKey, label = 'Tilo node', role = 'node', encoding = 'canonical'} = options ?? {};
   if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
   const runtime = options.runtime ?? await pageRuntime();
   if (!runtime?.issueDeviceCert) throw new TypeError('certifyDevice needs the wasm runtime');
   const key = typeof devicePublicKey === 'string' ? devicePublicKey.toLowerCase() : hex(devicePublicKey ?? []);
   if (unhex(key).length !== 32) throw new IdentityError('malformed', 'A device public key is 32 bytes');
-  return runtime.issueDeviceCert(identity, key, label, role);
+  const json = await runtime.issueDeviceCert(identity, key, label, role);
+  if (encoding === 'json') return json;
+  let binary = '';
+  for (const byte of runtime.deviceCertCanonical(json)) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 /**
@@ -410,10 +415,14 @@ export async function certifyDevice(options) {
  */
 export async function installNodeCertificate({origin, certificate, installToken, fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
   if (!origin || !certificate || !installToken) throw new TypeError('origin, certificate and installToken are required');
+  // JSON, or the canonical encoding as base64 (what certifyDevice returns).
+  const json = typeof certificate !== 'string' || certificate.trimStart().startsWith('{');
   const response = await fetcher(new URL('/peer/v1/install', origin).href, {
     method: 'POST',
-    headers: {'content-type': 'application/json', 'x-tilo-install-token': installToken},
-    body: typeof certificate === 'string' ? certificate : JSON.stringify(certificate),
+    headers: {'content-type': json ? 'application/json' : 'application/octet-stream', 'x-tilo-install-token': installToken},
+    body: json
+      ? (typeof certificate === 'string' ? certificate : JSON.stringify(certificate))
+      : unbase64url(certificate.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')),
     credentials: 'omit',
   });
   const text = await response.text();
