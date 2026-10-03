@@ -6,7 +6,8 @@ keeps writing `winit::…`. Upstream: https://github.com/rust-windowing/winit
 (Apache-2.0, unchanged).
 
 The additions the SDK uses are `KeyEvent::synthetic`, Wayland drag sources
-(`start_drag`) and swipe gestures, and a macOS quit request
+(`start_drag`), swipe gestures, announcing a frame drawn off the event-loop
+thread (`Window::announce_frame`), and a macOS quit request
 (`set_quit_request_window`); `vendor/PATCHES.md` and the standalone history
 `vendor-upstream/winit-0.30.13` in the Tilo repository list them commit by
 commit. When a winit release carries them, the SDK moves back to `winit` and

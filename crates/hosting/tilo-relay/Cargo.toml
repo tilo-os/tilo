@@ -195,6 +195,8 @@ moq-net.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# Mints an approver the way onboarding does: the root only in its record.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 
 [[test]]
 name = "it"
