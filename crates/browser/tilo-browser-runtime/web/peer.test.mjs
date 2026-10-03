@@ -85,7 +85,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
     },
     async inspectInvitation(post, invitation) {
       calls.inspected = [...invitation];
-      return JSON.stringify({kind: 'invitation', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9'});
+      return JSON.stringify({kind: 'invitation', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
+        inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
     async askToJoin(post, invitation, root, custody, requestId, name, label) {
       calls.asked = {invitation: [...invitation], root, requestId, name, label};
@@ -769,7 +770,8 @@ test('joining with an invitation waits for the owner, then connects with the roo
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const offer = await inspectInvitation('https://host.example:8443', 'AQID', {runtime});
   assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
-  assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: ROOM, workspaceId: '7', expiresAtNs: '9', inviter: undefined});
+  assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: ROOM, workspaceId: '7', expiresAtNs: '9',
+    inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
 
   const progress = [];
   const peer = await joinWorkspace({

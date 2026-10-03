@@ -124,6 +124,16 @@ pub struct JoinRequest {
     pub requested_at_ns: u64,
 }
 
+/// The person who sent an invitation, as the host signed it into the
+/// invitation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Inviter {
+    /// Their user root.
+    pub user_public_key: [u8; 32],
+    /// The name they gave.
+    pub name: String,
+}
+
 /// An invitation still redeemable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingInvite {
@@ -162,6 +172,9 @@ pub enum RoomsRequest {
         role: RoomRole,
         /// It stops being redeemable here, at most 30 days ahead.
         expires_at_ns: u64,
+        /// How the inviting person names themself; the invitation records
+        /// it with their user root.
+        inviter_name: Option<String>,
     },
     /// Cancel an invitation not yet redeemed: answered with
     /// [`RoomsReply::Pending`].
@@ -295,6 +308,8 @@ pub enum JoinReply {
         role: RoomRole,
         /// It stops being redeemable here.
         expires_at_ns: u64,
+        /// Who sent it, when the invitation names them.
+        inviter: Option<Inviter>,
     },
     /// The canonical encoding of the challenge to sign; it decodes as a
     /// [`JoinChallengeView`].

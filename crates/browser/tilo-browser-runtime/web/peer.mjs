@@ -22,6 +22,7 @@
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
+import {createMembership, createWorkspaces} from './membership.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -825,8 +826,18 @@ export async function connectPeer({
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
+  const membership = createMembership({rooms: request => peer.rooms(request), room, displayName});
   const certifiedPeer = {
     get host() { return host; },
+    /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
+    createInvitation: options => membership.createInvitation(options),
+    /** The room's members, waiting people and invitations, for its owner
+     * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
+     * `remove`, `cancelInvitation`. */
+    get membership() { return membership; },
+    /** The workspaces the host governs (`membership.mjs`): `list()`,
+     * `create(name)`, `enter(room)`; needs no room. */
+    workspaces: createWorkspaces({rooms: request => peer.rooms(request)}),
     getSnapshot: () => snapshot,
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
@@ -966,8 +977,8 @@ const invitationBytes = invitation => {
 /**
  * What an invitation (its signed bytes, or them as base64/base64url) offers
  * at the host `relayUrl`: `{workspaceName, role, room, workspaceId,
- * expiresAtNs, inviter}`. `inviter` is undefined: invitations do not name
- * who sent them.
+ * expiresAtNs, inviter}`. `inviter` is `{name, userPublicKey}` as the host
+ * signed it into the invitation, or undefined when it names nobody.
  */
 export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: fetcher} = {}) {
   runtime ??= await pageRuntime();
@@ -975,7 +986,7 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
   if (reply.kind !== 'invitation') throw new Error(reply.reason ?? 'This invitation offers nothing here');
   return {
     workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
-    expiresAtNs: reply.expiresAtNs, inviter: undefined,
+    expiresAtNs: reply.expiresAtNs, inviter: reply.inviter ?? undefined,
   };
 }
 
