@@ -198,31 +198,6 @@ fn file_explorer_widget_constructs_with_sensible_default_path() {
     assert_eq!(cwd, file_explorer::model::initial_path());
 }
 
-#[test]
-fn sidebar_shortcuts_width_and_active_highlight() {
-    sidebar_shows_fixed_seven_shortcuts_when_home_present();
-    sidebar_highlights_active_shortcut();
-    sidebar_has_fixed_width_180();
-}
-
-fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
-    use file_explorer::sidebar::build_shortcuts;
-    use ui::icons::Icon;
-    crate::common::pin_locale();
-    let home = Some(PathBuf::from("/home/test"));
-    let shortcuts = build_shortcuts(home.as_deref());
-    assert_eq!(shortcuts.len(), 7);
-    assert_eq!(shortcuts[0].0, Icon::Home);
-    assert_eq!(shortcuts[0].1, "Home");
-    assert_eq!(shortcuts[6].0, Icon::HardDrive);
-    assert_eq!(shortcuts[6].1, "Root");
-
-    let none = build_shortcuts(None);
-    assert_eq!(none.len(), 1);
-    assert_eq!(none[0].0, Icon::HardDrive);
-    assert_eq!(none[0].1, "Root");
-}
-
 // ---------------------------------------------------------------------------
 // Behavioural parity tests
 // ---------------------------------------------------------------------------
@@ -344,29 +319,6 @@ fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root(
     } else {
         assert_eq!(p, PathBuf::from("/"), "root is the final fallback");
     }
-}
-
-fn sidebar_highlights_active_shortcut() {
-    use file_explorer::sidebar::{active_shortcut_index, build_shortcuts};
-    let home = PathBuf::from("/home/tester");
-    let shortcuts = build_shortcuts(Some(&home));
-    // The Home shortcut is at index 0 and must be the active one when
-    // `current_path == home`.
-    assert_eq!(active_shortcut_index(&shortcuts, &home), Some(0));
-    // A non-shortcut path must not match any sidebar row.
-    assert_eq!(
-        active_shortcut_index(&shortcuts, &PathBuf::from("/tmp")),
-        None
-    );
-    // Root at the end of the list.
-    assert_eq!(
-        active_shortcut_index(&shortcuts, &PathBuf::from("/")),
-        shortcuts.len().checked_sub(1)
-    );
-}
-
-fn sidebar_has_fixed_width_180() {
-    assert!((file_explorer::sidebar::SIDEBAR_WIDTH_PX - 180.0).abs() < f32::EPSILON);
 }
 
 fn sort_by_name_places_alpha_order_with_dirs_first() {

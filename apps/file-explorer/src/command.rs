@@ -160,10 +160,6 @@ pub enum FileCommand {
     /// Create a new file in the current directory by copying the given
     /// template file, then drop into inline-rename.
     NewFromTemplate(PathBuf),
-    /// Request the favourite context menu for the favourite at `path` (a
-    /// right-press on a sidebar favourite). The app opens a labelled menu with
-    /// the normal folder actions plus "Remove from Favourites".
-    OpenFavoriteMenu(PathBuf),
     /// Begin dragging a row out of the file list (a press that moved past the
     /// drag threshold). The app carries the row(s) as a floating ghost until
     /// they are dropped: onto a folder (or the parent) they move there; a single
