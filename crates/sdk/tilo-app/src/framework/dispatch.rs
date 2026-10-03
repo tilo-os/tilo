@@ -38,7 +38,7 @@ pub struct Dispatcher<R: Resource> {
     serial: Rc<Cell<u64>>,
     /// The last immediate action and its serial, to tell whether the next
     /// continues it.
-    last: Rc<RefCell<Option<(u64, R::Action)>>>,
+    last: Rc<RefCell<Option<Serialed<R>>>>,
     /// Every immediate action since the last undo boundary continued the one
     /// before it ([`Resource::coalesces`]): one step, still open.
     continuing: Rc<Cell<bool>>,
@@ -48,6 +48,9 @@ pub struct Dispatcher<R: Resource> {
     opened: Rc<Cell<bool>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
+
+/// An immediate action and the serial it was applied at.
+type Serialed<R> = (u64, <R as Resource>::Action);
 
 /// Applies one typed action to a document through the host.
 type SubmitNow<R> = Rc<

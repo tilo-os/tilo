@@ -94,16 +94,20 @@ pub fn splice_between(before: &str, after: &str) -> Option<TextEdit> {
         .zip(&after)
         .take_while(|(left, right)| left == right)
         .count();
-    let end = before[start..]
+    let before_rest = before.get(start..).unwrap_or_default();
+    let after_rest = after.get(start..).unwrap_or_default();
+    let end = before_rest
         .iter()
         .rev()
-        .zip(after[start..].iter().rev())
+        .zip(after_rest.iter().rev())
         .take_while(|(left, right)| left == right)
         .count();
     Some(TextEdit::Splice {
         at: start,
-        delete: before.len().saturating_sub(start).saturating_sub(end),
-        insert: after[start..after.len().saturating_sub(end)]
+        delete: before_rest.len().saturating_sub(end),
+        insert: after_rest
+            .get(..after_rest.len().saturating_sub(end))
+            .unwrap_or_default()
             .iter()
             .collect(),
     })
@@ -269,6 +273,7 @@ impl Resource for PlainText {
 mod tests {
     use super::*;
     use crate::Replica;
+    use tilo_automerge::ApplyIncoming;
 
     fn spliced(text: &str, edit: &TextEdit) -> String {
         let mut doc = Doc::new();
@@ -317,7 +322,7 @@ mod tests {
         }
         .apply_under(&mut ours, &obj)
         .unwrap();
-        ours.merge(&mut theirs).unwrap();
+        ours.merge_incoming(&mut theirs).unwrap();
         assert_eq!(ours.text(&obj).unwrap(), "SELECT 1;");
     }
 
