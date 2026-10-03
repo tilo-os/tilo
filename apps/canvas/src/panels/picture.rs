@@ -11,7 +11,7 @@ use ui::widget::Toggle;
 
 use super::heading;
 use super::inspector::{grow, labelled, section, tight};
-use crate::model::{Adjust, Mark, Shape};
+use crate::model::{Adjust, Artwork, Mark, Shape};
 use crate::resource::ArtworkResource;
 use crate::tools::{Live, Tools};
 
@@ -155,25 +155,98 @@ impl Step {
     }
 }
 
+/// What an adjustment control changes: the marks selected, or a layer.
+#[derive(Clone)]
+pub enum Target {
+    Marks(Vec<String>),
+    Layer(String),
+}
+
+impl Target {
+    /// `edit` of the target's adjustments, as one invocation.
+    fn invoke(&self, edit: Adjust) -> Invoke<ArtworkResource> {
+        match self {
+            Self::Marks(ids) => ArtworkResource::SET_ADJUST.with((ids.clone(), edit)),
+            Self::Layer(id) => ArtworkResource::SET_LAYER_ADJUST.with((id.clone(), edit)),
+        }
+    }
+
+    /// `control` bound to editing the target's adjustments with the
+    /// edit `edit` makes of the control's value.
+    fn bind<I: 'static, C: ui::framework::ActionControl<I>>(
+        &self,
+        cx: &ViewCx<ArtworkResource>,
+        control: C,
+        edit: impl Fn(I) -> Adjust + Send + Sync + 'static,
+    ) -> C {
+        match self {
+            Self::Marks(ids) => {
+                let ids = ids.clone();
+                cx.actions().bind(
+                    control,
+                    ArtworkResource::SET_ADJUST.map(move |value: I| (ids.clone(), edit(value))),
+                )
+            }
+            Self::Layer(id) => {
+                let id = id.clone();
+                cx.actions().bind(
+                    control,
+                    ArtworkResource::SET_LAYER_ADJUST
+                        .map(move |value: I| (id.clone(), edit(value))),
+                )
+            }
+        }
+    }
+
+    /// The target's adjustments in `art`, with `change` made, as the
+    /// canvas shows them while a control is dragged.
+    fn preview(&self, art: &mut Artwork, change: &dyn Fn(&mut Adjust)) {
+        let changed = |adjust: &mut Option<Adjust>| {
+            let mut edited = adjust.clone().unwrap_or_default();
+            change(&mut edited);
+            *adjust = edited.normalized();
+        };
+        match self {
+            Self::Marks(ids) => {
+                for mark in art.marks.iter_mut().filter(|mark| ids.contains(&mark.id)) {
+                    changed(&mut mark.style.adjust);
+                }
+            }
+            Self::Layer(id) => {
+                for layer in art.layers.iter_mut().filter(|layer| layer.id == *id) {
+                    changed(&mut layer.adjust);
+                }
+            }
+        }
+    }
+}
+
 /// The picture's part of the inspector: `mark` is the first of `ids`.
 pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &Tools) -> Element {
-    tools.live.borrow_mut().clear();
     let adjust = mark.style.adjust.clone().unwrap_or_default();
-    let mut parts = vec![
+    section(vec![
         heading("canvas-picture"),
         framing(cx, ids, mark, tools),
         straighten(cx, ids, mark, tools),
-    ];
+        adjustments(cx, &Target::Marks(ids.to_vec()), &adjust, tools),
+    ])
+}
+
+/// Colour and tone of `target`: light, colour and effects, and starting
+/// over.
+pub fn adjustments(
+    cx: &ViewCx<ArtworkResource>,
+    target: &Target,
+    adjust: &Adjust,
+    tools: &Tools,
+) -> Element {
     let reset = cx
         .button(
             "canvas-adjust-reset",
-            ArtworkResource::SET_ADJUST.with((
-                ids.to_vec(),
-                Adjust {
-                    reset: Some(true),
-                    ..Adjust::default()
-                },
-            )),
+            target.invoke(Adjust {
+                reset: Some(true),
+                ..Adjust::default()
+            }),
         )
         .ghost();
     let title = Row::new()
@@ -183,40 +256,35 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &
         .push(heading("canvas-adjust"))
         .push(Box::new(Spacer::new()))
         .push(Box::new(reset));
-    let mut adjust_parts: Vec<Element> = vec![Box::new(title)];
+    let mut parts: Vec<Element> = vec![Box::new(title)];
     for (group, steps) in [
         ("canvas-adjust-light", &LIGHT[..]),
         ("canvas-adjust-colour", &COLOUR[..]),
         ("canvas-adjust-effects", &EFFECTS[..]),
     ] {
-        adjust_parts.push(Box::new(
+        parts.push(Box::new(
             Text::new(group).with_role(TextRole::Caption).dimmed(),
         ));
         for step in steps {
-            adjust_parts.push(slider(cx, ids, &adjust, step, tools));
+            parts.push(slider(cx, target, adjust, step, tools));
         }
         if group == "canvas-adjust-colour" {
-            adjust_parts.push(flag(
+            parts.push(flag(
                 cx,
-                ids,
+                target,
                 "canvas-adjust-grayscale",
                 adjust.grayscale,
-                |a, on| {
-                    a.grayscale = Some(on);
-                },
+                |a, on| a.grayscale = Some(on),
             ));
-            adjust_parts.push(flag(
+            parts.push(flag(
                 cx,
-                ids,
+                target,
                 "canvas-adjust-invert",
                 adjust.invert,
-                |a, on| {
-                    a.invert = Some(on);
-                },
+                |a, on| a.invert = Some(on),
             ));
         }
     }
-    parts.push(section(adjust_parts));
     section(parts)
 }
 
@@ -287,14 +355,20 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: 
     };
     let travel = ((angle + 45.0) / 90.0).clamp(0.0, 1.0);
     let state = LocalState::new(travel);
+    let turned = ids.to_vec();
     tools.live.borrow_mut().push(Live {
-        ids: ids.to_vec(),
         state: state.clone(),
         committed: travel,
-        apply: Rc::new(move |mark: &mut Mark, travel| {
-            if let Some(mut placement) = crate::picture::Placement::of(&mark.shape) {
-                placement.straighten = to_value(travel);
-                placement.apply(&mut mark.shape);
+        apply: Rc::new(move |art: &mut Artwork, travel| {
+            for mark in art
+                .marks
+                .iter_mut()
+                .filter(|mark| turned.contains(&mark.id))
+            {
+                if let Some(mut placement) = crate::picture::Placement::of(&mark.shape) {
+                    placement.straighten = to_value(travel);
+                    placement.apply(&mut mark.shape);
+                }
             }
         }),
     });
@@ -319,10 +393,10 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: 
     ])
 }
 
-/// A slider for one adjustment of the marks `ids`.
+/// A slider for one adjustment of `target`.
 fn slider(
     cx: &ViewCx<ArtworkResource>,
-    ids: &[String],
+    target: &Target,
     adjust: &Adjust,
     step: &'static Step,
     tools: &Tools,
@@ -330,33 +404,29 @@ fn slider(
     let value = (step.read)(adjust).unwrap_or(0.0);
     let travel = step.travel(value);
     let state = LocalState::new(travel);
+    let previewed = target.clone();
     tools.live.borrow_mut().push(Live {
-        ids: ids.to_vec(),
         state: state.clone(),
         committed: travel,
-        apply: Rc::new(move |mark: &mut Mark, travel| {
-            let mut adjust = mark.style.adjust.clone().unwrap_or_default();
-            (step.write)(&mut adjust, step.at(travel));
-            mark.style.adjust = adjust.normalized();
+        apply: Rc::new(move |art: &mut Artwork, travel| {
+            previewed.preview(art, &|adjust| (step.write)(adjust, step.at(travel)));
         }),
     });
     let shown = {
         let state = state.clone();
         Text::dynamic(move || step.label(step.at(state.with(|t| *t)))).with_role(TextRole::Caption)
     };
-    let control = cx.actions().bind(
+    let control = target.bind(
+        cx,
         Slider::from_state(&state)
             .with_id(step.id)
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(step.id))
             .commits_on_release(),
-        ArtworkResource::SET_ADJUST.map({
-            let ids = ids.to_vec();
-            move |travel: f64| {
-                let mut edit = Adjust::default();
-                (step.write)(&mut edit, step.at(travel));
-                (ids.clone(), edit)
-            }
-        }),
+        move |travel: f64| {
+            let mut edit = Adjust::default();
+            (step.write)(&mut edit, step.at(travel));
+            edit
+        },
     );
     tight(vec![
         labelled(
@@ -367,27 +437,25 @@ fn slider(
     ])
 }
 
-/// A switch for an adjustment that is on or off.
+/// A switch for an adjustment of `target` that is on or off.
 fn flag(
     cx: &ViewCx<ArtworkResource>,
-    ids: &[String],
+    target: &Target,
     id: &str,
     on: Option<bool>,
     write: fn(&mut Adjust, bool),
 ) -> Element {
     let state = LocalState::new(on == Some(true));
-    let toggle = cx.actions().bind(
+    let toggle = target.bind(
+        cx,
         Toggle::from_state(&state)
             .with_id(id)
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(id)),
-        ArtworkResource::SET_ADJUST.map({
-            let ids = ids.to_vec();
-            move |on: bool| {
-                let mut edit = Adjust::default();
-                write(&mut edit, on);
-                (ids.clone(), edit)
-            }
-        }),
+        move |on: bool| {
+            let mut edit = Adjust::default();
+            write(&mut edit, on);
+            edit
+        },
     );
     labelled(&ui::i18n::I18nManager::lookup_plain(id), Box::new(toggle))
 }

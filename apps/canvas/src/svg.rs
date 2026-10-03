@@ -211,21 +211,27 @@ impl Writer {
     fn mark(&mut self, art: &Artwork, mark: &Mark, palette: &[tilo_wet_media::Pigment]) {
         let style = &mark.style;
         let mut wrap = String::new();
-        if let Some(clip) = art.mark(&mark.clip).filter(|_| !mark.clip.is_empty()) {
-            if self.clips.insert(clip.id.clone()) {
-                let transform = if clip.transform.is_some() {
-                    format!(r#" transform="{}""#, matrix(clip.affine()))
-                } else {
-                    String::new()
-                };
-                let _ = write!(
-                    self.defs,
-                    r#"<clipPath id="c-{}"><path d="{}"{transform}/></clipPath>"#,
-                    clip.id,
-                    path_data(&silhouette(&clip.shape)),
-                );
+        let clips = art.clips_of(mark);
+        if !clips.is_empty() {
+            // A group's id may hold `/`, which an SVG id may not.
+            let name = mark.clip.replace('/', "--");
+            if self.clips.insert(name.clone()) {
+                let mut paths = String::new();
+                for clip in &clips {
+                    let transform = if clip.transform.is_some() {
+                        format!(r#" transform="{}""#, matrix(clip.affine()))
+                    } else {
+                        String::new()
+                    };
+                    let _ = write!(
+                        paths,
+                        r#"<path d="{}"{transform}/>"#,
+                        path_data(&silhouette(&clip.shape))
+                    );
+                }
+                let _ = write!(self.defs, r#"<clipPath id="c-{name}">{paths}</clipPath>"#);
             }
-            let _ = write!(wrap, r#" clip-path="url(#c-{})""#, clip.id);
+            let _ = write!(wrap, r#" clip-path="url(#c-{name})""#);
         }
         if let Some(blend) = &style.blend {
             let _ = write!(wrap, r#" style="mix-blend-mode:{blend}""#);

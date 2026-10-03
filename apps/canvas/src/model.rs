@@ -456,22 +456,40 @@ impl Artwork {
             self.layer(&mark.layer)
                 .is_some_and(|layer| layer.visible && !layer.locked)
                 && mark.hit(point)
-                && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
+                && self.clipped_in(mark, point)
         })
     }
 
-    /// The mark `mark` is cut to, if any.
-    pub fn clip_of(&self, mark: &Mark) -> Option<&Mark> {
-        (!mark.clip.is_empty())
-            .then(|| self.mark(&mark.clip))
-            .flatten()
+    /// The marks `mark` is cut to: the mark its clip names, or the members
+    /// of the group it names; none when it is not cut.
+    pub fn clips_of(&self, mark: &Mark) -> Vec<&Mark> {
+        if mark.clip.is_empty() {
+            return Vec::new();
+        }
+        match self.mark(&mark.clip) {
+            Some(clip) => vec![clip],
+            None => self
+                .members(&mark.clip)
+                .filter(|member| member.id != mark.id)
+                .collect(),
+        }
+    }
+
+    /// Whether `point` is inside what `mark` is cut to (anywhere when it is
+    /// not cut).
+    pub fn clipped_in(&self, mark: &Mark, point: Point) -> bool {
+        let clips = self.clips_of(mark);
+        clips.is_empty() || clips.iter().any(|clip| clip.hit(point))
     }
 
     /// What of `mark` can show: its bounds, cut to its clip's.
     pub fn visible_bounds(&self, mark: &Mark) -> Rect {
         let bounds = mark.bounds();
-        self.clip_of(mark)
-            .map_or(bounds, |clip| bounds.intersect(clip.bounds()))
+        self.clips_of(mark)
+            .iter()
+            .map(|clip| clip.bounds())
+            .reduce(|a, b| a.union(b))
+            .map_or(bounds, |clip| bounds.intersect(clip))
     }
 
     /// The members of group `id`, bottom to top: its own marks and those of

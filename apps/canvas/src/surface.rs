@@ -422,6 +422,126 @@ impl CanvasSurface {
         self.start_text_edit(id) || self.start_points(id)
     }
 
+    /// An export a person asked for: rendered as the `export` action
+    /// renders it and saved where they choose.
+    fn take_export(&mut self) {
+        let finished = self.tools.saving.borrow().as_ref().is_some_and(|channel| {
+            !matches!(
+                channel.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            )
+        });
+        if finished {
+            *self.tools.saving.borrow_mut() = None;
+        }
+        let format = self.tools.export.with(Clone::clone);
+        if format.is_empty() {
+            return;
+        }
+        self.tools.export.set(String::new());
+        let request = crate::resource::Export {
+            format: Some(format.clone()),
+            ..crate::resource::Export::default()
+        };
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let rendered = view_ops::export(
+            &mut self.tools.renderer.borrow_mut(),
+            text,
+            &self.art,
+            &request,
+        );
+        let picture = match rendered {
+            Ok((picture, _)) => picture,
+            Err(error) => {
+                tracing::warn!(target: "canvas", %error, "the artwork was not exported");
+                return;
+            }
+        };
+        let title = if self.art.title.is_empty() {
+            ui::i18n::I18nManager::lookup_plain("canvas-untitled")
+        } else {
+            self.art.title.clone()
+        };
+        let extension = if format == "jpeg" { "jpg" } else { &format };
+        let request = ui::portal::PickRequest::save(
+            &ui::i18n::I18nManager::lookup_plain("canvas-export"),
+            &ui::i18n::I18nManager::lookup_plain("canvas-export-confirm"),
+            &format!("{title}.{extension}"),
+        )
+        .send_save_contents(picture.bytes);
+        *self.tools.saving.borrow_mut() = Some(request);
+    }
+
+    /// A picture the chooser answered with: the artwork, when the sheet is
+    /// empty; else placed on it, fitted inside and selected.
+    fn take_picked(&mut self) {
+        let answer = {
+            let picking = self.tools.picking.borrow();
+            let Some(channel) = picking.as_ref() else {
+                return;
+            };
+            match channel.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Ok(answer) => Some(answer),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        *self.tools.picking.borrow_mut() = None;
+        let Some(ui::portal::ContentsOutcome::Picked(files)) = answer else {
+            return;
+        };
+        let Some(file) = files.into_iter().next() else {
+            return;
+        };
+        if self.art.marks.is_empty() {
+            match crate::resource::open_picture(&file.name, &file.bytes) {
+                Ok(open) => {
+                    self.dispatch(&open);
+                    self.select_made(vec!["picture".into()]);
+                    self.tools.tool.set(Tool::Select);
+                }
+                Err(error) => {
+                    tracing::warn!(target: "canvas", %error, "the picture was not opened");
+                }
+            }
+            return;
+        }
+        match crate::resource::keep_picture_bytes(&file.name, &file.bytes) {
+            Ok((src, size)) => self.place_picture(src, size),
+            Err(error) => tracing::warn!(target: "canvas", %error, "the picture was not placed"),
+        }
+    }
+
+    /// The picture at `src` placed on the artwork: as large as fits inside
+    /// it at a unit to a pixel or less, in its middle, selected.
+    fn place_picture(&mut self, src: String, (width, height): (u32, u32)) {
+        let (width, height) = (f64::from(width), f64::from(height));
+        let fit = (self.art.width * 0.8 / width)
+            .min(self.art.height * 0.8 / height)
+            .min(1.0);
+        let (w, h) = (width * fit, height * fit);
+        let shape = Shape::Image {
+            src,
+            x: ((self.art.width - w) / 2.0).round(),
+            y: ((self.art.height - h) / 2.0).round(),
+            width: w.round(),
+            height: h.round(),
+            crop: None,
+            straighten: None,
+        };
+        let id = edit::fresh_id(&self.art, "picture", &[]);
+        let ink = self.ink();
+        self.dispatch(&CanvasAction::Draw(Draw {
+            layer: ink.layer,
+            marks: vec![NewMark {
+                id: Some(id.clone()),
+                ..NewMark::new(shape)
+            }],
+        }));
+        self.select_made(vec![id]);
+        self.tools.tool.set(Tool::Select);
+    }
+
     /// The picture being cropped: the one image selected in crop mode.
     fn cropping(&self) -> Option<&Mark> {
         if !self.tools.crop.with(|on| *on) {
@@ -1401,11 +1521,7 @@ impl CanvasSurface {
                 continue;
             };
             let art = shown.get_or_insert_with(|| (*self.art).clone());
-            for mark in &mut art.marks {
-                if control.ids.contains(&mark.id) {
-                    (control.apply)(mark, value);
-                }
-            }
+            (control.apply)(art, value);
         }
         if let Some(text) = &self.text {
             let art = shown.get_or_insert_with(|| (*self.art).clone());
@@ -1788,10 +1904,12 @@ impl CanvasSurface {
                 &placement.frame,
                 0.1,
             ));
+            // What the crop leaves out, dimmed under the theme's own
+            // backdrop so the kept part stands out.
             scene.push_layer(
                 Fill::EvenOdd,
                 ui::vello::peniko::BlendMode::default(),
-                0.35,
+                1.0,
                 at,
                 &outside,
             );
@@ -1800,6 +1918,13 @@ impl CanvasSurface {
                 at,
                 &ui::vello::peniko::ImageBrush::new(image),
                 Some(to_local * Affine::scale(step)),
+                &whole,
+            );
+            scene.fill(
+                Fill::NonZero,
+                at,
+                theme.bg_app.multiply_alpha(0.6),
+                None,
                 &whole,
             );
             scene.pop_layer();
@@ -2299,6 +2424,8 @@ impl Widget for CanvasSurface {
         self.follow_tool();
         self.follow_view();
         self.follow_crop();
+        self.take_picked();
+        self.take_export();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -2511,8 +2638,11 @@ impl Widget for CanvasSurface {
 
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up.
+        // drawing until it has caught up. A picture being chosen is
+        // waited for.
         self.wet().is_some()
+            || self.tools.picking.borrow().is_some()
+            || self.tools.saving.borrow().is_some()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {

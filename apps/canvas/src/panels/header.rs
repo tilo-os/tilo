@@ -46,6 +46,9 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .with_min_width(TITLE)
                     .with_child(Box::new(title)),
             ))
+            .push(add_picture(tools))
+            .push(export(tools))
+            .push(Box::new(Spacer::fixed(6.0)))
             .push(Box::new(icon_button(
                 cx,
                 Icon::Undo2,
@@ -67,6 +70,57 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 Icon::PanelRight,
             ))),
     )
+}
+
+/// Choose a picture to add: on an empty sheet it becomes the artwork, the
+/// sheet taking its size; otherwise it is placed on the artwork. The
+/// canvas takes the answer when the chooser gives it.
+fn add_picture(tools: &Tools) -> Element {
+    let picking = tools.picking.clone();
+    let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
+    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
+    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
+    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
+    Box::new(
+        Button::new("canvas-add-picture", "", None)
+            .with_icon(Icon::Image)
+            .ghost()
+            .with_accessible_name(&name)
+            .tooltip(name.clone())
+            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+            .on_view(move || {
+                let request = ui::portal::PickRequest::open(&title, &confirm)
+                    .filter(
+                        ui::portal::FileFilter::new(&kinds)
+                            .mimetype("image/png")
+                            .mimetype("image/jpeg")
+                            .mimetype("image/webp"),
+                    )
+                    .send_contents();
+                *picking.borrow_mut() = Some(request);
+            }),
+    )
+}
+
+/// Export the artwork as a picture, saved where the person chooses: the
+/// same rendering as the `export` action.
+fn export(tools: &Tools) -> Element {
+    let mut menu = Dropdown::from_state(Vec::new(), &tools.export)
+        .as_menu(Icon::Download)
+        .with_id("canvas-export")
+        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-export"));
+    menu.set_value_options(
+        ["png", "jpeg", "webp"]
+            .into_iter()
+            .map(|format| {
+                (
+                    format.to_owned(),
+                    ui::i18n::I18nManager::lookup_plain(&format!("canvas-export-{format}")),
+                )
+            })
+            .collect(),
+    );
+    Box::new(menu)
 }
 
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the
