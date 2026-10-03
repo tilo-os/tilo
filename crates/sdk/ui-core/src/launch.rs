@@ -1272,12 +1272,7 @@ fn capture_every_scenario(
     args: &LaunchArgs,
     directory: &std::path::Path,
 ) -> Result<(), LaunchError> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        LaunchError::Operation(format!(
-            "could not create shots directory {}: {error}",
-            directory.display()
-        ))
-    })?;
+    capture_directory(directory, "--shots-dir")?;
     let scenarios: Vec<Option<&str>> = if spec.scenarios.is_empty() {
         vec![None]
     } else {
@@ -1294,6 +1289,17 @@ fn capture_every_scenario(
         run_parsed(spec, &capture, |_| Ok(()))?;
     }
     Ok(())
+}
+
+/// Create the directory a capture mode (`option`) writes its PNGs into.
+#[cfg(feature = "native")]
+fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), LaunchError> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        LaunchError::Operation(format!(
+            "could not create the {option} directory {}: {error}",
+            directory.display()
+        ))
+    })
 }
 
 #[allow(
@@ -1409,12 +1415,7 @@ fn run_parsed(
     }
 
     if let Some(out_dir) = &args.responsive_matrix {
-        std::fs::create_dir_all(out_dir).map_err(|error| {
-            LaunchError::Operation(format!(
-                "could not create responsive-matrix directory {}: {error}",
-                out_dir.display()
-            ))
-        })?;
+        capture_directory(out_dir, "--responsive-matrix")?;
         for (name, viewport) in RESPONSIVE_VIEWPORTS {
             let out = out_dir.join(format!("{}-{name}.png", spec.app_id));
             let mut matrix_args = args.clone();

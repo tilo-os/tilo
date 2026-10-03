@@ -100,6 +100,15 @@ intents for everything, above and below file granularity.
 Displaying a resource is not destructive. Taking an action needs a permission, confirmed
 by the user by default.
 
+A view is built for a live window, a past version (History builds the same view again for
+every version it previews) or a screenshot. Only a live view starts work that reaches
+outside the process — a mail engine, a socket, a journal reader, a hardware probe. A
+screenshot scenario is the same view, never a second widget tree: what the resource does
+not hold is the scenario's fixture (typed stand-ins for live sources, files, blobs, other
+people's versions and presence), prepared before the view is built; the resource is staged
+with its actions; view state is staged by the views and surfaces that own it; and the
+capture waits until they report nothing left to draw.
+
 Code: `crates/sdk/tilo-resource` (`Resource`, `publish`), `crates/collab/actions`
 (protocol), `crates/sdk/tilo-app` (`ResourceApp`, `ViewCx`). Apps register; `shell` serves
 the published tree into search, the palette and the control socket.

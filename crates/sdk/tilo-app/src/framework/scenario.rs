@@ -52,10 +52,8 @@ impl RunMode {
 pub(crate) struct Fixtures {
     values: HashMap<TypeId, Rc<dyn Any>>,
     collaborators: Vec<(String, ResourceSelection)>,
-    #[cfg(not(target_arch = "wasm32"))]
     content: Option<tilo_content::ContentStore>,
     /// Kept for as long as anything built from the capture is.
-    #[cfg(not(target_arch = "wasm32"))]
     _directory: Option<tempfile::TempDir>,
 }
 
@@ -67,13 +65,10 @@ pub(crate) struct Run {
 }
 
 impl Run {
-    pub(crate) fn live(
-        #[cfg(not(target_arch = "wasm32"))] content: Option<tilo_content::ContentStore>,
-    ) -> Self {
+    pub(crate) fn live(content: Option<tilo_content::ContentStore>) -> Self {
         Self {
             mode: RunMode::Live,
             fixtures: Rc::new(Fixtures {
-                #[cfg(not(target_arch = "wasm32"))]
                 content,
                 ..Fixtures::default()
             }),
@@ -91,8 +86,6 @@ impl Run {
         let value = self.fixtures.values.get(&TypeId::of::<T>())?;
         Rc::clone(value).downcast::<T>().ok()
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn content(&self) -> Option<tilo_content::ContentStore> {
         self.fixtures.content.clone()
     }
@@ -118,25 +111,18 @@ pub struct Fixture<R: Resource> {
     values: HashMap<TypeId, Rc<dyn Any>>,
     history: Vec<Version<R>>,
     collaborators: Vec<(String, ResourceSelection)>,
-    #[cfg(not(target_arch = "wasm32"))]
     content: Option<tilo_content::ContentStore>,
-    #[cfg(not(target_arch = "wasm32"))]
     directory: Option<tempfile::TempDir>,
 }
 
 impl<R: Resource> Fixture<R> {
-    pub(crate) fn new(
-        scenario: Option<&str>,
-        #[cfg(not(target_arch = "wasm32"))] content: Option<tilo_content::ContentStore>,
-    ) -> Self {
+    pub(crate) fn new(scenario: Option<&str>, content: Option<tilo_content::ContentStore>) -> Self {
         Self {
             scenario: scenario.map(str::to_owned),
             values: HashMap::new(),
             history: Vec::new(),
             collaborators: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             content,
-            #[cfg(not(target_arch = "wasm32"))]
             directory: None,
         }
     }
@@ -158,7 +144,6 @@ impl<R: Resource> Fixture<R> {
     ///
     /// # Errors
     /// Returns why the directory could not be created.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn directory(&mut self) -> std::io::Result<&std::path::Path> {
         if self.directory.is_none() {
             self.directory = Some(
@@ -177,7 +162,6 @@ impl<R: Resource> Fixture<R> {
     /// ([`ViewCx::content`](super::ViewCx::content)), for the blobs a scene
     /// shows: photos, attachments, thumbnails. A private one when the host
     /// lent none.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn content(&mut self) -> &tilo_content::ContentStore {
         self.content
             .get_or_insert_with(tilo_content::ContentStore::memory)
@@ -226,16 +210,13 @@ impl<R: Resource> Fixture<R> {
             fixtures: Rc::new(Fixtures {
                 values: self.values,
                 collaborators: self.collaborators,
-                #[cfg(not(target_arch = "wasm32"))]
                 content: self.content,
-                #[cfg(not(target_arch = "wasm32"))]
                 _directory: self.directory,
             }),
         }
     }
 
     /// The content store the capture lends, once the fixture is prepared.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn lent_content(&self) -> Option<&tilo_content::ContentStore> {
         self.content.as_ref()
     }

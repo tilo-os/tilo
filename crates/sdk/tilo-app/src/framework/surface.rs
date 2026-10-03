@@ -138,7 +138,6 @@ impl<R: Resource> SurfaceCx<R> {
 
     /// The content store the host lent the app. A capture's holds the blobs
     /// its scenario put there.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         self.run.content()
     }

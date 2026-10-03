@@ -341,10 +341,7 @@ fn create<A: ResourceApp>(
     }
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
-        #[cfg(not(target_arch = "wasm32"))]
         None => Run::live(context.content().cloned()),
-        #[cfg(target_arch = "wasm32")]
-        None => Run::live(),
     };
     let permissions = context.live_permissions();
     let reader = context
@@ -374,12 +371,8 @@ fn prepare_capture<A: ResourceApp>(
     context: &mut HostContext,
     scenario: Option<&str>,
 ) -> Result<Run, LaunchError> {
-    #[cfg(not(target_arch = "wasm32"))]
     let mut fixture = Fixture::<A::Resource>::new(scenario, context.content().cloned());
-    #[cfg(target_arch = "wasm32")]
-    let mut fixture = Fixture::<A::Resource>::new(scenario);
     A::fixture(&mut fixture);
-    #[cfg(not(target_arch = "wasm32"))]
     if context.content().is_none()
         && let Some(content) = fixture.lent_content()
     {
