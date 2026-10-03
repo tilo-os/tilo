@@ -10,7 +10,6 @@ toolbar-table = Table
 toolbar-link = Link
 toolbar-styles = Styles
 toolbar-ruler = Ruler
-toolbar-outline = Outline
 toolbar-toc = Contents
 toolbar-row-add = Add row
 toolbar-row-del = Delete row
