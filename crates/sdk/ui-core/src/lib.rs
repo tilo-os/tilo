@@ -436,9 +436,9 @@ pub use text_edit::{Edit, EditCore, Motion};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,
     OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout, TextFlowRegion,
-    TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextScaling,
-    TextStyle, TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
-    configured_font_system,
+    TextFlowRegionError, TextKind, TextLayoutConstraints, TextLayoutEngine, TextRenderer,
+    TextScaling, TextStyle, TextWeight, TextWrapMode, UI_HYPERLEGIBLE_FAMILY, UI_MONOSPACE_FAMILY,
+    UI_SANS_FAMILY, UI_SERIF_FAMILY, configured_font_system,
 };
 pub use text_selection::{
     Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,
@@ -447,7 +447,7 @@ pub use text_selection::{
     next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
     try_clipboard_copy, word_boundaries, word_boundaries_chars,
 };
-pub use tokens::TextRole;
+pub use tokens::{TextRole, UiFace};
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
 pub use widget::merge_strategy::{

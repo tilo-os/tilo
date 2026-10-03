@@ -245,6 +245,10 @@ pub struct AccessibilityLayer {
     pub reduce_transparency: bool,
     #[serde(default)]
     pub thick_caret: bool,
+    /// Set the UI in the Hyperlegible face ([`crate::tokens::UiFace`])
+    /// whatever face the theme chose.
+    #[serde(default)]
+    pub hyperlegible: bool,
 }
 
 impl AccessibilityLayer {
@@ -316,6 +320,7 @@ impl Default for AccessibilityLayer {
             reduce_motion: false,
             reduce_transparency: false,
             thick_caret: false,
+            hyperlegible: false,
         }
     }
 }
@@ -381,6 +386,7 @@ fn accessibility_layer(
         ui_scale: scale_field(appearance, "ui_scale"),
         reduce_motion: bool_field(appearance, "reduce_motion"),
         reduce_transparency: bool_field(appearance, "reduce_transparency"),
+        hyperlegible: bool_field(appearance, "hyperlegible"),
         thick_caret: document
             .and_then(|value| {
                 value
@@ -439,8 +445,8 @@ fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistr
 /// 4. the workspace temperature ([`ThemeLayerStack::workspace_hue`])
 /// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it
 ///    (high contrast / forced colours, clamped text and UI scale, reduced
-///    motion, thick caret). A rejected payload leaves the theme unchanged
-///    by this layer
+///    motion, thick caret, the Hyperlegible face). A rejected payload leaves
+///    the theme unchanged by this layer
 #[must_use]
 pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     let distribution = stack
@@ -478,6 +484,12 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         theme = Theme::high_contrast().with_your_colour(you);
     }
     theme.caret_width = if access.thick_caret { 4.0 } else { 2.0 };
+    if access.hyperlegible {
+        theme
+            .tokens
+            .typography
+            .set_face(crate::tokens::UiFace::Hyperlegible.name());
+    }
     theme
         .with_ui_scale(access.ui_scale)
         .with_text_scale(access.text_scale)
@@ -747,6 +759,23 @@ mod tests {
     }
 
     #[test]
+    fn hyperlegible_accessibility_sets_the_ui_face_over_any_theme() {
+        let mut stack = light_stack();
+        if let Some(user) = stack.user_theme.as_mut() {
+            user.tokens.typography.set_face("Inter");
+        }
+        stack.accessibility.hyperlegible = true;
+        let theme = resolve_theme_layers(&stack);
+        assert_eq!(
+            theme.tokens.typography.sans_family,
+            crate::text_render::UI_HYPERLEGIBLE_FAMILY
+        );
+        assert_eq!(theme.tokens.typography.face_name(), "Hyperlegible");
+        let flat = accessibility_layer(None, Some(&serde_json::json!({ "hyperlegible": true })));
+        assert!(flat.hyperlegible);
+    }
+
+    #[test]
     fn a_rejected_accessibility_payload_does_not_apply() {
         let rejected = AccessibilityLayer {
             schema_version: 99,
@@ -757,6 +786,7 @@ mod tests {
             reduce_motion: true,
             reduce_transparency: true,
             thick_caret: true,
+            hyperlegible: true,
         };
         assert!(rejected.validate().is_err());
         assert!(rejected.materialize().is_err());
@@ -765,6 +795,10 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(theme.name, Theme::light().name);
+        assert_eq!(
+            theme.tokens.typography.sans_family,
+            crate::text_render::UI_SANS_FAMILY
+        );
         assert!(!theme.colors_are_forced());
         assert_eq!(theme.text_scale, 1.0);
         assert_eq!(theme.caret_width, 2.0);

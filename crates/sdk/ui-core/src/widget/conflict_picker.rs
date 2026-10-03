@@ -437,14 +437,15 @@ fn draw_card(
         &text_size_md,
     );
     let ts_y = inner.y0 + f64::from(author_h) + tight;
-    let (_, ts_h) = text_renderer.measure_style(content.timestamp_label, None, &text_size_sm);
+    let timestamp_style = text_size_sm.clone().numeric();
+    let (_, ts_h) = text_renderer.measure_style(content.timestamp_label, None, &timestamp_style);
     text_renderer.draw_style(
         scene,
         content.timestamp_label,
         theme.tokens.colors.text_dim,
         translated(transform, inner.x0, ts_y),
         None,
-        &text_size_sm,
+        &timestamp_style,
     );
 
     let label_y = ts_y + f64::from(ts_h) + group;
