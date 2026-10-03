@@ -299,7 +299,10 @@ impl Widget for Heatmap {
             .style
             .low_color
             .unwrap_or(theme.tokens.colors.surfaces.raised);
-        let high = self.style.high_color.unwrap_or(theme.accent_primary);
+        let high = self
+            .style
+            .high_color
+            .unwrap_or(theme.tokens.colors.intent.inverted);
         let missing = self
             .style
             .missing_color
@@ -426,7 +429,7 @@ impl Widget for Heatmap {
                 transform,
                 theme.tokens.colors.surfaces.overlay,
                 None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text_weighted(
                 scene,

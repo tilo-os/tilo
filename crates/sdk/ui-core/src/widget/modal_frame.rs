@@ -344,7 +344,7 @@ impl ModalFrame {
         if crate::a11y::contrast_ratio(theme.text_primary, card) >= MODAL_MIN_INK_CONTRAST {
             (theme.text_primary, theme.text_dim)
         } else {
-            let on = theme.on_card();
+            let on = theme.on_content();
             (on.ink, on.ink_dim)
         }
     }
@@ -522,11 +522,17 @@ impl ModalFrame {
         crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
 
         let scale = Self::chrome_scale(theme);
-        let radius = f64::from(tokens.radii.lg) * scale;
+        let radius = f64::from(tokens.radii.control) * scale;
         // Top of the elevation ramp: a modal is the one surface that is
         // unambiguously above everything, and reading as *lifted* is what
         // separates it from a panel that happens to be centred.
-        crate::surface::shadow(scene, transform, layout.card, radius, &tokens.elevation.e4);
+        crate::surface::shadow(
+            scene,
+            transform,
+            layout.card,
+            radius,
+            &tokens.elevation.floating,
+        );
         let card = RoundedRect::from_rect(layout.card, radius);
         scene.fill(
             Fill::NonZero,
@@ -584,7 +590,7 @@ impl ModalFrame {
             let face = ButtonFace::new(c, "")
                 .style(ButtonStyle::Ghost)
                 .icon(Icon::X)
-                .radius(f64::from(tokens.radii.sm) * scale)
+                .radius(f64::from(tokens.radii.detail) * scale)
                 .hovered(spec.close_hovered)
                 .focused(spec.close_focused)
                 .accessible_name("Close");

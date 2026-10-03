@@ -5847,7 +5847,7 @@ impl ShellOverlayHost {
                 crate::shell::trusted_ui::seal_band(
                     surface,
                     thickness,
-                    f64::from(theme.tokens.radii.md),
+                    f64::from(theme.tokens.radii.control),
                 ),
             ));
         }
@@ -15851,10 +15851,10 @@ struct OverviewMetrics {
     pad: f64,
     /// Gap between the "you are here" block and the room list (§9.6: `s4`).
     section_gap: f64,
-    /// Corner radius of the panel (Panel role, `radii.xl`).
+    /// Corner radius of the panel (Panel role, `radii.panel`).
     panel_radius: f64,
     /// Corner radius of a room row and the selection frame (Control role,
-    /// `radii.lg`).
+    /// `radii.control`).
     row_radius: f64,
     /// Line height of the current room's name (`x3l`); the face stack is
     /// centred on it.
@@ -15883,7 +15883,7 @@ struct OverviewMetrics {
     window_title_gap: f64,
     /// Line height of a preview tile's `sm` title.
     window_title_lh: f64,
-    /// Corner radius of a preview well (`radii.md`).
+    /// Corner radius of a preview well (`radii.control`).
     window_radius: f64,
     /// The air closing the "you are here" block (`s6`); the preview row
     /// takes its place.
@@ -15914,8 +15914,8 @@ impl OverviewMetrics {
             margin: f64::from(spacing.s12),
             pad: s4,
             section_gap: s4,
-            panel_radius: f64::from(tokens.radii.xl),
-            row_radius: f64::from(tokens.radii.lg),
+            panel_radius: f64::from(tokens.radii.panel),
+            row_radius: f64::from(tokens.radii.control),
             name_lh,
             here_h: name_lh + s1 + access_lh + s6,
             caption_h: s2 + caption_lh + s1,
@@ -15928,7 +15928,7 @@ impl OverviewMetrics {
             window_gap: s3,
             window_title_gap: s1,
             window_title_lh: lh(scale.sm),
-            window_radius: f64::from(tokens.radii.md),
+            window_radius: f64::from(tokens.radii.control),
             here_air: s6,
         }
     }
@@ -19119,7 +19119,7 @@ impl ShellOverlayHost {
                 transform,
                 surface,
                 theme,
-                f64::from(theme.tokens.radii.md),
+                f64::from(theme.tokens.radii.control),
             );
         }
 
@@ -19161,7 +19161,7 @@ impl ShellOverlayHost {
             scene.stroke(
                 &vello::kurbo::Stroke::new(7.0),
                 transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &edge,
             );
@@ -19228,7 +19228,7 @@ impl ShellOverlayHost {
     /// Shadow falloff plus the rise, so one dirty rectangle covers every
     /// frame of the fade without leaving the previous position behind.
     fn overview_shadow_outset(theme: &Theme) -> f64 {
-        let token = &theme.tokens.elevation.e4;
+        let token = &theme.tokens.elevation.floating;
         ui::surface::std_dev_for(token.blur) * 2.5 + f64::from(token.offset_y) + 2.0
     }
 
@@ -19793,7 +19793,7 @@ impl ShellOverlayHost {
                     host: self.rect,
                     rows: &rows,
                     own_initial,
-                    own_color: Color::from_rgb8(red, green, blue),
+                    own_color: theme.tokens.colors.presence.of_rgb((red, green, blue)),
                     unavailable: unavailable.as_deref(),
                     followed_id: self.followed_peer.as_deref(),
                     following_pairs: &following_pairs,
@@ -19907,16 +19907,16 @@ impl ShellOverlayHost {
                 transform
             };
             // A Panel casts `e4` (HIG §9.1), following the outline the
-            // sheet paints itself with (`radii.lg` in `room_activity.rs`);
+            // sheet paints itself with (`radii.control` in `room_activity.rs`);
             // the token's own colour, not a ramp slot, and its strength
             // fades in with the sheet.
-            let mut sheet_shadow = theme.tokens.elevation.e4;
+            let mut sheet_shadow = theme.tokens.elevation.floating;
             sheet_shadow.color = sheet_shadow.color.with_alpha_factor(alpha);
             ui::surface::shadow(
                 scene,
                 sheet_xform,
                 sheet,
-                f64::from(theme.tokens.radii.lg),
+                f64::from(theme.tokens.radii.control),
                 &sheet_shadow,
             );
             self.room_activity
@@ -20032,7 +20032,7 @@ impl ShellOverlayHost {
             // (`ChromeRole::Panel.radius`, the radius
             // `draw_quick_settings_card_background` paints), fading in
             // with the panel.
-            let mut qs_shadow = theme.tokens.elevation.e4;
+            let mut qs_shadow = theme.tokens.elevation.floating;
             qs_shadow.color = qs_shadow.color.with_alpha_factor(openness);
             ui::surface::shadow(
                 scene,
@@ -20249,7 +20249,7 @@ impl ShellOverlayHost {
         draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
         let panel = self.shortcut_help_panel_rect();
         let colors = &theme.tokens.colors;
-        // The guide is a Panel (HIG §9.1): `radii.xl`, the panel ground
+        // The guide is a Panel (HIG §9.1): `radii.panel`, the panel ground
         // from the semantic surface tier (never `neutral[0]`, §9.2), a
         // derived hairline edge, and an `e4` shadow along that outline.
         // Was an 18 px radius — off the 4/8/12/24 scale — on a ramp slot
@@ -20262,7 +20262,7 @@ impl ShellOverlayHost {
             transform,
             panel,
             panel_radius,
-            &theme.tokens.elevation.e4,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -20333,7 +20333,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            colors.intent.inverted,
             None,
             &RoundedRect::from_rect(done, 10.0),
         );
@@ -20666,7 +20666,7 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
                                 transform,
-                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                colors.intent.inverted,
                                 None,
                                 &RoundedRect::from_rect(hit, 8.0),
                             );
@@ -20703,7 +20703,7 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(2.0),
                                 transform,
-                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                colors.intent.inverted,
                                 None,
                                 &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
                             );
@@ -20760,13 +20760,13 @@ impl ShellOverlayHost {
                         x + reference_width,
                         reference_top + reference_height,
                     );
-                    // A keycap is a detail inside the guide (`radii.sm`) on
+                    // A keycap is a detail inside the guide (`radii.detail`) on
                     // the Control floor with its derived edge (HIG §9.5).
                     ui::surface::card(
                         scene,
                         transform,
                         group,
-                        f64::from(theme.tokens.radii.sm),
+                        f64::from(theme.tokens.radii.detail),
                         qs::control_fill(theme, false),
                     );
                     #[expect(
@@ -20944,13 +20944,13 @@ impl ShellOverlayHost {
             // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
             // and strength, following the card's rounded outline. While
             // the palette is still arriving the shadow fades in with it.
-            let mut shadow = theme.tokens.elevation.e4;
+            let mut shadow = theme.tokens.elevation.floating;
             shadow.color = shadow.color.with_alpha_factor(alpha);
             ui::surface::shadow(
                 scene,
                 palette_xform,
                 palette_rect,
-                self.palette.surface_radius_px(),
+                ui::widget::command_palette::CommandPalette::surface_radius_px(theme),
                 &shadow,
             );
             // A cloned theme with `surfaces.raised` pre-tinted, since
@@ -21034,7 +21034,7 @@ impl ShellOverlayHost {
             return;
         };
         draw_scrim_at(scene, transform, self.rect, 1.0, theme);
-        // A review sheet is a Panel (HIG §9.1): `radii.xl` and an `e4`
+        // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
         // shadow along that outline, painted before the surface so the
         // sheet sits on its shadow rather than under it. Was a 16 px
         // radius (off the scale) with a sprite shadow on a ramp slot until
@@ -21047,7 +21047,7 @@ impl ShellOverlayHost {
             transform,
             layout.sheet,
             sheet_radius,
-            &theme.tokens.elevation.e4,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -21563,14 +21563,14 @@ impl ShellOverlayHost {
         let panel = self.overview_panel_rect();
         let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
-        // A Panel (HIG §9.1): `radii.xl`, and a shadow that follows its own
+        // A Panel (HIG §9.1): `radii.panel`, and a shadow that follows its own
         // rounded outline rather than a square field.
         ui::surface::shadow(
             scene,
             transform,
             panel,
             m.panel_radius,
-            &tokens.elevation.e4,
+            &tokens.elevation.floating,
         );
         let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
         scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
@@ -21778,7 +21778,7 @@ impl ShellOverlayHost {
             transform,
             well,
             m.window_radius,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         let _ = tilo_desktop::window_switcher::draw_preview_well(
             scene,
@@ -21853,13 +21853,12 @@ impl ShellOverlayHost {
 
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
         let s3 = f64::from(tokens.spacing.s3);
         let s4 = f64::from(tokens.spacing.s4);
 
-        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, accent);
+        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, ground);
 
         // Faces claim the right edge, centred on the name line; the name
         // is elided against the room they leave rather than sliding under
@@ -21873,9 +21872,8 @@ impl ShellOverlayHost {
             ground,
         );
 
-        // "You are here" states which of these rooms you are in, in
-        // the same tinted-chip language every other current-state
-        // marker in the shell uses.
+        // "You are here" states which of these rooms you are in: a chip
+        // tinted with your own colour, the colour your presence has.
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
@@ -21913,7 +21911,7 @@ impl ShellOverlayHost {
             ),
             &here_label,
             ChipLead::None,
-            ChipStyle::tinted(accent),
+            ChipStyle::tinted(colors.intent.you),
             theme,
             text_renderer,
         );
@@ -21946,7 +21944,7 @@ impl ShellOverlayHost {
         content: Rect,
         here_rect: Rect,
         hi: usize,
-        accent: Color,
+        ground: Color,
     ) {
         if self.overview_selection != Some(hi) {
             return;
@@ -21961,18 +21959,14 @@ impl ShellOverlayHost {
             content.x1 + s2,
             here_rect.y1 - s2,
         );
+        // The keyboard's choice is a lift of the panel, with its edge.
         let sel_rr = RoundedRect::from_rect(sel, self.overview_metrics.row_radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            accent.with_alpha_factor(0.10),
-            None,
-            &sel_rr,
-        );
+        let fill = theme.tokens.colors.lift_on(ground, 1.0);
+        scene.fill(Fill::NonZero, transform, fill, None, &sel_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            accent.with_alpha_factor(0.55),
+            ui::surface::edge_on(fill),
             None,
             &sel_rr,
         );
@@ -22264,7 +22258,7 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let m = self.overview_metrics;
         let add_rect = self.overview_add_workspace_rect_for(cards_len);
@@ -22480,7 +22474,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 &ButtonFace::new(detach_rect, &t("follow-stop"))
-                    .radius(f64::from(theme.tokens.radii.sm))
+                    .radius(f64::from(theme.tokens.radii.detail))
                     .hovered(self.last_cursor.is_some_and(|p| detach_rect.contains(p))),
             );
             // The cross is the primary detach affordance; the word keeps the
@@ -22917,6 +22911,7 @@ impl ShellOverlayHost {
             None,
             &ui::surface::edge_outline(rect, radius),
         );
+        ui::surface::floating_edge(scene, transform, rect, radius, theme);
     }
 
     /// Root level renders the action row + sliders + toggles below;
@@ -24105,14 +24100,14 @@ impl ShellOverlayHost {
                 Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
                 icon,
                 if selected_row {
-                    theme.tokens.colors.on_accent(4.5)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.tokens.colors.text_primary
                 },
                 1.5,
             );
             let text_color = if selected_row {
-                theme.tokens.colors.on_accent(4.5)
+                theme.tokens.colors.intent.on_inverted
             } else {
                 theme.tokens.colors.text_primary
             };
@@ -24130,7 +24125,7 @@ impl ShellOverlayHost {
                 &detail,
                 theme.tokens.typography.scale.xs,
                 if selected_row {
-                    theme.tokens.colors.on_accent(4.5)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.tokens.colors.text_dim
                 },
@@ -24749,7 +24744,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let field = self.qs_password_field_rect();
-        // A field is a Control (HIG §9.1): `radii.lg`, body from the
+        // A field is a Control (HIG §9.1): `radii.control`, body from the
         // selection tiers — the full lift, which is opaque (it resolves to
         // the theme's raised surface), so the app underneath cannot show
         // through the passphrase field. Was `neutral[1]` under a 0.35 wash
@@ -24955,8 +24950,8 @@ impl ShellOverlayHost {
 /// token's own — the same `ui::surface::shadow` call paints it — so this
 /// is derived from the token rather than restating a sprite's spread.
 fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
-    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
-        + f64::from(theme.tokens.elevation.e4.offset_y)
+    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.floating.blur) * 3.0
+        + f64::from(theme.tokens.elevation.floating.offset_y)
         + 0.5;
     transform.transform_rect_bbox(rect.inflate(panel_reach, panel_reach))
 }

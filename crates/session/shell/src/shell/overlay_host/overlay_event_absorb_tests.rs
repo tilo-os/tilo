@@ -1187,8 +1187,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
         assert_eq!(chosen.fill, colors.lift(1.0));
         assert_ne!(
-            chosen.fill,
-            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            chosen.fill, colors.intent.inverted,
             "a chosen chip is lifted, not accent-filled"
         );
         assert!(chosen.border.is_some() && chosen.inner_glow.is_some());

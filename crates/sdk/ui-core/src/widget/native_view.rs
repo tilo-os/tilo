@@ -434,7 +434,7 @@ impl Widget for NativeView {
             return;
         }
 
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         scene.stroke(
             &Stroke::new(1.0),
             transform,

@@ -415,7 +415,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         };
         let hovered = self.last_cursor.is_some_and(|point| rect.contains(point));
         let style = if hovered {
-            ChipStyle::tinted(theme.accent_primary)
+            ChipStyle::tinted(theme.tokens.colors.intent.inverted)
         } else {
             ChipStyle::quiet()
         };
@@ -455,7 +455,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                     transform,
                     lift,
                     None,
-                    &rect.to_rounded_rect(f64::from(tokens.radii.sm)),
+                    &rect.to_rounded_rect(f64::from(tokens.radii.detail)),
                 );
             }
             let inset = (rect.width() * 0.2).max(1.0);
@@ -531,8 +531,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             self.rect.x1 - inset,
             cursor.y + height / 2.0,
         );
-        let radius = f64::from(tokens.radii.sm);
-        crate::surface::shadow(scene, transform, ghost, radius, &tokens.elevation.e4);
+        let radius = f64::from(tokens.radii.detail);
+        crate::surface::shadow(scene, transform, ghost, radius, &tokens.elevation.floating);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,

@@ -384,14 +384,14 @@ fn draw_resume_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5].with_alpha_factor(0.13),
+        colors.text_primary.with_alpha_factor(0.13),
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
     );
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &RoundedRect::new(rect.x0, rect.y0 + 8.0, rect.x0 + 3.0, rect.y1 - 8.0, 1.5),
     );
@@ -422,7 +422,7 @@ fn draw_resume_card(
         scene,
         &t("activity-resume-heading"),
         (theme.tokens.typography.scale.sm - 2.0).max(9.0),
-        colors.accent[4],
+        colors.intent.inverted_hover,
         at(transform, rect.x0 + 46.0, rect.y0 + 7.0),
         None,
     );
@@ -484,7 +484,7 @@ fn draw_resume_card(
         &ui::widget::ButtonFace::new(button, &button_label)
             .primary()
             .text_size(theme.tokens.typography.scale.sm)
-            .radius(f64::from(theme.tokens.radii.sm)),
+            .radius(f64::from(theme.tokens.radii.detail)),
     );
 }
 
@@ -2973,7 +2973,7 @@ impl RoomActivityPane {
                 transform,
                 theme.tokens.colors.lift(0.35),
                 None,
-                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
             );
         }
         if show_left {
@@ -3134,7 +3134,7 @@ impl RoomActivityPane {
             scene,
             &t("activity-agent-task"),
             type_size(tr, theme.tokens.typography.scale.base),
-            theme.tokens.colors.accent[4],
+            theme.tokens.colors.intent.inverted_hover,
             at(transform, x, y),
             None,
             ui::text_render::TextWeight::Medium,
@@ -3376,14 +3376,14 @@ impl RoomActivityPane {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[5].with_alpha_factor(0.12),
+            theme.tokens.colors.text_primary.with_alpha_factor(0.12),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.accent[5].with_alpha_factor(0.55),
+            theme.tokens.colors.text_primary.with_alpha_factor(0.55),
             None,
             &shape,
         );
@@ -3467,7 +3467,7 @@ impl RoomActivityPane {
             scene,
             transform,
             card,
-            f64::from(theme.tokens.radii.md),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.lift(0.35),
         );
         tr.draw_text_weighted(
@@ -3686,9 +3686,9 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.13),
+                theme.tokens.colors.text_primary.with_alpha_factor(0.13),
                 None,
-                &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text(
                 scene,
@@ -3940,7 +3940,7 @@ impl RoomActivityPane {
                 Fill::NonZero,
                 transform,
                 if active {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.28)
+                    theme.tokens.colors.text_primary.with_alpha_factor(0.28)
                 } else {
                     floor
                 },
@@ -3951,7 +3951,7 @@ impl RoomActivityPane {
                 &Stroke::new(1.0),
                 transform,
                 if active {
-                    theme.tokens.colors.accent[4]
+                    theme.tokens.colors.intent.inverted_hover
                 } else {
                     idle_edge
                 },
@@ -4002,13 +4002,13 @@ impl RoomActivityPane {
             self.sheet.x1 - 12.0,
             (self.sheet.y1 - info_h - 20.0).max(controls.y1 + 80.0),
         );
-        // The replay canvas is a card on the sheet: `radii.lg` (10 was off
+        // The replay canvas is a card on the sheet: `radii.control` (10 was off
         // the radius scale) with an edge derived from its base fill.
         ui::surface::card(
             scene,
             transform,
             canvas,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.surfaces.base,
         );
         draw_replay_layout(scene, transform, tr, theme, canvas, frame);
@@ -4096,7 +4096,7 @@ impl RoomActivityPane {
                 transform,
                 theme.tokens.colors.lift(0.45),
                 None,
-                &RoundedRect::from_rect(composer, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(composer, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text_weighted(
                 scene,
@@ -6620,7 +6620,7 @@ fn draw_task_button(
         Fill::NonZero,
         transform,
         if prominent {
-            theme.tokens.colors.accent[5]
+            theme.tokens.colors.intent.inverted
         } else {
             theme.tokens.colors.lift(0.35)
         },
@@ -6662,7 +6662,7 @@ fn draw_task_card(
         transform,
         theme.tokens.colors.lift(if selected { 0.55 } else { 0.3 }),
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
     );
     if selected {
         scene.stroke(
@@ -6670,7 +6670,7 @@ fn draw_task_card(
             transform,
             theme.tokens.colors.border_focus,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
     }
     let status = task_status_label(task.status);
@@ -6681,7 +6681,7 @@ fn draw_task_card(
         if task.status.is_finished() {
             theme.tokens.colors.text_dim
         } else {
-            theme.tokens.colors.accent[4]
+            theme.tokens.colors.intent.inverted_hover
         },
         at(transform, rect.x0 + 12.0, rect.y0 + 9.0),
         None,
@@ -6747,7 +6747,7 @@ fn draw_task_card(
                 scene,
                 notice,
                 type_size(tr, theme.tokens.typography.scale.sm),
-                theme.tokens.colors.accent[4],
+                theme.tokens.colors.intent.inverted_hover,
                 at(transform, rect.x0 + 12.0, audit_y),
                 Some(text_width(rect.width() - 24.0)),
             );
@@ -7023,7 +7023,7 @@ fn draw_replay_layout(
                     scene,
                     transform,
                     rect,
-                    f64::from(theme.tokens.radii.md),
+                    f64::from(theme.tokens.radii.control),
                     theme.tokens.colors.lift(0.35),
                 );
                 let title = group
@@ -7069,7 +7069,7 @@ fn draw_replay_layout(
                             Fill::NonZero,
                             transform,
                             if tab_index == group.active {
-                                theme.tokens.colors.accent[5].with_alpha_factor(0.18)
+                                theme.tokens.colors.text_primary.with_alpha_factor(0.18)
                             } else {
                                 theme.tokens.colors.lift(0.55)
                             },
@@ -7376,7 +7376,7 @@ fn draw_brief_card(
         &affordance,
         type_size(tr, theme.tokens.typography.scale.sm),
         if expanded {
-            theme.tokens.colors.accent[4]
+            theme.tokens.colors.intent.inverted_hover
         } else {
             theme.tokens.colors.text_dim
         },
@@ -7505,7 +7505,12 @@ fn draw_work_session_boundary(
             &Stroke::new(1.0),
             transform,
             if enabled {
-                theme.tokens.colors.accent[4].with_alpha_factor(0.65)
+                theme
+                    .tokens
+                    .colors
+                    .intent
+                    .inverted_hover
+                    .with_alpha_factor(0.65)
             } else {
                 theme.tokens.colors.border_standard
             },

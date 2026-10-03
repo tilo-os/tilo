@@ -92,12 +92,18 @@ pub fn draw_chip(
     rect: Rect,
     label: &str,
 ) {
-    let radius = f64::from(theme.tokens.radii.sm);
+    let radius = f64::from(theme.tokens.radii.detail);
 
     // The elevation token's own blur, following the chip's radius — the same
     // painter every other raised surface uses, rather than two hand-offset
     // translucent copies approximating it.
-    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
+    crate::surface::shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.floating,
+    );
 
     // Fill + a rest edge derived from the fill itself (HIG §9.5 "Tooltip:
     // as today, `edge_on(fill)`"), as a crisp 1 px inset stroke. The chip is

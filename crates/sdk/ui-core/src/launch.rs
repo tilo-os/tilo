@@ -1997,14 +1997,14 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
     // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
-    // app follows.
+    // app takes as the person's own colour.
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
     {
         Some(accent) => {
             use crate::color_compat::ColorCompat;
-            theme.with_accent([accent.r(), accent.g(), accent.b()])
+            theme.with_your_colour([accent.r(), accent.g(), accent.b()])
         }
         None => theme,
     };

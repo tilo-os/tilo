@@ -747,7 +747,7 @@ impl Widget for ScreenshotMarkup {
             transform,
             canvas_frame,
             8.0,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         scene.push_layer(
             Fill::NonZero,
@@ -784,7 +784,7 @@ impl Widget for ScreenshotMarkup {
             transform,
             self.toolbar,
             26.0,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -802,7 +802,13 @@ impl Widget for ScreenshotMarkup {
         );
         if self.tool_picker_open {
             let palette = self.tool_picker_rect();
-            surface::shadow(scene, transform, palette, 22.0, &theme.tokens.elevation.e2);
+            surface::shadow(
+                scene,
+                transform,
+                palette,
+                22.0,
+                &theme.tokens.elevation.floating,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -819,7 +825,13 @@ impl Widget for ScreenshotMarkup {
             );
         }
         if let Some(palette) = self.color_picker_rect() {
-            surface::shadow(scene, transform, palette, 22.0, &theme.tokens.elevation.e2);
+            surface::shadow(
+                scene,
+                transform,
+                palette,
+                22.0,
+                &theme.tokens.elevation.floating,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -895,9 +907,9 @@ impl Widget for ScreenshotMarkup {
                     Fill::NonZero,
                     transform,
                     if id == "save" {
-                        c.accent[5]
+                        c.intent.inverted
                     } else if selected {
-                        c.accent[4].with_alpha_factor(0.22)
+                        c.intent.inverted_hover.with_alpha_factor(0.22)
                     } else {
                         c.lift(0.72)
                     },
@@ -980,7 +992,7 @@ impl Widget for ScreenshotMarkup {
                 icon_rect,
                 icon,
                 if id == "save" {
-                    c.on_accent(4.5)
+                    c.intent.on_inverted
                 } else {
                     c.text_primary
                 },
@@ -997,7 +1009,7 @@ impl Widget for ScreenshotMarkup {
                     scene,
                     "Save",
                     renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    c.on_accent(4.5),
+                    c.intent.on_inverted,
                     transform.pre_translate(
                         (r.x0 + 30.0, r.center().y - f64::from(save_h) / 2.0).into(),
                     ),

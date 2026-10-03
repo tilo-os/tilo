@@ -238,21 +238,9 @@ impl PolarAreaChart {
         self.data.iter().find(|d| d.id == id)
     }
     fn color(datum: &PolarAreaDatum, index: usize, theme: &Theme) -> Color {
-        let colors = &theme.tokens.colors;
-        let palette = [
-            colors.accent.stops[5],
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.semantic.info,
-            colors.semantic.danger,
-            colors.accent.stops[7],
-        ];
-        datum.color.unwrap_or_else(|| {
-            palette
-                .get(index % palette.len())
-                .copied()
-                .unwrap_or(colors.accent.stops[5])
-        })
+        datum
+            .color
+            .unwrap_or_else(|| theme.tokens.colors.presence.series(index))
     }
     fn hit(&self, point: Point) -> Option<&str> {
         let (center, _, _) = self.geometry();
@@ -471,7 +459,7 @@ impl Widget for PolarAreaChart {
                 transform,
                 theme.tokens.colors.surfaces.overlay,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.md)),
+                &vello::kurbo::RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text_weighted(
                 scene,

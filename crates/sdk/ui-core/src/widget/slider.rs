@@ -340,7 +340,7 @@ impl Slider {
         // HIG §9.5: the unfilled half is a lift off the ground (not a ramp
         // slot) with an edge derived from itself; the filled half is accent.
         let unfilled = theme.tokens.colors.lift(1.0);
-        let filled = theme.accent_primary;
+        let filled = theme.tokens.colors.intent.inverted;
         let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
             vello::peniko::Fill::NonZero,

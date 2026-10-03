@@ -142,8 +142,8 @@ impl<'a> KeyframeFace<'a> {
         } else {
             match self.state {
                 KeyframeState::Off => (4.0, colors.text_tertiary, false),
-                KeyframeState::Between => (5.5, colors.accent[5], false),
-                KeyframeState::OnKey => (5.5, colors.accent[5], true),
+                KeyframeState::Between => (5.5, colors.intent.inverted, false),
+                KeyframeState::OnKey => (5.5, colors.intent.inverted, true),
             }
         };
         let center = self.rect.center();

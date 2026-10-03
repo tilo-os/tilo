@@ -285,7 +285,7 @@ impl Checkbox {
 
     /// Paint a checkbox without taking ownership of its state or events.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
-        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.control));
         if face.interact.disabled {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -300,7 +300,7 @@ impl Checkbox {
         // derived from it — `bg_active` was the pressed tier at rest, and a
         // declared `border_standard` vanished on a raised dark card.
         let box_color = if face.checked {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         } else if face.interact.hovered {
             theme.bg_hover
         } else {
@@ -332,7 +332,7 @@ impl Checkbox {
                 transform,
                 color,
                 None,
-                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.md)),
+                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.control)),
             );
         }
 

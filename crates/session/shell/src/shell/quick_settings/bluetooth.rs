@@ -348,7 +348,7 @@ impl QuickSettingsBluetoothPane {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     None,
                     &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );

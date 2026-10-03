@@ -36,7 +36,6 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
@@ -477,7 +476,7 @@ impl Autocomplete {
                 transform,
                 color,
                 None,
-                &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
+                &RoundedRect::from_rect(row, f64::from(tokens.radii.detail)),
             );
         }
     }
@@ -490,13 +489,11 @@ impl Autocomplete {
             theme,
         } = ctx.reborrow();
         let tokens = &theme.tokens;
-        let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
+        let accent = tokens.colors.intent.inverted;
         let armed = self.highlight == Some(i);
         let hovered = self.hover == Some(i) && !armed;
         Self::draw_row_background(scene, transform, tokens, accent, row, armed, hovered);
-        let on_accent = tokens
-            .colors
-            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let on_accent = tokens.colors.intent.on_inverted;
         let text_color = if armed {
             on_accent
         } else {
@@ -704,7 +701,7 @@ impl Widget for Autocomplete {
             return;
         };
         let tokens = &theme.tokens;
-        let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
+        let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.control));
         // The suggestion list is a Panel (HIG §9.1 / §9.5): panel ground and
         // panel edge, like the toolkit's other popovers.
         scene.fill(
@@ -719,7 +716,7 @@ impl Widget for Autocomplete {
             transform,
             crate::chrome::panel_border(theme),
             None,
-            &crate::surface::edge_outline(panel, f64::from(tokens.radii.md)),
+            &crate::surface::edge_outline(panel, f64::from(tokens.radii.control)),
         );
 
         let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);

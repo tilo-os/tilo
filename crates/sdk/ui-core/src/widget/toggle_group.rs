@@ -346,7 +346,7 @@ pub enum SegmentedStyle {
 /// bright one. Both the retained draw and [`segment_colors`] resolve
 /// through here so the strip and its immediate-mode face cannot disagree.
 pub fn selected_segment_ink(theme: &Theme) -> Color {
-    theme.tokens.colors.on_accent(ON_FILL_MIN_CONTRAST)
+    theme.tokens.colors.text_primary
 }
 
 /// Resolved across both the resting ground and the hover surface at once,
@@ -372,14 +372,30 @@ pub fn segment_colors(
     match style {
         SegmentedStyle::Solid => {
             if selected {
-                (Some(theme.accent_primary), selected_segment_ink(theme))
+                (
+                    Some(
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
+                    ),
+                    selected_segment_ink(theme),
+                )
             } else {
                 (Some(colors.surfaces.raised), colors.text_primary)
             }
         }
         SegmentedStyle::Pill => {
             if selected {
-                (Some(theme.accent_primary), selected_segment_ink(theme))
+                (
+                    Some(
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
+                    ),
+                    selected_segment_ink(theme),
+                )
             } else if hovered {
                 (Some(theme.bg_hover), unselected_segment_ink(theme))
             } else {
@@ -556,7 +572,10 @@ impl ToggleGroup {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        theme.accent_primary,
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
                         None,
                         &bar,
                     );
@@ -829,7 +848,10 @@ impl Widget for ToggleGroup {
             self.last_focused = self.is_focused;
         }
         let palette = [
-            theme.accent_primary,
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
             theme.bg_hover,
             theme.tokens.colors.text_primary,
             theme.tokens.colors.surfaces.base,
@@ -855,7 +877,7 @@ impl Widget for ToggleGroup {
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
 
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let outer_shape = RoundedRect::from_rect(self.rect, radius);
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
@@ -1496,7 +1518,15 @@ mod tests {
             use crate::a11y::contrast_ratio;
             let theme = Theme::dark();
             let (fill, fg) = segment_colors(&theme, SegmentedStyle::Solid, true, false);
-            assert_eq!(fill, Some(theme.accent_primary));
+            assert_eq!(
+                fill,
+                Some(
+                    theme
+                        .tokens
+                        .colors
+                        .lift_on(theme.tokens.colors.surfaces.raised, 1.0)
+                )
+            );
             let r = contrast_ratio(fg, fill.unwrap());
             assert!(
                 r >= ON_FILL_MIN_CONTRAST,
@@ -1529,7 +1559,15 @@ mod tests {
             assert_eq!(hfill, Some(theme.bg_hover));
             assert_eq!(hfg, fg, "the inactive label holds its colour on hover");
             let (sfill, sfg) = segment_colors(&theme, SegmentedStyle::Pill, true, false);
-            assert_eq!(sfill, Some(theme.accent_primary));
+            assert_eq!(
+                sfill,
+                Some(
+                    theme
+                        .tokens
+                        .colors
+                        .lift_on(theme.tokens.colors.surfaces.raised, 1.0)
+                )
+            );
             assert_eq!(
                 sfg,
                 segment_colors(&theme, SegmentedStyle::Solid, true, false).1,

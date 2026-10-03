@@ -100,13 +100,13 @@ impl Widget for PagePreview {
             &shadow,
         );
         let page = RoundedRect::from_rect(self.rect, 7.0);
-        let paper = theme.tokens.colors.surfaces.window_card;
+        let paper = theme.tokens.colors.surfaces.content;
         let ink = theme.on_surface(paper);
         scene.fill(Fill::NonZero, transform, paper, None, &page);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.surfaces.window_card_border,
+            theme.tokens.colors.surfaces.content_edge,
             None,
             &page,
         );
@@ -114,7 +114,7 @@ impl Widget for PagePreview {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.inverted,
             None,
             &accent,
         );

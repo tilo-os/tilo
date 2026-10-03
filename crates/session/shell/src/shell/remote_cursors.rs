@@ -171,7 +171,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         // border was three shades off `raised` on dark and vanished.
         let chip_border = ui::surface::edge_on(chip_bg);
         let label_color = theme.tokens.colors.text_primary;
-        let chip_radius = f64::from(theme.tokens.radii.sm);
+        let chip_radius = f64::from(theme.tokens.radii.detail);
 
         for cursor in cursors {
             let [px, py] = cursor.position;

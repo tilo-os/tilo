@@ -26,7 +26,7 @@ use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
@@ -295,12 +295,18 @@ fn paint_empty_state(
         ctx.scene.fill(
             Fill::NonZero,
             transform,
-            theme.accent_primary.with_alpha_factor(0.14),
+            theme.tokens.colors.text_primary.with_alpha_factor(0.14),
             None,
             &disc,
         );
         let icon_rect = Rect::from_center_size(disc_center, (ICON_D, ICON_D));
-        icon.draw_with_stroke(ctx.scene, transform, icon_rect, theme.accent_primary, 1.75);
+        icon.draw_with_stroke(
+            ctx.scene,
+            transform,
+            icon_rect,
+            theme.tokens.colors.intent.inverted,
+            1.75,
+        );
         y += DISC_D + gap;
     }
 
@@ -333,11 +339,11 @@ fn paint_empty_state(
         let action_rect = Rect::new(x0, y, x0 + bw, y + metrics.btn_h);
         let hovered = action_rect.contains(hover);
         let bg = if hovered {
-            theme.accent_hover
+            theme.tokens.colors.intent.inverted_hover
         } else {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         };
-        let pill = RoundedRect::from_rect(action_rect, f64::from(theme.tokens.radii.md));
+        let pill = RoundedRect::from_rect(action_rect, f64::from(theme.tokens.radii.control));
         ctx.scene.fill(Fill::NonZero, transform, bg, None, &pill);
         // An empty-state action is often the only route out of a first-use
         // screen. Keep the normal, high-visibility focus treatment even
@@ -355,11 +361,10 @@ fn paint_empty_state(
         ctx.text(
             label,
             &style.action,
-            // Ink chosen against the accent fill (rest and hover), so the
-            // label reads on a light theme's accent too.
+            // Ink chosen against the inverted fill (rest and hover).
             theme.tokens.colors.ink_on_any(
-                &[bg, theme.accent_primary],
-                Color::WHITE,
+                &[bg, theme.tokens.colors.intent.inverted],
+                theme.tokens.colors.intent.on_inverted,
                 ON_FILL_MIN_CONTRAST,
             ),
             Point::new(text_x, ty),

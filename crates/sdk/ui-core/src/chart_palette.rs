@@ -30,17 +30,12 @@ impl ChartPalette {
     /// selected by light, dark, and high-contrast themes.
     pub fn from_theme(theme: &Theme) -> Self {
         let colors = &theme.tokens.colors;
+        let series = &colors.presence;
         Self::new(
-            colors.accent.stops[5],
-            [
-                colors.semantic.success,
-                colors.semantic.warning,
-                colors.semantic.info,
-                colors.semantic.danger,
-                colors.accent.stops[7],
-            ],
+            series.series(0),
+            (1..crate::tokens::colors::PRESENCE_LEN).map(|index| series.series(index)),
         )
-        .with_sequential(colors.accent.stops[1], colors.accent.stops[8])
+        .with_sequential(colors.neutral.stops[2], series.series(0))
         .with_diverging(
             colors.semantic.danger,
             colors.neutral.stops[4],

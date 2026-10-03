@@ -99,7 +99,7 @@ impl Widget for Preview {
                     (self.rect.x0 + 210.0, self.rect.y1 - 60.0),
                     (self.rect.x1 - 44.0, self.rect.y0 + 38.0),
                 );
-                s.stroke(&Stroke::new(7.0), t, c.accent[4], None, &route);
+                s.stroke(&Stroke::new(7.0), t, c.intent.inverted_hover, None, &route);
                 let instruction = Rect::new(
                     self.rect.x0 + 14.0,
                     self.rect.y0 + 14.0,
@@ -140,7 +140,7 @@ impl Widget for Preview {
                     ),
                     46.0,
                 );
-                s.fill(Fill::NonZero, t, c.accent[3], None, &avatar);
+                s.fill(Fill::NonZero, t, c.presence.get(1), None, &avatar);
                 tr.draw_text_weighted(
                     s,
                     "AM",
@@ -248,7 +248,7 @@ pub fn run(_: &[String]) {
                 scene.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
-                    c.surface_white_5,
+                    c.overlay_subtle,
                     None,
                     &RoundedRect::from_rect(block, 16.0),
                 );

@@ -1,7 +1,8 @@
 //! The appearance a standalone app takes from the operating system it runs
 //! on. Inside Tilo OS the shell supplies appearance through settings and
-//! nothing here runs; outside it, light/dark, the accent and the contrast
-//! and motion preferences follow the host, so an SDK app looks at home
+//! nothing here runs; outside it, light/dark, the contrast and motion
+//! preferences follow the host, and the host's accent becomes the person's
+//! own colour (focus ring, caret, selection), so an SDK app looks at home
 //! without choosing a colour of its own.
 //!
 //! Light/dark comes from winit (`Window::theme`, `ThemeChanged`) where it
@@ -19,7 +20,7 @@ pub(crate) fn theme(host: HostAppearance) -> Theme {
         Some(Scheme::Dark) | None => Theme::dark(),
     };
     match host.accent {
-        Some(accent) => base.with_accent(accent),
+        Some(accent) => base.with_your_colour(accent),
         None => base,
     }
 }
@@ -117,7 +118,7 @@ impl Source {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+    use crate::color::Oklch;
     use vello::peniko::Color;
 
     #[test]
@@ -133,29 +134,28 @@ mod tests {
         assert_eq!(theme(Some(Scheme::Dark)).bg_app, Theme::dark().bg_app);
         assert_eq!(theme(None).bg_app, Theme::dark().bg_app);
         assert_eq!(
-            theme(None).accent_primary,
-            Theme::dark().accent_primary,
-            "no host accent keeps Tilo's own"
+            theme(None).border_focus,
+            Theme::dark().border_focus,
+            "no host accent keeps the default colour"
         );
     }
 
     #[test]
-    fn host_accent_recolours_every_accent_token() {
+    fn the_host_accent_becomes_your_colour_at_presence_lightness() {
         let theme = theme(HostAppearance {
             scheme: Some(Scheme::Light),
             accent: Some([0xE0, 0x40, 0x80]),
             ..HostAppearance::default()
         });
         let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
-        assert_eq!(theme.accent_primary, accent);
-        assert_eq!(theme.border_focus, accent);
-        assert_eq!(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX], accent);
-        assert_eq!(theme.tokens.colors.border_focus, accent);
-        assert_ne!(theme.accent_hover, accent, "hover stays a distinct step");
-        assert_ne!(
-            theme.tokens.terminal_palette.ansi,
-            Theme::light().tokens.terminal_palette.ansi,
-            "derived palettes follow the new accent"
+        let you = theme.tokens.colors.intent.you;
+        assert_eq!(theme.border_focus, you);
+        let (a, y) = (Oklch::from_color(accent), Oklch::from_color(you));
+        let d = (a.h - y.h).rem_euclid(360.0);
+        assert!(d.min(360.0 - d) < 3.0, "the host's hue is kept");
+        assert!(
+            (y.l - theme.tokens.colors.presence.lightness).abs() < 0.01,
+            "at the presence lightness, not the host's"
         );
         assert_eq!(
             theme.bg_app,

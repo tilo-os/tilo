@@ -622,14 +622,13 @@ impl SidebarWheelDisc {
         Point::new(cx, cy)
     }
 
-    /// Theming belongs to the user, so this isn't a hardcoded palette —
-    /// [`ui::tokens::Colors::categorical`] grows the series from the
-    /// theme's own accent, keeping adjacent workspaces 60° of hue apart.
+    /// The theme's series colours ([`ui::tokens::PresencePalette::series`]):
+    /// equal lightness and chroma, adjacent workspaces far apart in hue.
     ///
     /// Doesn't read `self` — kept as an associated fn (`Self::spoke_color(..)`)
     /// so it reads next to the other per-spoke painting helpers.
     fn spoke_color(idx: usize, colors: &ui::tokens::Colors) -> Color {
-        colors.categorical(idx)
+        colors.presence.series(idx)
     }
 
     /// Largest chip size step the active name fits in, from
@@ -1494,8 +1493,9 @@ impl SidebarWheelDisc {
             self.rect.x1 + RIM_SHADOW_REACH,
             self.rect.y1,
         );
-        // Flat fill — the theme's glass surface, same token as modal surfaces.
-        let body_hue = theme.material_glass();
+        // Flat fill — the floating-chrome surface, opaque: this renderer
+        // cannot blur what is behind the disc.
+        let body_hue = theme.tokens.colors.surfaces.overlay;
 
         Some(DiscGeometry {
             c,
@@ -1690,7 +1690,7 @@ impl SidebarWheelDisc {
     fn sector_label_style(theme: &Theme, is_active: bool) -> ChipStyle {
         let colors = &theme.tokens.colors;
         let fill = colors.surfaces.raised;
-        ChipStyle::measured(ui::tokens::colors::AccentChip {
+        ChipStyle::measured(ui::tokens::colors::TintedChip {
             fill,
             border: ui::surface::edge_on(fill),
             ink: if is_active {
