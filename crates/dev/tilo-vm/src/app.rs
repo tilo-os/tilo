@@ -3767,6 +3767,8 @@ impl App {
             }
         };
         self.receipt.set("layer", &layer);
+        // Building or pulling the layer can outlast the idle connection.
+        remote = self.connect(&vm)?;
         let info = entry.map(|c| c.info);
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
@@ -3843,7 +3845,7 @@ impl App {
             .set("builder", if chosen == Builder::Vm { "vm" } else { "host" });
         match chosen {
             Builder::Vm => self.build_layer_vm(vm, component),
-            Builder::Host => self.build_layer(remote, component),
+            Builder::Host => self.build_layer(remote, vm, component),
         }
     }
 
@@ -4140,6 +4142,7 @@ impl App {
     fn build_layer(
         &mut self,
         remote: &mut Remote,
+        vm: &Resolved,
         component: &Component,
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
@@ -4175,6 +4178,9 @@ impl App {
             build::pack(&staging.tree(), &staging.archive())
         });
         assembled?;
+        // A build can outlast an idle SSH connection (a release shell takes
+        // most of an hour): talk to the daemon on a fresh one.
+        *remote = self.connect(vm)?;
         let features = component.build_features(&extra);
         let provenance = build::provenance(
             &mut self.runner,
