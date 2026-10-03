@@ -482,7 +482,9 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
 
 /// Ask to join with `invitation` as this page's device (`custody`),
 /// certified by the person's own root (`root`) as `label`, named `name` to
-/// the room's owner, under request `requestIdHex`. Resolves to JSON
+/// the room's owner, under request `requestIdHex`; with `admissionToken`,
+/// the one-time token of the owner's pre-admission, the host admits it at
+/// once. Resolves to JSON
 /// `{reply, cert}`: the host's answer (`waiting`, `admitted`, `declined`,
 /// `refused`) and the device certificate the page then connects with.
 ///
@@ -499,6 +501,7 @@ pub async fn ask_to_join(
     request_id_hex: String,
     name: String,
     label: String,
+    admission_token: Option<Vec<u8>>,
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&custody)?;
@@ -514,15 +517,32 @@ pub async fn ask_to_join(
     )
     .await
     .map_err(js_error)?;
-    let reply = tilo_browser_peer::invite::ask_to_join(
-        &PageHttp(post),
-        &invitation,
-        &cert,
-        &signer,
-        request_id(&request_id_hex)?,
-        &name,
-    )
-    .await
+    let request_id = request_id(&request_id_hex)?;
+    let reply = match admission_token {
+        None => {
+            tilo_browser_peer::invite::ask_to_join(
+                &PageHttp(post),
+                &invitation,
+                &cert,
+                &signer,
+                request_id,
+                &name,
+            )
+            .await
+        }
+        Some(token) => {
+            tilo_browser_peer::invite::ask_to_join_pre_admitted(
+                &PageHttp(post),
+                &invitation,
+                &cert,
+                &signer,
+                request_id,
+                &name,
+                &token,
+            )
+            .await
+        }
+    }
     .map_err(js_error)?;
     Ok(serde_json::json!({"reply": join_reply_json(reply), "cert": cert}).to_string())
 }
@@ -1448,6 +1468,62 @@ impl WasmPeer {
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)?;
         serde_json::to_string(&answer).map_err(js_error)
+    }
+
+    /// Pre-admit whoever redeems the invitation this issues and presents
+    /// the token whose SHA-256 the grant names: `options` is JSON
+    /// `{requestId, room, role, tokenSha256, label, expiresInSeconds,
+    /// inviterName?}` (hex ids, `role` `Viewer`/`Commenter`/`Editor`); the
+    /// owner's `root` signs the grant. Resolves to the `RoomsReply` as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Rejects for malformed options, when the root does not sign, or as
+    /// [`Self::rooms`].
+    #[wasm_bindgen(js_name = preAdmit)]
+    pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
+        use tilo_browser_peer::DeviceSigner as _;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Options {
+            request_id: String,
+            room: String,
+            role: tilo_relay_protocol::rooms::RoomRole,
+            token_sha256: String,
+            label: String,
+            expires_in_seconds: u64,
+            inviter_name: Option<String>,
+        }
+        let options: Options = serde_json::from_str(&options).map_err(js_error)?;
+        let root = PageSigner::from_js(&root)?;
+        let now_ns = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
+            .unwrap_or_default();
+        let mut grant = tilo_relay_protocol::rooms::PreAdmission {
+            room: options.room,
+            role: options.role,
+            token_sha256: device_key(&options.token_sha256)?,
+            label: options.label,
+            expires_at_ns: now_ns
+                .saturating_add(options.expires_in_seconds.saturating_mul(1_000_000_000)),
+            owner_user_public_key: root.device_public_key(),
+            signature: [0; 64],
+        };
+        grant.signature = root
+            .sign(grant.digest().map_err(js_error)?.to_vec())
+            .await
+            .map_err(|error| js_error(error.0))?;
+        self.rooms(
+            serde_json::to_string(&tilo_relay_protocol::rooms::RoomsRequest::PreAdmit {
+                request_id: request_id(&options.request_id)?,
+                grant,
+                inviter_name: options.inviter_name,
+            })
+            .map_err(js_error)?,
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = liveGrant)]

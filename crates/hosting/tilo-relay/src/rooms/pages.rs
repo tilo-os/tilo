@@ -14,7 +14,7 @@ use tilo_peer_state::join::{
 };
 use tilo_relay_protocol::rooms::{
     Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_NAME_CHARS, MAX_JOIN_REQUESTS,
-    PendingInvite, Room, RoomMember, RoomRole, RoomsReply, RoomsRequest,
+    PendingInvite, PreAdmission, Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -221,20 +221,87 @@ impl Rooms {
                 request_id,
                 user_public_key,
             } => {
-                if user_public_key == self.inner.host.cert.user_public_key {
-                    return Err(CollaborationError::new("the owner cannot be removed"));
-                }
-                self.remove_member(
-                    &room,
-                    device,
-                    RemoveMemberRequest {
-                        request_id,
-                        user_public_key,
-                    },
-                )
-                .await?;
-                self.page_room(&room).await?
+                self.page_remove(&room, device, request_id, user_public_key)
+                    .await?
             }
+            RoomsRequest::PreAdmit {
+                request_id,
+                grant,
+                inviter_name,
+            } => {
+                self.pre_admit(device, request_id, grant, inviter_name, now)
+                    .await?
+            }
+            RoomsRequest::Notices { room } => {
+                self.authorize(device, now, "room.notices")?;
+                let room = self.room(&room).await?;
+                let notices = room.lock().await.admissions.notices();
+                RoomsReply::Notices(notices)
+            }
+        })
+    }
+
+    async fn page_remove(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        user_public_key: [u8; 32],
+    ) -> Result<RoomsReply, CollaborationError> {
+        if user_public_key == self.inner.host.cert.user_public_key {
+            return Err(CollaborationError::new("the owner cannot be removed"));
+        }
+        self.remove_member(
+            room,
+            device,
+            RemoveMemberRequest {
+                request_id,
+                user_public_key,
+            },
+        )
+        .await?;
+        self.page_room(room).await
+    }
+
+    /// Issue the single-use invitation of the owner's `grant` and record
+    /// the grant with it.
+    async fn pre_admit(
+        &self,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        grant: PreAdmission,
+        inviter_name: Option<String>,
+        now: u64,
+    ) -> Result<RoomsReply, CollaborationError> {
+        self.authorize(device, now, "invitation.pre-admit")?;
+        grant.verify()?;
+        if grant.owner_user_public_key != self.inner.host.cert.user_public_key {
+            return Err(CollaborationError::new(
+                "only the room's owner pre-admits people",
+            ));
+        }
+        let issued = self
+            .issue(
+                &grant.room,
+                device,
+                IssueInvitationRequest {
+                    request_id,
+                    role: member_role(grant.role),
+                    recipient_user_public_key: None,
+                    invitee_name: None,
+                    expires_at_ns: grant.expires_at_ns,
+                    inviter_name,
+                },
+            )
+            .await?;
+        let room = self.room(&grant.room).await?;
+        room.lock()
+            .await
+            .admissions
+            .record(issued.invite_id, grant)?;
+        Ok(RoomsReply::Invitation {
+            invite_id: issued.invite_id,
+            signed_invitation: issued.signed_invitation,
         })
     }
 
@@ -462,6 +529,26 @@ impl Rooms {
                         signature,
                     },
                     &valid_name(&name)?,
+                    None,
+                    now,
+                )
+                .await
+            }
+            JoinStep::ProvePreAdmitted {
+                challenge,
+                signature,
+                name,
+                token,
+            } => {
+                let challenge: JoinChallenge = postcard::from_bytes(&challenge)
+                    .map_err(|_| CollaborationError::new("join challenge is malformed"))?;
+                self.prove(
+                    JoinProof {
+                        challenge,
+                        signature,
+                    },
+                    &valid_name(&name)?,
+                    Some(&token),
                     now,
                 )
                 .await
@@ -481,6 +568,7 @@ impl Rooms {
         &self,
         proof: JoinProof,
         name: &str,
+        token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
         let room_id = proof.challenge.room.clone();
@@ -488,7 +576,7 @@ impl Rooms {
         let device = proof.challenge.device_public_key;
         let proof_digest = super::collaboration::request_digest(&proof)?;
         let room = self.room(&room_id).await?;
-        let room = room.lock().await;
+        let mut room = room.lock().await;
         if let Some(prior) = self.page_joins().find(&room_id, request_id) {
             if prior.proof_digest != proof_digest {
                 return Err(CollaborationError::new(
@@ -504,6 +592,11 @@ impl Rooms {
         let invite_id = redemption.join().invite_id();
         if room.redeemed(invite_id) {
             return Err(CollaborationError::new("invitation was already redeemed"));
+        }
+        if let Some(token) = token {
+            return self
+                .admit_pre_admitted(&mut room, &redemption, proof_digest, name, token, now)
+                .await;
         }
         let mut joins = self.page_joins();
         joins.prune(now);
@@ -543,6 +636,63 @@ impl Rooms {
             declined_at_ns: None,
         });
         Ok(JoinReply::Waiting)
+    }
+
+    /// Admit the redeeming device at once under the owner's pre-admission
+    /// for its invitation, spend the grant and tell the owner.
+    async fn admit_pre_admitted(
+        &self,
+        room: &mut GovernedRoom,
+        redemption: &VerifiedRedemption,
+        proof_digest: [u8; 32],
+        name: &str,
+        token: &[u8],
+        now: u64,
+    ) -> Result<JoinReply, CollaborationError> {
+        let invite_id = redemption.join().invite_id();
+        let role = room_role(redemption.join().grant().role);
+        let label = {
+            let grant = room.admissions.grant_for(invite_id, token, now)?;
+            if grant.role != role || grant.room != room.room() {
+                return Err(CollaborationError::new(
+                    "the pre-admission is for another room or role",
+                ));
+            }
+            grant.label.clone()
+        };
+        let certificate = redemption.certificate();
+        self.admit_redemption(
+            room,
+            certificate.device_public_key,
+            redemption.request_id(),
+            proof_digest,
+            redemption,
+            now,
+        )
+        .await?;
+        room.admissions.spend(
+            invite_id,
+            RoomNotice::PreAdmitted {
+                user_public_key: certificate.user_public_key,
+                name: name.to_owned(),
+                label,
+                role,
+                at_ns: now,
+            },
+        )?;
+        tracing::info!(
+            room = %room.room(),
+            invite_id = %hex::encode(invite_id),
+            person = %hex::encode(certificate.user_public_key),
+            outcome = "pre-admitted",
+            "workspace join admitted under the owner's pre-admission"
+        );
+        Ok(JoinReply::Admitted {
+            room: room.room().to_owned(),
+            workspace_id: room.workspace_id(),
+            name: room.record.name.clone(),
+            role,
+        })
     }
 
     async fn status(
