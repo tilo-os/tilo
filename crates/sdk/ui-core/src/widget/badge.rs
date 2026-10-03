@@ -216,8 +216,8 @@ impl Widget for Badge {
         let (width, height) = match &self.content {
             BadgeContent::Dot => (metrics.dot, metrics.dot),
             BadgeContent::Count(0) => (0.0, 0.0),
-            // The measured label width lands in `adjust_layout_with_measure`.
-            _ => (metrics.height, metrics.height),
+            // `auto`: measured in `measure`, pinned in `adjust_layout_with_measure`.
+            _ => (-1.0, metrics.height),
         };
         if self.metrics.as_ref() != Some(&metrics) {
             self.dirty = true;
@@ -232,7 +232,11 @@ impl Widget for Badge {
         )]
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(width as f32),
+                width: if width < 0.0 {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(width as f32)
+                },
                 height: Dimension::length(height as f32),
             },
             // Fixed target: never the item that gives in an overflowing row.
@@ -267,6 +271,25 @@ impl Widget for Badge {
         let mut style = style.clone();
         style.size.width = width;
         taffy.set_style(node, style).is_ok()
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let (Some(label), Some(metrics)) = (self.display_text(), self.metrics.as_ref()) else {
+            return Size::ZERO;
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel size; f32 precision is sufficient"
+        )]
+        Size {
+            width: known.width.unwrap_or(metrics.width(&label, text) as f32),
+            height: known.height.unwrap_or(metrics.height as f32),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

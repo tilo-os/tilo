@@ -4,8 +4,8 @@
 //! `apply_layout` → `draw`) on the same widget tree the interactive `gallery`
 //! example builds.
 //!
-//! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_shots`
-//! Out:  `$GALLERY_SHOTS_OUT` (default `/tmp/gallery_shots`) — gallery-dark.png,
+//! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_shots [out-dir]`
+//! Out:  `out-dir`, else `$GALLERY_SHOTS_OUT` (default `/tmp/gallery_shots`) — gallery-dark.png,
 //!       gallery-light.png
 //!
 //! Fractional `HiDPI`: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
@@ -101,10 +101,12 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());
 }
 
-pub fn run(_args: &[String]) {
+pub fn run(args: &[String]) {
     tilo_ui::i18n::I18nManager::init("en-US");
-    let dir =
-        std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
+    // The output directory: the first argument, then `$GALLERY_SHOTS_OUT`.
+    let dir = args.first().cloned().unwrap_or_else(|| {
+        std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string())
+    });
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("gallery_shots: failed to create output dir {dir}: {e}");
         return;

@@ -467,6 +467,16 @@ pub(crate) fn paint_pill(
     }
 
     let cy = rect.center().y;
+    // A chip insets its content by half its height; a badge is tighter
+    // (a third of its height, at least `s2`), as measured by its sizer.
+    let inset = if pill.centred {
+        (rect.height() / 3.0)
+            .round()
+            .max(f64::from(theme.tokens.spacing.s2))
+            .min(rect.width() / 4.0)
+    } else {
+        metrics.pad_x.min(rect.width() / 4.0)
+    };
     let lead_w = metrics.lead_width(pill.lead);
     let trailing = if pill.remove.is_some() {
         metrics.gap + metrics.glyph
@@ -477,7 +487,7 @@ pub(crate) fn paint_pill(
         String::new()
     } else {
         let room = rect.width()
-            - 2.0 * metrics.pad_x.min(rect.width() / 4.0)
+            - 2.0 * inset
             - if lead_w > 0.0 {
                 lead_w + metrics.gap
             } else {
@@ -489,7 +499,8 @@ pub(crate) fn paint_pill(
         } else {
             text_renderer.elide_to_width_style(
                 pill.label,
-                crate::num::f32_of_f64(room),
+                // Half a pixel of slack over shaping round-off.
+                crate::num::f32_of_f64(room + 0.5),
                 &metrics.label,
             )
         }
@@ -511,7 +522,7 @@ pub(crate) fn paint_pill(
     let mut x = if pill.centred || (label_w <= 0.0 && pill.remove.is_none()) {
         rect.center().x - content_w / 2.0
     } else {
-        rect.x0 + metrics.pad_x.min(rect.width() / 4.0)
+        rect.x0 + inset
     };
     match pill.lead {
         ChipLead::None => {}
@@ -552,7 +563,7 @@ pub(crate) fn paint_pill(
         );
     }
     if let Some(hovered) = pill.remove {
-        let x1 = rect.x1 - metrics.pad_x.min(rect.width() / 4.0);
+        let x1 = rect.x1 - inset;
         let glyph = Rect::from_center_size(
             Point::new(x1 - metrics.glyph / 2.0, cy),
             (metrics.glyph, metrics.glyph),
@@ -766,15 +777,17 @@ impl Widget for Chip {
         // Both axes are pinned as `length`, so taffy never asks `measure`
         // for this leaf; the settled footprint seeds the pass and
         // `adjust_layout_with_measure` corrects it from the real label.
-        let size = self.footprint.unwrap_or(taffy::Size {
-            width: self.metrics.height as f32,
-            height: self.metrics.height as f32,
-        });
+        // Until the label is measured the width is `auto`, so a host that
+        // solves with a measure function asks `measure` for it; the shared
+        // solver pins the measured pill in `adjust_layout_with_measure`.
+        let width = self
+            .footprint
+            .map_or_else(taffy::Dimension::auto, |size| length(size.width));
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
-                width: length(size.width),
-                height: length(size.height),
+                width,
+                height: length(self.metrics.height as f32),
             },
             ..Default::default()
         });
