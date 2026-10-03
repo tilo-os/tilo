@@ -36,11 +36,20 @@ $uart = Join-Path $run 'uart.log'
 $proof = Join-Path $run 'install-proof.log'
 
 function Resolve-Tool([string]$name) {
-    $override = if ($name -eq 'qemu-img') { $env:TILO_QEMU_IMG } else { $env:TILO_QEMU_SYSTEM }
+    $override = switch ($name) { 'qemu-img' { $env:TILO_QEMU_IMG }; 'qemu-system-aarch64' { $env:TILO_QEMU_SYSTEM }; default { $null } }
     if ($override) { return (Resolve-Path -LiteralPath $override).Path }
     $cmd = Get-Command "$name.exe" -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return (Resolve-Path -LiteralPath (Join-Path $env:USERPROFILE "msys64/clangarm64/bin/$name.exe")).Path
+}
+
+function Resolve-Python {
+    if ($env:TILO_PYTHON) { return (Resolve-Path -LiteralPath $env:TILO_PYTHON).Path }
+    foreach ($name in @('python3.exe', 'python.exe')) {
+        $candidate = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($candidate -and $candidate.Source -notlike '*\WindowsApps\*') { return $candidate.Source }
+    }
+    throw 'Installer code refresh requires Python 3 on PATH, or TILO_PYTHON pointing to its executable'
 }
 
 function Resolve-Firmware([string]$name, [string]$override) {
@@ -123,8 +132,22 @@ function Boot([bool]$installer, [string[]]$flags) {
     }
     $code = Resolve-Firmware 'edk2-aarch64-code.fd' $env:TILO_EFI_CODE
     # ProcessStartInfo.ArgumentList keeps paths and comma-bearing QEMU options intact.
+    @{ schema = 'tilo.installer-code-runtime.v1'; enabled = [bool]($installer -and $env:TILO_INSTALLER_CODE_FROM); port = $null; source = $null } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cycleDir 'installer-code-channel.json')
+    $codePort = @()
+    $codeNumber = 0
+    if ($installer -and $env:TILO_INSTALLER_CODE_FROM) {
+        @{ phase = 'startup' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cycleDir 'installer-code-phase.json')
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        $codeNumber = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+        $listener.Stop()
+        $codePort = @('-chardev', "socket,id=tilocode,host=127.0.0.1,port=$codeNumber,server=on,wait=off", '-device', 'virtserialport,chardev=tilocode,name=org.tilo.installer-code')
+        @{ schema = 'tilo.installer-code-runtime.v1'; enabled = $true; port = $codeNumber; source = [IO.Path]::GetFullPath($env:TILO_INSTALLER_CODE_FROM) } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cycleDir 'installer-code-channel.json')
+    }
     $proofPort = if ($installer) { @('-chardev', "file,id=tiloproof,path=$proof", '-device', 'virtserialport,chardev=tiloproof,name=org.tilo.vm-install-proof') } else { @() }
-    $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '3072', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', (Get-ScenarioNetwork), '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0') + $proofPort + @('-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
+    $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '3072', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', (Get-ScenarioNetwork), '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0') + $proofPort + $codePort + @('-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
     $start = [Diagnostics.ProcessStartInfo]::new($qemu)
     foreach ($arg in $argv) { $start.ArgumentList.Add([string]$arg) }
     # Command::output in tilo-vm captures this PowerShell process's stdout and
@@ -137,6 +160,12 @@ function Boot([bool]$installer, [string[]]$flags) {
         ConvertTo-Json -Compress | Set-Content -LiteralPath $pidFile
     Start-Sleep -Seconds 1
     if ($proc.HasExited) { throw "QEMU exited immediately with code $($proc.ExitCode)" }
+    if ($codeNumber) {
+        $helper = Join-Path $PSScriptRoot 'refresh-installer-code.py'
+        $python = Resolve-Python
+        & $python -X utf8 $helper --source $env:TILO_INSTALLER_CODE_FROM --port $codeNumber --receipt (Join-Path $cycleDir 'installer-code-refresh.json')
+        if ($LASTEXITCODE) { $owned = Get-VmProcess; if ($owned) { Stop-Process -Id $owned.Id }; throw 'initial installer code refresh failed' }
+    }
     "running pid=$($proc.Id) target=$target"
 }
 

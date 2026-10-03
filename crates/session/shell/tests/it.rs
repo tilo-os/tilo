@@ -59,6 +59,8 @@ mod continuity_suggestion_flow;
 mod control_socket_test;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
+#[path = "cpu_raster_parity.rs"]
+mod cpu_raster_parity;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
 #[path = "cursor_protocol.rs"]

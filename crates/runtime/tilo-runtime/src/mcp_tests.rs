@@ -333,3 +333,43 @@ fn every_word_of_a_needle_begins_a_word_of_the_row() {
         &page::needle_words("heavier text")
     ));
 }
+
+#[test]
+fn a_running_app_is_named_by_its_id_or_its_last_part() {
+    let running = [
+        "so.tilo.canvas",
+        "so.tilo.word-processor",
+        "org.example.canvas",
+    ];
+    assert_eq!(
+        page::app_named("so.tilo.word-processor", &running).unwrap(),
+        "so.tilo.word-processor"
+    );
+    assert_eq!(
+        page::app_named("Word-Processor", &running).unwrap(),
+        "so.tilo.word-processor"
+    );
+    let both = page::app_named("canvas", &running).unwrap_err();
+    assert!(both.contains("several"), "{both}");
+    let none = page::app_named("sheets", &running[..1]).unwrap_err();
+    assert!(none.contains("running: so.tilo.canvas"), "{none}");
+}
+
+#[test]
+fn a_succeeded_batch_step_is_its_output_alone() {
+    let step = succeeded_step(json!({
+        "invocation_id": "a",
+        "update": {"state": "succeeded", "invocation": "a", "output": {
+            "value": {"content": "tilo.content:ab"}, "resources": ["tilo.content:ab"]
+        }},
+        "unchanged": "note"
+    }));
+    assert_eq!(
+        step,
+        json!({"value": {"content": "tilo.content:ab"}, "unchanged": "note"})
+    );
+    let empty = succeeded_step(
+        json!({"invocation_id": "b", "update": {"state": "succeeded", "invocation": "b", "output": {}}}),
+    );
+    assert_eq!(empty, json!({}));
+}

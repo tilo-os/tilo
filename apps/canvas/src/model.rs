@@ -105,7 +105,30 @@ pub enum Shape {
     /// A brush stroke: a smooth curve through `points`, `size` wide.
     /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
     /// enough, the stroke is smoothed through them.
-    Stroke { points: Vec<StrokePoint>, size: f64 },
+    Stroke {
+        points: Vec<StrokePoint>,
+        size: f64,
+        /// A limb that lifts to a point and forks this many times (1-6)
+        /// into ever thinner twigs: a branch or bare tree in one stroke.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forks: Option<u32>,
+        /// With `forks`: how widely the twigs splay, in degrees (default 35).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spread: Option<f64>,
+        /// Instead of one line, this many short dabs (1-600) of `size`
+        /// scattered along the points: foliage, flowers, broken light.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dabs: Option<u32>,
+        /// With `dabs`: how far they stray either side of the path, in units
+        /// (default twice `size`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scatter: Option<f64>,
+        /// With `dabs`: how long each is, in units (about `size` when
+        /// absent); much longer than `size`, each is a flick that lifts to
+        /// a point, as grass is painted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dab_length: Option<f64>,
+    },
 }
 
 /// A colour gradient across a mark.
@@ -376,6 +399,19 @@ fn finite(values: &[f64]) -> bool {
 }
 
 impl Shape {
+    /// A brush stroke through `points`, `size` wide, that grows nothing.
+    pub fn plain_stroke(points: Vec<StrokePoint>, size: f64) -> Self {
+        Self::Stroke {
+            points,
+            size,
+            forks: None,
+            spread: None,
+            dabs: None,
+            scatter: None,
+            dab_length: None,
+        }
+    }
+
     /// Why this geometry cannot be drawn, in words an agent can act on.
     pub fn problem(&self) -> Option<String> {
         match self {
@@ -446,7 +482,7 @@ impl Shape {
                     None
                 }
             }
-            Self::Stroke { points, size } => {
+            Self::Stroke { points, size, .. } => {
                 if points.is_empty() || points.len() > MAX_POINTS {
                     Some(format!("a stroke needs 1 to {MAX_POINTS} points"))
                 } else if !points
@@ -457,9 +493,39 @@ impl Shape {
                 } else if !size.is_finite() || *size <= 0.0 || *size > MAX_SIDE {
                     Some("a stroke needs a positive size".into())
                 } else {
-                    None
+                    self.growth_problem()
                 }
             }
+        }
+    }
+
+    /// Why a stroke's twigs or dabs cannot be grown.
+    fn growth_problem(&self) -> Option<String> {
+        let Self::Stroke {
+            forks,
+            spread,
+            dabs,
+            scatter,
+            dab_length,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let units =
+            |value: &Option<f64>| value.is_some_and(|value| !(0.0..=MAX_SIDE).contains(&value));
+        if forks.is_some() && dabs.is_some() {
+            Some("a stroke either forks or breaks into dabs, not both".into())
+        } else if forks.is_some_and(|forks| !(1..=6).contains(&forks)) {
+            Some("forks is 1 to 6".into())
+        } else if spread.is_some_and(|spread| !(5.0..=90.0).contains(&spread)) {
+            Some("spread is 5 to 90 degrees".into())
+        } else if dabs.is_some_and(|dabs| !(1..=600).contains(&dabs)) {
+            Some("dabs is 1 to 600".into())
+        } else if units(scatter) || units(dab_length) {
+            Some("scatter and dab_length are 0 or more units".into())
+        } else {
+            None
         }
     }
 
@@ -572,7 +638,15 @@ impl Shape {
                 }
                 moved
             }
-            Self::Stroke { points, size } => Self::Stroke {
+            Self::Stroke {
+                points,
+                size,
+                forks,
+                spread,
+                dabs,
+                scatter,
+                dab_length,
+            } => Self::Stroke {
                 points: points
                     .iter()
                     .map(|point| {
@@ -587,8 +661,142 @@ impl Shape {
                     })
                     .collect(),
                 size: *size,
+                forks: *forks,
+                spread: *spread,
+                dabs: *dabs,
+                scatter: *scatter,
+                dab_length: *dab_length,
             },
         }
+    }
+
+    /// What a stroke grows into, in units: twigs, or dabs pointing along
+    /// the path or `angle` degrees.
+    pub fn form(&self, angle: Option<f64>) -> Option<tilo_wet_media::Form> {
+        let Self::Stroke {
+            size,
+            forks,
+            spread,
+            dabs,
+            scatter,
+            dab_length,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if let Some(forks) = forks {
+            return Some(tilo_wet_media::Form::Branch {
+                forks: *forks,
+                spread: narrow(spread.unwrap_or(35.0)),
+            });
+        }
+        dabs.map(|count| tilo_wet_media::Form::Dabs {
+            count,
+            scatter: narrow(scatter.unwrap_or(size * 2.0)),
+            length: narrow(dab_length.unwrap_or(0.0)),
+            angle: angle.map(narrow),
+        })
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "stroke geometry is bounded by the document's size limits"
+)]
+fn narrow(value: f64) -> f32 {
+    value as f32
+}
+
+impl Shape {
+    /// The same shape under `affine`, when the geometry itself can carry it:
+    /// a move and a stretch along the axes, the same both ways for text and
+    /// brush strokes. `None` asks for a transform instead (a turn, a skew, a
+    /// flip).
+    #[must_use]
+    pub fn transformed(&self, affine: Affine) -> Option<Self> {
+        let [sx, b, c, sy, dx, dy] = affine.as_coeffs();
+        if b != 0.0 || c != 0.0 || sx <= 0.0 || sy <= 0.0 {
+            return None;
+        }
+        let uniform = (sx - sy).abs() <= 1e-9 * sx.max(sy);
+        let map = |[x, y]: [f64; 2]| [x * sx + dx, y * sy + dy];
+        let points = |points: &[[f64; 2]]| points.iter().copied().map(map).collect();
+        Some(match self {
+            Self::Rect {
+                x,
+                y,
+                width,
+                height,
+                radius,
+            } => {
+                let [x, y] = map([*x, *y]);
+                Self::Rect {
+                    x,
+                    y,
+                    width: width * sx,
+                    height: height * sy,
+                    radius: radius * sx.min(sy),
+                }
+            }
+            Self::Ellipse { cx, cy, rx, ry } => {
+                let [cx, cy] = map([*cx, *cy]);
+                Self::Ellipse {
+                    cx,
+                    cy,
+                    rx: rx * sx,
+                    ry: ry * sy,
+                }
+            }
+            Self::Polygon { points: at } => Self::Polygon { points: points(at) },
+            Self::Line { points: at } => Self::Line { points: points(at) },
+            Self::Path { d } => {
+                let mut path = BezPath::from_svg(d).ok()?;
+                path.apply_affine(affine);
+                Self::Path {
+                    d: path_data(&path),
+                }
+            }
+            Self::Text { .. } if uniform => {
+                let mut text = self.clone();
+                if let Self::Text {
+                    x, y, size, width, ..
+                } = &mut text
+                {
+                    [*x, *y] = map([*x, *y]);
+                    *size *= sx;
+                    *width = width.map(|width| width * sx);
+                }
+                text
+            }
+            Self::Stroke {
+                points,
+                size,
+                forks,
+                spread,
+                dabs,
+                scatter,
+                dab_length,
+            } if uniform => Self::Stroke {
+                points: points
+                    .iter()
+                    .map(|point| {
+                        let mut moved = point.clone();
+                        if let [x, y, ..] = moved.as_mut_slice() {
+                            [*x, *y] = map([*x, *y]);
+                        }
+                        moved
+                    })
+                    .collect(),
+                size: size * sx,
+                forks: *forks,
+                spread: *spread,
+                dabs: *dabs,
+                scatter: scatter.map(|scatter| scatter * sx),
+                dab_length: dab_length.map(|length| length * sx),
+            },
+            Self::Text { .. } | Self::Stroke { .. } => return None,
+        })
     }
 }
 
@@ -712,6 +920,31 @@ impl Mark {
             mark.transform = Some((Affine::translate((dx, dy)) * self.affine()).as_coeffs());
         } else {
             mark.shape = self.shape.translated(dx, dy);
+            // A gradient is placed in the same units as the geometry.
+            if let Some(gradient) = &mut mark.style.gradient {
+                for point in [&mut gradient.from, &mut gradient.to] {
+                    point[0] += dx;
+                    point[1] += dy;
+                }
+            }
+        }
+        mark
+    }
+
+    /// The mark under `affine` (artwork units): baked into its geometry
+    /// where the geometry can carry it, so a stretched rectangle stays a
+    /// rectangle; otherwise composed onto its transform.
+    #[must_use]
+    pub fn transformed(&self, affine: Affine) -> Self {
+        let mut mark = self.clone();
+        match self
+            .transform
+            .is_none()
+            .then(|| self.shape.transformed(affine))
+            .flatten()
+        {
+            Some(shape) => mark.shape = shape,
+            None => mark.transform = Some((affine * self.affine()).as_coeffs()),
         }
         mark
     }
@@ -722,6 +955,20 @@ impl Mark {
         let mut path = self.shape.path();
         path.apply_affine(self.affine());
         let reach = match &self.shape {
+            // Twigs reach beyond the limb about as far again as it is long;
+            // dabs stray their scatter from the path.
+            Shape::Stroke {
+                size,
+                forks: Some(_),
+                ..
+            } => size * 0.5 + path.perimeter(0.5) * 0.9,
+            Shape::Stroke {
+                size,
+                dabs: Some(_),
+                scatter,
+                dab_length,
+                ..
+            } => size * 2.0 + scatter.unwrap_or(size * 2.0) + dab_length.unwrap_or(0.0) * 1.4,
             Shape::Stroke { size, .. } => size * 0.5,
             _ => self.style.stroke_width * 0.5,
         };

@@ -1,0 +1,22 @@
+[Unit]
+Description=Explicit development VM installer helper refresh
+ConditionKernelCommandLine=tilo.install
+ConditionVirtualization=vm
+ConditionPathExists=/usr/share/tilo/unverified-vm-install
+ConditionPathExists=/dev/virtio-ports/org.tilo.installer-code
+Wants=systemd-udev-settle.service
+After=local-fs.target systemd-udev-settle.service
+Before=greetd.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/libexec/tilo-installer-code-refresh.py
+# Bind overrides must be visible to PID1's later installer transient unit.
+PrivateMounts=no
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

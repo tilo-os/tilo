@@ -113,13 +113,17 @@ pub struct NewMark {
     pub cap: Option<String>,
     /// `miter`, `round` or `bevel`.
     pub join: Option<String>,
-    /// `multiply`, `screen`, `overlay`, … (see the refusal for all).
+    /// `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`,
+    /// `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`,
+    /// `exclusion`, `hue`, `saturation`, `color` or `luminosity`.
     pub blend: Option<String>,
     pub shadow: Option<Shadow>,
     /// A group id: edits naming it change the members as one.
     pub group: Option<String>,
     /// Cut to this mark's shape (opacity 0 hides that mark).
     pub clip: Option<String>,
+    /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
+    pub transform: Option<[f64; 6]>,
 }
 
 impl NewMark {
@@ -145,6 +149,7 @@ impl NewMark {
             shadow: None,
             group: None,
             clip: None,
+            transform: None,
         }
     }
 }
@@ -159,7 +164,7 @@ pub struct Draw {
 }
 
 /// One brush stroke.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewStroke {
     pub id: Option<String>,
@@ -177,6 +182,26 @@ pub struct NewStroke {
     /// Medium parameter overrides for this stroke (`{"load": 0.2}` for dry
     /// brush).
     pub params: Option<BTreeMap<String, f64>>,
+    /// A limb that lifts to a point and forks this many times (1-6) into
+    /// ever thinner twigs: a branch or a bare tree in one stroke.
+    pub forks: Option<u32>,
+    /// With `forks`: how widely the twigs splay, in degrees (default 35).
+    pub spread: Option<f64>,
+    /// Instead of one line, this many short dabs (1-600) of `size`
+    /// scattered along the points: foliage, flowers, broken light.
+    pub dabs: Option<u32>,
+    /// With `dabs`: how far they stray either side of the path, in units
+    /// (default twice `size`).
+    pub scatter: Option<f64>,
+    /// With `dabs`: how long each is, in units (about `size` when absent);
+    /// much longer than `size`, each is a flick lifting to a point (grass).
+    pub dab_length: Option<f64>,
+    /// With `dabs`: the way they point, in degrees (-90 is up); along the
+    /// path when absent.
+    pub angle: Option<f64>,
+    /// Keep the paint inside this mark's shape, as a painter cuts in
+    /// against an edge: texture a rock or a crown within its silhouette.
+    pub clip: Option<String>,
 }
 
 /// Paint brush strokes, in order, on top of a layer: a passage of painting
@@ -209,7 +234,7 @@ pub struct EditMarks {
     pub group: Option<String>,
     /// Cut to this mark's shape; empty uncuts.
     pub clip: Option<String>,
-    /// A colour, or `none`.
+    /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
     pub gradient: Option<Gradient>,
     /// A colour, or `none`.
@@ -228,6 +253,9 @@ pub struct EditMarks {
     pub rotate: Option<f64>,
     /// Move the marks onto this layer, on top.
     pub layer: Option<String>,
+    /// An affine `[a, b, c, d, e, f]` in artwork units applied after the
+    /// rest, to all the marks as one: a stretch or turn about any point.
+    pub transform: Option<[f64; 6]>,
 }
 
 /// Remove marks by id, or every mark of a layer.
@@ -245,8 +273,11 @@ pub struct RemoveMarks {
 #[serde(deny_unknown_fields)]
 pub struct Arrange {
     pub ids: Vec<String>,
-    /// `front`, `back`, `forward` or `backward`.
+    /// `front`, `back`, `forward`, `backward`, or `above`/`below` the mark or
+    /// group `of`.
     pub to: String,
+    /// The mark or group `above` and `below` are relative to.
+    pub of: Option<String>,
 }
 
 /// Save a medium in the artwork (or replace one saved before), so layers can
@@ -428,6 +459,23 @@ fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), ActionEr
     Ok(())
 }
 
+/// A transform must be finite and keep some area, so the mark can be found
+/// and turned back.
+fn check_transform(transform: [f64; 6]) -> Result<(), ActionError> {
+    let affine = ui::vello::kurbo::Affine::new(transform);
+    if transform
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
+        && affine.determinant().abs() > 1e-6
+    {
+        Ok(())
+    } else {
+        Err(refuse(
+            "a transform is [a, b, c, d, e, f], finite, and must not flatten the mark",
+        ))
+    }
+}
+
 /// The marks `ids` address, as units that move, scale and rotate together:
 /// a mark id is that mark, a group id all of the group's members. A mark
 /// named twice (itself and through its group) counts once.
@@ -577,6 +625,9 @@ fn add_marks(
         if let Some(problem) = mark.shape.problem() {
             return Err(refuse(format!("mark {index}: {problem}")));
         }
+        if let Some(transform) = mark.transform {
+            check_transform(transform).map_err(problem)?;
+        }
         check_style(art, layer, &mark.style).map_err(problem)?;
         if !mark.group.is_empty() {
             check_group(art, &mark.group, &ids).map_err(problem)?;
@@ -659,6 +710,7 @@ impl Draw {
                 Mark {
                     group: mark.group.clone().unwrap_or_default(),
                     clip: mark.clip.clone().unwrap_or_default(),
+                    transform: mark.transform,
                     ..placed(
                         id,
                         mark.name.clone().unwrap_or_default(),
@@ -689,13 +741,21 @@ impl Paint {
                     opacity: stroke.opacity,
                     wet: stroke.wet.unwrap_or(false),
                     params: stroke.params.clone().unwrap_or_default(),
+                    angle: stroke.angle,
                     ..Style::default()
                 };
                 let shape = Shape::Stroke {
                     points: stroke.points.clone(),
                     size: stroke.size,
+                    forks: stroke.forks,
+                    spread: stroke.spread,
+                    dabs: stroke.dabs,
+                    scatter: stroke.scatter,
+                    dab_length: stroke.dab_length,
                 };
-                placed(id, stroke.name.clone().unwrap_or_default(), shape, style)
+                let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
+                mark.clip = stroke.clip.clone().unwrap_or_default();
+                mark
             })
             .collect();
         add_marks(doc, art, &layer, marks)
@@ -743,6 +803,9 @@ impl EditMarks {
         if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
             check_group(art, group, &[])?;
         }
+        if let Some(transform) = self.transform {
+            check_transform(transform)?;
+        }
         for unit in units {
             let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
@@ -777,6 +840,9 @@ impl EditMarks {
                 }
                 if self.scale.is_some() || self.rotate.is_some() {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
+                }
+                if let Some(transform) = self.transform {
+                    mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
                 }
                 check_style(art, &mark.layer, &mark.style)
                     .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
@@ -815,6 +881,9 @@ impl EditMarks {
                     mark.style.stroke = fill;
                 } else {
                     mark.style.fill = fill;
+                    // A gradient is drawn instead of the fill: a new fill
+                    // replaces it.
+                    mark.style.gradient = None;
                 }
             }
             if let ColourEdit::Set(stroke) = colour_patch(self.stroke.as_ref()) {
@@ -846,15 +915,43 @@ impl EditMarks {
 }
 
 /// Where `ids` go when moved `to` the front, back, forward or backward of
-/// the ordered `all`: new order keys for the moved entries.
+/// the ordered `all`, or directly `above` or `below` the entries `of`: new
+/// order keys for the moved entries.
 fn rearranged(
     all: &[(String, String)],
     ids: &[String],
     to: &str,
+    of: &[String],
 ) -> Result<Vec<(String, String)>, ActionError> {
     let moving: Vec<&(String, String)> = all.iter().filter(|(id, _)| ids.contains(id)).collect();
     let staying: Vec<&(String, String)> = all.iter().filter(|(id, _)| !ids.contains(id)).collect();
+    let anchor = || {
+        let first = staying.iter().position(|(id, _)| of.contains(id));
+        let last = staying.iter().rposition(|(id, _)| of.contains(id));
+        first.zip(last).ok_or_else(|| {
+            refuse("name the mark or group to go above or below in `of`, on the same layer and not among ids")
+        })
+    };
     let (low, high) = match to {
+        "above" => {
+            let (_, top) = anchor()?;
+            (
+                staying.get(top).map(|(_, order)| order.clone()),
+                staying
+                    .get(top.saturating_add(1))
+                    .map(|(_, order)| order.clone()),
+            )
+        }
+        "below" => {
+            let (bottom, _) = anchor()?;
+            (
+                bottom
+                    .checked_sub(1)
+                    .and_then(|before| staying.get(before))
+                    .map(|(_, order)| order.clone()),
+                staying.get(bottom).map(|(_, order)| order.clone()),
+            )
+        }
         "front" => (staying.last().map(|(_, order)| order.clone()), None),
         "back" => (None, staying.first().map(|(_, order)| order.clone())),
         "forward" | "backward" => {
@@ -894,7 +991,7 @@ fn rearranged(
         }
         other => {
             return Err(refuse(format!(
-                "to {other:?} must be front, back, forward or backward"
+                "to {other:?} must be front, back, forward, backward, above or below"
             )));
         }
     };
@@ -904,6 +1001,50 @@ fn rearranged(
         .zip(orders)
         .map(|((id, _), order)| (id.clone(), order))
         .collect())
+}
+
+/// Move marks within their layer's stacking order.
+fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), ActionError> {
+    let ids: Vec<String> = units(art, &arrange.ids)?
+        .into_iter()
+        .flatten()
+        .map(|mark| mark.id.clone())
+        .collect();
+    let Some(first) = ids.first().and_then(|id| art.mark(id)) else {
+        return Err(refuse("name existing marks in ids"));
+    };
+    if let Some(other) = ids
+        .iter()
+        .find(|id| art.mark(id).is_none_or(|mark| mark.layer != first.layer))
+    {
+        return Err(refuse(format!(
+            "{other:?} is not a mark on layer {:?}; arrange marks of one layer at a time",
+            first.layer
+        )));
+    }
+    let all: Vec<(String, String)> = art
+        .marks_of(&first.layer)
+        .map(|mark| (mark.id.clone(), mark.order.clone()))
+        .collect();
+    let of: Vec<String> = match &arrange.of {
+        Some(of) => units_of(art, of)?
+            .into_iter()
+            .map(|mark| mark.id.clone())
+            .collect(),
+        None => Vec::new(),
+    };
+    for (id, order) in rearranged(&all, &ids, &arrange.to, &of)? {
+        if let Some(mark) = art.mark(&id) {
+            doc::write_mark(
+                doc,
+                &Mark {
+                    order,
+                    ..mark.clone()
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 impl tilo_actions::Action for CanvasAction {
@@ -955,41 +1096,7 @@ impl tilo_actions::Action for CanvasAction {
                 }
                 Ok(())
             }
-            Self::Arrange(arrange) => {
-                let ids: Vec<String> = units(&art, &arrange.ids)?
-                    .into_iter()
-                    .flatten()
-                    .map(|mark| mark.id.clone())
-                    .collect();
-                let Some(first) = ids.first().and_then(|id| art.mark(id)) else {
-                    return Err(refuse("name existing marks in ids"));
-                };
-                if let Some(other) = ids
-                    .iter()
-                    .find(|id| art.mark(id).is_none_or(|mark| mark.layer != first.layer))
-                {
-                    return Err(refuse(format!(
-                        "{other:?} is not a mark on layer {:?}; arrange marks of one layer at a time",
-                        first.layer
-                    )));
-                }
-                let all: Vec<(String, String)> = art
-                    .marks_of(&first.layer)
-                    .map(|mark| (mark.id.clone(), mark.order.clone()))
-                    .collect();
-                for (id, order) in rearranged(&all, &ids, &arrange.to)? {
-                    if let Some(mark) = art.mark(&id) {
-                        doc::write_mark(
-                            doc,
-                            &Mark {
-                                order,
-                                ..mark.clone()
-                            },
-                        )?;
-                    }
-                }
-                Ok(())
-            }
+            Self::Arrange(arrange) => arrange_marks(doc, &art, arrange),
             Self::SaveMedium(save) => {
                 save.medium.validate().map_err(refuse)?;
                 doc::write_medium(doc, &save.medium)?;
@@ -1144,7 +1251,8 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
             .iter()
             .map(|layer| (layer.id.clone(), layer.order.clone()))
             .collect();
-        if let Some((_, order)) = rearranged(&all, std::slice::from_ref(&layer.id), to)?.pop() {
+        if let Some((_, order)) = rearranged(&all, std::slice::from_ref(&layer.id), to, &[])?.pop()
+        {
             layer.order = order;
         }
     }
