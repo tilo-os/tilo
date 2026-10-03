@@ -462,30 +462,44 @@ reads and writes the same format natively. Unlocking unwraps straight into a
 non-extractable `CryptoKey`; the root never exists in the clear outside the
 page's memory.
 
+Everything below is exported by `root-identity.mjs` and re-exported by
+`peer.mjs`. The identity created or unlocked last is the page's current one
+and the default wherever an `identity` is taken.
+
 ```ts
-createIdentity({rpId, userName, userId, displayName?, passkey?: boolean})
+createIdentity({rpId, userName, userId, displayName?, passkey?: boolean, prfSalt?})
   : Promise<{envelope, recoveryKey: string, identity: RootIdentity}>;
-unlockIdentity(envelope, {passkey: true, rpId?} | {recoveryKey: string}): Promise<RootIdentity>;
-addPasskey(envelope, {identity, rpId, userName, userId}): Promise<envelope>;
-// RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts), lock()}
+unlockIdentity(envelope, {passkey: true, rpId?} | {prfOutput, credentialId} | {recoveryKey: string})
+  : Promise<RootIdentity>;
+addPasskey(envelope, {identity?, rpId?, userName?, userId?}?): Promise<envelope>;
+// A native node that hosts and governs the person's workspaces: host, owns
+// and reads all workspaces, admits no devices, one year. Never the root.
+certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser'})
+  : Promise<string /* DeviceCert JSON */>;
+installNodeCertificate({origin, certificate, installToken}): Promise<{device_public_key, user_public_key}>;
+// The page's own device, certified by the root itself against the host's
+// certificate (which must be a host of this root), no approver. Defaults:
+// a profile per identity, its device key, the page host's runtime.
+connectPeer({origin, identity, signal, …}): Promise<CertifiedPeer>;
+// RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts?), lock()}
 ```
 
 `createIdentity` refuses a passkey without PRF (`IdentityError` code
 `prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
-`addPasskey` excludes the envelope's existing credentials, so the new passkey
-lands on another authenticator instead of replacing one.
+All of an identity's passkeys share one PRF input (`prf_salt`; random unless
+`prfSalt` is given), so a login that already asserted a passkey with
+`extensions.prf.eval` of it unlocks with `{prfOutput, credentialId}` and no
+second prompt. `addPasskey` excludes the envelope's existing credentials, so
+the new passkey lands on another authenticator instead of replacing one; its
+`userName`/`userId` default to those the identity was created with.
 
-The unlocked root certifies devices through the wasm runtime
-(`issueDeviceCert`, `certifyWithRoot`), signing with the non-extractable key:
-
-```ts
-// A native node that hosts and governs the person's workspaces: host, owns
-// and reads all workspaces, admits no devices, one year. Never the root.
-certifyDevice({identity, runtime, devicePublicKey, label?, role?: 'node' | 'browser'}): Promise<string /* DeviceCert JSON */>;
-// The page's own device: certified by the root itself against the host's
-// certificate (which must be a host of this root), no approver.
-connectPeer({origin, identity, custody, runtime, …}); // userPublicKey defaults to identity.userPublicKey
-```
+A node provisioned without a certificate (`tilo-relay run --web …
+--install-token-file PATH`) creates its device key, prints
+`{"event": "awaiting_certificate", "devicePublicKey": …}` and serves only
+`POST /peer/v1/install` (the certificate as JSON, the token in
+`x-tilo-install-token`; every other route answers `503`). Once a valid host
+certificate for its key is installed it starts as that identity's host on the
+same origin.
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the
