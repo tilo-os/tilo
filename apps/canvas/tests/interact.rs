@@ -461,7 +461,7 @@ fn the_eraser_rubs_out_paint_or_whole_strokes() {
     desk.key("b");
     desk.drag((100.0, 450.0), (450.0, 450.0));
     let painted = desk.art().marks.last().unwrap().id.clone();
-    desk.key("e");
+    desk.key("x");
     desk.drag((275.0, 400.0), (275.0, 500.0));
     let rub = desk.art().marks.last().cloned().unwrap();
     assert_eq!(rub.style.brush.as_deref(), Some("eraser"));
