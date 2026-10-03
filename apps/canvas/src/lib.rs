@@ -116,11 +116,11 @@ enum Dock {
 }
 
 /// The tool rail's width.
-const RAIL: f32 = 56.0;
+const RAIL: f32 = 56.0; // a pointer target and its inset, laid out before a theme is known
 /// The sidebar's width.
-const SIDEBAR: f32 = 300.0;
+const SIDEBAR: f32 = 300.0; // the colour picker's and swatches' width plus insets: a layout width, not spacing
 /// The height of the layers and history dock under the inspector.
-const DOCK: f32 = 320.0;
+const DOCK: f32 = 320.0; // a share of the sidebar's height for the dock: a layout size, not spacing
 
 /// The tools, top to bottom, each with its key.
 fn rail(tools: &tools::Tools) -> Element {

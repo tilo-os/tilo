@@ -38,7 +38,7 @@ impl Selecting for ColorSwatchPicker {
 }
 
 /// A swatch cell's side.
-const SWATCH: f64 = 28.0;
+const SWATCH: f64 = 28.0; // eight to a row across the sidebar: a cell size, not spacing
 
 /// `#rrggbb` as `0xrrggbb`.
 fn packed(hex: &str) -> Option<u32> {
@@ -116,7 +116,7 @@ fn labelled(label: &str, value: Element) -> Element {
 }
 
 /// The width of a field's label, so a form's controls line up.
-const LABEL_WIDTH: f32 = 84.0;
+const LABEL_WIDTH: f32 = 84.0; // the longest field label's width, so controls line up: not spacing
 
 /// A label on the left and a control filling the rest of the row.
 fn field(label: &str, control: Element) -> Element {

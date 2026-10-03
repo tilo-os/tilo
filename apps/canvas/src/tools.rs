@@ -122,7 +122,7 @@ impl Default for Tools {
             tool: LocalState::new(Tool::Brush),
             // The brush starts loaded with ultramarine: a paint colour, not
             // chrome, so it does not follow the theme.
-            colour: LocalState::new("#2b3f8f".to_owned()), // paint
+            colour: LocalState::new(INK.to_owned()),
             pigment: LocalState::new(None),
             size: LocalState::new(0.2),
             load: LocalState::new(0.5),
@@ -133,6 +133,10 @@ impl Default for Tools {
         }
     }
 }
+
+/// The ink a brush starts with: ultramarine, a paint colour rather than
+/// chrome, so it does not follow the theme.
+const INK: &str = "#2b3f8f";
 
 /// The smallest and largest brush, in artwork units.
 const BRUSH_RANGE: (f64, f64) = (1.0, 120.0);
@@ -171,7 +175,8 @@ impl Tools {
         }
         self.colour.with(|text| {
             crate::render::colour(text.trim(), &[])
-                .unwrap_or(Color::from_rgba8(0x1d, 0x1d, 0x1f, 255)) // paint
+                .or_else(|| crate::render::colour(INK, &[]))
+                .unwrap_or(Color::TRANSPARENT)
         })
     }
 
