@@ -2,10 +2,9 @@
 
 use super::App;
 use crate::history_source::HistoryComparison;
+use crate::search::SEARCH_OPERATION;
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
-use crate::standalone_history_host::{
-    HISTORY_OPERATION, HistoryCommand, SEARCH_OPERATION, StandaloneHistoryHost,
-};
+use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
 
 #[derive(Clone, Debug)]
@@ -207,7 +206,7 @@ impl App {
             let mut resources = self.close_admission.resources();
             resources.extend(self.framework_history_resource());
             if self.document_history.has_search() {
-                resources.push(crate::standalone_history_host::search_resource());
+                resources.push(crate::search::search_resource());
             }
             return resources;
         }

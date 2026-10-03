@@ -55,11 +55,13 @@ pub use provider::{
 pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
-pub(crate) use request::{SEARCH_OPERATION, SEARCH_RESOURCE, search_address, search_resource};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use request::{SEARCH_OPERATION, SEARCH_RESOURCE};
 pub use request::{
     ScopeDecl, SearchOpener, SearchRequest, SearchRequestScope, open_search_binding,
     open_search_invocation, scope_contains, search_button,
 };
+pub(crate) use request::{search_address, search_resource};
 pub use row::SearchRow;
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
