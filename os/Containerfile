@@ -2973,6 +2973,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 # layer. Its current RUN may still mount DNS under /run; the next one will not.
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
+    --mount=type=bind,source=os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf,target=/usr/local/libexec/tilo-ldconfig-image-cache.conf,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
@@ -3015,10 +3016,17 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
-    # The linker cache is current as built. Recording /etc as updated for this
-    # /usr keeps first boot from running ldconfig.service (3.5 s on the login
-    # critical chain of a release VM) to regenerate it.
+    # The linker cache is current as built; ldconfig.service rebuilds it only
+    # if it goes missing (its drop-in). The hardware database lives in /usr
+    # with none in /etc, so systemd-hwdb-update.service has nothing to do on
+    # the first boot of a deployment either.
+    && install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf \
+         /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf \
     && ldconfig \
+    && systemd-hwdb update --usr \
+    && rm -f /etc/udev/hwdb.bin \
+    && test -s /usr/lib/udev/hwdb.bin \
+    && { [ ! -d /etc/udev/hwdb.d ] || [ -z "$(ls -A /etc/udev/hwdb.d)" ]; } \
     && /usr/lib/systemd/systemd-update-done --root=/ \
     && test -s /etc/.updated \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \

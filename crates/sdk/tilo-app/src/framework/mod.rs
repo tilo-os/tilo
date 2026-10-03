@@ -87,6 +87,20 @@
 //!   another ([`Resource::coalesces`](tilo_resource::Resource::coalesces)) are
 //!   one step — a word typed, a slider dragged — until the surface
 //!   [settles](Dispatcher::settle) the gesture.
+//! * **Settings** — preferences that follow a person or stay on a device,
+//!   never seen by collaborators — are a typed
+//!   [`SettingsSchema`](crate::storage::SettingsSchema) whose
+//!   [`Scope`](crate::storage::Scope) says how far they travel: `Personal`
+//!   roams across the person's own devices, `DeviceLocal` never leaves this
+//!   one, `Shared` reads a per-user section every app follows (`locale`,
+//!   `text_assistance`). [`ViewCx::settings`] and [`SurfaceCx::settings`]
+//!   hand out a [`Setting`] kept current while the view lives; a write from
+//!   another window or device reaches it on the next frame. Files and
+//!   secrets come from the same context ([`ViewCx::storage`],
+//!   [`SurfaceCx::secrets`], [`SurfaceCx::files`]); a secret that belongs to
+//!   one document item (a profile's password) is
+//!   `secrets().item(purpose, id)`, so the document names the item and the
+//!   secret stays on the device.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
 //!   an enum, one variant per effect. A view answers it with
@@ -125,6 +139,7 @@ pub mod history;
 mod live;
 mod preview;
 mod root;
+mod settings;
 mod stage;
 mod surface;
 mod switch;
@@ -145,6 +160,7 @@ pub use each::Each;
 pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
 pub use live::Live;
 pub use preview::PastVersion;
+pub use settings::Setting;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use tilo_resource::{Effect, NoEffect};

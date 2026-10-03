@@ -90,6 +90,7 @@ pub struct HostContext {
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
+    settings: crate::storage::SettingsDocument,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -260,6 +261,7 @@ impl HostContext {
             retirement: None,
             content: None,
             open_file: None,
+            settings: crate::storage::SettingsDocument::Session,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -349,10 +351,21 @@ impl HostContext {
     pub fn files(&self) -> crate::storage::AppFiles {
         crate::storage::AppFiles::for_app(&self.app_id)
     }
-    /// This app's preferences: its own section of the desktop settings
-    /// document, named by the app id.
-    pub fn settings(&self) -> crate::storage::Settings {
-        crate::storage::Settings::for_app(&self.app_id)
+    /// This app's typed settings of type `T`, in the settings document the
+    /// host gave it ([`Self::provide_settings`]); `T` declares how far they
+    /// travel.
+    pub fn settings<T: crate::storage::SettingsSchema>(&self) -> crate::storage::Settings<T> {
+        self.storage().settings()
+    }
+    /// This app's files, secrets and settings in one handle, as framework
+    /// views and surfaces receive them.
+    pub fn storage(&self) -> crate::storage::AppStorage {
+        crate::storage::AppStorage::new(&self.app_id, self.secrets(), self.settings.clone())
+    }
+    /// Give the component this settings document instead of the person's
+    /// session document: a test or capture profile's own.
+    pub fn provide_settings(&mut self, document: crate::storage::SettingsDocument) {
+        self.settings = document;
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors

@@ -51,7 +51,26 @@ def require(ok, message):
 
 
 def plan_rows(plan):
-    return direct.normalized(plan["preserve_partitions"] + plan["target_partitions"])
+    preserved = direct.normalized(plan["preserve_partitions"])
+    targets = direct.normalized(plan["target_partitions"])
+    target_slots = {row["number"] for row in targets}
+    preserved_slots = {row["number"] for row in preserved}
+    require(len(target_slots) == len(targets) and len(preserved_slots) == len(preserved),
+            "reviewed partition groups have duplicate slots")
+    used = target_slots | preserved_slots
+    for row in preserved:
+        if row["number"] not in target_slots:
+            continue
+        # Windows numbers partitions by physical order, whereas this synthetic
+        # GPT retains the old WinRE slot from before the Windows shrink. Keep
+        # reviewed Tilo slots and change only WinRE's source GPT entry number.
+        require(row["type_guid"] == "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+                "only preserved WinRE may collide with reviewed target slots")
+        available = [slot for slot in range(1, GPT_ENTRIES + 1) if slot not in used]
+        require(available, "source GPT has no unused WinRE slot")
+        row["number"] = available[0]
+        used.add(row["number"])
+    return direct.normalized(preserved + targets)
 
 
 def gpt_header(current, backup, table_lba, sectors, disk_guid, table_crc):

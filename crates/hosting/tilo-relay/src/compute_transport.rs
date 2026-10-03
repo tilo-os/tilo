@@ -25,7 +25,7 @@ use crate::mesh::{
 use crate::store::{StoreError, WorkspaceStore};
 
 pub const COMPUTE_TRANSPORT_SCHEMA_VERSION: u16 = 1;
-pub const COMPUTE_ALPN: &[u8] = b"tilo-personal-compute/1";
+pub use tilo_relay_protocol::transport::COMPUTE_ALPN;
 pub const MAX_COMPUTE_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS: u64 = 60_000;
 pub const MAX_COMPUTE_ADVERTISED_APPS: usize = 128;
@@ -101,9 +101,13 @@ pub struct ComputeWorkerAdvertisement {
     pub worker: DeviceKey,
     pub workspace_id: u64,
     pub apps: BTreeSet<String>,
-    pub gpu: bool,
+    pub accelerators: BTreeSet<ComputeAccelerator>,
     pub assignment_capacity: u32,
     pub active_assignments: u32,
+    /// Interactive environment sessions the worker hosts at once; zero when
+    /// it hosts none.
+    pub environment_capacity: u32,
+    pub active_environments: u32,
     pub power: PowerAvailability,
     pub energy_saver: bool,
     pub issued_at_ms: u64,
@@ -120,12 +124,15 @@ impl ComputeWorkerAdvertisement {
         if self.version != COMPUTE_TRANSPORT_SCHEMA_VERSION
             || self.worker != authenticated_worker
             || self.workspace_id == 0
-            || self.apps.is_empty()
+            || (self.apps.is_empty()
+                && self.environment_capacity == 0
+                && !self.accelerators.contains(&ComputeAccelerator::Kvm))
             || self.apps.len() > MAX_COMPUTE_ADVERTISED_APPS
             || app_bytes > MAX_COMPUTE_ADVERTISED_APP_BYTES
             || self.apps.iter().any(|app| !valid_app_id(app))
             || self.assignment_capacity == 0
             || self.active_assignments > self.assignment_capacity
+            || self.active_environments > self.environment_capacity
             || self.issued_at_ms > now_ms
             || now_ms >= self.expires_at_ms
             || self.expires_at_ms.saturating_sub(self.issued_at_ms)
@@ -146,11 +153,7 @@ impl ComputeWorkerAdvertisement {
             },
             workspaces: BTreeSet::from([self.workspace_id]),
             apps: self.apps.clone(),
-            accelerators: if self.gpu {
-                BTreeSet::from([ComputeAccelerator::Gpu])
-            } else {
-                BTreeSet::new()
-            },
+            accelerators: self.accelerators.clone(),
             priority: 0,
             latency_ms: 0,
             power: self.power,
@@ -230,11 +233,14 @@ pub enum ComputeTransportError {
 pub struct ComputeTransportState {
     workers: HashMap<DeviceKey, ComputeWorkerAdvertisement>,
     sessions: HashMap<DeviceKey, ComputeSubscriber>,
+    /// Members' environment sessions and legacy launches routed to workers.
+    pub environments: crate::environment_routing::WorkspaceEnvironments,
 }
 
 struct ComputeSubscriber {
     sender: mpsc::Sender<ComputeEnvelope>,
     disconnect: mpsc::Sender<()>,
+    connection: Option<iroh::endpoint::Connection>,
 }
 
 impl ComputeTransportState {
@@ -268,9 +274,60 @@ impl ComputeTransportState {
         device: DeviceKey,
         sender: mpsc::Sender<ComputeEnvelope>,
         disconnect: mpsc::Sender<()>,
+        connection: Option<iroh::endpoint::Connection>,
     ) {
+        self.sessions.insert(
+            device,
+            ComputeSubscriber {
+                sender,
+                disconnect,
+                connection,
+            },
+        );
+    }
+
+    /// The live connection of an attached worker that currently advertises
+    /// room for one more environment session in this workspace, least
+    /// loaded first.
+    #[must_use]
+    pub fn environment_worker(
+        &self,
+        now_ms: u64,
+    ) -> Option<(DeviceKey, iroh::endpoint::Connection)> {
+        self.workers
+            .iter()
+            .filter(|(worker, advertisement)| {
+                advertisement.validate(**worker, now_ms).is_ok()
+                    && advertisement.active_environments < advertisement.environment_capacity
+                    && !advertisement.energy_saver
+            })
+            .min_by_key(|(worker, advertisement)| (advertisement.active_environments, **worker))
+            .and_then(|(worker, _)| Some((*worker, self.worker_connection(worker)?)))
+    }
+
+    /// The live connection of an attached worker advertising `kvm`, least
+    /// loaded first.
+    #[must_use]
+    pub fn kvm_worker(&self, now_ms: u64) -> Option<(DeviceKey, iroh::endpoint::Connection)> {
+        self.workers
+            .iter()
+            .filter(|(worker, advertisement)| {
+                advertisement.validate(**worker, now_ms).is_ok()
+                    && advertisement
+                        .accelerators
+                        .contains(&ComputeAccelerator::Kvm)
+                    && !advertisement.energy_saver
+            })
+            .min_by_key(|(worker, advertisement)| (advertisement.active_assignments, **worker))
+            .and_then(|(worker, _)| Some((*worker, self.worker_connection(worker)?)))
+    }
+
+    /// The live connection of an attached device.
+    #[must_use]
+    pub fn worker_connection(&self, worker: &DeviceKey) -> Option<iroh::endpoint::Connection> {
         self.sessions
-            .insert(device, ComputeSubscriber { sender, disconnect });
+            .get(worker)
+            .and_then(|subscriber| subscriber.connection.clone())
     }
 
     pub fn detach(&mut self, device: &DeviceKey) {
@@ -540,9 +597,15 @@ mod tests {
             worker: [2; 32],
             workspace_id: 7,
             apps: BTreeSet::from(["org.tilo.render".into()]),
-            gpu,
+            accelerators: if gpu {
+                BTreeSet::from([ComputeAccelerator::Gpu])
+            } else {
+                BTreeSet::new()
+            },
             assignment_capacity: 2,
             active_assignments: 0,
+            environment_capacity: 0,
+            active_environments: 0,
             power: PowerAvailability::External,
             energy_saver: false,
             issued_at_ms: 100,
@@ -731,7 +794,7 @@ mod tests {
 
             let (sender, mut receiver) = mpsc::channel(1);
             let (disconnect, _disconnect_receiver) = mpsc::channel(1);
-            state.attach([2; 32], sender, disconnect);
+            state.attach([2; 32], sender, disconnect, None);
             let live = ComputeEnvelope::Cancel { binding: binding() };
             state.route([2; 32], &live, &store, 2).unwrap();
             assert!(matches!(

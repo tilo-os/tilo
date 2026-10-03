@@ -1,0 +1,311 @@
+name: Build / env tool catalog
+
+# Builds the tool catalog (os/env-tools-catalog.txt) for the published
+# env-runtime, natively for x86_64 and aarch64, so `pkg install git` in an
+# environment is a cache hit rather than a build. Each tool is built by
+# tilo-env-tools exactly as a device builds one — the runtime as an overlay
+# lower, dnf as uid 0 of the build sandbox's own user namespace — and sealed
+# into a signed `tool` tapp bound to that runtime's package id.
+#
+# Main publishes every tool and both architectures' catalog.json (cache key
+# -> tool id) as registry.tilo.so/tilo/env-tools:<runtime tag>-<catalog
+# fingerprint>, Cosign-signed. The fingerprint covers the catalog list and
+# the builder sources that decide an image's contents, so an unchanged
+# catalog on an unchanged runtime exits early. Until the runtime is
+# published a main run waits by exiting early; the scheduled run builds the
+# catalog once it is. A dispatch on a branch builds against the published
+# runtime, or an unpublished preview of it when there is none, seals with a
+# throwaway key and publishes nothing.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "11 */6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - os/env-tools-catalog.txt
+      - os/Containerfile.env-tools
+      - os/dev/build-env-tools.sh
+      - os/dev/preview-env-runtime.sh
+      - crates/runtime/env-tools/**
+      - .forgejo/workflows/build-env-tools.yml
+
+concurrency:
+  group: env-tools-${{ github.ref == 'refs/heads/main' && 'publication' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      runtime: ${{ steps.plan.outputs.runtime }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Install registry tools
+        run: |
+          if ! command -v skopeo >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends skopeo
+            else
+              sudo -n dnf install -y skopeo
+            fi
+          fi
+      - name: Decide what to build
+        id: plan
+        run: |
+          set -euo pipefail
+          runtime_tag="$(./os/dev/resolve-env-runtime.sh --tag)"
+          catalog="$(cat os/env-tools-catalog.txt os/Containerfile.env-tools \
+            crates/runtime/env-tools/src/{key,seal,sandbox,builder,image,resolve}.rs \
+            | sha256sum | cut -c1-16)"
+          tag="${runtime_tag}-${catalog}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          status=0
+          ./os/dev/resolve-env-runtime.sh --exists || status=$?
+          case $status in
+            0) runtime=published ;;
+            1) runtime=preview ;;
+            *) exit "$status" ;;
+          esac
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            if [[ $runtime == preview ]]; then
+              echo "::notice::the env-runtime for this checkout is not published yet; the scheduled run builds the catalog once it is"
+              build=false
+            elif skopeo inspect --no-tags "docker://registry.tilo.so/tilo/env-tools:$tag" >/dev/null 2>&1; then
+              echo "::notice::tool catalog already published as $tag"
+              build=false
+            else
+              build=true
+            fi
+            publish=$build
+          else
+            build=true
+            publish=false
+          fi
+          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  builder:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  signing-preflight:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: runner
+    timeout-minutes: 5
+    enable-openid-connect: true
+    steps:
+      - name: Checkout signing policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+      - name: Require non-exportable signing authority
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+        run: os/dev/require-cosign-authority.sh
+
+  tools:
+    needs: [plan, builder]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      # Privilege applies inside the disposable guest only: the build
+      # sandbox creates a user namespace and mounts an overlay in it.
+      options: --privileged
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_INCREMENTAL: "0"
+      TILO_SCCACHE_KEY_PREFIX: tilo/env-tools/v1/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Require a native build host
+        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+      - name: Restore Cargo downloads
+        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare compiler cache
+        run: bash tools/ci/sccache.sh prepare
+      - name: Build the tool builder and the packer
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p env-tools --bin tilo-env-tools \
+            -p tilo-app-package-cli --bin tilo-app-package
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: Install the build sandbox's tools
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in bwrap skopeo; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if ((${#missing[@]})); then
+            pkgs=("${missing[@]/bwrap/bubblewrap}")
+            dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}"
+          fi
+          ./os/dev/install-cached-cosign.sh
+
+      - name: Fetch the published env-runtime
+        if: needs.plan.outputs.runtime == 'published'
+        run: |
+          set -euo pipefail
+          ./os/dev/fetch-env-runtime.sh "$RUNNER_TEMP/env-runtime"
+          cp "$RUNNER_TEMP/env-runtime/env-runtime-${{ matrix.arch }}.tapp" "$RUNNER_TEMP/runtime.tapp"
+      - name: Build a preview env-runtime
+        if: needs.plan.outputs.runtime == 'preview'
+        run: |
+          set -euo pipefail
+          echo "::notice::no published env-runtime for this checkout: building tools against an unpublished preview"
+          ./os/dev/preview-env-runtime.sh "$RUNNER_TEMP/runtime.tapp"
+
+      - name: Build the catalog
+        env:
+          TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+          PUBLISH: ${{ needs.plan.outputs.publish }}
+        run: |
+          set -euo pipefail
+          identity=()
+          if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then
+            identity=("$RUNNER_TEMP/tilo-env-tools-publisher.json")
+            (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "${identity[0]}")
+            trap 'rm -f "${identity[0]}"' EXIT
+          elif [[ $PUBLISH == true ]]; then
+            printf 'TAPP_PUBLISHER_IDENTITY is required for publication\n' >&2
+            exit 1
+          else
+            echo "::notice::branch build: sealed with a throwaway key, published nowhere"
+          fi
+          unset TAPP_PUBLISHER_IDENTITY
+          # Overlay uppers cannot live on the container's own overlay root,
+          # and the shared-memory tmpfs is too small for a toolchain: give
+          # the builds a loop-mounted ext4 of their own on the job's disk.
+          state="$RUNNER_TEMP/env-tools-state"
+          mkdir -p "$state"
+          df -hT "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          case $(stat -f -c %T "$state") in
+            overlayfs|tmpfs)
+              command -v mkfs.ext4 >/dev/null || dnf install -y e2fsprogs
+              truncate -s 40G "$RUNNER_TEMP/env-tools-state.img"
+              mkfs.ext4 -q "$RUNNER_TEMP/env-tools-state.img"
+              mount -o loop "$RUNNER_TEMP/env-tools-state.img" "$state"
+              ;;
+          esac
+          echo "build state on $(stat -f -c %T "$state")"
+          out="$PWD/env-tools/${{ matrix.arch }}"
+          mkdir -p "$out"
+          {
+            echo "## env tool catalog (${{ matrix.arch }}, runtime: ${{ needs.plan.outputs.runtime }})"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          TILO_ENV_TOOLS_STATE="$state" ./os/dev/build-env-tools.sh \
+            "$RUNNER_TEMP/runtime.tapp" "$out" "${identity[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          mv "$out/catalog.json" "$out/catalog-${{ matrix.arch }}.json"
+          mv "$out/report.json" "$out/report-${{ matrix.arch }}.json"
+          ls -l "$out"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: env-tools-${{ matrix.arch }}
+          path: env-tools/${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, signing-preflight, tools]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: runner
+    timeout-minutes: 30
+    enable-openid-connect: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: built
+
+      - name: Collect both architectures
+        run: |
+          set -euo pipefail
+          mkdir -p sealed
+          for arch in x86_64 aarch64; do
+            cp "built/env-tools-$arch"/* sealed/
+          done
+          (cd sealed && sha256sum ./*.tapp > SHA256SUMS)
+          ls -l sealed
+
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: ./.forgejo/actions/setup-buildx
+
+      - name: Push the catalog
+        id: push
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          build-contexts: |
+            sealed=sealed
+          file: os/Containerfile.env-tools
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: registry.tilo.so/tilo/env-tools:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+
+      - name: Sign, verify and tag the catalog
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || sudo -n dnf install -y skopeo || {
+            sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends skopeo; }
+          ./os/dev/install-cached-cosign.sh
+          . os/dev/configure-cosign-kms.sh
+          [[ $TAG =~ ^set-[0-9a-f]{64}-[0-9a-f]{16}$ && $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]
+          ref="registry.tilo.so/tilo/env-tools@$DIGEST"
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          if skopeo inspect --no-tags "docker://registry.tilo.so/tilo/env-tools:$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG already present; leaving the published digest"
+          else
+            skopeo copy --all --preserve-digests "docker://$ref" "docker://registry.tilo.so/tilo/env-tools:$TAG"
+          fi
+          echo "::notice::tool catalog published: registry.tilo.so/tilo/env-tools:$TAG ($ref)"

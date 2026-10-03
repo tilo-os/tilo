@@ -304,6 +304,7 @@ impl Session {
             ],
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
+            grant_root: self.store.grant_root().map(Path::to_path_buf),
             runtime_bin: runtime_binary()?,
             broker_socket,
             seccomp_blob,
@@ -841,6 +842,9 @@ fn spawn_attached(
     }
     cmd.env(crate::store::STORE_ENV, launch.store.root());
     cmd.env(crate::store::RECORDS_ENV, launch.store.records_root());
+    if let Some(root) = launch.store.grant_root() {
+        cmd.env(crate::store::GRANT_ROOT_ENV, root);
+    }
     cmd.env("TERM", launch.term);
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));

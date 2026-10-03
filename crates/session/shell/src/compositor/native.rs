@@ -151,6 +151,17 @@ fn desired_legacy_shares(
     }
     desired
 }
+/// Whether the active workspace shows a legacy window.
+fn has_legacy_windows(tree: &crate::shell::state::WorkspaceTree) -> bool {
+    tree.desktop.active_workspace().is_some_and(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
+    })
+}
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
@@ -217,6 +228,15 @@ const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
 const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
 const SLOW_WAYLAND_CLIENT_DISPATCH: Duration = Duration::from_millis(10);
 const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
+
+/// What the input phase's trace calls the time spent on `event`.
+fn input_event_step(event: &BackendEvent) -> &'static str {
+    match event {
+        BackendEvent::Input(WindowEvent::KeyboardInput { .. }) => "key-event",
+        BackendEvent::Input(_) => "pointer-event",
+        _ => "backend-event",
+    }
+}
 
 fn slow_prepaint_phase(elapsed: Duration) -> bool {
     elapsed >= SLOW_PREPAINT_PHASE
@@ -7044,6 +7064,11 @@ pub fn run() {
     // than requiring the person to restart the desktop they just set up.
     let enable_peer_sync = peer_sync_requested && onboarding_identity_dir.is_none();
     let mut deferred_peer_sync = peer_sync_requested && onboarding_identity_dir.is_some();
+    // Without peer sync the broker is local-only, but it still reads the
+    // session's identity and device key once when it starts. Start it after
+    // first-login setup too, or it keeps the pre-identity view all session.
+    let mut deferred_local_broker = !peer_sync_requested && onboarding_identity_dir.is_some();
+    let mut local_broker_due = false;
     if deferred_peer_sync {
         tracing::info!("peer-sync: waiting for first-login identity setup to complete");
     }
@@ -7186,7 +7211,7 @@ pub fn run() {
     // Onboarding withholds every app, so defer its broker too. That lets the
     // freshly authenticated transport be its outbound route as soon as the
     // person completes setup, with no stale local-only broker to replace.
-    let mut collab_broker = (!deferred_peer_sync)
+    let mut collab_broker = (!deferred_peer_sync && !deferred_local_broker)
         .then(|| spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref()))
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
@@ -7508,8 +7533,12 @@ pub fn run() {
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
     let headless = backend_kind == BackendKind::Headless;
-    let mut power_policy =
-        idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
+    // No power profile is known yet: the power service reads it over D-Bus
+    // once it runs and sends the profile's idle-suspend timeout from there.
+    let mut power_policy = idle_policy_for_backend(
+        tilo_power_mgmt::config::load_policy_for_profile(None),
+        headless,
+    );
     let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
         && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
             || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
@@ -7845,6 +7874,9 @@ pub fn run() {
         HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
     let mut hosted_legacy_checked = Instant::now();
+    // Whether this loop, not a viewer's watch request, made the headless
+    // backend watched: for legacy windows its room's host relays.
+    let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
     // Slow iterations are exceptional and always worth preserving in the
@@ -7945,6 +7977,7 @@ pub fn run() {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        let mut input_steps = crate::compositor::metrics::SlowestStep::starting_at(iter_t0);
         if !transition_hold_sleep.is_zero() {
             frame_builder
                 .host_mut()
@@ -7977,6 +8010,7 @@ pub fn run() {
                 event,
             ));
         });
+        input_steps.step("backend-poll");
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
             tracing::warn!(
@@ -7993,6 +8027,7 @@ pub fn run() {
         // can deadlock behind its first transaction barrier.
         let foreign_capture_changed =
             state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        input_steps.step("capture-barriers");
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
         // then stops Tilo's graphical targets and clears the shared user-manager
@@ -8042,6 +8077,7 @@ pub fn run() {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
         }
+        input_steps.step("services");
         // A pen goes to a tablet-aware client directly and stands in for the
         // pointer everywhere else, so it expands into ordinary input here,
         // in order, before the batch is dispatched.
@@ -8132,6 +8168,7 @@ pub fn run() {
         if pad_map.is_some() || frame_builder.chrome().pad_map.is_some() {
             frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
+        input_steps.step("tablet");
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
@@ -8199,7 +8236,10 @@ pub fn run() {
         // outside this loop and reused every tick to avoid a per-frame
         // allocation on this hot path, and an event may expand into further
         // events that must run next, before anything the backend queued later.
+        let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            input_steps.step(event_step);
+            event_step = input_event_step(&event);
             match event {
                 BackendEvent::CloseRequested => {
                     close_requested = true;
@@ -8716,6 +8756,7 @@ pub fn run() {
             }
         }
 
+        input_steps.step(event_step);
         // Automatic scanning is generated by the same session owner, then
         // offered to the focused Wayland client or shell through the exact
         // normal Tab press/release route. It never runs on the lock screen.
@@ -8786,6 +8827,7 @@ pub fn run() {
             }
         }
 
+        input_steps.step("controllers");
         state.expire_host_launch_activations();
         crate::shell::launcher::expire_pending_placements();
         session_changed |=
@@ -8802,10 +8844,12 @@ pub fn run() {
         // repeat) under render pressure.  Flush events queued by this input batch
         // before doing any layout/render work.  The later flush remains necessary
         // for protocol events produced while dispatching client requests.
+        input_steps.step("launches");
         if had_backend_events && let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: input flush_clients error: {err}");
             break;
         }
+        input_steps.step("input-flush");
         // Click-to-focus persistence serialises the full workspace tree and
         // performs two durability barriers (file + containing directory).
         // Keep that I/O out of `route_mouse_input`: queue and flush
@@ -8826,15 +8870,19 @@ pub fn run() {
             }
         }
 
+        input_steps.step("focus-persist");
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
         if settings_written.swap(false, Ordering::AcqRel) {
             settings_watch.check_now();
         }
         if settings_watch.changed(Instant::now()) {
+            input_steps.step("settings-poll");
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
+            input_steps.step("settings-keyboard");
             backend.reload_input_settings();
+            input_steps.step("settings-input-devices");
             // The backend has now reconciled any staged display plan; tell
             // the output-management clients that asked for it how it went.
             state.output_management.resolve_transactions(
@@ -8843,6 +8891,7 @@ pub fn run() {
             if let Some(xwayland) = xwayland.as_mut() {
                 xwayland.reload_keyboard_settings();
             }
+            input_steps.step("settings-displays-xwayland");
             // Shortcut ownership is decided before a focused client sees the
             // press. Refresh the host's validated snapshot in the same settings
             // transaction so changes made in Settings take effect live rather
@@ -8862,6 +8911,7 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
+            input_steps.step("settings-shortcuts");
             // Input/display reload above does not re-theme. An appearance
             // write must rebuild chrome on this tick and wake tiled apps so
             // they paint the new Theme instead of keeping the last buffer.
@@ -8873,15 +8923,26 @@ pub fn run() {
                 }
             }
             force_first_paint = true;
-            let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
+            input_steps.step("settings-appearance");
+            // The profile the power service last read, not a fresh ask:
+            // `powerprofilesctl` is a process start this thread would wait on.
+            let policy = idle_policy_for_backend(
+                tilo_power_mgmt::config::load_policy_for_profile(
+                    power_bridge.active_profile().as_deref(),
+                ),
+                headless,
+            );
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
             session.set_lock_timeout(policy.idle_lock);
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
+            input_steps.step("settings-power");
             input_methods.reload(&mut state);
+            input_steps.step("settings-input-methods");
         }
+        input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
         input_methods.tick();
         for (output, on) in state.output_management.take_power_requests() {
@@ -8910,6 +8971,7 @@ pub fn run() {
 
         // Re-derive everything depending on the output set once, after the whole
         // batch — a dock plug raises several udev edges, and per-edge re-derivation would advertise globals the next edge immediately supersedes.
+        input_steps.step("input-methods");
         let output_geometry_changed = std::mem::take(&mut outputs_dirty);
         if output_geometry_changed {
             let outs = backend.outputs().to_vec();
@@ -8972,14 +9034,19 @@ pub fn run() {
                 metrics.set_target_period(interval);
             }
         }
+        input_steps.step("outputs");
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
+        metrics.mark_input_step(input_steps);
         let input_dispatch = t_input_done.saturating_sub(t_backend_poll_done);
         if slow_prepaint_phase(input_dispatch) {
+            let (slowest_step, slowest_took) = input_steps.slowest();
             tracing::warn!(
                 target: "tilo::latency",
                 elapsed_ms = input_dispatch.as_secs_f64() * 1_000.0,
                 backend_poll_ms = t_backend_poll_done.as_secs_f64() * 1_000.0,
+                slowest_step,
+                slowest_step_ms = slowest_took.as_secs_f64() * 1_000.0,
                 had_backend_events,
                 "pre-paint input and service dispatch stalled compositor input"
             );
@@ -9293,6 +9360,26 @@ pub fn run() {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }
                 }
+                // Windows a remote viewer closed: through the same tab close.
+                for surface in state.take_remote_closes() {
+                    let tabs: Vec<_> = chrome
+                        .tree()
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|workspace| workspace.strips.iter())
+                        .flat_map(|strip| strip.window_groups.iter())
+                        .flat_map(|group| group.tabs.iter())
+                        .filter(|tab| {
+                            matches!(&tab.tile, crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                if *surface_id == surface)
+                        })
+                        .map(|tab| tab.id)
+                        .collect();
+                    for tab in tabs {
+                        let _ = crate::shell::window_actions::close_tab(chrome, tab);
+                    }
+                }
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
@@ -9595,7 +9682,10 @@ pub fn run() {
                                 }),
                                 InputEvent::PointerEnter { .. }
                                 | InputEvent::PointerLeave { .. }
-                                | InputEvent::KeyboardFocus { .. } => None,
+                                | InputEvent::KeyboardFocus { .. }
+                                | InputEvent::PointerAxis { .. }
+                                | InputEvent::ClipboardText { .. }
+                                | InputEvent::Close => None,
                             };
                                     if let Some(mapped) = mapped {
                                         let _ =
@@ -9702,6 +9792,19 @@ pub fn run() {
                 };
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
+                // A headless session whose active room has a host shows its
+                // legacy windows to the host's viewers (browsers that opened
+                // them): it paints and encodes while it has one, and stops
+                // with the last.
+                let for_host = !viewer_hosts.is_empty() && has_legacy_windows(&tree);
+                if for_host != watched_for_host
+                    && (for_host != backend.watched() || watched_for_host)
+                {
+                    if backend.set_watched(for_host) {
+                        injected_redraw_pending = true;
+                    }
+                    watched_for_host = for_host;
+                }
                 desired_legacy_shares(&tree, backend.watched(), &viewer_hosts)
             };
             // This session's legacy windows, as its own tabs in the rooms
@@ -9927,13 +10030,22 @@ pub fn run() {
                 Arc::clone(&session_wake),
             ));
         }
-        if let Some(outcome) = network_start
-            .as_ref()
-            .and_then(crate::session_runtime::PendingStart::poll)
-        {
+        if take_deferred_peer_sync_activation(&mut deferred_local_broker, onboarding_active) {
+            local_broker_due = true;
+        }
+        let started = if std::mem::take(&mut local_broker_due) {
+            Some(None)
+        } else {
+            network_start
+                .as_ref()
+                .and_then(crate::session_runtime::PendingStart::poll)
+                .map(Some)
+        };
+        if let Some(outcome) = started {
             network_start = None;
             let start_failure = match outcome {
-                Ok(network) => {
+                None => None,
+                Some(Ok(network)) => {
                     peer_sync = Some(install_session_peer_sync(
                         &mut frame_builder,
                         &mut state,
@@ -9945,7 +10057,7 @@ pub fn run() {
                     }
                     None
                 }
-                Err(error) => {
+                Some(Err(error)) => {
                     tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
                     Some(error)
                 }
@@ -9959,6 +10071,8 @@ pub fn run() {
                     onboarding_active,
                 ));
                 attach_collab_broker_bridges(&mut frame_builder, broker);
+                #[cfg(feature = "agent-control")]
+                spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
                 if let (Some(portal), Some(service)) =
                     (portal_backend.as_ref(), broker.native_media_service())
                 {
@@ -10838,10 +10952,12 @@ pub fn run() {
                 }
             }
         }
-        if let Some(watching) = test_control_ctx.watch_request.take()
-            && backend.set_watched(watching)
-        {
-            injected_redraw_pending = true;
+        if let Some(watching) = test_control_ctx.watch_request.take() {
+            // A viewer's own lease governs from here on.
+            watched_for_host = false;
+            if backend.set_watched(watching) {
+                injected_redraw_pending = true;
+            }
         }
         // An agent driving the screen answers the shell's choosers; a viewer
         // only watching cannot click one.

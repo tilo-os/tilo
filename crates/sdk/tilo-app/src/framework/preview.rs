@@ -31,6 +31,7 @@ use ui_core::widget::Widget;
 
 use super::app::{Editing, ResourceApp, build_root, leaked};
 use super::root::ResourceRoot;
+use ui_core::storage::AppStorage;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
 
@@ -148,7 +149,7 @@ fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
     let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
     Ok(Box::new(ViewPreview {
-        root: build_root::<A>(reader, Editing::ReadOnly),
+        root: build_root::<A>(reader, Editing::ReadOnly, AppStorage::for_app(A::ID)),
         doc: Some(doc),
         bounds: Rect::ZERO,
         view: input.initial_view,
@@ -210,7 +211,7 @@ pub(crate) fn render_past<A: ResourceApp>(
 ) -> Result<PastVersion<A::Resource>, String> {
     let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
     let mut preview = ViewPreview {
-        root: build_root::<A>(reader, Editing::ReadOnly),
+        root: build_root::<A>(reader, Editing::ReadOnly, AppStorage::for_app(A::ID)),
         doc: Some(doc),
         bounds: Rect::ZERO,
         view: PreviewView::default(),
@@ -238,7 +239,7 @@ pub(crate) fn draw_past<A: ResourceApp>(
 ) -> Result<(), String> {
     let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
     let mut preview = ViewPreview {
-        root: build_root::<A>(reader, Editing::ReadOnly),
+        root: build_root::<A>(reader, Editing::ReadOnly, AppStorage::for_app(A::ID)),
         doc: Some(doc),
         bounds: Rect::ZERO,
         view: PreviewView::default(),
@@ -493,7 +494,11 @@ mod tests {
 
             let frozen = AutoCommit::load(&bytes).unwrap();
             let mut preview = ViewPreview {
-                root: build_root::<PageApp>(Reader::read(&frozen).unwrap(), Editing::ReadOnly),
+                root: build_root::<PageApp>(
+                    Reader::read(&frozen).unwrap(),
+                    Editing::ReadOnly,
+                    AppStorage::for_app(PageApp::ID),
+                ),
                 doc: Some(frozen),
                 bounds: Rect::ZERO,
                 view: PreviewView::default(),

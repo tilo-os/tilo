@@ -37,13 +37,27 @@ The relay rewrites every surface-bearing event to the selected stream and
 routes it to that device alone. A `204` acknowledges forwarding, not injection:
 the native compositor's existing share registry and input firewall remain the
 final gate (read-only, lock, kill switch, physical priority and private focus).
+Besides pointer and keys, input carries the wheel (`PointerAxis`, at the
+member's last pointer position), pasted text (`ClipboardText`, offered as the
+session's clipboard before the paste chord) and `Close`: a member who drives
+a window and closes its desktop window asks the session to close it, as a
+person's close of its tab does. A watcher closing it closes only its view,
+and the desktop does not reopen a window the person closed while it streams.
+
+## Legacy applications on a node
+
+A node runs a session beside the relay (`run --session-device`); `POST
+/peer/v1/node` names its device to members ([`NodeInfo`]). The page asks that
+session for the room's `workspace:<room>` catalogue and lists its unconfined
+applications (`applications.host-app`: Chromium, LibreOffice, …) in desktop
+search and the navigation catalogue. Opening one invokes its `app.<id>`/`open`
+action on the session, which launches it in the room. A headless session whose
+active room has a host paints and encodes while that room shows a legacy
+window, so the window arrives here as above, beside the focused one.
 
 ## Explicit remaining gaps
 
-- Native peer input currently decodes pointer motion/buttons/enter/leave and
-  keyboard keys/focus only. Wheel and clipboard protocol variants are reserved;
-  the HTTP route returns `501` instead of acknowledging events the native peer
-  cannot decode. IME/text commit and touch input likewise need native endpoints.
+- IME/text commit and touch input need native endpoints.
 - This increment consumes consented H.264 surface streams; it creates no native
   capture/share endpoint. A session must already grant and stream the surface.
   There is no independent PNG/JPEG/image delivery endpoint or codec negotiation.

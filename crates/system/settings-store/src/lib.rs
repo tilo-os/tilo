@@ -146,7 +146,12 @@ pub fn stamp() -> Option<SettingsStamp> {
     if let Some(source) = installed_source() {
         return Some(SettingsStamp::Revision(source.revision()));
     }
-    let modified = std::fs::metadata(settings_path()?).ok()?.modified().ok()?;
+    stamp_at(&settings_path()?)
+}
+
+/// [`stamp`] of the document at `path`, ignoring any installed source.
+pub fn stamp_at(path: &Path) -> Option<SettingsStamp> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(SettingsStamp::Modified(modified))
 }
 
