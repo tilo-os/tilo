@@ -239,6 +239,7 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+mod theme_document;
 mod theme_layers;
 pub mod tokens;
 pub mod ui_graph;

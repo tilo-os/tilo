@@ -23,7 +23,7 @@ const PERIOD_SECONDS: f64 = 120.0;
 /// the initial composition without requiring a redraw timer.
 #[must_use]
 pub fn needs_animation(theme: &Theme) -> bool {
-    !theme.reduce_motion && theme.name != "High Contrast"
+    !theme.reduce_motion && !theme.colors_are_forced()
 }
 
 /// Paint an opaque authentication backdrop inside `bounds`.
@@ -39,7 +39,7 @@ pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64
 
     let base = theme.bg_app.with_alpha(1.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, base, None, &bounds);
-    if theme.name == "High Contrast" {
+    if theme.colors_are_forced() {
         return;
     }
 

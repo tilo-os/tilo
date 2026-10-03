@@ -1527,7 +1527,7 @@ impl App {
                     .set_text_scale(self.accessibility.text_scale);
                 self.accessibility.text_scale = self.text_renderer.text_scale();
                 let base = if self.accessibility.a11y.high_contrast {
-                    Theme::high_contrast()
+                    self.accessibility.base_theme.clone().with_high_contrast()
                 } else {
                     self.accessibility.base_theme.clone()
                 };
