@@ -54,6 +54,23 @@ fn is_disk_unlock_prompt(text: &str) -> bool {
     text.contains("unlock tilo") && text.contains("enter your disk passphrase or recovery key")
 }
 
+// Older receipts predate these flags and used scenario-tilo plus medium defaults.
+fn check_retained_preferences(saved: &Value, current: &Value) -> Result<(), String> {
+    for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
+        let legacy = if key == "hostname" {
+            json!("scenario-tilo")
+        } else {
+            Value::Null
+        };
+        if saved.get(key).unwrap_or(&legacy) != current.get(key).unwrap_or(&legacy) {
+            return Err(format!(
+                "retained scenario {key} differs; use its original inputs"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Everything one run needs to know, settled before anything boots.
 struct Plan {
     root: PathBuf,
@@ -65,6 +82,10 @@ struct Plan {
     resume: bool,
     unlock: Unlock,
     username: String,
+    hostname: String,
+    keyboard_layout: Option<String>,
+    timezone: Option<String>,
+    locale: Option<String>,
     graphics: crate::scenario::Graphics,
     cycle: String,
     out: PathBuf,
@@ -200,6 +221,10 @@ impl Plan {
             "filesystem": self.filesystem,
             "encrypt": self.unlock.name(),
             "username": self.username,
+            "hostname": self.hostname,
+            "keyboard_layout": self.keyboard_layout,
+            "timezone": self.timezone,
+            "locale": self.locale,
             "graphics": self.graphics,
             "cycle": self.cycle,
             "artifacts": self.out,
@@ -972,6 +997,10 @@ impl App {
             resume: args.resume,
             unlock: args.encrypt,
             username: username.to_owned(),
+            hostname: args.hostname.clone(),
+            keyboard_layout: args.keyboard_layout.clone(),
+            timezone: args.timezone.clone(),
+            locale: args.locale.clone(),
             graphics: args.graphics,
             cycle_dir: storage.join("vm-cycles").join(&cycle),
             run: runtime.join(format!("tilo-vm-{cycle}")),
@@ -1007,6 +1036,8 @@ impl App {
                     ));
                 }
             }
+            check_retained_preferences(&saved, &current)
+                .map_err(|message| failed("resume", message, &plan))?;
         }
         if args.dry_run {
             let plan_json = plan.describe();
@@ -1305,7 +1336,10 @@ impl App {
                 } else {
                     plan.username.clone()
                 },
-                hostname: "scenario-tilo".into(),
+                hostname: plan.hostname.clone(),
+                keyboard_layout: plan.keyboard_layout.clone(),
+                timezone: plan.timezone.clone(),
+                locale: plan.locale.clone(),
                 account_secret: crate::scenario::Secret::new(credentials.account.expose()),
                 disk_secret: credentials
                     .disk
@@ -1730,6 +1764,29 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 #[cfg(test)]
 mod tests {
     #[test]
+    fn retained_install_preferences_preserve_legacy_defaults_and_reject_changes() {
+        let legacy = serde_json::json!({});
+        let defaults = serde_json::json!({"hostname":"scenario-tilo", "keyboard_layout":null, "timezone":null, "locale":null});
+        super::check_retained_preferences(&legacy, &defaults).unwrap();
+        let mut configured = plan(Layout::Erase);
+        configured.hostname = "laptop".into();
+        configured.keyboard_layout = Some("German (QWERTZ)".into());
+        configured.timezone = Some("Europe/Berlin".into());
+        let requested = configured.describe();
+        super::check_retained_preferences(&requested, &requested).unwrap();
+        for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
+            let mut changed = requested.clone();
+            changed[key] = serde_json::json!("different");
+            assert!(
+                super::check_retained_preferences(&requested, &changed)
+                    .unwrap_err()
+                    .contains(key)
+            );
+        }
+        assert!(super::check_retained_preferences(&legacy, &requested).is_err());
+    }
+
+    #[test]
     fn disk_secret_requires_the_visible_encrypted_root_prompt() {
         assert!(super::is_disk_unlock_prompt(
             "Unlock Tilo\n\nEnter your disk passphrase or recovery key"
@@ -2008,6 +2065,10 @@ mod tests {
             resume: false,
             unlock: Unlock::Passphrase,
             username: "scenario".into(),
+            hostname: "scenario-tilo".into(),
+            keyboard_layout: None,
+            timezone: None,
+            locale: None,
             graphics: crate::scenario::Graphics::Software,
             cycle: "scenario-install-x".into(),
             out: PathBuf::from("/w/target/tilo-vm-scenarios/scenario-install-x"),
