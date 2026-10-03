@@ -14,7 +14,6 @@ crates/sdk/ui-core/src/widget/color_picker.rs literal_color 2
 crates/sdk/ui-core/src/widget/color_picker.rs white_or_black 2
 crates/sdk/ui-core/src/widget/conflict_picker.rs literal_color 1
 crates/sdk/ui-core/src/widget/conflict_picker.rs white_or_black 2
-crates/sdk/ui-core/src/widget/empty_state.rs white_or_black 1
 crates/sdk/ui-core/src/widget/identity_flow/sheet.rs literal_color 2
 crates/sdk/ui-core/src/widget/nav_shell.rs literal_color 2
 crates/sdk/ui-core/src/widget/nav_split.rs literal_color 2

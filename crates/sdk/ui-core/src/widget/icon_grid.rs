@@ -360,7 +360,7 @@ impl Widget for IconGrid {
                 let bg = if selected {
                     tokens.colors.lift_on(tokens.colors.surfaces.content, 1.0)
                 } else {
-                    theme.bg_hover
+                    tokens.colors.intent.selection_hover
                 };
                 let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);

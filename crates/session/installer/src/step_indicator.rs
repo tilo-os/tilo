@@ -171,7 +171,7 @@ impl Widget for StepIndicator {
         }
         let cy = self.rect.y0 + CIRCLE_CY;
         let accent = theme.tokens.colors.intent.inverted;
-        let upcoming_bg = theme.bg_primary;
+        let upcoming_bg = theme.tokens.colors.surfaces.raised;
 
         if self.rect.width() < COMPACT_WIDTH {
             self.draw_compact(scene, transform, text_renderer, theme);

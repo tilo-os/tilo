@@ -2653,7 +2653,13 @@ pub fn paint_output_presentation_surface(
     // An audience surface is deliberately opaque: its renderer may carry
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &rect,
+    );
     let Some(frame) = store().snapshot(surface_id) else {
         return;
     };

@@ -2031,7 +2031,11 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_hover.with_alpha_factor(0.35),
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+                .with_alpha_factor(0.35),
             None,
             &gutter,
         );
@@ -2060,7 +2064,11 @@ impl TextInput {
         let Some(layout) = &self.single_layout else {
             return;
         };
-        let band_color = theme.bg_hover.with_alpha_factor(0.6);
+        let band_color = theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+            .with_alpha_factor(0.6);
         for (top, height) in layout.logical_line_bands(caret_byte) {
             let y0 = self.single_origin.y + f64::from(top);
             let band = Rect::new(
@@ -2342,7 +2350,11 @@ impl TextInput {
             return;
         }
         let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let band_color = theme.bg_hover.with_alpha_factor(0.6);
+        let band_color = theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+            .with_alpha_factor(0.6);
         for (row, &lor) in self.lines.iter().zip(line_of_row.iter()) {
             if lor != caret_line {
                 continue;
@@ -4769,7 +4781,7 @@ impl TextInput {
         let disabled = self.effectively_disabled();
         let rest = theme.tokens.colors.surfaces.raised;
         let bg_color = if self.is_focused && !disabled {
-            theme.bg_active
+            theme.tokens.colors.lift_on(rest, 1.0)
         } else {
             rest
         };

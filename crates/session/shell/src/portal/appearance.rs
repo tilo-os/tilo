@@ -60,7 +60,7 @@ impl LegacyAppearance {
         let document = settings_store::parse(text);
         let theme = ui::Theme::resolved_from_settings(text);
         let high_contrast = theme.colors_are_forced();
-        let background = theme.bg_app.to_rgba8();
+        let background = theme.tokens.colors.surfaces.content.to_rgba8();
         let luma = 0.2126 * f64::from(background.r)
             + 0.7152 * f64::from(background.g)
             + 0.0722 * f64::from(background.b);

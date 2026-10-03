@@ -136,7 +136,7 @@ impl CollaborationOverview {
                 &Self::initials(identity.name),
                 fill,
                 crate::widget::AvatarRing {
-                    color: theme.bg_primary,
+                    color: theme.region(crate::surface::Region::Inspector),
                     width: 2.0,
                 },
             );
@@ -665,7 +665,7 @@ impl Widget for CollaborationOverview {
         th: &Theme,
         _: &PresenceCtx,
     ) {
-        s.fill(Fill::NonZero, a, th.bg_primary, None, &self.rect);
+        crate::surface::region(s, a, self.rect, crate::surface::Region::Inspector, th);
         self.draw_header(s, a, tr, th);
         let top = self.draw_own_status(s, a, tr, th, self.rect.y0 + 72.0);
         let top = self.draw_people(s, a, tr, th, top);
