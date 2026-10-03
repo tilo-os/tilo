@@ -214,7 +214,6 @@ impl RegionPane {
             Measurement::Metric => "settings-region-preview-c",
             Measurement::Imperial => "settings-region-preview-f",
         });
-        let week_starts = weekday_label(loc.first_day_of_week);
         let preview = card(
             &t("settings-region-preview-card"),
             rows(vec![
@@ -222,7 +221,6 @@ impl RegionPane {
                 preview_line(&t("settings-region-preview-date"), &loc.date_format.today()),
                 preview_line(&t("settings-region-preview-time"), &loc.time_format.now()),
                 preview_line(&t("settings-region-preview-temp"), &temp),
-                preview_line(&t("settings-region-preview-week"), &week_starts),
             ]),
         );
 
