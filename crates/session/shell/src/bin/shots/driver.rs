@@ -442,8 +442,21 @@ impl ShellDriver {
 
     /// Render the current frame into a fresh Vello scene. Caller is
     /// responsible for passing it to a renderer (offscreen or live).
+    /// Draw floating chrome as under the reduced-transparency setting.
+    pub fn set_reduce_transparency(&mut self, on: bool) {
+        self.fb.set_reduce_transparency_for_shots(on);
+    }
+
+    /// The backdrops the latest [`Self::paint`] drew floating surfaces over;
+    /// see `FrameBuilder::take_backdrop`.
+    pub fn take_backdrop(&mut self) -> Option<std::sync::Arc<ui::backdrop::BackdropFrame>> {
+        self.fb.take_backdrop()
+    }
+
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
+            // The lock scene has no floating surfaces; drop any earlier frame's.
+            let _ = self.fb.take_backdrop();
             let (width, height) = self.fb.scene_size();
             let output = shell::compositor::lock_screen::LockOutput {
                 origin: (0.0, 0.0),

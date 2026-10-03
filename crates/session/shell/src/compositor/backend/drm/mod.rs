@@ -263,6 +263,7 @@ struct PhaseWindow {
     gpu_readback_map_us: u128,
     settle_us: u128,
     cpu_swizzle_us: u128,
+    backdrop_us: u128,
     readback_bytes: u64,
     output_bytes: u64,
     /// Wall time around the complete renderer bridge call. This remains
@@ -290,6 +291,7 @@ impl Default for PhaseWindow {
             gpu_readback_map_us: 0,
             settle_us: 0,
             cpu_swizzle_us: 0,
+            backdrop_us: 0,
             readback_bytes: 0,
             output_bytes: 0,
             bridge_us: 0,
@@ -310,6 +312,7 @@ impl PhaseWindow {
         self.cpu_swizzle_us = self
             .cpu_swizzle_us
             .saturating_add(timing.cpu_copy_swizzle_us);
+        self.backdrop_us = self.backdrop_us.saturating_add(timing.backdrop_us);
         self.readback_bytes = self.readback_bytes.saturating_add(timing.readback_bytes);
         self.output_bytes = self.output_bytes.saturating_add(timing.cpu_output_bytes);
     }
@@ -409,6 +412,7 @@ mod phase_window_tests {
             cpu_copy_swizzle_us: u128::from(value.saturating_mul(4)),
             readback_bytes: value.saturating_mul(5),
             cpu_output_bytes: value.saturating_mul(6),
+            backdrop_us: u128::from(value.saturating_mul(7)),
         }
     }
 
@@ -428,6 +432,7 @@ mod phase_window_tests {
             assert_eq!(window.gpu_readback_map_us, 10);
             assert_eq!(window.settle_us, 15);
             assert_eq!(window.cpu_swizzle_us, 20);
+            assert_eq!(window.backdrop_us, 35);
             assert_eq!(window.readback_bytes, 25);
             assert_eq!(window.output_bytes, 30);
             assert_eq!(window.bridge_us, 0);
@@ -704,6 +709,7 @@ impl DrmPresenter {
                 workspace_id: None,
                 workspace_hold: false,
                 workspace_clip: None,
+                backdrop: None,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -737,6 +743,7 @@ impl DrmPresenter {
                 workspace_id: frame.workspace_id,
                 workspace_hold: frame.workspace_hold,
                 workspace_clip: frame.workspace_clip,
+                backdrop: frame.backdrop.as_ref(),
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -808,7 +815,7 @@ impl DrmPresenter {
                 "frames={} direct_frames={} direct_dropped={} flip_completions={} \
                  unprofiled_frames={} window_us={} avg_submit_us={} \
                  avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
-                 readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
+                 avg_backdrop_us={} readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
                  DRM render phase summary",
                 summary.frames,
@@ -831,6 +838,10 @@ impl DrmPresenter {
                     .unwrap_or(0),
                 self.phase_window
                     .cpu_swizzle_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
+                self.phase_window
+                    .backdrop_us
                     .checked_div(u128::from(frames))
                     .unwrap_or(0),
                 summary.readback_bytes,
@@ -866,12 +877,13 @@ impl DrmPresenter {
         self.profile_seq = self.profile_seq.saturating_add(1);
         eprintln!(
             "seq={} submit_us={} gpu_readback_map_us={} settle_us={} cpu_swizzle_us={} \
-             readback_bytes={} output_bytes={} DRM render frame phases",
+             backdrop_us={} readback_bytes={} output_bytes={} DRM render frame phases",
             self.profile_seq,
             timing.submit_us,
             timing.completed_readback_map_us,
             timing.settle_us,
             timing.cpu_copy_swizzle_us,
+            timing.backdrop_us,
             timing.readback_bytes,
             timing.cpu_output_bytes,
         );
@@ -1020,6 +1032,8 @@ struct ScanoutFrame<'a> {
     workspace_id: Option<u64>,
     workspace_hold: bool,
     workspace_clip: Option<vello::FineDamageRect>,
+    /// What the scene's floating surfaces are drawn over.
+    backdrop: Option<&'a std::sync::Arc<ui::backdrop::BackdropFrame>>,
 }
 
 /// An unchanged frame, or an overview fade that carries its own panel patch,
@@ -1293,6 +1307,7 @@ fn paint_scanouts(
         let Some(bridge) = paint.as_mut() else {
             return PaintScanoutSample::default();
         };
+        bridge.set_backdrop(frame.backdrop.cloned());
         if bridge.size() != target_size {
             bridge_resized = true;
             if let Err(e) = bridge.resize(target_size.0, target_size.1) {
@@ -1690,6 +1705,7 @@ fn render_combined_readback(
         workspace_id,
         workspace_hold,
         workspace_clip,
+        backdrop: _,
     } = frame;
     let unchanged = damage.is_some_and(|damage| {
         damage
@@ -2387,6 +2403,7 @@ impl Backend for DrmBackend {
                 workspace_id: None,
                 workspace_hold: false,
                 workspace_clip: None,
+                backdrop: None,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -2416,6 +2433,7 @@ impl Backend for DrmBackend {
                 workspace_id: frame.workspace_id,
                 workspace_hold: frame.workspace_hold,
                 workspace_clip: frame.workspace_clip,
+                backdrop: frame.backdrop.as_ref(),
             },
             None,
             &mut self.direct_bypass_reported,

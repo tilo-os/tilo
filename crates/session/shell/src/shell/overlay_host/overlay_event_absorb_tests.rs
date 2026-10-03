@@ -2548,7 +2548,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         std::fs::create_dir_all(&dir).expect("fixture directory");
         let ground = theme.tokens.colors.surfaces.base;
         let floor = qs::control_fill(&theme, false);
-        let panel_ground = panel_surface(&theme, POPOVER_SURFACE_ALPHA);
+        let panel_ground = ui::chrome::shell::panel_ground(&theme);
         for (name, arrange) in scenes {
             let mut harness = build_harness_sized(vw, vh);
             arrange(&mut harness);

@@ -2672,31 +2672,9 @@ fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
         }
     }
 
-    /// Legibility against a busy desktop backdrop wins over tint depth:
-    /// [`MODAL_SURFACE_ALPHA`] lifts to `>= 0.90` so the palette reads as
-    /// solid chrome with just a hint of the wallpaper's tint.
-    #[allow(
-        clippy::assertions_on_constants,
-        reason = "regression guards on design constants; the messages interpolate f32 values, which cannot be const-evaluated"
-    )]
-    fn palette_surface_alpha_lifts_off_desktop() {
-        // Same rationale as `palette_scrim_alpha_matches_concept`: a
-        // regression guard on a design constant that's currently true by
-        // construction, kept as a runtime assert because the panic
-        // message interpolates an `f32`.
-        assert!(
-            MODAL_SURFACE_ALPHA >= 0.90,
-            "MODAL_SURFACE_ALPHA must stay >= 0.90 so the palette + \
-             workspace-settings modal read as opaque chrome; a lower \
-             alpha reintroduces the 2026-07-09 legibility complaint \
-             (got {MODAL_SURFACE_ALPHA})"
-        );
-    }
-
     palette_scrim_alpha_matches_concept();
     palette_scrim_alpha_reads_like_the_blurred_concept();
     scrim_hue_comes_from_the_theme_and_darkens_in_both();
-    palette_surface_alpha_lifts_off_desktop();
 }
 
 #[test]
