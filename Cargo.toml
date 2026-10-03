@@ -164,6 +164,14 @@ path = "tests/serde_objects.rs"
 name = "sync_object"
 path = "tests/sync_object.rs"
 
+[[test]]
+name = "web_animation_frame"
+path = "tests/web_animation_frame.rs"
+
+[[test]]
+name = "web_resize_size"
+path = "tests/web_resize_size.rs"
+
 [dependencies.bitflags]
 version = "2"
 
@@ -240,7 +248,7 @@ optional = true
 default-features = false
 
 [target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.calloop]
-version = "0.13.0"
+version = "0.14.0"
 
 [target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.libc]
 version = "0.2.64"
@@ -260,18 +268,20 @@ features = [
     "system",
     "thread",
     "process",
+    "event",
+    "pipe",
 ]
 default-features = false
 
 [target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.sctk]
-version = "0.19.2"
+version = "0.20.0"
 features = ["calloop"]
 optional = true
 default-features = false
 package = "smithay-client-toolkit"
 
 [target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.sctk-adwaita]
-version = "0.10.1"
+version = "0.11.1"
 optional = true
 default-features = false
 

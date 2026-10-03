@@ -32,16 +32,11 @@ impl AnimationFrameHandler {
     }
 
     pub fn request(&self) {
-        if let Some(handle) = self.handle.take() {
-            self.window.cancel_animation_frame(handle).expect("Failed to cancel animation frame");
-        }
-
-        let handle = self
-            .window
-            .request_animation_frame(self.closure.as_ref().unchecked_ref())
-            .expect("Failed to request animation frame");
-
-        self.handle.set(Some(handle));
+        super::animation_frame_request::request(&self.handle, || {
+            self.window
+                .request_animation_frame(self.closure.as_ref().unchecked_ref())
+                .expect("Failed to request animation frame")
+        });
     }
 
     pub fn cancel(&mut self) {
