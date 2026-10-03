@@ -188,18 +188,15 @@ pub(crate) fn build_root<A: ResourceApp>(
     let stages = Stages::new();
     let mut cx = ViewCx::root(live, updaters, &alive, dispatch, published, saved, stages);
     let content = A::view(&mut cx);
-    #[cfg(not(target_arch = "wasm32"))]
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation(A::local_operations());
-    #[cfg(not(target_arch = "wasm32"))]
-    let root = if live {
+    if live {
         root.drawing_past(super::preview::draw_past::<A>)
     } else {
         root
-    };
-    root
+    }
 }
 
 #[allow(
