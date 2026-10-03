@@ -910,6 +910,20 @@ ink) and `Live` (the one filled pill: live, recording, an unread count).
 | `Metrics::{menu_row_height, scrollbar_gutter}` | Menu rows; scroll bar gutter |
 | `ColorSwatch`, `ColorSwatchPicker::new(swatches, columns)`, `ColorSwatchFace::{of, focused}` | Swatches |
 | `InputHint::keycap_height(theme)` | Centring a row of keycaps |
+| `Colors::inverted_pressed()` | A pressed inverted control: the hover step taken twice, so press reads past hover |
+| `Colors::raised_on(ground)` | `surfaces.raised` as it stands on `ground`; `Theme::on_ground` applies it, so controls in a panel never sink into it |
+| `widget::floating_surface::{menu_inset, paint_armed_row}` | A painted menu's row inset and its inverted, concentric armed row |
+| `Widget::set_invalid(bool)` | A form's verdict on a control; `Field::with_error` sets it. `TextInput` edges itself in danger ink and reports `invalid` to assistive technology |
+
+Visible changes that need no code: a popover menu's rows are menu rows
+(`metrics.menu_row_height`, 32) with the inverted armed row and a small
+check; the dropdown list insets its rows like every menu and checks the
+applied value instead of lifting it; text fields lift under the pointer;
+tooltips are the floating material; a toast shows its severity as a leading
+icon instead of a stripe; the tree's disclosure, the breadcrumb separator,
+the date picker's month steps and the time picker's arrows are chevrons from
+`ui::icons` instead of typed glyphs. A screenshot test pinned to the old
+pixels is regenerated, not worked around.
 
 ## Content widgets
 
