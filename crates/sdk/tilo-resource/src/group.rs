@@ -94,19 +94,20 @@ where
             .map_or(ExecutionLocus::ClientLocal, tilo_actions::Action::locus)
     }
 
-    /// A gesture is housekeeping only when every member is; one content
-    /// change makes it content.
+    /// A gesture is someone's step when any member is: one content change
+    /// makes it content. Otherwise it is external when any member is, and
+    /// housekeeping when every member is.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
-        if !self.actions.is_empty()
-            && self
-                .actions
-                .iter()
-                .all(|action| !action.change_kind().is_content())
-        {
-            tilo_actions::ChangeKind::Housekeeping
-        } else {
-            tilo_actions::ChangeKind::Content
-        }
+        use tilo_actions::ChangeKind;
+        let mut kinds = self.actions.iter().map(tilo_actions::Action::change_kind);
+        let Some(first) = kinds.next() else {
+            return ChangeKind::Content;
+        };
+        kinds.fold(first, |group, member| match (group, member) {
+            (ChangeKind::Content, _) | (_, ChangeKind::Content) => ChangeKind::Content,
+            (ChangeKind::External, _) | (_, ChangeKind::External) => ChangeKind::External,
+            (ChangeKind::Housekeeping, ChangeKind::Housekeeping) => ChangeKind::Housekeeping,
+        })
     }
 }
 
