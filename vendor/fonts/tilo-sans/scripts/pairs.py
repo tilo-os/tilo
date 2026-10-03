@@ -26,6 +26,13 @@ are compared as horizontal profiles in 4-unit bands, the left glyph's
 widened by the minimum gap in every direction, so a tone mark that comes
 near a neighbour's ascender diagonally counts as well as one that touches.
 
+The distinct forms are checked the same way with ss13 and zero on: every
+I shape (Latin, its accented forms, Greek Ι Ϊ Ί, Cyrillic І Ї) and every
+precomposed l, both ways, beside the neighbours above plus the lowercase i
+accents, the apostrophe carons, ¿ ¡ and each other. Such a pair collides
+when it comes closer than MIN_GAP and closer than the same pair with ss13
+off; scripts/il_kern.py owns its kerning (and keeps it much further apart).
+
 A pair whose inks come closer than MIN_GAP (font units) is a collision.
 scripts/kerning.py opens the colliding pairs, by kerning group, to
 MIN_GAP + FIX_MARGIN at the masters, so the instances between them stay

@@ -19,46 +19,67 @@ new accents): `--check` exits non-zero while any pair is off its rule.
 Who owns which pairs:
   left  public.kern1.KO_l.ss13       l.ss13 and the tailed l forms, f_l/f_f_l.ss13
   left  public.kern1.KO_lcaron.ss13  lcaron.ss13
-  left  public.kern1.KO_I.ss13       I.ss13 and its accented forms
-  right public.kern2.KO_I.ss13       I.ss13, its accented forms, IJ.ss13
-  and glyph-level exceptions on their members. Everything else (and the
-  left side of l.ss13, which is l's) keeps upstream's kerning.
+  left  public.kern1.KO_I.ss13       I.ss13, its accented forms, Greek Ι Ϊ Ί and
+                                     Cyrillic І Ї in their serif forms
+  right public.kern2.KO_I.ss13       the same but Ί (its left side is the tonos),
+                                     and IJ.ss13
+  the lowercase i accents (and ť ď ř) before a tailed l, glyph against glyph;
+  Ί.ss13's left side, copied from plain Ί; and glyph-level exceptions on all
+  their members. Everything else (and the left side of l.ss13, which is l's)
+  keeps upstream's kerning.
 
 Terms. "plain" is the same pair with ss13 off (Instrument's own I or l).
 The stem band is the height where the serif I is a bare stem (between its
 serifs) or the tailed l is a bare stem (above its tail); "extra" is how much
 further the stem sits from the next glyph than the plain stem does
-(l: the tail's advance; I: the serif's inset).
+(l: the tail's advance; I: the serif's inset). A "gap" is measured level,
+scanline against scanline; a "distance" in any direction (a serif tip
+towards the flag of 1 counts), and the kerning that reaches a distance is
+solved exactly, so one pass settles.
 
 Rules, at each master:
   stem      the white beside the stem: the stem-band gap is the plain gap plus
-            K, where K is 12 (l) / 14 (I) units for most partners; next to
-            rounds (O C G Q, o c e d q g, 0 6 8 9) two thirds of "extra" for
-            the I and one third for the l (its tail already fills under the
-            round); half of it next to shapes that live at the top or middle
-            (T V W Y 7, quotes, dashes, guillemets, asterisk, question, bullet,
-            middle dot). Tightening stops where a serif would come closer to
-            the partner than it sits to H, or the tail closer than it sits to
-            n (scaled by plain l's gap to the partner over its gap to n, so a
-            round gets proportionally less): tail and serifs space like a stem
-            and the stem never hides behind them.
-  floors    never closer than these (full height):
-            - serif I: 40 units from anything, or the plain I's gap where that
-              is already closer (cap accent meeting cap accent); 40 always
-              against lowercase accents, apostrophe carons and between the
-              accented serif I's themselves (accent against accent);
-            - tailed l: never tighter than Instrument's t, or the plain l;
-            - I I: Instrument's Z Z; I J, t I, ť I: L Z (baseline bars);
-              l I: the larger of L Z and Z Z; ď ľ ť ř before I: 45;
-            - Condensed Bold: l l and l I 10 more, so they keep a pixel of
-              white at 12-13 px.
+            K, where K is 12 (l) / 14 (I) units for most partners; a third
+            of "extra" next to rounds (O C G Q, o c e d q g, 0 6 8 9, Ø, and
+            the Greek and Cyrillic rounds): the serifs sit where a round
+            curves away and the tail fills under it; half of it next to
+            shapes that live at the top or middle (T V W Y 7, quotes, dashes,
+            guillemets, asterisk, question, bullet, middle dot). Tightening
+            stops where a serif would come closer to the partner than it sits
+            to H, or the tail closer than it sits to n (scaled by plain l's
+            gap to the partner over its gap to n, so a round gets
+            proportionally less): tail and serifs space like a stem and the
+            stem never hides behind them.
+  floors    distances never shorter than these:
+            - anything: 24 (pairs.py's collision minimum plus room for the
+              instances between masters), even where the plain letter
+              collides;
+            - serif I, side by side: 40, or the plain I's distance where that
+              is already shorter; where the nearest approach is diagonal (1 4
+              ¿ ˝, a bowl, an accent): what Z's bars keep from the same partner
+              (Ζ in Greek, Е in Cyrillic), or the plain I's distance where
+              shorter, and never under the side-by-side floor;
+            - serif I: 40 always against lowercase accents, apostrophe carons
+              and between the accented serif I's (accent against accent);
+            - tailed l: never shorter than Instrument's t or the plain l keep;
+              40 from the i accents on both sides;
+            - next to 1 | ¦ ! ¡: the plain letter's distance, up to 104 (a
+              clear pixel and a quarter at 12 px), so I1 never closes up;
+            - level gaps: I I at Instrument's Z Z; I J, t I, ť I at L Z
+              (baseline bars); l I at the larger of L Z and Z Z; ď ľ ť ř before
+              I a distance of 45; Condensed Bold l l and l I 10 more, so they
+              keep a pixel of white at 12-13 px.
   lcaron    lcaron.ss13 kerns as the larger (looser) of the tailed l's value
-            and plain ľ's value moved by the advance difference, so the caron
-            keeps ľ's clearance and the tail keeps l.ss13's.
+            and plain ľ's value moved by the advance difference, so the tail
+            keeps l.ss13's clearance; its caron keeps a distance of 40 from
+            anything (plain ľ's is negative against T Y 7 and the i accents).
   Catalan   l·l (locl CAT): the middle dot sits centred between the two tailed
             l's, as it does between plain ones.
 
-The italic masters are measured on their own outlines.
+The italic masters are measured on their own outlines, with the slant taken
+out for level gaps (as Glyphs shows italic sidebearings) and as drawn for
+distances. Letters of two scripts are never measured together: HarfBuzz
+shapes them in separate runs, which are not kerned.
 """
 
 from __future__ import annotations
@@ -598,7 +619,6 @@ def solve(style, write=False):
             plain = sh.gap(pl)
             if full is None:
                 continue
-            diag = sh.dist(gl)
             plain_d = sh.dist(pl)
             if is_l:
                 stem = sh.gap(gl, band_a=L_STEM)
@@ -660,7 +680,6 @@ def solve(style, write=False):
             plain = sh.gap(pl)
             if full is None:
                 continue
-            diag = sh.dist(gl)
             plain_d = sh.dist(pl)
             stem = sh.gap(gl, band_b=I_STEM)
             band = min([x for x in (sh.gap(gl, band_b=I_SERIF_LO), sh.gap(gl, band_b=I_SERIF_HI)) if x is not None], default=None)
