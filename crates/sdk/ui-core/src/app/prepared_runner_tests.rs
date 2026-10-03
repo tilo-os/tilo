@@ -178,7 +178,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_name = app.theme.name.clone();
 
     write("light");
@@ -189,7 +189,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
         app.reconcile_configured_theme(),
         "an appearance file write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
         (dark_bg, dark_name.as_str()),
@@ -237,7 +237,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_y = crate::a11y::relative_luminance(dark_bg);
 
     write("light");
@@ -248,7 +248,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
         app.reconcile_configured_theme(),
         "a session-file theme write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     let light_y = crate::a11y::relative_luminance(light_bg);
     assert_ne!(
         (light_bg, app.theme.name.as_str()),

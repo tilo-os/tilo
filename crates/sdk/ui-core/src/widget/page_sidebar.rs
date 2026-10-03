@@ -868,9 +868,9 @@ impl PageSidebar {
         // A Neutral control on the rail: its own surface with a derived
         // edge (HIG §9.5); hover is the shared hover face, not an accent wash.
         let bg = if hovered {
-            theme.bg_hover
+            c.lift_on(c.surfaces.raised, 0.5)
         } else {
-            c.surfaces.base
+            c.surfaces.raised
         };
         crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
         let label = format!("+  {}", self.add_label);

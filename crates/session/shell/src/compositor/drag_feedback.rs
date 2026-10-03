@@ -139,7 +139,12 @@ fn draw_chip(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.bg_primary.with_alpha_factor(HANDLE_ALPHA),
+        theme
+            .tokens
+            .colors
+            .surfaces
+            .raised
+            .with_alpha_factor(HANDLE_ALPHA),
         None,
         &rect,
     );
@@ -368,7 +373,7 @@ fn draw_cursor(scene: &mut Scene, at: Point, theme: &Theme) {
     scene.stroke(
         &vello::kurbo::Stroke::new(1.2),
         Affine::IDENTITY,
-        theme.bg_app,
+        theme.tokens.colors.surfaces.base,
         None,
         &p,
     );

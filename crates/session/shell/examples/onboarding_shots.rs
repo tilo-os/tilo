@@ -129,7 +129,7 @@ fn shoot_in_context(
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(width, height);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.base, out);
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -181,7 +181,7 @@ fn shoot_visual(
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(width, height);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.base, out);
     println!("wrote {}", out.display());
     Ok(())
 }

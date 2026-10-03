@@ -442,7 +442,7 @@ impl Backend for HeadlessBackend {
         // `snapshot` command can write a PNG without re-painting.
         //
         // The clear colour matches `WinitBackend`'s `FALLBACK_BG` and
-        // `Theme::dark().bg_app`, so a headless PNG and a winit host window
+        // `Theme::dark().tokens.colors.surfaces.base`, so a headless PNG and a winit host window
         // clear to identical pixels for a blank scene.
         if !self.watched {
             self.last_frame = Vec::new();

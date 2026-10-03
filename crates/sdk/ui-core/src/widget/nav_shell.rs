@@ -808,14 +808,12 @@ impl NavShell {
         self.content_child_rect(self.detail_rect)
     }
 
-    /// The drawer slides *over* live content, so without this fill the
-    /// content reads straight through it. Drawn under the child so a sidebar
-    /// that paints its own background simply covers this.
-    fn fill_panel(scene: &mut Scene, transform: Affine, theme: &Theme, r: Rect) {
-        if r.width() <= 0.0 || r.height() <= 0.0 {
-            return;
-        }
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &r);
+    /// The sidebar region's ground, docked or as the drawer sliding over
+    /// live content, and the theme its child draws with: ink and selection
+    /// measured against that ground (`Theme::in_region`).
+    fn fill_panel(scene: &mut Scene, transform: Affine, theme: &Theme, r: Rect) -> Theme {
+        crate::surface::region(scene, transform, r, crate::surface::Region::Sidebar, theme);
+        theme.in_region(crate::surface::Region::Sidebar)
     }
 
     fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
@@ -1004,7 +1002,7 @@ impl NavShell {
             transform,
             rect,
             theme.radius_standard,
-            theme.bg_primary,
+            theme.tokens.colors.surfaces.raised,
         );
 
         // The glyph is icon-sized: the 1× chip square grown with `ui_scale`
@@ -1261,8 +1259,8 @@ impl Widget for NavShell {
                 let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
             }
-            Self::fill_panel(scene, transform, theme, self.sidebar_rect);
-            s.draw(scene, transform, text_renderer, theme, presence);
+            let sidebar_theme = Self::fill_panel(scene, transform, theme, self.sidebar_rect);
+            s.draw(scene, transform, text_renderer, &sidebar_theme, presence);
         }
         // Scrim already drawn above; this only adds dividers + affordance.
         self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
@@ -1305,13 +1303,13 @@ impl Widget for NavShell {
                 let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
             }
-            Self::fill_panel(scene, transform, theme, self.sidebar_rect);
+            let sidebar_theme = Self::fill_panel(scene, transform, theme, self.sidebar_rect);
             if let Some(s) = self.sidebar.as_mut() {
                 s.draw_with_presence(
                     scene,
                     transform,
                     text_renderer,
-                    theme,
+                    &sidebar_theme,
                     presence,
                     permissions,
                 );
@@ -1611,16 +1609,15 @@ impl NavShell {
         if self.mode() == ShellMode::Wide {
             // Pane dividers derive from the surface they are painted on (HIG
             // §9.5), centred on the last pixel column of the pane they close:
-            // the sidebar's on `fill_panel`'s `bg_primary`, the overview's on
-            // the shell's base ground, which is what a content pane sits on
-            // unless it paints its own.
+            // the sidebar's on the sidebar region, the overview's on the
+            // window ground the framework paints under every content pane.
             let stroke = Stroke::new(1.0);
             if self.sidebar_visible() {
                 let x = self.sidebar_rect.x1 - 0.5;
                 scene.stroke(
                     &stroke,
                     transform,
-                    crate::surface::edge_on(theme.bg_primary),
+                    crate::surface::edge_on(theme.region(crate::surface::Region::Sidebar)),
                     None,
                     &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
                 );
@@ -1629,7 +1626,7 @@ impl NavShell {
             scene.stroke(
                 &stroke,
                 transform,
-                crate::surface::edge_on(theme.tokens.colors.surfaces.base),
+                crate::surface::edge_on(theme.tokens.colors.surfaces.content),
                 None,
                 &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
             );

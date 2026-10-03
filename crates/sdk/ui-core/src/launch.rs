@@ -1305,11 +1305,13 @@ fn run_with_args_with_attachment(
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
                     driver.prepare_component_output();
-                    driver.render_png(out);
+                    driver.render_window_png(out);
                 } else if let Some(directory) = &args.responsive_matrix {
                     for (name, viewport) in RESPONSIVE_VIEWPORTS {
                         driver.resize_component_capture(viewport);
-                        driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
+                        driver.render_window_png(
+                            &directory.join(format!("{}-{name}.png", spec.app_id)),
+                        );
                     }
                 }
                 close_component_capture(&mut driver)?;
@@ -1358,7 +1360,7 @@ fn run_with_args_with_attachment(
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
         let harness = build_history_capture(spec, &args, root, viewport)?;
-        harness.render_png(out);
+        harness.render_window_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
         return Ok(());
     }
@@ -1381,7 +1383,7 @@ fn run_with_args_with_attachment(
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
                 let harness = build_history_capture(spec, &matrix_args, root, viewport)?;
-                harness.render_png(&out);
+                harness.render_window_png(&out);
             }
             println!(
                 "{}: wrote {name} responsive shot to {}",

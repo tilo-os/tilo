@@ -123,7 +123,7 @@ impl<'a> KeyframeFace<'a> {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.bg_hover,
+                colors.intent.selection_hover,
                 None,
                 &RoundedRect::from_rect(self.rect, 5.0),
             );

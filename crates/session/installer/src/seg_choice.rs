@@ -156,7 +156,7 @@ impl Widget for SegChoice {
             let fill = if i == self.selected {
                 theme.tokens.colors.intent.inverted
             } else {
-                theme.bg_primary
+                theme.tokens.colors.surfaces.raised
             };
             scene.fill(Fill::NonZero, transform, fill, None, seg);
         }

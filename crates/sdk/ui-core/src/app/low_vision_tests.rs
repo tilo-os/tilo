@@ -21,12 +21,13 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
     // Case `toggle_high_contrast_swaps_the_theme`.
     {
         let mut a = app();
-        let plain_ratio = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        let plain_ratio =
+            contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
 
         let now_on = a.toggle_high_contrast();
         assert!(now_on);
         assert!(a.high_contrast());
-        let hc_ratio = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        let hc_ratio = contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
         assert!(
             hc_ratio > plain_ratio,
             "high contrast must raise fg/bg contrast ({hc_ratio:.1} vs {plain_ratio:.1})",
@@ -36,7 +37,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         let now_off = a.toggle_high_contrast();
         assert!(!now_off);
         assert!(!a.high_contrast());
-        let restored = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        let restored = contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
         assert!(
             (restored - plain_ratio).abs() < 1e-6,
             "off restores base colours"
@@ -271,7 +272,10 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     };
     assert!(a.apply_host_appearance(light));
     assert_eq!(a.theme.name, "Light");
-    assert_eq!(a.theme.bg_app, Theme::light().bg_app);
+    assert_eq!(
+        a.theme.tokens.colors.surfaces.content,
+        Theme::light().tokens.colors.surfaces.content
+    );
     assert!(
         !a.apply_host_appearance(light),
         "an unchanged host is a no-op"

@@ -271,7 +271,10 @@ fn draw_button(
     let mut bg = if state.primary {
         theme.tokens.colors.intent.inverted
     } else if state.hover {
-        theme.bg_hover
+        theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
     } else {
         theme.tokens.colors.surfaces.raised
     };
