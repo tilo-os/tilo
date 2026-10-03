@@ -738,10 +738,14 @@ impl Relay {
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
-            identity.user_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
+            crate::compute_session::ComputeIdentity {
+                user_public_key: identity.user_public_key,
+                cert: identity.device_cert.clone(),
+                signing_key: identity.device_signing_key.clone(),
+            },
             revocations.clone(),
+            live_trust_policy.clone(),
+            Arc::new(crate::environment_host::TracingMetering),
         );
         let certification = crate::certification::CertificationProtocol::new(
             identity.user_public_key,
@@ -849,6 +853,10 @@ impl Relay {
                 workspaces: cfg.workspaces.iter().map(|binding| binding.id).collect(),
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
+                environments: crate::environment_host::worker_environments(
+                    cfg.environments.as_ref(),
+                    &cfg.state_root.join("environments"),
+                ),
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {
