@@ -1534,7 +1534,6 @@ settings-region-preview-time = Time
 settings-region-preview-temp = Temperature
 settings-region-preview-c = 21 °C
 settings-region-preview-f = 70 °F
-settings-region-preview-week = Calendar week starts
 
 settings-region-undo-name = Region & formats
 settings-region-undo-action = Change region preferences
