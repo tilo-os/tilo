@@ -12,11 +12,16 @@ name: Build / env-runtime image
 # The fingerprint is the bytes of os/Containerfile.env-runtime. Every tool
 # image is bound to one exact runtime package id, so the runtime is rebuilt
 # only when that file changes; a run whose tag already resolves exits early.
-# A dispatch on a branch builds and seals with a throwaway key and publishes
-# nothing, to check a change to the runtime before it lands.
+# The runtime's packages are snapshot markers in that file, so changing them
+# also changes the frozen RPM snapshot (build-rpms.yml). Until that snapshot
+# is published a run waits by exiting early, and the scheduled run builds
+# the runtime once it is. A dispatch on a branch builds and seals with a
+# throwaway key and publishes nothing, to check a change before it lands.
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "41 */4 * * *"
   push:
     branches: [main]
     paths:
@@ -75,6 +80,19 @@ jobs:
           else
             build=true
             publish=false
+          fi
+          if [[ $build == true ]]; then
+            status=0
+            ./os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+            case $status in
+              0) ;;
+              1)
+                echo "::notice::the frozen RPM snapshot for this checkout is not published yet; the scheduled run builds the runtime once it is"
+                build=false
+                publish=false
+                ;;
+              *) exit "$status" ;;
+            esac
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
