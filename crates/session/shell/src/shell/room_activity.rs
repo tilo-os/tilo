@@ -2,7 +2,7 @@
 //!
 //! The pane itself is [`tilo_desktop::activity::RoomActivityPane`]; this
 //! module gives it the device's identity, its private seen frontiers and
-//! departures (kept in settings), live agent dispatch through the session's
+//! departures (kept in the user's state directory), live agent dispatch through the session's
 //! action broker, managed agent launches, and the native workspace tree as
 //! its causal history source.
 use crate::shell::state::WorkspaceAuthority as _;
@@ -29,10 +29,25 @@ pub(crate) struct NativeActivityHost {
         std::cell::RefCell<Vec<(crate::shell::automation_host::FinishedShortcutRun, u32)>>,
 }
 
-/// The `history` settings section, parsed into `key`'s per-workspace map.
-fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T> {
-    settings_store::load_section("history")
-        .get(key)
+/// `$XDG_STATE_HOME/tilo/activity-history.json`: what this device has seen of
+/// each workspace and when it last left one. Private viewer state rewritten on
+/// every workspace switch, so it stays out of `settings.json`, whose writes
+/// every settings reader treats as a preference change to re-apply.
+fn history_path() -> Option<std::path::PathBuf> {
+    xdg_paths::state_dir().map(|root| root.join("tilo/activity-history.json"))
+}
+
+/// `key`'s per-workspace map from the history file at `path`. A missing or
+/// malformed file reads as empty.
+fn load_history_map_at<T: serde::de::DeserializeOwned>(
+    path: Option<&std::path::Path>,
+    key: &str,
+) -> HashMap<u64, T> {
+    let doc: serde_json::Map<String, serde_json::Value> = path
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    doc.get(key)
         .and_then(|value| value.as_object())
         .into_iter()
         .flat_map(|values| values.iter())
@@ -45,7 +60,18 @@ fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T
         .collect()
 }
 
-fn save_history_map<T: serde::Serialize>(key: &str, values: &HashMap<u64, T>) {
+/// Replace `key`'s map in the history file at `path`, keeping its other maps:
+/// directory `0700`, file `0600`, written atomically.
+fn save_history_map_at<T: serde::Serialize>(
+    path: &std::path::Path,
+    key: &str,
+    values: &HashMap<u64, T>,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut doc: serde_json::Map<String, serde_json::Value> = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
     let values = values
         .iter()
         .filter_map(|(id, value)| {
@@ -54,9 +80,24 @@ fn save_history_map<T: serde::Serialize>(key: &str, values: &HashMap<u64, T>) {
                 .map(|value| (id.to_string(), value))
         })
         .collect();
-    let mut section = serde_json::Map::new();
-    section.insert(key.into(), serde_json::Value::Object(values));
-    if let Err(error) = settings_store::update_section("history", section) {
+    doc.insert(key.into(), serde_json::Value::Object(values));
+    let bytes = serde_json::to_vec(&doc).map_err(std::io::Error::other)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    }
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+}
+
+fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T> {
+    load_history_map_at(history_path().as_deref(), key)
+}
+
+fn save_history_map<T: serde::Serialize>(key: &str, values: &HashMap<u64, T>) {
+    let Some(path) = history_path() else {
+        return;
+    };
+    if let Err(error) = save_history_map_at(&path, key, values) {
         tracing::warn!(%error, key, "could not persist history state");
     }
 }
@@ -230,7 +271,7 @@ impl RoomActivityPane {
         Self(pane, None)
     }
     /// The production pane: the device's private seen frontiers and
-    /// departures are read from and written to settings.
+    /// departures are read from and written to the user's state directory.
     pub fn new_persistent() -> Self {
         let mut pane = Self::new();
         pane.load_frontiers();
@@ -316,6 +357,49 @@ mod tests {
     use super::*;
     use automerge::transaction::{CommitOptions, Transactable};
     use ui::record::{RecordId, RecordStore};
+
+    /// Leaving a workspace rewrites the history file and nothing else: a
+    /// write to `settings.json` would make every settings reader re-apply
+    /// its preferences on each workspace switch.
+    #[test]
+    fn workspace_history_keeps_both_maps_in_its_own_private_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state/tilo/activity-history.json");
+        let departures = HashMap::from([(
+            7_u64,
+            WorkspaceDeparture {
+                departed_at_secs: 1_700_000_000,
+                frontier: WorkspaceSeenFrontier::default(),
+            },
+        )]);
+        let frontiers = HashMap::from([(9_u64, WorkspaceSeenFrontier::default())]);
+        save_history_map_at(&path, "departures", &departures).expect("departures saved");
+        save_history_map_at(&path, "seen_frontiers", &frontiers).expect("frontiers saved");
+
+        let loaded: HashMap<u64, WorkspaceDeparture> =
+            load_history_map_at(Some(&path), "departures");
+        assert_eq!(
+            loaded.get(&7).map(|departure| departure.departed_at_secs),
+            Some(1_700_000_000),
+            "saving the frontiers keeps the departures beside them"
+        );
+        let loaded: HashMap<u64, WorkspaceSeenFrontier> =
+            load_history_map_at(Some(&path), "seen_frontiers");
+        assert!(loaded.contains_key(&9));
+        let mode = std::fs::metadata(&path)
+            .expect("saved")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(
+            history_path().is_none_or(|history| Some(history) != settings_store::settings_path()),
+            "history must not live in settings.json"
+        );
+        let missing: HashMap<u64, WorkspaceDeparture> =
+            load_history_map_at(Some(&dir.path().join("absent.json")), "departures");
+        assert!(missing.is_empty());
+    }
 
     /// A shortcut run the broker finished lands in the workspace document
     /// as one undoable run as soon as a document it changed is open here.

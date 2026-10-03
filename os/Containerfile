@@ -58,6 +58,11 @@ ARG WINDOWS_GUEST_REF=scratch
 # while neither is set) for os/dev/build-image.sh and CI alike, and x86_64,
 # whose Fedora Wine is always present, refuses it.
 ARG TILO_WITH_WINDOWS=1
+# The published env-runtime environment image (os/dev/resolve-env-runtime.sh),
+# shipped in the system app store so the first environment opens offline.
+# Scratch while no runtime is published for this checkout's definition: the
+# image then ships none, and environments fetch it on first use.
+ARG ENV_RUNTIME_REF=scratch
 
 # TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
@@ -74,6 +79,7 @@ FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
+FROM ${ENV_RUNTIME_REF} AS env-runtime
 
 # Public trust parsing is a build-only operation. The pinned base supplies the
 # OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
@@ -320,6 +326,7 @@ COPY \
     os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
+    os/scripts/install-env-runtime.sh \
     os/scripts/browser-runtime-launcher.c \
     /build/os/scripts/
 COPY os/desktop-artifacts /build/os/desktop-artifacts
@@ -1018,6 +1025,13 @@ RUN --mount=type=secret,id=browser_app_identity \
             /build/os/scripts/pack-apps.sh \
             && rm -rf /tmp/browser-package-repo; }; }
 
+# The env-runtime environment image joins the apps in the read-only store, so
+# the first environment opens offline. It takes the path every image takes on
+# a device (`tilo-install image add`); see os/scripts/install-env-runtime.sh.
+RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
+    /build/os/scripts/install-env-runtime.sh /tilo-env-runtime/env-runtime \
+      /usr/share/tilo-apps /usr/share/tilo-apps /out/tilo-install
+
 # Enumerated artifact overlays keep the expensive rootfs stage shallow without
 # bulk-copying os/usr (which would accidentally ship development/test-only
 # files). Their internal COPY layers are cheap scratch-tree commits; each is
@@ -1314,9 +1328,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Video codecs: the image ships only royalty-free software codecs — libvpx
 # (VP9, in -good), libaom and SVT-AV1 (in -bad-free) and dav1d — plus the
 # VA-API/Vulkan hardware paths stock Mesa exposes (AV1/VP9 decode, AV1 encode
-# on AMD). Cisco's openh264 GStreamer plugin is deliberately NOT baked in:
-# Cisco's patent licence covers only binaries the user downloads from Cisco.
-# It arrives with the opt-in additional-codecs pack, downloaded on the device.
+# on AMD). Cisco's OpenH264 binary and its GStreamer plugin are deliberately
+# NOT baked in: Cisco's patent licence covers only binaries the user downloads
+# from Cisco. libopenh264.so.8, which libavcodec-free links, is Fedora's
+# `noopenh264` stub (the frozen snapshot is resolved without Fedora's
+# fedora-cisco-openh264 repository, os/Containerfile.rpms). Cisco's build
+# arrives with the user-downloaded media-codecs extension, whose overlay
+# shadows the stub at the same path. os/scripts/verify-no-cisco-openh264.sh
+# fails the build if either ships.
 #
 # -bad-free's gtkwaylandsink plugin makes GTK 3 a hard dependency (see
 # os/scripts/verify-no-ui-toolkits.sh). Fedora's GTK sound-event helper and
@@ -1722,6 +1741,7 @@ COPY \
     os/dev/make-plymouth-assets.py \
     os/scripts/verify-runtime-crypto-packages.sh \
     os/scripts/verify-no-ui-toolkits.sh \
+    os/scripts/verify-no-cisco-openh264.sh \
     /usr/local/bin/
 
 # Splash rendering needs Pillow once. The frozen snapshot already carries it
@@ -2948,6 +2968,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 # layer. Its current RUN may still mount DNS under /run; the next one will not.
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
+    --mount=type=bind,source=os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf,target=/usr/local/libexec/tilo-ldconfig-image-cache.conf,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
@@ -2978,7 +2999,9 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
+    && bash /usr/local/bin/verify-no-cisco-openh264.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+             /usr/local/bin/verify-no-cisco-openh264.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     # The system font cache, written once here: fontconfig records each font
     # directory's time, so those are pinned to the epoch first, the time the
@@ -2988,10 +3011,17 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
-    # The linker cache is current as built. Recording /etc as updated for this
-    # /usr keeps first boot from running ldconfig.service (3.5 s on the login
-    # critical chain of a release VM) to regenerate it.
+    # The linker cache is current as built; ldconfig.service rebuilds it only
+    # if it goes missing (its drop-in). The hardware database lives in /usr
+    # with none in /etc, so systemd-hwdb-update.service has nothing to do on
+    # the first boot of a deployment either.
+    && install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf \
+         /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf \
     && ldconfig \
+    && systemd-hwdb update --usr \
+    && rm -f /etc/udev/hwdb.bin \
+    && test -s /usr/lib/udev/hwdb.bin \
+    && { [ ! -d /etc/udev/hwdb.d ] || [ -z "$(ls -A /etc/udev/hwdb.d)" ]; } \
     && /usr/lib/systemd/systemd-update-done --root=/ \
     && test -s /etc/.updated \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \

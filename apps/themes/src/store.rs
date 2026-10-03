@@ -60,8 +60,8 @@ pub const SECTION: &str = "appearance";
 /// Theme Studio's private artifact below Settings' canonical appearance state.
 pub const STUDIO_KEY: &str = "studio";
 
-fn appearance() -> ui::storage::Settings {
-    ui::storage::Settings::section(SECTION)
+fn appearance() -> ui::storage::SettingsSection {
+    ui::storage::SettingsSection::named(SECTION)
 }
 
 /// Resolve the shared settings path. Delegating to [`ui::storage`] is what

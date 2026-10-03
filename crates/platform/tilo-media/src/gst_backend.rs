@@ -251,6 +251,9 @@ pub struct GstState {
     /// The position the last seek asked for, so `position_ms` reports the
     /// requested time rather than a stale query result while the seek settles.
     seek_target_ms: Option<u64>,
+    /// A seek asked for before the first preroll completed, applied once the
+    /// pipeline reaches PAUSED. A later request replaces it.
+    deferred_seek: Option<(u64, SeekMode)>,
 
     volume: f32,
     muted: bool,
@@ -357,6 +360,7 @@ impl GstState {
             pending: VecDeque::new(),
             seek_in_flight: false,
             seek_target_ms: None,
+            deferred_seek: None,
             volume: 0.8,
             muted: false,
             rate: 1.0,
@@ -397,6 +401,7 @@ impl GstState {
         self.pending.clear();
         self.seek_in_flight = false;
         self.seek_target_ms = None;
+        self.deferred_seek = None;
         self.frames_stored = 0;
         self.frames_at_seek = 0;
         self.chapters.clear();
@@ -440,6 +445,7 @@ impl GstState {
         );
         if settled {
             self.seek_in_flight = false;
+            self.apply_deferred_seek();
         }
         settled
     }
@@ -620,27 +626,53 @@ impl GstState {
     /// re-prerolls and the new frame arrives on the preroll path, so scrubbing
     /// never starts the audio sink.
     pub fn seek(&mut self, ms: u64, mode: SeekMode) -> bool {
+        // Before the first preroll completes, decodebin may still be
+        // autoplugging the decoder, and a flushing seek GStreamer accepts in
+        // that window can leave the decoder's caps unnegotiated, so no
+        // picture ever arrives. Hold it until the pipeline reaches PAUSED.
+        let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
+        if current < gst::State::Paused {
+            self.deferred_seek = Some((ms, mode));
+            self.mark_seek(ms);
+            return true;
+        }
+        self.deferred_seek = None;
+        self.issue_seek(ms, mode)
+    }
+
+    /// Issue a seek held back by [`Self::seek`], once the first preroll is in.
+    fn apply_deferred_seek(&mut self) {
+        let Some((ms, mode)) = self.deferred_seek else {
+            return;
+        };
+        let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
+        if current >= gst::State::Paused && self.issue_seek(ms, mode) {
+            self.deferred_seek = None;
+        }
+    }
+
+    fn issue_seek(&mut self, ms: u64, mode: SeekMode) -> bool {
         let pos = gst::ClockTime::from_mseconds(ms);
         match self.playbin.seek_simple(mode.flags(), pos) {
             Ok(()) => {
-                self.seek_in_flight = true;
-                self.seek_target_ms = Some(ms);
-                // Anything already held belongs to the *previous* position.
-                // Record the watermark rather than clearing the frame: the
-                // preview keeps painting the old picture (no flicker) while
-                // `frame_is_post_seek` reports, truthfully, that it is stale.
-                self.frames_at_seek = self.frames_stored;
+                self.mark_seek(ms);
                 true
             }
             Err(e) => {
-                // A pipeline that has not finished prerolling refuses seeks.
-                // That is expected right after `open`, and the caller retries —
-                // but it must know, or it waits forever for a picture nobody
-                // ever asked for.
-                tracing::debug!("media: seek to {ms}ms not accepted yet: {e}");
+                tracing::debug!("media: seek to {ms}ms not accepted: {e}");
                 false
             }
         }
+    }
+
+    fn mark_seek(&mut self, ms: u64) {
+        self.seek_in_flight = true;
+        self.seek_target_ms = Some(ms);
+        // Anything already held belongs to the *previous* position. Record
+        // the watermark rather than clearing the frame: the preview keeps
+        // painting the old picture (no flicker) while `frame_is_post_seek`
+        // reports, truthfully, that it is stale.
+        self.frames_at_seek = self.frames_stored;
     }
 
     /// Volume in `0.0..=1.0`, applied to the gain element so the change does
@@ -742,7 +774,8 @@ impl GstState {
     /// old one so scrubbing does not flicker — so staleness has to be
     /// reported rather than inferred from absence.
     pub fn frame_is_post_seek(&self) -> bool {
-        self.frames_stored > self.frames_at_seek
+        // The first preroll is not the picture a deferred seek asked for.
+        self.deferred_seek.is_none() && self.frames_stored > self.frames_at_seek
     }
 
     /// The most recent picture as system-memory RGBA.
@@ -853,7 +886,7 @@ impl GstState {
                 MessageView::AsyncDone(_) => {
                     // The flushing seek finished; the sink now holds the frame
                     // for the requested time.
-                    self.seek_in_flight = false;
+                    self.seek_in_flight = self.deferred_seek.is_some();
                 }
                 MessageView::Eos(_) => {
                     self.playing = false;
@@ -872,6 +905,7 @@ impl GstState {
         }
 
         self.drain_samples();
+        self.apply_deferred_seek();
 
         let pos = self.position_ms();
         if self.last_position != Some(pos) {

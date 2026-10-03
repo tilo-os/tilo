@@ -270,7 +270,7 @@ mod tests {
             assert_eq!(extra, ["browser/dev-overrides"]);
             assert_eq!(
                 as_cargo(&cargo_build(&shell, &extra)),
-                "cargo build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides"
+                "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/wpe,browser/dev-overrides"
             );
             let plain = component(
                 "[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n",

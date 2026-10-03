@@ -526,6 +526,14 @@ fn begin_window_render_init(
     Ok(result_rx)
 }
 
+/// A frame goes to the render thread, which presents it while this thread
+/// reads on: tell the compositor the frame is coming, so one that waits for
+/// this window to answer input (an agent's screenshot) waits for the frame
+/// rather than taking the window's quiet event loop for an answer.
+fn announce_frame(window: &Window) {
+    window.announce_frame();
+}
+
 fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
     for cursor in app.state.collab.cursors.values() {
         let mut path = vello::kurbo::BezPath::new();
@@ -579,6 +587,11 @@ impl AppHandler {
         event: WindowEvent,
     ) {
         let _entry = self.app.enter_wake_scope();
+        // A pen's sample is no event of its own: widgets read it while they
+        // handle the pointer event it precedes.
+        let Some(_pen) = self.app.input.pen.route(&event) else {
+            return;
+        };
         if render_probe_event(&event) {
             let auxiliary_event = self
                 .floating_windows
@@ -935,6 +948,7 @@ impl AppHandler {
         if !drawn {
             return false;
         }
+        announce_frame(&audience.window);
         if render
             .render_tx
             .send(RenderRequest::Frame {
@@ -1356,6 +1370,7 @@ impl AppHandler {
             &app.theme,
             &app.presence_ctx,
         );
+        announce_frame(&surface.window);
         if render
             .render_tx
             .send(RenderRequest::Frame {
@@ -1969,6 +1984,7 @@ impl AppHandler {
                 RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
                 RenderRequest::Shutdown { .. } => None,
             };
+            announce_frame(window);
             let (send_result, send_bounds) = crate::render_thread::timing::around(
                 self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),

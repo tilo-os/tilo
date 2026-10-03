@@ -273,6 +273,27 @@ RUN --network=none \
 
 # ---- The dev image ------------------------------------------------------------
 FROM dev-toolchain AS dev
+
+# Third-party apps the VM acceptance suite (scripts/vm-acceptance, A08-A13)
+# opens, one per toolkit and protocol path people use every day: Chromium, the
+# engine Electron apps (VS Code, Cursor, chat clients) ship, on Wayland and
+# forced onto X11 through Xwayland; GNOME Text Editor (GTK4 and libadwaita);
+# FeatherPad on Qt's Wayland platform (Qt6); alacritty (winit and OpenGL); and
+# glxgears, an OpenGL X11 client the way games are. os/dev-image/ carries the
+# desktop entries and the page that start the variants. Without weak
+# dependencies they add about 600 MiB, two thirds of it Chromium. Like the
+# toolchain layer this one is the same for every commit on one rootfs.
+ARG SOURCE_DATE_EPOCH=0
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
+    LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
+      --setopt=install_weak_deps=False \
+      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils \
+    && dnf clean all \
+    && if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi \
+    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
+RUN ldconfig
+
 COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
 COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/

@@ -95,6 +95,24 @@ impl ArtworkResource {
     /// `edit-marks` replacing a mark's geometry (a text's style).
     pub const SET_SHAPE: ActionRef<Self, (Vec<String>, crate::model::Shape)> =
         ActionRef::new("edit-marks", &["ids", "shape"]);
+    /// `edit-marks` setting strokes' brush preset.
+    pub const SET_BRUSH: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "brush"]);
+    /// `edit-marks` setting strokes' width.
+    pub const SET_SIZE: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "size"]);
+    /// `edit-marks` setting strokes' brush dynamics or a medium's parameters.
+    pub const SET_PARAMS: ActionRef<Self, (Vec<String>, std::collections::BTreeMap<String, f64>)> =
+        ActionRef::new("edit-marks", &["ids", "params"]);
+    /// `edit-marks` smoothing strokes' paths.
+    pub const SMOOTH: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "smooth"]);
+    /// `edit-marks` simplifying strokes' paths.
+    pub const SIMPLIFY: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "simplify"]);
+    /// `edit-marks` joining strokes into the first.
+    pub const MERGE: ActionRef<Self, (Vec<String>, bool)> =
+        ActionRef::new("edit-marks", &["ids", "merge"]);
     /// `set-artwork` with a title.
     pub const SET_TITLE: ActionRef<Self, String> = ActionRef::new("set-artwork", &["title"]);
     /// `set-artwork` with a width.
@@ -114,6 +132,25 @@ impl ArtworkResource {
     pub const UNDO_RUN: ActionRef<Self, String> = ActionRef::new("undo", &["run"]);
     /// `restore` a past version as a new change.
     pub const RESTORE: ActionRef<Self, String> = ActionRef::new("restore", &["version"]);
+    /// `use-selection`: what to make of it, on a layer, in a colour.
+    pub const USE_SELECTION: ActionRef<Self, (String, Option<String>, Option<String>)> =
+        ActionRef::new("use-selection", &["do", "layer", "colour"]);
+    /// `select` inverting the selection.
+    pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
+    /// `select` with a mode alone: `none` selects nothing.
+    pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
+    /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
+    pub const COMBINE: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("combine", &["ids", "op"]);
+    /// `edit-layer` giving a layer a mask (`reveal`, `hide`) or removing it.
+    pub const SET_LAYER_MASK: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "mask"]);
+    /// `edit-layer` inverting a layer's mask.
+    pub const SET_MASK_INVERT: ActionRef<Self, (String, bool)> =
+        ActionRef::new("edit-layer", &["id", "invert"]);
+    /// `edit-layer` clipping a layer to the one below.
+    pub const SET_LAYER_CLIP: ActionRef<Self, (String, bool)> =
+        ActionRef::new("edit-layer", &["id", "clip"]);
     /// `checkpoint`: name the current version.
     pub const CHECKPOINT: ActionRef<Self, String> = ActionRef::new("checkpoint", &["name"]);
 }
@@ -406,7 +443,7 @@ impl Resource for ArtworkResource {
             decl::<Paint>(
                 "paint",
                 "Paint strokes",
-                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first, blended while wet on the same layer; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
                 CanvasAction::Paint,
             ),
             decl::<Draw>(
@@ -418,13 +455,13 @@ impl Resource for ArtworkResource {
             decl::<EditMarks>(
                 "edit-marks",
                 "Edit marks",
-                "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.",
+                "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge.",
                 CanvasAction::edit,
             ),
             decl::<RemoveMarks>(
                 "remove-marks",
                 "Remove marks",
-                "Remove marks by id, or every mark of a layer.",
+                "Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
                 CanvasAction::RemoveMarks,
             ),
             decl::<Arrange>(
@@ -497,6 +534,9 @@ impl Resource for ArtworkResource {
             })
             .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
         ]
+        .into_iter()
+        .chain(area_declarations())
+        .collect()
     }
 
     fn action_schema() -> Option<Value> {
@@ -596,6 +636,30 @@ impl Resource for ArtworkResource {
         );
         entries
     }
+}
+
+/// Selecting areas, using the selection and combining shapes.
+fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
+    vec![
+            ActionDecl::new("select", "Select area", params_of::<crate::selection::Select>(), |args, _now| {
+            let mut select: crate::selection::Select = read_args(args)?;
+            crate::author::resolve(&mut select)?;
+            Ok(CanvasAction::Select(Box::new(select)))
+        })
+        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it"),
+        decl::<crate::selection::UseSelection>(
+            "use-selection",
+            "Use selection",
+            "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
+            CanvasAction::UseSelection,
+        ),
+        decl::<crate::selection::Combine>(
+            "combine",
+            "Combine shapes",
+            "Combine shapes into one path mark, in the bottom one's place and style.",
+            CanvasAction::Combine,
+        ),
+    ]
 }
 
 /// How a view's arguments become the operation it asks for.

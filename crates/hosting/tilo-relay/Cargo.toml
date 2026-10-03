@@ -25,7 +25,7 @@ test-support = []
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "dep:tilo-agent-participant"]
-web = ["dep:tilo-moq", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+web = ["dep:tilo-moq", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -105,6 +105,8 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+# Install bodies carry certificates' canonical encoding as base64.
+base64 = { workspace = true, optional = true }
 
 # Signing / hashing — reused for the connection-level nonce challenge.
 getrandom.workspace = true
@@ -195,6 +197,8 @@ moq-net.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# Mints an approver the way onboarding does: the root only in its record.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 
 [[test]]
 name = "it"

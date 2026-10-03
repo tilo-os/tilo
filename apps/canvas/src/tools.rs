@@ -11,6 +11,7 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::vello::peniko::Color;
 
+use crate::brushes::{DYNAMICS, Dynamics, Preset};
 use crate::gesture::Ink;
 use crate::model::Artwork;
 use crate::render::Renderer;
@@ -27,13 +28,30 @@ pub enum Tool {
     Pen,
     Text,
     Eyedropper,
+    /// Selects a rectangle of the artwork.
+    Marquee,
+    /// Selects an ellipse.
+    Oval,
+    /// Selects freehand (drag) or point by point (click).
+    Lasso,
+    /// Selects like colour touching a point.
+    Wand,
+    /// Fills like colour touching a point.
+    Bucket,
+    Eraser,
 }
 
 impl Tool {
     /// The tools in the rail's order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 14] = [
         Self::Select,
+        Self::Marquee,
+        Self::Oval,
+        Self::Lasso,
+        Self::Wand,
         Self::Brush,
+        Self::Bucket,
+        Self::Eraser,
         Self::Rect,
         Self::Ellipse,
         Self::Line,
@@ -41,6 +59,11 @@ impl Tool {
         Self::Text,
         Self::Eyedropper,
     ];
+
+    /// Whether the tool selects an area of the artwork.
+    pub fn selects_area(self) -> bool {
+        matches!(self, Self::Marquee | Self::Oval | Self::Lasso | Self::Wand)
+    }
 
     /// The Fluent id of the tool's name.
     pub fn label(self) -> &'static str {
@@ -53,6 +76,12 @@ impl Tool {
             Self::Pen => "canvas-tool-pen",
             Self::Text => "canvas-tool-text",
             Self::Eyedropper => "canvas-tool-eyedropper",
+            Self::Marquee => "canvas-tool-marquee",
+            Self::Oval => "canvas-tool-oval",
+            Self::Lasso => "canvas-tool-lasso",
+            Self::Wand => "canvas-tool-wand",
+            Self::Bucket => "canvas-tool-bucket",
+            Self::Eraser => "canvas-tool-eraser",
         }
     }
 
@@ -66,6 +95,12 @@ impl Tool {
             Self::Pen => Icon::PenTool,
             Self::Text => Icon::Type,
             Self::Eyedropper => Icon::Pipette,
+            Self::Marquee => Icon::SquareDashed,
+            Self::Oval => Icon::CircleDashed,
+            Self::Lasso => Icon::Lasso,
+            Self::Wand => Icon::WandSparkles,
+            Self::Bucket => Icon::PaintBucket,
+            Self::Eraser => Icon::Eraser,
         }
     }
 
@@ -80,6 +115,12 @@ impl Tool {
             Self::Pen => "p",
             Self::Text => "t",
             Self::Eyedropper => "i",
+            Self::Marquee => "m",
+            Self::Oval => "o",
+            Self::Lasso => "q",
+            Self::Wand => "w",
+            Self::Bucket => "g",
+            Self::Eraser => "x",
         }
     }
 
@@ -121,9 +162,55 @@ pub struct Tools {
     pub sidebar: LocalState<bool>,
     /// The stop of a gradient fill the swatches recolour.
     pub stop: LocalState<usize>,
+    /// The preset the brush lays strokes with on a plain layer.
+    pub preset: LocalState<Preset>,
+    /// The brush's opacity, `0..=1`.
+    pub opacity: LocalState<f64>,
+    /// The brush's dynamics as the person set them, starting at its
+    /// preset's own.
+    pub flow: LocalState<f64>,
+    pub hardness: LocalState<f64>,
+    pub smoothing: LocalState<f64>,
+    pub taper: LocalState<f64>,
+    /// What the eraser takes: whole strokes, or the paint under it.
+    pub erasing: LocalState<Erasing>,
+    /// How crisp the eraser's edge is, `0..=1`.
+    pub eraser_hardness: LocalState<f64>,
+    /// How much paint the eraser takes off, `0..=1`.
+    pub eraser_strength: LocalState<f64>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+}
+
+/// The brush's paint and the chosen layer, apart from the rest of the
+/// tools.
+#[derive(Clone)]
+pub struct Loaded {
+    colour: LocalState<String>,
+    pigment: LocalState<Option<(String, String)>>,
+    layer: LocalState<String>,
+}
+
+impl Loaded {
+    /// The paint as a mark names it, as [`Tools::paint`] says.
+    pub fn paint(&self) -> String {
+        if let Some((name, _)) = self.pigment.with(Clone::clone) {
+            return format!("pigment:{name}");
+        }
+        let rgba = self
+            .colour
+            .with(|text| crate::render::colour(text.trim(), &[]))
+            .or_else(|| crate::render::colour(INK, &[]))
+            .unwrap_or(Color::TRANSPARENT)
+            .to_rgba8();
+        format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
+    }
+
+    /// The chosen layer, if one is chosen.
+    pub fn layer(&self) -> Option<String> {
+        Some(self.layer.with(Clone::clone)).filter(|layer| !layer.is_empty())
+    }
 }
 
 /// A change of view the canvas makes when asked.
@@ -137,8 +224,19 @@ pub enum ViewRequest {
     Actual,
 }
 
+/// What the eraser takes off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Erasing {
+    /// The paint under it, as an eraser mark of its own.
+    #[default]
+    Paint,
+    /// Every stroke it touches, whole.
+    Strokes,
+}
+
 impl Default for Tools {
     fn default() -> Self {
+        let round = Dynamics::of(Preset::Round, &BTreeMap::new());
         Self {
             tool: LocalState::new(Tool::Brush),
             // The brush starts loaded with ultramarine: a paint colour, not
@@ -154,6 +252,15 @@ impl Default for Tools {
             view: LocalState::new(None),
             sidebar: LocalState::new(true),
             stop: LocalState::new(0),
+            preset: LocalState::new(Preset::Round),
+            opacity: LocalState::new(1.0),
+            flow: LocalState::new(round.flow),
+            hardness: LocalState::new(round.hardness),
+            smoothing: LocalState::new(round.smoothing),
+            taper: LocalState::new(round.taper),
+            erasing: LocalState::new(Erasing::Paint),
+            eraser_hardness: LocalState::new(1.0),
+            eraser_strength: LocalState::new(1.0),
             renderer: Rc::default(),
         }
     }
@@ -205,6 +312,16 @@ impl Tools {
         })
     }
 
+    /// The paint and the chosen layer alone, for a control that reads them
+    /// when it is used.
+    pub fn loaded(&self) -> Loaded {
+        Loaded {
+            colour: self.colour.clone(),
+            pigment: self.pigment.clone(),
+            layer: self.layer.clone(),
+        }
+    }
+
     /// What the tools put down now.
     pub fn ink(&self) -> Ink {
         Ink {
@@ -222,9 +339,55 @@ impl Tools {
             .set(format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b));
     }
 
-    /// The medium parameters a stroke on `layer` carries: its load, when
-    /// the layer is painted and the load was set.
+    /// Load the brush with `preset`, its dynamics starting at the
+    /// preset's own.
+    pub fn choose_preset(&self, preset: Preset) {
+        let dynamics = Dynamics::of(preset, &BTreeMap::new());
+        self.preset.set(preset);
+        self.flow.set(dynamics.flow);
+        self.hardness.set(dynamics.hardness);
+        self.smoothing.set(dynamics.smoothing);
+        self.taper.set(dynamics.taper);
+    }
+
+    /// The preset name a stroke on `layer` is laid with: the brush's on a
+    /// plain layer; a painted layer's medium paints it.
+    pub fn brush_name(&self, art: &Artwork, layer: &str) -> Option<String> {
+        if art
+            .layer(layer)
+            .is_some_and(|layer| !layer.medium.is_empty())
+        {
+            return None;
+        }
+        crate::brushes::stored(self.preset.with(|preset| preset.name()))
+    }
+
+    /// The parameters a stroke on `layer` carries: on a painted layer its
+    /// load, when the load was set; on a plain layer the dynamics the
+    /// person moved away from the preset's.
     pub fn stroke_params(&self, art: &Artwork, layer: &str) -> Option<BTreeMap<String, f64>> {
+        let plain = art
+            .layer(layer)
+            .or_else(|| art.layers.last())
+            .is_some_and(|layer| layer.medium.is_empty());
+        if plain {
+            let preset = self.preset.with(|preset| *preset);
+            let defaults = Dynamics::of(preset, &BTreeMap::new());
+            let set = [
+                (self.flow.with(|value| *value), defaults.flow),
+                (self.hardness.with(|value| *value), defaults.hardness),
+                (defaults.spacing, defaults.spacing),
+                (self.smoothing.with(|value| *value), defaults.smoothing),
+                (self.taper.with(|value| *value), defaults.taper),
+            ];
+            let params: BTreeMap<String, f64> = DYNAMICS
+                .iter()
+                .zip(set)
+                .filter(|(_, (value, default))| (value - default).abs() > 0.005)
+                .map(|(name, (value, _))| ((*name).to_owned(), (value * 100.0).round() / 100.0))
+                .collect();
+            return (!params.is_empty()).then_some(params);
+        }
         let travel = self.load.with(|load| *load);
         let (min, max) = load_range(art, layer)?;
         Some(BTreeMap::from([(
