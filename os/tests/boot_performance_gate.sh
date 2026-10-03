@@ -153,6 +153,33 @@ initrd_gaps() {
     END { for (u in begun) printf "  %7.3fs %s (still running at switch-root)\n", (end - begun[u]) / 1e6, u }' \
     <<<"$log" | sort -rn | head -8 || true
 }
+# The pivot into the real root logs no unit in between; systemd's own
+# milestones across it say where its time went (policy load, relabel, the
+# new manager's first job).
+switch_root_steps() {
+  local log
+  log="$(journalctl -b -o short-monotonic --no-pager 2>/dev/null)" || return 0
+  printf 'switch-root milestones:\n'
+  grep -E 'Switching root|SELinux policy|Relabeled|systemd [0-9]+[.0-9-]* running|Queued start job for default target|initrd-switch-root.service: Deactivated' <<<"$log" \
+    | cut -c1-160 | sed 's/^/  /' | head -12 || true
+}
+
+# ldconfig.service and systemd-update-done.service run on a boot only when
+# /usr looks newer than /etc/.updated; the image records the two as equal.
+first_boot_update_check() {
+  local result path
+  result="$(systemctl show ldconfig.service --property=ConditionResult --value 2>/dev/null || true)"
+  printf 'first-boot update check: ldconfig condition %s\n' "${result:-unknown}"
+  # The booted view, the mount behind /usr, and the deployment's own /etc
+  # (bootc's merged copy), to tell which side moved.
+  for path in /usr /etc/.updated /etc/ld.so.cache /sysroot/state/deploy/*/etc/.updated \
+      /sysroot/ostree/deploy/*/deploy/*/etc/.updated; do
+    [ -e "$path" ] || continue
+    printf '  %s %s\n' "$(stat -c '%y' "$path" 2>/dev/null)" "$path"
+  done
+  printf '  /usr is %s\n' "$(findmnt -no SOURCE,FSTYPE --target /usr 2>/dev/null | head -1)"
+}
+
 kernel_gaps() {
   local log
   # Journald timestamps imported early messages at receipt. Those timestamps
@@ -208,6 +235,8 @@ if [ "$entered_us" -gt $((budget_us / 2)) ] && [ "$entered_us" -le "$budget_us" 
   cpu_steal
   kernel_gaps
   initrd_gaps
+  switch_root_steps
+  first_boot_update_check
   systemd-analyze critical-chain graphical.target 2>/dev/null | head -14 || true
 fi
 if [ "$entered_us" -gt "$budget_us" ]; then
@@ -217,6 +246,8 @@ if [ "$entered_us" -gt "$budget_us" ]; then
   cpu_steal >&2
   kernel_gaps >&2
   initrd_gaps >&2
+  switch_root_steps >&2
+  first_boot_update_check >&2
   systemd-analyze critical-chain graphical.target >&2 || true
   systemd-analyze blame --no-pager 2>/dev/null | grep -v '\.device$' | head -20 >&2 || true
   exit 1
