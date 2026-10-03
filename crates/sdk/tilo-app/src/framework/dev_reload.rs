@@ -6,6 +6,7 @@ use ui_core::permissions::{LivePermissions, Role};
 use ui_core::widget::AppWidget;
 
 use super::app::{Editing, ResourceApp, action_registry, build_root, role_permissions};
+use super::scenario::Run;
 
 /// Address of the `ui` this library linked. The host compares it with its own
 /// and refuses the library when they differ.
@@ -30,7 +31,14 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     };
     let permissions = LivePermissions::fixed(role_permissions("dev", Role::Owner).borrow().clone());
     let me = ui_core::collaboration::local_user_id().0;
-    let root = build_root::<A>(reader, Editing::Live { permissions, me });
+    let root = build_root::<A>(
+        reader,
+        Editing::Live {
+            permissions,
+            me,
+            run: Run::live(None),
+        },
+    );
     let view: Box<dyn AppWidget> = Box::new(root);
     ui_core::app::publish_dev_root(ui_core::app::DevRoot {
         view,
