@@ -13,6 +13,7 @@ use ui_core::application::{
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
 use ui_core::record::RecordKind;
+use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
 
 // Launching (live windows, captures, headless drives, test hosts) discovers
@@ -233,6 +234,7 @@ fn write_scope<A: ResourceApp>() -> PermissionScope {
 pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
+    storage: AppStorage,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only, me) = match editing {
@@ -251,11 +253,14 @@ pub(crate) fn build_root<A: ResourceApp>(
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
+    let storage = super::settings::ViewStorage::new(storage);
     // Effects run in the live app only; History shows a past version.
     let effects = permissions
         .is_some()
         .then(|| Effects::live(dispatch.clone(), live.clone()));
-    let mut cx = ViewCx::root(live, updaters, &alive, dispatch, published, saved, stages);
+    let mut cx = ViewCx::root(
+        live, updaters, &alive, dispatch, published, saved, stages, storage,
+    );
     if let Some(effects) = effects {
         cx.effects = effects;
     }
@@ -358,7 +363,7 @@ fn create<A: ResourceApp>(
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let me = context.author().0.clone();
-    let root = build_root::<A>(reader, Editing::Live { permissions, me });
+    let root = build_root::<A>(reader, Editing::Live { permissions, me }, context.storage());
     if let Some(invoke) = opening {
         root.dispatcher().invoke(invoke);
     }
@@ -472,6 +477,7 @@ fn prepare_definition(
             .tempdir()
             .map_err(operation)?;
         let root = profile.path().join("state");
+        let settings = profile.path().join("settings.json");
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
             "capture-device".into(),
@@ -481,13 +487,15 @@ fn prepare_definition(
             tilo_actions::ActionContext::default(),
             Rc::new(CaptureProfile(profile)),
         )?;
-        return host.prepare_default(
-            definition,
-            CAPTURE_INSTANCE,
-            default_record_of(definition),
-            None,
-            inputs,
-        );
+        return host
+            .prepare_default(
+                definition,
+                CAPTURE_INSTANCE,
+                default_record_of(definition),
+                None,
+                inputs,
+            )
+            .map(|prepared| super::testing::with_settings_file(prepared, settings));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -496,13 +504,20 @@ fn prepare_definition(
             &author,
             role_permissions(&author.0, Role::Owner),
         )?;
-        let mut prepared = host.prepare_default(
-            definition,
-            DATA_DIR_INSTANCE,
-            default_record_of(definition),
-            None,
-            inputs,
-        )?;
+        let mut prepared = host
+            .prepare_default(
+                definition,
+                DATA_DIR_INSTANCE,
+                default_record_of(definition),
+                None,
+                inputs,
+            )
+            .map(|prepared| {
+                super::testing::with_settings_file(
+                    prepared,
+                    super::testing::data_dir_settings(directory.as_ref()),
+                )
+            })?;
         hand_over(definition, args, &mut prepared);
         return Ok(prepared);
     }

@@ -30,7 +30,11 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     };
     let permissions = LivePermissions::fixed(role_permissions("dev", Role::Owner).borrow().clone());
     let me = ui_core::collaboration::local_user_id().0;
-    let root = build_root::<A>(reader, Editing::Live { permissions, me });
+    let root = build_root::<A>(
+        reader,
+        Editing::Live { permissions, me },
+        ui_core::storage::AppStorage::for_app(A::ID),
+    );
     let view: Box<dyn AppWidget> = Box::new(root);
     ui_core::app::publish_dev_root(ui_core::app::DevRoot {
         view,
