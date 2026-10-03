@@ -3,7 +3,10 @@
 // creates the person's identity with a passkey, then answers one JSON
 // request per stdin line until stdin closes:
 //   {"sign": "<hex>"}                              -> {"signature": "<hex>"}
+//   {"info": {origin, devicePublicKey, installToken}}
+//                                                  -> what nodeInstallInfo resolves to
 //   {"install": {origin, certificate (canonical, hex), installToken}}
+//   {"install": {origin, certificate (JSON), sessionCertificate (JSON), installToken}}
 //                                                  -> what installNodeCertificate resolves to
 // Any failure is answered as {"error": "..."}.
 //
@@ -50,11 +53,13 @@ try {
     const request = JSON.parse(line);
     const answer = request.sign !== undefined
       ? await page(`return {signature: id.hex(await window.root.sign(id.unhex(${JSON.stringify(request.sign)})))};`)
-      : await page(`return await id.installNodeCertificate(${JSON.stringify({
-        ...request.install,
-        // What certifyDevice resolves to: the canonical encoding, base64.
-        certificate: Buffer.from(request.install.certificate, 'hex').toString('base64'),
-      })});`);
+      : request.info !== undefined
+        ? await page(`return await id.nodeInstallInfo(${JSON.stringify(request.info)});`)
+        : await page(`return await id.installNodeCertificate(${JSON.stringify(request.install.sessionCertificate ? request.install : {
+          ...request.install,
+          // What certifyDevice resolves to: the canonical encoding, base64.
+          certificate: Buffer.from(request.install.certificate, 'hex').toString('base64'),
+        })});`);
     process.stdout.write(`${JSON.stringify(answer)}\n`);
   }
   if (tab.log.length) console.error(tab.log.join('\n'));
