@@ -2146,7 +2146,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         );
 
         let button =
-            parse_ui_node(r#"{"type":"button","id":"create","label":"Create","style":"primary"}"#)
+            parse_ui_node(r#"{"type":"button","id":"create","label":"Create","role":"primary"}"#)
                 .expect("button node");
         edit_ui_graph(
             &graph,
@@ -2279,7 +2279,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         let edits = parse_ui_graph_edits(
                 r#"[
                   {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
-                  {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","style":"primary"}},
+                  {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","role":"primary"}},
                   {"op":"move","id":"create","parent":"root","index":1},
                   {"op":"set-property","id":"create","property":"enabled","value":false},
                   {"op":"set-property","id":"title","property":"role","value":"heading"},

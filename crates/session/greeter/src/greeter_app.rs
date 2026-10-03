@@ -58,7 +58,7 @@ pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 use crate::auth::{AuthUpdate, spawn_auth};
 use crate::local_users::{LoginUser, discover_default_login_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
-use ui::widget::{ButtonRole, ControlSize};
+use ui::widget::ButtonRole;
 
 const USERNAME_PATH: &str = "greeter.username";
 const SUBMIT_PATH: &str = "greeter.submit";
@@ -1041,7 +1041,6 @@ impl GreeterApp {
         let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
             Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
                 .role(ButtonRole::Primary)
-                .control_size(ControlSize::Large)
                 .fill_width(),
         )];
         // Once an attempt is running this action is inert and the live PAM
@@ -1055,7 +1054,6 @@ impl GreeterApp {
                     "Use fingerprint",
                     Some(FINGERPRINT_PATH),
                 )
-                .control_size(ControlSize::Large)
                 .fill_width(),
             ));
         }
@@ -1358,14 +1356,12 @@ impl GreeterApp {
                 .push(Box::new(
                     Button::new("greeter.reboot", "Restart", Some(REBOOT_PATH))
                         .role(ButtonRole::Plain)
-                        .with_icon(Icon::Refresh)
-                        .control_size(ControlSize::Large),
+                        .with_icon(Icon::Refresh),
                 ))
                 .push(Box::new(
                     Button::new("greeter.poweroff", "Shut down", Some(POWEROFF_PATH))
                         .role(ButtonRole::Plain)
-                        .with_icon(Icon::Power)
-                        .control_size(ControlSize::Large),
+                        .with_icon(Icon::Power),
                 )),
         )
     }
@@ -3692,7 +3688,8 @@ mod tests {
         // Footer rectangles alone do not prove that enlarged labels fit: fixed
         // widths let the button painter draw glyphs outside their hit targets.
         {
-            for (viewport, scale, allow_wrap) in [
+            // `footer_wraps`: the narrow 2× footer stacks its two actions.
+            for (viewport, scale, footer_wraps) in [
                 ((320.0, 640.0), 1.0, false),
                 ((640.0, 480.0), 1.3, false),
                 ((640.0, 480.0), 2.0, false),
@@ -3716,11 +3713,10 @@ mod tests {
                         clippy::cast_possible_truncation,
                         reason = "bounded logical test viewport"
                     )]
-                    let max_width = allow_wrap
-                        .then(|| rect.width() as f32 - theme.padding_standard * 2.0 - 28.0);
+                    // A button label stays on one line.
                     let (label_width, label_height) = text.measure_style(
                         &label,
-                        max_width,
+                        None,
                         &ui::widget::ControlSize::default().label_style(&theme),
                     );
                     assert!(label_width > 0.0 && label_height > 0.0);
@@ -3729,11 +3725,13 @@ mod tests {
                         "{id} at {scale}× cannot contain its painted label and icon: {rect:?}, label={label_width}"
                     );
                     assert!(
-                        rect.height() >= 44.0 && rect.height() >= f64::from(label_height),
+                        rect.height() >= ui::widget::ControlSize::Regular.height(&theme)
+                            && rect.height() >= f64::from(label_height),
                         "{id} at {scale}× needs a complete target and unclipped glyphs: {rect:?}"
                     );
                     assert!(
-                        rect.height() + 0.5 >= f64::from(label_height + theme.padding_standard),
+                        rect.height() + 0.5
+                            >= f64::from(label_height + 2.0 * theme.tokens.spacing.s1),
                         "{id} at {scale}× must reserve vertical label padding: {rect:?}, text={label_height}"
                     );
                     assert!(
@@ -3747,7 +3745,7 @@ mod tests {
                 }
                 let restart = rect_for(&app, "greeter.reboot").unwrap();
                 let shutdown = rect_for(&app, "greeter.poweroff").unwrap();
-                if allow_wrap {
+                if footer_wraps {
                     assert!(
                         restart.x1 <= shutdown.x0
                             || shutdown.x1 <= restart.x0
