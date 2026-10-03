@@ -101,6 +101,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_first_six_categories_are_distinct_hues() {
+        use crate::color::Oklch;
+        for theme in [Theme::dark(), Theme::light()] {
+            let palette = ChartPalette::from_theme(&theme);
+            let hues: Vec<f32> = (0..6)
+                .map(|i| Oklch::from_color(palette.categorical(i)).h)
+                .collect();
+            for (i, a) in hues.iter().enumerate() {
+                for b in hues.iter().skip(i + 1) {
+                    let d = (a - b).rem_euclid(360.0);
+                    let d = d.min(360.0 - d);
+                    assert!(
+                        d >= 55.0,
+                        "{}: hues {a} and {b} are only {d}° apart",
+                        theme.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn chart_palettes_wrap_categories_and_clamp_ramps() {
         // Case `categorical_lookup_wraps_and_can_never_be_empty`.
         {

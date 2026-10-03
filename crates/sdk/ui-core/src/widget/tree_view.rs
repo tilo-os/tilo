@@ -3001,7 +3001,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         &row_rect,
                     );
                 } else {
-                    crate::widget::data_table::paint_selected_row(
+                    crate::widget::list_row::paint_row_selection_faded(
                         scene, transform, theme, row_rect, opacity,
                     );
                 }
@@ -3208,7 +3208,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let y0 = self.body_top() + visual.geometry.top;
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y0 + visual.geometry.height);
             if payload.selected {
-                crate::widget::data_table::paint_selected_row(
+                crate::widget::list_row::paint_row_selection_faded(
                     scene, transform, theme, row_rect, opacity,
                 );
             }

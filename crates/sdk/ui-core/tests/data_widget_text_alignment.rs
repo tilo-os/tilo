@@ -35,14 +35,14 @@ use tilo_ui::search::{SearchGroup, SearchResult};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
-    Alternative, Banner, Button, Card, Chart, Column, ConflictBanner, ConflictKind, ConflictPicker,
-    Container, Element, IconGrid, IconGridItem, Row, SearchResultsView, Series, StatTile, Text,
-    TreeNode, TreeView, Trend,
+    Alternative, Banner, Button, Chart, Column, ConflictBanner, ConflictKind, ConflictPicker,
+    Container, Element, IconGrid, IconGridItem, SearchResultsView, Section, SectionHeader, Series,
+    StatGroup, StatTile, Text, TreeNode, TreeView, Trend,
 };
 use vello::kurbo::Rect;
 
 // Pinned widget defaults the regions below are built from.
-const TABLE_HEADER_H: f64 = 28.0;
+const TABLE_HEADER_H: f64 = 32.0;
 const TABLE_ROW_H: f64 = 24.0;
 const TREE_ROW_H: f64 = 22.0;
 const TREE_DISCLOSURE_W: f64 = 16.0;
@@ -53,8 +53,6 @@ const SEARCH_ROW_TWO_LINE: f64 = 50.0;
 const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
 const CHART_HEADER_H: f64 = 22.0;
 const ICON_CELL: (f64, f64) = (96.0, 88.0);
-const TILE_PAD: f64 = 14.0;
-const TILE_ICON_D: f64 = 18.0;
 const PICKER_PAD: f64 = 16.0;
 const PICKER_TITLE_H: f64 = 28.0;
 const ICON_GLYPH: f64 = 40.0;
@@ -305,25 +303,12 @@ fn banners() -> Element {
 }
 
 fn stat_tiles() -> Element {
-    Box::new(
-        Row::new()
-            .push(Box::new(
-                StatTile::new("Sessions", "1,284")
-                    .with_icon(Icon::Search)
-                    .with_delta("12%", Trend::Up),
-            ))
-            .push(Box::new(
-                StatTile::new("Errors", "3")
-                    .with_icon(Icon::Inbox)
-                    .with_delta("2", Trend::Down),
-            ))
-            .push(Box::new(
-                StatTile::new("Latency", "48 ms").with_delta("0%", Trend::Flat),
-            ))
-            .push(Box::new(
-                StatTile::new("Uptime", "99.9%").with_icon(Icon::Refresh),
-            )),
-    )
+    Box::new(StatGroup::new(vec![
+        Box::new(StatTile::new("Sessions", "1,284").change("12%", Trend::Up)),
+        Box::new(StatTile::new("Errors", "3").change("2", Trend::Down)),
+        Box::new(StatTile::new("Latency", "48").unit("ms")),
+        Box::new(StatTile::new("Uptime", "99.9").unit("%")),
+    ]))
 }
 
 fn chart() -> Element {
@@ -416,17 +401,21 @@ fn legacy_cards() -> Element {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(12.0)
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 "Region formats",
-                Box::new(Text::new(
+                vec![Box::new(Text::new(
                     "Dates, times and numbers follow the selected region.",
-                )),
+                ))],
             )))
-            .push(Box::new(Card::titled_with_action(
-                "Email",
-                Box::new(Button::new("add-account", "Add account", None)),
-                Box::new(Text::new("No email accounts yet.")),
-            ))),
+            .push(Box::new(
+                Section::new(vec![Box::new(Text::new("No email accounts yet."))]).with_header(
+                    SectionHeader::heading("Email").action(Button::new(
+                        "add-account",
+                        "Add account",
+                        None,
+                    )),
+                ),
+            )),
     )
 }
 
@@ -456,24 +445,18 @@ fn data_rows_centre_their_text_and_scale_once() {
             if scale > 1.0 {
                 assert!(header_h > TABLE_HEADER_H && row_h > TABLE_ROW_H);
             }
-            // First column only: the sort glyph lives at the column's trailing edge.
+            // First column only: the label and the sort icon beside it share
+            // the header's centre line.
             let header = Rect::new(
                 table.x0 + 4.0,
                 table.y0,
-                table.x0 + 180.0,
+                table.x0 + 216.0,
                 table.y0 + header_h,
             );
             let header_label = ink(&cap.image, header);
             header_ink.push(header_label);
             assert_centered("header label", header_label, header, 1.0);
             assert_has_air("header label", header_label, header);
-            let arrow = Rect::new(
-                table.x0 + 180.0,
-                table.y0,
-                table.x0 + 220.0,
-                table.y0 + header_h,
-            );
-            assert_centered("sort glyph", ink(&cap.image, arrow), arrow, 2.0);
             // The first two rows: if the rows had stayed 24 px at 2x, the second
             // probe would straddle two rows' text and neither would centre.
             for index in 0..2 {
@@ -707,50 +690,19 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
         assert_scaled_once("banner text", text_ink[0], text_ink[1]);
     }
 
-    // Case `stat_tile_icon_sits_on_the_caption_line_and_scales_once`.
+    // Case `stat_tile_label_sits_on_its_line_and_scales_once`.
     {
         let mut caption_ink = Vec::new();
         for scale in [1.0, 2.0] {
             let cap = capture("stat_tiles", stat_tiles(), (760, 160), scale);
             let tile = rect(find(&cap.harness.inspection().root, "StatTile"));
-            // The caption line only: the 24 px value starts at PAD + 12 + 6 at 1x.
-            let caption_band = if scale == 1.0 {
-                Rect::new(
-                    tile.x0,
-                    tile.y0 + TILE_PAD - 2.0,
-                    tile.x1,
-                    tile.y0 + TILE_PAD + 17.0,
-                )
-            } else {
-                Rect::new(
-                    tile.x0,
-                    tile.y0 + TILE_PAD - 2.0,
-                    tile.x1,
-                    tile.y0 + TILE_PAD + 30.0,
-                )
-            };
-            let caption = Rect::new(
-                tile.x0 + TILE_PAD,
-                caption_band.y0,
-                tile.x0 + 100.0,
-                caption_band.y1,
-            );
-            caption_ink.push(ink(&cap.image, caption));
-            if scale == 1.0 {
-                let icon = Rect::new(
-                    tile.x1 - TILE_PAD - TILE_ICON_D - 2.0,
-                    caption_band.y0,
-                    tile.x1 - TILE_PAD + 2.0,
-                    caption_band.y1,
-                );
-                let caption_ink = ink(&cap.image, caption);
-                let icon_ink = ink(&cap.image, icon);
-                let offset = icon_ink.center().y - caption_ink.center().y;
-                assert!(
-                    offset.abs() <= 1.0,
-                    "tile icon {icon_ink:?} is {offset:+.2} px off the caption line {caption_ink:?}"
-                );
-            }
+            let theme = Theme::dark().with_text_scale(scale);
+            // The label is the tile's first line: a Caption line box at its top.
+            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
+            let band = Rect::new(tile.x0, tile.y0, tile.x0 + 120.0, tile.y0 + line);
+            let label = ink(&cap.image, band);
+            assert_has_air("tile label", label, band);
+            caption_ink.push(label);
         }
         assert_scaled_once("tile caption", caption_ink[0], caption_ink[1]);
     }
@@ -784,33 +736,31 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
         assert_scaled_once("chart title", title_ink[0], title_ink[1]);
     }
 
-    // Case `legacy_card_titles_use_the_title_role_and_the_theme_gap`.
+    // Case `section_titles_use_the_heading_role_and_the_related_gap`.
     {
         let mut title_heights = Vec::new();
         for scale in [1.0_f32, 2.0] {
             let cap = capture("legacy_cards", legacy_cards(), (520, 320), scale);
             let snapshot = cap.harness.inspection();
-            // Card -> Container -> Section -> Column[title Row, gap, body]; the
-            // Text inside the title Row is the heading.
-            let card = &snapshot.root.children[0];
-            let section = &card.children[0].children[0];
-            let column = &section.children[0];
-            let title_row = rect(&column.children[0]);
-            let body = rect(&column.children[2]);
-            let title = rect(find(&column.children[0], "Text"));
+            // Section -> [header row, body]; the Text inside the header row is
+            // the heading.
+            let section = &snapshot.root.children[0];
+            let title_row = rect(&section.children[0]);
+            let body = rect(&section.children[1]);
+            let title = rect(find(&section.children[0], "Text"));
             title_heights.push(title.height());
             let theme = Theme::dark().with_text_scale(scale);
-            let expected = f64::from(theme.text(TextRole::Title).line_height_px());
+            let expected = f64::from(theme.text(TextRole::Heading).line_height_px());
             assert!(
                 (title.height() - expected).abs() < 1.0,
-                "{scale}x: title line box {} must be the Title role's {expected}",
+                "{scale}x: title line box {} must be the Heading role's {expected}",
                 title.height()
             );
+            let related = f64::from(theme.tokens.spacing.rhythm.related);
             assert!(
-                (body.y0 - title_row.y1 - f64::from(theme.gap_standard)).abs() < 0.5,
-                "{scale}x: title/body gap {} must be theme.gap_standard {}",
+                (body.y0 - title_row.y1 - related).abs() < 0.5,
+                "{scale}x: title/body gap {} must be rhythm.related {related}",
                 body.y0 - title_row.y1,
-                theme.gap_standard
             );
         }
         assert!(

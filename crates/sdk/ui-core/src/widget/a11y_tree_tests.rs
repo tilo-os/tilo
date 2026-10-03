@@ -221,13 +221,13 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
 
 // segmented::ColorSwatchPicker -> List + ListItem children
 
-// gauge::RingGauge / gauge::BarGauge -> ProgressBar with % value
+// gauge::ProgressRing / gauge::BarGauge -> ProgressBar with % value
 
 #[test]
 fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
     fn ring_gauge_exposes_a_named_percentage_meter() {
-        use super::gauge::RingGauge;
-        let mut g = RingGauge::new(0.42).with_label("42%", "CPU");
+        use super::gauge::ProgressRing;
+        let mut g = ProgressRing::new(0.42).caption("CPU");
         let nodes = access_nodes(&mut g);
         let bar = by_label(&nodes, AkRole::ProgressIndicator, "CPU");
         // The dim caption names it; the fraction becomes a spoken percentage.
@@ -322,7 +322,7 @@ fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
 fn new_widgets_are_reachable_and_announced_from_the_window_root() {
     fn composed_ui_reaches_every_new_widget_through_the_window_root() {
         use super::Column;
-        use super::gauge::{BarGauge, RingGauge};
+        use super::gauge::{BarGauge, ProgressRing};
         use super::segmented::{ColorSwatchPicker, TriStateControl};
         use super::slash_menu::SlashMenu;
 
@@ -333,7 +333,7 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
                 TriStateControl::allow_inherit_deny().with_selected(2),
             ))
             .push(Box::new(ColorSwatchPicker::new().with_selected(0)))
-            .push(Box::new(RingGauge::new(0.9).with_label("90%", "GPU")))
+            .push(Box::new(ProgressRing::new(0.9).caption("GPU")))
             .push(Box::new(BarGauge::new(0.5).with_label("Battery", "50%")))
             .push(Box::new(slash));
         let nodes = access_nodes(&mut col);
@@ -367,7 +367,7 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
     }
 
     fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
-        use super::gauge::RingGauge;
+        use super::gauge::ProgressRing;
         use super::segmented::TriStateControl;
         use crate::screen_reader::{ScreenReader, describe};
 
@@ -387,7 +387,7 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
             "Inherit, radio button, not checked, 2 of 3"
         );
 
-        let gauge = RingGauge::new(0.42).with_label("42%", "CPU");
+        let gauge = ProgressRing::new(0.42).caption("CPU");
         let gnode = Widget::accessibility(&gauge).unwrap();
         assert_eq!(describe(&gnode), "CPU, progress bar, 42%");
 

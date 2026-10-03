@@ -16,10 +16,9 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
@@ -265,7 +264,12 @@ pub struct PageSidebar {
     last_pointer: Point,
     menu: Option<Menu>,
     pending: Vec<PageSidebarEvent>,
+    /// Pages that carry a mark (annotations, comments).
+    marked: Vec<usize>,
 }
+
+/// The hairline that seats a page thumbnail on the rail.
+const PAGE_EDGE_ALPHA: u8 = 26;
 
 impl PageSidebar {
     /// A rail whose thumbnails have aspect ratio `page_h / page_w`
@@ -273,7 +277,7 @@ impl PageSidebar {
     pub fn new(aspect: f64) -> Self {
         Self {
             aspect: aspect.max(0.05),
-            header: "PAGES".to_string(),
+            header: "Pages".to_string(),
             add_label: String::new(),
             show_add: false,
             draw_panel: true,
@@ -293,7 +297,14 @@ impl PageSidebar {
             last_pointer: Point::ZERO,
             menu: None,
             pending: Vec::new(),
+            marked: Vec::new(),
         }
+    }
+
+    /// The pages that carry a mark (annotations, comments): a dot inside
+    /// the thumbnail's corner.
+    pub fn set_marked(&mut self, pages: Vec<usize>) {
+        self.marked = pages;
     }
 
     #[must_use]
@@ -402,7 +413,16 @@ impl PageSidebar {
             0.0
         };
         let top = rect.y0 + header_h;
-        let bottom = (rect.y1 - add_h).max(top);
+        // The add button keeps a margin above it too, so the last thumbnail
+        // never runs under it.
+        let bottom = (rect.y1
+            - add_h
+            - if self.show_add {
+                self.m.add_margin
+            } else {
+                0.0
+            })
+        .max(top);
         self.list_vp = Rect::new(rect.x0, top, rect.x1, bottom);
 
         let usable_w = self.list_vp.width() - 2.0 * self.m.pad - self.m.num_gutter - SCROLLBAR_W;
@@ -656,24 +676,27 @@ impl PageSidebar {
     ) where
         F: FnMut(&mut Scene, &mut TextRenderer, Affine, usize, Rect),
     {
+        // A rail that paints its own panel is the window's sidebar region:
+        // the framework's tier, and everything on it drawn for that ground.
+        let region_theme;
+        let theme = if self.draw_panel {
+            crate::surface::region(
+                scene,
+                base,
+                self.rect,
+                crate::surface::Region::Sidebar,
+                theme,
+            );
+            region_theme = theme.in_region(crate::surface::Region::Sidebar);
+            &region_theme
+        } else {
+            theme
+        };
         let c = &theme.tokens.colors;
 
         if self.draw_panel {
-            scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &self.rect);
-            // The rail's edge derives from its own surface (HIG §9.5) and
-            // sits on its last pixel column so it never bleeds onto the page.
-            let x = self.rect.x1 - 0.5;
-            let divider = Line::new((x, self.rect.y0), (x, self.rect.y1));
-            scene.stroke(
-                &Stroke::new(1.0),
-                base,
-                crate::surface::edge_on(c.surfaces.raised),
-                None,
-                &divider,
-            );
-            // The header is a section label: `scale.sm`, semibold, on the
-            // rail's padding and centred on its own measured line in the
-            // header band rather than nine pixels down.
+            // The header is a section label, sentence case, centred on its
+            // own measured line in the header band.
             let style = label_style(theme);
             let (_, lh) = tr.measure_style(
                 &self.header,
@@ -737,10 +760,12 @@ impl PageSidebar {
             let radius = f64::from(theme.tokens.radii.control);
             crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.floating);
             thumb(scene, tr, base, from, ghost);
+            // The page you are moving carries your colour, as every drop
+            // and insertion indicator does.
             scene.stroke(
                 &Stroke::new(2.0),
                 base,
-                theme.tokens.colors.intent.inverted,
+                theme.tokens.colors.intent.you,
                 None,
                 &RoundedRect::from_rect(ghost, radius),
             );
@@ -810,23 +835,53 @@ impl PageSidebar {
     {
         let c = &theme.tokens.colors;
         let is_current = i == self.current;
+        let radius = f64::from(theme.tokens.radii.control);
+
+        // The current page is the selection lift (HIG §9.3): one plate
+        // behind its number and thumbnail, never a coloured ring.
+        if is_current {
+            let inset = f64::from(theme.tokens.spacing.s1);
+            let plate = Rect::new(
+                self.list_vp.x0 + inset,
+                rect.y0 - inset,
+                rect.x1 + inset,
+                rect.y1 + inset,
+            );
+            crate::widget::list_row::paint_row_fill(scene, base, theme, plate, true, false);
+        }
 
         thumb(scene, tr, base, i, rect);
 
-        // The current page wears the focus-ring weight; the others a
-        // hairline. Both follow the thumbnail's `radii.control` corners.
-        let (ring, w) = if is_current {
-            (theme.tokens.colors.intent.inverted, 2.0)
-        } else {
-            (c.text_primary.with_alpha_factor(0.12), 1.0)
-        };
+        // Every page is seated on the rail by a hairline derived from the
+        // ground, following the thumbnail's corners.
         scene.stroke(
-            &Stroke::new(w),
+            &Stroke::new(1.0),
             base,
-            ring,
+            crate::tokens::colors::Colors::hairline_on(c.surfaces.content, PAGE_EDGE_ALPHA),
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
+            &crate::surface::edge_outline(rect, radius),
         );
+        // A marked page (annotated, commented) carries a dot inside its own
+        // corner, in your colour.
+        if self.marked.contains(&i) {
+            let d = f64::from(theme.tokens.spacing.s2);
+            let inset = f64::from(theme.tokens.spacing.s1) + d / 2.0;
+            let centre = Point::new(rect.x1 - inset, rect.y0 + inset);
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.surfaces.content,
+                None,
+                &vello::kurbo::Circle::new(centre, d / 2.0 + 1.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.intent.you,
+                None,
+                &vello::kurbo::Circle::new(centre, d / 2.0),
+            );
+        }
 
         // Right-aligned in the left gutter, one `s2` short of the
         // thumbnail, vertically centred on the measured line.
@@ -841,7 +896,7 @@ impl PageSidebar {
         let lx = rect.x0 - f64::from(theme.tokens.spacing.s2) - f64::from(lw);
         let ly = rect.y0 + (rect.height() - f64::from(lh)) / 2.0;
         let col = if is_current {
-            theme.tokens.colors.intent.inverted
+            c.text_primary
         } else {
             c.text_dim
         };
@@ -873,22 +928,27 @@ impl PageSidebar {
             c.surfaces.raised
         };
         crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
-        let label = format!("+  {}", self.add_label);
-        let style = label_style(theme);
-        let (tw, th) = tr.measure_style(
-            &label,
-            None,
-            &style.clone().with_weight(TextWeight::Semibold),
+        let style = label_style(theme).with_weight(TextWeight::Semibold);
+        let (tw, th) = tr.measure_style(&self.add_label, None, &style);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let gap = f64::from(theme.tokens.metrics.icon_label_gap);
+        let cluster = icon + gap + f64::from(tw);
+        let x0 =
+            (r.x0 + (r.width() - cluster) / 2.0).max(r.x0 + f64::from(theme.tokens.spacing.s2));
+        crate::icons::Icon::Plus.draw(
+            scene,
+            base,
+            Rect::from_center_size(Point::new(x0 + icon / 2.0, r.center().y), (icon, icon)),
+            c.text_primary,
         );
-        let tx = r.x0 + (r.width() - f64::from(tw)) / 2.0;
         let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
         tr.draw_style(
             scene,
-            &label,
+            &self.add_label,
             c.text_primary,
-            translated(base, tx.max(r.x0 + f64::from(theme.tokens.spacing.s2)), ty),
+            translated(base, x0 + icon + gap, ty),
             None,
-            &style.clone().with_weight(TextWeight::Semibold),
+            &style,
         );
     }
 
