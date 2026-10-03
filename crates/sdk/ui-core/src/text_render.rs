@@ -15,7 +15,10 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 /// renderer also assigns them to the CSS-like generic families below. Keeping
 /// the names here makes plain text, rich text, and theme tokens agree instead
 /// of depending on each machine's fontconfig defaults.
-pub const UI_SANS_FAMILY: &str = "Noto Sans";
+///
+/// The UI face covers Latin; Greek, Cyrillic and Vietnamese fall back to
+/// Noto Sans, the first family of the common fallback list.
+pub const UI_SANS_FAMILY: &str = "Instrument Sans";
 pub const UI_SERIF_FAMILY: &str = "Noto Serif";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.

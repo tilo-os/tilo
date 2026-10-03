@@ -1,10 +1,43 @@
 # Tilo canonical fonts
 
-The manifest records installed Fedora 44 binary paths, package NEVRs, complete
-SHA-256 values, metadata, and exact license mappings. These files were copied
-without modification. Product and fixture scope are independent of whether a
-font happens to be installed on a host. The 15 product fonts total 43,817,716
+The manifest records each file's source (an installed Fedora 44 binary path
+and package NEVR, or an immutable upstream URL), complete SHA-256 values,
+metadata, and exact license mappings. These files were copied without
+modification. Product and fixture scope are independent of whether a font
+happens to be installed on a host. The 17 product fonts total 44,214,180
 bytes; Adwaita adds 879,796 fixture bytes.
+
+## Instrument Sans (UI face)
+
+Instrument Sans is the system UI face; Noto Sans stays in the catalog as the
+fallback for the Greek, Cyrillic and Vietnamese text Instrument Sans does not
+cover, and as the face of the PDF helper. Fedora 44 does not package
+Instrument Sans, so its files come from the Google Fonts repository, which
+publishes the upstream release unmodified:
+
+| file | bytes | SHA-256 |
+|---|---:|---|
+| `InstrumentSans[wdth,wght].ttf` | 194336 | `b24f1812584816958afcf22e22d08e44318c5e51651e25d2438efdde389b33b1` |
+| `InstrumentSans-Italic[wdth,wght].ttf` | 202128 | `a74203cc5066a3b2f8de1a7b0887ef897773c2319dc86c911f8e85350cde0d07` |
+| `LICENSES/Instrument-Sans-OFL.txt` (upstream `OFL.txt`) | 4403 | `9e27a72ed30eb49a08678f6a5d6ed98ec7ba5368f541637ee0683ec9134ef966` |
+
+All three were fetched from `google/fonts` commit
+`2fc9491da70cf3e1bafd3c3da49244c5a496e9d5` (path `ofl/instrumentsans/`,
+"Instrument Sans: Version 1.000", 2023-04-13), the last commit touching them.
+That family's `METADATA.pb` names the upstream source: repository
+`https://github.com/Instrument/instrument-sans`, commit
+`7fa22308a3d0c94ee2b3cd537a1196b65db34a3e`, files
+`fonts/variable/InstrumentSans[wdth,wght].ttf` and
+`fonts/variable/InstrumentSans-Italic[wdth,wght].ttf`. Both fonts embed
+`Copyright 2022 The Instrument Sans Project Authors` and an OFL 1.1 notice
+with no Reserved Font Name; their name-ID 0, 13 and 14 records are appended
+to `LICENSES/FONT-COPYRIGHT-NOTICES.txt`.
+
+The face was chosen over Noto Sans, Mona Sans and Atkinson Hyperlegible Next
+by rendering the same screen in each at the type roles' sizes on the vello
+renderer: it is the most refined at 20-34 px, compact and clear at 12-14 px,
+has tabular figures and a 400-700 weight axis covering every role weight,
+carries no Reserved Font Name, and is 396 KB for both styles.
 
 The current Fedora rendering does not reproduce all historical Tilo typography
 PNGs. This catalog identifies a reviewed product input; it does not claim those
