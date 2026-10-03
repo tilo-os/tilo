@@ -478,6 +478,29 @@ fn local() -> String {
 }
 
 impl Provenance {
+    /// A component copied out of CI's image of a build, for `arch`:
+    /// `requested` is what the client knew (component, profile, features,
+    /// the commit it asked for); `digest` and `revision` are the pulled
+    /// image's. The same record whether the VM or the host pulled it.
+    pub fn from_ci(
+        requested: &Self,
+        arch: &str,
+        digest: Option<String>,
+        revision: Option<String>,
+    ) -> Self {
+        let mut provenance = Self::local(&requested.component);
+        provenance.authority = "ci".into();
+        provenance.builder = Some("ci".into());
+        provenance.source_commit = revision.or_else(|| requested.source_commit.clone());
+        provenance.base_image_digest = digest;
+        provenance.target = Some(format!("{arch}-unknown-linux-gnu"));
+        provenance
+            .cargo_profile
+            .clone_from(&requested.cargo_profile);
+        provenance.features.clone_from(&requested.features);
+        provenance
+    }
+
     /// A local build of `component` with nothing else known yet.
     pub fn local(component: &str) -> Self {
         Self {

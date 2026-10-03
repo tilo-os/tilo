@@ -318,6 +318,12 @@ pub trait Hypervisor {
     fn powers_on(&self) -> bool {
         true
     }
+    /// Does a CI layer come out of an image this host pulls, rather than
+    /// one the guest pulls? A device's storage and network are a board's:
+    /// it gets only the layer, never the whole multi-gigabyte image.
+    fn ci_layers_from_host(&self) -> bool {
+        false
+    }
 }
 
 /// # Errors
@@ -436,6 +442,10 @@ impl Hypervisor for Device {
 
     fn powers_on(&self) -> bool {
         false
+    }
+
+    fn ci_layers_from_host(&self) -> bool {
+        true
     }
 }
 
