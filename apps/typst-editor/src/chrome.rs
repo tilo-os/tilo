@@ -47,7 +47,10 @@ pub enum Command {
 type Queue = Rc<RefCell<Vec<Command>>>;
 
 /// The position of the Problems toggle among the toolbar's items.
-const PROBLEMS_ITEM: usize = 9;
+const PROBLEMS_ITEM: usize = 1;
+/// The position of the zoom-out command; zoom in follows it. The two are one
+/// pair: [`Chrome::place`] never lets overflow leave only the first showing.
+const ZOOM_OUT_ITEM: usize = 3;
 
 /// What the toolbar was built for; it is rebuilt when the Problems label or
 /// the toggle's state would differ.
@@ -99,17 +102,21 @@ fn build_toolbar(queue: &Queue, problems: usize, shown: bool) -> Toolbar {
     } else {
         format!("Problems ({problems})")
     };
+    // Overflow folds the trailing commands first, so the order is the
+    // priority: what the person needs at every width (compile, and whether the
+    // source has problems) leads, the preview's zoom follows, and the file
+    // commands, which have shortcuts, fold into the More menu first.
     Toolbar::new(Orientation::Horizontal)
         .push_button("Compile", command(queue, Command::Compile))
-        .push_button("Save", command(queue, Command::Save))
-        .push_button("Open", command(queue, Command::Open))
-        .push_button("Export PDF", command(queue, Command::ExportPdf))
+        .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
         .push_separator()
         .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
         .push_icon(Icon::Plus, "Zoom in", command(queue, Command::ZoomIn))
         .push_button("Fit width", command(queue, Command::Fit))
         .push_spacer()
-        .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
+        .push_button("Save", command(queue, Command::Save))
+        .push_button("Open", command(queue, Command::Open))
+        .push_button("Export PDF", command(queue, Command::ExportPdf))
 }
 
 impl Default for Chrome {
@@ -334,6 +341,18 @@ impl Chrome {
         self.view.apply_layout_external(view_rect);
         self.toolbar_rect = toolbar_rect;
         self.toolbar.lay_out_in(toolbar_rect, tr, theme);
+        // Zoom out without zoom in reads as a broken control: when overflow
+        // would leave only the first of the pair showing, take back exactly
+        // the room that command used so both fold into the More menu.
+        if self.toolbar.visible_count() == ZOOM_OUT_ITEM + 1 {
+            let fold = Rect::new(
+                (toolbar_rect.x0 + control + gap).min(toolbar_rect.x1),
+                toolbar_rect.y0,
+                toolbar_rect.x1,
+                toolbar_rect.y1,
+            );
+            self.toolbar.lay_out_in(fold, tr, theme);
+        }
     }
 
     /// Place the Problems panel's close button; `None` hides it.
