@@ -45,22 +45,10 @@ pub struct DeckAssets<'a> {
     pub images: &'a dyn ImageLookup,
 }
 
-/// The hairline that seats a slide on the window ground: derived from that
-/// ground, so a white slide on a white window keeps its edge.
-pub fn seat_slide(
-    scene: &mut Scene,
-    transform: Affine,
-    dest: Rect,
-    corner: f64,
-    theme: &ui::theme::Theme,
-) {
-    scene.stroke(
-        &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
-        transform,
-        ui::surface::edge_on(theme.tokens.colors.surfaces.content),
-        None,
-        &ui::surface::edge_outline(dest, corner),
-    );
+/// `theme` at unit text scale, when it is scaled: what a slide's words lay
+/// out against.
+pub fn unit_scale(theme: &ui::theme::Theme) -> Option<ui::theme::Theme> {
+    ((theme.text_scale - 1.0).abs() > f32::EPSILON).then(|| theme.clone().with_text_scale(1.0))
 }
 
 /// The colour under the middle of text element `e`: the topmost filled
@@ -135,7 +123,15 @@ pub fn draw_slide_except(
     let palette = &assets.palette.on(slide.background);
     let bg = palette.slide_bg(slide.background);
     let card = RoundedRect::from_rect(dest, corner);
-    scene.fill(Fill::NonZero, transform, bg, None, &card);
+    if corner > 0.0 {
+        // A framed slide (the canvas, a thumbnail, a preview) is a card:
+        // its ground with an edge derived from it, so a white slide on a
+        // white window keeps its outline.
+        ui::surface::card(scene, transform, dest, corner, bg);
+    } else {
+        // Full bleed while presenting.
+        scene.fill(Fill::NonZero, transform, bg, None, &card);
+    }
 
     // Clip element painting to the slide card so overflowing shapes stay
     // crisp at the rounded edge.
@@ -145,12 +141,23 @@ pub fn draw_slide_except(
         palette,
         images: assets.images,
     };
+    // A slide's type is sized in slide units, whatever the reader's text
+    // scale: its words lay out against a theme at unit scale.
+    let unit_theme = unit_scale(ctx.theme);
     for el in slide.z_sorted() {
         if el.kind == ElementKind::Text {
             if editing == Some(el.id.as_str()) {
                 continue;
             }
-            draw_text_element(ctx, text_ink(palette, slide, el), el, dest, s);
+            let ink = text_ink(palette, slide, el);
+            let theme = unit_theme.as_ref().unwrap_or(ctx.theme);
+            draw_text_element(
+                &mut PaintCtx::new(ctx.scene, ctx.transform, ctx.text, theme),
+                ink,
+                el,
+                dest,
+                s,
+            );
             continue;
         }
         draw_element(ctx, assets, el, dest, s);

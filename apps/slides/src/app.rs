@@ -52,8 +52,6 @@ use crate::strings::{tr, tr_args};
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
-/// Logical pixels scrolled per mouse-wheel line notch.
-const WHEEL_LINE_PX: f64 = 48.0;
 /// Compressed presentation bytes are bounded before opening the ZIP.  Archive
 /// member and aggregate expansion limits live beside the ODP/PPTX readers.
 const MAX_PRESENTATION_FILE_BYTES: usize = 64 * 1024 * 1024;
@@ -248,15 +246,6 @@ fn save_document_request(suggested_name: &str) -> DocPortalChannel {
     }
 }
 
-/// Half-size of a selection handle's *grab* zone (hit-test radius).
-const HANDLE: f64 = 9.0;
-/// How far outside the selected element's content box the resize handles sit,
-/// so a handle never covers the first glyph of left-anchored text (or any
-/// content at a corner). The selection ring is drawn at this same outset, so
-/// the ring passes through the handle centres and the whole selection
-/// decoration reads as a single frame *around* the content rather than over it.
-const HANDLE_OFFSET: f64 = 8.0;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Edit,
@@ -285,9 +274,6 @@ enum Guide {
     Vertical(f64),
     Horizontal(f64),
 }
-
-/// Snap threshold in *pixels*; converted to slide units per-drag.
-const SNAP_PX: f64 = 7.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Handle {
@@ -1499,20 +1485,15 @@ impl SlidesApp {
         Point::new((p.x - dest.x0) / s, (p.y - dest.y0) / s)
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.handles_of(...) call site consistent with the other \
-                  slide-space geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
+    /// The resize handles of `el` and the rect each one is grabbed in. They
+    /// sit on the selection frame, just outside the content, so a handle
+    /// never covers the first glyph of a left-anchored title. Resize math
+    /// keys off the pointer position, not these centres.
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
         let er = render::element_dest(dest, s, el);
-        // Anchor the handles on a rect outset from the content by
-        // `HANDLE_OFFSET`, so each handle sits just *outside* the element and
-        // can never overlap the content (e.g. the first glyph of a left-anchored
-        // title). Resize math keys off the pointer position, not these centres,
-        // so pushing them outward doesn't change resize behaviour.
-        let hr = er.inflate(HANDLE_OFFSET, HANDLE_OFFSET);
+        let outset = self.selection_outset(dest, s, el);
+        let hr = er.inflate(outset, outset);
+        let reach = self.chrome_metrics.target * 0.3;
         let cx = hr.center().x;
         let cy = hr.center().y;
         let pos = |h: Handle| -> Point {
@@ -1530,10 +1511,9 @@ impl SlidesApp {
         Handle::ALL
             .iter()
             .map(|h| {
-                let p = pos(*h);
                 (
                     *h,
-                    Rect::new(p.x - HANDLE, p.y - HANDLE, p.x + HANDLE, p.y + HANDLE),
+                    Rect::from_center_size(pos(*h), (2.0 * reach, 2.0 * reach)),
                 )
             })
             .collect()
@@ -2537,7 +2517,6 @@ impl SlidesApp {
             radius,
             editing,
         );
-        render::seat_slide(scene, t, chrome.slide_dest, radius, theme);
         self.draw_editor_selection_chrome(scene, t, theme, chrome);
         self.draw_editor_guides(scene, t, theme, chrome);
     }
@@ -2545,14 +2524,14 @@ impl SlidesApp {
     /// How far the selection frame stands outside the selected element: a
     /// small step, never so far that it runs over a neighbouring element
     /// (a title's accent rule just under it).
-    fn selection_outset(&self, chrome: &Chrome, el: &Element) -> f64 {
+    fn selection_outset(&self, dest: Rect, scale: f64, el: &Element) -> f64 {
         let m = &self.chrome_metrics;
-        let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
+        let er = render::element_dest(dest, scale, el);
         let grip = m.target * 0.25;
         let mut outset = m.s2;
         if let Some(slide) = self.slide() {
             for other in slide.elements.iter().filter(|other| other.id != el.id) {
-                let or = render::element_dest(chrome.slide_dest, chrome.scale, other);
+                let or = render::element_dest(dest, scale, other);
                 if er.intersect(or).area() > 0.0 {
                     continue;
                 }
@@ -2562,7 +2541,7 @@ impl SlidesApp {
                 if gap > 0.0 && dx.min(dy) < 0.0 {
                     // A neighbour beside the element along one axis: keep
                     // the frame and its handles clear of it.
-                    outset = outset.min(gap - grip / 2.0 - 1.0);
+                    outset = outset.min(gap - grip / 2.0 - 2.0);
                 }
             }
         }
@@ -2584,7 +2563,7 @@ impl SlidesApp {
         };
         let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
         let you = theme.tokens.colors.intent.you;
-        let outset = self.selection_outset(chrome, el);
+        let outset = self.selection_outset(chrome.slide_dest, chrome.scale, el);
         let line = f64::from(theme.tokens.metrics.chrome_rule_px) * 1.5;
         scene.stroke(
             &Stroke::new(line),
@@ -4502,7 +4481,8 @@ impl SlidesApp {
                 let dx = sp.x - start.x;
                 let dy = sp.y - start.y;
                 let (w, h) = self.selected_element().map_or((0.0, 0.0), |e| (e.w, e.h));
-                let thr = SNAP_PX / s.max(0.0001);
+                // Snap within one small spacing step on screen.
+                let thr = self.chrome_metrics.s2 / s.max(0.0001);
                 let (nx, ny, guides) = self.snapped_move(&id, orig_x + dx, orig_y + dy, w, h, thr);
                 self.active_guides = guides;
                 if let Some(slide) = self.deck.slides.get_mut(self.cur_slide)
@@ -5285,7 +5265,8 @@ impl SlidesApp {
         // Positive wheel deltas scroll the content up (toward the start), so we
         // subtract from the offset.
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => f64::from(y) * WHEEL_LINE_PX,
+            // A wheel notch scrolls three lines of body text.
+            MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 3.0 * self.chrome_metrics.lh_body,
             MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
         };
         if dy == 0.0 {
@@ -5813,6 +5794,8 @@ impl SlidesApp {
             .editor_mut()
             .set_text_align(render::text_align(element.align));
         editor.host.set_text_color(Some(color));
+        let unit_theme = render::unit_scale(theme);
+        let theme = unit_theme.as_ref().unwrap_or(theme);
         let content_h = editor
             .host
             .layout(render::text_box_rect(&element), theme, tr);
