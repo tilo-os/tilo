@@ -6,7 +6,6 @@ crates/sdk/ui-core/src/chrome/shell.rs pixel_const 10
 crates/sdk/ui-core/src/chrome/status_bar.rs pixel_const 1
 crates/sdk/ui-core/src/chrome/toolbar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 13
-crates/sdk/ui-core/src/widget/app_shell.rs pixel_const 3
 crates/sdk/ui-core/src/widget/autocomplete.rs pixel_const 5
 crates/sdk/ui-core/src/widget/banner.rs pixel_const 6
 crates/sdk/ui-core/src/widget/block_editor.rs pixel_const 11
@@ -46,8 +45,6 @@ crates/sdk/ui-core/src/widget/modal_dialog.rs pixel_const 3
 crates/sdk/ui-core/src/widget/modal_frame.rs pixel_const 11
 crates/sdk/ui-core/src/widget/modal_prompt.rs pixel_const 4
 crates/sdk/ui-core/src/widget/native_view.rs taffy_length 1
-crates/sdk/ui-core/src/widget/nav_shell.rs pixel_const 4
-crates/sdk/ui-core/src/widget/nav_split.rs pixel_const 3
 crates/sdk/ui-core/src/widget/number_input.rs pixel_const 4
 crates/sdk/ui-core/src/widget/page_palette.rs pixel_const 4
 crates/sdk/ui-core/src/widget/page_preview.rs pixel_const 2
@@ -70,7 +67,6 @@ crates/sdk/ui-core/src/widget/section.rs pixel_const 1
 crates/sdk/ui-core/src/widget/segmented.rs pixel_const 1
 crates/sdk/ui-core/src/widget/shortcut_recorder.rs pixel_const 2
 crates/sdk/ui-core/src/widget/shortcut_recorder.rs taffy_length 1
-crates/sdk/ui-core/src/widget/sidebar.rs pixel_const 1
 crates/sdk/ui-core/src/widget/slash_menu.rs pixel_const 6
 crates/sdk/ui-core/src/widget/slider.rs pixel_const 3
 crates/sdk/ui-core/src/widget/spinner.rs pixel_const 2
