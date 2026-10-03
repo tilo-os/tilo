@@ -2,4 +2,3 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/tube/src/api.rs middle_dot_join 2
-apps/tube/src/screens.rs middle_dot_join 6
