@@ -1,5 +1,6 @@
 //! Populated, interactive reference scene for the chart catalogue.
 
+use tilo_ui::TextRole;
 use tilo_ui::chart_palette::ChartPalette;
 use tilo_ui::num::f64_of_usize;
 use tilo_ui::theme::Theme;
@@ -421,7 +422,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     let content = Column::new()
         .with_intrinsic_height()
         .with_gap(18.0)
-        .push(Box::new(Text::new("Interactive chart gallery").with_size(30.0)))
+        .push(Box::new(Text::new("Interactive chart gallery").with_role(TextRole::Display)))
         .push(Box::new(Text::new(
             "Resize to reflow. Hover points, cells, links, nodes, and segments; click to activate accessible data targets.",
         )))

@@ -25,9 +25,10 @@ use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::color_compat::ColorCompat;
 use crate::paint::with_alpha;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::Metrics;
+use crate::tokens::TextRole;
 use crate::widget::AuthoredExtent;
 use crate::widget::nav_split::{FlapState, SplitLayout};
 
@@ -278,7 +279,7 @@ impl SidebarNav {
                 tr,
                 scene,
                 &section.label,
-                (11.0, c.text_dim, TextWeight::Bold),
+                (&theme.text(TextRole::Subheading), c.text_dim),
                 transform,
                 self.rect.x0 + 18.0,
                 heading_y,
@@ -294,30 +295,28 @@ impl SidebarNav {
                         &RoundedRect::from_rect(row, 10.0),
                     );
                 }
+                let label_style = if item.selected {
+                    theme.text(TextRole::Body).strong()
+                } else {
+                    theme.text(TextRole::Body)
+                };
                 draw_nav_text(
                     tr,
                     scene,
                     &item.label,
-                    (
-                        14.0,
-                        c.text_primary,
-                        if item.selected {
-                            TextWeight::Bold
-                        } else {
-                            TextWeight::Medium
-                        },
-                    ),
+                    (&label_style, c.text_primary),
                     transform,
                     row.x0 + 12.0,
                     row.y0 + 12.0,
                 );
                 if let Some(badge) = &item.badge {
-                    let (width, _) = tr.measure_weighted(badge, 12.0, None, TextWeight::Regular);
+                    let badge_style = theme.text(TextRole::Caption).numeric();
+                    let (width, _) = tr.measure_style(badge, None, &badge_style);
                     draw_nav_text(
                         tr,
                         scene,
                         badge,
-                        (12.0, c.text_dim, TextWeight::Regular),
+                        (&badge_style, c.text_dim),
                         transform,
                         row.x1 - f64::from(width) - 12.0,
                         row.y0 + 13.0,
@@ -338,20 +337,19 @@ fn draw_nav_text(
     tr: &mut TextRenderer,
     scene: &mut Scene,
     text: &str,
-    style: (f32, Color, TextWeight),
+    style: (&TextStyle, Color),
     transform: Affine,
     x: f64,
     y: f64,
 ) {
-    let (size, color, weight) = style;
-    tr.draw_text_weighted(
+    let (style, color) = style;
+    tr.draw_style(
         scene,
         text,
-        size,
         color,
         transform * Affine::translate((x, y)),
         None,
-        weight,
+        style,
     );
 }
 
@@ -1154,7 +1152,7 @@ mod tests {
                             SidebarNavItem::new("favourites", "Favourites"),
                         ],
                     ),
-                    SidebarNavSection::new("TOOLS", vec![SidebarNavItem::new("import", "Import")]),
+                    SidebarNavSection::new("Tools", vec![SidebarNavItem::new("import", "Import")]),
                 ],
             );
             let all = nav.row_rect(0, 0);

@@ -8,11 +8,10 @@
 
 //! Text is scaled exactly once.
 //!
-//! Theme typography already carries the accessibility text scale and the
-//! legacy size-based `TextRenderer` APIs multiply by the renderer's scale
-//! again, so a widget that hands them a theme size paints 4× glyphs at 200 %.
-//! `tilo_ui::text_metrics::renderer_type_size` divides once; this test pins the
-//! migrated widgets to that contract two ways:
+//! Theme roles are resolved (`TextScaling::Resolved`): they already carry
+//! the accessibility text scale and the renderer paints them as given, while
+//! a size-based `TextRenderer` API scales its 1× base once. This test pins
+//! the widgets to that contract two ways:
 //!
 //! - through the shared `FrameHarness` (theme *and* renderer scaled, as the
 //!   live host does): the label ink of each widget grows by the expected
@@ -26,6 +25,7 @@
 //! `text_scaled_once/` there as visual evidence.
 
 use tilo_ui::State;
+use tilo_ui::TextRole;
 use tilo_ui::headless::{FrameHarness, InspectionNode};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -219,16 +219,11 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
                 2.0,
             ),
             (
-                // Renderer-relative contract: an app that wants the theme's
-                // control-label size divides it once, as documented on
-                // `pill_size`; the pill then paints it scaled once.
+                // The pill sets its label in the theme's `Label` role, so it
+                // paints it scaled once.
                 "status_bubble::draw_pill",
                 Box::new(|scene, tr, theme| {
-                    let size = tilo_ui::text_metrics::renderer_type_size(
-                        tr,
-                        theme.tokens.typography.scale.sm,
-                    );
-                    let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, size, 0.0);
+                    let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, theme, 0.0);
                     tilo_ui::status_bubble::draw_pill(
                         scene,
                         Affine::IDENTITY,
@@ -236,7 +231,6 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
                         theme,
                         Rect::new(0.0, 0.0, w, h),
                         "Syncing",
-                        size,
                     );
                 }),
                 2.0,
@@ -264,27 +258,15 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
         }
     }
 
-    // Case `renderer_type_size_is_the_size_only_twin_of_renderer_input_style`.
-    // The helper itself: the size-only twin of `renderer_input_style`.
+    // Case `a_resolved_role_measures_the_same_at_every_renderer_scale`.
     {
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let resolved = Theme::dark()
-            .with_text_scale(2.0)
-            .tokens
-            .typography
-            .scale
-            .base;
-        let via_style = tr
-            .renderer_input_style(&tilo_ui::text_render::TextStyle::new(resolved))
-            .size;
+        let style = Theme::dark().with_text_scale(2.0).text(TextRole::Body);
+        let mut one = TextRenderer::new();
+        let mut two = TextRenderer::new();
+        two.set_text_scale(2.0);
         assert_eq!(
-            tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
-            via_style
-        );
-        assert_eq!(
-            tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
-            14.0
+            one.measure_style("Scale once", None, &style),
+            two.measure_style("Scale once", None, &style)
         );
     }
 }

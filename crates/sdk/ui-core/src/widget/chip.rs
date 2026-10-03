@@ -20,9 +20,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::TintedChip;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -38,9 +38,8 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Default pill height: the dense control step (HIG §9.6, 28 px). Hosts that
-/// lay a chip out taller get a proportionally larger label via
-/// [`Chip::label_size_for_height`].
+/// Default pill height: the dense control step (HIG §9.6, 28 px). The label
+/// is always a `Label`, whatever height a host lays the chip out at.
 const HEIGHT: f64 = 28.0;
 /// Horizontal inset, `spacing.s3` at 1× — the same inset a button uses, so a
 /// chip and a button in one row start their content on the same line.
@@ -72,10 +71,10 @@ pub struct Chip {
     x_rect: Rect,
     last_cursor: Point,
     label_w: f64,
-    /// The theme's `typography.scale.sm`, captured in `build_layout` for
+    /// The `Label` role resolved at `build_layout`, for
     /// `measure` and `adjust_layout_with_measure`, which have no theme of
     /// their own (the old `measure` reached for `Theme::dark()` instead).
-    label_size: f32,
+    label_style: TextStyle,
     /// Vertical inset between the measured label line and the pill edge
     /// when the line outgrows [`HEIGHT`] (`spacing.s1` a side).
     pad_y: f64,
@@ -105,7 +104,7 @@ impl Chip {
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             label_w: 0.0,
-            label_size: crate::tokens::TypeScale::default().sm,
+            label_style: crate::tokens::typography::stock().style(TextRole::Label),
             pad_y: f64::from(crate::tokens::Spacing::BASE.s1),
             min_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -203,12 +202,7 @@ impl Chip {
     /// pill stays 28; at 2× text the 30 px line lifts it to 42 instead of
     /// spilling over the pill's top and bottom.
     fn intrinsic_size(&self, text_renderer: &mut TextRenderer) -> (f64, f64) {
-        // `label_size` is the theme's resolved step (text scale included);
-        // the size-based renderer APIs scale again, so hand them the
-        // renderer-relative twin — one multiplier, not two. (`draw` still
-        // feeds the raw step to the renderer; that expression is X1's.)
-        let size = renderer_type_size(text_renderer, self.label_size);
-        let (w, lh) = text_renderer.measure(&self.label, size, None);
+        let (w, lh) = text_renderer.measure_style(&self.label, None, &self.label_style);
         let mut total = PAD_X * 2.0 + f64::from(w);
         if self.dot.is_some() {
             total += DOT_D + GAP;
@@ -336,26 +330,6 @@ impl ChipStyle {
 }
 
 impl Chip {
-    /// Text size a chip of `height` px paints its label at. The widget's
-    /// own `HEIGHT` maps to `typography.scale.sm`, whether the caller passes
-    /// authored geometry or geometry already grown by the responsive layout.
-    /// Anything intentionally taller or shorter scales with it, while the
-    /// already-scaled type token is still applied exactly once.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "clamped to 0.75..=1.6 just above, so the f32 cast can't \
-                  truncate anything that matters for a UI scale factor"
-    )]
-    pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
-        let resolved_height = HEIGHT * theme.responsive_scale();
-        let relative_height = if height >= resolved_height {
-            height / resolved_height
-        } else {
-            height / HEIGHT
-        };
-        theme.tokens.typography.scale.sm * relative_height.clamp(0.75, 1.6) as f32
-    }
-
     /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
     /// needs to paint `label` and `lead` at `height` without truncating.
     pub fn natural_width_at(
@@ -365,8 +339,7 @@ impl Chip {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> f64 {
-        let size = renderer_type_size(text_renderer, Self::label_size_for_height(height, theme));
-        let (w, _) = text_renderer.measure(label, size, None);
+        let (w, _) = text_renderer.measure_style(label, None, &theme.text(TextRole::Label));
         let lead_w = match lead {
             ChipLead::None => 0.0,
             ChipLead::Dot(_) => DOT_D + GAP,
@@ -479,47 +452,44 @@ impl Chip {
         }
 
         // Label, truncated to the space actually left inside the pill.
-        let size = renderer_type_size(
-            text_renderer,
-            Self::label_size_for_height(rect.height(), theme),
-        );
+        let label_style = theme.text(TextRole::Label);
         let avail = rect.x1 - PAD_X - x;
         if avail <= 1.0 {
             return;
         }
-        let shown = truncate_to_width(label, size, avail, text_renderer);
+        let shown = truncate_to_width(label, &label_style, avail, text_renderer);
         if shown.is_empty() {
             return;
         }
-        let (_, lh) = text_renderer.measure(&shown, size, None);
+        let (_, lh) = text_renderer.measure_style(&shown, None, &label_style);
         let label_col = match (style.resolved, style.tint, style.ghost) {
             (Some(c), _, false) if !style.bare => c.ink,
             (_, _, true) => colors.text_dim,
             (_, Some(t), _) => t,
             (_, None, _) => colors.text_primary,
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &shown,
-            size,
             fade(label_col, 1.0),
             translated(transform, x, cy - f64::from(lh) / 2.0),
             None,
+            &label_style,
         );
     }
 }
 
-/// Longest prefix of `label` that fits `avail` px at `size`, with an
+/// Longest prefix of `label` that fits `avail` px in `style`, with an
 /// ellipsis appended when anything was dropped. Returns an empty string
 /// when not even one character plus the ellipsis fits — callers treat that
 /// as "no room for a label here" rather than painting a lone `…`.
 fn truncate_to_width(
     label: &str,
-    size: f32,
+    style: &TextStyle,
     avail: f64,
     text_renderer: &mut TextRenderer,
 ) -> String {
-    let out = text_renderer.elide_to_width(label, size, crate::num::f32_of_f64(avail));
+    let out = text_renderer.elide_to_width_style(label, crate::num::f32_of_f64(avail), style);
     if out != label && out.starts_with(crate::text_render::ELLIPSIS) {
         String::new()
     } else {
@@ -546,18 +516,18 @@ impl Widget for Chip {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Label);
         let pad_y = f64::from(theme.tokens.spacing.s1);
-        if label_size.to_bits() != self.label_size.to_bits()
-            || pad_y.to_bits() != self.pad_y.to_bits()
-        {
+        if label_style != self.label_style || pad_y.to_bits() != self.pad_y.to_bits() {
             // A new type step re-shapes the label and a new spacing scale
             // moves the pill's inset; the settled pill no longer describes
             // either (a relayout-only host such as `FrameHarness::set_theme`
             // never rebuilds the widget, so this is the only invalidation).
             self.footprint = None;
         }
-        self.label_size = label_size;
+        let label_size = label_style.size;
+        let label_line = f64::from(label_style.line_height_px());
+        self.label_style = label_style;
         self.pad_y = pad_y;
         self.min_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // Both axes are pinned as `length`, so taffy never asks `measure`
@@ -570,7 +540,7 @@ impl Widget for Chip {
                 + f64::from(char_count) * (f64::from(label_size) * 0.6)
                 + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
                 + if self.removable { GAP + X_D } else { 0.0 };
-            let estimated_line_height = crate::text_metrics::line_height_px(label_size, 1.0);
+            let estimated_line_height = label_line;
             taffy::Size {
                 width: approx as f32,
                 height: HEIGHT.max(estimated_line_height + pad_y * 2.0) as f32,
@@ -704,17 +674,17 @@ impl Widget for Chip {
             x += DOT_D + GAP;
         }
 
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (lw, lh) = text_renderer.measure(&self.label, size, None);
+        let style = theme.text(TextRole::Label);
+        let (lw, lh) = text_renderer.measure_style(&self.label, None, &style);
         self.label_w = f64::from(lw);
         let label_col = if selected { accent } else { theme.text_primary };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &self.label,
-            size,
             label_col,
             translated(transform, x, cy - f64::from(lh) / 2.0),
             None,
+            &style,
         );
         x += f64::from(lw);
 
@@ -854,7 +824,7 @@ mod tests {
         fn chip_width_is_measured_not_estimated() {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
-            let (label_w, _) = text.measure("Rust", theme.tokens.typography.scale.sm, None);
+            let (label_w, _) = text.measure_style("Rust", None, &theme.text(TextRole::Label));
             let expected = (PAD_X * 2.0 + f64::from(label_w)).ceil();
             let rect = settled_chip_rect(Chip::new("Rust"), 1.0);
             assert!(
@@ -870,18 +840,19 @@ mod tests {
         }
 
         /// The pill height follows the label's measured line once that line
-        /// outgrows the 28 px selector height: the 12 px step is 24 px at 2×,
-        /// its line 30 px, so the pill is 38 — measured once, at the
-        /// renderer-relative size, not the doubled 60 px line the raw step
-        /// would shape.
+        /// outgrows the 28 px selector height: the 13 px `Label` is 26 px at 2×,
+        /// its line 33.8 px — measured once, from the resolved role, never a
+        /// line doubled a second time by the renderer.
         fn pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x() {
             let theme = Theme::dark().with_text_scale(2.0);
             let mut text = TextRenderer::new();
             text.set_text_scale(2.0);
-            let size =
-                crate::text_metrics::renderer_type_size(&text, theme.tokens.typography.scale.sm);
-            let (_, line_h) = text.measure("Filter", size, None);
-            assert!((line_h - 30.0).abs() < 1e-3, "2× sm line: {line_h}");
+            let style = theme.text(TextRole::Label);
+            let (_, line_h) = text.measure_style("Filter", None, &style);
+            assert!(
+                (line_h - 13.0 * 2.0 * 1.3).abs() < 1e-3,
+                "2× label line: {line_h}"
+            );
             let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
             assert!(
                 expected > HEIGHT,
@@ -942,7 +913,8 @@ mod tests {
                 .first()
                 .expect("chip label glyph run");
             assert_eq!(
-                run.font_size, theme.tokens.typography.scale.sm,
+                run.font_size,
+                theme.tokens.typography.size(TextRole::Label),
                 "theme and renderer scale must not multiply each other"
             );
         }

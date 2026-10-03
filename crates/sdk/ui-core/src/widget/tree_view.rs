@@ -28,13 +28,14 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::EventCtx;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::data_table::{
-    RowType, centered_text_top, renderer_type_size, row_estimate, text_band, type_line_height,
+    RowType, centered_text_top, row_estimate, text_band, type_line_height,
 };
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
@@ -881,8 +882,6 @@ pub struct TreeView<T, M = TreeNode<T>> {
     inset_rows: bool,
     /// Gap between a row's label and its trailing content.
     row_gap: f64,
-    /// Label type size, resolved at draw time; the rename field matches it.
-    label_size: f32,
     on_rename: Option<Box<dyn FnMut(NodeId, String)>>,
     rename_on_double_click: bool,
     rename: Option<editing::RenameField>,
@@ -917,16 +916,18 @@ const DISCLOSURE_WIDTH: f64 = 16.0;
     reason = "const context: f64::from is not const; f32 -> f64 is exact"
 )]
 const DEFAULT_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
-const ROW_HEIGHT: f64 = 22.0;
+/// A dense row before a theme is seen: one `Body` line and its `s1` pads,
+/// rounded to whole pixels.
+const ROW_HEIGHT: f64 = 28.0;
 /// Label-to-trailing-content gap before a theme is seen: the `s2` step.
 #[allow(
     clippy::cast_lossless,
     reason = "const context: f64::from is not const; f32 -> f64 is exact"
 )]
 const DEFAULT_ROW_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-/// Label size before a first draw resolves the theme's `sm` step.
-const DEFAULT_LABEL_SIZE: f32 = crate::tokens::TypeScale::BASE.sm;
 const MAX_TRANSITION_ROWS: usize = 512;
+/// The role every row label is set in; the rename field matches it.
+const LABEL_ROLE: TextRole = TextRole::Body;
 
 fn idx_to_f64(index: usize) -> f64 {
     f64::from(u32::try_from(index).unwrap_or(u32::MAX))
@@ -1070,7 +1071,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
             row_inset: 0.0,
             inset_rows: false,
             row_gap: DEFAULT_ROW_GAP,
-            label_size: DEFAULT_LABEL_SIZE,
             on_rename: None,
             rename_on_double_click: false,
             rename: None,
@@ -1956,7 +1956,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// touched.
     fn apply_type_metrics(&mut self, theme: &Theme) {
         let tokens = &theme.tokens;
-        let line = type_line_height(tokens.typography.scale.sm);
+        let line = type_line_height(&tokens.typography, LABEL_ROLE);
         self.disclosure_w = text_band(DISCLOSURE_WIDTH, line, 0.0);
         self.indent_px = f64::from(tokens.spacing.s4);
         let pad = f64::from(tokens.spacing.s1);
@@ -1973,7 +1973,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             0.0
         };
         let heading_band =
-            type_line_height(tokens.typography.scale.xs) + 2.0 * f64::from(tokens.spacing.s2);
+            type_line_height(&tokens.typography, LABEL_ROLE) + 2.0 * f64::from(tokens.spacing.s2);
         self.heading_h = match (&self.heading, &self.heading_action) {
             // An action needs a band a pressable control fits in.
             (_, Some(_)) => heading_band.max(line + 4.0 * pad),
@@ -2836,11 +2836,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     ) {
         self.request_visible_rows();
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
-        self.label_size = text_size;
+        let text_style = tokens.typography.style(LABEL_ROLE);
         // Every label and disclosure glyph is one line of this style, so one
         // measured line box centres every row identically.
-        let (_, line_h) = text_renderer.measure("\u{25B6}", text_size, None);
+        let (_, line_h) = text_renderer.measure_style("\u{25B6}", None, &text_style);
         // The indent and disclosure column hit-testing uses, resolved from
         // this theme at layout.
         let indent_px = self.indent_px;
@@ -2866,18 +2865,19 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             &self.rect,
         );
         if let Some(heading) = &self.heading {
-            let heading_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
-            let (_, heading_line) = text_renderer.measure(heading, heading_size, None);
+            let heading_style = tokens.typography.style(TextRole::Caption);
+            let (_, heading_line) = text_renderer.measure_style(heading, None, &heading_style);
             let x = self.rect.x0 + f64::from(tokens.spacing.s3);
             let end = self
                 .heading_action_rect()
                 .map_or(self.rect.x1, |action| action.x0);
             let max_w = (end - x - f64::from(tokens.spacing.s3)).max(0.0);
-            let heading = text_renderer.elide_to_width_weighted(
+            let heading = text_renderer.elide_to_width_style(
                 heading,
-                heading_size,
                 px(max_w),
-                crate::text_render::TextWeight::Semibold,
+                &heading_style
+                    .clone()
+                    .with_weight(crate::text_render::TextWeight::Semibold),
             );
             #[allow(
                 clippy::arithmetic_side_effects,
@@ -2888,14 +2888,15 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     x,
                     centered_text_top(self.rect.y0, self.heading_h, heading_line),
                 ));
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &heading,
-                heading_size,
                 tokens.colors.text_dim,
                 heading_xf,
                 None,
-                crate::text_render::TextWeight::Semibold,
+                &heading_style
+                    .clone()
+                    .with_weight(crate::text_render::TextWeight::Semibold),
             );
         }
         self.paint_heading_action(scene, transform, text_renderer, theme);
@@ -3074,13 +3075,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
                 )]
                 let glyph_xf = transform * Affine::translate((glyph_x, text_y));
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     glyph,
-                    text_size,
                     tokens.colors.text_dim.with_alpha_factor(opacity),
                     glyph_xf,
                     None,
+                    &text_style,
                 );
             }
 
@@ -3115,7 +3116,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         label_max -= used + gap;
                     }
                     if let Some(trailing) = &decoration.trailing {
-                        let (trailing_w, _) = text_renderer.measure(trailing, text_size, None);
+                        let (trailing_w, _) =
+                            text_renderer.measure_style(trailing, None, &text_style);
                         let trailing_x =
                             self.rect.x1 - f64::from(tokens.spacing.s3) - f64::from(trailing_w);
                         #[allow(
@@ -3123,13 +3125,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
                         )]
                         let trailing_xf = transform * Affine::translate((trailing_x, text_y));
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             trailing,
-                            text_size,
                             tokens.colors.text_dim.with_alpha_factor(opacity),
                             trailing_xf,
                             None,
+                            &text_style,
                         );
                         label_max = trailing_x - gap - label_x;
                     }
@@ -3144,7 +3146,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     && field.id == id
                 {
                     // The field takes the label's place, at the label's size.
-                    field.input.set_font_size(text_size);
+                    field.input.set_text_role(LABEL_ROLE);
                     field.input.apply_layout_external(Rect::new(
                         label_x,
                         y0,
@@ -3153,19 +3155,20 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     ));
                     continue;
                 }
-                let label = text_renderer.elide_to_width(label, text_size, px(label_max.max(0.0)));
+                let label =
+                    text_renderer.elide_to_width_style(label, px(label_max.max(0.0)), &text_style);
                 #[allow(
                     clippy::arithmetic_side_effects,
                     reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
                 )]
                 let label_xf = transform * Affine::translate((label_x, text_y));
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &label,
-                    text_size,
                     text_color.with_alpha_factor(opacity),
                     label_xf,
                     None,
+                    &text_style,
                 );
             }
         }
@@ -3218,13 +3221,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     reason = "kurbo Affine composition is finite screen-space matrix math"
                 )]
                 let glyph_transform = transform * Affine::translate((glyph_x, text_y));
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     glyph,
-                    text_size,
                     tokens.colors.text_dim.with_alpha_factor(opacity),
                     glyph_transform,
                     None,
+                    &text_style,
                 );
             }
             let color = match payload.tone {
@@ -3238,13 +3241,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             )]
             let label_transform =
                 transform * Affine::translate((glyph_x + self.disclosure_w, text_y));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &payload.label,
-                text_size,
                 color.with_alpha_factor(opacity),
                 label_transform,
                 None,
+                &text_style,
             );
         }
         if let Some(field) = self.rename.as_mut() {
@@ -3252,7 +3255,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .input
                 .draw(scene, transform, text_renderer, theme, presence);
         }
-        self.paint_drag_ghost(scene, transform, text_renderer, theme, text_size, line_h);
+        self.paint_drag_ghost(scene, transform, text_renderer, theme, &text_style, line_h);
         if let Some(preview) = self.reorder.preview() {
             let color = if self
                 .reorder
@@ -4036,26 +4039,26 @@ fn paint_row_icon(
             side
         }
         TreeRowIcon::Glyph { text, color } => {
-            let size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
-            let (w, h) = text_renderer.measure(text, size, None);
+            let style = tokens.typography.style(TextRole::Caption);
+            let (w, h) = text_renderer.measure_style(text, None, &style);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
             )]
             let xf = transform * Affine::translate((anchor.x, anchor.y - f64::from(h) / 2.0));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 text,
-                size,
                 color.with_alpha_factor(opacity),
                 xf,
                 None,
+                &style,
             );
             f64::from(w).max(side)
         }
         TreeRowIcon::Badge { text, fill } => {
-            let size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
-            let (w, h) = text_renderer.measure(text, size, None);
+            let style = tokens.typography.style(TextRole::Caption);
+            let (w, h) = text_renderer.measure_style(text, None, &style);
             let chip_w = side.max(f64::from(w) + f64::from(tokens.spacing.s1));
             let chip = Rect::new(
                 anchor.x,
@@ -4081,7 +4084,14 @@ fn paint_row_icon(
                     chip.x0 + (chip_w - f64::from(w)) / 2.0,
                     anchor.y - f64::from(h) / 2.0,
                 ));
-            text_renderer.draw_text(scene, text, size, ink.with_alpha_factor(opacity), xf, None);
+            text_renderer.draw_style(
+                scene,
+                text,
+                ink.with_alpha_factor(opacity),
+                xf,
+                None,
+                &style,
+            );
             chip_w
         }
     }
@@ -5999,6 +6009,11 @@ mod tests {
 
     #[test]
     fn tree_reorder_drag_previews_commits_rejects_and_hover_expands() {
+        // A pointer `rows` rows down the viewport (2.5 = the middle of the
+        // third row), so the cases follow the row height.
+        fn row_y(rows: f64) -> f64 {
+            rows * ROW_HEIGHT
+        }
         // Case `tree_reorder_previews_and_commits_a_valid_sibling_drop`.
         fn tree_reorder_previews_and_commits_a_valid_sibling_drop() {
             let mut view = TreeView::from_model(external_model())
@@ -6037,12 +6052,12 @@ mod tests {
                         true
                     },
                 );
-            view.set_viewport(88.0, px(ROW_HEIGHT));
+            view.set_viewport(px(4.0 * ROW_HEIGHT), px(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
-            dispatch_laid_out(&mut view, &cursor_moved(80.0, 55.0), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(2.5)), &taffy, node);
             dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-            dispatch_laid_out(&mut view, &cursor_moved(80.0, 86.0), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(3.9)), &taffy, node);
             assert_eq!(
                 view.reorder_target(),
                 Some(&DropTarget::new(4, DropPlacement::After))
@@ -6061,12 +6076,12 @@ mod tests {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
                 .with_reorder(|_, _, _| true, |_, _| true);
-            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_viewport(px(5.0 * ROW_HEIGHT), px(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
-            dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(1.5)), &taffy, node);
             dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-            dispatch_laid_out(&mut view, &cursor_moved(80.0, 60.0), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(2.73)), &taffy, node);
             assert!(view.reorder_preview().is_none());
             dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
             assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 3, 4]);
@@ -6080,12 +6095,12 @@ mod tests {
             view.reorder = ReorderController::new()
                 .with_drag_threshold(0.0)
                 .with_hover_expand_delay(Duration::ZERO);
-            view.set_viewport(88.0, px(ROW_HEIGHT));
+            view.set_viewport(px(4.0 * ROW_HEIGHT), px(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
-            dispatch_laid_out(&mut view, &cursor_moved(80.0, 55.0), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(2.5)), &taffy, node);
             dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
-            dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
+            dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(1.5)), &taffy, node);
             assert_eq!(
                 view.reorder_target(),
                 Some(&DropTarget::new(2, DropPlacement::Inside))

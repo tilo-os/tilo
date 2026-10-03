@@ -584,7 +584,7 @@ mod tests {
         {
             let mut p = PopoverWidget::new(
                 Rect::new(100.0, 100.0, 200.0, 130.0),
-                Text::new("Scaled popover").with_scaled_size(20.0),
+                Text::new("Scaled popover").with_role(crate::tokens::TextRole::Title),
                 PopoverSide::Below,
             )
             .open(true)

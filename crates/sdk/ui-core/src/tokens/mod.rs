@@ -21,7 +21,7 @@ pub use radii::Radii;
 pub use spacing::{Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
-pub use typography::{FontFamily, TextRole, TypeScale, Typography, WeightScale};
+pub use typography::{FontFamily, REFERENCE_BODY_PX, TextRole, Typography};
 
 #[derive(Clone, Debug)]
 pub struct Tokens {
@@ -37,8 +37,6 @@ pub struct Tokens {
     /// on construction; consumers should prefer this over the raw string so
     /// future fallback lists/weights can be added without breaking call sites.
     pub font_mono: FontFamily,
-    /// Canonical base body font size in logical px. Mirrors `typography.scale.base`.
-    pub font_size_base: f32,
     /// Palette for terminal-style widgets (fg/bg defaults + ANSI 0..=15).
     pub terminal_palette: TerminalPalette,
     /// The one syntax-highlighting palette every code surface paints with.
@@ -54,7 +52,6 @@ impl Tokens {
     pub fn of_material(material: Material) -> Self {
         let typography = Typography::default();
         let font_mono = FontFamily::new(typography.mono_family.clone());
-        let font_size_base = typography.scale.base;
         let colors = Colors::of_material(material, DEFAULT_NEUTRAL_HUE);
         let light = material == Material::Light;
         Self {
@@ -72,7 +69,6 @@ impl Tokens {
             },
             motion: Motion::default(),
             font_mono,
-            font_size_base,
             motion_character: 1.0,
         }
     }

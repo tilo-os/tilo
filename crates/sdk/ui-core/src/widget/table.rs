@@ -47,6 +47,7 @@ use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{TextInput, Widget};
 
 // ---------------------------------------------------------------------------
@@ -76,7 +77,6 @@ const DELETE_SIDE: f64 = 15.0;
 /// the authored default of this grid, kept exact at 1×. `TextInput` takes a
 /// *base* size and applies the renderer's text scale itself, so the cells
 /// still follow the accessibility text scale.
-const CELL_FONT: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
 // CRDT keys
@@ -492,7 +492,7 @@ impl Table {
             .with_id(&format!("cell_{rid}_{cid}"))
             .with_on_change_path(&cell_key(rid, cid))
             .with_plain_chrome()
-            .with_font_size(CELL_FONT)
+            .with_text_role(TextRole::Body)
     }
 
     /// Local projection for hosts whose canonical table is already represented
@@ -510,7 +510,7 @@ impl Table {
             self.col_ids = (0..columns).map(|column| column.to_string()).collect();
             self.cells = (0..rows.len().saturating_mul(columns))
                 .map(|_| {
-                    let mut input = TextInput::local().with_plain_chrome().with_font_size(14.0);
+                    let mut input = TextInput::local().with_plain_chrome();
                     input.set_multiline(true);
                     input
                 })

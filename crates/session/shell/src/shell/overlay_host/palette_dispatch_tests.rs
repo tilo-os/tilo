@@ -1,6 +1,7 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceTree;
+use ui::TextRole;
 use ui::widget::Container;
 
 fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
@@ -1211,7 +1212,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn compact_shortcut_recovery_actions_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.scale.xs;
+        let chord_size = Theme::dark().tokens.typography.size(TextRole::Caption);
         // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
         // compact guide uses three semantic columns with quiet key pills.
         let columns = shortcut_reference_columns(688.0);

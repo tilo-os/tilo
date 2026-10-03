@@ -925,8 +925,7 @@ mod tests {
                 first_text(&harness.inspection().root).expect("card title text")[3]
             };
             let theme = Theme::dark();
-            let typography = &theme.tokens.typography;
-            let expected = f64::from(typography.scale.lg * typography.line_height_tight);
+            let expected = f64::from(theme.text(crate::tokens::TextRole::Title).line_height_px());
             let base = title_height(1.0);
             assert!(
                 (base - expected).abs() < 1.0,

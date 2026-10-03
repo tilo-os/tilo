@@ -1262,7 +1262,7 @@ mod tests {
         {
             let mut ns = NavSplit::new(
                 Box::new(Text::new("Sidebar")),
-                Box::new(Text::new("Scaled content").with_scaled_size(20.0)),
+                Box::new(Text::new("Scaled content").with_role(crate::tokens::TextRole::Title)),
             )
             .with_mode(SplitMode::AlwaysDocked);
             lay_out_with(&mut ns, &Theme::dark().with_text_scale(2.0), 1000.0, 600.0);

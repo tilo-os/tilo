@@ -2,7 +2,6 @@ use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -22,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
+use crate::tokens::TextRole;
 /// Group widths are the desktop model's: a fraction of the strip, never
 /// pixels, with one set of tiers and clamps for every host.
 pub use tilo_desktop_model::width::{
@@ -1703,8 +1703,8 @@ impl WindowGroup {
             .find(|t| t.id == self.bar.active_id())
             .map(|t| t.title.clone())
             .unwrap_or_default();
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-        let (tw, th) = tr.measure(&active_title, title_size, None);
+        let title_style = theme.text(TextRole::Caption);
+        let (tw, th) = tr.measure_style(&active_title, None, &title_style);
         // The label sits `spacing.s3` in from either end of its chip.
         let chip_pad = f64::from(theme.tokens.spacing.s3);
         let title_pill_w = (f64::from(tw) + 2.0 * chip_pad).max(MAXIMIZED_TITLE_CHIP_MIN_W);
@@ -1734,13 +1734,13 @@ impl WindowGroup {
                 title_pill.center().x - f64::from(tw) / 2.0,
                 title_pill.center().y - f64::from(th) / 2.0,
             ));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &active_title,
-            title_size,
             theme.tokens.colors.text_primary,
             title_text_transform,
             None,
+            &title_style,
         );
     }
 
@@ -1757,14 +1757,14 @@ impl WindowGroup {
         layout: ChromePillLayout,
     ) {
         let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        let title_style = theme.text(TextRole::Caption);
         // The close chip is a square of the row's height, so its × sits on
         // the same centre the title chip's text does.
         let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
         let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-        let (lw, lh) = tr.measure(&label, title_size, None);
+        let (lw, lh) = tr.measure_style(&label, None, &title_style);
         let icon_inset = f64::from(theme.tokens.spacing.s2);
         // Icon slot, gap, label, end pad: a longer translation widens the chip.
         let restore_w = MAXIMIZED_RESTORE_CHIP_W
@@ -1817,13 +1817,13 @@ impl WindowGroup {
             reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
         )]
         let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &label,
-            title_size,
             theme.tokens.colors.text_primary,
             label_transform,
             None,
+            &title_style,
         );
 
         self.draw_maximized_close_button(scene, transform, theme);
@@ -4842,7 +4842,10 @@ mod tests {
                     < 1e-9,
                 "restore and close sit one s1 apart"
             );
-            assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
+            assert!(
+                g.restore_rect.width() >= MAXIMIZED_RESTORE_CHIP_W,
+                "the restore chip never undercuts its authored width"
+            );
         }
         // Case `the_restore_chip_reads_in_the_desktops_language_and_fits_it`.
         {
@@ -4858,8 +4861,8 @@ mod tests {
                 let mut scene = Scene::new();
                 g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
                 let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-                let size = renderer_type_size(&tr, theme.tokens.typography.scale.xs);
-                let (label_w, _) = tr.measure(&label, size, None);
+                let style = theme.text(TextRole::Caption);
+                let (label_w, _) = tr.measure_style(&label, None, &style);
                 let label_x0 = g.restore_rect.x0
                     + f64::from(theme.tokens.spacing.s2) * 2.0
                     + MAXIMIZED_ICON_PX;

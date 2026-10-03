@@ -22,6 +22,7 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
@@ -48,13 +49,13 @@ fn px32(v: f64) -> f32 {
 }
 
 fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, x: f64, y: f64, text: &str) {
-    tr.draw_text(
+    tr.draw_style(
         scene,
         text,
-        theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
         Affine::translate((x, y)),
         None,
+        &theme.text(TextRole::Caption),
     );
 }
 
@@ -191,13 +192,13 @@ impl Widget for TinyText {
         )]
         let text_transform =
             transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 6.0));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &self.text,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             text_transform,
             None,
+            &theme.text(TextRole::Caption),
         );
     }
     fn name(&self) -> &'static str {
@@ -501,13 +502,13 @@ fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
         None,
         &anchor,
     );
-    ctx.tr.draw_text(
+    ctx.tr.draw_style(
         ctx.scene,
         "anchor",
-        ctx.theme.tokens.typography.scale.sm,
         ctx.theme.tokens.colors.text_primary,
         Affine::translate((anchor.x0 + 12.0, anchor.y0 + 8.0)),
         None,
+        &ctx.theme.text(TextRole::Caption),
     );
     let viewport = Rect::new(
         pop_x,

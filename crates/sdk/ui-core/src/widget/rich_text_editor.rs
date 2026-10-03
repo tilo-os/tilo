@@ -53,6 +53,7 @@ use crate::text_selection::{
     word_boundaries,
 };
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::marks::{self, Mark, MarkSpan};
@@ -143,6 +144,9 @@ impl RichBlockStyle {
 pub struct RichTextEditor {
     key: String,
     placeholder: String,
+    /// `Body` for interface copy, `Reading` (serif) for long-form text.
+    text_role: TextRole,
+    /// The role's 1× size; block styles scale off it.
     base_font_size: f32,
     frame: bool,
 
@@ -190,7 +194,8 @@ impl RichTextEditor {
         Self {
             key: key.into(),
             placeholder: String::new(),
-            base_font_size: 16.0,
+            text_role: TextRole::Body,
+            base_font_size: crate::tokens::typography::stock().size(TextRole::Body),
             frame: true,
             field_obj: None,
             text_obj: None,
@@ -223,10 +228,13 @@ impl RichTextEditor {
         self.placeholder = text.into();
         self
     }
-    /// Override the base body font size (logical px). Block styles scale off it.
+    /// Set the editor's body in `role`: [`TextRole::Body`] (the default)
+    /// or [`TextRole::Reading`] for long-form text. Block styles scale off
+    /// the role.
     #[must_use]
-    pub fn with_font_size(mut self, px: f32) -> Self {
-        self.base_font_size = px;
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.text_role = role;
+        self.base_font_size = crate::tokens::typography::stock().size(role);
         self
     }
     /// Draw the editor without its rounded frame (for an inline title field).
@@ -533,7 +541,7 @@ impl RichTextEditor {
         let layout = RichTextLayout::shape_styled_browser(
             &mut tr.font_system,
             &spans,
-            &RichTextLayout::block_style(base_bold, size, FontFamily::Sans, 1.0),
+            &RichTextLayout::block_style(base_bold, size, self.body_family(), 1.0),
             Some(width),
             TextAlign::Left,
             underlines,
@@ -542,6 +550,14 @@ impl RichTextEditor {
         );
         tr.note_browser_rich_layout(&layout);
         layout
+    }
+
+    fn body_family(&self) -> FontFamily {
+        match self.text_role {
+            TextRole::Reading => FontFamily::Serif,
+            TextRole::Code => FontFamily::Mono,
+            _ => FontFamily::Sans,
+        }
     }
 
     fn ensure_layout(&mut self, tr: &mut TextRenderer, width: f32) {

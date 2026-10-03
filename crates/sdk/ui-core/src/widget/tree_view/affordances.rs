@@ -9,6 +9,7 @@ use super::{
     idx_to_f64, px,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::text_render::TextStyle;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{Chip, ChipLead, ChipStyle, Widget};
 
@@ -507,7 +508,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        text_size: f32,
+        text_style: &TextStyle,
         line_h: f32,
     ) {
         if !self.reorder.is_active() {
@@ -542,7 +543,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         );
         let x = ghost.x0 + self.disclosure_w;
         let max_w = (ghost.x1 - x - self.row_gap).max(0.0);
-        let label = text_renderer.elide_to_width(label, text_size, px(max_w));
+        let label = text_renderer.elide_to_width_style(label, px(max_w), text_style);
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
@@ -552,13 +553,13 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 x,
                 crate::widget::data_table::centered_text_top(ghost.y0, height, line_h),
             ));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            text_size,
             tokens.colors.text_primary,
             xf,
             None,
+            text_style,
         );
     }
 

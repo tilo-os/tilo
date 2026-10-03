@@ -26,8 +26,9 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
@@ -39,9 +40,6 @@ const CAPTION_BLOCK: f64 = 40.0;
 const LABEL_BLOCK: f64 = 22.0;
 /// Height of a single-line embedded text field.
 const FIELD_H: f64 = 44.0;
-
-const CAPTION_SIZE: f32 = 13.5;
-const LABEL_SIZE: f32 = 12.0;
 
 /// Renders `caption → label → field`, where caption and label are optional.
 pub struct PromptBody {
@@ -190,25 +188,24 @@ impl Widget for PromptBody {
         let width = px(self.rect.width().max(1.0));
         let mut y = self.rect.y0 + TOP_PAD;
         if !self.caption.is_empty() {
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &self.caption,
-                CAPTION_SIZE,
                 c.text_dim,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 Some(width),
+                &theme.text(TextRole::Body),
             );
             y += CAPTION_BLOCK;
         }
         if !self.label.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.label,
-                LABEL_SIZE,
                 c.text_primary,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Label).strong(),
             );
         }
         self.input.draw(scene, transform, tr, theme, presence);

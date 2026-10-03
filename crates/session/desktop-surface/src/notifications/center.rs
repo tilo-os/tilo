@@ -28,6 +28,7 @@ use super::log::NotificationLog;
 use super::model::Notification;
 use crate::drill_in::{self as qs, DrillInList};
 use crate::i18n::{t, t_args};
+use ui::TextRole;
 
 /// Rows the panel asks room for before it starts paging.
 const PREFERRED_ROWS: usize = 7;
@@ -66,7 +67,7 @@ fn f64_to_f32_lossy(v: f64) -> f32 {
 #[derive(Clone, Copy, Debug)]
 pub struct CenterLayout {
     panel: Rect,
-    /// Line boxes of a caption (`xs`) and a label (`sm`) at the text scale.
+    /// Line boxes of a caption and a label at the text scale.
     caption_lh: f64,
     label_lh: f64,
 }
@@ -76,14 +77,19 @@ impl CenterLayout {
     /// band, the panel padding.
     const FOOTER_RESERVE: f64 = qs::RELATED_GAP + qs::TARGET + qs::PANEL_PAD;
 
-    /// `type_px` are the resolved caption (`xs`) and label (`sm`) sizes the
-    /// centre paints with.
-    pub fn new(panel: Rect, type_px: (f32, f32)) -> Self {
-        let line = |px: f32| f64::from(ui::text_render::TextStyle::new(px).line_height_px());
+    /// The line boxes of the caption and label roles the centre paints
+    /// with, in `theme`: what [`Self::new`] lays rows out from.
+    pub fn type_lines(theme: &ui::Theme) -> (f64, f64) {
+        let line = |role| f64::from(theme.text(role).line_height_px());
+        (line(TextRole::Caption), line(TextRole::Label))
+    }
+
+    /// `type_lines` are [`Self::type_lines`] of the theme the centre paints in.
+    pub fn new(panel: Rect, type_lines: (f64, f64)) -> Self {
         Self {
             panel,
-            caption_lh: line(type_px.0),
-            label_lh: line(type_px.1),
+            caption_lh: type_lines.0,
+            label_lh: type_lines.1,
         }
     }
     pub fn panel(&self) -> Rect {
@@ -175,11 +181,11 @@ impl CenterLayout {
     /// The height the centre wants to show `rows` of `total`: the pager band
     /// is reserved only when there is something to page to. An empty centre
     /// keeps the drill-in's one-row band for its message.
-    pub fn preferred_height(rows: usize, total: usize, type_px: (f32, f32)) -> f64 {
+    pub fn preferred_height(rows: usize, total: usize, type_lines: (f64, f64)) -> f64 {
         if rows == 0 {
             return DrillInList::list_height(qs::LIST_TOP, 0);
         }
-        let l = Self::new(Rect::ZERO, type_px);
+        let l = Self::new(Rect::ZERO, type_lines);
         let foot = if total > rows {
             Self::FOOTER_RESERVE
         } else {
@@ -257,10 +263,10 @@ impl NotificationCenter {
         host.log().rows(&self.collapsed)
     }
 
-    /// The panel height the centre asks for over `log` at `type_px`.
-    pub fn preferred_height(&self, log: &NotificationLog, type_px: (f32, f32)) -> f64 {
+    /// The panel height the centre asks for over `log` at `type_lines`.
+    pub fn preferred_height(&self, log: &NotificationLog, type_lines: (f64, f64)) -> f64 {
         let total = log.rows(&self.collapsed).len();
-        CenterLayout::preferred_height(total.min(PREFERRED_ROWS), total, type_px)
+        CenterLayout::preferred_height(total.min(PREFERRED_ROWS), total, type_lines)
     }
 
     /// The first visible row, newest first.
@@ -941,8 +947,8 @@ impl NotificationCenter {
     ) {
         let rect = layout.panel();
         let colors = &theme.tokens.colors;
-        let caption_size = qs::type_size(text_renderer, theme.tokens.typography.scale.xs);
-        let label_size = qs::type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let caption_style = theme.text(TextRole::Caption);
+        let label_style = theme.text(TextRole::Label);
         Self::chip(
             scene,
             transform,
@@ -953,12 +959,14 @@ impl NotificationCenter {
             colors.text_primary,
         );
         let title = t("notification-center-title");
-        let (title_w, title_h) =
-            text_renderer.measure_weighted(&title, label_size, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
+        let (title_w, title_h) = text_renderer.measure_style(
+            &title,
+            None,
+            &label_style.clone().with_weight(TextWeight::Semibold),
+        );
+        text_renderer.draw_style(
             scene,
             &title,
-            label_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -968,7 +976,7 @@ impl NotificationCenter {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &label_style.clone().with_weight(TextWeight::Semibold),
         );
         let rows = self.rows(host);
         let log = host.log();
@@ -1020,13 +1028,13 @@ impl NotificationCenter {
                 &[("count", history.len().into())],
             )
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &position,
-            caption_size,
             colors.text_dim,
             transform.pre_translate((rect.x0 + qs::PANEL_PAD, layout.position_y()).into()),
             Some(f64_to_f32_lossy(rect.width() - 2.0 * qs::PANEL_PAD)),
+            &caption_style,
         );
 
         let now = ui::time::now();
@@ -1111,51 +1119,50 @@ impl NotificationCenter {
             );
             let source = source_label(notification);
             let age = relative_time(notification, now);
-            let (time_width, _) = text_renderer.measure(&age, caption_size, None);
+            let (time_width, _) = text_renderer.measure_style(&age, None, &caption_style);
             // Source/time, title, body: three measured lines on the control
             // padding, inset `s3` like every row glyph in the panel. A
             // grouped notification sits one glyph in, under its header's
             // label, so the fold reads as a hierarchy.
             let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
             let source_y = row.y0 + qs::CONTROL_PAD;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &source,
-                caption_size,
                 colors.text_dim,
                 transform.pre_translate((x, source_y).into()),
                 Some(f64_to_f32_lossy(
                     row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
                 )),
+                &caption_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &age,
-                caption_size,
                 colors.text_dim,
                 transform.pre_translate(
                     (row.x1 - qs::CONTROL_INSET - f64::from(time_width), source_y).into(),
                 ),
                 None,
+                &caption_style,
             );
             let title_y = source_y + layout.caption_lh;
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &notification.title,
-                label_size,
                 colors.text_primary,
                 transform.pre_translate((x, title_y).into()),
                 Some(f64_to_f32_lossy(text_right - x)),
-                TextWeight::Semibold,
+                &label_style.clone().with_weight(TextWeight::Semibold),
             );
             if notification.show_preview && !notification.body.is_empty() {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &notification.body,
-                    caption_size,
                     colors.text_dim,
                     transform.pre_translate((x, title_y + layout.label_lh).into()),
                     Some(f64_to_f32_lossy(text_right - x)),
+                    &caption_style,
                 );
             }
             Self::draw_row_controls(scene, transform, theme, controls, (focused_control, cursor));
@@ -1186,11 +1193,10 @@ impl NotificationCenter {
                 qs::control_fill(theme, false),
             );
             let hint = format!("{newer}   \u{00b7}   {older}");
-            let (hint_w, hint_h) = text_renderer.measure(&hint, caption_size, None);
-            text_renderer.draw_text(
+            let (hint_w, hint_h) = text_renderer.measure_style(&hint, None, &caption_style);
+            text_renderer.draw_style(
                 scene,
                 &hint,
-                caption_size,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1200,6 +1206,7 @@ impl NotificationCenter {
                         .into(),
                 ),
                 Some(f64_to_f32_lossy(footer.width() - 2.0 * qs::CONTROL_INSET)),
+                &caption_style,
             );
         }
     }
@@ -1216,7 +1223,7 @@ impl NotificationCenter {
         label: &str,
         ink: Color,
     ) {
-        let caption_size = qs::type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let caption_style = theme.text(TextRole::Caption);
         qs::paint_control(
             scene,
             transform,
@@ -1225,11 +1232,10 @@ impl NotificationCenter {
             cursor.is_some_and(|p| r.contains(p)),
             false,
         );
-        let (w, h) = text_renderer.measure(label, caption_size, None);
-        text_renderer.draw_text(
+        let (w, h) = text_renderer.measure_style(label, None, &caption_style);
+        text_renderer.draw_style(
             scene,
             label,
-            caption_size,
             ink,
             transform.pre_translate(
                 (
@@ -1239,6 +1245,7 @@ impl NotificationCenter {
                     .into(),
             ),
             None,
+            &caption_style,
         );
     }
 
@@ -1251,7 +1258,7 @@ impl NotificationCenter {
         layout: &CenterLayout,
     ) {
         let colors = &theme.tokens.colors;
-        let size = theme.tokens.typography.scale.xs;
+        let style = theme.text(TextRole::Caption);
         let status = layout.cleared_band();
         scene.fill(
             Fill::NonZero,
@@ -1260,13 +1267,13 @@ impl NotificationCenter {
             None,
             &RoundedRect::from_rect(status, 10.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("notification-center-cleared"),
-            size,
             colors.text_primary,
             transform.pre_translate((status.x0 + 12.0, status.y0 + 12.0).into()),
             Some(f64_to_f32_lossy(status.width() - 96.0)),
+            &style,
         );
         let undo = layout.undo();
         scene.fill(
@@ -1277,11 +1284,10 @@ impl NotificationCenter {
             &RoundedRect::from_rect(undo, 9.0),
         );
         let label = t("notification-center-undo");
-        let (w, h) = text_renderer.measure(&label, size, None);
-        text_renderer.draw_text(
+        let (w, h) = text_renderer.measure_style(&label, None, &style);
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             colors.intent.on_inverted,
             transform.pre_translate(
                 (
@@ -1291,6 +1297,7 @@ impl NotificationCenter {
                     .into(),
             ),
             None,
+            &style,
         );
     }
 
@@ -1306,8 +1313,8 @@ impl NotificationCenter {
         now: Instant,
     ) {
         let colors = &theme.tokens.colors;
-        let caption_size = qs::type_size(text_renderer, theme.tokens.typography.scale.xs);
-        let label_size = qs::type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let caption_style = theme.text(TextRole::Caption);
+        let label_style = theme.text(TextRole::Label);
         let glyph = qs::leading_glyph(row, qs::CONTROL_INSET, qs::GLYPH);
         ui::icons::draw_icon(
             scene,
@@ -1324,51 +1331,50 @@ impl NotificationCenter {
         let (dismiss, _) = layout.row_controls(row, false);
         let x = glyph.x1 + qs::RELATED_GAP;
         let age = relative_time(newest, now);
-        let (time_width, _) = text_renderer.measure(&age, caption_size, None);
+        let (time_width, _) = text_renderer.measure_style(&age, None, &caption_style);
         let source_y = row.y0 + qs::CONTROL_PAD;
         let count_label = t_args(
             "notification-center-group-count",
             &[("count", count.into())],
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &count_label,
-            caption_size,
             colors.text_dim,
             transform.pre_translate((x, source_y).into()),
             Some(f64_to_f32_lossy(
                 row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
             )),
+            &caption_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &age,
-            caption_size,
             colors.text_dim,
             transform.pre_translate(
                 (row.x1 - qs::CONTROL_INSET - f64::from(time_width), source_y).into(),
             ),
             None,
+            &caption_style,
         );
         let text_w = f64_to_f32_lossy(dismiss.x0 - qs::RELATED_GAP - x);
         let title_y = source_y + layout.caption_lh;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((x, title_y).into()),
             Some(text_w),
-            TextWeight::Semibold,
+            &label_style.with_weight(TextWeight::Semibold),
         );
         if !expanded {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &newest.title,
-                caption_size,
                 colors.text_dim,
                 transform.pre_translate((x, title_y + layout.label_lh).into()),
                 Some(text_w),
+                &caption_style,
             );
         }
     }

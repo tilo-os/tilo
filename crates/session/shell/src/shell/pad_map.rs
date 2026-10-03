@@ -16,6 +16,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::shell::i18n::{t, t_args};
+use ui::TextRole;
 
 /// One control on a pad, by libinput's number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -514,17 +515,17 @@ struct Metrics {
 impl Metrics {
     fn new(theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
-        let scale = &theme.tokens.typography.scale;
+        let scale = &theme.tokens.typography;
         Self {
-            title: scale.lg,
-            body: scale.sm,
-            caption: scale.xs,
+            title: scale.size(TextRole::Heading),
+            body: scale.size(TextRole::Caption),
+            caption: scale.size(TextRole::Caption),
             gap: f64::from(spacing.s2),
             section: f64::from(spacing.s4),
             inset: f64::from(spacing.s6),
             margin: f64::from(spacing.s8),
             // A keycap's height, so rows of caps never touch.
-            row: f64::from(scale.sm) + f64::from(spacing.s3) * 2.0,
+            row: f64::from(scale.size(TextRole::Caption)) + f64::from(spacing.s3) * 2.0,
             label_max: f64::from(spacing.s16) * 4.0,
         }
     }
@@ -610,7 +611,7 @@ fn draw_row(
 
 /// The shared keycap's height, as `InputHint` sizes it.
 fn cap_height(theme: &Theme) -> f64 {
-    28.0_f64.max(f64::from(theme.tokens.typography.scale.sm) + 8.0)
+    28.0_f64.max(f64::from(theme.tokens.typography.size(TextRole::Caption)) + 8.0)
 }
 
 fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {

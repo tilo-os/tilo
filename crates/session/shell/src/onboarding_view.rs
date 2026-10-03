@@ -1998,15 +1998,13 @@ impl OnboardingView {
             .with_id("onboarding.connect.path.field")
             .with_on_change_path(KEY_CONNECT_PATH)
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"))
-            .with_font_size(theme.tokens.typography.scale.base);
+            .with_placeholder(&t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             &t("onboarding-connect-passphrase"),
             &t("onboarding-connect-passphrase-placeholder"),
-        )
-        .with_font_size(theme.tokens.typography.scale.base);
+        );
         let spacing = &theme.tokens.spacing;
         let mut body = Column::new()
             .with_no_padding()
@@ -2354,8 +2352,9 @@ impl OnboardingView {
     }
 }
 
+/// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded

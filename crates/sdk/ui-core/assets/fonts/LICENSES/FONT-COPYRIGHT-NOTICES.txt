@@ -74,3 +74,11 @@ face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/O
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2016 The Inter Project Authors
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/OFL
+google/fonts@2fc9491da70cf3e1bafd3c3da49244c5a496e9d5:ofl/instrumentsans/InstrumentSans[wdth,wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://scripts.sil.org/OFL
+google/fonts@2fc9491da70cf3e1bafd3c3da49244c5a496e9d5:ofl/instrumentsans/InstrumentSans-Italic[wdth,wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://scripts.sil.org/OFL
