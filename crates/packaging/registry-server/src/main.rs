@@ -787,6 +787,7 @@ fn cmd_sign_delegated_snapshot(
         candidate.issued_at_unix,
     )?;
     writer.publish(&candidate)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&candidate)?);
     Ok(())
@@ -818,6 +819,7 @@ fn cmd_publish_staged_first_party(
         let moderation = ModerationService::new(storage.clone());
         moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
         let pruned = writer.prune_unreferenced()?;
+        let history = writer.compact_history()?;
         drop(writer);
         let pruned = compact_after_prune(storage, pruned)?;
         println!(
@@ -828,6 +830,7 @@ fn cmd_publish_staged_first_party(
                 "sequence": journal.candidate_snapshot.sequence,
                 "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
                 "pruned": pruned,
+                "history": history,
             })
         );
         return Ok(());
@@ -975,6 +978,7 @@ fn cmd_publish_staged_first_party(
     writer.publish(&journal.candidate_snapshot)?;
     moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
     let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
     drop(writer);
     let pruned = compact_after_prune(storage, pruned)?;
     println!(
@@ -985,6 +989,7 @@ fn cmd_publish_staged_first_party(
             "sequence": journal.candidate_snapshot.sequence,
             "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
             "pruned": pruned,
+            "history": history,
         })
     );
     Ok(())
@@ -1006,11 +1011,14 @@ fn compact_after_prune(
 }
 
 fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
-    let pruned = storage.lock_snapshot()?.prune_unreferenced()?;
+    let writer = storage.lock_snapshot()?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
+    drop(writer);
     let pruned = compact_after_prune(storage, pruned)?;
     println!(
         "{}",
-        serde_json::json!({"status": "pruned", "pruned": pruned})
+        serde_json::json!({"status": "pruned", "pruned": pruned, "history": history})
     );
     Ok(())
 }
@@ -1179,6 +1187,7 @@ fn cmd_sign_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
@@ -1198,9 +1207,19 @@ fn cmd_rollback_snapshot(
     let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
     refuse_active_promotion(storage)?;
-    let target = writer
-        .sequence(to_sequence)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
+    let target =
+        writer
+            .sequence(to_sequence)?
+            .ok_or_else(|| match storage.history_compaction() {
+                Ok(Some(compaction)) if to_sequence <= compaction.through_sequence => {
+                    anyhow::anyhow!(
+                        "snapshot sequence {to_sequence} was compacted (history is pruned through \
+                 {}); restore it from a backup",
+                        compaction.through_sequence
+                    )
+                }
+                _ => anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"),
+            })?;
     let current = writer
         .current()?
         .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
@@ -1249,6 +1268,7 @@ fn cmd_rollback_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())

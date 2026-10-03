@@ -55,8 +55,9 @@ pub use moderation::{ModerationError, ModerationService};
 pub use moderation_api::{ModerationApiError, ModerationApiService};
 pub use serve::{AppState, handle};
 pub use storage::{
-    PendingSubmission, PromotionJournal, PruneReport, ReviewDecision, ReviewRecord, ReviewSubject,
-    ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
+    HistoryCompaction, HistoryCompactionReport, PendingSubmission, PromotionJournal, PruneReport,
+    ReviewDecision, ReviewRecord, ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion,
+    Storage, StorageError,
 };
 
 /// Bind the server to `addr` and run until the listener errors or
