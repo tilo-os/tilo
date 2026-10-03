@@ -141,6 +141,8 @@ pub enum Icon {
     Undo2,
     /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
     Redo2,
+    /// A side panel on the right, shown or hidden. Lucide `panel-right`.
+    PanelRight,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -714,6 +716,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m15 14 5-5-5-5"),
             path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
         ],
+        Icon::PanelRight => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            line_path(15.0, 3.0, 15.0, 21.0),
+        ],
     }
 }
 
@@ -1278,6 +1284,7 @@ mod tests {
                 Icon::CornerDownLeft,
                 Icon::Undo2,
                 Icon::Redo2,
+                Icon::PanelRight,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
