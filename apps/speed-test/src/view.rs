@@ -15,7 +15,7 @@ use ui::widget::{
     StatTile, Stepper, Text, Widget,
 };
 
-use crate::model::{DialReading, Model, Phase, age_label, data_label, qualities};
+use crate::model::{DialReading, Model, Phase, Quality, age_label, data_label, qualities};
 
 /// The model, shared with the buttons that drive it and the dial that reads it.
 pub(crate) type Shared = Rc<RefCell<Model>>;
@@ -41,7 +41,7 @@ pub(crate) fn build(shared: &Shared, scroll: &ScrollOffset, theme: &Theme) -> El
                 .with_no_padding()
                 .with_flex_grow()
                 .with_min_width(min_column)
-                .with_child(Box::new(results_column(&model))),
+                .with_child(Box::new(results_column(&model, theme))),
         ));
     let mut page = Column::new().with_intrinsic_height().with_no_padding();
     if let Some(error) = &model.error {
@@ -53,7 +53,7 @@ pub(crate) fn build(shared: &Shared, scroll: &ScrollOffset, theme: &Theme) -> El
                 .with_vertical_padding(0.0)
                 .with_extra_top_padding(gutter)
                 .push(Box::new(
-                    Banner::error("The test was interrupted").with_message(error.clone()),
+                    Banner::error("Test interrupted").with_message(error.clone()),
                 )),
         ));
     }
@@ -73,7 +73,7 @@ fn test_column(shared: &Shared, model: &Model, theme: &Theme) -> Column {
         Phase::Download => "Measuring download",
         Phase::Upload => "Measuring upload",
         Phase::Complete => "Test complete",
-        Phase::Error => "Test interrupted",
+        Phase::Error => "Ready to try again",
     };
     let (label, role) = if model.is_running() {
         ("Stop test", ButtonRole::Secondary)
@@ -117,7 +117,7 @@ fn centred(child: Element) -> Element {
 }
 
 /// The measured numbers, the facts about the test, and the recent tests.
-fn results_column(model: &Model) -> Column {
+fn results_column(model: &Model, theme: &Theme) -> Column {
     let readings = &model.readings;
     let pending = "—";
     let number = |value: Option<f64>, decimals: usize| {
@@ -162,23 +162,31 @@ fn results_column(model: &Model) -> Column {
         .with_kind(ui::TextKind::Numeric),
     ]);
 
+    let spacing = &theme.tokens.spacing;
     let mut column = Column::new()
         .with_intrinsic_height()
-        .push(Box::new(Section::titled("Results", vec![Box::new(tiles)])))
-        .push(Box::new(Section::titled(
-            "Connection",
-            vec![Box::new(facts)],
-        )));
+        .with_gap(spacing.rhythm.section)
+        .push(block(theme, "Results", Box::new(tiles), 0.0))
+        .push(block(theme, "Connection", Box::new(facts), spacing.s2));
 
     if let Some(latest) = model.latest() {
-        let rows = qualities(latest)
+        let rows: Vec<Element> = qualities(latest)
             .into_iter()
-            .map(|(use_case, quality)| Property::new(use_case, quality.label()))
+            .enumerate()
+            .map(|(index, (use_case, quality))| -> Element {
+                let row = ListRow::new(format!("quality-{index}"), use_case).meta(quality.label());
+                Box::new(match quality {
+                    Quality::Excellent | Quality::Good => row.active(),
+                    Quality::Limited => row.warning(),
+                })
+            })
             .collect();
-        column = column.push(Box::new(Section::titled(
+        column = column.push(block(
+            theme,
             "Connection quality",
-            vec![Box::new(PropertyList::new(rows))],
-        )));
+            Box::new(Section::new(rows)),
+            spacing.s3,
+        ));
     }
 
     if !model.history.is_empty() {
@@ -201,11 +209,42 @@ fn results_column(model: &Model) -> Column {
                 )
             })
             .collect();
-        column = column.push(Box::new(
-            Section::new(rows).with_header(SectionHeader::heading("Recent tests")),
+        column = column.push(block(
+            theme,
+            "Recent tests",
+            Box::new(Section::new(rows)),
+            spacing.s3,
         ));
     }
     column
+}
+
+/// A titled block of the results column. The heading, the tiles and the text
+/// of the rows all start on one edge: each composite insets its own content
+/// by `own_inset`, so the block pads the rest.
+fn block(theme: &Theme, title: &str, body: Element, own_inset: f32) -> Element {
+    let edge = theme.tokens.spacing.s3;
+    let indented = |child: Element, inset: f32| -> Element {
+        Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_horizontal_padding(inset, inset)
+                .with_vertical_padding(0.0)
+                .push(child),
+        )
+    };
+    Box::new(
+        Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(theme.tokens.spacing.rhythm.related)
+            .push(indented(
+                Box::new(Section::new(Vec::new()).with_header(SectionHeader::heading(title))),
+                edge,
+            ))
+            .push(indented(body, (edge - own_inset).max(0.0))),
+    )
 }
 
 /// One result: its number once measured, a dash until then.
