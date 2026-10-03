@@ -346,6 +346,14 @@ fn a_device_that_lost_its_state_is_admitted_again() {
         .unwrap();
     assert!(!unchanged.changed());
     let again = request(&mut member, &phone, 2);
+    // Replaying the journal, with the admission of the key package the
+    // phone lost, asks for nothing more: the request it just sent stands.
+    let mut replayed = Vec::new();
+    for frame in steward.journal().frames().to_vec() {
+        replayed.extend(member.receive(frame, &vault()).unwrap());
+    }
+    assert!(!replayed.contains(&MemberEvent::Desynchronised));
+    assert_eq!(member.access(), Access::Waiting);
     let outcome = steward
         .reconcile(
             &allowed(&[&phone]),
