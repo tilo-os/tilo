@@ -55,7 +55,6 @@ pub mod search_provider;
 pub mod sharing;
 pub mod shortcut_menu;
 pub mod templates;
-pub mod text_layout;
 pub mod toolbar;
 pub mod views;
 
