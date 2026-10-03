@@ -57,6 +57,7 @@ use tilo_desktop_model::{
     WorkspaceTask, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 /// Widest the sheet ever gets. Past this the rows stop gaining information
 /// and start becoming hard to scan across.
@@ -470,9 +471,7 @@ fn draw_resume_card(
         transform,
         tr,
         theme,
-        &ui::widget::ButtonFace::new(button, &button_label)
-            .primary()
-            .radius(f64::from(theme.tokens.radii.detail)),
+        &ui::widget::ButtonFace::new(button, &button_label).role(ButtonRole::Primary),
     );
 }
 

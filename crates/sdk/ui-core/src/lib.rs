@@ -335,7 +335,7 @@ pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, ContentSurface, Theme, resolve_theme_layers, workspace_hue};
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
-    UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
+    UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
     UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
     parse_ui_graph_edits,
 };

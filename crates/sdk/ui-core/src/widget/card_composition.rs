@@ -67,7 +67,7 @@ impl ContentCard {
 }
 
 /// Standard actions in declaration/focus order: secondaries, then primary.
-/// Unspecified buttons use measured content sizing; explicit sizes remain manual.
+/// Buttons keep their intrinsic width.
 /// Each wrapped line aligns to the trailing edge.
 pub struct Actions {
     parts: Parts,
@@ -76,16 +76,14 @@ pub struct Actions {
 impl Actions {
     pub fn new(primary: Button) -> Self {
         Self {
-            parts: Parts::new(vec![Box::new(primary.with_action_sizing())]),
+            parts: Parts::new(vec![Box::new(primary)]),
         }
     }
 
     #[must_use]
     pub fn secondary(mut self, button: Button) -> Self {
         let index = self.parts.children.len().saturating_sub(1);
-        self.parts
-            .children
-            .insert(index, Box::new(button.with_action_sizing()));
+        self.parts.children.insert(index, Box::new(button));
         self
     }
 }
@@ -228,7 +226,8 @@ mod tests {
                 Card::composed(Box::new(Text::new("Short description")))
                     .with_title("Terminal")
                     .with_footer(Box::new(Actions::new(
-                        Button::new("open", "Open", Some("opened")).primary(),
+                        Button::new("open", "Open", Some("opened"))
+                            .role(crate::widget::ButtonRole::Primary),
                     ))),
             ),
             Box::new(
@@ -237,7 +236,8 @@ mod tests {
                 )))
                 .with_title("Workspace")
                 .with_footer(Box::new(Actions::new(
-                    Button::new("install", "Install", None).primary(),
+                    Button::new("install", "Install", None)
+                        .role(crate::widget::ButtonRole::Primary),
                 ))),
             ),
         ]))
@@ -396,7 +396,7 @@ mod tests {
                                     None,
                                 )
                                 .with_icon(crate::icons::Icon::Search)
-                                .primary(),
+                                .role(crate::widget::ButtonRole::Primary),
                             )
                             .secondary(Button::new(
                                 &format!("secondary-{index}"),
@@ -575,15 +575,16 @@ mod tests {
             assert!((rect(last).y1 - 400.0).abs() < 1.0);
         }
 
-        fn actions_keep_manual_sizes_and_secondary_then_primary_order() {
-            let actions =
-                Actions::new(Button::new("primary", "Primary", None).with_size(97.0, 35.0))
-                    .secondary(Button::new("secondary", "Secondary", None).fit_content(33.0));
+        fn actions_put_secondary_before_primary_at_one_height() {
+            let actions = Actions::new(Button::new("primary", "Primary", None))
+                .secondary(Button::new("secondary", "Secondary", None));
+            let theme = Theme::dark().with_text_scale(2.0);
+            let height = crate::widget::ControlSize::Regular.height(&theme);
             let harness = FrameHarness::new_with_theme(
                 crate::State::new(),
                 Box::new(actions),
                 (600, 80),
-                Theme::dark().with_text_scale(2.0),
+                theme,
             );
             let snapshot = harness.inspection();
             assert_eq!(
@@ -594,16 +595,13 @@ mod tests {
                 snapshot.root.children[1].test_id.as_deref(),
                 Some("primary")
             );
-            assert_eq!(rect(&snapshot.root.children[0]).height(), 33.0);
-            assert_eq!(
-                rect(&snapshot.root.children[1]).size(),
-                vello::kurbo::Size::new(97.0, 35.0)
-            );
+            assert_eq!(rect(&snapshot.root.children[0]).height(), height);
+            assert_eq!(rect(&snapshot.root.children[1]).height(), height);
         }
 
         actions_trail_an_intrinsic_column_without_caller_widths();
         scrolling_reaches_the_last_scaled_action();
-        actions_keep_manual_sizes_and_secondary_then_primary_order();
+        actions_put_secondary_before_primary_at_one_height();
     }
 
     #[test]

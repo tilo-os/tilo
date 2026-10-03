@@ -251,7 +251,7 @@ fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
             settings.node("save"),
             Some(tilo_ui_graph::UiNode::Button {
                 on_click_path: Some(path),
-                style: tilo_ui_graph::UiButtonStyle::Primary,
+                role: tilo_ui_graph::UiButtonRole::Primary,
                 ..
             }) if path == "account-settings-save-requested"
         ));
@@ -5969,6 +5969,7 @@ fn portability_lint_records_what_the_web_target_cannot_run() {
     lib.push_str(
         r#"
 use std::time::{Duration, Instant, SystemTime};
+use ui::widget::ButtonRole;
 
 pub fn work() -> Duration {
     let started = Instant::now();

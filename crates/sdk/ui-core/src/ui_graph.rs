@@ -11,7 +11,7 @@ use crate::time::SystemTime;
 use crate::tokens::TextRole;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
-    Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
+    Button, ButtonRole, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
 };
 use automerge::{AutoCommit, ObjId};
@@ -35,7 +35,7 @@ pub const LIVE_GRAPH_DIR_ENV: &str = "TILO_UI_GRAPH_DIR";
 pub const LIVE_GRAPH_OPERATION: &str = "tilo.ui.graph";
 
 pub use tilo_ui_graph::{
-    UI_GRAPH_VERSION, UiButtonStyle, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
+    UI_GRAPH_VERSION, UiButtonRole, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
     UiTextRole, UiTextSource, parse_ui_graph_edits,
 };
 
@@ -104,13 +104,13 @@ impl UiBuildContext {
     }
 }
 
-impl From<UiButtonStyle> for ButtonStyle {
-    fn from(value: UiButtonStyle) -> Self {
+impl From<UiButtonRole> for ButtonRole {
+    fn from(value: UiButtonRole) -> Self {
         match value {
-            UiButtonStyle::Neutral => Self::Neutral,
-            UiButtonStyle::Primary => Self::Primary,
-            UiButtonStyle::Danger => Self::Danger,
-            UiButtonStyle::Ghost => Self::Ghost,
+            UiButtonRole::Primary => Self::Primary,
+            UiButtonRole::Secondary => Self::Secondary,
+            UiButtonRole::Destructive => Self::Destructive,
+            UiButtonRole::Plain => Self::Plain,
         }
     }
 }
@@ -259,7 +259,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             click_value,
             navigate,
             enabled,
-            style,
+            role,
         } => {
             let navigation_bound = navigate.as_ref().is_none_or(|navigation| {
                 context
@@ -274,7 +274,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             });
             let mut button = Button::new(id, label, on_click_path.as_deref())
                 .with_enabled(*enabled && (navigation_bound || on_click_path.is_some()))
-                .with_style((*style).into());
+                .role((*role).into());
             if let Some(name) = accessible_name {
                 button = button.with_accessible_name(name);
             }
@@ -1738,7 +1738,7 @@ enum EditableBool {
 enum EditableChoice {
     TextSource,
     TextRole,
-    ButtonStyle,
+    ButtonRole,
     ButtonNavigation,
 }
 
@@ -1772,11 +1772,10 @@ fn build_editor_child(
         let id_for_click = id.clone();
         hierarchy = hierarchy.push(Box::new(
             Button::new(&button_id, &label, None)
-                .fit_content(34.0)
-                .with_style(if selected_row {
-                    ButtonStyle::Primary
+                .role(if selected_row {
+                    ButtonRole::Secondary
                 } else {
-                    ButtonStyle::Ghost
+                    ButtonRole::Plain
                 })
                 .on_click(move || {
                     if let Err(error) = graph.finish_edit_group() {
@@ -2579,7 +2578,6 @@ fn boolean_property_button(
         &format!("{label}: {}", if value { "On" } else { "Off" }),
         None,
     )
-    .fit_content(36.0)
     .on_click(move || {
         let result = graph.update_node(&selected, |node| set_editable_bool(node, property, !value));
         let status = state.borrow().status.clone();
@@ -2615,14 +2613,12 @@ fn editable_choices(
                 "builder-text-role",
             ),
         ],
-        UiNode::Button {
-            style, navigate, ..
-        } => vec![
+        UiNode::Button { role, navigate, .. } => vec![
             (
-                EditableChoice::ButtonStyle,
-                button_style_name(*style),
-                "Style",
-                "builder-button-style",
+                EditableChoice::ButtonRole,
+                button_role_name(*role),
+                "Role",
+                "builder-button-role",
             ),
             (
                 EditableChoice::ButtonNavigation,
@@ -2647,20 +2643,18 @@ fn choice_property_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     let selected = selected.to_owned();
-    Button::new(id, &format!("{label}: {value}"), None)
-        .fit_content(36.0)
-        .on_click(move || {
-            let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
-            let status = state.borrow().status.clone();
-            match result {
-                Ok(()) => {
-                    let mut editor = state.borrow_mut();
-                    editor.chrome_dirty = true;
-                    status.set("Preview updated".to_owned());
-                }
-                Err(error) => status.set(format!("Edit rejected: {error}")),
+    Button::new(id, &format!("{label}: {value}"), None).on_click(move || {
+        let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
+        let status = state.borrow().status.clone();
+        match result {
+            Ok(()) => {
+                let mut editor = state.borrow_mut();
+                editor.chrome_dirty = true;
+                status.set("Preview updated".to_owned());
             }
-        })
+            Err(error) => status.set(format!("Edit rejected: {error}")),
+        }
+    })
 }
 
 fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
@@ -2678,12 +2672,12 @@ fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
         (UiNode::Text { role, .. }, EditableChoice::TextRole) => {
             *role = next_text_role(*role);
         }
-        (UiNode::Button { style, .. }, EditableChoice::ButtonStyle) => {
-            *style = match style {
-                UiButtonStyle::Neutral => UiButtonStyle::Primary,
-                UiButtonStyle::Primary => UiButtonStyle::Danger,
-                UiButtonStyle::Danger => UiButtonStyle::Ghost,
-                UiButtonStyle::Ghost => UiButtonStyle::Neutral,
+        (UiNode::Button { role, .. }, EditableChoice::ButtonRole) => {
+            *role = match role {
+                UiButtonRole::Secondary => UiButtonRole::Primary,
+                UiButtonRole::Primary => UiButtonRole::Destructive,
+                UiButtonRole::Destructive => UiButtonRole::Plain,
+                UiButtonRole::Plain => UiButtonRole::Secondary,
             };
         }
         (UiNode::Button { navigate, .. }, EditableChoice::ButtonNavigation) => {
@@ -2731,12 +2725,12 @@ const fn next_text_role(role: UiTextRole) -> UiTextRole {
     }
 }
 
-const fn button_style_name(style: UiButtonStyle) -> &'static str {
-    match style {
-        UiButtonStyle::Neutral => "Neutral",
-        UiButtonStyle::Primary => "Primary",
-        UiButtonStyle::Danger => "Danger",
-        UiButtonStyle::Ghost => "Ghost",
+const fn button_role_name(role: UiButtonRole) -> &'static str {
+    match role {
+        UiButtonRole::Primary => "Primary",
+        UiButtonRole::Secondary => "Secondary",
+        UiButtonRole::Destructive => "Destructive",
+        UiButtonRole::Plain => "Plain",
     }
 }
 
@@ -2764,7 +2758,7 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-save", "Save", None)
-        .primary()
+        .role(ButtonRole::Primary)
         .on_click(move || {
             let status = state.borrow().status.clone();
             if let Err(error) = graph.finish_edit_group() {
@@ -2793,7 +2787,6 @@ fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-undo", "Undo", None)
-        .fit_content(36.0)
         .with_enabled(handle.can_undo())
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2809,7 +2802,6 @@ fn redo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-redo", "Redo", None)
-        .fit_content(36.0)
         .with_enabled(handle.can_redo())
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2834,7 +2826,6 @@ fn add_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new(id, label, None)
-        .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2892,7 +2883,7 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
             click_value: None,
             navigate: None,
             enabled: true,
-            style: UiButtonStyle::Neutral,
+            role: UiButtonRole::Secondary,
         },
         InsertKind::Row => UiNode::Row {
             id,
@@ -2979,7 +2970,6 @@ fn move_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new(id, label, None)
-        .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
             let result = (|| {
@@ -3015,7 +3005,7 @@ fn delete_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-delete", "Delete", None)
-        .danger()
+        .role(ButtonRole::Destructive)
         .with_enabled(enabled)
         .on_click(move || {
             let result = (|| {
@@ -3253,7 +3243,7 @@ mod tests {
                     click_value: Some("yes".into()),
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             ],
             gap: Some(8.0),
@@ -3513,7 +3503,7 @@ mod tests {
                     route: "settings".into(),
                 }),
                 enabled: true,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
             },
         );
         let settings = screen(
@@ -3528,7 +3518,7 @@ mod tests {
                 click_value: None,
                 navigate: Some(UiNavigation::Back),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
+                role: UiButtonRole::Secondary,
             },
         );
         let router = crate::widget::Router::new(
@@ -3606,7 +3596,7 @@ mod tests {
                     route: "missing".into(),
                 }),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
+                role: UiButtonRole::Secondary,
             });
         }
         let route = crate::widget::RouteHandle::new("home", ["home"]).unwrap();
@@ -3678,9 +3668,9 @@ mod tests {
 
         handle
             .update_node("save", |node| {
-                if let UiNode::Button { label, style, .. } = node {
+                if let UiNode::Button { label, role, .. } = node {
                     *label = "Publish".into();
-                    *style = UiButtonStyle::Danger;
+                    *role = UiButtonRole::Destructive;
                 }
             })
             .unwrap();
@@ -4064,7 +4054,7 @@ mod tests {
                     click_value: None,
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             )
             .unwrap();
@@ -4204,7 +4194,7 @@ mod tests {
                     click_value: Some("requested".into()),
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             )
             .unwrap();
@@ -4254,7 +4244,7 @@ mod tests {
             )
             .unwrap();
         driver
-            .perform_named("builder-button-style", &Action::Activate)
+            .perform_named("builder-button-role", &Action::Activate)
             .unwrap();
         driver.relayout();
         driver
@@ -4324,7 +4314,7 @@ mod tests {
                 click_value: Some(click_value),
                 navigate: Some(UiNavigation::Push { route }),
                 enabled: false,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
                 ..
             }) if label == "Publish"
                 && accessible_name == "Publish changes"
@@ -4348,7 +4338,7 @@ mod tests {
                 on_click_path: Some(on_click_path),
                 navigate: Some(UiNavigation::Push { route }),
                 enabled: false,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
                 ..
             }) if label == "Publish"
                 && accessible_name == "Publish changes"

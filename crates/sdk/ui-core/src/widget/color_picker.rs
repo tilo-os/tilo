@@ -24,6 +24,7 @@ use crate::color_compat::ColorCompat;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -920,7 +921,7 @@ impl ColorPicker {
             text_renderer,
             theme,
             &ButtonFace::new(self.done_rect, "Done")
-                .primary()
+                .role(ButtonRole::Primary)
                 .hovered(self.done_rect.contains(self.last_cursor)),
         );
     }

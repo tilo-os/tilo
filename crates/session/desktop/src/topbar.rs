@@ -29,6 +29,7 @@ use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
 
@@ -4437,7 +4438,7 @@ impl TopBarChrome {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(self.clock_pause_rect, &pause_label)
-                .primary()
+                .role(ButtonRole::Primary)
                 .icon(if activity.paused {
                     ui::icons::Icon::Play
                 } else {
@@ -4459,7 +4460,7 @@ impl TopBarChrome {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(self.clock_close_rect, "")
-                .ghost()
+                .role(ButtonRole::Plain)
                 .icon(ui::icons::Icon::X)
                 .accessible_name(&close_label)
                 .focused(self.clock_control_focus == Some(2)),
