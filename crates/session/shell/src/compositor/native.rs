@@ -10090,7 +10090,9 @@ pub fn run() {
                     frame_builder.paint_with_damage()
                 } else {
                     let scene = frame_builder.paint();
-                    FramePaint::full(scene).with_hdr_layers(frame_builder.take_hdr_layers())
+                    FramePaint::full(scene)
+                        .with_hdr_layers(frame_builder.take_hdr_layers())
+                        .with_backdrop(frame_builder.take_backdrop())
                 };
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM

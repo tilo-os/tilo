@@ -61,6 +61,7 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
             padding_standard: t.spacing.s3,
             gap_standard: t.spacing.s3,
             reduce_motion: false,
+            reduce_transparency: false,
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
