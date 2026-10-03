@@ -75,6 +75,19 @@
       <string>Gcommaaccent.ss01.ss07</string>
       <string>Gdotaccent.ss01.ss07</string>
     </array>
+    <key>public.kern1.KO_I.ss13</key>
+    <array>
+      <string>I.ss13</string>
+      <string>Iacute.ss13</string>
+      <string>Icircumflex.ss13</string>
+      <string>Idieresis.ss13</string>
+      <string>Idieresis.ss01.ss13</string>
+      <string>Idotaccent.ss13</string>
+      <string>Idotaccent.ss01.ss13</string>
+      <string>Igrave.ss13</string>
+      <string>Imacron.ss13</string>
+      <string>Iogonek.ss13</string>
+    </array>
     <key>public.kern1.KO_Iacute</key>
     <array>
       <string>Iacute</string>
@@ -282,6 +295,7 @@
     <array>
       <string>dcaron</string>
       <string>lcaron</string>
+      <string>lcaron.ss13</string>
     </array>
     <key>public.kern1.KO_degree</key>
     <array>
@@ -418,6 +432,16 @@
       <string>k.ss04</string>
       <string>kcommaaccent.ss04</string>
       <string>kcommaaccent.ss01.ss04</string>
+    </array>
+    <key>public.kern1.KO_l.ss13</key>
+    <array>
+      <string>l.ss13</string>
+      <string>lacute.ss13</string>
+      <string>lcommaaccent.ss13</string>
+      <string>lcommaaccent.ss01.ss13</string>
+      <string>lslash.ss13</string>
+      <string>f_l.ss13</string>
+      <string>f_f_l.ss13</string>
     </array>
     <key>public.kern1.KO_less_hyphen.dlig</key>
     <array>
@@ -737,6 +761,20 @@
       <string>Kcommaaccent.ss01.ss04</string>
       <string>Rcommaaccent.ss01.ss05</string>
     </array>
+    <key>public.kern2.KO_I.ss13</key>
+    <array>
+      <string>I.ss13</string>
+      <string>Iacute.ss13</string>
+      <string>Icircumflex.ss13</string>
+      <string>Idieresis.ss13</string>
+      <string>Idieresis.ss01.ss13</string>
+      <string>Idotaccent.ss13</string>
+      <string>Idotaccent.ss01.ss13</string>
+      <string>Igrave.ss13</string>
+      <string>Imacron.ss13</string>
+      <string>Iogonek.ss13</string>
+      <string>IJ.ss13</string>
+    </array>
     <key>public.kern2.KO_J</key>
     <array>
       <string>J</string>
@@ -1043,6 +1081,10 @@
       <string>k.ss04</string>
       <string>kcommaaccent.ss04</string>
       <string>kcommaaccent.ss01.ss04</string>
+      <string>lacute.ss13</string>
+      <string>lcaron.ss13</string>
+      <string>lcommaaccent.ss13</string>
+      <string>lcommaaccent.ss01.ss13</string>
     </array>
     <key>public.kern2.KO_nine</key>
     <array>

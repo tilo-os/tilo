@@ -179,7 +179,34 @@ convention (an underscore after each capital: `Aacute` → `A_acute.glif`,
 Stylistic sets in use: ss01 Round dots, ss02 Single Story a, ss03 Alternate y,
 ss04 Alternate K, ss05 Alternate R, ss06 Alternate M, ss07 Alternate G, ss08
 Alternate J, ss09 Alternate Q, ss10 Alternate 2, ss11 Alternate Ampersand, ss12
-Alternate Currency. New sets start at ss13.
+Alternate Currency, ss13 Distinct I and l. New sets start at ss14.
+
+### Distinct forms for identifiers (`features/il.fea`)
+
+Off by default. The UI toolkit turns on `ss13` and `zero` for text that must be
+unambiguous: usernames, user-submitted identifiers, passwords, codes.
+
+| feature | name | glyphs |
+|---|---|---|
+| `ss13` | Distinct I and l | `I` → `I.ss13` (short slab serifs, as thick as `E`'s arms), `l` → `l.ss13` (the `t`'s tail, cut shorter), with every precomposed form: `Iacute.ss13` … `Iogonek.ss13`, `IJ.ss13`, `Idieresis.ss01.ss13`, `lacute.ss13`, `lcaron.ss13`, `lcommaaccent.ss13`, `lslash.ss13`, and the ligatures `f_l.ss13`, `f_f_l.ss13` |
+| `cv01` | Capital I with serifs | the `I` half of `ss13` |
+| `cv02` | Lowercase l with tail | the `l` half of `ss13` |
+| `zero` | (slashed zero) | `zero.zero`, `zero.tf.zero`: the slash stays inside the counter, so it never reads as `Ø` |
+
+`1`, `|` and `!` keep their upstream forms: the flagged `1`, the long thin bar
+and the dotted `!` already differ from both new forms. The lookups run after
+`liga` and `ss01`, so `fl` becomes `f_l.ss13` and `Ï` with round dots becomes
+`Idieresis.ss01.ss13`. A new precomposed `I` or `l` (for example `Itilde`,
+`Ihookabove`, `Idotbelow`, `ldot`) needs its own `.ss13` composite and a line in
+`il.fea`; so would Cyrillic `І Ї Ӏ` and Greek `Ι` if they should follow.
+
+Kerning: `I.ss13` and its accented forms are `public.kern1.KO_I.ss13` /
+`public.kern2.KO_I.ss13` (plus `IJ.ss13` on the left), `l.ss13`, its accented forms,
+`lslash.ss13` and the tailed ligatures are `public.kern1.KO_l.ss13`; their left
+sides are the plain stems' (no pairs). `lcaron.ss13` and the accented `l`s join the
+upstream groups of their default forms. The few pairs: the serifs against
+`E F L T Z 7`, the tail against shapes that open toward it (`T V W Y 7 1 \`,
+quotes, dashes, guillemets).
 
 ## Anchors
 

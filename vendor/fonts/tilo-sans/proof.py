@@ -90,7 +90,7 @@ class Fallback:
 def fallbacks() -> dict[str, Fallback]:
     noto = REPO / "crates/sdk/ui-core/assets/fonts"
     return {
-        "onest": Fallback("Onest ss02", MOCK_FONTS / "cand-onest.ttf", '"ss02" 1'),
+        "onest": Fallback("Onest ss02", MOCK_FONTS / "cand-onest.ttf", "'ss02' 1"),
         "geologica": Fallback("Geologica light", MOCK_FONTS / "cand-geologica.ttf", weight_scale=0.85),
         "noto": Fallback("Noto Sans", noto / "NotoSans[wght].ttf", italic_path=noto / "NotoSans-Italic[wght].ttf"),
         "instrument": Fallback("Instrument Sans (upstream)", UPSTREAM / "InstrumentSans[wdth,wght].ttf",
@@ -446,7 +446,7 @@ def main() -> int:
         samples = list(SAMPLES["latin"])
     if not args.lang:
         args.lang = {"vietnamese": "vi", "greek": "el", "cyrillic": "ru"}.get(args.set or "", "en")
-    args.feature_css = ", ".join(f'"{f.strip()}" 1' for f in args.features.split(",") if f.strip())
+    args.feature_css = ", ".join(f"'{f.strip()}' 1" for f in args.features.split(",") if f.strip())
     name = args.name or args.set or "custom"
     args.title = f"Tilo Sans · {name}"
     out_dir = (PROOFS / "sheets" / name) if args.final else (PROOFS / "work" / name)

@@ -40,6 +40,8 @@
       <integer>-105</integer>
       <key>lslash</key>
       <integer>-29</integer>
+      <key>lslash.ss13</key>
+      <integer>-29</integer>
       <key>multiply</key>
       <integer>-69</integer>
       <key>nine</key>
@@ -63,6 +65,8 @@
       <key>eth</key>
       <integer>-37</integer>
       <key>lslash</key>
+      <integer>-29</integer>
+      <key>lslash.ss13</key>
       <integer>-29</integer>
     </dict>
     <key>Adieresis</key>
@@ -92,6 +96,8 @@
       <key>imacron</key>
       <integer>0</integer>
       <key>lslash</key>
+      <integer>-6</integer>
+      <key>lslash.ss13</key>
       <integer>-6</integer>
       <key>nine</key>
       <integer>0</integer>
@@ -312,6 +318,8 @@
       <key>less_hyphen.liga</key>
       <integer>-164</integer>
       <key>lslash</key>
+      <integer>-37</integer>
+      <key>lslash.ss13</key>
       <integer>-37</integer>
       <key>nine</key>
       <integer>-45</integer>
@@ -553,6 +561,8 @@
       <integer>0</integer>
       <key>lslash</key>
       <integer>0</integer>
+      <key>lslash.ss13</key>
+      <integer>0</integer>
       <key>three</key>
       <integer>12</integer>
       <key>trademark</key>
@@ -646,6 +656,8 @@
       <key>less_hyphen.liga</key>
       <integer>-146</integer>
       <key>lslash</key>
+      <integer>-30</integer>
+      <key>lslash.ss13</key>
       <integer>-30</integer>
       <key>multiply</key>
       <integer>-67</integer>
@@ -864,6 +876,8 @@
       <integer>0</integer>
       <key>lslash</key>
       <integer>-30</integer>
+      <key>lslash.ss13</key>
+      <integer>-30</integer>
       <key>scaron</key>
       <integer>-34</integer>
       <key>three</key>
@@ -991,6 +1005,8 @@
       <integer>-125</integer>
       <key>lslash</key>
       <integer>-23</integer>
+      <key>lslash.ss13</key>
+      <integer>-23</integer>
       <key>nine</key>
       <integer>-11</integer>
       <key>registered</key>
@@ -1021,6 +1037,8 @@
       <key>imacron</key>
       <integer>-22</integer>
       <key>lslash</key>
+      <integer>-12</integer>
+      <key>lslash.ss13</key>
       <integer>-12</integer>
       <key>parenright</key>
       <integer>-78</integer>
@@ -1092,6 +1110,8 @@
     <key>aogonek</key>
     <dict>
       <key>lslash</key>
+      <integer>-12</integer>
+      <key>lslash.ss13</key>
       <integer>-12</integer>
     </dict>
     <key>asciicircum</key>
@@ -1396,6 +1416,8 @@
       <integer>-12</integer>
       <key>lslash</key>
       <integer>0</integer>
+      <key>lslash.ss13</key>
+      <integer>0</integer>
       <key>oslash</key>
       <integer>10</integer>
       <key>seven</key>
@@ -1503,6 +1525,8 @@
     <key>eogonek</key>
     <dict>
       <key>lslash</key>
+      <integer>0</integer>
+      <key>lslash.ss13</key>
       <integer>0</integer>
     </dict>
     <key>equal</key>
@@ -2101,6 +2125,8 @@
       <integer>31</integer>
       <key>lslash</key>
       <integer>26</integer>
+      <key>lslash.ss13</key>
+      <integer>26</integer>
       <key>scaron</key>
       <integer>32</integer>
       <key>zcaron</key>
@@ -2212,6 +2238,8 @@
       <integer>-14</integer>
       <key>lslash</key>
       <integer>-28</integer>
+      <key>lslash.ss13</key>
+      <integer>-28</integer>
       <key>seven</key>
       <integer>-72</integer>
       <key>trademark</key>
@@ -2306,6 +2334,8 @@
       <key>hyphen_greater.liga</key>
       <integer>-21</integer>
       <key>lslash</key>
+      <integer>0</integer>
+      <key>lslash.ss13</key>
       <integer>0</integer>
       <key>o</key>
       <integer>-3</integer>
@@ -2472,6 +2502,8 @@
       <integer>-3</integer>
       <key>lslash</key>
       <integer>0</integer>
+      <key>lslash.ss13</key>
+      <integer>0</integer>
       <key>o</key>
       <integer>0</integer>
       <key>parenright</key>
@@ -2496,6 +2528,8 @@
       <key>eth</key>
       <integer>-3</integer>
       <key>lslash</key>
+      <integer>0</integer>
+      <key>lslash.ss13</key>
       <integer>0</integer>
     </dict>
     <key>odieresis</key>
@@ -2674,6 +2708,8 @@
       <key>less_hyphen.liga</key>
       <integer>-160</integer>
       <key>lslash</key>
+      <integer>-55</integer>
+      <key>lslash.ss13</key>
       <integer>-55</integer>
       <key>multiply</key>
       <integer>-120</integer>
@@ -3398,6 +3434,8 @@
       <integer>-5</integer>
       <key>public.kern2.KO_B</key>
       <integer>-7</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>14</integer>
       <key>public.kern2.KO_J</key>
       <integer>4</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -3527,6 +3565,8 @@
       <integer>-74</integer>
       <key>public.kern2.KO_B</key>
       <integer>0</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>14</integer>
       <key>public.kern2.KO_J</key>
       <integer>-99</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -3905,6 +3945,15 @@
       <integer>-27</integer>
       <key>public.kern2.KO_zero</key>
       <integer>6</integer>
+    </dict>
+    <key>public.kern1.KO_I.ss13</key>
+    <dict>
+      <key>public.kern2.KO_T</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_seven</key>
+      <integer>14</integer>
     </dict>
     <key>public.kern1.KO_Iacute</key>
     <dict>
@@ -4414,6 +4463,8 @@
       <integer>-5</integer>
       <key>public.kern2.KO_B</key>
       <integer>-12</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>14</integer>
       <key>public.kern2.KO_J</key>
       <integer>4</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -5555,6 +5606,8 @@
       <integer>-115</integer>
       <key>public.kern2.KO_B</key>
       <integer>-2</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>14</integer>
       <key>public.kern2.KO_J</key>
       <integer>-95</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -6337,6 +6390,8 @@
       <integer>-3</integer>
       <key>public.kern2.KO_B</key>
       <integer>0</integer>
+      <key>public.kern2.KO_I.ss13</key>
+      <integer>14</integer>
       <key>public.kern2.KO_J</key>
       <integer>5</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -10011,6 +10066,51 @@
       <integer>-5</integer>
       <key>public.kern2.KO_zero</key>
       <integer>-20</integer>
+    </dict>
+    <key>public.kern1.KO_l.ss13</key>
+    <dict>
+      <key>backslash</key>
+      <integer>-15</integer>
+      <key>bullet</key>
+      <integer>-10</integer>
+      <key>periodcentered</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_hyphen</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_seven</key>
+      <integer>-15</integer>
     </dict>
     <key>public.kern1.KO_less_hyphen.dlig</key>
     <dict>
@@ -14743,6 +14843,8 @@
       <integer>0</integer>
       <key>lslash</key>
       <integer>0</integer>
+      <key>lslash.ss13</key>
+      <integer>0</integer>
       <key>oslash</key>
       <integer>20</integer>
       <key>seven</key>
@@ -15067,6 +15169,8 @@
       <integer>-11</integer>
       <key>lslash</key>
       <integer>-5</integer>
+      <key>lslash.ss13</key>
+      <integer>-5</integer>
       <key>seven</key>
       <integer>-90</integer>
       <key>trademark</key>
@@ -15085,6 +15189,8 @@
       <key>ellipsis.ss01</key>
       <integer>-86</integer>
       <key>lslash</key>
+      <integer>-5</integer>
+      <key>lslash.ss13</key>
       <integer>-5</integer>
       <key>seven</key>
       <integer>-90</integer>
@@ -15125,6 +15231,8 @@
       <key>eth</key>
       <integer>-30</integer>
       <key>lslash</key>
+      <integer>-9</integer>
+      <key>lslash.ss13</key>
       <integer>-9</integer>
       <key>seven</key>
       <integer>-90</integer>
@@ -15169,6 +15277,8 @@
       <key>imacron</key>
       <integer>-14</integer>
       <key>lslash</key>
+      <integer>-11</integer>
+      <key>lslash.ss13</key>
       <integer>-11</integer>
       <key>seven</key>
       <integer>-85</integer>

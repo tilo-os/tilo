@@ -350,8 +350,16 @@ def drop_unused_names(font: ttLib.TTFont) -> None:
     if "GSUB" in font:
         for record in font["GSUB"].table.FeatureList.FeatureRecord:
             params = record.Feature.FeatureParams
-            if params is not None and hasattr(params, "UINameID"):
+            if params is None:
+                continue
+            if hasattr(params, "UINameID"):  # ssXX
                 used.add(params.UINameID)
+            for attr in ("FeatUILabelNameID", "FeatUITooltipTextNameID", "SampleTextNameID"):  # cvXX
+                if getattr(params, attr, 0):
+                    used.add(getattr(params, attr))
+            first = getattr(params, "FirstParamUILabelNameID", 0)
+            if first:
+                used.update(range(first, first + params.NumNamedParameters))
     font["name"].names = [n for n in font["name"].names if n.nameID in used]
 
 
