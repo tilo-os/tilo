@@ -8,7 +8,7 @@ use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Badge, ChipStyle, Column, ControlSize, Element, EmptyState, Row, Scrollable, Spacer, Text,
-    ToggleGroup,
+    ToggleGroup, Tone,
 };
 
 use crate::commands::{Cmd, Sink};
@@ -47,13 +47,25 @@ pub(crate) fn sending() -> Element {
 
 /// The request could not be completed. The reason is shown here once.
 pub(crate) fn failed(detail: &str) -> Element {
+    let status = Row::new().push(Box::new(
+        Badge::text("Failed").style(ChipStyle::Tinted(Tone::Danger)),
+    ));
+    let reason = EmptyState::error("Couldn't complete the request", detail)
+        .with_icon(Icon::TriangleAlert)
+        .with_action("Try again")
+        .with_action_id("api.response.retry")
+        .on_action(crate::app::active_send_binding())
+        .into_scrollable();
     Box::new(
-        EmptyState::error("Request failed", detail)
-            .with_icon(Icon::TriangleAlert)
-            .with_action("Try again")
-            .with_action_id("api.response.retry")
-            .on_action(crate::app::active_send_binding())
-            .into_scrollable(),
+        Column::new()
+            .with_no_padding()
+            .push(Box::new(status))
+            .push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_fill_remaining_height()
+                    .push(Box::new(reason)),
+            )),
     )
 }
 

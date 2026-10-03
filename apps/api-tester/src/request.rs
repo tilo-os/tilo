@@ -129,6 +129,8 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
     let send = Button::new("api.send", "Send", None)
         .role(ButtonRole::Primary)
         .on_action(crate::app::active_send_binding());
+    // The endpoint keeps room to read: the URL never gets narrower than a few
+    // words, so on a narrow window the row wraps and the URL takes a line.
     Box::new(
         Row::new()
             .push(Box::new(method))
@@ -136,6 +138,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
                 Container::new()
                     .with_no_padding()
                     .with_flex_grow()
+                    .with_min_width(Metrics::BASE.min_pointer_target * 10.0)
                     .with_child(Box::new(url)),
             ))
             .push(Box::new(save))

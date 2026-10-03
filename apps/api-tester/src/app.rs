@@ -707,6 +707,14 @@ impl ApiTesterApp {
     fn load_request(&mut self, state: &mut AutoCommit, path: &ObjId, ci: usize, ri: usize) {
         self.load_saved(ci, ri);
         self.write_request_fields(state, path);
+        self.dismiss_drawer();
+    }
+
+    /// Choosing from a floating sidebar is done with it: show the request.
+    fn dismiss_drawer(&mut self) {
+        if self.nav.geometry().sidebar == ui::widget::SidebarPlacement::Drawer {
+            self.nav.close_sidebar();
+        }
     }
 
     /// Mirror the composed request's method, URL and body into the document.
@@ -840,6 +848,7 @@ impl ApiTesterApp {
             tilo_actions::ActionContext::for_action("so.tilo.api-tester", "API Tester", action),
         );
         self.adopt_workspace(state, path);
+        self.show_active_environment(state, path);
         self.dirty = true;
     }
 
@@ -950,12 +959,20 @@ impl ApiTesterApp {
 
     fn replay_history(&mut self, state: &mut AutoCommit, path: &ObjId, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
-            self.request.method = entry.method;
-            self.request.url = entry.url;
+            // History keeps what was sent, not the rest of the request: it
+            // opens as a new request.
+            let mut request = crate::seed::blank_request();
+            request.method = entry.method;
+            request.url = entry.url;
+            self.request = request;
             self.selected = None;
             self.error = None;
+            self.active_tab = RequestTab::Params;
             self.write_request_fields(state, path);
+            self.stale.request = true;
+            self.stale.header = true;
             self.stale.sidebar = true;
+            self.dismiss_drawer();
         }
     }
 
@@ -1333,20 +1350,32 @@ impl ApiTesterApp {
                 self.dirty = true;
             }
         }
+        // A name no environment has any more is a stale picker (the active
+        // environment was just renamed or deleted), not a choice.
         let chosen = ApiDoc::read_text(state, path, ENV_PATH);
-        if !chosen.is_empty() {
-            let next = if chosen == NO_ENV {
-                None
-            } else {
-                self.environments
-                    .iter()
-                    .find(|e| e.name == chosen)
-                    .map(|e| e.id)
-            };
-            if next != self.active_env {
-                self.perform(state, path, &actions::set_active_environment_action(next));
-            }
+        let next = if chosen == NO_ENV {
+            Some(None)
+        } else {
+            self.environments
+                .iter()
+                .find(|e| e.name == chosen)
+                .map(|e| Some(e.id))
+        };
+        if let Some(next) = next
+            && next != self.active_env
+        {
+            self.perform(state, path, &actions::set_active_environment_action(next));
         }
+    }
+
+    /// Make the environment picker read the active environment, whichever way
+    /// it changed (a rename, a deletion, the palette).
+    fn show_active_environment(&self, state: &mut AutoCommit, path: &ObjId) {
+        let name = self.active_environment().map_or_else(
+            || NO_ENV.to_string(),
+            |environment| environment.name.clone(),
+        );
+        ApiDoc::set_text(state, path, ENV_PATH, &name);
     }
 
     /// Seed the picker CRDT strings from the model so the dropdowns display
