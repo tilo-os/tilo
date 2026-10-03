@@ -318,7 +318,7 @@ fn shoot(out: &Path, name: &str, build: fn() -> Element, theme: &Theme, viewport
     let harness =
         FrameHarness::new_with_theme(tilo_ui::State::new(), build(), viewport, theme.clone());
     let path = out.join(format!("{name}.png"));
-    harness.render_window_png(&path);
+    harness.render_png(&path);
     if let Ok(json) = harness.inspection_json() {
         let _ = std::fs::write(out.join(format!("{name}.json")), json);
     }
