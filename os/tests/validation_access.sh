@@ -41,6 +41,20 @@ refuses 'links the diagnostic script outside the overlay' 'diagnostics script mu
 refuses 'holds a device node' 'contains a special file' \
   sh -c 'mkdir -p "$0/verity.d" && mkfifo "$0/verity.d/x.crt"'
 
+# The overlay is added without rewriting the directories it lands in: `cp -a
+# SRC/. DST/` copied the runner work directory's label onto the deployment's
+# /etc (var_t), which broke every confined service that writes there. The build
+# compares label, mode and owner of /etc and each existing parent before and
+# after, and fails on any change.
+if grep -Fq -- '--no-overwrite-dir' "$disk" \
+   && ! grep -Fq 'cp -a --no-preserve=ownership "$ETC_OVERLAY/."' "$disk" \
+   && grep -Fq 'os.getxattr(path, "security.selinux")' "$disk" \
+   && grep -Fq 'die "the validation overlay changed the label, mode or owner of an existing /etc directory"' "$disk"; then
+  ok 'the validation overlay leaves existing /etc directories, and their labels, as they were'
+else
+  bad 'the validation overlay can rewrite the label or mode of the deployment /etc'
+fi
+
 # The release gate's diagnostic service must pass the overlay policy. Use an
 # intentionally missing helper to stop at the next preflight without a build.
 allowed_overlay="$work/diagnostics-allowed"
