@@ -834,7 +834,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Rename a layer, change its medium, opacity or visibility, or move it to the front, back, forward or backward.",
+    "description": "Rename a layer, change its medium, opacity, visibility or lock, or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -897,6 +897,20 @@
             "boolean",
             "null"
           ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "locked",
+        "ty": "boolean",
+        "required": false,
+        "description": "Locked marks are not picked by the pointer.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Locked marks are not picked by the pointer."
         },
         "nullable": true
       },
@@ -2536,156 +2550,5 @@
         "nullable": false
       }
     ]
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer%2D2",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer%2D3",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
-    "action": "decrement",
-    "resource_kind": "tilo.ui.control",
-    "label": "Decrement",
-    "description": null,
-    "operation": "Effect",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
-    "action": "increment",
-    "resource_kind": "tilo.ui.control",
-    "label": "Increment",
-    "description": null,
-    "operation": "Effect",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
-    "action": "expand",
-    "resource_kind": "tilo.ui.control",
-    "label": "Expand",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
-    "action": "set-value",
-    "resource_kind": "tilo.ui.control",
-    "label": "Set value",
-    "description": null,
-    "operation": "Effect",
-    "params": [
-      {
-        "name": "value",
-        "ty": "text",
-        "required": true,
-        "description": "Value",
-        "nullable": false
-      }
-    ]
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
-    "action": "set-value",
-    "resource_kind": "tilo.ui.control",
-    "label": "Set value",
-    "description": null,
-    "operation": "Effect",
-    "params": [
-      {
-        "name": "value",
-        "ty": "text",
-        "required": true,
-        "description": "Value",
-        "nullable": false
-      }
-    ]
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aedit%2Dlayer",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aedit%2Dlayer%2D2",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aedit%2Dlayer%2D3",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aremove%2Dlayer",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
   }
 ]

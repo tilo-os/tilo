@@ -46,6 +46,72 @@ impl ArtworkResource {
     /// `arrange`: marks, then `front`, `back`, `forward` or `backward`.
     pub const ARRANGE: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("arrange", &["ids", "to"]);
+    /// `add-layer` with a medium, above another layer.
+    pub const ADD_LAYER_ABOVE: ActionRef<Self, (String, String, String)> =
+        ActionRef::new("add-layer", &["name", "medium", "above"]);
+    /// `edit-layer` renaming a layer.
+    pub const RENAME_LAYER: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "name"]);
+    /// `edit-layer` locking or unlocking a layer.
+    pub const SET_LAYER_LOCKED: ActionRef<Self, (String, bool)> =
+        ActionRef::new("edit-layer", &["id", "locked"]);
+    /// `edit-layer` setting a layer's opacity.
+    pub const SET_LAYER_OPACITY: ActionRef<Self, (String, f64)> =
+        ActionRef::new("edit-layer", &["id", "opacity"]);
+    /// `edit-layer` changing the medium that paints a layer.
+    pub const SET_LAYER_MEDIUM: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "medium"]);
+    /// `edit-marks` setting the fill.
+    pub const SET_FILL: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "fill"]);
+    /// `edit-marks` setting the outline colour.
+    pub const SET_STROKE: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "stroke"]);
+    /// `edit-marks` setting the outline width.
+    pub const SET_STROKE_WIDTH: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "stroke_width"]);
+    /// `edit-marks` setting the opacity.
+    pub const SET_OPACITY: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "opacity"]);
+    /// `edit-marks` setting the blend mode.
+    pub const SET_BLEND: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "blend"]);
+    /// `edit-marks` setting the outline dashes.
+    pub const SET_DASH: ActionRef<Self, (Vec<String>, Vec<f64>)> =
+        ActionRef::new("edit-marks", &["ids", "dash"]);
+    /// `edit-marks` setting the outline ends.
+    pub const SET_CAP: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "cap"]);
+    /// `edit-marks` setting the outline corners.
+    pub const SET_JOIN: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "join"]);
+    /// `edit-marks` setting the shadow.
+    pub const SET_SHADOW: ActionRef<Self, (Vec<String>, crate::model::Shadow)> =
+        ActionRef::new("edit-marks", &["ids", "shadow"]);
+    /// `edit-marks` replacing a mark's geometry (a text's style).
+    pub const SET_SHAPE: ActionRef<Self, (Vec<String>, crate::model::Shape)> =
+        ActionRef::new("edit-marks", &["ids", "shape"]);
+    /// `set-artwork` with a title.
+    pub const SET_TITLE: ActionRef<Self, String> = ActionRef::new("set-artwork", &["title"]);
+    /// `set-artwork` with a width.
+    pub const SET_WIDTH: ActionRef<Self, f64> = ActionRef::new("set-artwork", &["width"]);
+    /// `set-artwork` with a height.
+    pub const SET_HEIGHT: ActionRef<Self, f64> = ActionRef::new("set-artwork", &["height"]);
+    /// `set-artwork` with a ground texture.
+    pub const SET_TEXTURE: ActionRef<Self, String> = ActionRef::new("set-artwork", &["texture"]);
+    /// `set-artwork` with a ground colour.
+    pub const SET_GROUND: ActionRef<Self, String> =
+        ActionRef::new("set-artwork", &["ground_colour"]);
+    /// `undo`: the caller's last step.
+    pub const UNDO: ActionRef<Self, ()> = ActionRef::new("undo", &[]);
+    /// `redo`: what the last undo took back.
+    pub const REDO: ActionRef<Self, ()> = ActionRef::new("redo", &[]);
+    /// `undo` of an agent run, whole.
+    pub const UNDO_RUN: ActionRef<Self, String> = ActionRef::new("undo", &["run"]);
+    /// `restore` a past version as a new change.
+    pub const RESTORE: ActionRef<Self, String> = ActionRef::new("restore", &["version"]);
+    /// `checkpoint`: name the current version.
+    pub const CHECKPOINT: ActionRef<Self, String> = ActionRef::new("checkpoint", &["name"]);
 }
 
 /// Look at the artwork, or a region of it, as a picture.
@@ -333,7 +399,7 @@ impl Resource for ArtworkResource {
             decl::<EditLayer>(
                 "edit-layer",
                 "Edit layer",
-                "Rename a layer, change its medium, opacity or visibility, or move it to the front, back, forward or backward.",
+                "Rename a layer, change its medium, opacity, visibility or lock, or move it to the front, back, forward or backward.",
                 CanvasAction::EditLayer,
             ),
             decl::<RemoveLayer>(

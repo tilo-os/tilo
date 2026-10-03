@@ -599,6 +599,9 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
                 if !layer.visible {
                     fields.insert("visible".into(), false.into());
                 }
+                if layer.locked {
+                    fields.insert("locked".into(), true.into());
+                }
             }
             entry
         })

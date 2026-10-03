@@ -83,6 +83,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
     pub(crate) stages: Stages,
+    pub(crate) feeds: super::history::HistoryFeeds,
 }
 
 impl<R: Resource> ViewCx<R> {
@@ -95,6 +96,13 @@ impl<R: Resource> ViewCx<R> {
         saved: LocalState<RecordSaveStatus>,
         stages: Stages,
     ) -> Self {
+        // The history verbs every app answers are bindable like its own.
+        let mut published = published;
+        for spec in super::history::specs() {
+            if !published.actions.iter().any(|action| action.id == spec.id) {
+                published = published.with_action(spec);
+            }
+        }
         Self {
             live,
             focus: Rc::new(|state| Some(state)),
@@ -106,6 +114,7 @@ impl<R: Resource> ViewCx<R> {
             controls: Rc::default(),
             saved,
             stages,
+            feeds: super::history::HistoryFeeds::default(),
         }
     }
 }
@@ -145,6 +154,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// The item this scope stands for, inside an [`Each`] row.
     pub fn item(&self) -> Option<&Id> {
         self.item.as_ref()
+    }
+
+    /// The resource's last `last` versions, oldest first, kept current as
+    /// the document moves: an in-app history list of what was done and by
+    /// whom, each version addressable by the `undo`, `restore` and
+    /// `checkpoint` actions every app publishes.
+    pub fn history(&self, last: usize) -> LocalState<Vec<super::history::HistoryVersion>> {
+        self.feeds.follow(self.alive.clone(), last)
     }
 
     /// Read the scope's value now (at build time). For values that must
@@ -308,6 +325,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let controls = Rc::clone(&self.controls);
         let saved = self.saved.clone();
         let stages = self.stages.clone();
+        let feeds = self.feeds.clone();
         Each::new(
             self.live.clone(),
             self.dispatch.clone(),
@@ -328,6 +346,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     controls: Rc::clone(&controls),
                     saved: saved.clone(),
                     stages: stages.clone(),
+                    feeds: feeds.clone(),
                 };
                 row(&mut cx)
             }),
@@ -390,6 +409,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let item = self.item.clone();
         let saved = self.saved.clone();
         let stages = self.stages.clone();
+        let feeds = self.feeds.clone();
         Box::new(Switch::new(
             key.clone(),
             Box::new(move |value: &K, alive: &Rc<()>| {
@@ -405,6 +425,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     controls: Rc::default(),
                     saved: saved.clone(),
                     stages: stages.clone(),
+                    feeds: feeds.clone(),
                 };
                 part(&mut cx, value)
             }),

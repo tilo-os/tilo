@@ -4,7 +4,12 @@
 //!
 //! State lives entirely on the widget (no CRDT round-trip) because the
 //! segmented control's selection is ephemeral UI sugar — callers persist
-//! the choice via the `on_change` callback into their own CRDT slot.
+//! the choice via the `on_change` callback into their own CRDT slot, or
+//! bind it to typed view state with [`ToggleGroup::from_state`].
+//!
+//! [`ToggleGroup::vertical`] stacks icon segments into a tool rail: each
+//! segment shows its [`Segment::with_icon`] glyph, and its label (with the
+//! [`Segment::with_hint`] shortcut) is its tooltip and accessible name.
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -16,9 +21,11 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::icons::Icon;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+use crate::widget::toolbar::Orientation;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
 
 /// Lossless `usize -> f64` widening for segment-strip geometry. Segment
@@ -43,14 +50,52 @@ const SEGMENT_WIDTH: f32 = 120.0;
 
 pub struct Segment {
     pub label: String,
+    /// Drawn instead of the label, which stays the tooltip and the
+    /// accessible name.
+    pub icon: Option<Icon>,
+    /// A short hint shown after the label in the tooltip: the segment's
+    /// keyboard shortcut.
+    pub hint: Option<String>,
 }
 
 impl Segment {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            icon: None,
+            hint: None,
         }
     }
+
+    /// Show `icon` instead of the label.
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Name the segment's shortcut in its tooltip (`B`, `Shift+R`).
+    #[must_use]
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    /// The tooltip: the label, and the hint when there is one.
+    fn tooltip(&self) -> String {
+        match &self.hint {
+            Some(hint) => format!("{}  {hint}", self.label),
+            None => self.label.clone(),
+        }
+    }
+}
+
+/// Two-way storage of the chosen segment as the caller's own value.
+struct Choice {
+    /// The index of the value the state holds now, when it changed.
+    pull: Box<dyn FnMut() -> Option<usize>>,
+    /// Store the value of a chosen segment.
+    push: Box<dyn FnMut(usize)>,
 }
 
 #[allow(
@@ -91,6 +136,12 @@ pub struct ToggleGroup {
     /// Finger owning the current gesture. Selection commits on release, so a
     /// scroll or cancelled touch never changes tabs on initial contact.
     active_touch: Option<u64>,
+    /// A strip or a stack.
+    orientation: Orientation,
+    /// The segment under the pointer.
+    hovered: Option<usize>,
+    /// Where the chosen segment's value lives, when bound.
+    choice: Option<Choice>,
 }
 
 impl ToggleGroup {
@@ -120,7 +171,49 @@ impl ToggleGroup {
             flexible_width: false,
             style: SegmentedStyle::Solid,
             active_touch: None,
+            orientation: Orientation::Horizontal,
+            hovered: None,
+            choice: None,
         }
+    }
+
+    /// A choice among `choices`, kept in `state`: choosing a segment stores
+    /// its value, and a value set anywhere else (a keyboard shortcut, the
+    /// app) selects its segment.
+    pub fn from_state<T: Clone + PartialEq + 'static>(
+        choices: Vec<(T, Segment)>,
+        state: &crate::LocalState<T>,
+    ) -> Self {
+        let (values, segments): (Vec<T>, Vec<Segment>) = choices.into_iter().unzip();
+        let values = std::rc::Rc::new(values);
+        let (current, binding) = crate::local_state::LocalBinding::new(state);
+        let binding = std::rc::Rc::new(std::cell::RefCell::new(binding));
+        let selected = values.iter().position(|value| *value == current);
+        let mut group = Self::new(segments, selected.unwrap_or_default());
+        let (pull_values, pull_binding) =
+            (std::rc::Rc::clone(&values), std::rc::Rc::clone(&binding));
+        group.choice = Some(Choice {
+            pull: Box::new(move || {
+                let value = pull_binding.borrow_mut().poll()?;
+                pull_values.iter().position(|candidate| *candidate == value)
+            }),
+            push: Box::new(move |index| {
+                if let Some(value) = values.get(index) {
+                    binding.borrow_mut().publish(value);
+                }
+            }),
+        });
+        group
+    }
+
+    /// Stack the segments vertically as square icon buttons: a tool rail.
+    /// Only the chosen (and hovered) segment is filled.
+    #[must_use]
+    pub fn vertical(mut self) -> Self {
+        self.orientation = Orientation::Vertical;
+        self.style = SegmentedStyle::Pill;
+        self.cache_dirty = true;
+        self
     }
 
     /// Use the containing width instead of the 120px-per-segment intrinsic
@@ -246,9 +339,21 @@ impl ToggleGroup {
     fn apply_selection(&mut self, index: usize) {
         self.selected = index;
         self.cache_dirty = true;
+        if let Some(choice) = self.choice.as_mut() {
+            (choice.push)(index);
+        }
         if let Some(callback) = self.on_change.as_mut() {
             callback(index);
         }
+    }
+
+    /// The side of a stacked segment and the gap between segments.
+    fn stacked_metrics(theme: &Theme) -> (f32, f32) {
+        let metrics = &theme.tokens.metrics;
+        (
+            metrics.min_pointer_target.max(metrics.panel_row_height),
+            theme.tokens.spacing.s1,
+        )
     }
 
     fn segment_prefix(&self) -> String {
@@ -290,6 +395,35 @@ impl ToggleGroup {
         if n == 0 {
             return;
         }
+        if self.orientation == Orientation::Vertical {
+            // Square segments down the rail, with the gap the layout left
+            // between them.
+            let side = self.rect.width();
+            let gaps = usize_to_f64(n.saturating_sub(1)).max(1.0);
+            let gap = ((self.rect.height() - side * usize_to_f64(n)) / gaps).max(0.0);
+            let mut y = self.rect.y0;
+            for _ in 0..n {
+                self.segment_rects
+                    .push(Rect::new(self.rect.x0, y, self.rect.x1, y + side));
+                y += side + gap;
+            }
+        } else {
+            self.partition_horizontally(n);
+        }
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact equality is intentional: both rects come from the same taffy \
+                      layout pass, so a bit-identical width/height means the cached scene is \
+                      still valid, not merely close enough"
+        )]
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
+            self.cache_dirty = true;
+        }
+    }
+
+    fn partition_horizontally(&mut self, n: usize) {
         let total_w = self.rect.width();
         let seg_w = total_w / usize_to_f64(n);
         let last = n.saturating_sub(1);
@@ -304,17 +438,6 @@ impl ToggleGroup {
             };
             self.segment_rects
                 .push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
-        }
-        #[allow(
-            clippy::float_cmp,
-            reason = "exact equality is intentional: both rects come from the same taffy \
-                      layout pass, so a bit-identical width/height means the cached scene is \
-                      still valid, not merely close enough"
-        )]
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        if size_changed {
-            self.cache_dirty = true;
         }
     }
 
@@ -404,6 +527,8 @@ pub fn segment_colors(
 pub struct SegmentedFace<'a> {
     segments: &'a [Rect],
     labels: &'a [&'a str],
+    /// Glyphs drawn instead of the labels of the same index.
+    icons: &'a [Option<Icon>],
     selected: usize,
     hovered: Option<usize>,
     style: SegmentedStyle,
@@ -419,6 +544,7 @@ impl<'a> SegmentedFace<'a> {
         Self {
             segments,
             labels,
+            icons: &[],
             selected,
             hovered: None,
             style: SegmentedStyle::Solid,
@@ -461,6 +587,12 @@ impl<'a> SegmentedFace<'a> {
     #[must_use]
     pub fn left_labels(mut self, pad: f64) -> Self {
         self.label_pad_left = Some(pad);
+        self
+    }
+    /// Draw these glyphs instead of the labels of the same index.
+    #[must_use]
+    pub fn icons(mut self, icons: &'a [Option<Icon>]) -> Self {
+        self.icons = icons;
         self
     }
 }
@@ -584,16 +716,22 @@ impl ToggleGroup {
         // Selected pills use a slightly heavier weight so the active choice
         // reads first.
         for (i, seg) in segs.iter().enumerate() {
-            let label = face.labels.get(i).copied().unwrap_or("");
-            if label.is_empty() {
-                continue;
-            }
             let (_, fg) = segment_colors(
                 theme,
                 face.style,
                 i == face.selected,
                 face.hovered == Some(i),
             );
+            if let Some(icon) = face.icons.get(i).copied().flatten() {
+                let side = (seg.width().min(seg.height()) * 0.5).clamp(14.0, 22.0);
+                let glyph = Rect::from_center_size(seg.center(), (side, side));
+                icon.draw(scene, transform, glyph, fg);
+                continue;
+            }
+            let label = face.labels.get(i).copied().unwrap_or("");
+            if label.is_empty() {
+                continue;
+            }
             let weight = if i == face.selected {
                 crate::text_render::TextWeight::Semibold
             } else {
@@ -769,6 +907,20 @@ impl Widget for ToggleGroup {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if self.orientation == Orientation::Vertical {
+            let (side, gap) = Self::stacked_metrics(theme);
+            let n = usize_to_f32(self.segments.len().max(1));
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(side),
+                    height: Dimension::length(side * n + gap * (n - 1.0)),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         // Segments always share the available width equally in `apply_layout`.
         let width = usize_to_f32(self.segments.len().max(1)) * SEGMENT_WIDTH;
         let node = taffy.leaf_node(Style {
@@ -858,7 +1010,10 @@ impl Widget for ToggleGroup {
         let radius = f64::from(theme.tokens.radii.md);
         let outer_shape = RoundedRect::from_rect(self.rect, radius);
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
+        let icons: Vec<Option<Icon>> = self.segments.iter().map(|s| s.icon).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
+            .icons(&icons)
+            .hovered(self.hovered)
             .style(self.style)
             .text_size(crate::text_metrics::renderer_type_size(
                 text_renderer,
@@ -905,6 +1060,18 @@ impl Widget for ToggleGroup {
                 let logical_pos =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor.set(logical_pos);
+                let hovered = self
+                    .segment_rects
+                    .iter()
+                    .position(|segment| segment.contains(logical_pos));
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.cache_dirty = true;
+                }
+            }
+            WindowEvent::CursorLeft { .. } if self.hovered.is_some() => {
+                self.hovered = None;
+                self.cache_dirty = true;
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -931,6 +1098,23 @@ impl Widget for ToggleGroup {
 
     fn name(&self) -> &'static str {
         "ToggleGroup"
+    }
+
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        if let Some(index) = self.choice.as_mut().and_then(|choice| (choice.pull)()) {
+            self.set_selected(index);
+        }
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        // Icon segments show no label, so their label is the tooltip.
+        let index = self
+            .segment_rects
+            .iter()
+            .position(|segment| segment.contains(point))?;
+        let segment = self.segments.get(index)?;
+        let rect = *self.segment_rects.get(index)?;
+        (segment.icon.is_some() || segment.hint.is_some()).then(|| (rect, segment.tooltip()))
     }
 
     fn get_rect(&self) -> Rect {
@@ -1069,7 +1253,17 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let Some(action) = &self.action else {
-            return Vec::new();
+            // A choice kept in view state is made through the segments'
+            // own semantic actions.
+            if self.choice.is_none() {
+                return Vec::new();
+            }
+            return (0..self.segments.len())
+                .map(|index| ControlBindingMetadata {
+                    control_id: self.segment_id(index),
+                    kind: crate::widget::ControlBindingKind::SemanticAction(self.segment_id(index)),
+                })
+                .collect();
         };
         (0..self.segments.len())
             .map(|index| action.metadata(self.segment_id(index)))

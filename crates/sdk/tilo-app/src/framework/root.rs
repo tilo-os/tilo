@@ -42,6 +42,7 @@ pub(crate) struct ResourceRoot<R: Resource> {
     permissions: Option<LivePermissions>,
     write: Option<PermissionScope>,
     stages: Stages,
+    feeds: super::history::HistoryFeeds,
     content: Element,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
@@ -148,6 +149,7 @@ impl<R: Resource> ResourceRoot<R> {
             permissions: None,
             write: None,
             stages: cx.stages,
+            feeds: cx.feeds,
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
@@ -296,6 +298,7 @@ impl<R: Resource> ResourceRoot<R> {
             self.followed.set(revision);
             self.updaters.run(&self.live.get());
         }
+        self.feeds.refresh(doc);
     }
 }
 

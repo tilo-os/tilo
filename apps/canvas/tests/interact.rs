@@ -43,8 +43,11 @@ impl Desk {
         // The artwork is fitted into the canvas less its 24-point padding.
         let art = app.state();
         let zoom = ((canvas.width() - 48.0) / art.width).min((canvas.height() - 48.0) / art.height);
-        // Centred across, at the top less the padding down.
-        let origin = (canvas.center().x - art.width * zoom / 2.0, canvas.y0 + 24.0);
+        // Centred in the canvas.
+        let origin = (
+            canvas.center().x - art.width * zoom / 2.0,
+            canvas.center().y - art.height * zoom / 2.0,
+        );
         let mut desk = Self {
             app,
             origin,
