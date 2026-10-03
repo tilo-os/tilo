@@ -236,6 +236,8 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+# Names a legacy VM's forwarded windows (`legacy.<guest>.<app id>`).
+legacy-agent-protocol = { path = "../../runtime/legacy-agent-protocol" }
 # The wire of the shell's own file choosers, served to apps with no portal.
 tilo-dialogs.workspace = true
 package-store = { path = "../../packaging/package-store" }

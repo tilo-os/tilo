@@ -95,6 +95,13 @@ pub enum Request {
     Status,
     /// `restart` — rebuild the guest in place.
     Restart,
+    /// A legacy app's command shim: run `app` in the user's legacy VM, in
+    /// `cwd` when the VM can see it. Its windows open in the current strip.
+    LegacyLaunch {
+        app: String,
+        args: Vec<String>,
+        cwd: PathBuf,
+    },
 }
 
 /// What the broker answers.
@@ -155,8 +162,14 @@ struct HostCommand {
     mutating: bool,
 }
 
-fn host_command_for(base: &Path, req: &Request) -> Option<HostCommand> {
+fn host_command_for(base: &Path, policy: &Policy, req: &Request) -> Option<HostCommand> {
     let (operation, program, args, mutating) = match req {
+        Request::LegacyLaunch { app, args, cwd } => (
+            "legacy-launch",
+            LEGACY_PROGRAM,
+            legacy_launch_args(policy, app, args, cwd)?,
+            false,
+        ),
         Request::AppUpdate { package } => {
             let mut args = vec!["update".into()];
             args.extend(package.iter().cloned());
@@ -209,6 +222,43 @@ fn host_command_for(base: &Path, req: &Request) -> Option<HostCommand> {
         binary: base.join("usr/bin").join(program),
         mutating,
     })
+}
+
+/// The host side of every legacy app shim.
+const LEGACY_PROGRAM: &str = "tilo-legacy";
+
+/// `tilo-legacy launch <app> --cwd <cwd> [--share-cwd] -- <args…>`.
+///
+/// The directory a command is typed in is shared with the VM for that launch
+/// only when the user trusted it to this runtime for writing: a guest cannot
+/// widen what the VM sees beyond what the person already granted here.
+/// `None` for an app name that is not a plain identifier or a relative cwd.
+fn legacy_launch_args(
+    policy: &Policy,
+    app: &str,
+    args: &[String],
+    cwd: &Path,
+) -> Option<Vec<String>> {
+    let plain = !app.is_empty()
+        && !app.starts_with(['-', '.'])
+        && app
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    if !plain || !cwd.is_absolute() {
+        return None;
+    }
+    let mut out = vec![
+        "launch".to_string(),
+        app.to_string(),
+        "--cwd".to_string(),
+        cwd.display().to_string(),
+    ];
+    if policy.permits(cwd, Verb::Write, Some(unix_now())) {
+        out.push("--share-cwd".to_string());
+    }
+    out.push("--".to_string());
+    out.extend(args.iter().cloned());
+    Some(out)
 }
 
 /// One line of `pkg diff`.
@@ -343,6 +393,15 @@ impl BrokerState {
                 self.restart_requested = true;
                 self.log("restart", None, true, None);
                 Response::Ok
+            }
+            Request::LegacyLaunch { app, args, cwd } => {
+                if let Some(args) = legacy_launch_args(&self.policy, &app, &args, &cwd) {
+                    self.host_command("legacy-launch", LEGACY_PROGRAM, &args)
+                } else {
+                    let reason = format!("{app:?} is not a legacy app name");
+                    self.log("legacy-launch", Some(&app), false, Some(&reason));
+                    Response::Denied { reason }
+                }
             }
         }
     }
@@ -780,7 +839,7 @@ fn serve_connection(
                 let command = state
                     .lock()
                     .ok()
-                    .and_then(|s| host_command_for(&s.base, &req));
+                    .and_then(|s| host_command_for(&s.base, &s.policy, &req));
                 if let Some(command) = command {
                     if serve_host_command(
                         &command,
@@ -1173,6 +1232,59 @@ mod tests {
             layer: dir.join("layers/persistent"),
             layer_kind: "persistent".into(),
             landlock: "not attempted".into(),
+        }
+    }
+
+    #[test]
+    fn legacy_shims_reach_the_vm_only_with_the_users_own_grants() {
+        let mut policy = Policy::default();
+        policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
+        // phase: a trusted directory is shared for the launch
+        {
+            let args = legacy_launch_args(
+                &policy,
+                "code",
+                &[".".to_string()],
+                Path::new("/var/home/you/src/app"),
+            )
+            .unwrap();
+            assert_eq!(
+                args,
+                [
+                    "launch",
+                    "code",
+                    "--cwd",
+                    "/var/home/you/src/app",
+                    "--share-cwd",
+                    "--",
+                    "."
+                ]
+            );
+            let command = host_command_for(
+                Path::new("/"),
+                &policy,
+                &Request::LegacyLaunch {
+                    app: "code".into(),
+                    args: Vec::new(),
+                    cwd: "/var/home/you/src".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(command.binary, PathBuf::from("/usr/bin/tilo-legacy"));
+            assert!(!command.mutating);
+        }
+        // phase: an untrusted directory is named but not shared
+        {
+            let args = legacy_launch_args(&policy, "code", &[], Path::new("/var/home/you/secret"))
+                .unwrap();
+            assert!(!args.contains(&"--share-cwd".to_string()));
+        }
+        // phase: option-looking names and relative directories are refused
+        {
+            for app in ["--image", "../x", "", "a b"] {
+                assert!(legacy_launch_args(&policy, app, &[], Path::new("/x")).is_none());
+            }
+            assert!(legacy_launch_args(&policy, "code", &[], Path::new("src")).is_none());
         }
     }
 

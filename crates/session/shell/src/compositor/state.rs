@@ -3187,6 +3187,10 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Set when the connection is a legacy VM's Wayland forwarder: every app
+    /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
+    /// lowers what a window is trusted with, so it needs no proof.
+    pub legacy_guest: Option<legacy_agent_protocol::GuestOs>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3204,6 +3208,7 @@ impl Default for ClientState {
             enforce_package_id: false,
             executable: None,
             pid: None,
+            legacy_guest: None,
         }
     }
 }
@@ -3332,6 +3337,15 @@ fn authenticated_toplevel_identity(
     let Some(client) = client else {
         return Ok((announced_app_id, None));
     };
+    if let Some(guest) = client.legacy_guest {
+        return Ok((
+            Some(legacy_agent_protocol::window::host_app_id(
+                guest,
+                announced_app_id.as_deref(),
+            )),
+            None,
+        ));
+    }
     let Some(package_id) = client.package_id.as_deref() else {
         return Ok((announced_app_id, None));
     };
@@ -5463,6 +5477,19 @@ mod osk_identity_tests {
                     Some("org.example.HostApp".into())
                 ),
                 Ok((Some("org.example.HostApp".into()), None))
+            );
+            let legacy = ClientState {
+                legacy_guest: Some(legacy_agent_protocol::GuestOs::Linux),
+                ..ClientState::default()
+            };
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), Some("org.gnome.Calculator".into())),
+                Ok((Some("legacy.linux.org.gnome.Calculator".into()), None)),
+                "a legacy VM's window is named after its guest"
+            );
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), None),
+                Ok((Some("legacy.linux.window".into()), None))
             );
             let room = crate::shell::state::RoomId::new();
             let host = ClientState::attributed_arc(

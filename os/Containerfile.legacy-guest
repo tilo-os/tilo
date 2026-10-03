@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7
+# The Linux legacy VM guest: minimal Fedora bootc, Flatpak with Flathub, the
+# Wayland forwarder (waypipe), Xwayland for X11 apps, Mesa, and Tilo's guest
+# agent on vsock. .forgejo/workflows/build-legacy-guest.yml installs it to a
+# qcow2, wraps that in an OCI image, signs and pins it
+# (os/legacy-guest-snapshot.env). The agent binary is built by the same
+# workflow and placed at os/legacy-guest/agent/tilo-legacy-agent first.
+ARG BASE_REF
+FROM ${BASE_REF}
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+      flatpak \
+      waypipe \
+      xorg-x11-server-Xwayland \
+      xwayland-satellite \
+      mesa-dri-drivers \
+      mesa-vulkan-drivers \
+      dbus-daemon \
+      polkit \
+      fuse3 \
+ && dnf clean all \
+ && flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+COPY os/legacy-guest/rootfs/ /
+COPY --chmod=0755 os/legacy-guest/agent/tilo-legacy-agent /usr/libexec/tilo-legacy-agent
+
+RUN systemctl enable tilo-legacy-agent.service \
+ && test -x /usr/libexec/tilo-legacy-agent \
+ && command -v waypipe xwayland-satellite flatpak \
+ && bootc container lint

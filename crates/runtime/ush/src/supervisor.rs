@@ -215,6 +215,7 @@ impl Session {
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             runtime_bin: runtime_binary()?,
+            legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
             command: self.opts.command.clone(),

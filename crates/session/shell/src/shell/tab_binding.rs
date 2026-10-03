@@ -1027,6 +1027,18 @@ pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
         return name;
     }
+    // A legacy VM's window: its installed app's search entry names it (found
+    // above by `StartupWMClass`); otherwise its own id, and always the guest.
+    if let Some((guest, inner)) = legacy_agent_protocol::window::split_host_app_id(app_id) {
+        let name = crate::shell::launcher::display_name_for_package_id(inner);
+        let name = if name.trim().is_empty() {
+            inner.to_string()
+        } else {
+            name
+        };
+        let name: String = name.chars().take(24).collect();
+        return format!("{name} ({})", guest.label());
+    }
     let label = crate::shell::launcher::display_name_for_package_id(app_id);
     let label = if label.trim().is_empty() {
         app_id.to_string()
