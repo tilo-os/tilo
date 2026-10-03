@@ -305,7 +305,15 @@ def import_image(root=ROOT):
             "--entrypoint", "/bin/sh", image_id, "-ec",
             'test "$(cat /usr/lib/tilo/image-flavour)" = dev; '
             'test -x /usr/sbin/sshd; test -f /usr/lib/systemd/system/sshd.service; '
-            'test -f /boot/tilo-target/tilo-target.efi', timeout=120)
+            'test -d /usr/lib/modules', timeout=120)
+        mounted = Path(run('podman', 'image', 'mount', image_id, timeout=120))
+        try:
+            require(mounted.is_absolute() and mounted.is_dir(), 'development image mount is unsafe')
+            if not (mounted / 'boot/tilo-target/tilo-target.efi').is_file():
+                run('python3', '/usr/libexec/tilo-installer-dev-target-uki.py',
+                    'validate-image', '--image-root', str(mounted), timeout=120)
+        finally:
+            run('podman', 'image', 'unmount', image_id, timeout=120)
     run("podman", "run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
         "--entrypoint", "/usr/bin/python3", image_id,
         "/usr/lib/tilo/hardware_profile.py", "--install-update-origin",

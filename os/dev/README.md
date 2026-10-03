@@ -383,9 +383,15 @@ For a local disposable medium, prepare that same transport with
 `TILO_UNVERIFIED_VM_INSTALL=1` when building the installer. Normal transports
 continue to require signed release targets. The unsigned path requires a dev
 live image, the explicit VM marker, a VM proof port, and detected virtualization;
-the target must contain the dev flavour, OpenSSH and an installed-target UKI.
-An unsealed generic dev image cannot be used as a separate encrypted target;
-use the workflow's adapted generic self-copy medium for that boot scenario.
+the target must contain the dev flavour and OpenSSH. A separate target may
+provide the installed-target bundle, a sealed board UKI, or one split kernel
+and initramfs. For the latter two forms, the installer projects an unsigned
+installed UKI from the exact selected CI kernel, initramfs and pinned hardware
+DTB. It verifies the installed OCI manifest, origin, composefs and bootc payload
+digest before adding the TILO_BOOT mount. A sealed target retains its original
+origin and loader entry; a split target changes only its boot representation.
+No OS rebuild, image commit or registry upload is involved. The signed release
+promotion path continues to require its prebuilt target bundle.
 
 Run the downloaded medium through `tilo-vm scenario install` on Windows ARM64.
 The Windows backend requires WHPX and never falls back to TCG. A selected dev
