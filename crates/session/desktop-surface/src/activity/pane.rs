@@ -403,20 +403,17 @@ fn draw_resume_card(
         .unwrap_or('\u{2022}')
         .to_uppercase()
         .collect::<String>();
-    ui::widget::Avatar::draw_at(
-        scene,
-        transform,
-        Rect::new(
-            rect.x0 + 12.0,
-            rect.y0 + 22.0,
-            rect.x0 + 36.0,
-            rect.y0 + 46.0,
-        ),
-        &initial,
-        vello::peniko::Color::from_rgba8(r, g, b, 255),
-        theme,
-        tr,
-    );
+    ui::widget::AvatarFace::new(&initial, "")
+        .presence(vello::peniko::Color::from_rgba8(r, g, b, 255))
+        .paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            Rect::new(
+                rect.x0 + 12.0,
+                rect.y0 + 22.0,
+                rect.x0 + 36.0,
+                rect.y0 + 46.0,
+            ),
+        );
     tr.draw_style(
         scene,
         &t("activity-resume-heading"),
@@ -7294,15 +7291,12 @@ fn draw_brief_card(
                 .unwrap_or('\u{2022}')
                 .to_uppercase()
                 .collect::<String>();
-            ui::widget::Avatar::draw_at(
-                scene,
-                transform,
-                Rect::new(rail_x - 8.0, action_y - 2.0, rail_x + 8.0, action_y + 14.0),
-                &initial,
-                vello::peniko::Color::from_rgba8(r, g, b, 255),
-                theme,
-                tr,
-            );
+            ui::widget::AvatarFace::new(&initial, "")
+                .presence(vello::peniko::Color::from_rgba8(r, g, b, 255))
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+                    Rect::new(rail_x - 8.0, action_y - 2.0, rail_x + 8.0, action_y + 14.0),
+                );
             let action_line = format!(
                 "{} · {} · {}",
                 action.author.name,
@@ -7528,26 +7522,20 @@ fn draw_brief_author_stack(
             .unwrap_or('\u{2022}')
             .to_uppercase()
             .collect::<String>();
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
-            Rect::new(avatar_x, y - 2.0, avatar_x + 18.0, y + 16.0),
-            &initial,
-            vello::peniko::Color::from_rgba8(red, green, blue, 255),
-            theme,
-            tr,
-        );
+        ui::widget::AvatarFace::new(&initial, "")
+            .presence(vello::peniko::Color::from_rgba8(red, green, blue, 255))
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+                Rect::new(avatar_x, y - 2.0, avatar_x + 18.0, y + 16.0),
+            );
     }
     if authors.len() > visible {
         let badge_x = x + small_count_to_f64(visible) * 12.0;
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
+        ui::widget::AvatarFace::paint_overflow(
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
             Rect::new(badge_x, y - 2.0, badge_x + 18.0, y + 16.0),
-            &format!("+{}", authors.len().saturating_sub(visible)),
-            theme.tokens.colors.surfaces.raised,
-            theme,
-            tr,
+            authors.len().saturating_sub(visible),
+            None,
         );
     }
     // `visible` is at most two, so adding the overflow badge cannot saturate.

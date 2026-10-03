@@ -10,7 +10,7 @@ use crate::presence::{PresenceCtx, user_color};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::avatar::Avatar;
+use crate::widget::avatar::AvatarFace;
 use crate::widget::{TaffyTreeExt, Widget};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -129,28 +129,15 @@ impl CollaborationOverview {
         ringed: bool,
     ) {
         let fill = theme.tokens.colors.presence.of_rgb(user_color(identity.id));
+        let initials = Self::initials(identity.name);
+        let mut face = AvatarFace::new(&initials, identity.id).presence(fill);
         if ringed {
-            Avatar::draw_ringed_at(
-                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
-                rect,
-                &Self::initials(identity.name),
-                fill,
-                crate::widget::AvatarRing {
-                    color: theme.region(crate::surface::Region::Inspector),
-                    width: 2.0,
-                },
-            );
-        } else {
-            Avatar::draw_at(
-                scene,
-                transform,
-                rect,
-                &Self::initials(identity.name),
-                fill,
-                theme,
-                tr,
-            );
+            face = face.ringed_on(theme.region(crate::surface::Region::Inspector));
         }
+        face.paint(
+            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+            rect,
+        );
     }
     fn card(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         scene.fill(

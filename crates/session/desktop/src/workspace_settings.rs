@@ -26,7 +26,7 @@ use ui::overlay::FocusTrap;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Avatar, BadgeFace, Button, ButtonFace, ChipStyle, SegmentedFace, Tone};
+use ui::widget::{AvatarFace, BadgeFace, Button, ButtonFace, ChipStyle, SegmentedFace, Tone};
 
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use collab_types::role::Role as CapRole;
@@ -1202,16 +1202,9 @@ fn draw_avatar(
     // retain the square document-like treatment: it distinguishes an app
     // principal from a human identity at a glance.
     if !square {
-        let initials = Avatar::initials_for_name(label);
-        let initials = if initials.is_empty() { "?" } else { &initials };
-        Avatar::draw_at(
-            scene,
-            transform,
+        AvatarFace::new(label, label).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             rect,
-            initials,
-            Avatar::color_for_initials(initials, theme),
-            theme,
-            text_renderer,
         );
         return;
     }

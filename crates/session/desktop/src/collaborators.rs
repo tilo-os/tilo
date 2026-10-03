@@ -1068,15 +1068,12 @@ impl CollaboratorsOverlay {
             self.panel.x0 + 38.0,
             self.status.y0 + 27.0,
         );
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
-            avatar,
-            &model.own_initial.to_string(),
-            model.own_color,
-            theme,
-            text_renderer,
-        );
+        ui::widget::AvatarFace::new(&model.own_initial.to_string(), "")
+            .presence(model.own_color)
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                avatar,
+            );
         let spark = vello::kurbo::Circle::new(Point::new(avatar.x1 - 2.0, avatar.y1 - 2.0), 3.5);
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
@@ -1311,15 +1308,12 @@ impl CollaboratorsOverlay {
                 TextWeight::Semibold,
             );
         } else {
-            ui::widget::Avatar::draw_at(
-                scene,
-                transform,
-                avatar_rect,
-                &row.initial.to_string(),
-                row.color,
-                theme,
-                text_renderer,
-            );
+            ui::widget::AvatarFace::new(&row.initial.to_string(), "")
+                .presence(row.color)
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    avatar_rect,
+                );
             // A live spark belongs on the identity itself: it reads as
             // "here now" without turning the row into a status report.
             let spark = vello::kurbo::Circle::new(Point::new(center.x + 8.0, center.y + 8.0), 3.5);
@@ -1358,15 +1352,12 @@ impl CollaboratorsOverlay {
                     partner_center.x + 6.0,
                     partner_center.y + 6.0,
                 );
-                ui::widget::Avatar::draw_at(
-                    scene,
-                    transform,
-                    partner_rect,
-                    &partner.initial.to_string(),
-                    partner.color,
-                    theme,
-                    text_renderer,
-                );
+                ui::widget::AvatarFace::new(&partner.initial.to_string(), "")
+                    .presence(partner.color)
+                    .paint(
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                        partner_rect,
+                    );
                 draw_direction_arrow(scene, transform, from, to, row.color.multiply_alpha(0.9));
             }
         }

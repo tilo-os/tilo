@@ -32,8 +32,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Card, Checkbox, Column, FilePicker, FilePickerMode, ProgressBar, Row,
-    Scrollable, Spacer, Text, TextInput, Widget,
+    Banner, Button, Checkbox, Column, FilePicker, FilePickerMode, ProgressBar, Row, Scrollable,
+    Section, Spacer, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -1899,9 +1899,9 @@ impl OnboardingView {
             body = body.push(Box::new(checklist));
         } else {
             for (card_title, copy) in cards {
-                body = body.push(Box::new(Card::titled(
+                body = body.push(Box::new(Section::titled(
                     t(card_title),
-                    paragraph(&t(copy), theme),
+                    vec![paragraph(&t(copy), theme)],
                 )));
             }
         }
@@ -1959,9 +1959,9 @@ impl OnboardingView {
                 .with_gap(spacing.s4)
                 .push(heading(&title, theme))
                 .push(paragraph(&body, theme))
-                .push(Box::new(Card::titled(
+                .push(Box::new(Section::titled(
                     t("onboarding-intro-card-title"),
-                    Box::new(list),
+                    vec![Box::new(list)],
                 ))),
         )
     }
@@ -2063,13 +2063,13 @@ impl OnboardingView {
             ))
             .push(Box::new(passphrase));
         Box::new(
-            body.push(Box::new(Card::titled(
+            body.push(Box::new(Section::titled(
                 t("onboarding-connect-nearby-card"),
-                Box::new(nearby),
+                vec![Box::new(nearby)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-connect-backup-card"),
-                Box::new(backup),
+                vec![Box::new(backup)],
             ))),
         )
     }

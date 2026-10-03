@@ -193,7 +193,6 @@ fn primitive(width: u32, scale: f32) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(shot_theme().tokens.colors.surfaces.content)
             .with_child(scroll),
     )
 }
