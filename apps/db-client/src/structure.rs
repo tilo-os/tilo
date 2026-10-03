@@ -160,6 +160,7 @@ fn summary(info: &TableInfo) -> String {
 
 fn page(info: &TableInfo) -> Element {
     let mut column = Column::new()
+        .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(
             Text::new(&info.name)
@@ -250,5 +251,72 @@ impl Decorator for StructureView {
 
     fn name(&self) -> &'static str {
         "StructureView"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ColumnInfo, ForeignKey, IndexInfo, TypeClass};
+
+    fn info(rows: Option<i64>, kind: RelationKind) -> TableInfo {
+        let column = |name: &str, primary_key: bool| ColumnInfo {
+            name: name.into(),
+            decl_type: "INTEGER".into(),
+            class: TypeClass::Integer,
+            not_null: false,
+            primary_key,
+            default: None,
+        };
+        TableInfo {
+            name: "tracks".into(),
+            kind,
+            columns: vec![column("id", true), column("album_id", false)],
+            foreign_keys: vec![ForeignKey {
+                column: "album_id".into(),
+                ref_table: "albums".into(),
+                ref_column: "id".into(),
+            }],
+            indexes: vec![IndexInfo {
+                name: "idx_tracks_album".into(),
+                unique: false,
+                columns: vec!["album_id".into()],
+            }],
+            row_count: rows,
+        }
+    }
+
+    /// The summary is a sentence about the table, and a view has no row count to claim.
+    #[test]
+    fn the_summary_says_what_the_relation_is() {
+        assert_eq!(
+            summary(&info(Some(15), RelationKind::Table)),
+            "Table with 2 columns and 15 rows"
+        );
+        assert_eq!(
+            summary(&info(Some(1), RelationKind::Table)),
+            "Table with 2 columns and 1 row"
+        );
+        assert_eq!(
+            summary(&info(None, RelationKind::View)),
+            "View with 2 columns"
+        );
+    }
+
+    /// A primary key is not nullable, and the keys table lists the primary key before the foreign keys.
+    #[test]
+    fn keys_and_nullability_follow_the_catalog() {
+        let table = info(Some(3), RelationKind::Table);
+        let keys = keys_table(&table).expect("the table has keys");
+        let rows = keys.view_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].constraint, "Primary key");
+        assert_eq!(rows[1].constraint, "Foreign key");
+        assert_eq!(rows[1].references.as_deref(), Some("albums.id"));
+        let columns = columns_table(&table);
+        let rows = columns.view_rows();
+        assert_eq!(rows[0].nullable, "No", "the primary key cannot be null");
+        assert_eq!(rows[1].nullable, "Yes");
+        assert!(indexes_table(&table).is_some());
     }
 }

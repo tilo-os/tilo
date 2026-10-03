@@ -23,7 +23,7 @@ use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 /// Which workspace tab the main panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainTab {
-    /// SQL editor + results grid.
+    /// SQL editor + results table.
     Query,
     /// Browse rows of the selected table.
     Data,
