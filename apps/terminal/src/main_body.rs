@@ -108,6 +108,10 @@ pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> b
     )
 }
 
+/// What the session banner says once the shell has exited.
+const SESSION_ENDED_MESSAGE: &str =
+    "Session ended. The shell has exited, so typing no longer reaches it.";
+
 /// One UI turn may parse at most this much queued PTY output. Anything beyond
 /// it stays in the bounded queue for the following frame, preserving ordering
 /// while keeping pointer input and accessibility responsive during a build
@@ -683,12 +687,6 @@ pub struct TerminalWidget {
     /// viewport space). Defaults to 0 until the first frame paints.
     viewport_start_y: usize,
 
-    /// Horizontal glyph gutter used by the most recent `draw`, cached so
-    /// pointer hit-testing in `handle_event` (which has no `Theme`) lands on
-    /// the same column the glyphs were painted at even if the theme retunes
-    /// the spacing. Seeded to the default `spacing.s1` (4px).
-    last_padding_x: f64,
-
     /// The single source of truth for grid geometry: the widget
     /// [`rect`](Self::rect) inset by a uniform body padding on every side, with
     /// a scrollbar gutter reserved on the right. Every grid read — cell layout,
@@ -699,8 +697,7 @@ pub struct TerminalWidget {
     /// decoration (the tab/title chrome); the app draws only the grid.
     grid_rect: Rect,
     /// Cached body geometry (padding, scrollbar gutter), refreshed from the
-    /// theme on every `draw` (the same pattern as `last_padding_x`) so
-    /// `set_geometry` and pointer hit-testing — neither of which receives a
+    /// theme on every `draw` so `set_geometry` and pointer hit-testing — neither of which receives a
     /// `Theme` — inset the grid by the exact amounts `draw` painted with.
     /// Seeded to the default token values so the first (pre-draw) layout is
     /// already correct.
@@ -836,7 +833,7 @@ impl TerminalWidget {
             session_disconnected: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             child_killer: None,
-            session_status_message: Arc::new(Mutex::new("Session ended — input unavailable")),
+            session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE)),
             parser: Parser::new(),
             grid,
             grid_attrs,
@@ -894,7 +891,6 @@ impl TerminalWidget {
             gesture_effects: VecDeque::new(),
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
-            last_padding_x: 4.0,
             grid_rect: Rect::ZERO,
             // Seeded to the default token metrics (body pad 12, scrollbar
             // gutter 8) so the first layout — which runs before the first
@@ -1036,7 +1032,7 @@ impl TerminalWidget {
     fn disconnected_message(&self) -> &'static str {
         self.session_status_message
             .lock()
-            .map_or("Session ended — input unavailable", |message| *message)
+            .map_or(SESSION_ENDED_MESSAGE, |message| *message)
     }
 
     /// A compact visual lifecycle state. The detailed transport cause stays in
@@ -1548,7 +1544,7 @@ impl TerminalWidget {
             return;
         }
         let visible = self.current_visible_rows().max(1);
-        let max_top = self.grid.len().saturating_sub(visible);
+        let max_top = self.view_rows().saturating_sub(visible);
         let top = found.row.saturating_sub(visible / 2).min(max_top);
         self.scroll_offset = max_top.saturating_sub(top);
     }
@@ -1642,7 +1638,7 @@ impl TerminalWidget {
     #[cfg(test)]
     pub fn visible_lines(&self) -> Vec<String> {
         let vis = self.current_visible_rows();
-        let max_top = self.grid.len().saturating_sub(vis);
+        let max_top = self.view_rows().saturating_sub(vis);
         let scroll = if self.alt_active {
             0
         } else {
@@ -1820,7 +1816,7 @@ impl TerminalWidget {
     /// Furthest the viewport can scroll up: the number of rows above the
     /// live viewport.
     fn max_scroll(&self) -> usize {
-        self.grid.len().saturating_sub(self.current_visible_rows())
+        self.view_rows().saturating_sub(self.current_visible_rows())
     }
 
     fn scrollbar_track(&self) -> Rect {
@@ -1831,7 +1827,7 @@ impl TerminalWidget {
 
     fn scrollbar_metrics(&self) -> ScrollMetrics {
         let visible = self.current_visible_rows() as f64;
-        let total = self.grid.len() as f64;
+        let total = self.view_rows() as f64;
         // Scrollbar offsets are measured from the top; terminal history is
         // measured back from the live bottom.
         let from_top = self.max_scroll().saturating_sub(self.scroll_offset) as f64;
@@ -2080,7 +2076,9 @@ impl TerminalWidget {
             return Err("terminal session is disconnected; input was not sent".to_string());
         }
         let Ok(mut writer) = self.pty_write.lock() else {
-            self.mark_disconnected("Terminal input unavailable — PTY writer stopped");
+            self.mark_disconnected(
+                "Session ended. The terminal can no longer send input to the shell.",
+            );
             return Err("terminal input is unavailable because its PTY writer stopped".to_string());
         };
         let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
@@ -2737,19 +2735,11 @@ impl Widget for TerminalWidget {
         // framework's, so nothing here fills the widget.
         let cell_style = theme.text(TextRole::Code);
         self.palette = Self::grid_palette(theme);
-        // Horizontal gutter between the terminal's left edge and the first
-        // glyph column. Sourced from the shared spacing scale (`s1` == 4px
-        // in the default tokens) so the OS can tune it centrally.
-        let padding_x = f64::from(theme.tokens.spacing.s1);
-        // Cache the real gutter so pointer hit-testing (which has no `Theme`)
-        // maps clicks to the same column the glyphs were painted at.
-        self.last_padding_x = padding_x;
-
         // Refresh the body geometry from the theme and re-derive the inner grid
         // rect (inside the padding, minus the scrollbar gutter) — the same
         // `grid_content_rect` `set_geometry` and pointer hit-testing use, so the
         // grid origin is single-sourced. `set_geometry` and hit-testing read the
-        // cached metrics — neither sees a `Theme` — mirroring `last_padding_x`.
+        // cached metrics — neither sees a `Theme`.
         self.refresh_chrome_metrics(theme);
 
         // Measure the cell advance of the exact style the glyphs are drawn in
@@ -2776,7 +2766,7 @@ impl Widget for TerminalWidget {
         let grid_rect = self.grid_rect;
 
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
-        let max_top = self.grid.len().saturating_sub(visible_rows);
+        let max_top = self.view_rows().saturating_sub(visible_rows);
         // Alt screen has no scrollback; clamp the offset for the main buffer.
         let scroll = if self.alt_active {
             0
@@ -2836,24 +2826,8 @@ impl Widget for TerminalWidget {
 
         // Paint the selection BEFORE the cell text so glyphs read on top of
         // the highlight.
-        self.draw_selection_highlight(
-            scene,
-            transform,
-            theme,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-        );
-        self.draw_find_match_highlight(
-            scene,
-            transform,
-            theme,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-        );
+        self.draw_selection_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
+        self.draw_find_match_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
 
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.draw_cell_rows(&mut ctx, &cell_style, start_y, visible_rows);
@@ -4104,7 +4078,6 @@ impl TerminalWidget {
         transform: Affine,
         theme: &Theme,
         grid_rect: Rect,
-        padding_x: f64,
         start_y: usize,
         visible_rows: usize,
     ) {
@@ -4117,9 +4090,9 @@ impl TerminalWidget {
             }
             let vrow = row - start_y;
             let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = grid_rect.x0 + padding_x + start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + padding_x + end_col as f64 * self.char_w;
-            let band = Rect::new(x0, py, x1, py + self.char_h);
+            let x0 = grid_rect.x0 + start_col as f64 * self.char_w;
+            let x1 = grid_rect.x0 + end_col as f64 * self.char_w;
+            let band = snap_to_device_pixels(transform, Rect::new(x0, py, x1, py + self.char_h));
             scene.fill(Fill::NonZero, transform, sel_color, None, &band);
         }
     }
@@ -4134,7 +4107,6 @@ impl TerminalWidget {
         transform: Affine,
         theme: &Theme,
         grid_rect: Rect,
-        padding_x: f64,
         start_y: usize,
         visible_rows: usize,
     ) {
@@ -4144,10 +4116,13 @@ impl TerminalWidget {
                 continue;
             }
             let row = found.row - start_y;
-            let x0 = grid_rect.x0 + padding_x + found.start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + padding_x + found.end_col as f64 * self.char_w;
+            let x0 = grid_rect.x0 + found.start_col as f64 * self.char_w;
+            let x1 = grid_rect.x0 + found.end_col as f64 * self.char_w;
             let y0 = grid_rect.y0 + row as f64 * self.char_h;
-            let marker = Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h);
+            let marker = snap_to_device_pixels(
+                transform,
+                Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h),
+            );
             paint_find_match(scene, transform, marker, index == self.find_current, theme);
         }
     }
@@ -4283,7 +4258,7 @@ impl TerminalWidget {
             if outside_horizontal || outside_vertical {
                 continue;
             }
-            let left = grid_rect.x0 + self.last_padding_x + placement.col as f64 * self.char_w;
+            let left = grid_rect.x0 + placement.col as f64 * self.char_w;
             let top = grid_rect.y0 + placement.row.saturating_sub(start_y) as f64 * self.char_h;
             let right = (left + columns as f64 * self.char_w).min(grid_rect.x1);
             let bottom = (top + rows as f64 * self.char_h).min(grid_rect.y1);
@@ -4339,7 +4314,6 @@ impl TerminalWidget {
         visible_rows: usize,
     ) {
         let grid_rect = self.grid_rect;
-        let padding_x = self.last_padding_x;
         for (y, line_text) in self
             .grid
             .iter()
@@ -4374,7 +4348,7 @@ impl TerminalWidget {
                             cell_style,
                             &current_run,
                             prev_attr,
-                            Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
+                            Point::new(run_start_cell_idx as f64 * self.char_w, py),
                         );
                     }
                     current_run.clear();
@@ -4392,7 +4366,7 @@ impl TerminalWidget {
                     cell_style,
                     &current_run,
                     prev_attr,
-                    Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
+                    Point::new(run_start_cell_idx as f64 * self.char_w, py),
                 );
             }
         }
@@ -4417,7 +4391,6 @@ impl TerminalWidget {
         } = ctx.reborrow();
         let palette = &self.palette;
         let grid_rect = self.grid_rect;
-        let padding_x = self.last_padding_x;
         let scroll = self.scroll_offset;
         let cursor_color = self.last_cursor_color;
         // Absolute grid row of the cursor → visible row (may be scrolled off).
@@ -4429,10 +4402,13 @@ impl TerminalWidget {
             && cursor_abs < start_y + visible_rows.max(1)
         {
             let cy_local = cursor_abs - start_y;
-            let cx = grid_rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
+            let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
             let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
             // An unmistakable, theme-coloured "inverted cell" cursor.
-            let cursor_rect = Rect::new(cx, cy, cx + self.char_w, cy + self.char_h);
+            let cursor_rect = snap_to_device_pixels(
+                transform,
+                Rect::new(cx, cy, cx + self.char_w, cy + self.char_h),
+            );
             scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
 
             // Re-punch the glyph beneath the block in the background color so
@@ -4498,7 +4474,10 @@ impl TerminalWidget {
         }
 
         if let Some(bg_color) = bg_opt {
-            let bg_rect = Rect::new(tx, py, tx + visual_width + 0.5, py + self.char_h + 0.5);
+            let bg_rect = snap_to_device_pixels(
+                transform,
+                Rect::new(tx, py, tx + visual_width, py + self.char_h),
+            );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -4528,13 +4507,15 @@ impl TerminalWidget {
 
         if attr.underline || is_link {
             let uy = py + self.char_h - 1.5;
-            let line = Rect::new(tx, uy, tx + visual_width, uy + 1.0);
+            let line =
+                snap_to_device_pixels(transform, Rect::new(tx, uy, tx + visual_width, uy + 1.0));
             scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
         }
         if attr.strike {
             // A crossed-out line through the vertical centre of the cell.
             let sy = (py + self.char_h * 0.5).floor();
-            let line = Rect::new(tx, sy, tx + visual_width, sy + 1.0);
+            let line =
+                snap_to_device_pixels(transform, Rect::new(tx, sy, tx + visual_width, sy + 1.0));
             scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
         }
     }
@@ -4557,6 +4538,22 @@ impl TerminalWidget {
         written.max(cursor_abs + 1)
     }
 
+    /// How many rows the view scrolls over: the whole buffer, minus blank rows
+    /// below the last thing on it. A session allocates a full screen of rows
+    /// up front, and a band above the grid (the find bar, the session banner)
+    /// shows fewer rows than that screen. Anchoring the view to the bottom of
+    /// the allocation would then hide the first lines of a short transcript
+    /// behind the band, so the view only reaches past what is on screen when
+    /// there is something there. The alternate screen is always shown whole.
+    fn view_rows(&self) -> usize {
+        if self.alt_active {
+            return self.grid.len();
+        }
+        self.content_rows()
+            .max(self.current_visible_rows())
+            .min(self.grid.len())
+    }
+
     /// Whether the scrollbar represents anything, for a viewport of
     /// `visible_rows` rows. The predicate [`Self::draw_scrollbar`] gates on.
     ///
@@ -4570,10 +4567,7 @@ impl TerminalWidget {
     /// goes from blank to blank. A scrollbar is a claim about content, so
     /// it appears only when there is content to reach.
     pub(crate) fn scrollbar_visible(&self, visible_rows: usize) -> bool {
-        !self.alt_active
-            && visible_rows > 0
-            && self.grid.len() > visible_rows
-            && self.content_rows() > visible_rows
+        !self.alt_active && visible_rows > 0 && self.content_rows() > visible_rows
     }
 
     /// The shared scrollbar thumb in the reserved right gutter, drawn only
@@ -4591,7 +4585,7 @@ impl TerminalWidget {
             return;
         }
         let metrics =
-            ScrollMetrics::new(self.grid.len() as f64, visible_rows as f64, start_y as f64);
+            ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, start_y as f64);
         self.scrollbar.draw(
             scene,
             transform,
@@ -4616,13 +4610,21 @@ impl TerminalWidget {
             return;
         }
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-        // An ended session already says why in the banner above; only a
-        // widget that never had a process explains itself here.
-        let content = EmptyStateContent {
-            icon: Some(Icon::Terminal),
-            message: (!self.is_disconnected())
-                .then_some("Output appears here once a shell session starts."),
-            ..EmptyStateContent::new("No shell running")
+        // An ended session already says why in the banner above, so the grid
+        // only reports that the shell left nothing behind; a widget that never
+        // had a process explains where output will appear.
+        let content = if self.is_disconnected() {
+            EmptyStateContent {
+                icon: Some(Icon::Terminal),
+                message: Some("The shell exited before it printed anything."),
+                ..EmptyStateContent::new("No output")
+            }
+        } else {
+            EmptyStateContent {
+                icon: Some(Icon::Terminal),
+                message: Some("Output appears here once a shell session starts."),
+                ..EmptyStateContent::new("No shell running")
+            }
         };
         EmptyState::paint(&mut ctx, area, &content, self.last_cursor_pos);
     }
@@ -4635,10 +4637,7 @@ impl TerminalWidget {
     /// visible cell — matching xterm's behaviour during a drag-select that
     /// leaves the terminal area.
     fn pos_from_logical(&self, p: Point) -> GridPos {
-        // Match the padding used in `draw` so a click on column 0 lands
-        // on column 0 and not -1 due to the leading gutter.
-        let padding_x = self.last_padding_x();
-        let local_x = (p.x - self.grid_rect.x0 - padding_x).max(0.0);
+        let local_x = (p.x - self.grid_rect.x0).max(0.0);
         let local_y = (p.y - self.grid_rect.y0).max(0.0);
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
         let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
@@ -4854,7 +4853,7 @@ impl TerminalWidget {
             return None;
         }
         let vrow = cell.row - start_y;
-        let x = self.grid_rect.x0 + self.last_padding_x + cell.col as f64 * self.char_w;
+        let x = self.grid_rect.x0 + cell.col as f64 * self.char_w;
         let y = (self.grid_rect.y0 + vrow as f64 * self.char_h).floor();
         Some(Rect::new(x, y, x + 2.0, y + self.char_h))
     }
@@ -4875,19 +4874,11 @@ impl TerminalWidget {
             }
             let vrow = row - start_y;
             let py = (self.grid_rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = self.grid_rect.x0 + self.last_padding_x + start_col as f64 * self.char_w;
-            let x1 = self.grid_rect.x0 + self.last_padding_x + end_col as f64 * self.char_w;
+            let x0 = self.grid_rect.x0 + start_col as f64 * self.char_w;
+            let x1 = self.grid_rect.x0 + end_col as f64 * self.char_w;
             rects.push(Rect::new(x0, py, x1, py + self.char_h));
         }
         rects
-    }
-
-    /// The horizontal glyph gutter the last `draw` actually used. Cached from
-    /// the theme each frame so pointer hit-testing (which never receives a
-    /// `Theme`) stays pixel-aligned with the painted columns even if the OS
-    /// retunes `spacing.s1`.
-    fn last_padding_x(&self) -> f64 {
-        self.last_padding_x
     }
 
     /// Build + open the shared terminal context menu at the cached cursor.
@@ -6792,11 +6783,29 @@ pub(crate) fn resolve_pair(
 /// Kept as a free function so the rule "the cursor always tracks the theme"
 /// is a single obvious call site and tests can invoke it directly.
 pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Color {
-    // A near-solid block (90% alpha) reads as a firm caret while the glyph
-    // beneath it is re-drawn in the background color for an inverted-cell look.
-    // The hue comes from the theme's default foreground so the cursor tracks
-    // palette swaps rather than a hard-coded grey.
-    palette.fg_default.with_alpha_factor(230.0 / 255.0)
+    // An opaque inverted cell: the block is the theme's default foreground and
+    // the glyph beneath it is re-drawn in the background colour. Taking the hue
+    // from the palette keeps the cursor tracking theme swaps.
+    palette.fg_default.with_alpha_factor(1.0)
+}
+
+/// Snap `rect` to whole device pixels under `transform`, so a cell fill has
+/// crisp edges instead of an anti-aliased fringe. Edges are rounded as device
+/// coordinates, so two rects that meet at one coordinate still meet after
+/// snapping: adjacent runs and rows tile without a seam or an overlap.
+/// `transform` is the paint transform of an axis-aligned scale and offset.
+pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
+    let [sx, _, _, sy, tx, ty] = transform.as_coeffs();
+    if sx == 0.0 || sy == 0.0 {
+        return rect;
+    }
+    let snap = |v: f64, scale: f64, offset: f64| ((v * scale + offset).round() - offset) / scale;
+    Rect::new(
+        snap(rect.x0, sx, tx),
+        snap(rect.y0, sy, ty),
+        snap(rect.x1, sx, tx),
+        snap(rect.y1, sy, ty),
+    )
 }
 
 /// Resolve the user's native shell for the standalone fallback path.
@@ -7410,9 +7419,9 @@ impl TerminalWidget {
                 .name("tilo-terminal-child-wait".into())
                 .spawn(move || {
                     let message = if child.wait().is_ok() {
-                        "Session ended — input unavailable"
+                        SESSION_ENDED_MESSAGE
                     } else {
-                        "Terminal process status failed — input unavailable"
+                        "Session ended. The shell's exit status could not be read."
                     };
                     set_terminal_disconnected(&disconnected, &status, message);
                     request_terminal_wake(&waker, &pending);
@@ -7422,7 +7431,9 @@ impl TerminalWidget {
                 if let Some(killer) = &mut widget.child_killer {
                     let _ = killer.kill();
                 }
-                widget.mark_disconnected("Terminal unavailable — process monitor could not start");
+                widget.mark_disconnected(
+                    "Session unavailable. The terminal could not watch the shell for exit.",
+                );
             }
             widget
         };
@@ -7458,7 +7469,7 @@ impl TerminalWidget {
                         set_terminal_disconnected(
                             &session_disconnected,
                             &session_status_message,
-                            "Terminal reader failed — session unavailable",
+                            "Session ended. The terminal can no longer read from the shell.",
                         );
                         request_terminal_wake(&waker, &wake_pending);
                         break;
@@ -7474,7 +7485,7 @@ impl TerminalWidget {
                             set_terminal_disconnected(
                                 &session_disconnected,
                                 &session_status_message,
-                                "Session ended — input unavailable",
+                                SESSION_ENDED_MESSAGE,
                             );
                             request_terminal_wake(&waker, &wake_pending);
                             break;

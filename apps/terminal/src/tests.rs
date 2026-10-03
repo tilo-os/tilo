@@ -5268,3 +5268,49 @@ fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
         w.grid_row(1)
     );
 }
+
+#[test]
+fn the_cursor_is_an_opaque_inverted_cell() {
+    let palette = ui::tokens::TerminalPalette::dark();
+    let cursor = crate::inner::cursor_from_palette(&palette);
+    assert!(
+        (cursor.components[3] - 1.0).abs() < f32::EPSILON,
+        "the block cursor is fully opaque, not a translucent wash"
+    );
+    assert_eq!(
+        cursor.components[..3],
+        palette.fg_default.components[..3],
+        "the cursor is the default foreground"
+    );
+}
+
+#[test]
+fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
+    use crate::inner::snap_to_device_pixels;
+    use vello::kurbo::Affine;
+
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let transform = Affine::scale(scale);
+        // Fractional advances and an offset, as in a real grid.
+        let (char_w, x0) = (8.43, 12.0);
+        for cell in 0..40 {
+            let left = x0 + f64::from(cell) * char_w;
+            let a = snap_to_device_pixels(transform, Rect::new(left, 20.0, left + char_w, 40.0));
+            let b = snap_to_device_pixels(
+                transform,
+                Rect::new(left + char_w, 20.0, left + 2.0 * char_w, 40.0),
+            );
+            for edge in [a.x0, a.x1, a.y0, a.y1] {
+                let device = edge * scale;
+                assert!(
+                    (device - device.round()).abs() < 1e-9,
+                    "edge {edge} at scale {scale} is not on a device pixel"
+                );
+            }
+            assert!(
+                (a.x1 - b.x0).abs() < 1e-9,
+                "neighbouring cells meet without a seam or overlap"
+            );
+        }
+    }
+}
