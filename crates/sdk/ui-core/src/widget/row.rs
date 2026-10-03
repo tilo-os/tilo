@@ -80,6 +80,9 @@ pub struct Row {
     cache_rect: vello::kurbo::Rect,
     cache_present: bool,
     descendant_caches_released: bool,
+    /// The cache holds floating surfaces over the blurred material. A reused
+    /// cache would show them opaque, so it is redrawn while it does.
+    cache_carries_material: bool,
 }
 
 impl Default for Row {
@@ -110,6 +113,7 @@ impl Row {
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
             descendant_caches_released: false,
+            cache_carries_material: false,
         }
     }
 
@@ -485,13 +489,15 @@ impl Widget for Row {
         let size_changed = (self.rect.width() - self.cache_rect.width()).abs() > f64::EPSILON
             || (self.rect.height() - self.cache_rect.height()).abs() > f64::EPSILON;
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = !self.cache_present || size_changed || any_child_dirty;
+        let needs_rebuild =
+            !self.cache_present || size_changed || any_child_dirty || self.cache_carries_material;
         if needs_rebuild {
             // Drop the active viewport for the recursion — see
             // `Column::draw_with_presence` for why.
             let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
+            crate::backdrop::nest_scene(&local);
             for child in &mut self.children {
                 child.draw_with_presence(
                     &mut local,
@@ -502,7 +508,8 @@ impl Widget for Row {
                     permissions,
                 );
             }
-            scene.append(&local, Some(transform));
+            self.cache_carries_material =
+                crate::backdrop::append_nested(scene, &local, transform) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             self.cache_present = true;

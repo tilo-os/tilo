@@ -3084,6 +3084,7 @@ impl App {
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
             if self.take_search_invocation(&intent, Some(&target.binding))
+                || self.take_history_invocation(&intent)
                 || self.dispatch_bound_control_invocation(&target, &intent)
             {
                 dispatched = dispatched.saturating_add(1);
@@ -3096,7 +3097,7 @@ impl App {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root_widget.as_mut()))
         {
-            if self.take_search_invocation(&intent, None) {
+            if self.take_search_invocation(&intent, None) || self.take_history_invocation(&intent) {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
@@ -3522,6 +3523,29 @@ impl App {
 
     /// Take a control invocation addressed to the host search door: open
     /// search here, or queue it for the shell hosting `owner`.
+    /// A control in the app's tree bound to the window's History door (the
+    /// History control in the app's header row) runs there, as the History
+    /// shortcut does, never as an app action. Returns whether it was one.
+    fn take_history_invocation(&mut self, intent: &tilo_actions::ControlInvocation) -> bool {
+        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
+            return false;
+        }
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(intent.arguments.clone())
+        );
+        let result = self
+            .invoke_history_address_local(&intent.address, Some(&argument))
+            .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
+        crate::widget::controls::on_control_invocation_result(
+            self.root_widget.as_mut(),
+            &intent.address,
+            &result,
+        );
+        true
+    }
+
     fn take_search_invocation(
         &mut self,
         intent: &tilo_actions::ControlInvocation,

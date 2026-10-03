@@ -56,12 +56,12 @@ Why:
   descenders of the line above; at 12–13 px Condensed Bold the tones beside
   a circumflex are two-pixel marks; ỵ's dot sits right of the descender.
 - **Greek** ships: review approved it against the fallback (Geologica at 0.85
-  × the weight). The product owner's sheet is `proofs/final/greek-review/`.
+  × the weight). The product owner reviews it on the sheet from `scripts/review_sheet.py --script greek`.
 - **Cyrillic** is held back. Review found the shapes recognisably Instrument
   and better than Onest beside Instrument's Latin, and the earlier collisions
   (б and ф kerned as rounds under Т Г У in «Тбилиси», «Убрать»; the italic
   ∂-shaped д in «Где», «Удача»), the crowded dieresis of «її» and the clogged
-  bold в Ф Ю are fixed (`proofs/final/cyrillic/review-fixes.png`). Still open:
+  bold в Ф Ю are fixed. Still open:
   - the condensed italic Я (worst in Condensed Bold Italic): moving the
     italic foot right by the slant left leg and stem nearly parallel, 3–32
     units apart, so «ЯНВАРЬ» reads as «9I». The gap between leg and stem must
@@ -81,7 +81,7 @@ Why:
     47 units in Condensed Bold (63 in Bold), so it clogs at 12–13 px;
   - э in Condensed Bold: the eye above the bar is about 55 × 90 units and
     fills in before с and е do.
-  Native readers check `proofs/final/cyrillic-review/` (a Bulgarian reader the
+  Native readers check the sheet from `scripts/review_sheet.py --script cyrillic` (a Bulgarian reader the
   `locl BGR` forms) once those are fixed.
 - **Distinct I and l** is held back. What held it back before is fixed: the
   serif I no longer comes diagonally close to the flag of 1, `il_kern.py`
@@ -113,9 +113,9 @@ Why:
   own Latin letters and spacing; in Condensed Bold at 12 px `rn` comes
   close to `m`.
 
-Final sheets of the merged family are in `proofs/final/`: one folder per area
-(`vietnamese`, `greek`, `cyrillic`, `il`, `latin`), and the review sheets
-`greek-review/` and `cyrillic-review/` (`scripts/review_sheet.py`): every
+Proof sheets are generated, never tracked. `proof.py --final` writes the merged family's sheets to
+`proofs/final/`, one folder per area (`vietnamese`, `greek`, `cyrillic`, `il`, `latin`), and
+`scripts/review_sheet.py` writes the review sheets `greek-review/` and `cyrillic-review/`: every
 letter large above the fallback's, interface strings and running text at 14,
 16, 20 and 32 px in light and dark, Tilo Sans beside Tilo's Latin plus the
 fallback. Geologica at 340 is still heavier than Tilo Sans at 400 (its stem is
@@ -181,9 +181,8 @@ vendor/fonts/tilo-sans/
     features/*.fea                 OpenType code, one file per feature, shared by all 8 masters
   fonts/        (ignored)  TiloSans[wdth,wght].ttf, TiloSans-Italic[wdth,wght].ttf (everything),
                            default/ (what Tilo ships), full/ (for review)
-  proofs/work/  (ignored)  every proof run
-  proofs/sheets/           proofs written with --final, per area
-  proofs/final/            the sheets of the merged family: one per area, and the review sheets
+  proofs/       (ignored)  generated sheets: work/ (every run), sheets/ (--final, per area),
+                           final/ (merged family and review sheets)
   .upstream/    (ignored)  upstream checkout for import/verify
 ```
 
@@ -241,7 +240,7 @@ vendor/fonts/tilo-sans/.upstream/instrument-sans`, then check out the commit.
 ### Proofs
 
 `proof.py` writes 2x PNGs to `proofs/work/<name>/` (`--final` writes to
-`proofs/sheets/<name>/`, which git tracks):
+`proofs/sheets/<name>/`). Proofs are build output: regenerate them rather than committing them.
 
 | page | what |
 |---|---|
@@ -440,7 +439,7 @@ does.
 (`I l 1 | ! i j`, `O 0 o`, `rn m`, `cl d`) and identifier strings at 12, 13 and
 14 px at 1x, enlarged without smoothing, in Regular, Bold and Condensed Bold,
 upright and italic, light and dark, each line off and on; and the tight pairs
-at 96 px. Its sheets are in `proofs/sheets/il-sheet/`.
+at 96 px. With `--final` its sheets go to `proofs/sheets/il-sheet/`.
 
 A new letter that can sit next to a serif I or tailed l (Vietnamese `Ĩ Ỉ Ị`,
 Cyrillic `і`, Greek `ι`, a new accent) needs no hand kerning against them: build,
