@@ -894,6 +894,44 @@ impl Colors {
         oklch(g.l + step * t, chroma, hue)
     }
 
+    /// [`Intents::inverted`] while pressed: the hover step taken twice, so
+    /// a press reads past the hover instead of matching it.
+    #[must_use]
+    pub fn inverted_pressed(&self) -> Color {
+        let rest = Oklch::from_color(self.intent.inverted);
+        let hover = Oklch::from_color(self.intent.inverted_hover);
+        let l = (hover.l + (hover.l - rest.l)).clamp(0.0, 1.0);
+        oklch(l, hover.c, hover.h)
+    }
+
+    /// What [`Surfaces::raised`] is on `ground`: the raised tier itself
+    /// while it stands off `ground` the same way it stands off the content
+    /// surface, by at least half that step (so on every region of the
+    /// window); otherwise that step taken from `ground` (the other way where
+    /// the ground has no room). A field, a secondary button or a checkbox on
+    /// a floating panel lighter than the raised tier stands off it as it
+    /// does off content, instead of sinking into it.
+    #[must_use]
+    pub fn raised_on(&self, ground: Color) -> Color {
+        let step =
+            Oklch::from_color(self.surfaces.raised).l - Oklch::from_color(self.surfaces.content).l;
+        let g = Oklch::from_color(ground);
+        let off = Oklch::from_color(self.surfaces.raised).l - g.l;
+        if ground == self.surfaces.content
+            || step.abs() <= f32::EPSILON
+            || (off * step > 0.0 && off.abs() >= step.abs() / 2.0)
+        {
+            return self.surfaces.raised;
+        }
+        let l = if (0.0..=1.0).contains(&(g.l + step)) {
+            g.l + step
+        } else {
+            g.l - step
+        };
+        let raised = Oklch::from_color(self.surfaces.raised);
+        oklch(l, raised.c, raised.h)
+    }
+
     /// Ink tiers for content on [`Surfaces::content`] — the theme's own text
     /// tiers, since those are defined there.
     pub fn on_content(&self) -> OnSurface {
