@@ -332,7 +332,7 @@ suites = [
 [[group]]
 name = "vm-acceptance"
 inputs = ["scripts/vm-acceptance/"]
-suites = ["scripts/vm-acceptance/test_apps.py"]
+suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
 
 [[group]]
 name = "perf-tools"
