@@ -5,12 +5,13 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::record::RecordId;
 use ui::tilo_actions::{ActionSpec, EncodedAction};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{IMAGE_EDITOR_ACTION_TYPE, ImageEditorAction, register};
+use crate::actions::{IMAGE_EDITOR_ACTION_TYPE, ImageEditorAction, SetSource, register};
 use crate::app::ImageEditorApp;
 use crate::doc::ProjectDoc;
 use crate::model::Project;
@@ -73,9 +74,36 @@ impl ResourceApp for ImageEditorShell {
     const TITLE: &'static str = "Image Editor";
     const ICON: Option<&'static str> = Some("image-editor");
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<ImageEditor>) -> Element {
         cx.surface(ImageEditorApp::new())
+    }
+
+    /// An image opened with the editor has its own project: the edits of
+    /// that file, which follow it through a rename or move.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input
+            .argument()
+            .map(|image| RecordId::derived("edits", &RecordId::identify_file(image)))
+    }
+
+    /// A new project for an opened image starts from that image.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ImageEditor>> {
+        let Some(image) = input.argument().filter(|_| created) else {
+            return Vec::new();
+        };
+        let path = std::path::absolute(image).unwrap_or_else(|_| image.into());
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        let open = ImageEditorAction::SetSource(SetSource {
+            path: path.to_string_lossy().into_owned(),
+            name,
+        });
+        Invoke::apply(&open).into_iter().collect()
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -194,12 +222,11 @@ pub fn standalone_launch() -> bool {
                 let _ = args.next();
             }
             "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
-            "--open" | "--size" => {
+            "--size" => {
                 let _ = args.next();
                 return true;
             }
-            flag if flag.starts_with("--shots=") || flag.starts_with("--open=") => return true,
-            file if !file.starts_with('-') => return true,
+            flag if flag.starts_with("--shots=") => return true,
             _ => {}
         }
     }
@@ -355,6 +382,35 @@ mod tests {
                     && resource.id.as_str() != PROJECT_RESOURCE_ID),
             "hosted must not republish the project beside ResourceRoot"
         );
+    }
+
+    #[test]
+    fn an_image_on_the_command_line_opens_its_own_project() {
+        let pictures = tempfile::tempdir().unwrap();
+        let harbour = pictures.path().join("harbour.png");
+        crate::write_shot_image(&harbour).unwrap();
+        let harbour = harbour.to_str().unwrap();
+
+        let mut app =
+            ui::framework::testing::TestApp::<ImageEditorShell>::launched(&[harbour]).unwrap();
+        app.harness().relayout();
+        assert_eq!(
+            app.record(),
+            &RecordId::derived("edits", &RecordId::identify_file(harbour))
+        );
+        let project = app.state();
+        assert_eq!(project.name, "harbour");
+        assert!(
+            matches!(
+                project.operations.get("source"),
+                Some(Operation::Source { path }) if path == harbour
+            ),
+            "{:?}",
+            project.operations.get("source")
+        );
+
+        let plain = ui::framework::testing::TestApp::<ImageEditorShell>::new().unwrap();
+        assert_eq!(plain.record(), &RecordId::room_default());
     }
 
     #[test]
