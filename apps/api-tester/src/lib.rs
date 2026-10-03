@@ -39,15 +39,22 @@ use ui::widget::Widget;
 
 pub mod actions;
 mod app;
+mod code_view;
+mod commands;
+mod dialog;
 mod doc;
 mod http;
+mod kv;
+mod locales;
 mod model;
-mod navrow;
 mod palette;
+mod request;
 pub mod resource;
-mod responsive;
+mod response;
 mod search_provider;
 mod seed;
+mod sidebar;
+mod swap;
 mod vars;
 
 pub use app::ApiTesterApp;
