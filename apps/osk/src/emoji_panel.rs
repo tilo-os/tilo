@@ -95,8 +95,6 @@ pub struct PanelBands {
     pub row_height: f64,
     /// Smallest grid cell, a comfortable touch target.
     pub min_cell: f64,
-    /// Height of the group tab row.
-    pub tab_height: f64,
     /// Height of a section heading in the grid.
     pub heading_height: f64,
     /// Inset of the search field and the grid's headings from their band.
@@ -110,7 +108,6 @@ impl PanelBands {
     #[must_use]
     pub fn sized_by(mut self, spacing: &Spacing, metrics: &Metrics) -> Self {
         self.min_cell = f64::from(spacing.s12);
-        self.tab_height = f64::from(metrics.bar_height);
         self.heading_height = f64::from(spacing.s6);
         self.inset = f64::from(spacing.s2);
         self.tab_glyph = f64::from(metrics.icon_md);
@@ -256,6 +253,25 @@ impl EmojiPanel {
         self.tones = None;
     }
 
+    /// Show the group `text` belongs to, from its top. Returns whether the
+    /// catalogue knows the emoji.
+    pub fn show_group_of(&mut self, text: &str) -> bool {
+        let catalogue = self.catalogue;
+        let Some(found) = catalogue.lookup(text) else {
+            return false;
+        };
+        let base = found.emoji.text();
+        let Some(index) = catalogue
+            .groups()
+            .iter()
+            .position(|g| catalogue.group_emoji(g).iter().any(|e| e.text() == base))
+        else {
+            return false;
+        };
+        self.select_group(index);
+        true
+    }
+
     /// Append `text` to the query.
     pub fn type_text(&mut self, text: &str) {
         let mut query = self.search.value().to_owned();
@@ -273,8 +289,23 @@ impl EmojiPanel {
     /// Replace the query.
     pub fn set_query(&mut self, query: &str) {
         self.search.set_query(query);
+        self.seat_caret_at_end();
         let _ = self.search.take_dirty();
         self.tones = None;
+    }
+
+    /// The field keeps its caret where it was when its text is replaced, so
+    /// a query set from the keys would leave the caret over the first letter.
+    /// Seat it after the text, as typing would.
+    fn seat_caret_at_end(&mut self) {
+        // The field is a local buffer; the action path wants a document to
+        // lend, which a local buffer never touches.
+        let mut scratch = automerge::AutoCommit::new();
+        let end = ui::a11y::Action::SetSelection {
+            anchor: usize::MAX,
+            focus: usize::MAX,
+        };
+        Widget::perform_action(&mut self.search, &end, &mut scratch, &automerge::ROOT);
     }
 
     /// The best matches for the query, best first.
@@ -386,32 +417,65 @@ impl EmojiPanel {
         self.layout_tones();
     }
 
+    /// The visible edge of a key on the bottom row, from the band's edge: the
+    /// one left and right edge the search field, the headings, the first
+    /// emoji and the Letters key all share.
+    fn edge(&self) -> f64 {
+        let row = self
+            .bands
+            .row_height
+            .min(self.bands.keys.height() * 0.3)
+            .max(0.0);
+        crate::presentation::key_pad_for_height(row)
+    }
+
+    /// The search field: the suggestion band, between the keys' edges.
+    fn field_rect(&self) -> Rect {
+        let PanelBands {
+            suggestion, keys, ..
+        } = self.bands;
+        let edge = self.edge();
+        let v = self.bands.inset / 2.0;
+        Rect::new(
+            keys.x0 + edge,
+            suggestion.y0 + v,
+            (keys.x1 - edge).max(keys.x0 + edge),
+            (suggestion.y1 - v).max(suggestion.y0 + v),
+        )
+    }
+
     fn layout_browse(&mut self, recents: &Recents) {
         let PanelBands {
-            suggestion,
-            keys,
-            row_height,
-            ..
+            keys, row_height, ..
         } = self.bands;
-        self.search_rect = suggestion.inset(-self.bands.inset / 2.0);
-        let tab_h = self.bands.tab_height.min(keys.height() * 0.25);
+        self.search_rect = self.field_rect();
+        let edge = self.edge();
         let bottom_h = row_height.min(keys.height() * 0.3).max(0.0);
-        let groups = self.catalogue.groups().len().max(1);
-        let tab_w = keys.width() / groups as f64;
-        self.tab_rects = (0..groups)
-            .map(|i| {
-                let x = keys.x0 + i as f64 * tab_w;
-                Rect::new(x, keys.y0, x + tab_w, keys.y0 + tab_h)
-            })
-            .collect();
+        // One row at the bottom: the way back to the letters, the group tabs
+        // and Delete.
         let bottom = Rect::new(keys.x0, keys.y1 - bottom_h, keys.x1, keys.y1);
-        let side = (bottom.width() * 0.18).max(bottom_h);
+        let side = (bottom.width() * 0.12).max(bottom_h);
         self.letters_rect = Rect::new(bottom.x0, bottom.y0, bottom.x0 + side, bottom.y1);
         self.delete_rect = Rect::new(bottom.x1 - side, bottom.y0, bottom.x1, bottom.y1);
-        self.grid = Rect::new(keys.x0, keys.y0 + tab_h, keys.x1, bottom.y0);
+        let groups = self.catalogue.groups().len().max(1);
+        let tab_w = (self.delete_rect.x0 - self.letters_rect.x1).max(0.0) / groups as f64;
+        self.tab_rects = (0..groups)
+            .map(|i| {
+                let x = self.letters_rect.x1 + i as f64 * tab_w;
+                Rect::new(x, bottom.y0, x + tab_w, bottom.y1)
+            })
+            .collect();
+        self.grid = Rect::new(keys.x0, keys.y0, keys.x1, bottom.y0);
 
-        let cols = ((self.grid.width() / self.bands.min_cell.max(1.0)).floor() as usize).max(1);
-        self.cell = self.grid.width() / cols as f64;
+        // The columns tile so the first emoji's glyph starts on the edge and
+        // the last one's ends on the opposite edge: each cell is wider than
+        // its glyph by `overhang` of a cell, half of it on either side.
+        let left = keys.x0 + edge;
+        let width = (keys.x1 - edge - left).max(1.0);
+        let overhang = 1.0 - GLYPH_CONTENT_PX_RATIO;
+        let cols = ((width / self.bands.min_cell.max(1.0) + overhang).floor() as usize).max(1);
+        self.cell = width / (cols as f64 - overhang);
+        let cells_x0 = left - overhang / 2.0 * self.cell;
         let sections = self.sections(recents);
         self.content_height = sections
             .iter()
@@ -421,14 +485,11 @@ impl EmojiPanel {
         self.scroll = self.scroll.clamp(0.0, max);
         let mut y = self.grid.y0 - self.scroll;
         for section in sections {
-            self.headings.push((
-                section.heading,
-                Point::new(self.grid.x0 + self.bands.inset, y),
-            ));
+            self.headings.push((section.heading, Point::new(left, y)));
             y += self.bands.heading_height;
             let rows = section.emoji.len().div_ceil(cols) as f64;
             for (i, text) in section.emoji.into_iter().enumerate() {
-                let x = self.grid.x0 + (i % cols) as f64 * self.cell;
+                let x = cells_x0 + (i % cols) as f64 * self.cell;
                 let top = y + (i / cols) as f64 * self.cell;
                 let rect = Rect::new(x, top, x + self.cell, top + self.cell);
                 if rect.y1 > self.grid.y0 && rect.y0 < self.grid.y1 {
@@ -440,12 +501,8 @@ impl EmojiPanel {
     }
 
     fn layout_search(&mut self, recents: &Recents) {
-        let PanelBands {
-            toolbar,
-            suggestion,
-            ..
-        } = self.bands;
-        self.search_rect = suggestion.inset(-self.bands.inset / 2.0);
+        let toolbar = self.bands.toolbar;
+        self.search_rect = self.field_rect();
         let side = toolbar.height();
         self.end_search_rect = Rect::new(toolbar.x0, toolbar.y0, toolbar.x0 + side, toolbar.y1);
         let cell = side.max(1.0);
