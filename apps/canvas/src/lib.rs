@@ -15,6 +15,7 @@ pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
 pub mod doc;
+pub mod gesture;
 pub mod locales;
 pub mod media;
 pub mod model;
@@ -119,17 +120,19 @@ impl ResourceApp for App {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["landscape"]
+        &["landscape", "close-up", "selection", "turned", "points"]
     }
 
-    /// The landscape screenshot paints the sample through the same actions
-    /// an agent would; a plain `--shots` shows the empty sheet a new
-    /// artwork is.
+    /// The screenshots paint their samples through the same actions an
+    /// agent would; a plain `--shots` shows the empty sheet a new artwork
+    /// is.
     fn scenario(name: Option<&str>) -> Vec<Invoke<ArtworkResource>> {
-        if name != Some("landscape") {
-            return Vec::new();
-        }
-        sample::landscape()
+        let actions = match name {
+            Some("landscape" | "close-up") => sample::landscape(),
+            Some("selection" | "turned" | "points") => sample::shapes(),
+            _ => return Vec::new(),
+        };
+        actions
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
             .collect()
