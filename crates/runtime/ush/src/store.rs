@@ -28,18 +28,11 @@ pub const STORE_ENV: &str = "TILO_USH_HOME";
 /// starts, so a session always uses its supervisor's.
 pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 
-/// Where granted directories' contents are, when not on this machine at the
-/// paths the grants name: a grant of `/home/you/src` binds
-/// `<grant root>/home/you/src` at `/home/you/src`. A relay sets it to the
-/// member's own file area; unset, grants bind the machine's own paths.
-pub const GRANT_ROOT_ENV: &str = "TILO_USH_GRANT_ROOT";
-
 /// The runtime's store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Store {
     root: PathBuf,
     records: PathBuf,
-    grant_root: Option<PathBuf>,
 }
 
 impl Store {
@@ -57,15 +50,11 @@ impl Store {
             Self {
                 root: data.join("ush"),
                 records: crate::records::terminal_data_home(&data),
-                grant_root: None,
             }
         };
         if let Some(raw) = std::env::var_os(RECORDS_ENV) {
             store.records = PathBuf::from(raw);
         }
-        store.grant_root = std::env::var_os(GRANT_ROOT_ENV)
-            .map(PathBuf::from)
-            .filter(|root| root.is_absolute());
         store
     }
 
@@ -75,21 +64,7 @@ impl Store {
         Self {
             records: root.join("records"),
             root,
-            grant_root: None,
         }
-    }
-
-    /// This store with granted directories found below `root` (see
-    /// [`GRANT_ROOT_ENV`]).
-    #[must_use]
-    pub fn with_grant_root(mut self, root: PathBuf) -> Self {
-        self.grant_root = Some(root);
-        self
-    }
-
-    /// Where granted directories' contents are, when not at their own paths.
-    pub fn grant_root(&self) -> Option<&Path> {
-        self.grant_root.as_deref()
     }
 
     pub fn root(&self) -> &Path {
