@@ -319,6 +319,50 @@ mod tests {
         );
     }
 
+    /// A relay forwards a browser's input (wheel, a paste, a close among
+    /// it) in its wire vocabulary; each must be what this session decodes.
+    #[test]
+    fn viewer_input_from_a_relay_decodes_as_remote_input() {
+        use crate::network::streaming::InputEvent as Session;
+        use tilo_relay_protocol::legacy_window::InputEvent as Wire;
+        let pairs = [
+            (
+                Session::PointerMotion { x: 1.5, y: -2.0 },
+                Wire::PointerMotion { x: 1.5, y: -2.0 },
+            ),
+            (
+                Session::KeyboardFocus {
+                    surface: 7,
+                    focused: true,
+                },
+                Wire::KeyboardFocus {
+                    surface: 7,
+                    focused: true,
+                },
+            ),
+            (
+                Session::PointerAxis { dx: 0.0, dy: 30.0 },
+                Wire::PointerAxis { dx: 0.0, dy: 30.0 },
+            ),
+            (
+                Session::ClipboardText {
+                    text: "pasted".into(),
+                },
+                Wire::ClipboardText {
+                    text: "pasted".into(),
+                },
+            ),
+            (Session::Close, Wire::Close),
+        ];
+        for (session, wire) in pairs {
+            assert_eq!(
+                postcard::to_allocvec(&session).unwrap(),
+                postcard::to_allocvec(&wire).unwrap(),
+                "{session:?}"
+            );
+        }
+    }
+
     #[test]
     fn only_this_sessions_own_legacy_tabs_are_published() {
         let salt = 0x0042;
