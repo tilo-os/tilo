@@ -1,5 +1,6 @@
 //! Package identity: [`PackageId`] (the BLAKE3 root hash) and
-//! [`Kind`] (app / service / format-provider / plugin / runtime).
+//! [`Kind`] (app / service / format-provider / plugin / runtime /
+//! env-runtime / tool).
 //!
 //! The package id is intentionally the same shape across every
 //! package kind — same `pack` flow, same on-disk format, same
@@ -115,6 +116,13 @@ pub enum Kind {
     FormatProvider,
     Plugin,
     Runtime,
+    /// A minimal userland (shell, coreutils, glibc, dnf) an environment's
+    /// `/usr` and `/etc` start from. An image, never launched.
+    EnvRuntime,
+    /// The files a set of packages adds on top of one exact
+    /// [`Kind::EnvRuntime`] package, named by `[image].runtime`. An image,
+    /// never launched.
+    Tool,
 }
 
 impl Kind {
@@ -126,7 +134,16 @@ impl Kind {
             Kind::FormatProvider => "format-provider",
             Kind::Plugin => "plugin",
             Kind::Runtime => "runtime",
+            Kind::EnvRuntime => "env-runtime",
+            Kind::Tool => "tool",
         }
+    }
+
+    /// Whether packages of this kind are environment images: read-only
+    /// directory trees stacked under an environment's `/usr` and `/etc`,
+    /// which the store keeps apart from applications and nothing launches.
+    pub fn is_image(&self) -> bool {
+        matches!(self, Kind::EnvRuntime | Kind::Tool)
     }
 }
 

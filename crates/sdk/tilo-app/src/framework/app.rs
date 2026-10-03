@@ -30,6 +30,7 @@ use {
 };
 
 use super::dispatch::Dispatcher;
+use super::effect::Effects;
 use super::live::Live;
 use super::root::ResourceRoot;
 use super::scenario::{Fixture, Run};
@@ -254,9 +255,16 @@ pub(crate) fn build_root<A: ResourceApp>(
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
+    // Effects and projection drains run in a window someone uses only:
+    // History shows a past version, and a capture reaches nothing outside.
+    let effects = (permissions.is_some() && run.mode.is_live())
+        .then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(
         live, updaters, &alive, dispatch, published, saved, stages, run,
     );
+    if let Some(effects) = effects {
+        cx.effects = effects;
+    }
     let content = A::view(&mut cx);
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)

@@ -60,6 +60,28 @@ pub fn derive_json_schema(input: TokenStream) -> TokenStream {
 
 mod schema;
 
+/// Derive `Effect`: an enum's variants become the app's published effects —
+/// work with no document delta, invoked by buttons, the palette, agents and
+/// scripts alike. See `tilo_resource::effect`.
+///
+/// `#[effect(operation = "app.effects")]` names the vocabulary's operation
+/// type. Each variant is unit or has named fields (the effect's typed
+/// parameters, `#[param("…")]` describing one); its id is the variant name in
+/// kebab case and its label the first doc line. Variant options:
+/// `#[effect(label = "...", job, cancellable, returns, destructive,
+/// permission = "read")]`. Generates `impl Effect` and one `ActionRef`
+/// constant per variant (`Backups::RESTORE`) for binding controls.
+#[proc_macro_derive(Effect, attributes(effect, param))]
+pub fn derive_effect(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match effect::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+mod effect;
+
 #[derive(Default)]
 struct FieldOptions {
     rename: Option<String>,

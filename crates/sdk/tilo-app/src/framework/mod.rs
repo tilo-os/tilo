@@ -87,6 +87,25 @@
 //!   another ([`Resource::coalesces`](tilo_resource::Resource::coalesces)) are
 //!   one step — a word typed, a slider dragged — until the surface
 //!   [settles](Dispatcher::settle) the gesture.
+//! * **Effects** — work with no document delta (reload, back up now,
+//!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
+//!   an enum, one variant per effect. A view answers it with
+//!   [`ViewCx::effects`], a custom surface with
+//!   [`ResourceSurface::effect`] (`impl ResourceSurface<R, MyEffect>`); the
+//!   framework publishes it beside the resource's actions, with the
+//!   availability and labels the handler reports now ([`EffectStatus`]),
+//!   and every caller — a button ([`ViewCx::effect_button`],
+//!   [`Dispatcher::effect`]), the palette, an agent, a script — reaches the
+//!   handler as a typed value. Long work is a job started through the
+//!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
+//!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
+//!   finishes on the UI thread, changing the document with ordinary actions
+//!   and answering its caller. Effects never run in History mode.
+//! * **Projections** — an outside consequence an action recorded in the
+//!   document (an outbox, a filesystem operation, a device's configuration)
+//!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
+//!   the live app after every change, on every participant's device, and
+//!   the drain acknowledges each entry with an action.
 //! * **Run mode.** A view is built for a window someone uses, a past version
 //!   in History, or a screenshot ([`RunMode`], from [`ViewCx::mode`] and
 //!   [`SurfaceCx::mode`]). Only a live view starts work that reaches outside
@@ -117,6 +136,7 @@ mod controls;
 pub mod dev_reload;
 mod dispatch;
 mod each;
+mod effect;
 pub mod history;
 mod live;
 mod preview;
@@ -137,11 +157,13 @@ pub use app::launch_spec;
 pub use app::run;
 pub use app::{ResourceApp, SeedCx, definition};
 pub use controls::{ActionControl, Actions};
-pub use dispatch::{DispatchGroup, Dispatcher};
+pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
+pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
 pub use live::Live;
 pub use preview::PastVersion;
 pub use scenario::{Fixture, RunMode};
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
-pub use view::ViewCx;
+pub use tilo_resource::{Effect, NoEffect};
+pub use view::{EffectsHandle, ViewCx};
