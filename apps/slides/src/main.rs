@@ -111,6 +111,7 @@ pub fn main() {
                 "rename",
                 "notes_edit",
                 "slide_props",
+                "layout_menu",
                 "toolbar_menu",
                 "many",
                 "many_rail",

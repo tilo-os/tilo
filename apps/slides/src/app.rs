@@ -33,8 +33,8 @@ use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    AudiencePresentationProvider, ColorPicker, FullscreenProvider, NumberInput, PageSidebar,
-    PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
+    AudiencePresentationProvider, ColorPicker, Dropdown, FullscreenProvider, NumberInput,
+    PageSidebar, PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;
@@ -389,7 +389,8 @@ struct TextBoxEditor {
 }
 
 impl TextBoxEditor {
-    fn open(doc: &AutoCommit, slide_id: &str, element: &Element) -> Self {
+    /// `prompt` is what the box asks for while it has no words.
+    fn open(doc: &AutoCommit, slide_id: &str, element: &Element, prompt: &str) -> Self {
         let (locate_slide, locate_element) = (slide_id.to_owned(), element.id.clone());
         let (edit_slide, edit_element) = (slide_id.to_owned(), element.id.clone());
         let field = RichTextField::new(
@@ -402,7 +403,7 @@ impl TextBoxEditor {
             },
         );
         let mut surface = RichTextSurface::field(field)
-            .with_editor(render::text_box_editor(element))
+            .with_editor(render::text_box_editor(element).with_empty_hint(prompt))
             .with_submit(SubmitKey::ModEnter);
         surface.present_from(doc);
         surface.set_focus(true);
@@ -580,6 +581,9 @@ pub struct SlidesApp {
     /// popover over the inspector when the user picks a custom fill.
     fill_picker: ColorPicker,
     fill_picker_open: bool,
+    /// The current slide's layout picker in the inspector: the shared
+    /// [`Dropdown`], positioned on its inspector slot and driven directly.
+    layout_picker: Dropdown,
     /// Inline deck-title editor — the shared single-line [`ui::widget::TextInput`]
     /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
     /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
@@ -603,7 +607,7 @@ pub struct SlidesApp {
     /// frame (once the rail geometry is known) so a headless capture shows the
     /// floating ghost + reflow gap. Never set on a live launch.
     demo_reorder: bool,
-    /// `--shots`-only: stage a thumbnail drag dropped over the red dashed
+    /// `--shots`-only: stage a thumbnail drag dropped over the dashed
     /// delete zone on the first drawn frame, so a headless capture shows the
     /// armed "Drop to delete" target. Never set on a live launch.
     demo_delete_zone: bool,
@@ -617,7 +621,6 @@ pub struct SlidesApp {
 struct MenuRow {
     label: String,
     hit: Hit,
-    checked: Option<bool>,
     destructive: bool,
 }
 
@@ -626,14 +629,8 @@ impl MenuRow {
         Self {
             label,
             hit,
-            checked: None,
             destructive: false,
         }
-    }
-
-    fn checked(mut self, checked: bool) -> Self {
-        self.checked = Some(checked);
-        self
     }
 
     fn destructive(mut self) -> Self {
@@ -649,6 +646,8 @@ enum DemoMenu {
     Slide,
     /// The insert tools behind the header row's More button.
     Tools,
+    /// The inspector's slide layout picker.
+    Layout,
 }
 
 /// The content store an app constructed without one uses: the app's own
@@ -769,6 +768,7 @@ impl SlidesApp {
             fill_picker: ColorPicker::new(vello::peniko::Color::TRANSPARENT),
             fill_picker_open: false,
             fill_picker_needs_init: false,
+            layout_picker: Self::new_layout_picker(),
             title_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_text_role(ui::TextRole::Heading)
@@ -908,6 +908,14 @@ impl SlidesApp {
                 self.sel = None;
                 self.bootstrapped = true;
             }
+            // The slide layout picker, open on the current slide's layout.
+            "layout_menu" => {
+                self.cur_slide = 1;
+                self.sel = None;
+                self.demo_menu = Some(DemoMenu::Layout);
+                self.demo_open_inspector = true;
+                self.bootstrapped = true;
+            }
             // The toolbar overflow ("More") menu, opened — proves every insert
             // tool stays pointer-reachable even when the bar can't show them all.
             "toolbar_menu" => {
@@ -953,13 +961,14 @@ impl SlidesApp {
             // An on-canvas text box in edit mode with a live selection over the
             // first word — proves the shared caret / selection core.
             "edit_text" => self.apply_scenario_edit_text(),
-            // A slide thumbnail dragged onto the red dashed delete zone at the
+            // A slide thumbnail dragged onto the dashed delete zone at the
             // foot of the rail (armed) — proves the drag-to-delete affordance.
             // Staged on the first drawn frame (see `draw`).
             "delete_zone" => {
                 self.cur_slide = 0;
                 self.sel = None;
                 self.demo_delete_zone = true;
+                self.demo_open_rail = true;
                 self.bootstrapped = true;
             }
             // The inspector with the font-size NumberInput (text selected) and
@@ -1490,9 +1499,7 @@ impl SlidesApp {
     /// never covers the first glyph of a left-anchored title. Resize math
     /// keys off the pointer position, not these centres.
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
-        let er = render::element_dest(dest, s, el);
-        let outset = self.selection_outset(dest, s, el);
-        let hr = er.inflate(outset, outset);
+        let hr = self.selection_frame(dest, s, el);
         let reach = self.chrome_metrics.target * 0.3;
         let cx = hr.center().x;
         let cy = hr.center().y;
@@ -1524,7 +1531,7 @@ impl SlidesApp {
     fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
         match hit {
             Hit::ToggleToolbarMenu => self.open_tools_menu(),
-            Hit::OpenLayoutMenu => self.open_layout_menu(),
+            Hit::OpenLayoutMenu => self.open_layout_picker(doc),
             Hit::NewSlide => self.new_slide(doc),
             Hit::DuplicateSlide => self.duplicate_slide(doc),
             Hit::DeleteSlide => self.delete_slide(doc),
@@ -2516,36 +2523,46 @@ impl SlidesApp {
             chrome.slide_dest,
             radius,
             editing,
+            true,
         );
         self.draw_editor_selection_chrome(scene, t, theme, chrome);
         self.draw_editor_guides(scene, t, theme, chrome);
     }
 
-    /// How far the selection frame stands outside the selected element: a
-    /// small step, never so far that it runs over a neighbouring element
-    /// (a title's accent rule just under it).
-    fn selection_outset(&self, dest: Rect, scale: f64, el: &Element) -> f64 {
+    /// The selection frame round the selected element: a small step outside
+    /// it on every side, taken in on a side where a neighbouring element
+    /// (a title's accent rule just under it) sits close, so the frame and
+    /// its handles stay clear of that neighbour.
+    fn selection_frame(&self, dest: Rect, scale: f64, el: &Element) -> Rect {
         let m = &self.chrome_metrics;
         let er = render::element_dest(dest, scale, el);
-        let grip = m.target * 0.25;
-        let mut outset = m.s2;
+        // Room a handle needs beyond the frame line, plus a clear gap.
+        let reach = m.target * 0.25 / 2.0 + m.s1;
+        let (mut left, mut top, mut right, mut bottom) = (m.s2, m.s2, m.s2, m.s2);
         if let Some(slide) = self.slide() {
             for other in slide.elements.iter().filter(|other| other.id != el.id) {
                 let or = render::element_dest(dest, scale, other);
                 if er.intersect(or).area() > 0.0 {
                     continue;
                 }
-                let dx = (or.x0 - er.x1).max(er.x0 - or.x1);
-                let dy = (or.y0 - er.y1).max(er.y0 - or.y1);
-                let gap = dx.max(dy);
-                if gap > 0.0 && dx.min(dy) < 0.0 {
-                    // A neighbour beside the element along one axis: keep
-                    // the frame and its handles clear of it.
-                    outset = outset.min(gap - grip / 2.0 - 2.0);
+                let beside_x = or.y0 < er.y1 && or.y1 > er.y0;
+                let beside_y = or.x0 < er.x1 && or.x1 > er.x0;
+                let room = |gap: f64| (gap - reach).max(1.0);
+                if beside_y && or.y0 >= er.y1 {
+                    bottom = bottom.min(room(or.y0 - er.y1));
+                }
+                if beside_y && or.y1 <= er.y0 {
+                    top = top.min(room(er.y0 - or.y1));
+                }
+                if beside_x && or.x0 >= er.x1 {
+                    right = right.min(room(or.x0 - er.x1));
+                }
+                if beside_x && or.x1 <= er.x0 {
+                    left = left.min(room(er.x0 - or.x1));
                 }
             }
         }
-        outset.max(1.0)
+        Rect::new(er.x0 - left, er.y0 - top, er.x1 + right, er.y1 + bottom)
     }
 
     /// The selection frame and resize handles around the selected element.
@@ -2561,17 +2578,10 @@ impl SlidesApp {
         let Some(el) = self.selected_element() else {
             return;
         };
-        let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
         let you = theme.tokens.colors.intent.you;
-        let outset = self.selection_outset(chrome.slide_dest, chrome.scale, el);
+        let frame = self.selection_frame(chrome.slide_dest, chrome.scale, el);
         let line = f64::from(theme.tokens.metrics.chrome_rule_px) * 1.5;
-        scene.stroke(
-            &Stroke::new(line),
-            t,
-            you,
-            None,
-            &er.inflate(outset, outset),
-        );
+        scene.stroke(&Stroke::new(line), t, you, None, &frame);
         if !self.editing_text {
             let grip = self.chrome_metrics.target * 0.25;
             for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
@@ -2669,6 +2679,23 @@ impl SlidesApp {
         if let Some(rect) = chrome.fill_picker_rect {
             self.fill_picker.apply_layout_external(rect);
         }
+        match chrome.layout_picker_rect() {
+            Some(rect) => {
+                if !self.layout_picker.is_open() {
+                    let current = self.slide().map_or(Layout::TitleContent, |s| s.layout);
+                    self.layout_picker.set_selected(current.as_str());
+                }
+                self.layout_picker.set_viewport(self.rect);
+                self.layout_picker.apply_layout_external(rect);
+            }
+            None => {
+                if self.layout_picker.is_open() {
+                    self.layout_picker.close();
+                    Widget::set_focus(&mut self.layout_picker, false);
+                }
+                self.layout_picker.apply_layout_external(Rect::ZERO);
+            }
+        }
     }
 
     /// Draw the inspector's embedded widgets: the font-size field, in the
@@ -2696,6 +2723,18 @@ impl SlidesApp {
                 &chrome.inspector_body,
             );
             self.font_input.draw(scene, t, tr, &local, presence);
+            scene.pop_layer();
+        }
+        if chrome.layout_picker_rect().is_some() {
+            let local = self.inspector_theme(theme);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                t,
+                &chrome.inspector_body,
+            );
+            self.layout_picker.draw(scene, t, tr, &local, presence);
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -3127,7 +3166,7 @@ impl SlidesApp {
                 AccessState::new().expanded(self.ctx_menu.is_open() && self.toolbar_menu_open),
             ),
             Hit::OpenLayoutMenu => (
-                Role::Button,
+                Role::ComboBox,
                 tr_args(
                     "slides-a11y-layout-menu",
                     &[(
@@ -3135,7 +3174,7 @@ impl SlidesApp {
                         ArgValue::from(self.slide().map_or("", |slide| slide.layout.label())),
                     )],
                 ),
-                AccessState::new(),
+                AccessState::new().expanded(self.layout_picker.is_open()),
             ),
         }
     }
@@ -3328,6 +3367,8 @@ impl Widget for SlidesApp {
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        // An opened layout list lands on the current layout.
+        self.layout_picker.sync(state, path);
         let (state, _) = ui::doc::document(state, path);
         if self.joined && SlidesDoc::is_uninitialized(state) {
             return;
@@ -3466,7 +3507,16 @@ impl Widget for SlidesApp {
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
         self.sync_scroll_offsets(dt);
-        self.stage_shots_demo();
+        if self.stage_shots_demo() {
+            // A staged drag changes the thumbnail list's viewport (the
+            // drop-to-delete zone takes the footer's place).
+            self.page_sidebar.begin_frame_with_theme(
+                theme,
+                self.rail_viewport(self.rail_rect()),
+                self.deck.slides.len(),
+                self.cur_slide,
+            );
+        }
         match self.mode {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
@@ -3532,6 +3582,10 @@ impl Widget for SlidesApp {
         }
         if self.editing_notes {
             self.notes_input
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.mode == Mode::Edit && self.layout_picker.is_open() {
+            self.layout_picker
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         self.ctx_menu
@@ -3632,6 +3686,10 @@ impl Widget for SlidesApp {
         }
         // The inline title editor owns input while renaming.
         if self.route_title_edit(&mut routed) {
+            *ctx.handled = true;
+            return;
+        }
+        if self.route_layout_picker(&mut routed) {
             *ctx.handled = true;
             return;
         }
@@ -4322,7 +4380,8 @@ impl SlidesApp {
     /// menu, a live reorder drag, a thumbnail dropped on the delete zone)
     /// now that the layout rect is known. No-op on a live launch — the
     /// staging flags are never set outside [`SlidesApp::apply_scenario`].
-    fn stage_shots_demo(&mut self) {
+    /// Returns whether it staged a thumbnail drag.
+    fn stage_shots_demo(&mut self) -> bool {
         // `--shots`-only: pop a context menu now that the layout rect is known.
         if let Some(kind) = self.demo_menu.take() {
             let chrome = self.compute_chrome();
@@ -4335,6 +4394,7 @@ impl SlidesApp {
                     self.open_element_menu(p);
                 }
                 DemoMenu::Tools => self.open_tools_menu(),
+                DemoMenu::Layout => self.open_layout_picker(&mut AutoCommit::new()),
                 DemoMenu::Slide => {
                     // Open the shared rail's own duplicate / move / delete menu on
                     // the current slide's thumbnail.
@@ -4348,9 +4408,11 @@ impl SlidesApp {
                 }
             }
         }
+        let mut staged = false;
         // `--shots`-only: stage a live reorder drag so the capture shows the
         // floating ghost + the reflowed drop gap.
         if std::mem::take(&mut self.demo_reorder) {
+            staged = true;
             let thumbs = self.rail_thumb_rects();
             if let (Some(first), Some(third)) = (thumbs.first(), thumbs.get(2)) {
                 let start = first.1.center();
@@ -4364,8 +4426,9 @@ impl SlidesApp {
             }
         }
         // `--shots`-only: stage a thumbnail dragged onto the delete zone so the
-        // capture shows the armed red dashed "Drop to delete" target.
+        // capture shows the armed "Drop to delete" target.
         if std::mem::take(&mut self.demo_delete_zone) {
+            staged = true;
             let thumbs = self.rail_thumb_rects();
             if let Some(second) = thumbs.get(1) {
                 let start = second.1.center();
@@ -4376,6 +4439,7 @@ impl SlidesApp {
                 let _ = self.page_sidebar.take_events();
             }
         }
+        staged
     }
 
     /// The index of the slide currently shown. Lets a test observe where a
@@ -4869,10 +4933,7 @@ impl SlidesApp {
                 } else {
                     MenuItem::action(row.label.clone(), || {})
                 };
-                menu.push(match row.checked {
-                    Some(checked) => item.with_checked(checked),
-                    None => item,
-                });
+                menu.push(item);
                 hits.push(Some(row.hit.clone()));
             } else {
                 menu.push(MenuItem::separator());
@@ -4927,7 +4988,7 @@ impl SlidesApp {
             .overflow
             .iter()
             .filter_map(|b| match &b.kind {
-                ButtonKind::Command { label, .. } => {
+                ButtonKind::Tool { label, .. } => {
                     Some(Some(MenuRow::new(label.clone(), b.hit.clone())))
                 }
                 _ => None,
@@ -4937,29 +4998,81 @@ impl SlidesApp {
         self.toolbar_menu_open = true;
     }
 
-    /// The slide layouts, the current one checked, under the inspector's
-    /// layout button.
-    fn open_layout_menu(&mut self) {
+    /// The inspector's layout picker, offering every slide layout.
+    fn new_layout_picker() -> Dropdown {
+        let mut picker = Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
+            .with_accessible_name("slides-layout")
+            .with_id("slides-layout");
+        picker.set_value_options(
+            Layout::ALL
+                .iter()
+                .map(|l| (l.as_str().to_owned(), l.label().to_owned()))
+                .collect(),
+        );
+        picker
+    }
+
+    /// Open the layout picker's list on the current slide's layout. The
+    /// picker keeps its choice in local state, so syncing it reads nothing
+    /// from `doc`; the sync lands the list's highlight on that layout.
+    fn open_layout_picker(&mut self, doc: &mut AutoCommit) {
         let chrome = self.compute_chrome();
-        let Some(anchor) = chrome
-            .buttons
-            .iter()
-            .find(|b| matches!(b.hit, Hit::OpenLayoutMenu))
-            .map(|b| b.rect)
-        else {
+        self.position_inspector_widgets(&chrome);
+        if self.layout_picker.get_rect().width() <= 0.0 {
             return;
-        };
-        let current = self.slide().map(|s| s.layout);
-        let rows: Vec<Option<MenuRow>> = Layout::ALL
-            .iter()
-            .map(|l| {
-                Some(
-                    MenuRow::new(l.label().to_owned(), Hit::SetLayout(*l))
-                        .checked(current == Some(*l)),
-                )
-            })
-            .collect();
-        self.open_menu_under(anchor, &rows);
+        }
+        self.layout_picker.open_menu();
+        self.layout_picker.sync(doc, &automerge::ROOT);
+        Widget::set_focus(&mut self.layout_picker, true);
+    }
+
+    /// The layout picker: while its list is open it is modal and takes every
+    /// event; a layout chosen from it is applied to the current slide. While
+    /// closed it only follows the pointer for its hover face.
+    fn route_layout_picker(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+        if self.mode != Mode::Edit {
+            return false;
+        }
+        let open = self.layout_picker.is_open();
+        if !open && !matches!(routed.event, WindowEvent::CursorMoved { .. }) {
+            return false;
+        }
+        let chrome = self.compute_chrome();
+        self.position_inspector_widgets(&chrome);
+        if open {
+            self.layout_picker.sync(routed.state, routed.path);
+        }
+        let before = self.layout_picker.selected().to_owned();
+        let focus = *routed.focus_target;
+        let mut handled = false;
+        self.layout_picker.handle_event(
+            routed.event,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut handled,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
+        );
+        // The picker is driven here, not through the window's focus chain.
+        *routed.focus_target = focus;
+        if !open {
+            return false;
+        }
+        if !self.layout_picker.is_open() {
+            Widget::set_focus(&mut self.layout_picker, false);
+        }
+        let chosen = self.layout_picker.selected().to_owned();
+        if chosen != before
+            && let Some(layout) = Layout::ALL.iter().find(|l| l.as_str() == chosen)
+        {
+            self.apply_hit(routed.state, Hit::SetLayout(*layout));
+        }
+        true
     }
 
     /// Forward an event to the open context menu and apply any chosen action.
@@ -5680,7 +5793,11 @@ impl SlidesApp {
             .as_ref()
             .is_some_and(|editor| editor.slide_id == slide_id && editor.element_id == element.id);
         if !current {
-            self.text_editor = Some(TextBoxEditor::open(doc, &slide_id, &element));
+            let prompt = self
+                .slide()
+                .map(|slide| render::prompt_text(slide, &element))
+                .unwrap_or_default();
+            self.text_editor = Some(TextBoxEditor::open(doc, &slide_id, &element, &prompt));
         }
         let select_all = std::mem::take(&mut self.text_edit_select_all);
         if let Some(editor) = self.text_editor.as_mut() {
@@ -6014,6 +6131,28 @@ mod tests {
                 app.slide().unwrap().elements.len(),
                 before + 1,
                 "the chosen shape was actually inserted"
+            );
+        }
+
+        // Case `layout_picker_chooses_the_slides_layout`.
+        // The inspector's layout dropdown opens on a press, lands on the
+        // current layout, and a layout chosen from it applies to the slide.
+        {
+            let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+            sized(&mut app, 1280.0, 800.0);
+            app.sel = None;
+            let chrome = app.compute_chrome();
+            let field = chrome.layout_picker_rect().expect("the layout picker");
+            app_dispatch(&mut app, &mut doc, &cursor_ev(field.center()));
+            app_dispatch(&mut app, &mut doc, &left_press_ev());
+            assert!(app.layout_picker.is_open(), "a press opens the list");
+            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowUp));
+            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
+            assert!(!app.layout_picker.is_open(), "choosing closes the list");
+            assert_eq!(
+                loaded(&doc).slides[0].layout,
+                Layout::Section,
+                "the layout above Blank was applied"
             );
         }
 
@@ -6639,8 +6778,17 @@ mod tests {
                 );
             }
             for b in &chrome.buttons {
-                if let ButtonKind::Command { label, icon, .. } = &b.kind {
-                    let face = ui::widget::ButtonFace::new(b.rect, label);
+                let (label, icon, size) = match &b.kind {
+                    ButtonKind::Command { label, icon, .. } => {
+                        (label, icon, ui::widget::ControlSize::Regular)
+                    }
+                    ButtonKind::Tool { label, icon } => {
+                        (label, icon, ui::widget::ControlSize::Small)
+                    }
+                    _ => continue,
+                };
+                {
+                    let face = ui::widget::ButtonFace::new(b.rect, label).control_size(size);
                     let face = match icon {
                         Some(icon) => face.icon(*icon),
                         None => face,
@@ -7701,7 +7849,7 @@ mod tests {
         }
 
         // Case `dropping_a_slide_on_the_delete_zone_removes_it_from_the_crdt`.
-        // Dropping a dragged slide thumbnail on the red dashed delete zone removes
+        // Dropping a dragged slide thumbnail on the dashed delete zone removes
         // that slide from the CRDT (the whole `on_press` → drag → `on_release` path).
         {
             let (mut app, mut doc) = reorder_app();
@@ -8541,10 +8689,11 @@ mod tests {
         let theme = Theme::dark();
         app.draw_notes(&mut scene, Affine::IDENTITY, &mut tr, &theme, nb);
 
-        // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
+        // ArrowUp moves onto the first line, at the nearest column (its end
+        // when the second line is wider), and ArrowDown back.
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowUp));
         assert!(
-            app.notes_input.cursor_pos() < "line one".len(),
+            app.notes_input.cursor_pos() <= "line one".len(),
             "ArrowUp moved the notes caret onto the first shaped line"
         );
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowDown));

@@ -629,7 +629,7 @@ fn exact_paint(value: &str, allow_none: bool) -> bool {
         || FILL_ROLES.contains(&value)
         || matches!(
             value,
-            "accent-deep" | "surface-dim" | "text" | "text-dim" | "on-accent" | "white"
+            "accent-deep" | "surface-dim" | "deep" | "text-dim" | "on-accent" | "white"
         )
         || (value.starts_with('#') && ui::color::parse_hex(value).is_some())
 }
@@ -1493,7 +1493,7 @@ pub fn set_element_z_action(
 /// structure. Fresh ids are minted on each call (a new slide is genuinely new).
 pub fn new_slide_template() -> Slide {
     let mut s = Slide::new(Layout::TitleContent);
-    s.add(Element::text("New slide", 96.0, 90.0, 1088.0, 100.0, 54.0).with(|e| e.bold = true));
+    s.add(Element::text("New slide", 96.0, 90.0, 1088.0, 76.0, 54.0).with(|e| e.bold = true));
     s.add(
         Element::shape(ElementKind::Rect, 96.0, 188.0, 150.0, 8.0).with(|e| {
             e.fill = "accent".into();

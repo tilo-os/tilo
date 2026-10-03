@@ -130,6 +130,8 @@ mod tests {
                 "slides-colour-amber",
                 "slides-colour-red",
                 "slides-colour-violet",
+                "slides-prompt-title",
+                "slides-prompt-text",
                 "slides-image-loading",
                 "slides-image-unavailable",
                 "slides-current",

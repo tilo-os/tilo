@@ -237,6 +237,13 @@ impl Element {
     /// The text as written: its blocks, or for an element built from plain
     /// text, a paragraph per line carrying the element's bold and italic
     /// over all of it.
+    /// Whether a text box has no words yet.
+    pub fn is_blank_text(&self) -> bool {
+        self.kind == ElementKind::Text
+            && self.text.trim().is_empty()
+            && self.blocks.iter().all(|block| block.text.trim().is_empty())
+    }
+
     pub fn rich_blocks(&self) -> Vec<BlockContent> {
         if !self.blocks.is_empty() {
             return self.blocks.clone();
@@ -823,18 +830,25 @@ impl Palette {
     }
 }
 
-/// The fill/stroke roles offered in the inspector swatch row.
+/// The fill roles the inspector offers. They stay distinct from one another
+/// in either OS theme: `surface` is the slide's own ground and `text` its
+/// ink, which sit at opposite ends whichever theme is showing, and the rest
+/// are the deck's hues.
 pub const FILL_ROLES: [&str; 8] = [
     "accent",
     "accent-soft",
     "surface",
-    "deep",
+    "text",
     "success",
     "warning",
     "danger",
     "info",
 ];
-pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", "danger"];
+/// The stroke roles the inspector offers: no stroke, the slide's ink, and
+/// the deck's hues.
+pub const STROKE_ROLES: [&str; 7] = [
+    "none", "text", "accent", "success", "warning", "danger", "info",
+];
 
 /// Linear blend `a*(1-t) + b*t` in straight RGB.
 fn mix(a: Color, b: Color, t: f64) -> Color {
@@ -856,9 +870,11 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
 pub fn starter_deck() -> Deck {
     let mut s = Slide::new(Layout::Title);
     s.background = Background::Surface;
-    s.add(Element::text("Title", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
+    // Empty boxes: the editor prompts for their words, a presentation
+    // shows nothing until they are written.
+    s.add(Element::text("", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
     s.add(
-        Element::text("Subtitle", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
+        Element::text("", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
             e.fill = "text-dim".into();
         }),
     );
@@ -930,7 +946,7 @@ fn seed_slide_cover() -> Slide {
         }),
     );
     s.add(
-        Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
+        Element::shape(ElementKind::Rect, 110.0, 222.0, 92.0, 8.0).with(|e| {
             e.fill = "white".into();
             e.radius = 4.0;
         }),
@@ -946,7 +962,7 @@ fn seed_slide_goals() -> Slide {
                wetland — that's the constraint everything else works around."
         .into();
     s.add(
-        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 76.0, 56.0).with(|e| {
             e.bold = true;
         }),
     );
@@ -994,7 +1010,7 @@ fn seed_slide_two_column() -> Slide {
                before we cost them out."
         .into();
     s.add(
-        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0)
+        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 76.0, 56.0)
             .with(|e| e.bold = true),
     );
     s.add(
