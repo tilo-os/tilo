@@ -36,7 +36,6 @@ document-heading = Document
 document-edit-heading = Content
 document-title-label = Title
 document-title-placeholder = Untitled document
-document-title-help = The preview below follows every edit.
 document-body-label = Body
 document-body-placeholder = Start writing…
 document-preview-heading = Live preview
