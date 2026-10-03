@@ -139,7 +139,7 @@ pub mod prelude {
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Dispatcher, Each, EffectCx, EffectStatus, Effected, Live,
-        ResourceApp, ResourceSelection, ResourceSurface, SeedCx, SurfaceCx, ViewCx,
+        ResourceApp, ResourceSelection, ResourceSurface, SeedCx, Setting, SurfaceCx, ViewCx,
     };
     pub use tilo_resource::{
         self, ActionCx, Atom, Collection, Delta, Demand, Effect, Id, Invoke, Json, Model, Refusal,
@@ -154,6 +154,7 @@ pub mod prelude {
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
+    pub use ui_core::storage::{Scope, SettingsSchema};
     pub use ui_core::taffy::{NodeId, TaffyTree};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionRegistry, ExecutionLocus};

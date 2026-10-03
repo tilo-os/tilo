@@ -49,6 +49,24 @@ else
   bad 'greeter fprintd policy is missing, broad, or absent from the image'
 fi
 
+# The session leaves greetd's xdm_t for the user's context: pam_selinux close
+# comes first, pam_loginuid before open, and the rest of the session after it.
+session_rule() { grep -n "^session[[:space:]]\+required[[:space:]]\+$1\$" "$pam" | cut -d: -f1; }
+first_session_line=$(grep -n '^-\?session' "$pam" | head -1 | cut -d: -f1)
+selinux_close_line=$(session_rule 'pam_selinux\.so close')
+loginuid_line=$(session_rule 'pam_loginuid\.so')
+selinux_open_line=$(session_rule 'pam_selinux\.so open')
+include_line=$(grep -n '^session[[:space:]]\+include[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)
+if [ -n "$selinux_close_line" ] && [ -n "$loginuid_line" ] && [ -n "$selinux_open_line" ] && [ -n "$include_line" ] \
+   && [ "$selinux_close_line" = "$first_session_line" ] \
+   && [ "$selinux_close_line" -lt "$loginuid_line" ] \
+   && [ "$loginuid_line" -lt "$selinux_open_line" ] \
+   && [ "$selinux_open_line" -lt "$include_line" ]; then
+  ok 'a greetd session runs in the user SELinux context with its login uid'
+else
+  bad 'a greetd session can keep the display manager domain or lack a login uid'
+fi
+
 auth_keyring_line=$(grep -n '^auth[[:space:]]\+optional[[:space:]]\+pam_gnome_keyring\.so$' "$pam" | cut -d: -f1)
 password_auth_line=$(grep -n '^auth[[:space:]]\+substack[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)
 session_include_line=$(grep -n '^session[[:space:]]\+include[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)

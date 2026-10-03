@@ -142,6 +142,17 @@ impl Images for StoreImages {
     }
 
     fn share(&self, id: &PackageId) -> Result<(), String> {
+        // A catalog image the builder named rather than built is fetched by
+        // every device from where this one gets it.
+        if self
+            .store
+            .user()
+            .image(*id)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            return Ok(());
+        }
         let Some(target) = &self.shelf else {
             return Err("this session has no synced files to share it through".into());
         };
