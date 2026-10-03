@@ -26,6 +26,16 @@ everything an agent, a script or a screen reader does:
 | `look` | a PNG of the artwork or a region, with an optional coordinate grid |
 | `inspect`, `media`, `history`, `export` | what is on it, what it can use, how it got here |
 
+Lettering uses the fonts Tilo ships (`media` lists them), so it looks the
+same on every machine: any weight between the face's lightest and boldest,
+tracking, line height, alignment, and words set along a path. A mark can
+carry film `grain`, an `inner_shadow` (a light one is a highlight) and a
+`feather`ed edge; a layer's `texture` lets the ground's tooth show through.
+`inspect` with `measure` reports where a mark's ink weighs (its ink box,
+area and centre of mass) and each letter's box, for balancing icons and
+type by eye. Groups nest (`icons/mail`), and SVG export and import keep
+them, their shadows and text set along a path.
+
 Refusals name the mistake and the valid choices (the layers that exist, the
 pigments of the layer's palette), so an agent can correct itself from the
 message.

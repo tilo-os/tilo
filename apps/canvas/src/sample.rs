@@ -140,6 +140,7 @@ pub fn landscape() -> Vec<CanvasAction> {
                     from: [860.0, 210.0],
                     to: [860.0, 270.0],
                     stops: vec![(0.0, "#fff4c2".into()), (1.0, "#f2a541".into())],
+                    focal: None,
                 }),
                 ..mark(
                     "sun",
@@ -165,6 +166,8 @@ pub fn landscape() -> Vec<CanvasAction> {
                     align: None,
                     line_height: None,
                     width: None,
+                    tracking: None,
+                    path: None,
                 },
                 "#2a1d14",
             ),
@@ -272,6 +275,8 @@ pub fn shapes() -> Vec<CanvasAction> {
                     align: None,
                     line_height: None,
                     width: None,
+                    tracking: None,
+                    path: None,
                 },
                 "#2a1d14",
             )

@@ -85,6 +85,7 @@ pub struct Renderer {
     painted: HashMap<String, PaintedLayer>,
     reference: Option<(String, Option<ImageData>)>,
     wet: Option<WetPreview>,
+    tooth: Option<(String, ImageData)>,
 }
 
 /// The last picture of a stroke still being painted, and what it cost, so
@@ -116,6 +117,8 @@ pub struct Options {
     /// A stroke still being painted: shown on its layer as its medium will
     /// paint it, without being kept.
     pub wet: Option<Mark>,
+    /// Only these marks of plain layers, when given.
+    pub marks: Option<Vec<String>>,
 }
 
 /// The largest reference picture, in bytes.
@@ -180,6 +183,9 @@ impl Renderer {
             if let Some(medium) =
                 media::resolve(art, &layer.medium).filter(|_| !layer.medium.is_empty())
             {
+                if options.marks.is_some() {
+                    continue;
+                }
                 let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
                 self.draw_painted(art, (layer, wet), &medium, scene, transform, text);
             } else {
@@ -191,8 +197,22 @@ impl Renderer {
                     transform,
                     &board,
                 );
-                for mark in art.marks_of(&layer.id) {
-                    draw_mark(art, mark, &palette, scene, (transform, text));
+                let tooth = (layer.texture > 0.0)
+                    .then(|| Speckle::new(self.tooth(art), 1.0 / cell_scale(art), layer.texture));
+                for mark in art.marks_of(&layer.id).filter(|mark| {
+                    options
+                        .marks
+                        .as_ref()
+                        .is_none_or(|only| only.contains(&mark.id))
+                }) {
+                    draw_mark(
+                        art,
+                        mark,
+                        &palette,
+                        scene,
+                        (transform, text),
+                        tooth.as_ref(),
+                    );
                 }
                 scene.pop_layer();
             }
@@ -327,6 +347,37 @@ impl Renderer {
             Some(Affine::scale(1.0 / scale)),
             &board,
         );
+    }
+
+    /// The ground's tooth as light and shade a plain layer's marks are
+    /// speckled with; paper's when the ground is smooth.
+    fn tooth(&mut self, art: &Artwork) -> ImageData {
+        let scale = cell_scale(art);
+        let (width, height) = (cells(art.width, scale), cells(art.height, scale));
+        let texture = match Texture::parse(&art.ground.texture).unwrap_or_default() {
+            Texture::Smooth => Texture::Paper,
+            texture => texture,
+        };
+        let key = format!("{}:{width}x{height}", texture.name());
+        if let Some((have, image)) = &self.tooth
+            && *have == key
+        {
+            return image.clone();
+        }
+        let field = Heightfield::new(width, height, texture, narrow(scale), 1);
+        let shaded = field.shade(tilo_wet_media::Rgb::WHITE);
+        let relief: Vec<u8> = shaded
+            .chunks_exact(4)
+            .flat_map(|pixel| {
+                // White-lit relief sits just around white; how far from it
+                // a cell is says how much light or shade it adds.
+                let lit = f64::from(pixel.first().copied().unwrap_or(255));
+                speck(byte_of(128.0 + (lit - 236.0) * 3.0))
+            })
+            .collect();
+        let image = image(relief, width, height);
+        self.tooth = Some((key, image.clone()));
+        image
     }
 
     /// The ground's tooth and its lit image, built once per ground.
@@ -705,7 +756,11 @@ fn gradient_brush(
     let from = Point::new(gradient.from[0], gradient.from[1]);
     let to = Point::new(gradient.to[0], gradient.to[1]);
     let brush = if gradient.kind == "radial" {
-        PenikoGradient::new_radial(from, narrow(from.distance(to)))
+        let radius = narrow(from.distance(to));
+        match gradient.focal {
+            Some([x, y]) => PenikoGradient::new_two_point_radial((x, y), 0.0, from, radius),
+            None => PenikoGradient::new_radial(from, radius),
+        }
     } else {
         PenikoGradient::new_linear(from, to)
     };
@@ -817,6 +872,7 @@ fn draw_mark(
     palette: &[Pigment],
     scene: &mut Scene,
     (transform, text): (Affine, &mut TextRenderer),
+    tooth: Option<&Speckle>,
 ) {
     let mut layers = 0;
     if let Some(clip) = art.mark(&mark.clip).filter(|_| !mark.clip.is_empty()) {
@@ -842,17 +898,329 @@ fn draw_mark(
     if let Some(shadow) = &mark.style.shadow {
         draw_shadow(mark, shadow, palette, scene, (transform, text));
     }
-    draw_vector(mark, palette, scene, transform, text);
+    let style = &mark.style;
+    let mut speckles: Vec<Speckle> = Vec::new();
+    if let Some(grain) = style.grain.filter(|grain| *grain > 0.0) {
+        speckles.push(Speckle::grain(grain));
+    }
+    speckles.extend(tooth.cloned());
+    if matches!(mark.shape, Shape::Text { .. }) {
+        // Lettering keeps its clean edges.
+        speckles.clear();
+    }
+    // Speckle laid over paint that is partly clear must not show where the
+    // paint does not: the mark is drawn into a group of its own and the
+    // speckle lands only on what it covers. Opaque paint takes the cheap
+    // path, its outline filled with the speckle.
+    let reach = mark.bounds().inflate(
+        style.feather.unwrap_or(0.0) + 2.0,
+        style.feather.unwrap_or(0.0) + 2.0,
+    );
+    let isolated = !speckles.is_empty() && !opaque(mark, palette);
+    if isolated {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &reach);
+    }
+    match style.feather {
+        Some(feather) if feather > 0.0 => draw_feathered(mark, palette, scene, transform, feather),
+        _ => draw_vector(mark, palette, scene, transform, text),
+    }
+    if let Some(inner) = &style.inner_shadow {
+        draw_inner_shadow(mark, inner, palette, scene, transform);
+    }
+    for speckle in &speckles {
+        if isolated {
+            speckle.atop(&reach, scene, transform);
+        } else {
+            speckle.over(mark, scene, transform);
+        }
+    }
+    if isolated {
+        scene.pop_layer();
+    }
     for _ in 0..layers {
         scene.pop_layer();
     }
 }
 
-/// How many rings a soft shadow is built from.
-const SHADOW_RINGS: u16 = 8;
+/// Whether `mark` paints its whole outline solidly: no clear stop in its
+/// gradient, no clear fill, no opacity, no feathered edge.
+fn opaque(mark: &Mark, palette: &[Pigment]) -> bool {
+    let style = &mark.style;
+    let solid =
+        |text: &str| colour(text, palette).is_some_and(|colour| colour.components[3] >= 1.0);
+    style.opacity() >= 1.0
+        && style.feather.is_none()
+        && (mark.shape.closed() || matches!(mark.shape, Shape::Stroke { .. }))
+        && match &style.gradient {
+            Some(gradient) => gradient.stops.iter().all(|(_, stop)| solid(stop)),
+            None => style
+                .fill
+                .as_deref()
+                .or(style.stroke.as_deref())
+                .is_some_and(solid),
+        }
+}
 
-/// A shadow: the mark's silhouette offset and, when soft, grown outward in
-/// rings that fade, so its edge falls off over `blur` units.
+/// The side of the grain tile, in texels.
+const GRAIN_TILE: usize = 128;
+
+/// A grey's departure from mid grey as light (white) or shade (black)
+/// whose alpha is how far it departs: laid over paint, it lightens and
+/// darkens it without a blend layer.
+fn speck(grey: u8) -> [u8; 4] {
+    if grey >= 128 {
+        [255, 255, 255, grey - 128]
+    } else {
+        [0, 0, 0, 128 - grey]
+    }
+}
+
+/// A tile of film grain, the same everywhere.
+fn noise() -> ImageData {
+    static NOISE: std::sync::OnceLock<ImageData> = std::sync::OnceLock::new();
+    NOISE
+        .get_or_init(|| {
+            let mut pixels = Vec::with_capacity(GRAIN_TILE * GRAIN_TILE * 4);
+            let mut state: u32 = 0x9e37_79b9;
+            for _ in 0..GRAIN_TILE * GRAIN_TILE {
+                // xorshift: fast, fixed, and good enough for grain.
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let [a, b, ..] = state.to_le_bytes();
+                // Two draws averaged: grain clusters around mid grey.
+                let grey = u8::try_from(u16::midpoint(u16::from(a), u16::from(b))).unwrap_or(128);
+                pixels.extend_from_slice(&speck(grey));
+            }
+            image(pixels, GRAIN_TILE, GRAIN_TILE)
+        })
+        .clone()
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to a byte's range before the cast"
+)]
+fn byte_of(value: f64) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
+/// A tile of light and shade (see [`speck`]) laid over marks: grain, or the
+/// ground's tooth showing through a layer.
+#[derive(Clone)]
+pub struct Speckle {
+    tile: ImageData,
+    /// Artwork units per texel.
+    unit: f64,
+    amount: f64,
+}
+
+impl Speckle {
+    fn new(tile: ImageData, unit: f64, amount: f64) -> Self {
+        Self { tile, unit, amount }
+    }
+
+    /// Film grain at `amount`, a texel to an artwork unit.
+    fn grain(amount: f64) -> Self {
+        Self::new(noise(), 1.0, amount)
+    }
+
+    /// The tile, repeated and fixed to the artwork so it does not swim when
+    /// a mark moves.
+    fn brush(&self, opacity: f64) -> ImageBrush {
+        ImageBrush::new(self.tile.clone())
+            .with_extend(Extend::Repeat)
+            .with_alpha(narrow((self.amount * opacity).clamp(0.0, 1.0)))
+    }
+
+    /// Over the outline of `mark`, which paints it solidly.
+    fn over(&self, mark: &Mark, scene: &mut Scene, transform: Affine) {
+        let mut path = silhouette(&mark.shape);
+        path.apply_affine(mark.affine());
+        let brush = self.brush(mark.style.opacity());
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &brush,
+            Some(Affine::scale(self.unit)),
+            &path,
+        );
+    }
+
+    /// Over whatever is drawn within `reach` of the group it is laid in,
+    /// as much as it is drawn.
+    fn atop(&self, reach: &Rect, scene: &mut Scene, transform: Affine) {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::new(Mix::Normal, Compose::SrcAtop),
+            1.0,
+            transform,
+            reach,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &self.brush(1.0),
+            Some(Affine::scale(self.unit)),
+            reach,
+        );
+        scene.pop_layer();
+    }
+}
+
+/// A mark whose edge fades out over `feather` units: its paint as drawn
+/// inside, melting away outside.
+fn draw_feathered(
+    mark: &Mark,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    transform: Affine,
+    feather: f64,
+) {
+    let style = &mark.style;
+    let closed = mark.shape.closed() || matches!(mark.shape, Shape::Stroke { .. });
+    let named = |value: Option<&str>| value.and_then(|value| colour(value, palette));
+    let brush: Option<ui::vello::peniko::Brush> = if closed {
+        style
+            .gradient
+            .as_ref()
+            .and_then(|gradient| gradient_brush(gradient, palette, 1.0))
+            .map(Into::into)
+            .or_else(|| named(style.fill.as_deref().or(style.stroke.as_deref())).map(Into::into))
+    } else {
+        named(style.stroke.as_deref()).map(Into::into)
+    };
+    let Some(brush) = brush else {
+        return;
+    };
+    let line = if closed {
+        0.0
+    } else {
+        style.stroke_width.max(1.0)
+    };
+    soft_paint(
+        scene,
+        transform * mark.affine(),
+        &brush,
+        &silhouette(&mark.shape),
+        (closed, line),
+        feather,
+        style.opacity(),
+    );
+}
+
+/// A shadow inside `mark` from its edge: the world outside its silhouette,
+/// offset and softened, seen only through the mark.
+fn draw_inner_shadow(
+    mark: &Mark,
+    shadow: &crate::model::Shadow,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    transform: Affine,
+) {
+    if matches!(mark.shape, Shape::Text { .. }) {
+        return;
+    }
+    let ink = shadow
+        .colour
+        .as_deref()
+        .and_then(|value| colour(value, palette))
+        .unwrap_or(SHADOW_INK);
+    let alpha = f64::from(ink.components[3]) * mark.style.opacity();
+    let at = transform * mark.affine();
+    let path = silhouette(&mark.shape);
+    let [dx, dy] = shadow.offset;
+    // Everything around the silhouette: a frame well past its edge with the
+    // silhouette cut out of it, offset; its soft edge reaches inward.
+    let margin = shadow.blur + dx.abs() + dy.abs() + 4.0;
+    let around = {
+        use ui::vello::kurbo::Shape as _;
+        let mut around = path.bounding_box().inflate(margin, margin).to_path(0.1);
+        around.extend(path.iter());
+        around
+    };
+    let shifted = at * Affine::translate((dx, dy));
+    let rings = if shadow.blur > 0.0 { SHADOW_RINGS } else { 1 };
+    let each = 1.0 - (1.0 - alpha.clamp(0.0, 0.999)).powf(1.0 / f64::from(rings));
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, at, &path);
+    scene.fill(
+        Fill::EvenOdd,
+        shifted,
+        ink.with_alpha(narrow(alpha)),
+        None,
+        &around,
+    );
+    if shadow.blur > 0.0 {
+        // The falloff inside the offset silhouette.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, shifted, &path);
+        for ring in 0..rings {
+            let grow = shadow.blur * (f64::from(ring) + 0.5) / f64::from(rings);
+            let pen = Stroke::new(grow * 2.0).with_join(Join::Round);
+            scene.stroke(&pen, shifted, ink.with_alpha(narrow(each)), None, &path);
+        }
+        scene.pop_layer();
+    }
+    scene.pop_layer();
+}
+
+/// How many rings a soft shadow or edge is built from.
+const SHADOW_RINGS: u16 = 10;
+
+/// `path` painted with `brush` at `alpha`, its edge softened outward over
+/// `soft` units: filled once, then rings of outline outside it only, each
+/// letting through the share that compounds to `alpha` at the edge. An
+/// open line (`filled` false, `line` wide) softens to both sides. One clip
+/// layer at most, however many rings: a layer per ring exhausts the
+/// renderer's blend memory on a busy artwork.
+fn soft_paint(
+    scene: &mut Scene,
+    at: Affine,
+    brush: &ui::vello::peniko::Brush,
+    path: &BezPath,
+    (filled, line): (bool, f64),
+    soft: f64,
+    alpha: f64,
+) {
+    let rings = if soft > 0.0 { SHADOW_RINGS } else { 1 };
+    let each = 1.0 - (1.0 - alpha.clamp(0.0, 0.999)).powf(1.0 / f64::from(rings));
+    let grow = |ring: u16| soft * (f64::from(ring) + 0.5) / f64::from(rings);
+    if !filled {
+        for ring in 0..rings {
+            let width = line + if soft > 0.0 { grow(ring) * 2.0 } else { 0.0 };
+            let pen = Stroke::new(width)
+                .with_caps(Cap::Round)
+                .with_join(Join::Round);
+            let faint = brush.clone().multiply_alpha(narrow(each));
+            scene.stroke(&pen, at, &faint, None, path);
+        }
+        return;
+    }
+    let solid = brush.clone().multiply_alpha(narrow(alpha));
+    scene.fill(Fill::NonZero, at, &solid, None, path);
+    if soft <= 0.0 {
+        return;
+    }
+    let outside = {
+        use ui::vello::kurbo::Shape as _;
+        let mut outside = path
+            .bounding_box()
+            .inflate(soft + 4.0, soft + 4.0)
+            .to_path(0.1);
+        outside.extend(path.iter());
+        outside
+    };
+    scene.push_layer(Fill::EvenOdd, BlendMode::default(), 1.0, at, &outside);
+    let faint = brush.clone().multiply_alpha(narrow(each));
+    for ring in 0..rings {
+        let pen = Stroke::new(grow(ring) * 2.0).with_join(Join::Round);
+        scene.stroke(&pen, at, &faint, None, path);
+    }
+    scene.pop_layer();
+}
+
+/// A shadow: the mark's silhouette offset and, when soft, falling off over
+/// `blur` units.
 fn draw_shadow(
     mark: &Mark,
     shadow: &crate::model::Shadow,
@@ -868,61 +1236,37 @@ fn draw_shadow(
     let alpha = f64::from(ink.components[3]) * mark.style.opacity();
     let ink = ink.with_alpha(1.0);
     let at = transform * Affine::translate((shadow.offset[0], shadow.offset[1])) * mark.affine();
-    let rings = if shadow.blur > 0.0 { SHADOW_RINGS } else { 1 };
-    // Each ring lets through the share that compounds to `alpha` inside.
-    let each = 1.0 - (1.0 - alpha.clamp(0.0, 0.999)).powf(1.0 / f64::from(rings));
-    let reach = (mark.bounds() + ui::vello::kurbo::Vec2::new(shadow.offset[0], shadow.offset[1]))
-        .inflate(shadow.blur + 2.0, shadow.blur + 2.0);
     if let Shape::Text { .. } = mark.shape {
+        // Faint copies of the lettering around the offset: where they all
+        // overlap, the shadow is as dark as asked.
+        let rings = if shadow.blur > 0.0 { SHADOW_RINGS } else { 1 };
+        let each = 1.0 - (1.0 - alpha.clamp(0.0, 0.999)).powf(1.0 / f64::from(rings));
         for ring in 0..rings {
             let turn = f64::from(ring) / f64::from(rings) * std::f64::consts::TAU;
             let jitter = Affine::translate((
                 turn.cos() * shadow.blur * 0.5,
                 turn.sin() * shadow.blur * 0.5,
             ));
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                narrow(each),
-                transform,
-                &reach,
-            );
-            draw_text_shape(&mark.shape, ink, scene, jitter * at, text);
-            scene.pop_layer();
+            let faint = ink.with_alpha(narrow(each));
+            draw_text_shape(&mark.shape, faint, scene, jitter * at, text);
         }
         return;
     }
     let filled = mark.shape.closed() || matches!(mark.shape, Shape::Stroke { .. });
-    let path = silhouette(&mark.shape);
-    let width = if filled {
+    let line = if filled {
         0.0
     } else {
         mark.style.stroke_width.max(1.0)
     };
-    for ring in 0..rings {
-        let grow = if rings > 1 {
-            shadow.blur * (f64::from(ring) + 0.5) / f64::from(rings)
-        } else {
-            0.0
-        };
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            narrow(each),
-            transform,
-            &reach,
-        );
-        if filled {
-            scene.fill(Fill::NonZero, at, ink, None, &path);
-        }
-        if width + grow > 0.0 {
-            let pen = Stroke::new(width + grow * 2.0)
-                .with_caps(Cap::Round)
-                .with_join(Join::Round);
-            scene.stroke(&pen, at, ink, None, &path);
-        }
-        scene.pop_layer();
-    }
+    soft_paint(
+        scene,
+        at,
+        &ink.into(),
+        &silhouette(&mark.shape),
+        (filled, line),
+        shadow.blur,
+        alpha,
+    );
 }
 
 /// The toolkit's text style for a text shape.
@@ -934,18 +1278,18 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
         italic,
         align,
         line_height,
+        tracking,
         ..
     } = shape
     else {
         return None;
     };
-    let family = match font.as_deref() {
-        None | Some("sans") => ui::FontChoice::SansSerif,
-        Some("serif") => ui::FontChoice::Serif,
-        Some("mono") => ui::FontChoice::Monospace,
-        Some(name) => ui::FontChoice::Named(name.to_owned()),
+    let family = match font.as_deref().and_then(crate::fonts::family) {
+        None => ui::FontChoice::SansSerif,
+        Some(family) => ui::FontChoice::Named(family.to_owned()),
     };
-    let weight = match weight.unwrap_or(400) {
+    let weight = weight.unwrap_or(400);
+    let tier = match weight {
         0..=449 => ui::TextWeight::Regular,
         450..=549 => ui::TextWeight::Medium,
         550..=649 => ui::TextWeight::Semibold,
@@ -959,11 +1303,157 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
     Some(
         ui::TextStyle::new(narrow(*size))
             .with_family(family)
-            .with_weight(weight)
+            .with_weight(tier)
+            // The shipped faces are variable: any weight between their
+            // lightest and boldest draws as given.
+            .with_font_variation(ui::OpenTypeTag::WEIGHT, f32::from(weight))
             .with_italic(*italic)
+            .with_tracking(narrow(tracking.unwrap_or(0.0) / 1000.0))
             .with_line_height(narrow(line_height.unwrap_or(1.2)))
             .with_align(align),
     )
+}
+
+/// Where a text's lines start: its left edge, the wrap width it is laid
+/// out in, and how far its first baseline sits below the layout's top.
+fn text_frame(
+    shape: &Shape,
+    style: &ui::TextStyle,
+    text: &mut TextRenderer,
+) -> Option<(f64, f64, Option<f32>)> {
+    let Shape::Text {
+        x,
+        y,
+        text: words,
+        align,
+        width,
+        ..
+    } = shape
+    else {
+        return None;
+    };
+    let natural = f64::from(text.measure_style(words, width.map(narrow), style).0);
+    let wide = width.unwrap_or(natural + 0.5);
+    // Letter spacing follows every letter, the last too: a centred or
+    // end-aligned line would sit that trailing space off where its letters
+    // should be.
+    let trail = f64::from(style.letter_spacing);
+    let left = match (width, align.as_deref()) {
+        (None, Some("center")) => x - wide / 2.0 + trail / 2.0,
+        (None, Some("end")) => x - wide + trail,
+        (Some(_), Some("center")) => x + trail / 2.0,
+        (Some(_), Some("end")) => x + trail,
+        _ => *x,
+    };
+    let max = (width.is_some() || align.as_deref().is_some_and(|align| align != "start"))
+        .then(|| narrow(wide));
+    let top = y - f64::from(text.first_baseline_style(words, max, style));
+    Some((left, top, max))
+}
+
+/// One letter of a text as geometry in artwork units (before the mark's
+/// transform), and the characters it shows.
+pub struct Letter {
+    pub path: BezPath,
+    pub text: String,
+}
+
+/// A text shape's letters as outlines, where they are drawn: along its path
+/// when it has one, else laid out from x, y.
+pub fn letters(shape: &Shape, text: &mut TextRenderer) -> Vec<Letter> {
+    let (
+        Some(style),
+        Shape::Text {
+            text: words,
+            path,
+            align,
+            ..
+        },
+    ) = (text_style(shape), shape)
+    else {
+        return Vec::new();
+    };
+    let named = |range: &std::ops::Range<usize>, words: &str| {
+        words.get(range.clone()).unwrap_or_default().to_owned()
+    };
+    if let Some(d) = path {
+        let line = words.replace('\n', " ");
+        let glyphs = text.glyph_outlines(&line, None, &style);
+        let along = BezPath::from_svg(d).unwrap_or_default();
+        return on_path(&glyphs, &along, align.as_deref())
+            .into_iter()
+            .map(|(path, glyph)| Letter {
+                path,
+                text: named(&glyph.cluster, &line),
+            })
+            .collect();
+    }
+    let Some((left, top, max)) = text_frame(shape, &style, text) else {
+        return Vec::new();
+    };
+    text.glyph_outlines(words, max, &style)
+        .into_iter()
+        .map(|glyph| Letter {
+            path: Affine::translate((left + glyph.origin.x, top + glyph.origin.y))
+                * glyph.path.clone(),
+            text: named(&glyph.cluster, words),
+        })
+        .collect()
+}
+
+/// `glyphs` of one line set along `path`: each turned to the curve's
+/// direction at its middle, the line placed at the path's start, middle or
+/// end by `align`. Letters past either end are left out.
+fn on_path<'a>(
+    glyphs: &'a [ui::GlyphOutline],
+    path: &BezPath,
+    align: Option<&str>,
+) -> Vec<(BezPath, &'a ui::GlyphOutline)> {
+    let mut points: Vec<Point> = Vec::new();
+    ui::vello::kurbo::flatten(path.iter(), 0.1, |element| match element {
+        PathEl::MoveTo(at) if points.is_empty() => points.push(at),
+        PathEl::MoveTo(at) | PathEl::LineTo(at) => points.push(at),
+        _ => {}
+    });
+    let mut lengths = vec![0.0];
+    for pair in points.windows(2) {
+        if let [a, b] = pair {
+            let last = lengths.last().copied().unwrap_or(0.0);
+            lengths.push(last + a.distance(*b));
+        }
+    }
+    let total = lengths.last().copied().unwrap_or(0.0);
+    let line = glyphs
+        .iter()
+        .map(|glyph| glyph.origin.x + glyph.advance)
+        .fold(0.0, f64::max);
+    let start = match align {
+        Some("center") => (total - line) / 2.0,
+        Some("end") => total - line,
+        _ => 0.0,
+    };
+    let baseline = glyphs.first().map_or(0.0, |glyph| glyph.origin.y);
+    let at = |distance: f64| -> Option<(Point, f64)> {
+        if !(0.0..=total).contains(&distance) {
+            return None;
+        }
+        let index = lengths.partition_point(|length| *length < distance).max(1);
+        let (a, b) = (*points.get(index - 1)?, *points.get(index)?);
+        let span = (lengths.get(index)? - lengths.get(index - 1)?).max(1e-9);
+        let t = (distance - lengths.get(index - 1)?) / span;
+        Some((a.lerp(b, t), (b - a).atan2()))
+    };
+    glyphs
+        .iter()
+        .filter_map(|glyph| {
+            let middle = start + glyph.origin.x + glyph.advance / 2.0;
+            let (point, angle) = at(middle)?;
+            let place = Affine::translate(point.to_vec2())
+                * Affine::rotate(angle)
+                * Affine::translate((-glyph.advance / 2.0, glyph.origin.y - baseline));
+            Some((place * glyph.path.clone(), glyph))
+        })
+        .collect()
 }
 
 /// Shape and paint a text mark with the toolkit's text renderer.
@@ -977,27 +1467,21 @@ fn draw_text_shape(
     let (
         Some(style),
         Shape::Text {
-            x,
-            y,
-            text: words,
-            align,
-            width,
-            ..
+            text: words, path, ..
         },
     ) = (text_style(shape), shape)
     else {
         return;
     };
-    let natural = f64::from(text.measure_style(words, width.map(narrow), &style).0);
-    let wide = width.unwrap_or(natural + 0.5);
-    let left = match (width, align.as_deref()) {
-        (None, Some("center")) => x - wide / 2.0,
-        (None, Some("end")) => x - wide,
-        _ => *x,
+    if path.is_some() {
+        for letter in letters(shape, text) {
+            scene.fill(Fill::NonZero, at, ink, None, &letter.path);
+        }
+        return;
+    }
+    let Some((left, top, max)) = text_frame(shape, &style, text) else {
+        return;
     };
-    let max = (width.is_some() || align.as_deref().is_some_and(|align| align != "start"))
-        .then(|| narrow(wide));
-    let top = y - f64::from(text.first_baseline_style(words, max, &style));
     text.draw_style(
         scene,
         words,
