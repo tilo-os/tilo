@@ -31,6 +31,9 @@ struct Writer {
     /// The text `read-text` answers; set, `read-text` declares itself the
     /// document's read.
     document: Option<String>,
+    /// Rows per page of a resource's listing, as when the host's byte
+    /// budget cuts it short.
+    listing_page: Option<usize>,
 }
 
 impl Writer {
@@ -41,6 +44,7 @@ impl Writer {
             invoked: Arc::default(),
             blank_listings: Arc::default(),
             document: None,
+            listing_page: None,
         }
     }
 
@@ -296,6 +300,26 @@ impl ActionHost for Writer {
             rows.retain(|row| row.parent_resource == parent);
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
+        }
+        if let Some(size) = self
+            .listing_page
+            .filter(|_| query.parent_resource.is_some())
+        {
+            let offset: usize = String::from_utf8_lossy(&query.cursor).parse().unwrap_or(0);
+            let next = offset.saturating_add(size);
+            let exhausted = next >= rows.len();
+            return Pending::ready(Ok(CataloguePage {
+                revision: "v5".into(),
+                rows: rows.into_iter().skip(offset).take(size).collect(),
+                next_cursor: if exhausted {
+                    Vec::new()
+                } else {
+                    next.to_string().into_bytes()
+                },
+                exhausted,
+                budget_exhausted: !exhausted,
+                ..CataloguePage::default()
+            }));
         }
         rows.truncate(query.page_size());
         Pending::ready(Ok(CataloguePage {
@@ -931,6 +955,47 @@ fn a_needle_no_row_matches_whole_finds_the_rows_matching_most_of_it() {
         .await
         .unwrap();
         assert_eq!(nothing["resources"], json!([]), "{nothing}");
+    });
+}
+
+#[test]
+fn a_found_resource_lists_every_action_across_the_hosts_pages() {
+    let writer = Writer {
+        listing_page: Some(2),
+        ..Writer::new(Some("open"))
+    };
+    let mut server = McpServer::new(writer, "room".into(), "owner".into());
+    run(async {
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        let page = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "save"}),
+        )
+        .await
+        .unwrap();
+        let actions = resource(&page, "word_processor.document")["actions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for action in [
+            "read-text",
+            "save-as",
+            "select-block",
+            "apply-style",
+            "set-paragraph-style",
+            "open",
+        ] {
+            assert!(actions.contains(action), "{action}: {page}");
+        }
     });
 }
 

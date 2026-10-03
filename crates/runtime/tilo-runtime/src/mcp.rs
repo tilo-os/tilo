@@ -908,28 +908,36 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             return Ok(());
         }
         for resource in matched {
-            let listed = self
-                .ask(CatalogueQuery {
-                    parent_resource: Some(resource.clone()),
-                    needle: String::new(),
-                    revision: None,
-                    cursor: Vec::new(),
-                    max_results: 128,
-                    ..query.clone()
-                })
-                .await?;
-            for row in listed.rows {
-                let new = row.resource.id == resource
-                    && row.action.as_ref().is_some_and(|action| {
-                        !page.rows.iter().any(|seen| {
-                            seen.resource.id == resource
-                                && seen.action.as_ref().map(|a| &a.address.action)
-                                    == Some(&action.address.action)
-                        })
-                    });
-                if new {
-                    page.rows.push(row);
+            let mut listing = CatalogueQuery {
+                parent_resource: Some(resource.clone()),
+                needle: String::new(),
+                revision: None,
+                cursor: Vec::new(),
+                max_results: 128,
+                ..query.clone()
+            };
+            // The host's byte budget counts whole contracts, so one
+            // resource's actions can span pages its compact rows would not.
+            for _ in 0..EVERY_ACTION_PAGES {
+                let listed = self.ask(listing.clone()).await?;
+                for row in listed.rows {
+                    let new = row.resource.id == resource
+                        && row.action.as_ref().is_some_and(|action| {
+                            !page.rows.iter().any(|seen| {
+                                seen.resource.id == resource
+                                    && seen.action.as_ref().map(|a| &a.address.action)
+                                        == Some(&action.address.action)
+                            })
+                        });
+                    if new {
+                        page.rows.push(row);
+                    }
                 }
+                if listed.exhausted || listed.next_cursor.is_empty() {
+                    break;
+                }
+                listing.revision = Some(listed.revision);
+                listing.cursor = listed.next_cursor;
             }
         }
         Ok(())
@@ -1856,6 +1864,8 @@ const DEFAULT_PAGE: u32 = 64;
 const EXPANDED_RESOURCES: usize = 3;
 /// Host pages one multi-word needle reads before answering with none.
 const WORD_FILTER_PAGES: usize = 8;
+/// The most host pages read to list every action of one found resource.
+const EVERY_ACTION_PAGES: usize = 4;
 /// Words of a needle no row matches whole that are searched one by one,
 /// and the shortest searched: "as" or "to" would match nearly everything.
 const SOME_WORDS_SEARCHED: usize = 6;
