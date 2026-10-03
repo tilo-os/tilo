@@ -25,18 +25,55 @@ There are **two distinct kinds of panel**. Do not conflate them. A single
 generic "overlay drawer with a scrim, everywhere" is wrong — it turns *content*
 into a menu and clutters small screens.
 
+**One shell does both.** Every window with navigation is a
+`ui::widget::NavShell`: `.sidebar(..)` for §1a, `.overview(..)` and
+`.content(..)` for §1b, `.inspector(..)` for the properties of the
+selection at the trailing edge. Its sidebar lists destinations with a
+`ui::widget::NavList`. The shell owns the header row, the sidebar toggle,
+the widths, the breakpoints, the drawer, the push stack, the regions and the
+motion; the app passes none of them. A painted app that cannot host widgets
+uses the headless `ui::widget::SidebarDrawer` with the same metrics and
+paints its rows with `ui::chrome::paint_nav_row`. No other sidebar, split or
+row painter exists.
+
+**The header row.** Windows have no title bar. The shell draws one header
+row (`metrics.header_height`, 56) across the window and each column's header
+sits in it — `.sidebar_header(title, actions)`, `.overview_header(..)`,
+`.content_header(..)`, `.inspector_header(..)` — so the row reads as one
+unified toolbar: a `Heading` title in sentence case after the shell's
+leading button, the column's actions at its trailing end, and one hairline
+under the content columns. An app never draws a band of its own above a
+column.
+
 ### 1a. Genuine sidebar / menu  (pure navigation)
 
 Chrome that lists destinations. Examples: a calendar's list of *calendars*; an
 email client's accounts + folders.
 
-- **Desktop / wide:** solid, **docked** beside the content. Collapsible via a
-  proper **collapse / hamburger button** — **never an `X`**. It reads as part of
-  the window frame, not a floating overlay. Smooth collapse/expand animation.
-- **Mobile / narrow:** it **stays a genuine sidebar** — a web-style **overlay
-  drawer** over the content (scrim behind), summoned and dismissed by the *same*
-  proper collapse/hamburger button (**not** an `X`). It remains a menu; it does
-  **not** turn into a full-screen page.
+- **Desktop / wide:** solid, **docked** beside the content on the
+  `Region::Sidebar` tier, at `metrics.sidebar_width` (280). Shown and hidden
+  by the **sidebar toggle** — a Plain icon button with the `Icon::PanelLeft`
+  glyph that the shell draws at the sidebar's top-leading corner, and at the
+  leading edge of the next column's header while the sidebar is hidden —
+  **never an `X`**, never a hamburger. One system shortcut toggles it in
+  every app (`HostShortcut::Sidebar`, Ctrl+Shift+L / ⌘⇧L), and the toggle
+  publishes "Show sidebar" / "Hide sidebar" to the palette and to agents.
+  Dragging the sidebar's trailing edge resizes it between
+  `sidebar_min_width` and `sidebar_max_width`; dragging it below the minimum
+  hides it. The person's choice is remembered per window size class.
+- **Mobile / narrow:** below the width where the content beside it would be
+  squeezed (`sidebar_width` + the content's minimum), it **stays a genuine
+  sidebar** as a **floating drawer** over the content — the floating
+  material, `radii.panel`, the floating shadow, `surfaces.scrim` behind —
+  summoned and dismissed by the same toggle, a scrim press or Esc. Choosing
+  a destination in it closes it. It remains a menu; it does **not** turn
+  into a full-screen page. (`NavMode::Push` is the exception for a list of
+  *categories* such as Settings: there the sidebar is the first screen of
+  the push stack and choosing pushes the content. `NavMode::Docked` is for a
+  compact icon rail, `NavList::rail`, which fits beside content at every
+  width.)
+- A docked sidebar is never kept beside columns that no longer fit: at 800 px
+  a window with a sidebar, an overview and a detail shows the drawer.
 
 ### 1b. Content panels  (overview + detail)
 
@@ -46,11 +83,17 @@ list (overview) + the message (detail).
 
 - **Desktop / wide:** shown **side by side** (alongside the genuine sidebar, if
   any). Only the sidebar collapses; the content panels stay abreast.
-- **Mobile / narrow:** show **only one of {overview, detail} at a time**. The
-  overview is the default **full-screen** view; selecting an entry **slides the
-  detail in from the right**, over the overview, with a **back button top-left**.
-  Back returns to the overview. This is **push navigation** — never a
-  scrim-overlay of content over content.
+- **Mobile / narrow:** when the overview and the detail no longer fit side by
+  side (`overview_width` + `detail_min_width`), show **only one of
+  {overview, detail} at a time**. The overview is the default
+  **full-screen** view; selecting an entry **slides the detail in from the
+  right**, over the overview, with a **Back button top-left** in the header
+  row. Back (or Esc) returns to the overview. This is **push navigation** —
+  never a scrim-overlay of content over content. A `NavList` in the overview
+  pushes by itself; any other overview pushes with `shell.show(NavPane::Content)`
+  or a `LocalState<NavPane>` bound with `with_pane_state`.
+- The sidebar collapses first, then the split: at 800 px a mail window shows
+  the drawer and keeps the list beside the message; at 560 px it pushes.
 
 ### 1c. How to decide which a panel is
 
@@ -411,6 +454,11 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
   `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
+- Sidebar, master/detail, drawer, push screens, column headers → `NavShell`;
+  a list of destinations → `NavList` (a painted app: `SidebarDrawer` +
+  `chrome::paint_nav_row` / `paint_nav_section`); a selected or hovered row →
+  `chrome::paint_row_selection`. Never a private sidebar row painter,
+  selection fill or collapse chip.
 
 **If the shared widget is missing a capability you need, extend the widget — do
 not fork it.** Add the feature to the one `ui` primitive so every app gets it and
@@ -629,24 +677,32 @@ chosen scope chip, current power profile — uses the **same four tiers**:
 | **active** | `colors.lift(1.0)` | `hairline_on(ground, 26)` | `hairline_on(ground, 51)` | 1.0 |
 | pressed | as active | as active | as active | 0.97 |
 
-This is `ui::chrome::selection_tier`; call it, do not restate it. Toolkit list
-selection (`TreeView`, `Table`, `DataTable`, `Sidebar` rows) is a lift too.
-On a ground other than the desktop use `chrome::selection_tier_on(theme,
-state, ground)`, which keeps the base lift where it registers and otherwise
-walks `LIFT_ALPHA_STEPS` until the active fill clears the ground by
-`HAIRLINE_MIN_DELTA`.
+This is `ui::chrome::selection_tier`; call it, do not restate it. On any other
+ground use `chrome::selection_tier_on(theme, state, ground)`: the active fill
+is one surface step of that ground (`colors.lift_on(ground, 1.0)`, hover
+`0.5`), stepping the other way where the ground has no room (a white well on
+a dark palette), so it stays at least `SELECTION_MIN_STEP` (OKLCH ΔL 0.06)
+from the ground on content, sidebar, inspector, raised and panel grounds in
+every material.
+
+**A selected list row is the lift and nothing else.** Every list paints its
+rows' hover and selection through `ui::chrome::paint_row_selection(scene,
+transform, rect, state, ground, theme)`: the row inset `s2` from the list's
+edges, at `radii.item` (6), primary ink, no border, no hue, no leading bar or
+stripe. `TreeView`, `NavList` and `paint_nav_row` use it; a painted list
+calls it. A private `selected_on` / `row_tier_on` / `selection_fill` is a
+defect.
 
 **The armed row of a menu is inverted, not lifted.** The row Enter or a click
 will activate in a menu, popover, dropdown, slash menu or palette result list
 is an inverted control (`intent.inverted` fill, `intent.on_inverted` label):
 a lift was measured too weak to find (ΔL* 11.6 read as "no highlighting").
 
-**One caveat the tier cannot absorb for you.** `Colors::lift` interpolates
-from `surfaces.base` toward `surfaces.raised`; on the high-contrast material,
-where those two are both black, it falls back to a derived step against the
-ground. If a control needs its own floor, derive all of its states from one
-ordered ramp against the ground and assert the ordering per theme; do not mix
-a floor with the tier.
+**A control with its own floor** (a filled rest face rather than a
+transparent one) takes all of its states from one ordered ramp against the
+ground: `chrome::selection_floor_ramp(theme, state, ground)` — rest, hover
+and active each a further step from the ground on every material. Do not mix
+a floor with the transparent tier.
 
 An active thing never gets *more* prominent on hover. The contrast gain
 belongs to the inactive things brightening toward the active tier.
@@ -755,7 +811,7 @@ focus is `border_focus` (your colour); disabled is the rest face under
 | Slider | unfilled `lift(1.0)`, filled `intent.inverted` | `edge_on(unfilled)`; thumb contrasts against both halves |
 | Checkbox | unchecked `surfaces.raised`, checked `intent.inverted` | `edge_on(raised)` |
 | Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
-| TreeView / Sidebar / VirtualList rows | transparent | none; selection is a lift |
+| TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
 | Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
 | App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
@@ -807,48 +863,48 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   `panel_width_utility`; an overlay drawer is the same width,
   `drawer_width`), 360 for a roster or list Panel (`panel_width_list`), 560
   for a sheet with a form in it (`panel_width_sheet`).
-- Responsive shells: a genuine sidebar docks at `sidebar_width` 280, an
-  overview column at `overview_width` 340, and a sidebar docks beside its
-  content at or above `compact_breakpoint` 720. `NavShell` and `AppShell`
-  read those defaults from `theme.tokens.metrics` in `build_layout`, so they
-  follow `ui_scale`. `NavSplit` (300 / 900), `NavShell`'s 700 breakpoint and
-  `AppShell`'s 264 sidebar predate the tokens; the proposal on record is one
-  set for all four shells — sidebar `sidebar_width` 280, breakpoint
-  `compact_breakpoint` 720 (drawer: 720 + `drawer_width − sidebar_width` =
-  760), and one chip for `AppShell`'s Back button (34) and `NavShell`'s
-  collapse / Back chip (36): `min_pointer_target` 32 inside an `s3` inset,
-  which also makes the chip band (56) equal to a 56 px header bar.
-- **One text-scale rule for shell inputs (`Theme::responsive_scale`).** A
-  breakpoint or pane width handed to `NavSplit`, `NavShell`, `AppShell` or
-  `SidebarDrawer` is **authored at 1×** and the shell resolves it against the
-  theme when the tree is built: `× ui_scale × text_scale.max(1.0)`
-  (`Metrics::text_growth`). Panes and breakpoints are sized by the text they
-  hold, so they grow with it and never shrink below the authored geometry;
-  an app passes `with_breakpoint(760.0)` and deletes its own
-  `× text_scale` arithmetic (`widget::AuthoredExtent` is the rule as a
-  value, for a host that needs it directly). A width sized by icons rather
-  than text — a rail — takes the `with_icon_*_width` builder
-  (`SidebarDrawer::icon_docked_width`) and follows `ui_scale` alone.
-  `SidebarDrawer` has no `build_layout`, so a host adopting the rule calls
-  `drawer.scale_for(theme)` once from its own; until it does, the drawer lays
-  out the authored geometry, which is what every drawer host does today.
-  Read the resolved values back (`shell.breakpoint()`, `sidebar_width()`)
-  rather than comparing a window width against the authored constant. A
-  shell control that carries one line of text (the Back chip, the search
-  slot) grows by `widget::text_control_height(authored, theme)` — the
-  authored height until the body line outgrows it, then line + the authored
-  padding — never by the whole scale.
-- **Shell panes are measured with the host's theme and renderer.** A
-  `NavSplit` / `NavShell` pane is built against the theme its outer tree was
-  built with and solved in `adjust_layout_with_measure` with the renderer
-  the host hands the layout pass; a `Text` under a split measures at the
-  same text scale as everything beside it. Never lay a child out against
-  `Theme::dark()` or a fresh `TextRenderer::new()` on a draw or layout path.
-- **A docked sidebar keeps its full height.** The collapse chip sits in the
-  docked sidebar's own header row, which the sidebar clears horizontally
-  (mail: `CHIP_CLEARANCE`), so the three panes' headers share one top edge.
-  Only an overlay drawer, and a narrow content pane the chip floats over,
-  start below the chip band.
+- **The window shell (`NavShell`) reads every size from the metrics**; an app
+  passes none:
+
+  | Metric | 1× | For |
+  |---|---|---|
+  | `header_height` | 56 | the one header row: `min_pointer_target` 32 in an `s3` inset |
+  | `sidebar_width` | 280 | a docked sidebar (drag range `sidebar_min_width` 200 – `sidebar_max_width` 420) |
+  | `drawer_width` | 320 | the floating drawer, `s2` in from the window edges |
+  | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
+  | `overview_width` | 340 | the overview column |
+  | `detail_min_width` | 360 | narrowest the detail beside an overview may get before they push |
+  | `content_min_width` | 440 | narrowest the content beside a sidebar may get before the sidebar becomes a drawer (`compact_breakpoint` 720 − `sidebar_width`) |
+  | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
+  | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
+
+  The breakpoints follow from them: the sidebar docks while
+  `sidebar_width + overview_width + detail_min_width` (980) — or
+  `sidebar_width + content_min_width` (720) without an overview — fits; the
+  overview and detail stand side by side while `overview_width +
+  detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
+  inspector toggle) are Plain icon buttons of `min_pointer_target` in the
+  `s3` inset.
+- **One text-scale rule (`Theme::responsive_scale`).** The shell grows its
+  text-sized widths and breakpoints by `ui_scale × text_scale.max(1.0)`
+  (`Metrics::text_growth`): at 200 % text the panes stop fitting side by side
+  at twice the width, and never shrink below 1×. A rail is sized by icons and
+  follows `ui_scale` alone. The header row and a one-line control (the
+  filter field) grow by `widget::text_control_height(authored, theme)` — the
+  authored height until the body line outgrows it — never by the whole
+  scale. A painted app's `SidebarDrawer` applies the same rule to the widths
+  it authors once the host calls `drawer.scale_for(theme)` from its
+  `build_layout`.
+- **The shell places its children through the host's layout pass.**
+  `NavShell` is a manual layout policy (`MANUAL_LAYOUT.md`): every column,
+  header action, the filter and the shell's buttons are children in the
+  host tree, measured with the host's renderer and placed at the rects the
+  responsive plan gives them, so focus, routing and semantics see the real
+  geometry. A column the shell is not showing (a hidden sidebar, a closed
+  drawer, a screen pushed away) is not in the host tree; an open drawer is
+  modal, so only it and its toggle take input.
+- **Every column's header shares the one header row**, and every body starts
+  under it, so the columns' first rows share one top edge.
 
 ### 9.7 Motion
 
