@@ -581,10 +581,11 @@ impl AppShell {
         presence: &PresenceCtx,
         permissions: Option<&crate::permissions::PermissionContext>,
     ) {
-        // The sidebar is the raised surface tier (HIG §9.2), never a ramp
-        // slot, and its divider derives from that surface (HIG §9.5).
-        let sidebar_fill = theme.tokens.colors.surfaces.raised;
-        let content_fill = theme.tokens.colors.surfaces.base;
+        // Each region is its own surface tier (HIG §9.2): the navigation
+        // column the sidebar surface, the rest the window ground. The
+        // divider derives from the sidebar surface (HIG §9.5).
+        let sidebar_fill = theme.tokens.colors.surfaces.sidebar;
+        let content_fill = theme.tokens.colors.surfaces.content;
         let divider = crate::surface::edge_on(sidebar_fill);
 
         let narrow_list =

@@ -169,7 +169,7 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
         close(pixel(&opaque, width, centre.0, centre.1), ground, 1),
         "without the pass the placeholder is the opaque ground"
     );
-    let tint = f64::from(FLOATING_TINT_ALPHA);
+    let tint = f64::from(theme.tokens.colors.surfaces.material_opacity);
     let expected = ground.map(|channel| {
         let mixed = f64::from(channel).mul_add(tint, 127.5 * (1.0 - tint));
         #[allow(
