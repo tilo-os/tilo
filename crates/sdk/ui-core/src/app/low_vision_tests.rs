@@ -1,5 +1,6 @@
 use super::*;
 use crate::a11y::contrast_ratio;
+use crate::tokens::TextRole;
 
 fn app() -> App {
     App::new(State::new(), Box::new(crate::widget::Text::new("t")))
@@ -45,10 +46,10 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
     // Case `text_scale_setter_scales_the_theme_type_size`.
     {
         let mut a = app();
-        let base = a.theme.tokens.typography.scale.base;
+        let base = a.theme.tokens.typography.size(TextRole::Body);
         a.set_text_scale(2.0);
         assert_eq!(a.text_scale(), 2.0);
-        assert!((a.theme.tokens.typography.scale.base - base * 2.0).abs() < 1e-3);
+        assert!((a.theme.tokens.typography.size(TextRole::Body) - base * 2.0).abs() < 1e-3);
         // A scale change must re-run layout so the larger text doesn't clip.
         assert!(a.layout.layout_dirty);
     }
@@ -57,14 +58,17 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
     {
         let mut a = app();
         a.set_text_scale(1.5);
-        let hc_base = Theme::high_contrast().tokens.typography.scale.base;
+        let hc_base = Theme::high_contrast()
+            .tokens
+            .typography
+            .size(TextRole::Body);
         a.set_high_contrast(true);
         assert_eq!(
             a.text_scale(),
             1.5,
             "scale preference is preserved across the swap"
         );
-        assert!((a.theme.tokens.typography.scale.base - hc_base * 1.5).abs() < 1e-3);
+        assert!((a.theme.tokens.typography.size(TextRole::Body) - hc_base * 1.5).abs() < 1e-3);
         assert_eq!(a.theme.name, "High Contrast");
     }
 
@@ -101,7 +105,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         let mut a = app();
         let base_gap = a.theme.tokens.spacing.s3;
         let base_radius = a.theme.tokens.radii.control;
-        let base_type = a.theme.tokens.typography.scale.base;
+        let base_type = a.theme.tokens.typography.size(TextRole::Body);
         a.set_ui_scale(1.5);
         assert_eq!(a.ui_scale(), 1.5);
         assert!(
@@ -113,7 +117,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
             "radii grow"
         );
         assert!(
-            (a.theme.tokens.typography.scale.base - base_type * 1.5).abs() < 1e-3,
+            (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.5).abs() < 1e-3,
             "type grows"
         );
         // A UI-scale change must re-run layout so the whole interface re-flows.
@@ -123,14 +127,16 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
     // Case `ui_scale_and_text_scale_compose_on_the_live_theme`.
     {
         let mut a = app();
-        let base_type = a.theme.tokens.typography.scale.base;
+        let base_type = a.theme.tokens.typography.size(TextRole::Body);
         let base_gap = a.theme.tokens.spacing.s3;
         a.set_ui_scale(1.25);
         a.set_text_scale(1.2);
         assert_eq!(a.ui_scale(), 1.25);
         assert_eq!(a.text_scale(), 1.2);
         // Type picks up BOTH factors; spacing only the UI factor.
-        assert!((a.theme.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-2);
+        assert!(
+            (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.25 * 1.2).abs() < 1e-2
+        );
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
     }
 
@@ -217,7 +223,10 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
     // Case `appearance_reconcile_applies_scale_theme_and_contrast_live`.
     {
         let base_gap = Theme::high_contrast().tokens.spacing.s3;
-        let base_type = Theme::high_contrast().tokens.typography.scale.base;
+        let base_type = Theme::high_contrast()
+            .tokens
+            .typography
+            .size(TextRole::Body);
         // Light base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
         let root = AppearanceRoot {
             intent: intent(Theme::light(), 1.5, 1.2, true),
@@ -237,7 +246,9 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
         );
         // Spacing grew by the UI factor; type by UI × text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
-        assert!((a.theme.tokens.typography.scale.base - base_type * 1.5 * 1.2).abs() < 1e-1);
+        assert!(
+            (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.5 * 1.2).abs() < 1e-1
+        );
         assert!(
             a.layout.layout_dirty,
             "a live appearance change re-runs layout"

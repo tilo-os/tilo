@@ -26,6 +26,7 @@ use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::text::centered_text_top;
 use crate::widget::{TextInput, TextInputKind, Widget};
@@ -44,7 +45,6 @@ const KBD_HEIGHT: f64 = 20.0;
 const KBD_PAD_X: f64 = 7.0;
 const KBD_INSET: f64 = 10.0;
 const KBD_RADIUS: f64 = 5.0;
-const KBD_LABEL_SIZE: f32 = 11.0;
 
 /// A search-styled input: magnifier + editable text + clear button.
 #[allow(
@@ -234,7 +234,7 @@ impl SearchField {
         theme: &Theme,
     ) {
         let label = Shortcut::command("K").label(self.platform);
-        let (tw, th) = text_renderer.measure(&label, KBD_LABEL_SIZE, None);
+        let (tw, th) = text_renderer.measure_style(&label, None, &theme.text(TextRole::Caption));
         let chip_w = f64::from(tw) + 2.0 * KBD_PAD_X;
         let cy = self.rect.center().y;
         let chip = Rect::new(
@@ -271,13 +271,13 @@ impl SearchField {
                       or panic"
         )]
         let label_transform = transform * Affine::translate((chip.x0 + KBD_PAD_X, label_top));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            KBD_LABEL_SIZE,
             theme.text_dim,
             label_transform,
             None,
+            &theme.text(TextRole::Caption),
         );
     }
 }
@@ -594,7 +594,7 @@ immaterial"
                 &scene,
                 runs - 1,
                 &label,
-                KBD_LABEL_SIZE,
+                &theme.text(TextRole::Caption),
                 field.rect.center().y - KBD_HEIGHT / 2.0,
                 KBD_HEIGHT,
                 &mut tr,

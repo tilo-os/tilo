@@ -15,6 +15,7 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 
 use crate::shell::i18n::{t, t_args};
+use ui::TextRole;
 use ui::theme::Theme;
 
 /// A transport request emitted by the overlay.
@@ -769,14 +770,14 @@ impl PeerSyncOverlay {
 
         let pad = 20.0;
         let mut y = rect.y0 + pad;
-        let title_size = tokens.typography.scale.base.max(14.0);
-        let body_size = tokens.typography.scale.xs.max(10.0);
+        let title_size = tokens.typography.size(TextRole::Body).max(14.0);
+        let body_size = tokens.typography.size(TextRole::Caption).max(10.0);
         let m = SheetMetrics {
             rect,
             pad,
             avail: rect.width() - pad * 2.0,
             body: body_size,
-            name: tokens.typography.scale.sm.max(12.0),
+            name: tokens.typography.size(TextRole::Caption).max(12.0),
         };
         let title = t(if self.state.invite_review_open {
             "peer-sync-title-review"
@@ -1229,7 +1230,7 @@ impl PeerSyncOverlay {
             // the face is handed the theme-scaled label size explicitly.
             let mut face = ui::widget::ButtonFace::new(brect, &label)
                 .radius(ui::chrome::ChromeRole::Control.radius(theme, bh))
-                .text_size(body);
+                .control_size(ui::widget::ControlSize::Large);
             if primary {
                 face = face.primary();
             }
@@ -1649,8 +1650,8 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
         );
     }
     let x = center.x + 30.0;
-    let ns = theme.tokens.typography.scale.sm.max(12.0);
-    let ss = theme.tokens.typography.scale.xs.max(10.0);
+    let ns = theme.tokens.typography.size(TextRole::Caption).max(12.0);
+    let ss = theme.tokens.typography.size(TextRole::Caption).max(10.0);
     let who = text.elide_to_width(who, ns, f64_to_f32(rect.x1 - x));
     text.draw_text(
         scene,
@@ -1676,7 +1677,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
-    let size = theme.tokens.typography.scale.lg.max(15.0);
+    let size = theme.tokens.typography.size(TextRole::Heading).max(15.0);
     let (_, fh) = text.measure(code, size, None);
     let field = Rect::new(at.x, at.y, at.x + avail, at.y + f64::from(fh) + 20.0);
     scene.fill(

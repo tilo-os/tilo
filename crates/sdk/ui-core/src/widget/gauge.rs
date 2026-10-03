@@ -18,9 +18,9 @@ use vello::peniko::{Brush, Color, Fill};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -270,31 +270,34 @@ impl RingGauge {
         let tokens = &theme.tokens;
         let (big, small) = (reading.value, reading.label);
         if !big.is_empty() {
-            let size = renderer_type_size(text_renderer, tokens.typography.scale.xl);
-            let (bw, bh) = text_renderer.measure_weighted(big, size, None, TextWeight::Bold);
+            let style = tokens.typography.style(TextRole::Title);
+            let (bw, bh) = text_renderer.measure_style(
+                big,
+                None,
+                &style.clone().with_weight(TextWeight::Bold),
+            );
             let bx = center.x - f64::from(bw) / 2.0;
             let by = center.y - f64::from(bh) / 2.0 - if small.is_empty() { 0.0 } else { 4.0 };
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 big,
-                size,
                 tokens.colors.text_primary,
                 transform.pre_translate(Vec2::new(bx, by)),
                 None,
-                TextWeight::Bold,
+                &style.clone().with_weight(TextWeight::Bold),
             );
             if !small.is_empty() {
-                let ss = renderer_type_size(text_renderer, tokens.typography.scale.xs);
-                let (sw, _) = text_renderer.measure(small, ss, None);
+                let ss = tokens.typography.style(TextRole::Caption);
+                let (sw, _) = text_renderer.measure_style(small, None, &ss);
                 let sx = center.x - f64::from(sw) / 2.0;
                 let sy = center.y + f64::from(bh) / 2.0 - 2.0;
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     small,
-                    ss,
                     tokens.colors.text_dim,
                     transform.pre_translate(Vec2::new(sx, sy)),
                     None,
+                    &ss,
                 );
             }
         }
@@ -506,34 +509,26 @@ impl BarGauge {
             value,
         } = *reading;
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(
-            text_renderer,
-            if style.compact_labels {
-                tokens.typography.scale.xs
-            } else {
-                tokens.typography.scale.sm
-            },
-        );
+        let text_style = theme.text(TextRole::Caption).numeric();
         if !label.is_empty() {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 label,
-                text_size,
                 tokens.colors.text_primary,
                 transform.pre_translate(Vec2::new(rect.x0, rect.y0)),
                 None,
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
         }
         if !value.is_empty() {
-            let (vw, _) = text_renderer.measure(value, text_size, None);
-            text_renderer.draw_text(
+            let (vw, _) = text_renderer.measure_style(value, None, &text_style);
+            text_renderer.draw_style(
                 scene,
                 value,
-                text_size,
                 tokens.colors.text_dim,
                 transform.pre_translate(Vec2::new(rect.x1 - f64::from(vw), rect.y0)),
                 None,
+                &text_style,
             );
         }
 

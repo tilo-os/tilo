@@ -27,6 +27,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
@@ -39,13 +40,14 @@ use crate::widget::{Element, TaffyTreeExt, Widget};
 const BAR_THICKNESS: f64 = 8.0;
 const BAR_MARGIN: f64 = 2.0;
 
-/// One line of `size` type as the renderer will lay it out. Theme type sizes
-/// already carry the accessibility text scale, and a single line of
-/// `TextStyle::new(size)` measures exactly `size × line_height` tall (see
-/// `TextRenderer::measure_style`), so a band sized from this at layout time
-/// agrees with the line the widget measures and centres at paint time.
-pub fn type_line_height(size: f32) -> f64 {
-    f64::from(crate::text_render::TextStyle::new(size).line_height_px())
+/// One line of `role` as the renderer will lay it out: the role's resolved
+/// size times its leading, so a band sized from this at layout time agrees
+/// with the line the widget measures and centres at paint time.
+pub fn type_line_height(
+    typography: &crate::tokens::Typography,
+    role: crate::tokens::TextRole,
+) -> f64 {
+    f64::from(typography.style(role).line_height_px())
 }
 
 /// A structural band that follows the type: `floor` is the widget's 1×
@@ -164,22 +166,22 @@ impl<Row> ColumnDef<Row> {
             // A selected row is a lift (HIG §9.3), so its ink stays the
             // ordinary text colour on every theme.
             let color = theme.text_primary;
-            let size = renderer_type_size(text, theme.tokens.typography.scale.sm);
+            let style = theme.text(TextRole::Caption);
             let label = value(row);
-            let (_, text_h) = text.measure(&label, size, None);
+            let (_, text_h) = text.measure_style(&label, None, &style);
             // `rect` is the whole row's cell (the body clip layer trims what
             // scrolls out), so the text is centred on the row and never
             // slides as the row enters or leaves the viewport.
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &label,
-                size,
                 color,
                 Affine::translate((
                     rect.x0 + f64::from(theme.tokens.spacing.s2),
                     centered_text_top(rect.y0, rect.height(), text_h),
                 )),
                 None,
+                &style,
             );
         }));
         self
@@ -1049,7 +1051,7 @@ impl<Row> DataTable<Row> {
     /// per row (`set_row_height`, mounted cells) are never touched.
     fn apply_type_metrics(&mut self, theme: &Theme) {
         let tokens = &theme.tokens;
-        let line = type_line_height(tokens.typography.scale.sm);
+        let line = type_line_height(&tokens.typography, TextRole::Caption);
         self.header_h = text_band(HEADER_HEIGHT, line, f64::from(tokens.spacing.s3));
         self.row_type = Some(RowType {
             line,
@@ -1308,22 +1310,22 @@ impl<Row> DataTable<Row> {
             ),
         );
 
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let pad_x = f64::from(tokens.spacing.s2);
         for (i, col) in self.columns.iter().enumerate() {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
             };
             let header = crate::i18n::I18nManager::lookup_plain(&col.header);
-            let (_, header_h) = text_renderer.measure(&header, text_size, None);
+            let (_, header_h) = text_renderer.measure_style(&header, None, &text_style);
             let label_y = centered_text_top(header_rect.y0, self.header_h, header_h);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &header,
-                text_size,
                 tokens.colors.text_primary,
                 translated(transform, cr.x0 + pad_x, label_y),
                 None,
+                &text_style,
             );
             if let Some(s) = &self.sort
                 && s.key == col.key
@@ -1331,7 +1333,7 @@ impl<Row> DataTable<Row> {
                 // Use geometry rather than a font triangle: the latter's ink
                 // sits below its line-box centre and drifts farther at large
                 // text sizes. This marker stays visually centred by construction.
-                let d = f64::from(tokens.typography.scale.sm) * 0.65;
+                let d = f64::from(tokens.typography.size(TextRole::Caption)) * 0.65;
                 let x1 = cr.x1 - pad_x;
                 let x0 = x1 - d;
                 let cy = header_rect.center().y;
@@ -1426,12 +1428,11 @@ impl<Row> DataTable<Row> {
                         TableRowState::Error(message) => (message, tokens.colors.text_primary),
                         _ => ("Loading…", tokens.colors.text_dim),
                     };
-                    let size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
-                    let (_, text_h) = text_renderer.measure(label, size, None);
-                    text_renderer.draw_text(
+                    let style = tokens.typography.style(TextRole::Caption);
+                    let (_, text_h) = text_renderer.measure_style(label, None, &style);
+                    text_renderer.draw_style(
                         scene,
                         label,
-                        size,
                         color,
                         translated(
                             transform,
@@ -1439,6 +1440,7 @@ impl<Row> DataTable<Row> {
                             centered_text_top(y0, row_h, text_h),
                         ),
                         None,
+                        &style,
                     );
                 }
             }
@@ -1757,13 +1759,6 @@ impl<Row> DataTable<Row> {
 
 const HEADER_HEIGHT: f64 = 28.0;
 const ROW_HEIGHT: f64 = 24.0;
-
-/// Theme type sizes already carry the accessibility text scale, and the
-/// renderer applies that same scale once more inside `draw_text`/`measure`.
-/// The size-only twin of [`TextRenderer::renderer_input_style`], defined in
-/// [`crate::text_metrics`]; re-exported here for the immediate-mode data
-/// widgets that learned it from this module.
-pub(crate) use crate::text_metrics::renderer_type_size;
 
 /// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
 /// taller than the band starts at the band's top rather than bleeding into
@@ -3504,7 +3499,7 @@ mod tests {
             let semantics = Widget::accessibility(&table).expect("table semantics");
             let row = semantics.children.first().expect("first visible row");
             let row_bounds = row.bounds.expect("row bounds").to_rect();
-            assert_eq!(row_bounds.y0, table.rect.y0 + HEADER_HEIGHT - 10.0);
+            assert_eq!(row_bounds.y0, table.rect.y0 + table.header_h - 10.0);
             assert_eq!(row_bounds.y1, row_bounds.y0 + 24.0);
             assert_eq!(row_bounds.x0, table.rect.x0);
             assert_eq!(row_bounds.x1, table.rect.x1);
@@ -3933,7 +3928,7 @@ mod tests {
             t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
             t.set_scroll_y(10.0 * px(ROW_HEIGHT)); // scrolled past 10 rows
             let rect = t.get_rect();
-            let p = Point::new(rect.x0 + 5.0, rect.y0 + HEADER_HEIGHT + 1.0);
+            let p = Point::new(rect.x0 + 5.0, rect.y0 + t.header_h + 1.0);
             assert_eq!(
                 t.row_at(p),
                 Some(10),
@@ -3954,7 +3949,7 @@ mod tests {
             assert!(t.set_row_height(0, 10.0));
             assert!(t.set_row_height(1, 50.0));
             let _laid = lay_out(&mut t);
-            let body = t.get_rect().y0 + HEADER_HEIGHT;
+            let body = t.get_rect().y0 + t.header_h;
 
             assert_eq!(t.row_at(Point::new(10.0, body + 9.0)), Some(0));
             assert_eq!(t.row_at(Point::new(10.0, body + 10.0)), Some(1));
@@ -3975,7 +3970,7 @@ mod tests {
             t.set_scroll_y(50_000.0 * px(ROW_HEIGHT));
             let _laid = lay_out(&mut t);
 
-            assert!((t.get_rect().height() - (HEADER_HEIGHT + 120.0)).abs() < 0.01);
+            assert!((t.get_rect().height() - (t.header_h + 120.0)).abs() <= 0.5);
             let node = Widget::accessibility(&t).expect("table semantics");
             assert!(
                 node.children.len() <= 10,
@@ -4246,7 +4241,7 @@ mod tests {
         fn body_drag_scrolls_table_without_selecting_but_click_still_selects() {
             let (mut table, tree, node) = scrolling_table();
             let modifiers = winit::event::Modifiers::default();
-            let body_top = table.get_rect().y0 + HEADER_HEIGHT;
+            let body_top = table.get_rect().y0 + table.header_h;
             let move_cursor = |y| WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (20.0, y).into(),

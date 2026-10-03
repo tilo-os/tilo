@@ -26,9 +26,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -266,10 +266,10 @@ impl Popover {
                   f64's exact-integer range"
     )]
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let fs = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let fs = theme.text(TextRole::Caption);
         let mut w = MIN_W.max(self.anchor.width());
         for label in &self.items {
-            let tw = f64::from(tr.measure(label, fs, None).0);
+            let tw = f64::from(tr.measure_style(label, None, &fs).0);
             w = w.max(tw + CHECK_W + PAD_X * 2.0);
         }
         let n = self.items.len().max(1);
@@ -400,7 +400,7 @@ impl Widget for Popover {
             &crate::surface::edge_outline(self.rect, radius),
         );
 
-        let fs = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let fs = theme.text(TextRole::Caption);
         for (idx, label) in self.items.iter().enumerate() {
             let row = self.row_rect(idx);
             let is_hl = idx == self.highlighted;
@@ -429,16 +429,19 @@ impl Widget for Popover {
                 };
                 Self::draw_check(scene, transform, row, check_color);
             }
-            let (_lw, lh) = text_renderer.measure_weighted(label, fs, None, TextWeight::Medium);
+            let (_lw, lh) = text_renderer.measure_style(
+                label,
+                None,
+                &fs.clone().with_weight(TextWeight::Medium),
+            );
             let ty = row.center().y - f64::from(lh) / 2.0;
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 label,
-                fs,
                 text_color,
                 transform.pre_translate(Vec2::new(row.x0 + PAD_X + CHECK_W, ty)),
                 None,
-                TextWeight::Medium,
+                &fs.clone().with_weight(TextWeight::Medium),
             );
         }
     }

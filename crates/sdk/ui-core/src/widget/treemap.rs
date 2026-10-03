@@ -18,6 +18,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
 };
@@ -337,14 +338,13 @@ impl Widget for Treemap {
             self.pointer = rect.center();
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         for tile in self.layout() {
@@ -376,23 +376,24 @@ impl Widget for Treemap {
                     .tokens
                     .colors
                     .ink_on(color, theme.tokens.colors.text_primary, 4.5);
-                tr.draw_text_weighted(
+                tr.draw_style(
                     scene,
                     &item.label,
-                    theme.tokens.typography.scale.sm,
                     ink,
                     transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
                     Some(crate::num::f32_of_f64((rect.width() - 20.0).max(0.0))),
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Label)
+                        .with_weight(TextWeight::Semibold),
                 );
                 if self.style.show_values && rect.height() >= 64.0 {
-                    tr.draw_text(
+                    tr.draw_style(
                         scene,
                         &format_compact(item.value),
-                        theme.tokens.typography.scale.xs,
                         ink,
                         transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 32.0)),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                 }
             }
@@ -405,8 +406,8 @@ impl Widget for Treemap {
             } else {
                 item.detail.clone()
             };
-            let (lw, _) = tr.measure(&item.label, theme.tokens.typography.scale.sm, None);
-            let (dw, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let (lw, _) = tr.measure_style(&item.label, None, &theme.text(TextRole::Caption));
+            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
             let width = f64::from(lw.max(dw)).max(130.0) + 28.0;
             let mut x = self.pointer.x + 16.0;
             let mut y = self.pointer.y + 16.0;
@@ -424,22 +425,23 @@ impl Widget for Treemap {
                 None,
                 &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &item.label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

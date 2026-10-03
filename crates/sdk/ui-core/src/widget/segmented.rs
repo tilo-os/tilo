@@ -27,9 +27,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, over};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -229,7 +229,7 @@ impl Widget for TriStateControl {
         // token would report a contrast the screen never holds.
         let active_ground = over(theme.tokens.colors.surfaces.raised, fill, alpha);
 
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Caption);
         for (i, (label, seg_rect)) in self.labels.iter().zip(self.seg_rects.iter()).enumerate() {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {
@@ -246,18 +246,18 @@ impl Widget for TriStateControl {
             } else {
                 theme.text_dim
             };
-            let (tw, th) = text_renderer.measure(label, text_size, None);
+            let (tw, th) = text_renderer.measure_style(label, None, &text_style);
             let cx = seg_rect.center().x - f64::from(tw) / 2.0;
             // The measured line, not the font size, is what gets centred —
             // see `widget::text::centered_text_top`.
             let cy = centered_text_top(self.rect.y0, self.rect.height(), f64::from(th));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                text_size,
                 col,
                 transform.pre_translate(Vec2::new(cx, cy)),
                 None,
+                &text_style,
             );
         }
     }
@@ -824,13 +824,13 @@ mod tests {
             assert!(rect.height() > 0.0);
             assert_eq!(scene.encoding().resources.glyph_runs.len(), labels.len());
 
-            let size = theme.tokens.typography.scale.sm;
+            let style = theme.text(TextRole::Caption);
             for (index, label) in labels.into_iter().enumerate() {
                 crate::widget::text::assert_glyph_run_centred_in_band(
                     &scene,
                     index,
                     label,
-                    size,
+                    &style,
                     rect.y0,
                     rect.height(),
                     &mut tr,

@@ -17,9 +17,9 @@ use vello::peniko::{self, BlendMode, Color, Fill};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -138,7 +138,7 @@ impl Avatar {
         rect: Rect,
         initials: &str,
         color: Color,
-        _theme: &Theme,
+        theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -155,20 +155,17 @@ impl Avatar {
         }
         // Same 0.4× ratio the widget uses, but keyed off the rect rather
         // than a stored `size` field so callers don't have to thread one.
-        let text_size =
-            renderer_type_size(text_renderer, px(rect.width().min(rect.height())) * 0.4);
-        let (tw, th) =
-            text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
+        let style = initials_style(theme, px(rect.width().min(rect.height())) * 0.4);
+        let (tw, th) = text_renderer.measure_style(&initials, None, &style);
         let tx = centre.x - f64::from(tw) / 2.0;
         let ty = centre.y - f64::from(th) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &initials,
-            text_size,
             Self::initial_ink(color),
             transform.pre_translate(Vec2::new(tx, ty)),
             None,
-            TextWeight::Semibold,
+            &style,
         );
     }
 
@@ -235,19 +232,11 @@ impl Avatar {
         // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
         // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
-        let text_size = renderer_type_size(ctx.text, px(rect.width().min(rect.height())) * 0.36);
-        let (tw, th) = ctx
-            .text
-            .measure_weighted(&label, text_size, None, TextWeight::Semibold);
+        let style = initials_style(ctx.theme, px(rect.width().min(rect.height())) * 0.36);
+        let (tw, th) = ctx.text.measure_style(&label, None, &style);
         let tx = centre.x - f64::from(tw) / 2.0;
         let ty = centre.y - f64::from(th) / 2.0;
-        ctx.text(
-            &label,
-            &TextStyle::new(text_size).with_weight(TextWeight::Semibold),
-            colors.text_dim,
-            Point::new(tx, ty),
-            None,
-        );
+        ctx.text(&label, &style, colors.text_dim, Point::new(tx, ty), None);
     }
 
     /// A filled `ring.color` disc `ring.width` px larger than `rect`,
@@ -316,21 +305,25 @@ impl Avatar {
 
         // Text size is proportional to the avatar size so a 24px chip
         // and a 64px header avatar both look balanced.
-        let text_size = renderer_type_size(text_renderer, self.size * 0.4);
-        let (tw, th) =
-            text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
+        let style = initials_style(theme, self.size * 0.4);
+        let (tw, th) = text_renderer.measure_style(&self.initials, None, &style);
         let tx = centre.x - f64::from(tw) / 2.0;
         let ty = centre.y - f64::from(th) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &self.initials,
-            text_size,
             Self::initial_ink(bg),
             transform.pre_translate(Vec2::new(tx, ty)),
             None,
-            TextWeight::Semibold,
+            &style,
         );
     }
+}
+
+/// Initials are sized by the disc they sit in, not by the reader's text
+/// scale: the theme's emphasised label face at `px`, as content.
+fn initials_style(theme: &Theme, px: f32) -> TextStyle {
+    theme.text(TextRole::Label).strong().with_content_size(px)
 }
 
 /// Index into a colour ramp of length `len` from a 64-bit hash. `len` is

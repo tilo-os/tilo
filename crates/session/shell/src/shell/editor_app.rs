@@ -27,6 +27,7 @@ use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
+use ui::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -505,16 +506,8 @@ impl EditorApp {
     }
 
     fn body_offset(tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        let (_, title_height) = tr.measure(
-            "Editor",
-            theme.tokens.typography.scale.lg / theme.text_scale,
-            None,
-        );
-        let (_, hint_height) = tr.measure(
-            "Ag",
-            theme.tokens.typography.scale.sm / theme.text_scale,
-            None,
-        );
+        let (_, title_height) = tr.measure_style("Editor", None, &theme.text(TextRole::Heading));
+        let (_, hint_height) = tr.measure_style("Ag", None, &theme.text(TextRole::Caption));
         18.0 + f64::from(title_height + hint_height) + 12.0
     }
 
@@ -527,16 +520,15 @@ impl EditorApp {
         theme: &Theme,
         palette: &EditorPalette,
     ) {
-        let tokens = &theme.tokens;
-        let title_size = tokens.typography.scale.lg / theme.text_scale;
-        let hint_size = tokens.typography.scale.sm / theme.text_scale;
-        tr.draw_text(
+        let title_style = theme.text(TextRole::Heading);
+        let hint_style = theme.text(TextRole::Caption);
+        tr.draw_style(
             scene,
             "Editor",
-            title_size,
             palette.body,
             at(transform, (self.rect.x0 + PADDING_X, self.rect.y0 + 18.0)),
             None,
+            &title_style,
         );
         let hint = crate::shell::i18n::t(if self.disk_conflict.is_some() {
             "editor-hint-disk-conflict"
@@ -549,16 +541,15 @@ impl EditorApp {
             clippy::cast_possible_truncation,
             reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
         )]
-        let hint = tr.elide_to_width(
+        let hint = tr.elide_to_width_style(
             &hint,
-            hint_size,
             (self.rect.width() - 2.0 * PADDING_X).max(0.0) as f32,
+            &hint_style,
         );
-        let (_, title_height) = tr.measure("Editor", title_size, None);
-        tr.draw_text(
+        let (_, title_height) = tr.measure_style("Editor", None, &title_style);
+        tr.draw_style(
             scene,
             &hint,
-            hint_size,
             if self.disk_conflict.is_some() {
                 theme.tokens.colors.semantic.warning
             } else {
@@ -572,6 +563,7 @@ impl EditorApp {
                 ),
             ),
             None,
+            &hint_style,
         );
     }
 
@@ -1237,16 +1229,10 @@ mod tests {
             let theme = Theme::dark().with_text_scale(2.0);
             let (_, body_height) = tr.measure("Ag", TEXT_SIZE, None);
             assert!(EditorApp::line_height(&tr) >= f64::from(body_height));
-            let (_, title_height) = tr.measure(
-                "Editor",
-                theme.tokens.typography.scale.lg / theme.text_scale,
-                None,
-            );
-            let (_, hint_height) = tr.measure(
-                "Click to edit",
-                theme.tokens.typography.scale.sm / theme.text_scale,
-                None,
-            );
+            let (_, title_height) =
+                tr.measure_style("Editor", None, &theme.text(TextRole::Heading));
+            let (_, hint_height) =
+                tr.measure_style("Click to edit", None, &theme.text(TextRole::Caption));
             assert!(
                 EditorApp::body_offset(&mut tr, &theme)
                     >= 18.0 + f64::from(title_height + hint_height) + 12.0

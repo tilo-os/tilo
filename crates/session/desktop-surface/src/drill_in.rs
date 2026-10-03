@@ -11,6 +11,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
+use ui::TextRole;
 use ui::chrome::{ChromeRole, SelectionState, selection_tier};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -65,13 +66,6 @@ const CONTROL_FLOOR_LIFT_T: f32 = 0.35;
 )]
 fn usize_to_f64_lossy(value: usize) -> f64 {
     value as f64
-}
-
-/// Theme typography tokens already carry the user's text scale, and the
-/// renderer scales every authored size again; divide once so the scale is
-/// applied exactly once (HIG §7a). Identity while the renderer is at 1×.
-pub fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
-    resolved / text.text_scale()
 }
 
 // ---------- the Control role, painted once ----------
@@ -408,12 +402,15 @@ impl DrillInList {
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
                 .accessible_name(&crate::i18n::t("drill-in-back")),
         );
-        let size = type_size(text, theme.tokens.typography.scale.sm);
-        let (width, height) = text.measure_weighted(title, size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
+        let style = theme.text(TextRole::Caption);
+        let (width, height) = text.measure_style(
+            title,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
+        text.draw_style(
             scene,
             title,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(
                 (
@@ -423,7 +420,7 @@ impl DrillInList {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &style.with_weight(TextWeight::Semibold),
         );
     }
 
@@ -450,12 +447,11 @@ impl DrillInList {
         message: &str,
         list_top: f64,
     ) {
-        let size = type_size(text, theme.tokens.typography.scale.sm);
-        let (width, height) = text.measure(message, size, None);
-        text.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (width, height) = text.measure_style(message, None, &style);
+        text.draw_style(
             scene,
             message,
-            size,
             theme.tokens.colors.text_dim,
             transform.pre_translate(
                 (
@@ -465,6 +461,7 @@ impl DrillInList {
                     .into(),
             ),
             None,
+            &style,
         );
     }
 
@@ -490,22 +487,22 @@ impl DrillInList {
         // those truthful status indicators.
         let label_x = glyph.x1 + CONTROL_INSET;
         let label_width = discovery_label_width(row, glyph, trailing_reserve);
-        let size = type_size(text, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the bounded quick-settings row width is represented as f32 by the text shaper"
         )]
-        let label = text.elide_to_width(label, size, label_width as f32);
-        let (_, label_height) = text.measure_weighted(&label, size, None, TextWeight::Medium);
-        text.draw_text_weighted(
+        let label = text.elide_to_width_style(label, label_width as f32, &style);
+        let (_, label_height) =
+            text.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
+        text.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             transform
                 .pre_translate((label_x, centred_text_top(row, f64::from(label_height))).into()),
             None,
-            TextWeight::Medium,
+            &style.clone().with_weight(TextWeight::Medium),
         );
         glyph
     }

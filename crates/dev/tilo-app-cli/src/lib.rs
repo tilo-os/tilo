@@ -745,7 +745,6 @@ fn starter_ui_document(title: &str) -> tilo_ui_graph::UiDocument {
                     value: title.into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Title,
-                size: None,
             },
             tilo_ui_graph::UiNode::Text {
                 id: "body".into(),
@@ -753,7 +752,6 @@ fn starter_ui_document(title: &str) -> tilo_ui_graph::UiDocument {
                     value: "Start building here.".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Body,
-                size: None,
             },
         ],
         gap: Some(8.0),
@@ -1900,7 +1898,6 @@ fn screen_text(id: &str, value: String, role: tilo_ui_graph::UiTextRole) -> tilo
         id: id.into(),
         text: tilo_ui_graph::UiTextSource::Static { value },
         role,
-        size: None,
     }
 }
 
@@ -3422,39 +3419,35 @@ fn text_component_source(
     let body = ScreenMessage::new(name, "body", "Replace this copy with application content.");
     let mut source = format!(
         r#"use ui::widget::Text;
-use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextStyle}};
+use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextRole}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Props {{
     pub message: String,
-    pub style: TextStyle,
+    /// What the text is; the theme decides how it looks.
+    pub role: TextRole,
 }}
 
 impl {type_name}Props {{
     #[must_use]
-    pub fn new(message: impl Into<String>, style: TextStyle) -> Self {{
-        Self {{ message: message.into(), style }}
+    pub fn new(message: impl Into<String>, role: TextRole) -> Self {{
+        Self {{ message: message.into(), role }}
     }}
 }}
 
 impl Default for {type_name}Props {{
     fn default() -> Self {{
-        Self::new(
-            "{name}-body",
-            TextStyle::new(18.0)
-                .with_line_height(1.5)
-                .with_kerning(true)
-                .with_letter_spacing(0.15)
-                .with_auto_hyphenation("en-US"),
-        )
+        Self::new("{name}-body", TextRole::Reading)
     }}
 }}
 
-/// Build ordinary reusable `{name}` text with one style shared by layout and paint.
+/// Build ordinary reusable `{name}` text in its role, shared by layout and paint.
 pub fn {module_name}(id: &str, props: &{type_name}Props) -> Text {{
     Text::new(&props.message)
         .with_id(id)
-        .with_style(props.style.clone())
+        .with_role(props.role)
+        .with_kerning(true)
+        .with_auto_hyphenation("en-US")
 }}
 
 /// Keep the standard Text lifecycle while replacing measurement and painting.
@@ -3491,7 +3484,7 @@ mod tests {{
     use ui::a11y::Role;
     use ui::headless::SemanticExpectation;
     use ui::kurbo::Point;
-    use ui::{{TextLayoutConstraints, TextRenderer}};
+    use ui::{{TextLayoutConstraints, TextRenderer, TextStyle}};
 
     struct RecordingLayout(Rc<Cell<u32>>);
 
@@ -3522,10 +3515,7 @@ mod tests {{
     #[test]
     fn component_keeps_text_semantics_with_a_custom_engine() {{
         let measures = Rc::new(Cell::new(0));
-        let props = {type_name}Props::new(
-            "Advanced typography",
-            TextStyle::new(18.0).with_kerning(true),
-        );
+        let props = {type_name}Props::new("Advanced typography", TextRole::Reading);
         let text = {module_name}_with_engine(
             "example-text",
             &props,
@@ -3548,7 +3538,7 @@ mod tests {{
 
     #[test]
     fn component_accepts_non_rectangular_text_flow() {{
-        let props = {type_name}Props::new("Polygon text", TextStyle::new(18.0));
+        let props = {type_name}Props::new("Polygon text", TextRole::Body);
         let region = TextFlowRegion::polygon([
             Point::new(0.0, 0.0),
             Point::new(360.0, 0.0),
@@ -9545,7 +9535,6 @@ fn graph_document() -> Result<String> {
                     value: "graph-title".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Title,
-                size: None,
             },
             tilo_ui_graph::UiNode::Text {
                 id: "graph-introduction".into(),
@@ -9553,7 +9542,6 @@ fn graph_document() -> Result<String> {
                     value: "graph-introduction".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Body,
-                size: None,
             },
         ],
         gap: Some(8.0),

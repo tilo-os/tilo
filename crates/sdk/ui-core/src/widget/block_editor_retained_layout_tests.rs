@@ -251,7 +251,7 @@ fn retained_paragraph_layout_tracks_typing_reflow_clicks_and_attachments() {
                 4,
                 "first click must use the current pointer, even on a previously unfocused line"
             );
-            let target = 37;
+            let target = 60;
             let first = fixture.editor.blocks[0]
                 .line
                 .caret_rect(&fixture.theme, target);

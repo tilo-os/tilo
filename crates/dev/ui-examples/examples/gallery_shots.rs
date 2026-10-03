@@ -39,7 +39,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let mut root = gallery_scene::build_showcase(&mut state, theme);
 
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
         "en-US",
     );
     #[allow(
