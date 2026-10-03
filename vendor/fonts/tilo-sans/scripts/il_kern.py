@@ -67,8 +67,8 @@ Rules, at each master:
               clear pixel and a quarter at 12 px), so I1 never closes up;
             - level gaps: I I at Instrument's Z Z; I J, t I, ť I at L Z
               (baseline bars); l I at the larger of L Z and Z Z; ď ľ ť ř before
-              I a distance of 45; Condensed Bold l l and l I 10 more, so they
-              keep a pixel of white at 12-13 px.
+              I a distance of 45; Condensed Bold l l and l I 10 more (not yet
+              enough for a pixel of white at 12-13 px; see the README).
   lcaron    lcaron.ss13 kerns as the larger (looser) of the tailed l's value
             and plain ľ's value moved by the advance difference, so the tail
             keeps l.ss13's clearance; its caron keeps a distance of 40 from

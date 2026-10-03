@@ -37,8 +37,8 @@ FILES = ("TiloSans[wdth,wght].ttf", "TiloSans-Italic[wdth,wght].ttf")
 # area -> what to hold back. Code points as inclusive ranges.
 HELD_BACK = {
     # Cyrillic: Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian,
-    # Kazakh. Held back until the kerning and heavy-weight issues found in
-    # review are fixed and native readers have approved it.
+    # Kazakh. Held back until native readers have approved it (and a
+    # Bulgarian reader the locl BGR forms).
     "cyrillic": {
         "codepoints": [(0x0400, 0x052F), (0x1C80, 0x1C8F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)],
         "features": [],
