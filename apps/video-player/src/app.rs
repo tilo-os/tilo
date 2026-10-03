@@ -4078,6 +4078,59 @@ mod tests {
         automerge::ROOT
     }
 
+    /// Press the left button with the pointer at `at`, the way the host
+    /// reports it to the app.
+    fn press_at(app: &mut PlayerApp, at: Point) -> bool {
+        app.last_cursor = at;
+        app.handle_app_pointer(&mut AutoCommit::new())
+    }
+
+    #[test]
+    fn library_sheet_rows_tabs_and_scrim_answer_the_pointer() {
+        let mut app = lay_out_still(
+            PlayerApp::for_shot(None, Some("library")),
+            (1200.0, 800.0),
+            1.0,
+        );
+        let next = app.queue[1].id.clone();
+        let row = app
+            .library_row_hits
+            .iter()
+            .find(|hit| hit.id == next)
+            .cloned()
+            .expect("the queued row is placed");
+        let remove = row.remove.expect("a queued row can be removed");
+        // The row's body plays it, through the host action.
+        assert!(press_at(
+            &mut app,
+            Point::new(row.row.x0 + 20.0, row.row.center().y)
+        ));
+        let play = ui::widget::controls::take_control_invocation(&mut *app).expect("play intent");
+        assert_eq!(play.address.action, "play");
+        // Its action removes it; the press does not also play it.
+        assert!(press_at(&mut app, remove.center()));
+        let removal = ui::widget::controls::take_control_invocation(&mut *app).expect("remove");
+        assert_eq!(removal.address.action, "remove");
+        assert!(ui::widget::controls::take_control_invocation(&mut *app).is_none());
+        // A tab asks the host to show that list.
+        let recent_tab = app.library_recent_tab_rect.center();
+        assert!(press_at(&mut app, recent_tab));
+        let recent = ui::widget::controls::take_control_invocation(&mut *app).expect("recent");
+        assert_eq!(recent.address.resource, "video-player.history.local");
+        // Close hides the sheet.
+        let close_button = app.library_close_rect.center();
+        assert!(press_at(&mut app, close_button));
+        let close = ui::widget::controls::take_control_invocation(&mut *app).expect("close");
+        assert_eq!(close.address.action, "hide-library");
+        // So does a press on the scrim, which no control under it receives.
+        assert!(press_at(&mut app, Point::new(40.0, 400.0)));
+        let dismissed = ui::widget::controls::take_control_invocation(&mut *app).expect("scrim");
+        assert_eq!(dismissed.address.action, "hide-library");
+        // With the sheet closed the same press reaches the player.
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(!press_at(&mut app, Point::new(40.0, 400.0)));
+    }
+
     /// Run the production layout passes (sync → build → compute → apply) for
     /// `app` at `viewport`, with the accessibility text scale applied the way
     /// the live host applies it.
