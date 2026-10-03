@@ -1019,11 +1019,49 @@ fn response_preimage(payload: &ResponsePayload) -> anyhow::Result<Vec<u8>> {
     Ok(preimage)
 }
 
+/// The human root an approval signs with: a seed this device holds, or the
+/// person's single-device identity record.
+trait RootSigner {
+    fn public_key(&self) -> [u8; 32];
+    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
+}
+
+impl RootSigner for ed25519_dalek::SigningKey {
+    fn public_key(&self) -> [u8; 32] {
+        self.verifying_key().to_bytes()
+    }
+
+    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+        Ok(self.sign(message).to_bytes())
+    }
+}
+
+impl RootSigner for runtime_identity::SigningIdentity {
+    fn public_key(&self) -> [u8; 32] {
+        self.group_public_key()
+    }
+
+    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+        self.sign(message)
+            .map_err(|error| anyhow::anyhow!("sign with the identity record: {error}"))
+    }
+}
+
+fn sign_root_cert(cert: &mut DeviceCert, root: &(impl RootSigner + ?Sized)) -> anyhow::Result<()> {
+    if cert.user_public_key != root.public_key() {
+        bail!("device certificate names a different identity than the signing root");
+    }
+    let digest = tilo_user_identity::device_cert_signing_digest(cert)?;
+    cert.signature = root.sign_message(&digest)?;
+    verify_device_cert(cert).context("signed device certificate does not verify")?;
+    Ok(())
+}
+
 fn sign_response(
     payload: ResponsePayload,
-    root: &ed25519_dalek::SigningKey,
+    root: &(impl RootSigner + ?Sized),
 ) -> anyhow::Result<Response> {
-    let signature = root.sign(&response_preimage(&payload)?).to_bytes().to_vec();
+    let signature = root.sign_message(&response_preimage(&payload)?)?.to_vec();
     Ok(Response { payload, signature })
 }
 
@@ -1323,7 +1361,7 @@ fn make_finalized(
     response_bytes: &[u8],
     nonce: [u8; 16],
     device_public_key: [u8; 32],
-    root: &ed25519_dalek::SigningKey,
+    root: &(impl RootSigner + ?Sized),
 ) -> anyhow::Result<Vec<u8>> {
     let payload = FinalizedPayload {
         nonce,
@@ -1333,7 +1371,7 @@ fn make_finalized(
     let encoded = postcard::to_stdvec(&payload)?;
     Ok(postcard::to_stdvec(&Finalized {
         payload,
-        signature: root.sign(&encoded).to_bytes().to_vec(),
+        signature: root.sign_message(&encoded)?.to_vec(),
     })?)
 }
 
@@ -1828,7 +1866,7 @@ struct ApprovalOptions<'a> {
 }
 
 struct ApprovalIdentity {
-    root: ed25519_dalek::SigningKey,
+    root: Box<dyn RootSigner>,
     device: ed25519_dalek::SigningKey,
     user_public_key: [u8; 32],
     relay_workspace_ids: Vec<u64>,
@@ -1873,12 +1911,46 @@ fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 3
     }
 }
 
+/// The person's root: the seed under the identity root when this device holds
+/// one, otherwise the active record in the identity directory, the way
+/// onboarding keeps it. A record signs only while it is single-device.
+fn load_approval_root(options: &ApprovalOptions<'_>) -> anyhow::Result<Box<dyn RootSigner>> {
+    const MISSING_ROOT: &str =
+        "this device does not hold the identity root needed to approve enrollment";
+    let paths = IdentityPaths::under(options.identity_root);
+    let seed_absent = matches!(
+        std::fs::symlink_metadata(&paths.user_privkey),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    let Some(identity_dir) = options.identity_dir.filter(|_| seed_absent) else {
+        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+            .context(MISSING_ROOT)?;
+        return Ok(Box::new(root));
+    };
+    let record = runtime_identity::resolve_active_identity(identity_dir).with_context(|| {
+        format!(
+            "{MISSING_ROOT}: {} holds no active identity",
+            identity_dir.display()
+        )
+    })?;
+    let identity = runtime_identity::load_from_path(record.clone()).map_err(|error| {
+        anyhow::anyhow!(
+            "{MISSING_ROOT}: cannot open {}: {error} (run this as the account that owns the \
+             identity, in a session that can reach its secret store)",
+            record.display()
+        )
+    })?;
+    if !identity.is_single_device() {
+        bail!("threshold identity requires the multi-device certificate ceremony");
+    }
+    Ok(Box::new(identity))
+}
+
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
     let paths = IdentityPaths::under(options.identity_root);
-    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
-        .context("this device does not hold the identity root needed to approve enrollment")?;
+    let root = load_approval_root(options)?;
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
-    let user_public_key = root.verifying_key().to_bytes();
+    let user_public_key = root.public_key();
     let issuer_cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&user_public_key),
     )
@@ -2078,12 +2150,13 @@ fn approval_projection(
                 .with_context(|| format!("read {}", options.acl.display()))?;
             let capabilities = serde_json::from_str(&capability_json)
                 .context("filesystem capability export is invalid")?;
-            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
                 ticket.workspace_id(),
                 1,
                 capabilities,
                 false,
-                &identity.root,
+                identity.user_public_key,
+                |payload| identity.root.sign_message(payload),
             )?;
             let mut relay_workspace_ids = identity.relay_workspace_ids.clone();
             relay_workspace_ids.sort_unstable();
@@ -2141,7 +2214,7 @@ fn prepare_approval(
         expires_at_ns: None,
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, &identity.root)?;
+    sign_root_cert(&mut cert, identity.root.as_ref())?;
     let projection = approval_projection(options, identity, &cert)?;
     let signed = sign_response(
         ResponsePayload {
@@ -2154,7 +2227,7 @@ fn prepare_approval(
             fleet_json: projection.fleet_json,
             home_peers_json: projection.home_peers_json,
         },
-        &identity.root,
+        identity.root.as_ref(),
     )?;
     let encrypted = encrypt_response(
         &signed,
@@ -2241,7 +2314,7 @@ fn commit_approval(
         &prepared.encrypted,
         pending.token.nonce,
         pending.request.device_public_key,
-        &identity.root,
+        identity.root.as_ref(),
     )?;
     for _ in 0..8 {
         socket.send_to(&finalized, pending.sender)?;
