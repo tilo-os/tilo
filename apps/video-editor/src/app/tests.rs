@@ -9721,7 +9721,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
         let bin_theme = Theme::dark().with_text_scale(2.0);
         for (media, row) in rows {
             let item = narrow.project.media(media).expect("row media exists");
-            let tx = row.x0 + 8.0 * narrow.bin_ui_scale() + 64.0 + 12.0 * narrow.bin_ui_scale();
+            let tx = row.x0 + 8.0 * narrow.bin_ui_scale() + 64.0 + 8.0 * narrow.bin_ui_scale();
             let available = (row.x1 - 8.0 * narrow.bin_ui_scale() - tx) as f32;
             let (name_w, name_h) =
                 bin_text.measure_style(&item.name, None, &bin_theme.text(TextRole::Label));
