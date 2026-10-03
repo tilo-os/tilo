@@ -27,14 +27,13 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::popover_widget::PopoverSide;
 use tilo_ui::widget::resizable_split::SplitOrientation;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
     Avatar, AvatarSize, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog,
-    PopoverWidget, ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar,
+    Popover, PopoverSide, ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar,
     TreeView, VideoPlayer, Widget,
 };
 
@@ -108,6 +107,14 @@ fn stamp(
     widget.sync(state, &automerge::ObjId::Root);
     let presence = PresenceCtx::default();
     widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    // The top layer (popovers, modals) is presented over the stamped region
+    // as a host presents it over its window.
+    let previous = presence.push_viewport(Rect::from_origin_size(
+        origin,
+        (f64::from(size.0), f64::from(size.1)),
+    ));
+    widget.draw_overlay(scene, Affine::IDENTITY, tr, theme, &presence);
+    presence.pop_viewport(previous);
 }
 
 struct TinyText {
@@ -452,7 +459,7 @@ fn draw_row6(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
     y + ctx.row_label_h + 220.0 + ctx.row_gap
 }
 
-/// Row 7: `ImageViewer` / `VideoPlayer` / `PopoverWidget` (the popover sets
+/// Row 7: `ImageViewer` / `VideoPlayer` / `Popover` (the popover sets
 /// its own anchor rect and viewport in scene-space, so the flip resolver
 /// fires inside the intended cell rather than going through `place`).
 fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
@@ -487,7 +494,7 @@ fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
         ctx.theme,
         pop_x,
         pop_y,
-        "PopoverWidget (anchored, Below)",
+        "Popover (anchored, below)",
     );
     // Visualise the anchor we're going to attach to so it reads as a
     // real button rather than a phantom region.
@@ -518,10 +525,11 @@ fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
         pop_x + pop_w,
         pop_y + row_label_h + pop_h,
     );
-    let mut popover =
-        PopoverWidget::new(anchor, TinyText::new("Popover content"), PopoverSide::Below)
-            .open(true)
-            .with_viewport(viewport);
+    let mut popover = Popover::with_content(TinyText::new("Popover content"))
+        .anchored(anchor)
+        .side(PopoverSide::Below)
+        .open(true)
+        .with_viewport(viewport);
     stamp(
         ctx.scene,
         ctx.tr,
@@ -561,8 +569,8 @@ fn draw_row8_modal(ctx: &mut GalleryCtx<'_>, pad: f64, canvas_w: u32, y: f64) {
     )
     .open(true)
     .primary_action("Save", || {})
-    .secondary_action("Discard", || {})
-    .with_viewport(viewport);
+    .secondary_action("Discard", || {});
+    let _ = viewport;
     stamp(
         ctx.scene,
         ctx.tr,

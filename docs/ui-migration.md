@@ -412,7 +412,7 @@ what the colour *did* at that line, first match wins:
 | `Theme::in_region(region) -> Theme`, `Theme::on_ground(ground) -> Theme` | The theme for what is drawn on that ground: `surfaces.content` re-pointed to it, ink tiers re-measured, `intent.selection` / `selection_hover` stepped from it. Pass it to the children's `draw`. |
 | `ui::surface::region_needs_edge(ground, content)`, `ui::tokens::colors::REGION_MIN_STEP` | Whether a tier is too close to content to separate by tone (only the high-contrast material). |
 | `theme.tokens.spacing.rhythm.{tight, related, sibling, section, group}` (`ui::tokens::Rhythm`) | Gaps by relationship (4 / 8 / 12 / 16 / 24 at 1×), scaled with `ui_scale` and a custom spacing. |
-| `FrameHarness::render_window_png` / `render_window_rgba` | The frame over the window ground; `--shots` and `--responsive-matrix` write this. |
+| `FrameHarness::render_png` / `render_rgba` | The frame over the window ground; `--shots` and `--responsive-matrix` write this (see Window chrome & shots). |
 | `ShotFrame::new(viewport, theme)` | Now clears to the window ground by default; delete a `.with_background(theme.bg_app)` / `.with_background(surfaces.content)`. |
 
 ### Choosing the region
@@ -917,6 +917,213 @@ tile.paint(&mut ctx, Rect::new(x, y, x + w, y + h));
 ## Search
 
 ## Window chrome & shots
+
+Overlays, status and captures behave the same in every app: one modal, one
+popover, both presented in the window's top layer; persistent status in the
+status bar and transient status in the bubble; chrome over media on the
+floating material; and shots that are the live window, settled, on a pinned
+clock. HIG §7c is the rule; this section is the mechanical part.
+
+### Removed APIs and their replacements
+
+| Removed | Replacement |
+|---|---|
+| `ui::widget::ModalFrame` (namespace) | functions of `ui::widget::modal_dialog`: `layout`, `paint_backdrop`, `paint_actions`, `card_width`, `body_width`, `action_height`, `ink` |
+| `ModalFrame::layout(viewport, &spec, tr, theme)` | `modal_dialog::layout(window, &spec, tr, theme)`; `window` is the whole window (see "Painted apps"), never a pane |
+| `ModalFrame::paint_backdrop(..)` / `ModalFrame::paint_actions(..)` | `modal_dialog::paint_backdrop(..)` / `modal_dialog::paint_actions(..)`, same arguments |
+| `ModalFrame::card_width(viewport, &spec, theme)` / `ModalFrame::body_width(viewport, &spec, theme)` | `modal_dialog::card_width(window, spec.max_width, theme)` / `modal_dialog::body_width(window, spec.max_width, theme)` |
+| `ModalFrame::action_height(theme)` / `ModalFrame::ink(theme)` | `modal_dialog::action_height(theme)` / `modal_dialog::ink(theme)` |
+| `ModalFrame::card_fill(theme)` | delete; a colour derived from the sheet is `ui::chrome::panel_ground(theme)` |
+| `ui::widget::modal_frame::{ModalAction, ModalEmphasis, ModalHit, ModalLayout, ModalSpec}` | same names in `ui::widget::modal_dialog` (also re-exported from `ui::widget`) |
+| `MODAL_SCRIM_ALPHA` (`ui::widget::modal_frame`) | `ui::overlay::scrim::MODAL_STRENGTH`; better, `ui::overlay::scrim::modal(scene, transform, window, openness, theme)` |
+| `MODAL_PAD`, `MODAL_TITLE_ROW_H`, `MODAL_ACTION_ROW_H`, `MODAL_CLOSE_SIZE`, `MODAL_VIEWPORT_MARGIN` | delete; read geometry from the `ModalLayout` |
+| `ModalSpec::body_height(h / text_scale)` | `ModalSpec::body_height(h)`: the body height in the same logical pixels as everything else; never divide by the text scale |
+| `ModalDialog::with_max_size(w, h)` / `set_max_size(w, h)` | `ModalDialog::with_max_width(w)` / `set_max_width(w)`; the height always follows the content (`shortcuts`' `with_max_size(560.0, 520.0)` becomes `with_max_width(560.0)`) |
+| `ModalDialog::layout_in(rect, theme, tr)` and `ModalDialog::with_viewport(rect)` | delete; the top layer places the dialog over the window (see "Mounting a dialog") |
+| `ui::widget::modal_dialog::{MAX_DIALOG_WIDTH, MAX_DIALOG_HEIGHT}` | `ui::widget::modal_dialog::MODAL_MAX_WIDTH`; no height cap |
+| `ui::widget::PopoverWidget::new(anchor, content, side)` | `ui::widget::Popover::with_content(content).anchored(anchor).side(side)` |
+| `ui::widget::popover_widget::PopoverSide` | `ui::widget::PopoverSide` |
+| `ui::overlay::{Modal, Popover, OverlayStack, OverlayEntry, Scrim}` | `ModalDialog`; `ui::widget::Popover`; nothing (the host owns the top layer); `ui::overlay::scrim::{modal, vertical_fade}` |
+| `ui::chrome::STATUS_BAR_HEIGHT` | `ui::chrome::status_bar::height(theme)`, and reserve the band with `status_bar::split` |
+| `ui::status_bubble::draw_chevron(..)` | `ui::icons::Icon::ChevronLeft` / `ChevronRight` `.draw(scene, transform, rect, ink)` |
+| `FrameHarness::render_window_png(path)` / `render_window_rgba()` | `FrameHarness::render_png(path)` / `render_rgba()` (now on `surfaces.content`) |
+| the old transparent `FrameHarness::render_png` / `render_rgba` | `render_png_transparent` / `render_rgba_transparent`, only where a test needs alpha 0 |
+| `ShotFrame::with_background(colour)` | delete; `ShotFrame::write_png` clears to `surfaces.content`, `write_png_transparent` for alpha |
+| `chrono::Local::now()` | `ui::clock::local_now()`; `Local::now().date_naive()` is `ui::clock::today()` |
+
+### New API
+
+| API | Use |
+|---|---|
+| `ModalDialog::with_max_width(w)` | Widest the sheet is drawn (design pixels, default 520). |
+| `ModalDialog::close_rect()` | The close control; shown when the dialog has `on_dismiss` and no secondary action. |
+| `ui::widget::Popover::with_content(c)` + `.anchored(rect)`, `.side(PopoverSide)`, `.open(bool)`, `.on_dismiss(f)`, `.with_viewport(rect)`, `.set_anchor(rect)`, `.set_open(bool)`, `.content()`, `.content_mut()` | An anchored Panel holding any widget. |
+| `ui::widget::Popover::new()` + `.with_label`, `.with_items`, `open_at`, `item_at`, `item_rect`, `move_highlight`, `select`, `take_selection`, `place` | An option menu (unchanged API). |
+| `ui::widget::floating_surface::{paint, paint_faded, radius}` | The body of any floating Panel: `radii.panel`, the blurred material, `elevation.floating`, the panel edge. |
+| `ui::chrome::status_bar::{height, split, draw}` | Persistent status, in a band the content does not cover. |
+| `StatusBubble::show(text, now)`, `pointer_moved(area, p, tr, theme, now)`, `paint(scene, t, tr, theme, area, now)`, `rect_in(area, tr, theme)`, `text()` | The transient bubble owns its text, timing, placement and paint. |
+| `ui::overlay::scrim::modal(scene, t, window, openness, theme)` | The scrim behind a modal Panel (`surfaces.scrim`). |
+| `ui::overlay::scrim::vertical_fade(scene, t, rect, FadeEdge::Top / Bottom, strength, theme)` | One smooth gradient under text on media. |
+| `theme.tokens.colors.media.{letterbox, scrim, ink, ink_dim}` | Media colours, the same in every theme. |
+| `ui::icons::Icon::TriangleAlert` | Warning icon (the `BannerKind::Warning` default). |
+| `ui::widget::history_button()` | The History button for an app's own toolbar; the window then draws no History bar. |
+| `ui::clock::{local_now, today, CAPTURE_LOCAL_TIME}` | Local date and time; pinned to 30 June 2026, 10:42 in captures. |
+| `FrameHarness::settle_for_capture(bound)` | Run frames until no animation runs and no image load is in flight. |
+| `ui::image_store::loads_in_flight()` | Image loads in flight across every store. |
+| `ResourceApp::scenario_viewport(name) -> Option<(u32, u32)>` | The viewport a named scenario is captured at. |
+
+### Mounting a dialog or a popover
+
+`ModalDialog::draw` and `Popover::draw` paint nothing. Both paint in
+`Widget::draw_overlay`, which the host calls after the app and the window's
+chrome, with the window as the presence viewport. So:
+
+1. **Retained apps** (a `Column`/`Row`/framework view holds the dialog):
+   nothing to do beyond deleting any `dialog.draw(..)`/`popover.draw(..)` call
+   the app makes itself. A dialog anywhere in the tree covers the window.
+2. **Painted apps** (a custom `Widget` that owns `dialog: ModalDialog<_>` or
+   `popover: Popover` as a field):
+   - Return it from `children()`, `for_each_child()` and `children_mut()`
+     while it is open, so the default `draw_overlay` reaches it. If the app
+     overrides `draw_overlay`, call `self.dialog.draw_overlay(scene,
+     transform, text, theme, presence)` there instead.
+   - Delete `dialog.layout_in(..)`, `.with_viewport(..)` and the
+     `dialog.draw(..)`/`popover.draw(..)` call in `draw`.
+   - Keep routing events with `dialog.handle_detached(event, scale, mods,
+     doc, path)` or `popover.handle_event(..)` while it is open.
+3. **Immediate-mode sheets** that keep `ModalSpec`/`ModalLayout` (no
+   `ModalDialog`): move the three paint calls into the app's
+   `draw_overlay`, and lay out against the window:
+   `let window = presence.viewport.get().unwrap_or(self.rect);`. Delete any
+   scrim the app paints itself and any opaque "overlay" fill used as a scrim
+   (vpn, mail).
+
+Scrims that covered only a pane (calendar, shortcuts, containers,
+word-processor) cover the window once the dialog is mounted as above; delete
+any per-pane scrim rect.
+
+### Choosing modal or popover
+
+- Confirms a destructive or irreversible step, asks for a value, or blocks
+  until answered → `ModalDialog`. Title says what is being decided; the
+  primary action names what happens ("Delete 3 photos"); `with_destructive`
+  for deleting, revoking or discarding; a `secondary_action("Cancel", ..)` or
+  an `on_dismiss` (which shows the close control).
+- Picks one value next to the control that owns it (an interval, a unit, a
+  sort order) → `Popover::new().with_items(..)`. Delete a hand-drawn list
+  with a solid accent row: the highlight is the panel's lift and the applied
+  option has a check.
+- Shows a small, dismissible form or detail next to its trigger →
+  `Popover::with_content(widget)`.
+- Never a modal for information that needs no decision: use a `Banner` or a
+  `Toast`.
+
+### Status: which surface
+
+| What | Surface |
+|---|---|
+| Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
+| A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
+| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
+| A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
+
+StatusBubble, replacing the hand-rolled pattern (`pill_size` + a margin
+rect + a reveal zone + `push_layer(alpha)` + `draw_pill` + `poke` on change):
+
+```rust
+// state: status_bubble: ui::StatusBubble
+let now = ui::time::now();
+self.status_bubble.show(&label, now);              // every frame is fine; pokes on change only
+// in CursorMoved:
+self.status_bubble.pointer_moved(self.rect, p, tr, theme, now);
+// in draw (or draw_overlay):
+self.status_bubble.paint(scene, transform, tr, theme, self.rect, now);
+// in needs_animation_frame:
+self.status_bubble.needs_frame(ui::time::now())
+```
+
+Delete the app's `status_shown` copy of the text, its `margin`/zone
+constants, `text_size` literals and the alpha layer. Delete
+`arm_status_bubble_for_shots`, `shots_status` and any forced-visible flag: a
+plain `--shots` waits until the bubble has faded. A screenshot scenario that
+wants the bubble in frame stages it in its stage hook with
+`status_bubble.show(text, now)` followed by `status_bubble.set_hover(true,
+now)`. A bubble that hosts controls (ebook's page arrows) keeps `pill_size`
+and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
+`ChevronRight`.
+
+### Scrims and media
+
+- Any scrim colour literal (`Color::from_rgba8(0, 0, 0, a)`, `BLACK.with_alpha`)
+  or app-painted modal dim → delete; the modal paints its own.
+- Stepped bands (several rects of increasing alpha, a hard 64 px band) under
+  text on media → one call:
+  `ui::overlay::scrim::vertical_fade(scene, t, rect, FadeEdge::Bottom, 0.7, theme)`,
+  and draw that text in `theme.tokens.colors.media.ink` (secondary:
+  `media.ink_dim`).
+- Controls over media (capture toolbars, editor transport, photo info) → a
+  floating Panel shaped to the controls:
+  `ui::widget::floating_surface::paint(scene, t, rect, theme)`, inked with
+  `let ink = theme.on_ground(ui::chrome::panel_ground(theme));`
+  (`ink.text_primary`, `ink.text_dim`). Glyphs are `metrics.icon_md` in
+  `metrics.min_pointer_target` hit rects that do not overlap.
+- The area around a frame (letterbox, an empty viewfinder) →
+  `theme.tokens.colors.media.letterbox`, never `surfaces.base`.
+- An idle or error state over media → text only; never draw a play glyph
+  or a ring under it.
+
+### History
+
+- Toolbar apps (logs, themes, weather and any app with its own header row):
+  put `ui::widget::history_button()` into that row (trailing group). The
+  window then draws no History bar; delete any top padding or band the app
+  added under the bar.
+- `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
+  places"). Delete descriptions and developer notes from it: "(not
+  recorded)", "(forecasts are not recorded)", "Process output (not
+  recorded)".
+
+### Shots
+
+1. Delete the `standalone_capture()` branch in `main.rs` that builds a
+   separate `LaunchSpec` or root for `--shots` (clocks, maps, settings,
+   themes, typst-editor, sheets, video-player, weather). `main` is
+   `ui::framework::run::<App>()`. Move each scenario:
+   - resource state → `ResourceApp::scenarios()` names it and
+     `ResourceApp::scenario(Some(name))` returns the actions that stage it;
+   - view state (a selection, an open dialog, a scroll offset, a pushed
+     detail page) → `ViewCx::on_stage` or `ResourceSurface::stage`;
+   - a narrow or phone-sized scenario → `ResourceApp::scenario_viewport`:
+     ```rust
+     fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+         name.ends_with("-narrow").then_some((520, 820))
+     }
+     ```
+2. Replace `chrono::Local::now()` with `ui::clock::local_now()` everywhere
+   (live and capture code alike) and delete per-app fixed demo clocks (maps'
+   `demo_clock_base`): a capture already shows 30 June 2026, 10:42.
+3. Delete `std::thread::sleep`, manual frame loops and
+   `ImageStore::block_until_idle` before a capture: the launcher settles
+   animations and image loads (`CAPTURE_SETTLE_BOUND`).
+4. Capture on the content ground: `render_window_png` → `render_png`; never
+   pass `Color::TRANSPARENT` to a shot.
+5. A shot handler that drives `ShotFrame` itself draws the top layer too:
+   `let mut scene = frame.draw(&mut root); frame.draw_overlay(&mut root, &mut scene); frame.write_png(&scene, out);`
+   (`ui::launch::render_widget_png` does all three).
+6. Light shots through a remote cargo drop-in: pass `--theme light` (the
+   environment is not forwarded).
+
+### What to delete in an app
+
+- Every `ModalFrame`, `PopoverWidget`, `ui::overlay::Modal`/`Popover`/`Scrim`
+  use, per the tables above.
+- Hand-drawn option lists, menus and pickers with an accent-filled selected
+  row → `Popover::new()`.
+- App-painted scrims, dims and "overlay" fills behind dialogs.
+- Status strips painted as a raised band → `chrome::status_bar`.
+- Error text drawn in red over content → `Banner` or `Toast`.
+- `arm_status_bubble_for_shots` and every forced-visible shot flag.
+- Separate capture roots, demo clocks and pre-capture sleeps.
 
 ## Floating material
 
