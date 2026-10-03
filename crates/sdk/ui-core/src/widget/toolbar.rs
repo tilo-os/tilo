@@ -275,7 +275,7 @@ impl Toolbar {
         let button = |label: &str, text: &mut TextRenderer| {
             let (width, height) = text.measure_style(label, None, &style);
             Size {
-                width: (width + self.padding * 2.0).max(self.minimum),
+                width: (width + self.padding * 2.0).ceil().max(self.minimum),
                 height: (height + self.padding * 2.0).max(self.minimum),
             }
         };

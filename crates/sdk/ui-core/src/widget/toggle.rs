@@ -245,7 +245,9 @@ impl ToggleColors {
 pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> ToggleColors {
     let colors = &theme.tokens.colors;
     let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-    let off_track = colors.lift(1.0);
+    // A lift of the window ground: lighter on a dark material, darker on a
+    // light one, so a white knob always stands out from it.
+    let off_track = colors.intent.selection;
     let track = if on {
         colors.intent.inverted
     } else {
@@ -260,7 +262,7 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
     let (knob, knob_edge) = if on {
         let knob = ink_across(&[track], colors.intent.on_inverted, floor);
         (if interact.hovered { harder(knob) } else { knob }, None)
-    } else if !colors.lifts_bright() {
+    } else if light_material(colors) {
         let ring = ink_across(&[track], colors.text_tertiary, floor);
         (
             colors.surfaces.raised,
@@ -283,6 +285,12 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
         edge,
         edge_width,
     }
+}
+
+/// Whether `colors` is a light material (dark ink on a light window
+/// ground), where a knob is a raised white object rather than an ink glyph.
+pub(crate) fn light_material(colors: &crate::tokens::colors::Colors) -> bool {
+    crate::a11y::relative_luminance(colors.surfaces.content) > 0.5
 }
 
 /// The lowest contrast `ink` reaches over any of `grounds`.
@@ -906,8 +914,7 @@ mod tests {
                 "on-track is the inverted fill"
             );
             assert_eq!(
-                off.track,
-                theme.tokens.colors.lift(1.0),
+                off.track, theme.tokens.colors.intent.selection,
                 "off-track is a lift off the ground, not a ramp slot"
             );
             assert_ne!(on.track, off.track, "on and off tracks must differ");
@@ -925,10 +932,7 @@ mod tests {
                 let on = toggle_face_colors(&theme, true, ToggleInteract::default());
                 assert_eq!(on.knob, colors.intent.on_inverted, "{}", theme.name);
                 assert_eq!(on.knob_edge, None);
-                if colors.lifts_bright() {
-                    assert_eq!(off.knob, colors.text_dim, "{}", theme.name);
-                    assert_eq!(off.knob_edge, None);
-                } else {
+                if light_material(colors) {
                     assert_eq!(off.knob, colors.surfaces.raised, "{}", theme.name);
                     assert!(
                         crate::a11y::relative_luminance(off.knob)
@@ -936,6 +940,9 @@ mod tests {
                         "{}: the off knob is lighter than its track",
                         theme.name
                     );
+                } else {
+                    assert_eq!(off.knob, colors.text_dim, "{}", theme.name);
+                    assert_eq!(off.knob_edge, None);
                 }
                 for (state, face) in [("off", off), ("on", on)] {
                     let ratio = crate::a11y::contrast_ratio(face.knob_outline(), face.track);

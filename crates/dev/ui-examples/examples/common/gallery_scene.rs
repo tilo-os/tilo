@@ -19,9 +19,9 @@ use tilo_ui::widget::table;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{
-    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, ChipLead,
-    ChipStyle, Column, Container, Divider, Dropdown, EmptyState, NumberInput, ProgressBar,
-    RingGauge, Row, SearchField, Series, Slider, Spacer, Sparkline, StatTile, TabBar,
+    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, ButtonRole, Chart, Checkbox, Chip,
+    ChipLead, ChipStyle, Column, Container, Divider, Dropdown, EmptyState, NumberInput,
+    ProgressBar, RingGauge, Row, SearchField, Series, Slider, Spacer, Sparkline, StatTile, TabBar,
     TabDescriptor, Table, Text, TextInput, Toggle, ToggleGroup, Tone, Toolbar, Trend, Widget,
 };
 use tilo_ui::{
@@ -350,8 +350,23 @@ fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new("g_save", "Save", None)))
-                        .push(Box::new(Button::new("g_cancel", "Discard", None))),
+                        .push(Box::new(
+                            Button::new("g_save", "Save", None)
+                                .role(ButtonRole::Primary)
+                                .shortcut_hint(tilo_ui::platform::Shortcut::command("S")),
+                        ))
+                        .push(Box::new(Button::new("g_cancel", "Discard", None)))
+                        .push(Box::new(
+                            Button::new("g_delete", "Delete", None).role(ButtonRole::Destructive),
+                        ))
+                        .push(Box::new(
+                            Button::new("g_more", "Details", None).role(ButtonRole::Plain),
+                        ))
+                        .push(Box::new(Button::icon_only(
+                            "g_open",
+                            tilo_ui::icons::Icon::ExternalLink,
+                            "Open in browser",
+                        ))),
                 ))
                 .push(Box::new(
                     Row::new()
@@ -437,6 +452,10 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                             Badge::text("New").style(ChipStyle::Tinted(Tone::Info)),
                         ))
                         .push(Box::new(Badge::text("Beta")))
+                        .push(Box::new(
+                            Badge::text("Failed").style(ChipStyle::Tinted(Tone::Danger)),
+                        ))
+                        .push(Box::new(Badge::text("Live").style(ChipStyle::Live)))
                         .push(Box::new(Badge::count(3)))
                         .push(Box::new(Badge::count(128)))
                         .push(Box::new(Badge::dot())),
