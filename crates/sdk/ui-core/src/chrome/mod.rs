@@ -17,7 +17,6 @@ pub use shell::{
     chrome_hairline, fill_scrim, glass_selector, panel_border, panel_ground, panel_shadow,
     scrim_maps, selection_tier, selection_tier_on,
 };
-pub use status_bar::STATUS_BAR_HEIGHT;
 pub use toolbar::{
     LabelCue, TOOLBAR_HEIGHT, ToolbarItem, ToolbarMetrics, bar_padding, item_rects, paint_bar,
 };

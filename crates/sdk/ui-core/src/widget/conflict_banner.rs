@@ -2,7 +2,7 @@
 //! above itself when one or more unresolved conflicts exist on the doc.
 //!
 //! ```text
-//!  [!]  File rename collision — 3 conflicts in this doc        [Review] [Dismiss]
+//!  (warning icon)  File rename collision: 3 conflicts    [Review] [Dismiss]
 //! ```
 //!
 //! Decorative + actionable: it never mutates the CRDT itself. `[Review]`
@@ -18,8 +18,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
@@ -37,16 +36,10 @@ use crate::widget::data_table::{text_band, type_line_height};
 pub const BANNER_HEIGHT: f64 = 36.0;
 /// Padding between the banner edge and any content.
 const PADDING: f64 = 8.0;
-/// Width of the warning glyph slot at the leading edge.
-const GLYPH_W: f64 = 20.0;
 /// Width budget for the trailing chip cluster (Review + Dismiss).
 const CHIP_REVIEW_W: f64 = 64.0;
 const CHIP_DISMISS_W: f64 = 64.0;
 const CHIP_GAP: f64 = 6.0;
-/// Alpha applied to the theme's warning color when used as the
-/// banner background — low enough that text overlay still reads as
-/// "warning-tinted neutral", not a fluorescent panel.
-const BANNER_BG_ALPHA: u8 = 51; // ~ 20%
 
 /// Composes `base` with a translation for text placement. Affine
 /// composition is floating-point matrix multiply — it cannot overflow or
@@ -208,68 +201,31 @@ impl ConflictBanner {
         ))
     }
 
-    /// The "N conflicts in this doc" label. Singular/plural handled here
-    /// so the picker + banner stay consistent.
+    /// The "Family: N conflicts" label. Singular/plural handled here so
+    /// the picker and banner stay consistent.
     fn count_label(&self) -> String {
         if self.conflict_count == 1 {
-            format!("{} \u{2014} 1 conflict in this doc", self.family_name)
+            format!("{}: 1 conflict", self.family_name)
         } else {
-            format!(
-                "{} \u{2014} {} conflicts in this doc",
-                self.family_name, self.conflict_count
-            )
+            format!("{}: {} conflicts", self.family_name, self.conflict_count)
         }
     }
 
-    /// Paint one trailing chip (`Review` / `Dismiss`).
+    /// Paint one trailing action (`Review` / `Dismiss`): a Small button.
     fn draw_chip(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        label: (&str, (f32, f32)),
+        (label, style): (&str, crate::widget::ButtonStyle),
         hovered: bool,
     ) {
-        let (label, measured) = label;
-        // A Neutral button face (HIG §9.5): raised at rest, its half lift
-        // when hovered, edge derived from the face — not a white
-        // veneer that is invisible on a light palette.
-        let body = if hovered {
-            theme
-                .tokens
-                .colors
-                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
-        } else {
-            theme.tokens.colors.surfaces.raised
-        };
-        crate::surface::card(
-            scene,
-            transform,
-            rect,
-            f64::from(theme.tokens.radii.detail),
-            body,
-        );
-        let text_style = theme.text(TextRole::Caption);
-        // Centre on the measurement the chip was sized from; a host that
-        // laid out without the renderer-aware hook measures here instead.
-        let (lw, lh) = if measured.0 > 0.0 {
-            measured
-        } else {
-            text_renderer.measure_style(label, None, &text_style)
-        };
-        text_renderer.draw_style(
-            scene,
-            label,
-            theme.tokens.colors.text_primary,
-            translated(
-                transform,
-                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
-                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            ),
-            None,
-            &text_style,
-        );
+        let face = crate::widget::ButtonFace::new(rect, label)
+            .style(style)
+            .control_size(crate::widget::control_size::ControlSize::Small)
+            .hovered(hovered);
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
     }
 }
 
@@ -346,42 +302,34 @@ impl Widget for ConflictBanner {
             self.dirty = false;
             return;
         }
-        let warn = theme.tokens.colors.semantic.warning;
-        let warn_rgba = warn.to_rgba8();
-        let bg_color = Color::from_rgba8(warn_rgba.r, warn_rgba.g, warn_rgba.b, BANNER_BG_ALPHA);
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.detail));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            bg_color,
-            None,
-            &shape,
-        );
-        scene.stroke(&Stroke::new(1.0), transform, warn, None, &shape);
+        // A well in the content, like a `Banner`: the raised surface under
+        // its derived rest edge, the warning carried by the icon alone.
+        let well = theme.tokens.colors.surfaces.raised;
+        let radius = f64::from(theme.tokens.radii.control);
+        crate::surface::card(scene, transform, self.rect, radius, well);
+        let on_well = theme.on_ground(well);
 
         let text_style = theme.text(TextRole::Caption);
-        let glyph_style = theme.text(TextRole::Body);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
-
-        let glyph = "!";
-        let (gw, gh) = text_renderer.measure_style(glyph, None, &glyph_style);
-        let glyph_x = self.rect.x0 + PADDING + (GLYPH_W - f64::from(gw)) / 2.0;
-        text_renderer.draw_style(
+        let icon = f64::from(theme.tokens.metrics.icon_md);
+        let icon_rect = Rect::from_center_size(
+            Point::new(self.rect.x0 + PADDING + icon / 2.0, cy),
+            (icon, icon),
+        );
+        crate::icons::Icon::TriangleAlert.draw(
             scene,
-            glyph,
-            warn,
-            translated(transform, glyph_x, cy - f64::from(gh) / 2.0),
-            None,
-            &glyph_style,
+            transform,
+            icon_rect,
+            theme.tokens.colors.semantic.warning,
         );
 
         let label = self.count_label();
-        let label_x = self.rect.x0 + PADDING + GLYPH_W + 6.0;
+        let label_x = icon_rect.x1 + f64::from(theme.tokens.spacing.s2);
         let (_lw, lh) = text_renderer.measure_style(&label, None, &text_style);
         text_renderer.draw_style(
             scene,
             &label,
-            theme.tokens.colors.text_primary,
+            on_well.text_primary,
             translated(transform, label_x, cy - f64::from(lh) / 2.0),
             None,
             &text_style,
@@ -397,7 +345,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                ("Review", self.review_label),
+                ("Review", crate::widget::ButtonStyle::Neutral),
                 self.review_hovered,
             );
         }
@@ -408,7 +356,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                ("Dismiss", self.dismiss_label),
+                ("Dismiss", crate::widget::ButtonStyle::Ghost),
                 self.dismiss_hovered,
             );
         }
@@ -649,7 +597,7 @@ mod tests {
             dispatch(&mut b, &mouse_press());
             assert_eq!(*fired.borrow(), 1);
             // Singular form for n == 1.
-            assert!(b.count_label().contains("1 conflict in this doc"));
+            assert!(b.count_label().ends_with(": 1 conflict"));
         }
 
         fn cursor_outside_chips_does_not_fire_callbacks() {
