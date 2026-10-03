@@ -160,22 +160,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self
     }
 
-    /// Close the tree's trailing side with a hairline derived from its
-    /// ground — the split between a sidebar and the content beside it.
-    #[must_use]
-    pub fn with_trailing_edge(mut self) -> Self {
-        self.trailing_edge = true;
-        self
-    }
-
-    /// Start rows one spacing step in from the tree's leading edge, aligned
-    /// with the heading, instead of flush against it.
-    #[must_use]
-    pub fn inset_rows(mut self) -> Self {
-        self.inset_rows = true;
-        self
-    }
-
     /// Hide tooltips while something the host paints covers the tree.
     pub fn suppress_tooltips(&mut self, suppressed: bool) {
         self.tooltips_suppressed = suppressed;
@@ -304,11 +288,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.visible_row_rect(self.visible_index_of(id)?)
     }
 
-    /// The disclosure column of `id`'s row (whether or not it is a branch).
+    /// The disclosure of `id`'s row: the leading caret column of a tree row
+    /// (whether or not it is a branch), the trailing chevron or the whole
+    /// header of a navigation row.
     #[must_use]
     pub fn disclosure_rect(&self, id: NodeId) -> Option<Rect> {
         let index = self.visible_index_of(id)?;
         let row = self.visible_row_rect(index)?;
+        if let Some(nav) = self.nav_disclosure_rect(id, row) {
+            return nav;
+        }
         let (_, depth) = self.index.row_at(&self.model, index)?;
         let x0 = row.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
         Some(Rect::new(x0, row.y0, x0 + self.disclosure_w, row.y1))
@@ -329,6 +318,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if count == 0 {
             return Vec::new();
         }
+        if self.is_nav() {
+            let icons: Vec<Icon> = self.row_actions.iter().map(|action| action.icon).collect();
+            return self.nav_action_rects(row, &icons);
+        }
         let margin = f64::from(self.spacing.s1) / 2.0;
         let side = (row.height() - 2.0 * margin).max(1.0);
         let gap = f64::from(self.spacing.s1) / 2.0;
@@ -346,8 +339,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Whether the row actions of `key`'s row are showing.
     pub(super) fn row_actions_visible(&self, key: TreeRowKey) -> bool {
         !self.row_actions.is_empty()
-            && matches!(key, TreeRowKey::Node(_))
-            && self.hovered == Some(key)
+            && matches!(key, TreeRowKey::Node(id) if self.model.shows_row_actions(id))
+            && (self.hovered == Some(key) || (self.is_focused && self.focused == Some(key)))
             && !self.reorder.is_tracking()
             && !self.menu.is_open()
             && self.rename.is_none()
@@ -362,6 +355,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             if let Some(callback) = &mut self.on_heading_action {
                 callback();
             }
+            return true;
+        }
+        if self.is_nav() && self.press_nav_section_action(point) {
             return true;
         }
         let Some(key @ TreeRowKey::Node(id)) = self.row_key_at(point) else {
@@ -560,26 +556,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
             xf,
             None,
             text_style,
-        );
-    }
-
-    /// The trailing hairline of [`Self::with_trailing_edge`].
-    pub(super) fn paint_trailing_edge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        ground: vello::peniko::Color,
-    ) {
-        if !self.trailing_edge {
-            return;
-        }
-        let edge = Rect::new(self.rect.x1 - 1.0, self.rect.y0, self.rect.x1, self.rect.y1);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::surface::edge_on(ground),
-            None,
-            &edge,
         );
     }
 

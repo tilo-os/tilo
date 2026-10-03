@@ -2203,25 +2203,19 @@ mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
-mod nav_split;
-pub use nav_split::{
-    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushNav, PushPane, SplitLayout,
-    SplitMode,
-};
-mod app_shell;
-pub use app_shell::{
-    AppShell, DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH, NarrowScreen, ShellLayout,
-};
+mod flap;
+pub use flap::{FlapState, SplitLayout};
 mod sidebar;
 pub use sidebar::{
-    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarNav, SidebarNavItem,
-    SidebarNavSection, SidebarSide,
+    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
+    SidebarSide,
 };
 mod nav_shell;
 pub use nav_shell::{
-    Affordance, ContentLayout, DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
-    DEFAULT_NAVSHELL_SIDEBAR_WIDTH, NavPane, NavShell, ShellMode,
+    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
+mod nav_list;
+pub use nav_list::{NavAction, NavDrop, NavItem, NavList, NavSection};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
