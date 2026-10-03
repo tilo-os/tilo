@@ -12,10 +12,10 @@ use ui::icons::Icon;
 use ui::tokens::{Spacing, SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Badge, Banner, Button, ButtonRole, Card, CardGrid, CardWidth, ChipStyle, Column,
-    Container, Divider, Dropdown, Field, Form, FormSection, Image, ImageCropEditor, ListRow,
-    NumberInput, PagePreview, ProgressBar, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
+    Actions, Badge, Banner, BarGauge, Button, ButtonRole, Card, CardGrid, CardWidth, ChipStyle,
+    Column, Container, Divider, Dropdown, Field, Form, FormSection, GaugeThresholds, Image,
+    ImageCropEditor, ListRow, NumberInput, ProgressBar, Property, PropertyList, Row, Scrollable,
+    Section, SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
 };
 
 use super::{
@@ -102,9 +102,40 @@ fn group_break() -> El {
     Box::new(Spacer::token(SpacingStep::S0))
 }
 
-/// A group of the page, set apart from the one above it.
-fn group(body: Column, item: El) -> Column {
-    body.push(group_break()).push(item)
+/// The groups of a page, one group rhythm apart.
+fn groups(items: Vec<El>) -> Column {
+    stack_of(column(), items)
+}
+
+/// A page of a subpage's kind: the way back and the title, then the groups of
+/// the page. The first group sits one sibling step under the title on every
+/// page; later groups are a group rhythm apart.
+fn subpage(title: &str, tx: &mpsc::Sender<UiCommand>, items: Vec<El>) -> Column {
+    stack_of(column().push(subpage_header(title, tx)), items)
+}
+
+/// `items` appended to `body`, a group rhythm between neighbours.
+fn stack_of(mut body: Column, items: Vec<El>) -> Column {
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            body = body.push(group_break());
+        }
+        body = body.push(item);
+    }
+    body
+}
+
+/// A column whose children belong together: it has no gap of its own, and
+/// [`related_gap`] between two children sets them one related step apart.
+fn related_stack() -> Column {
+    Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(0.0)
+}
+
+fn related_gap() -> El {
+    Box::new(Spacer::token(SpacingStep::S2))
 }
 
 /// A page column: the toolkit's gutter and gap, as tall as its content.
@@ -197,18 +228,20 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -
         "Print Centre couldn't get {} right now. Your saved devices and documents have not been removed.",
         join_areas(areas)
     );
-    Some(section(vec![
-        Box::new(Banner::error(subject).with_message(detail)),
-        Box::new(
-            command_button(
-                "print-centre.service.retry",
-                "Try again",
-                tx,
-                UiCommand::Refresh,
-            )
-            .with_icon(Icon::Refresh),
-        ),
-    ]))
+    Some(Box::new(
+        related_stack()
+            .push(Box::new(Banner::error(subject).with_message(detail)))
+            .push(related_gap())
+            .push(Box::new(
+                command_button(
+                    "print-centre.service.retry",
+                    "Try again",
+                    tx,
+                    UiCommand::Refresh,
+                )
+                .with_icon(Icon::Refresh),
+            )),
+    ))
 }
 
 /// A page's way back to the dashboard, then its title.
@@ -230,30 +263,66 @@ pub(super) fn loading_view() -> El {
     ])))
 }
 
-/// The measure of a supply: what it is called, how full it is, as a bar that
-/// spans its container.
-fn supply_meter(name: &str, level: f32, detail: &str) -> El {
+/// A supply gauge turns warning and then danger as the supply runs out, so
+/// the band comes from how much is left rather than how full the bar is.
+fn supply_thresholds(level: f32) -> GaugeThresholds {
+    if level <= 0.10 {
+        GaugeThresholds {
+            warning: 0.0,
+            danger: 0.0,
+        }
+    } else if level <= 0.25 {
+        GaugeThresholds {
+            warning: 0.0,
+            danger: 2.0,
+        }
+    } else {
+        GaugeThresholds {
+            warning: 2.0,
+            danger: 2.0,
+        }
+    }
+}
+
+/// The measure of a supply: what it is called and how much is left, over a
+/// track that shows the whole scale.
+fn supply_meter(name: &str, level: f32) -> El {
+    let percent = (level.clamp(0.0, 1.0) * 100.0).round();
     Box::new(
-        bare_column()
-            .push(muted(&format!("{name}: {detail}")))
-            .push(Box::new(
-                ProgressBar::new(level).with_label(format!("{name} level")),
-            )),
+        BarGauge::new(level)
+            .with_label(name, format!("{percent}%"))
+            .with_thresholds(supply_thresholds(level)),
     )
 }
 
-fn page_preview_for(job: &os_actions::printing::PrintJob, label: &str) -> PagePreview {
+/// How far a document has printed, with the page it is on.
+fn job_progress(job: &os_actions::printing::PrintJob) -> El {
     let total = job.impressions_total.unwrap_or(1).max(1);
-    let page = job
-        .impressions_completed
-        .unwrap_or(0)
-        .saturating_add(1)
-        .min(total);
-    PagePreview::new(label, page, total)
-}
-
-fn job_progress(job: &os_actions::printing::PrintJob, label: &str) -> ProgressBar {
-    ProgressBar::new(f32::from(job.progress_percent().unwrap_or(0)) / 100.0).with_label(label)
+    let done = job.impressions_completed.unwrap_or(0).min(total);
+    let percent = job.progress_percent().unwrap_or(0);
+    let label = if matches!(job.state, Some(os_actions::printing::JobState::Processing)) {
+        format!("Page {} of {total}", done.saturating_add(1).min(total))
+    } else {
+        let pages = if total == 1 { "page" } else { "pages" };
+        format!("{done} of {total} {pages}")
+    };
+    // Progress is healthy until the printer stops the document.
+    let thresholds = if matches!(job.state, Some(os_actions::printing::JobState::Stopped)) {
+        GaugeThresholds {
+            warning: 0.0,
+            danger: 2.0,
+        }
+    } else {
+        GaugeThresholds {
+            warning: 2.0,
+            danger: 2.0,
+        }
+    };
+    Box::new(
+        BarGauge::new(f32::from(percent) / 100.0)
+            .with_label(label, format!("{percent}%"))
+            .with_thresholds(thresholds),
+    )
 }
 
 fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiCommand>) -> El {
@@ -263,27 +332,16 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiComma
         _ => "Printing now",
     };
     let mut summary = bare_column()
-        .push(text(&job_title(job), TextRole::Subheading))
+        .push(copy(status))
         .push(muted(&format!(
             "Sent to {}",
             display_name(&job.destination)
         )))
-        .push(Box::new(job_progress(job, "Current document progress")));
+        .push(job_progress(job));
     if let Some(reason) = job.state_reasons.first() {
         summary = summary.push(copy(friendly_reason(reason)));
     }
-    let details = Container::new()
-        .with_no_padding()
-        .with_flex_grow()
-        .with_min_width(260.0)
-        .with_child(Box::new(summary));
-    let card = Card::new(Box::new(
-        Row::new()
-            .align_start()
-            .push(Box::new(page_preview_for(job, "Current document")))
-            .push(Box::new(details)),
-    ))
-    .with_title(status);
+    let card = Card::new(Box::new(summary)).with_title(job_title(job));
     let card = match actions(vec![
         destructive(command_button(
             "print-centre.job.cancel",
@@ -311,9 +369,10 @@ fn status_badge(queue: &os_actions::printing::PrinterQueue) -> El {
     Box::new(Badge::text(friendly_queue_state(queue)).style(ChipStyle::Tinted(tone)))
 }
 
+/// A printer on the dashboard: the whole card opens its page.
 fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiCommand>) -> El {
-    let supplies = if let Some((level, percent)) = supply_level(queue) {
-        supply_meter("Lowest supply", level, &format!("{percent}% remaining"))
+    let supplies = if let Some((level, _)) = supply_level(queue) {
+        supply_meter("Lowest supply", level)
     } else {
         muted("Supply levels unavailable")
     };
@@ -322,15 +381,13 @@ fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<Ui
     } else {
         "Available to your apps"
     };
-    let open = plain(
-        command_button(
-            &format!("print-centre.device.open.{}", queue.name),
-            "Open",
-            tx,
-            UiCommand::Device(queue.name.clone()),
-        )
-        .with_icon(Icon::ArrowRight),
-    );
+    let open = {
+        let tx = tx.clone();
+        let name = queue.name.clone();
+        move || {
+            let _ = tx.send(UiCommand::Device(name.clone()));
+        }
+    };
     Box::new(
         Card::new(Box::new(
             bare_column()
@@ -343,7 +400,8 @@ fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<Ui
                 ))
                 .push(supplies),
         ))
-        .with_title_action(display_name(&queue.name), Box::new(open)),
+        .with_title(display_name(&queue.name))
+        .on_activate(format!("print-centre.device.open.{}", queue.name), open),
     )
 }
 
@@ -389,55 +447,58 @@ pub(super) fn live_view(
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let active: Vec<_> = jobs.iter().filter(|job| is_active(job)).collect();
 
-    let mut body = column().push(button_row(vec![
-        command_button("print-centre.add", "Add printer", tx, UiCommand::Discover)
-            .with_icon(Icon::Plus),
-        primary(
-            command_button(
-                "print-centre.print",
-                "Print a document",
-                tx,
-                UiCommand::ChooseDocument,
-            )
-            .with_icon(Icon::Printer),
-        ),
-    ]));
+    let mut items: Vec<El> = Vec::new();
+    // Adding a printer and printing both need printers: with none, or with
+    // printers that could not be read, the page offers only what applies.
+    if !queues.is_empty() {
+        items.push(button_row(vec![
+            command_button("print-centre.add", "Add printer", tx, UiCommand::Discover)
+                .with_icon(Icon::Plus),
+            primary(
+                command_button(
+                    "print-centre.print",
+                    "Print a document",
+                    tx,
+                    UiCommand::ChooseDocument,
+                )
+                .with_icon(Icon::Printer),
+            ),
+        ]));
+    }
     if let Some(notice) = notice {
-        body = body.push(notice_banner(notice));
+        items.push(notice_banner(notice));
     }
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, true, true), tx) {
-        body = body.push(issue);
+        items.push(issue);
     }
     if let Some(job) = active.first() {
-        body = group(body, live_job_card(job, tx));
+        items.push(live_job_card(job, tx));
     }
     if snapshot.queues.is_ok() {
-        let refresh = command_button("print-centre.refresh", "Refresh", tx, UiCommand::Refresh)
-            .with_icon(Icon::Refresh);
-        let items: Vec<El> = if queues.is_empty() {
-            vec![
+        items.push(if queues.is_empty() {
+            section(vec![
                 copy("No printers added yet. Find one on your network to print from any app."),
                 Box::new(
-                    command_button(
+                    primary(command_button(
                         "print-centre.discover.empty",
                         "Find a printer",
                         tx,
                         UiCommand::Discover,
-                    )
+                    ))
                     .with_icon(Icon::Search),
                 ),
-            ]
+            ])
         } else {
-            vec![Box::new(
-                CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
-                    .with_card_width(CardWidth::Wide),
-            )]
-        };
-        body = body
-            .push(group_break())
-            .push(Box::new(Section::new(items).with_header(
-                SectionHeader::heading("Your printers").action(refresh),
-            )));
+            let refresh = command_button("print-centre.refresh", "Refresh", tx, UiCommand::Refresh)
+                .with_icon(Icon::Refresh);
+            Box::new(
+                Section::new(vec![Box::new(
+                    CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
+                        .with_card_width(CardWidth::Wide),
+                )])
+                .with_header(SectionHeader::heading("Your printers").action(refresh)),
+            )
+        });
     }
 
     let mut tools: Vec<El> = Vec::new();
@@ -477,10 +538,8 @@ pub(super) fn live_view(
         tx,
         UiCommand::Diagnostics,
     ));
-    body = body
-        .push(group_break())
-        .push(titled_section("Tools", tools));
-    page(body)
+    items.push(titled_section("Tools", tools));
+    page(groups(items))
 }
 
 fn history_status(job: &os_actions::printing::PrintJob) -> &'static str {
@@ -489,6 +548,30 @@ fn history_status(job: &os_actions::printing::PrintJob) -> &'static str {
         Some(os_actions::printing::JobState::Canceled) => "Canceled",
         _ => "Did not print",
     }
+}
+
+/// A finished document: what became of it and where, with the way to print
+/// it again always in view.
+fn history_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiCommand>) -> El {
+    let again = command_button(
+        &format!("print-centre.history.repeat.{}", job.id),
+        "Print again",
+        tx,
+        UiCommand::RetryJob(job.id.clone()),
+    )
+    .with_icon(Icon::Refresh);
+    let body = bare_column()
+        .push(copy(&format!(
+            "{} on {}",
+            history_status(job),
+            display_name(&job.destination)
+        )))
+        .push(muted(&job.submitted));
+    let card = Card::new(Box::new(body)).with_title(job_title(job));
+    Box::new(match actions(vec![again]) {
+        Some(footer) => card.with_footer(footer),
+        None => card,
+    })
 }
 
 pub(super) fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
@@ -506,47 +589,30 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) ->
             )
         })
         .collect();
-    let mut body = column().push(subpage_header("Print history", tx));
+    let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
-        body = body.push(issue);
+        items.push(issue);
     }
     if terminal.is_empty() {
-        body = body.push(copy(
+        items.push(copy(
             "No completed documents yet. After a document finishes or is canceled, it will appear here.",
         ));
     } else {
-        let rows: Vec<El> = terminal
-            .into_iter()
-            .take(50)
-            .map(|job| {
-                let again = {
-                    let tx = tx.clone();
-                    let id = job.id.clone();
-                    move || {
-                        let _ = tx.send(UiCommand::RetryJob(id.clone()));
-                    }
-                };
-                let mut row = ListRow::new(
-                    format!("print-centre.history.repeat.{}", job.id),
-                    job_title(job),
+        items.push(titled_section(
+            "Documents",
+            vec![Box::new(
+                CardGrid::new(
+                    terminal
+                        .into_iter()
+                        .take(50)
+                        .map(|job| history_card(job, tx))
+                        .collect(),
                 )
-                .icon(Icon::FileText)
-                .secondary(format!(
-                    "{} on {}",
-                    history_status(job),
-                    display_name(&job.destination)
-                ))
-                .meta(&job.submitted)
-                .action(Icon::Refresh, "Print again", again);
-                if matches!(job.state, Some(os_actions::printing::JobState::Aborted)) {
-                    row = row.error();
-                }
-                Box::new(row) as El
-            })
-            .collect();
-        body = group(body, titled_section("Documents", rows));
+                .with_card_width(CardWidth::Wide),
+            )],
+        ));
     }
-    page(body)
+    page(subpage("Print history", tx, items))
 }
 
 fn device_summary(
@@ -608,16 +674,16 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>
             .with_icon(Icon::Refresh),
         ),
     );
-    let mut body = column().push(subpage_header("Device help", tx));
+    let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, false, true), tx) {
-        body = body.push(issue);
+        items.push(issue);
     }
-    body = group(body, Box::new(check));
+    items.push(Box::new(check));
     for queue in queues {
-        body = group(body, printer_check(queue, tx));
+        items.push(printer_check(queue, tx));
     }
-    body = group(body, scanner_check(scanners.is_empty(), tx));
-    page(body)
+    items.push(scanner_check(scanners.is_empty(), tx));
+    page(subpage("Device help", tx, items))
 }
 
 /// What one printer answered to the status check, in plain words.
@@ -638,11 +704,7 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<U
     if let Some(supplies) = &queue.telemetry.supplies {
         for supply in supplies.iter().take(6) {
             if let Some(percent) = supply.level_percent {
-                items.push(supply_meter(
-                    &supply.name,
-                    f32::from(percent) / 100.0,
-                    &format!("{percent}% remaining"),
-                ));
+                items.push(supply_meter(&supply.name, f32::from(percent) / 100.0));
             }
         }
     }
@@ -699,7 +761,7 @@ fn queue_summary(job: &os_actions::printing::PrintJob) -> Column {
             display_name(&job.destination)
         )));
     if is_active(job) {
-        summary.push(Box::new(job_progress(job, "Document progress")))
+        summary.push(job_progress(job))
     } else {
         summary
     }
@@ -746,19 +808,7 @@ fn queue_card(
             },
         )));
     }
-    let card = Card::new(Box::new(
-        Row::new()
-            .align_start()
-            .push(Box::new(page_preview_for(job, "Queued document")))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(200.0)
-                    .with_child(Box::new(queue_summary(job))),
-            )),
-    ))
-    .with_title(job_title(job));
+    let card = Card::new(Box::new(queue_summary(job))).with_title(job_title(job));
     Box::new(match actions(buttons) {
         Some(footer) => card.with_footer(footer),
         None => card,
@@ -772,35 +822,38 @@ pub(super) fn queue_view(
     notice: Option<&OperationNotice>,
 ) -> El {
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
-    let mut body = column().push(subpage_header("Print queue", tx));
+    let mut items: Vec<El> = Vec::new();
     if let Some(notice) = notice {
-        body = body.push(notice_banner(notice));
+        items.push(notice_banner(notice));
     }
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
-        body = body.push(issue);
+        items.push(issue);
     }
     if pending_cancel.is_some() {
-        body = body.push(Box::new(
+        items.push(Box::new(
             Banner::warning("Cancel this document?")
                 .with_message("It will be removed from the printer. This cannot be undone."),
         ));
     }
     if jobs.is_empty() {
-        body = body.push(copy(
+        items.push(copy(
             "Nothing waiting. New documents appear here as soon as an app sends them.",
         ));
     } else {
-        body = body.push(Box::new(
-            CardGrid::new(
-                jobs.iter()
-                    .take(24)
-                    .map(|job| queue_card(job, pending_cancel, tx))
-                    .collect(),
-            )
-            .with_card_width(CardWidth::Wide),
+        items.push(titled_section(
+            "Documents",
+            vec![Box::new(
+                CardGrid::new(
+                    jobs.iter()
+                        .take(24)
+                        .map(|job| queue_card(job, pending_cancel, tx))
+                        .collect(),
+                )
+                .with_card_width(CardWidth::Wide),
+            )],
         ));
     }
-    page(body)
+    page(subpage("Print queue", tx, items))
 }
 
 pub(super) fn device_view(
@@ -844,11 +897,7 @@ pub(super) fn device_view(
             .iter()
             .map(|supply| {
                 let percent = supply.level_percent.unwrap_or(0);
-                supply_meter(
-                    &supply.name,
-                    f32::from(percent) / 100.0,
-                    &format!("{percent}% remaining"),
-                )
+                supply_meter(&supply.name, f32::from(percent) / 100.0)
             })
             .collect(),
         _ => vec![copy("This printer does not report supply levels.")],
@@ -862,46 +911,40 @@ pub(super) fn device_view(
             "Available to your apps"
         },
     );
-    page(
-        column()
-            .push(subpage_header(&display_name(&queue.name), tx))
-            .push(titled_section(
+    page(subpage(
+        &display_name(&queue.name),
+        tx,
+        vec![
+            titled_section(
                 "Details",
                 vec![Box::new(PropertyList::new(vec![status, availability]))],
-            ))
-            .push(group_break())
-            .push(titled_section("Ink and toner", supplies))
-            .push(group_break())
-            .push(titled_section(
-                "Printer controls",
-                vec![button_row(buttons)],
-            )),
-    )
+            ),
+            titled_section("Ink and toner", supplies),
+            titled_section("Printer controls", vec![button_row(buttons)]),
+        ],
+    ))
 }
 
 pub(super) fn discovery_view(
     result: Option<&Result<Vec<os_actions::printing::DiscoveredPrinter>, String>>,
     tx: &mpsc::Sender<UiCommand>,
 ) -> El {
-    let mut body = column().push(subpage_header("Add a printer", tx));
-    match result {
-        None => {
-            body = body.push(section(vec![
-                copy("Looking for printers on your network."),
-                Box::new(ProgressBar::indeterminate().with_label("Finding nearby printers")),
-            ]));
-        }
-        Some(Ok(printers)) if printers.is_empty() => {
-            body = body.push(section(vec![
-                copy("No printers found. Make sure the printer is awake and connected to the same network, then search again."),
-                Box::new(command_button(
-                    "print-centre.discover.retry",
-                    "Search again",
-                    tx,
-                    UiCommand::Discover,
-                )),
-            ]));
-        }
+    let body: El = match result {
+        None => section(vec![
+            copy("Looking for printers on your network."),
+            Box::new(ProgressBar::indeterminate().with_label("Finding nearby printers")),
+        ]),
+        Some(Ok(printers)) if printers.is_empty() => section(vec![
+            copy(
+                "No printers found. Make sure the printer is awake and connected to the same network, then search again.",
+            ),
+            Box::new(command_button(
+                "print-centre.discover.retry",
+                "Search again",
+                tx,
+                UiCommand::Discover,
+            )),
+        ]),
         Some(Ok(printers)) => {
             let cards: Vec<El> = printers
                 .iter()
@@ -924,23 +967,24 @@ pub(super) fn discovery_view(
                     ) as El
                 })
                 .collect();
-            body = body.push(Box::new(
-                CardGrid::new(cards).with_card_width(CardWidth::Wide),
-            ));
+            titled_section(
+                "Printers on your network",
+                vec![Box::new(
+                    CardGrid::new(cards).with_card_width(CardWidth::Wide),
+                )],
+            )
         }
-        Some(Err(_)) => {
-            body = body.push(section(vec![
-                copy("Could not search right now. Check your network connection and try again."),
-                Box::new(command_button(
-                    "print-centre.discover.retry",
-                    "Try again",
-                    tx,
-                    UiCommand::Discover,
-                )),
-            ]));
-        }
-    }
-    page(body)
+        Some(Err(_)) => section(vec![
+            copy("Could not search right now. Check your network connection and try again."),
+            Box::new(command_button(
+                "print-centre.discover.retry",
+                "Try again",
+                tx,
+                UiCommand::Discover,
+            )),
+        ]),
+    };
+    page(subpage("Add a printer", tx, vec![body]))
 }
 
 fn printer_picker(
@@ -976,7 +1020,7 @@ fn printer_picker(
 }
 
 /// The document being printed: its preview, which the person can check before
-/// anything is sent.
+/// anything is sent. The preview spans the card, so the page sits in its middle.
 fn document_card(filename: &str, preview: &PrintPreview) -> El {
     let preview_widget: El = match preview {
         PrintPreview::Ready {
@@ -985,7 +1029,7 @@ fn document_card(filename: &str, preview: &PrintPreview) -> El {
             height,
         } => Box::new(
             Container::new()
-                .with_size(180.0, 220.0)
+                .with_height(300.0)
                 .with_no_padding()
                 .with_child(Box::new(
                     Image::from_rgba(rgba.clone(), *width, *height)
@@ -993,7 +1037,7 @@ fn document_card(filename: &str, preview: &PrintPreview) -> El {
                         .with_alt(format!("Preview of {filename}")),
                 )),
         ),
-        PrintPreview::Loading => Box::new(Container::new().with_size(180.0, 138.0).with_child(
+        PrintPreview::Loading => Box::new(Container::new().with_height(138.0).with_child(
             Box::new(ProgressBar::indeterminate().with_label("Preparing document preview")),
         )),
         PrintPreview::Unavailable => Box::new(
@@ -1002,14 +1046,7 @@ fn document_card(filename: &str, preview: &PrintPreview) -> El {
                 .push(muted("The original document is unchanged.")),
         ),
     };
-    Box::new(
-        Card::new(Box::new(
-            bare_column()
-                .push(preview_widget)
-                .push(muted("The printer will render this document.")),
-        ))
-        .with_title(filename),
-    )
+    Box::new(Card::new(preview_widget).with_title(filename))
 }
 
 fn print_settings(
@@ -1074,11 +1111,12 @@ pub(super) fn print_setup_view(
                 .with_child(Box::new(settings)),
         ));
 
-    let mut body = column().push(subpage_header("Print a document", tx));
+    let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, false, false), tx) {
-        body = body.push(issue);
+        items.push(issue);
     }
-    body = body.push(Box::new(layout));
+    items.push(Box::new(layout));
+    let body = subpage("Print a document", tx, items);
 
     let mut buttons = vec![command_button(
         "print-centre.print.cancel",
@@ -1259,6 +1297,12 @@ fn scan_review_view(
         scan.crop.clone(),
     );
     let details = page_details(page_data, selected_page, page_count, tx);
+    // The editor shows the whole page inside a box of its own proportions, so
+    // the page starts on the column's edge instead of floating in the middle.
+    let longest = f64::from(page_data.width.max(page_data.height).max(1));
+    let fit = 360.0 / longest;
+    let side = |pixels: u32| ui::num::f32_of_f64((f64::from(pixels) * fit).round());
+    let (editor_width, editor_height) = (side(page_data.width), side(page_data.height));
     let review = Row::new()
         .align_start()
         .push(Box::new(
@@ -1266,8 +1310,15 @@ fn scan_review_view(
                 .with_min_width(280.0)
                 .with_flex_grow()
                 .with_no_padding()
-                .with_height(360.0)
-                .with_child(Box::new(editor)),
+                .with_child(titled_section(
+                    "Crop",
+                    vec![Box::new(
+                        Container::new()
+                            .with_size(editor_width, editor_height)
+                            .with_no_padding()
+                            .with_child(Box::new(editor)),
+                    )],
+                )),
         ))
         .push(Box::new(
             Container::new()
@@ -1277,23 +1328,22 @@ fn scan_review_view(
                 .with_child(Box::new(details)),
         ));
 
-    let mut body = column().push(subpage_header("Scanned document", tx));
+    let mut items: Vec<El> = Vec::new();
     if let Some(notice) = notice {
-        body = body.push(notice_banner(notice));
+        items.push(notice_banner(notice));
     }
-    body = body
-        .push(Box::new(review))
-        .push(group_break())
-        .push(titled_section(
-            "Pages in this document",
-            vec![
-                muted(&format!(
-                    "{page_count} {}",
-                    plural(page_count, "page", "pages")
-                )),
-                button_row(page_navigation(selected_page, page_count, tx)),
-            ],
-        ));
+    items.push(Box::new(review));
+    items.push(titled_section(
+        "Pages in this document",
+        vec![
+            muted(&format!(
+                "{page_count} {}",
+                plural(page_count, "page", "pages")
+            )),
+            button_row(page_navigation(selected_page, page_count, tx)),
+        ],
+    ));
+    let body = subpage("Scanned document", tx, items);
     let footer = actions(vec![
         command_button(
             "print-centre.scan.save-page",
@@ -1381,7 +1431,7 @@ fn scan_settings(scan: &ScanState) -> Vec<El> {
             "Text language",
             choice(
                 "print-centre.scan.language",
-                &["English", "Deutsch", "Français", "Español"],
+                &["English", "German", "French", "Spanish"],
                 &scan.language,
             ),
         ),
@@ -1399,21 +1449,22 @@ pub(super) fn scan_setup_view(
         return scan_review_view(page_data, scan, notice, tx);
     }
     let page_count = scan.pages.len();
-    let mut body = column().push(subpage_header("Scan a document", tx));
+    let mut items: Vec<El> = Vec::new();
     if let Some(notice) = notice {
-        body = body.push(notice_banner(notice));
+        items.push(notice_banner(notice));
     }
     if page_count > 0 {
-        body = body.push(muted(&format!(
+        items.push(muted(&format!(
             "{page_count} {} captured. New scans are added to this document.",
             plural(page_count, "page", "pages")
         )));
     }
-    body = group(
-        body,
-        titled_section("Scanner", scanner_choices(snapshot, selected, tx)),
-    );
-    body = group(body, titled_section("Page settings", scan_settings(scan)));
+    items.push(titled_section(
+        "Scanner",
+        scanner_choices(snapshot, selected, tx),
+    ));
+    items.push(titled_section("Page settings", scan_settings(scan)));
+    let body = subpage("Scan a document", tx, items);
 
     let mut buttons = vec![command_button(
         "print-centre.scan.cancel",
