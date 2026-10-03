@@ -843,13 +843,41 @@ pub enum PresencePayload {
 pub struct Collaborator {
     pub id: String,
     pub name: String,
-    pub color: [f32; 3],
+    /// The colour this participant wears, as they chose it or as their
+    /// stable identity derives it. `None` when the room has not heard it;
+    /// they are then painted in the colour their id derives
+    /// ([`crate::presence::user_color`]).
+    pub colour: Option<crate::tokens::PresenceHue>,
     /// Whether this participant is an agent rather than a person.
     pub is_agent: bool,
     /// Whether this row is the receiving machine's own participant.
     /// Apps can't derive this themselves: `id` is the address *other*
     /// machines use, and a machine never announces its own to its own apps.
     pub is_self: bool,
+}
+
+impl Collaborator {
+    /// [`Self::colour`] as the roster's wire carries it: the presence
+    /// colour's sRGB packed `0x00RRGGBB`, `0` for none (no presence colour
+    /// is black).
+    #[must_use]
+    pub fn packed_colour(&self) -> u32 {
+        self.colour.map_or(0, |hue| {
+            let (r, g, b) = crate::presence::identity_rgb(hue);
+            (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+        })
+    }
+
+    /// The colour a roster row's packed `0x00RRGGBB` names: the presence
+    /// hue nearest it, `None` for `0` or a grey.
+    #[must_use]
+    pub fn colour_from_packed(packed: u32) -> Option<crate::tokens::PresenceHue> {
+        if packed == 0 {
+            return None;
+        }
+        let [_, r, g, b] = packed.to_be_bytes();
+        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+    }
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].

@@ -1002,6 +1002,11 @@ impl App {
             // is, so it must not mint one at the origin.
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
+            // The colour they wear everywhere, once the room has heard it.
+            if let Some(hue) = c.colour {
+                self.presence_ctx
+                    .set_presence_hue(crate::permissions::UserId(c.id.clone()), hue);
+            }
             self.presence_ctx.set_participant_kind(
                 crate::permissions::UserId(c.id),
                 if c.is_agent {

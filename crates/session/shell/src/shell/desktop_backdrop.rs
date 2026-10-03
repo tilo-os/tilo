@@ -42,11 +42,12 @@ fn wallpaper_stamp(workspace_id: &str) -> WallpaperStamp {
 }
 
 /// The neutral temperature workspace `workspace_id` takes on this device:
-/// its wallpaper's dominant hue ([`ui::workspace_hue`]), the default hue for
-/// a workspace without one. Decodes the wallpaper only when it changed since
-/// the last call for that workspace.
-pub fn native_workspace_hue(workspace_id: &str) -> f32 {
-    static HUES: OnceLock<Mutex<HashMap<String, (WallpaperStamp, f32)>>> = OnceLock::new();
+/// its wallpaper's dominant hue ([`ui::workspace_hue`]), or `None` for a
+/// workspace whose wallpaper has none, which stays neutral. Decodes the
+/// wallpaper only when it changed since the last call for that workspace.
+pub fn native_workspace_hue(workspace_id: &str) -> Option<f32> {
+    type KnownHues = HashMap<String, (WallpaperStamp, Option<f32>)>;
+    static HUES: OnceLock<Mutex<KnownHues>> = OnceLock::new();
     let stamp = wallpaper_stamp(workspace_id);
     let hues = HUES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(cache) = hues.lock()
@@ -55,9 +56,7 @@ pub fn native_workspace_hue(workspace_id: &str) -> f32 {
     {
         return *hue;
     }
-    let hue = native_wallpaper(workspace_id).map_or(ui::tokens::DEFAULT_NEUTRAL_HUE, |image| {
-        ui::workspace_hue(image.data.data())
-    });
+    let hue = native_wallpaper(workspace_id).and_then(|image| ui::workspace_hue(image.data.data()));
     if let Ok(mut cache) = hues.lock() {
         cache.insert(workspace_id.to_owned(), (stamp, hue));
     }

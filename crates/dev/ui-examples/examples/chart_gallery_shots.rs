@@ -58,11 +58,17 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     println!("wrote {}", out.display());
 }
 
-pub fn run(_args: &[String]) {
+pub fn run(args: &[String]) {
     tilo_ui::i18n::I18nManager::init("en-US");
-    let dir = PathBuf::from(
-        std::env::var("CHART_GALLERY_SHOTS_OUT")
-            .unwrap_or_else(|_| "target/chart-gallery-shots".into()),
+    // The output directory: the first argument, then `$CHART_GALLERY_SHOTS_OUT`.
+    let dir = args.first().map_or_else(
+        || {
+            PathBuf::from(
+                std::env::var("CHART_GALLERY_SHOTS_OUT")
+                    .unwrap_or_else(|_| "target/chart-gallery-shots".into()),
+            )
+        },
+        PathBuf::from,
     );
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!("could not create {}: {error}", dir.display());
