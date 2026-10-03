@@ -1,0 +1,11 @@
+# The typography ratchet for apps-diffmerge: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/diffmerge/src/app.rs font_size_const 2
+apps/diffmerge/src/app.rs legacy_size_api 5
+apps/diffmerge/src/diff_view.rs font_size_const 3
+apps/diffmerge/src/diff_view.rs legacy_size_api 14
+apps/diffmerge/src/framework_history.rs legacy_size_api 4
+apps/diffmerge/src/highlight.rs legacy_size_api 1
+apps/diffmerge/src/merge_view.rs font_size_const 6
+apps/diffmerge/src/merge_view.rs legacy_size_api 16
