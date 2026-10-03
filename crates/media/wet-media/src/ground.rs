@@ -24,15 +24,18 @@ pub enum Texture {
     Rough,
     /// Primed linen: a woven canvas for oil.
     Linen,
+    /// A gessoed panel: a fine, irregular tooth with no weave to repeat.
+    Panel,
 }
 
 impl Texture {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Smooth,
         Self::Paper,
         Self::ColdPress,
         Self::Rough,
         Self::Linen,
+        Self::Panel,
     ];
 
     pub fn name(self) -> &'static str {
@@ -42,7 +45,13 @@ impl Texture {
             Self::ColdPress => "cold-press",
             Self::Rough => "rough",
             Self::Linen => "linen",
+            Self::Panel => "panel",
         }
+    }
+
+    /// Every texture's name, for messages that list the choices.
+    pub fn names() -> String {
+        Self::ALL.map(Self::name).join(", ")
     }
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -57,6 +66,7 @@ impl Texture {
             Self::ColdPress => 0.7,
             Self::Rough => 1.0,
             Self::Linen => 0.8,
+            Self::Panel => 0.6,
         }
     }
 }
@@ -143,7 +153,20 @@ fn height_at(texture: Texture, x: f32, y: f32, seed: u64) -> f32 {
             (1.0 - ridges * 0.6 - 0.2 + tooth * 0.3).clamp(0.0, 1.0)
         }
         Texture::Linen => linen(x, y, seed),
+        Texture::Panel => panel(x, y, seed),
     }
+}
+
+/// Gesso brushed onto a board coat over coat and sanded: a fine tooth, the
+/// faint level ridges of the gesso brush and the odd pit where a bubble
+/// burst, so thin paint over it reads as grain rather than a grid.
+fn panel(x: f32, y: f32, seed: u64) -> f32 {
+    let tooth = fbm(x / 1.4, y / 1.4, seed, 3);
+    let ridges = value_noise(x / 70.0, y / 3.0, seed ^ 0x47) * 0.6
+        + value_noise(x / 31.0, y / 1.6, seed ^ 0x48) * 0.4;
+    let pit = smoothstep(0.86, 0.97, value_noise(x / 1.8, y / 1.8, seed ^ 0x49));
+    let sanded = fbm(x / 40.0, y / 40.0, seed ^ 0x4a, 2) - 0.5;
+    (0.5 + (tooth - 0.5) * 0.9 + (ridges - 0.5) * 0.35 + sanded * 0.2 - pit * 0.35).clamp(0.0, 1.0)
 }
 
 /// An over-under weave of irregular threads under an uneven priming.

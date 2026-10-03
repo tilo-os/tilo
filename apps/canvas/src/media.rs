@@ -45,7 +45,7 @@ pub struct MediumSpec {
     #[serde(default)]
     pub params: BTreeMap<String, f64>,
     /// The ground this medium suits: `smooth`, `paper`, `cold-press`,
-    /// `rough` or `linen`.
+    /// `rough`, `linen` or `panel`.
     #[serde(default)]
     pub ground: Option<String>,
     #[serde(default)]
@@ -123,7 +123,8 @@ impl MediumSpec {
             && Texture::parse(ground).is_none()
         {
             return Err(format!(
-                "ground {ground:?} must be one of smooth, paper, cold-press, rough, linen"
+                "ground {ground:?} must be one of {}",
+                Texture::names()
             ));
         }
         if self.label.trim().is_empty() {

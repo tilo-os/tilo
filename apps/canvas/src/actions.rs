@@ -34,7 +34,7 @@ pub struct SetArtwork {
     pub width: Option<f64>,
     /// Height in units, 16 to 8192.
     pub height: Option<f64>,
-    /// `smooth`, `paper`, `cold-press`, `rough` or `linen`.
+    /// `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.
     pub texture: Option<String>,
     /// Ground colour, `#rrggbb`.
     pub ground_colour: Option<String>,
@@ -1034,7 +1034,8 @@ fn set_artwork(doc: &mut Doc, set: &SetArtwork) -> Result<(), ActionError> {
         if let Some(texture) = &set.texture {
             if tilo_wet_media::Texture::parse(texture).is_none() {
                 return Err(refuse(format!(
-                    "texture {texture:?} must be smooth, paper, cold-press, rough or linen"
+                    "texture {texture:?} must be one of {}",
+                    tilo_wet_media::Texture::names()
                 )));
             }
             ground.texture.clone_from(texture);

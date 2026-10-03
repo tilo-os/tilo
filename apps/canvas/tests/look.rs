@@ -90,6 +90,68 @@ fn a_look_shows_the_painting_whole_and_up_close() {
     assert!(error.contains("outside the artwork"), "{error}");
 }
 
+/// A painted fill whose gradient starts clear fades its paint in across
+/// the mark: the stops' alpha thins the paint, it is not the whole mark's.
+#[test]
+fn a_painted_gradient_that_starts_clear_fades_in() {
+    use canvas::CanvasAction;
+    use canvas::actions::{AddLayer, Draw, NewMark};
+    use canvas::model::{Gradient, Shape};
+    use ui::vello::kurbo::Rect;
+
+    let mut replica = Replica::<ArtworkResource>::new();
+    let layer = CanvasAction::AddLayer(AddLayer {
+        id: Some("mist".into()),
+        name: "mist".into(),
+        medium: Some("oil".into()),
+        ..AddLayer::default()
+    });
+    let veil = NewMark {
+        gradient: Some(Gradient {
+            kind: "linear".into(),
+            from: [0.0, 0.0],
+            to: [400.0, 0.0],
+            stops: vec![(0.0, "#20304000".into()), (1.0, "#203040".into())],
+        }),
+        brush: Some(20.0),
+        ..NewMark::new(Shape::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+            radius: 0.0,
+        })
+    };
+    let draw = CanvasAction::Draw(Draw {
+        layer: Some("mist".into()),
+        marks: vec![veil],
+    });
+    for action in [layer, draw] {
+        replica.apply(Invoke::apply(&action).unwrap()).unwrap();
+    }
+    let art = replica.state().unwrap();
+    let mut renderer = Renderer::default();
+    let mut text = ui::TextRenderer::new();
+    let options = canvas::render::Options {
+        bare: true,
+        ..canvas::render::Options::default()
+    };
+    let (rgba, width, _) =
+        view_ops::pixels(Rect::new(0.0, 0.0, 400.0, 300.0), 1.0, true, |scene, to| {
+            renderer.draw(&art, scene, to, &mut text, &options);
+        })
+        .unwrap();
+    let width = usize::try_from(width).unwrap();
+    let cover = |x: usize| {
+        (100..200)
+            .map(|y| u32::from(rgba[(y * width + x) * 4 + 3]))
+            .sum::<u32>()
+            / 100
+    };
+    assert!(cover(20) < 60, "clear where it starts: {}", cover(20));
+    assert!(cover(380) > 200, "opaque where it ends: {}", cover(380));
+}
+
 /// Text stands on the baseline its mark names, whatever its size and
 /// leading: letters without descenders end on `y`.
 #[test]
