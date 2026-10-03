@@ -313,7 +313,7 @@ impl PrintersPane {
                     &[("error", error.into())],
                 )),
             }
-            self.error = (!errors.is_empty()).then(|| errors.join(" · "));
+            self.error = (!errors.is_empty()).then(|| errors.join(" "));
             self.structure_dirty = true;
         }
         if let Some(result) = self.discover_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -381,14 +381,11 @@ impl PrintersPane {
         } else {
             t("settings-printers-refresh")
         };
-        let refresh = Box::new(
-            Button::new(
-                "settings.printers.refresh",
-                &refresh_label,
-                Some(REFRESH_KEY),
-            )
-            .content_sized(),
-        );
+        let refresh = Box::new(Button::new(
+            "settings.printers.refresh",
+            &refresh_label,
+            Some(REFRESH_KEY),
+        ));
         let printers = if self.printers.is_empty() {
             rows(vec![caption(&t("settings-printers-empty"))])
         } else {
@@ -405,9 +402,11 @@ impl PrintersPane {
         } else {
             t("settings-printers-find")
         };
-        let find = Box::new(
-            Button::new("settings.printers.discover", &find_label, Some(SCAN_KEY)).content_sized(),
-        );
+        let find = Box::new(Button::new(
+            "settings.printers.discover",
+            &find_label,
+            Some(SCAN_KEY),
+        ));
         let discovery = if self.discovered.is_empty() {
             rows(vec![caption(&t(if self.discovering {
                 "settings-printers-discovering"
@@ -441,8 +440,12 @@ impl PrintersPane {
                             Column::new()
                                 .with_no_padding()
                                 .with_intrinsic_height()
-                                .push(Box::new(Text::new(&s.description).with_size(13.0)))
-                                .push(Box::new(Text::new(&s.device).with_size(11.0).dimmed())),
+                                .push(Box::new(Text::new(&s.description)))
+                                .push(Box::new(
+                                    Text::new(&s.device)
+                                        .with_role(ui::TextRole::Caption)
+                                        .dimmed(),
+                                )),
                         ) as El
                     })
                     .collect(),
@@ -459,23 +462,27 @@ impl PrintersPane {
         let confirm_key = format!("settings.printers.confirm_remove.{}", slug(&printer.name));
         let state = state_label(printer.state);
         let mut top = Row::new()
-            .push(Box::new(Text::new(&printer.name).with_size(13.0)))
+            .push(Box::new(Text::new(&printer.name)))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&state, state_tone(printer.state)));
         if !printer.default {
             let make_default = t("settings-printers-make-default");
-            top = top.push(Box::new(
-                Button::new(&default_key, &make_default, Some(&default_key)).content_sized(),
-            ));
+            top = top.push(Box::new(Button::new(
+                &default_key,
+                &make_default,
+                Some(&default_key),
+            )));
         }
         let pause_label = t(if printer.state == QueueState::Paused {
             "settings-printers-resume"
         } else {
             "settings-printers-pause"
         });
-        top = top.push(Box::new(
-            Button::new(&enabled_key, &pause_label, Some(&enabled_key)).content_sized(),
-        ));
+        top = top.push(Box::new(Button::new(
+            &enabled_key,
+            &pause_label,
+            Some(&enabled_key),
+        )));
         let remove_label = t(
             if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
                 "settings-printers-remove-confirm"
@@ -488,9 +495,11 @@ impl PrintersPane {
         } else {
             remove_key
         };
-        top = top.push(Box::new(
-            Button::new(&remove_action, &remove_label, Some(&remove_action)).content_sized(),
-        ));
+        top = top.push(Box::new(Button::new(
+            &remove_action,
+            &remove_label,
+            Some(&remove_action),
+        )));
         let role = t(if printer.default {
             "settings-printers-role-default"
         } else {
@@ -528,7 +537,7 @@ impl PrintersPane {
                         ),
                     })
                     .collect::<Vec<_>>()
-                    .join(" · ");
+                    .join(", ");
                 t_args("settings-printers-supplies-list", &[("list", list.into())])
             }
             None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
@@ -539,8 +548,14 @@ impl PrintersPane {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(top))
-                .push(Box::new(Text::new(&detail).with_size(11.0).dimmed()))
-                .push(Box::new(Text::new(&supplies).with_size(11.0).dimmed())),
+                .push(Box::new(
+                    Text::new(&detail).with_role(ui::TextRole::Caption).dimmed(),
+                ))
+                .push(Box::new(
+                    Text::new(&supplies)
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                )),
         )
     }
 }
@@ -590,13 +605,15 @@ fn discovered_row(p: &DiscoveredPrinter) -> El {
             .with_intrinsic_height()
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&p.name).with_size(13.0)))
+                    .push(Box::new(Text::new(&p.name)))
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Button::new(&key, &add, Some(&key)).content_sized(),
-                    )),
+                    .push(Box::new(Button::new(&key, &add, Some(&key)))),
             ))
-            .push(Box::new(Text::new(&location).with_size(11.0).dimmed())),
+            .push(Box::new(
+                Text::new(&location)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            )),
     )
 }
 
@@ -628,29 +645,26 @@ fn job_row(job: &PrintJob) -> El {
     let reason = job
         .state_reasons
         .first()
-        .map_or(String::new(), |reason| format!(" · {reason}"));
+        .map_or(String::new(), |reason| format!(", {reason}"));
     let retry_label = t("settings-printers-retry");
     let cancel_label = t("settings-printers-cancel");
     let mut action_row = Row::new()
-        .push(Box::new(
-            Text::new(&format!("{} → {}", job.id, job.destination)).with_size(13.0),
-        ))
+        .push(Box::new(Text::new(&format!(
+            "{} → {}",
+            job.id, job.destination
+        ))))
         .push(Box::new(Spacer::new()));
     if matches!(
         job.state,
         Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
     ) {
-        action_row = action_row.push(Box::new(
-            Button::new(&retry, &retry_label, Some(&retry)).content_sized(),
-        ));
+        action_row = action_row.push(Box::new(Button::new(&retry, &retry_label, Some(&retry))));
     }
     if matches!(
         job.state,
         None | Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
     ) {
-        action_row = action_row.push(Box::new(
-            Button::new(&cancel, &cancel_label, Some(&cancel)).content_sized(),
-        ));
+        action_row = action_row.push(Box::new(Button::new(&cancel, &cancel_label, Some(&cancel))));
     }
     Box::new(
         Column::new()
@@ -658,13 +672,13 @@ fn job_row(job: &PrintJob) -> El {
             .with_intrinsic_height()
             .push(Box::new(action_row))
             .push(Box::new(
-                Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
-                    .with_size(11.0)
+                Text::new(&format!("{}, {}, {}", job.owner, size, job.submitted))
+                    .with_role(ui::TextRole::Caption)
                     .dimmed(),
             ))
             .push(Box::new(
-                Text::new(&format!("{state} · {progress}{reason}"))
-                    .with_size(11.0)
+                Text::new(&format!("{state}, {progress}{reason}"))
+                    .with_role(ui::TextRole::Caption)
                     .dimmed(),
             )),
     )

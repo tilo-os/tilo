@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ActionEmitter, Widget};
 use vello::Scene;
@@ -28,14 +28,14 @@ use placement::Placement;
 
 use crate::i18n::{t, t_args};
 
-/// Canvas height; the desktop is scaled to fit inside it. A drawing area
-/// sized for a desk of monitors, not a spacing step, so no token names it.
-const CANVAS_HEIGHT: f32 = 220.0;
+/// The canvas's width over its height; the desktop is scaled to fit inside
+/// it. A drawing area sized for a desk of monitors.
+const CANVAS_ASPECT: f32 = 3.2;
 /// Inner margin between the canvas edge and the desktop's bounding box.
 const CANVAS_PAD: f64 = ui::tokens::Spacing::BASE.s6 as f64;
-/// Snap distance on screen, converted to desktop units at the canvas scale.
-/// A pointer tolerance rather than layout spacing, so no token names it.
-const SNAP_SCREEN_PX: f64 = 12.0;
+/// Snap distance on screen (the `s3` step), converted to desktop units at
+/// the canvas scale.
+const SNAP_SCREEN_PX: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 
 /// One display as the canvas draws it.
 #[derive(Clone, Debug, PartialEq)]
@@ -299,21 +299,23 @@ impl DisplayArrangement {
         dragging: bool,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let radius = f64::from(theme.tokens.radii.sm);
+        let unit = f64::from(theme.tokens.spacing.s1);
+        let ground = colors.surfaces.raised;
+        let radius = f64::from(theme.tokens.radii.item);
         let shape = RoundedRect::from_rect(rect, radius);
-        let tier = ui::chrome::selection_tier(
+        let tier = ui::chrome::selection_tier_on(
             theme,
             ui::chrome::SelectionState::new(display.primary, dragging, false),
+            ground,
         );
         let fill = if display.movable {
-            colors.lift(if dragging { 0.7 } else { 0.45 })
+            colors.lift_on(ground, if dragging { 1.0 } else { 0.5 })
         } else {
-            colors.lift(0.2)
+            ground
         };
         scene.fill(Fill::NonZero, transform, fill, None, &shape);
         scene.stroke(
-            &Stroke::new(if dragging { 2.0 } else { 1.0 }),
+            &Stroke::new(if dragging { unit / 2.0 } else { unit / 4.0 }),
             transform,
             if dragging {
                 theme.border_focus
@@ -323,55 +325,49 @@ impl DisplayArrangement {
             None,
             &ui::surface::edge_outline(rect, radius),
         );
+        // The number Identify shows, and the display's name under it.
         let number = display.number.to_string();
-        let number_size = type_scale
-            .x2l
-            .min(px(rect.height() * 0.45))
-            .max(type_scale.sm);
-        let (nw, nh) =
-            text_renderer.measure_weighted(&number, number_size, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
-            scene,
-            &number,
-            number_size,
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    rect.center().x - f64::from(nw) / 2.0,
-                    rect.center().y - f64::from(nh) / 2.0 - 6.0,
-                )
-                    .into(),
-            ),
-            None,
-            TextWeight::Semibold,
+        let number_style = theme.text(ui::TextRole::Title).strong();
+        let label_style = theme.text(ui::TextRole::Caption);
+        let (nw, nh) = text_renderer.measure_style(&number, None, &number_style);
+        let label = text_renderer.elide_to_width_style(
+            &display.label,
+            px(rect.width() - 4.0 * unit),
+            &label_style,
         );
-        let label =
-            text_renderer.elide_to_width(&display.label, type_scale.xs, px(rect.width() - 12.0));
-        let (lw, _) = text_renderer.measure(&label, type_scale.xs, None);
-        text_renderer.draw_text(
-            scene,
+        let (lw, lh) = text_renderer.measure_style(&label, None, &label_style);
+        let block = f64::from(nh) + f64::from(lh);
+        let top = rect.center().y - block / 2.0;
+        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+        ctx.text(
+            &number,
+            &number_style,
+            colors.text_primary,
+            Point::new(rect.center().x - f64::from(nw) / 2.0, top),
+            None,
+        );
+        ctx.text(
             &label,
-            type_scale.xs,
+            &label_style,
             colors.text_dim,
-            transform.pre_translate(
-                (
-                    rect.center().x - f64::from(lw) / 2.0,
-                    rect.center().y + f64::from(nh) / 2.0 - 4.0,
-                )
-                    .into(),
-            ),
+            Point::new(rect.center().x - f64::from(lw) / 2.0, top + f64::from(nh)),
             None,
         );
         if display.primary {
             // Primary marker: a small bar along the top edge, the place the
             // top bar lives on that display.
-            let bar = Rect::new(rect.x0 + 6.0, rect.y0 + 5.0, rect.x1 - 6.0, rect.y0 + 8.0);
+            let bar = Rect::new(
+                rect.x0 + 2.0 * unit,
+                rect.y0 + unit,
+                rect.x1 - 2.0 * unit,
+                rect.y0 + 1.5 * unit,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                colors.intent.inverted,
                 None,
-                &RoundedRect::from_rect(bar, 1.5),
+                &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.detail)),
             );
         }
     }
@@ -394,8 +390,9 @@ impl Widget for DisplayArrangement {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(CANVAS_HEIGHT),
+                    height: Dimension::auto(),
                 },
+                aspect_ratio: Some(CANVAS_ASPECT),
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -423,8 +420,8 @@ impl Widget for DisplayArrangement {
         _presence: &PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
-        let ground = colors.lift(0.1);
+        let radius = f64::from(theme.tokens.radii.control);
+        let ground = colors.surfaces.raised;
         scene.fill(
             Fill::NonZero,
             transform,
@@ -450,18 +447,16 @@ impl Widget for DisplayArrangement {
         }
         if drawn.is_empty() {
             let message = t("display-arrangement-empty");
-            let (w, h) = text_renderer.measure(&message, theme.tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
-                scene,
+            let style = theme.text(ui::TextRole::Body);
+            let (w, h) = text_renderer.measure_style(&message, None, &style);
+            let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            ctx.text(
                 &message,
-                theme.tokens.typography.scale.sm,
+                &style,
                 colors.text_dim,
-                transform.pre_translate(
-                    (
-                        self.rect.center().x - f64::from(w) / 2.0,
-                        self.rect.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
+                Point::new(
+                    self.rect.center().x - f64::from(w) / 2.0,
+                    self.rect.center().y - f64::from(h) / 2.0,
                 ),
                 None,
             );

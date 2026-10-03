@@ -126,7 +126,7 @@ fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
             Some(TimeZonePoint {
                 id: id.to_string(),
                 region: region.replace('_', " "),
-                city: city.replace('_', " ").replace('/', " · "),
+                city: city.replace('_', " ").replace('/', ", "),
                 latitude_e6,
                 longitude_e6,
             })
@@ -179,8 +179,9 @@ fn parse_coordinate_part(value: &str, latitude: bool) -> Option<f64> {
     (coordinate <= limit).then_some(sign * coordinate)
 }
 
-const MAP_HEIGHT: f32 = 176.0;
-const MAP_HIT_RADIUS: f64 = 11.0;
+/// The map's width over its height: equirectangular world maps are about
+/// two and a half times wider than tall once the caption band is added.
+const MAP_ASPECT: f32 = 2.4;
 
 /// Compact equirectangular picker over coordinates published by installed
 /// tzdata. It complements rather than replaces the searchable selector: the
@@ -195,6 +196,12 @@ struct TimeZoneMap {
     needs_commit: bool,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
+    /// Inset of the plot from the well's edge (the `s2` step).
+    pad: f64,
+    /// Height of the caption band under the plot.
+    band: f64,
+    /// How close a pointer must come to a city to pick it.
+    hit_radius: f64,
 }
 
 impl TimeZoneMap {
@@ -211,6 +218,9 @@ impl TimeZoneMap {
             needs_commit: false,
             action: None,
             rect: Rect::ZERO,
+            pad: f64::from(ui::tokens::Spacing::BASE.s2),
+            band: f64::from(ui::tokens::Spacing::BASE.s6),
+            hit_radius: f64::from(ui::tokens::Metrics::BASE.min_pointer_target) / 2.0,
         }
     }
 
@@ -221,10 +231,10 @@ impl TimeZoneMap {
 
     fn plot_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + 10.0,
-            self.rect.y0 + 10.0,
-            (self.rect.x1 - 10.0).max(self.rect.x0 + 11.0),
-            (self.rect.y1 - 34.0).max(self.rect.y0 + 11.0),
+            self.rect.x0 + self.pad,
+            self.rect.y0 + self.pad,
+            (self.rect.x1 - self.pad).max(self.rect.x0 + self.pad),
+            (self.rect.y1 - self.pad - self.band).max(self.rect.y0 + self.pad),
         )
     }
 
@@ -249,7 +259,7 @@ impl TimeZoneMap {
             .filter_map(|(index, _)| {
                 let projected = self.projected(index);
                 let distance = (projected.x - position.x).hypot(projected.y - position.y);
-                (distance <= MAP_HIT_RADIUS).then_some((index, distance))
+                (distance <= self.hit_radius).then_some((index, distance))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(index, _)| index)
@@ -349,9 +359,13 @@ impl Widget for TimeZoneMap {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.pad = f64::from(theme.tokens.spacing.s2);
+        self.band = f64::from(theme.tokens.spacing.s2) * 2.0
+            + f64::from(theme.tokens.typography.size(ui::TextRole::Caption));
+        self.hit_radius = f64::from(theme.tokens.metrics.min_pointer_target) / 2.0;
         #[allow(
             clippy::unwrap_used,
             reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
@@ -360,8 +374,9 @@ impl Widget for TimeZoneMap {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(MAP_HEIGHT),
+                    height: Dimension::auto(),
                 },
+                aspect_ratio: Some(MAP_ASPECT),
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -388,17 +403,16 @@ impl Widget for TimeZoneMap {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        // The map is a base-surface well inside its raised card: the fill is
-        // the contrast step, and the rest edge derives from that fill
-        // (`ui::surface::card`, HIG §9.5) so it registers on the dark preset
-        // where a declared `border_standard` stroke did not. Focus replaces
-        // the hairline with the 2 px focus ring.
-        let radius = f64::from(theme.tokens.radii.md);
-        let well = theme.tokens.colors.surfaces.base;
+        // The map is a well on the content ground: the raised surface is the
+        // contrast step, and the rest edge derives from that fill
+        // (`ui::surface::card`, HIG §9.5). Focus replaces the hairline with
+        // the focus ring.
+        let radius = f64::from(theme.tokens.radii.control);
+        let well = theme.tokens.colors.surfaces.raised;
         ui::surface::card(scene, transform, self.rect, radius, well);
         if self.focused {
             scene.stroke(
-                &Stroke::new(2.0),
+                &Stroke::new(f64::from(theme.tokens.spacing.s1) / 2.0),
                 transform,
                 theme.border_focus,
                 None,
@@ -432,13 +446,13 @@ impl Widget for TimeZoneMap {
         }
 
         if self.points.is_empty() {
-            text_renderer.draw_text(
-                scene,
+            let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            ctx.text_role(
                 &t("time-map-unavailable"),
-                11.0,
+                ui::TextRole::Caption,
                 theme.text_dim,
-                transform * Affine::translate((plot.x0 + 8.0, plot.center().y - 6.0)),
-                Some((plot.width() - 16.0).max(1.0) as f32),
+                Point::new(plot.x0 + self.pad, plot.center().y),
+                Some((plot.width() - 2.0 * self.pad) as f32),
             );
             return;
         }
@@ -449,36 +463,37 @@ impl Widget for TimeZoneMap {
             let is_selected = selected == Some(index);
             let is_active =
                 self.hover == Some(index) || (self.focused && self.cursor == Some(index));
-            let radius = if is_selected { 4.5 } else { 2.2 };
+            let unit = f64::from(theme.tokens.spacing.s1);
+            let radius = if is_selected { unit } else { unit / 2.0 };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 if is_selected {
-                    theme.accent_primary
+                    theme.text_primary
                 } else {
-                    theme.text_dim.multiply_alpha(170.0 / 255.0)
+                    theme.text_dim
                 },
                 None,
                 &Circle::new(centre, radius),
             );
             if is_active {
                 scene.stroke(
-                    &Stroke::new(2.0),
+                    &Stroke::new(unit / 2.0),
                     transform,
                     theme.border_focus,
                     None,
-                    &Circle::new(centre, radius + 4.0),
+                    &Circle::new(centre, radius + unit),
                 );
             }
         }
 
-        text_renderer.draw_text(
-            scene,
+        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+        ctx.text_role(
             &self.active_label(),
-            11.0,
+            ui::TextRole::Caption,
             theme.text_primary,
-            transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y1 - 23.0)),
-            Some((self.rect.width() - 20.0).max(1.0) as f32),
+            Point::new(self.rect.x0 + self.pad, self.rect.y1 - self.band),
+            Some((self.rect.width() - 2.0 * self.pad) as f32),
         );
     }
 
@@ -887,10 +902,7 @@ impl TimeDatePane {
 
         let formats = card(
             &t("time-display-title"),
-            rows(vec![
-                value_row(&t("time-clock-format"), &clock_format),
-                caption(&t("time-display-caption")),
-            ]),
+            rows(vec![value_row(&t("time-clock-format"), &clock_format)]),
         );
 
         let map = card(
@@ -909,7 +921,6 @@ impl TimeDatePane {
             rows(vec![
                 value_row(&t("time-sync"), &sync),
                 value_row(&t("time-source"), &source_name),
-                caption(&t("time-source-caption")),
             ]),
         );
 
@@ -1135,7 +1146,7 @@ mod tests {
                 map.apply_layout(&taffy, node, Point::ZERO);
 
                 assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
-                assert!((map.rect.height() - f64::from(MAP_HEIGHT)).abs() < 0.1);
+                assert!((map.rect.height() - f64::from(width / MAP_ASPECT)).abs() < 0.5);
                 for index in 0..map.points.len() {
                     assert!(map.plot_rect().contains(map.projected(index)));
                 }

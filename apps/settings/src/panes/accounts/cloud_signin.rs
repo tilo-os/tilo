@@ -638,8 +638,7 @@ impl SignInFlow {
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Code from the provider")
-                            .with_placeholder("Paste the code")
-                            .with_font_size(13.0),
+                            .with_placeholder("Paste the code"),
                     ),
                 )),
                 Stage::Code { .. } => fields.push(setting_row(
@@ -649,8 +648,7 @@ impl SignInFlow {
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Verification code")
-                            .with_placeholder("123456")
-                            .with_font_size(13.0),
+                            .with_placeholder("123456"),
                     ),
                 )),
                 _ => self.form_fields(&mut fields),
@@ -708,8 +706,7 @@ impl SignInFlow {
                     .with_kind(TextInputKind::Name)
                     .with_id("accounts.signin.name")
                     .with_accessible_name("Display name")
-                    .with_placeholder(self.kind.label())
-                    .with_font_size(13.0),
+                    .with_placeholder(self.kind.label()),
             ),
         ));
         match self.kind {
@@ -721,8 +718,7 @@ impl SignInFlow {
                             .with_kind(TextInputKind::Url)
                             .with_id("accounts.signin.server")
                             .with_accessible_name("Server URL")
-                            .with_placeholder("https://cloud.example.com")
-                            .with_font_size(13.0),
+                            .with_placeholder("https://cloud.example.com"),
                     ),
                 ));
                 fields.push(caption(
@@ -739,8 +735,7 @@ impl SignInFlow {
                             .with_kind(TextInputKind::Email)
                             .with_id("accounts.signin.apple-id")
                             .with_accessible_name("Apple ID")
-                            .with_placeholder("you@icloud.com")
-                            .with_font_size(13.0),
+                            .with_placeholder("you@icloud.com"),
                     ),
                 ));
                 fields.push(setting_row(
@@ -751,8 +746,7 @@ impl SignInFlow {
                             .with_id("accounts.signin.password")
                             .with_accessible_name("Apple ID password")
                             .with_secret(true)
-                            .with_placeholder("Password")
-                            .with_font_size(13.0),
+                            .with_placeholder("Password"),
                     ),
                 ));
             }

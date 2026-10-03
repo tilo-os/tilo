@@ -41,7 +41,7 @@ use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher,
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Dropdown, ProgressBar, Sparkline, Toggle, Widget};
+use ui::widget::{Dropdown, ProgressBar, StatTile, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -609,12 +609,12 @@ impl PowerPane {
             .map(|p| p.capacity as f32)
             .collect();
         if trend.len() >= 2 {
+            let latest = trend.last().copied().unwrap_or_default();
             battery_rows.push(Box::new(
-                Sparkline::new(trend, Theme::dark().accent_primary)
-                    .with_max(100.0)
-                    .with_size(320.0, 56.0),
+                StatTile::new(t("power-history-title"), format!("{latest:.0}"))
+                    .unit("%")
+                    .sparkline(trend),
             ));
-            battery_rows.push(caption(&t("power-history-caption")));
         }
         if let Some(capability) = &self.charge_cap {
             let choices: Vec<String> = capability
@@ -686,7 +686,6 @@ impl PowerPane {
                     ),
                 )]
             };
-        profile_rows.push(caption(&t("power-profile-caption")));
         if let Some(notice) = &self.profile_notice {
             profile_rows.push(caption(notice));
         }
@@ -753,7 +752,6 @@ impl PowerPane {
                             .with_placeholder(&lock_now),
                     ),
                 ),
-                caption(&t("power-idle-caption")),
                 choice_row(
                     &t("power-saver-suspend"),
                     Box::new(
@@ -787,7 +785,6 @@ impl PowerPane {
                             .with_placeholder(&performance_now),
                     ),
                 ),
-                caption(&t("power-profile-idle-caption")),
             ]),
         )
     }

@@ -373,24 +373,18 @@ impl BluetoothPane {
             "settings-bluetooth-details"
         });
         Row::new()
-            .push(Box::new(Text::new(&d.name).with_size(13.0)))
+            .push(Box::new(Text::new(&d.name)))
             .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Button::new(
-                    &format!("settings.bluetooth.{action}.{}", token(&d.path)),
-                    &primary,
-                    Some(&key(&d.path, action)),
-                )
-                .content_sized(),
-            ))
-            .push(Box::new(
-                Button::new(
-                    &format!("settings.bluetooth.details.{}", token(&d.path)),
-                    &details,
-                    Some(&key(&d.path, "details")),
-                )
-                .content_sized(),
-            ))
+            .push(Box::new(Button::new(
+                &format!("settings.bluetooth.{action}.{}", token(&d.path)),
+                &primary,
+                Some(&key(&d.path, action)),
+            )))
+            .push(Box::new(Button::new(
+                &format!("settings.bluetooth.details.{}", token(&d.path)),
+                &details,
+                Some(&key(&d.path, "details")),
+            )))
     }
     fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<El> {
         let mut block: Vec<El> = Vec::new();
@@ -418,7 +412,6 @@ impl BluetoothPane {
                     &key(&d.path, "trusted"),
                 )),
             ));
-            block.push(caption(&t("settings-bluetooth-trust-caption")));
             block.push(Box::new(
                 TextInput::new(Vec::new())
                     .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
@@ -427,27 +420,18 @@ impl BluetoothPane {
             ));
             block.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            &format!("settings.bluetooth.rename.{}", token(&d.path)),
-                            &rename,
-                            Some(&key(&d.path, "rename")),
-                        )
-                        .content_sized(),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                            &forget,
-                            Some(&key(&d.path, "forget")),
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        &format!("settings.bluetooth.rename.{}", token(&d.path)),
+                        &rename,
+                        Some(&key(&d.path, "rename")),
+                    )))
+                    .push(Box::new(Button::new(
+                        &format!("settings.bluetooth.forget.{}", token(&d.path)),
+                        &forget,
+                        Some(&key(&d.path, "forget")),
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
-        }
-        if d.icon.starts_with("audio-") {
-            block.push(caption(&t("settings-bluetooth-audio-caption")));
         }
         block
     }
@@ -485,13 +469,16 @@ impl BluetoothPane {
         let refresh = t("settings-bluetooth-refresh");
         let mut body: Vec<El> = vec![Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new("settings.bluetooth.scan", &scan, Some(SCAN_KEY)).content_sized(),
-                ))
-                .push(Box::new(
-                    Button::new("settings.bluetooth.refresh", &refresh, Some(REFRESH_KEY))
-                        .content_sized(),
-                ))
+                .push(Box::new(Button::new(
+                    "settings.bluetooth.scan",
+                    &scan,
+                    Some(SCAN_KEY),
+                )))
+                .push(Box::new(Button::new(
+                    "settings.bluetooth.refresh",
+                    &refresh,
+                    Some(REFRESH_KEY),
+                )))
                 .push(Box::new(Spacer::new())),
         )];
         if let Some(n) = &self.notice {

@@ -988,7 +988,7 @@ impl AudioPane {
     /// The way into Speakers: several of your devices as one set.
     fn speakers_card() -> crate::widgets::El {
         let open_label = t("sound-speakers-open");
-        let open = ui::widget::Button::new("sound.speakers", &open_label, None).content_sized();
+        let open = ui::widget::Button::new("sound.speakers", &open_label, None);
         let open = match tilo_actions::ActionBinding::unit_for(
             &crate::actions::pane_navigation_resource(crate::categories::Category::Speakers),
             crate::actions::OPEN_PANE_ACTION,
@@ -1078,7 +1078,6 @@ impl AudioPane {
                         ),
                 ),
             ));
-            output_rows.push(caption(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
             output_rows.push(Box::new(
@@ -1093,7 +1092,6 @@ impl AudioPane {
                             },
                             None,
                         )
-                        .content_sized()
                         .on_action(
                             crate::actions::audio_unit_binding("diagnostics")
                                 .expect("audio diagnostics action is published"),
@@ -1106,7 +1104,6 @@ impl AudioPane {
                     Row::new()
                         .push(Box::new(
                             Button::new("settings.audio.test.left", &t("sound-test-left"), None)
-                                .content_sized()
                                 .on_action(
                                     crate::actions::audio_unit_binding("test-left")
                                         .expect("left speaker test action is published"),
@@ -1114,7 +1111,6 @@ impl AudioPane {
                         ))
                         .push(Box::new(
                             Button::new("settings.audio.test.right", &t("sound-test-right"), None)
-                                .content_sized()
                                 .on_action(
                                     crate::actions::audio_unit_binding("test-right")
                                         .expect("right speaker test action is published"),
@@ -1185,7 +1181,9 @@ impl AudioPane {
             };
             input_rows.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&activity).with_size(12.0)))
+                    .push(Box::new(
+                        Text::new(&activity).with_role(ui::TextRole::Caption),
+                    ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         Button::new(
@@ -1197,14 +1195,12 @@ impl AudioPane {
                             },
                             None,
                         )
-                        .content_sized()
                         .on_action(
                             crate::actions::audio_unit_binding("microphone-meter")
                                 .expect("microphone meter action is published"),
                         ),
                     )),
             ));
-            input_rows.push(caption(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
             input_rows.push(setting_row(
@@ -1219,7 +1215,6 @@ impl AudioPane {
                         ),
                 ),
             ));
-            input_rows.push(caption(&t("sound-echo-caption")));
         }
         card(&t("sound-input"), rows(input_rows))
     }
@@ -1961,7 +1956,6 @@ impl AudioPane {
                 ),
             ));
         }
-        sound_rows.push(caption(&t("sound-system-caption")));
         card(&t("sound-system"), rows(sound_rows))
     }
 

@@ -31,9 +31,7 @@ use crate::i18n::t;
 use crate::region::{
     Currency, DateStyle, FirstDayOfWeek, Measurement, NumberStyle, RegionSettings, TimeStyle,
 };
-use crate::widgets::{
-    caption, card, choice_row, choice_row_stacked, choice_rows_stack_below, rows,
-};
+use crate::widgets::{card, choice_row, choice_row_stacked, choice_rows_stack_below, rows};
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
@@ -270,12 +268,7 @@ impl RegionPane {
             ]),
         );
 
-        let explainer = card(
-            &t("settings-region-shared-card"),
-            rows(vec![caption(&t("settings-region-shared-body"))]),
-        );
-
-        crate::widgets::cards(vec![formats, preview, explainer])
+        crate::widgets::cards(vec![formats, preview])
     }
 
     fn draft_key(canonical: &str) -> String {

@@ -15,8 +15,7 @@
 //!
 //! - [`categories`] — the sidebar's [`categories::Section`]s and
 //!   [`categories::Category`]s.
-//! - [`sidebar`] — the cohesive navigation sidebar surface and its
-//!   full-width, click-to-select [`sidebar::SidebarRow`].
+//! - [`sidebar`] — the sidebar's navigation list of categories.
 //! - [`panes`] — one module per category content pane.
 //! - [`widgets`] — small composition helpers (card, setting row, caption)
 //!   shared across panels.
@@ -80,14 +79,12 @@ pub mod speaker_setup;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;
-#[cfg(not(feature = "thin"))]
-pub use shots::render_to_path;
 
 /// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.
 ///
 /// A `TextInput` bound via `with_on_change_path` persists typed characters by
 /// splicing into an **existing** `Text` object — it never creates one. So any
-/// field the user is meant to type into (the settings search, the add-account
+/// field the user is meant to type into (the add-account
 /// form, a Wi-Fi password) must have its backing object seeded first. Without
 /// this, edits update only the widget's local buffer and are silently lost on
 /// the next structure rebuild — which is exactly why those fields read as dead.

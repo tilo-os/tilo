@@ -18,98 +18,36 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
 use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ReadDoc};
+use automerge::ReadDoc;
 use settings::SettingsApp;
 use settings::categories::Category;
-use taffy::{NodeId, TaffyTree};
-use ui::text_render::TextRenderer;
+use ui::headless::{Framed, viewport};
 use ui::widget::{ResourceOperation, Widget};
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::Point;
 
 const W: f32 = 1200.0;
 // Wide navigation tests address every category directly; keep each target
 // visible. Short-viewport sidebar scrolling is exercised separately.
 const H: f32 = 1800.0;
 
-/// Run the host's per-frame `build_layout → compute_layout(measure) →
-/// apply_layout` cycle at the default wide viewport, returning the live tree
-/// + root node for event routing.
-fn lay_out(app: &mut SettingsApp) -> (TaffyTree<()>, NodeId) {
-    lay_out_at(app, W, H)
+/// Mount `app` in the production frame host at `(w, h)` and run its first
+/// frame.
+fn lay_out_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
+    Framed::new(ui::State::new(), app, viewport((w, h)), ui::Theme::dark())
 }
 
-/// Same, at an explicit viewport (used for the narrow screens).
-fn lay_out_at(app: &mut SettingsApp, w: f32, h: f32) -> (TaffyTree<()>, NodeId) {
-    let theme = ui::Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(w),
-                    height: taffy::Dimension::length(h),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    let measure_map = node_map.clone();
-    let mut tr = TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(w),
-                height: taffy::AvailableSpace::Definite(h),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    app.apply_layout(&taffy, node, Point::ORIGIN);
-    (taffy, node)
-}
-
-/// Find a widget's on-screen rect by `name` (+ optional `test_id`).
-fn find_rect(app: &SettingsApp, name: &str, test_id: Option<&str>) -> Option<Rect> {
-    fn walk(w: &dyn Widget, name: &str, tid: Option<&str>, out: &mut Option<Rect>) {
-        if out.is_some() {
-            return;
-        }
-        if w.name() == name && (tid.is_none() || w.test_id() == tid) {
-            *out = Some(w.get_rect());
-            return;
-        }
-        for c in w.children() {
-            walk(c, name, tid, out);
-        }
-    }
-    let mut out = None;
-    walk(app, name, test_id, &mut out);
-    out
+/// Rebuild and re-lay-out exactly as the host does on structure-dirty.
+fn relayout(app: &mut Framed<SettingsApp>, (w, h): (f32, f32)) {
+    Framed::harness_mut(app)
+        .relayout_themed(viewport((w, h)), ui::Theme::dark())
+        .expect("settings frame lays out");
 }
 
 /// Drive a full left-click (cursor move → press → release) at `p` through
 /// the production event path.
-fn click_at(
-    app: &mut SettingsApp,
-    taffy: &TaffyTree<()>,
-    node: NodeId,
-    doc: &mut AutoCommit,
-    p: Point,
-) {
-    let root = automerge::ROOT;
+fn click_at(app: &mut Framed<SettingsApp>, p: Point) {
     let mods = winit::event::Modifiers::default();
     let cursor = winit::event::WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
@@ -126,32 +64,19 @@ fn click_at(
         button: winit::event::MouseButton::Left,
     };
     for ev in [&cursor, &press, &release] {
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
+        Framed::harness_mut(app).dispatch_to_root_with(ev, &mods);
         // The live host resolves action-bound control intents immediately
-        // after event delivery. Mirror that boundary here so AppShell's Back
+        // after event delivery. Mirror that boundary here so the shell's Back
         // `View` action reaches its retained button handler.
-        while let Some(intent) = ui::widget::controls::take_control_invocation(app) {
+        let (root, state) = Framed::split(app);
+        while let Some(intent) = ui::widget::controls::take_control_invocation(root) {
             let control = intent
                 .address
                 .resource
                 .strip_prefix("tilo.control:")
                 .expect("Settings control actions use the toolkit control resource");
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
-            let started = app
+            let started = root
                 .start_operation(
                     &ResourceOperation::local(
                         tilo_actions::InvocationId::new(),
@@ -159,8 +84,8 @@ fn click_at(
                         "tilo.ui.control.invoke",
                         &payload,
                     ),
-                    doc,
-                    &root,
+                    &mut state.doc,
+                    &state.root,
                 )
                 .expect("Settings control action succeeds");
             assert!(started.is_some(), "Settings handled its control action");
@@ -168,26 +93,27 @@ fn click_at(
     }
 }
 
+/// The host's `sync` against the live document.
+fn sync(app: &mut Framed<SettingsApp>) {
+    let (app, state) = Framed::split(app);
+    app.sync(&mut state.doc, &state.root);
+}
+
 /// Navigate to `target` by clicking its sidebar row through the production
-/// path, then rebuild + re-lay-out as the host does. Returns the live tree.
-fn navigate(
-    app: &mut SettingsApp,
-    doc: &mut AutoCommit,
-    target: Category,
-) -> (TaffyTree<()>, NodeId) {
-    let (taffy, node) = lay_out(app);
-    let row = find_rect(app, "SidebarRow", Some(&target.label()))
-        .unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
+/// path, then rebuild + re-lay-out as the host does.
+fn navigate(app: &mut Framed<SettingsApp>, target: Category) {
+    let row = crate::support::nav_row(&**app, &target.label())
+        .unwrap_or_else(|| panic!("no sidebar row for {target:?}"))
+        .rect;
     assert!(
         row.y0 >= 0.0 && row.y1 <= f64::from(H),
         "navigation fixture must show {target:?}: {row:?}"
     );
-    click_at(app, &taffy, node, doc, row.center());
-    let root = automerge::ROOT;
-    app.sync(doc, &root);
+    click_at(app, row.center());
+    sync(app);
     assert_eq!(app.selected(), target, "click navigated to {target:?}");
     let _ = app.take_structure_dirty();
-    lay_out(app)
+    relayout(app, (W, H));
 }
 
 /// The back button returns to the list and the Wi-Fi toggle stays pane-local.
@@ -195,35 +121,34 @@ fn navigate(
 fn back_button_and_wifi_toggle_drive_pane_state() {
     // Case `clicking_back_button_returns_to_list`.
     // The narrow content screen's back-arrow button, clicked through the
-    // production event path, navigates back to the standalone list screen (the
-    // only way back — there is no overlay or floating sidebar).
+    // production event path, navigates back to the standalone list screen.
     {
         const NW: f32 = 440.0;
         const NH: f32 = 820.0;
         let config = crate::support::ScratchConfig::new();
         // Start drilled into a category's content screen (narrow layout).
-        let mut app = config
+        let app = config
             .app()
             .with_category(Category::Network)
             .with_width_hint(NW)
             .with_narrow_content_shot();
-        let mut doc = AutoCommit::new();
-        let (taffy, node) = lay_out_at(&mut app, NW, NH);
-        app.sync(&mut doc, &automerge::ROOT);
+        let mut app = lay_out_at(app, NW, NH);
+        sync(&mut app);
         assert!(app.is_narrow(), "440px resolves to the narrow layout");
         assert!(
             !app.sidebar_open(),
             "starts on the content screen (list hidden)"
         );
 
-        // The back arrow is drawn by the app-shell (not a child widget), so
-        // hit-test it by its resolved rect and click it through the real path.
+        // The back arrow is drawn by the shell (not a child widget of the
+        // app), so hit-test it by its resolved rect and click it through the
+        // real path.
         let back = app.back_button_rect();
         assert!(back.width() > 0.0, "the back arrow has a resolved rect");
-        click_at(&mut app, &taffy, node, &mut doc, back.center());
-        app.sync(&mut doc, &automerge::ROOT);
+        click_at(&mut app, back.center());
+        sync(&mut app);
         let _ = app.take_structure_dirty();
-        let _ = lay_out_at(&mut app, NW, NH);
+        relayout(&mut app, (NW, NH));
         assert!(
             app.sidebar_open(),
             "back navigates to the standalone list screen"
@@ -239,16 +164,15 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
     // remote scalar may turn the collaborative document into a radio command.
     {
         let config = crate::support::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = AutoCommit::new();
-        let _ = navigate(&mut app, &mut doc, Category::Network);
-        let root = automerge::ROOT;
-        let heads = doc.get_heads();
-        app.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), heads);
+        let mut app = lay_out_at(config.app(), W, H);
+        navigate(&mut app, Category::Network);
+        let heads = Framed::split(&mut app).1.doc.get_heads();
+        sync(&mut app);
+        let (_, state) = Framed::split(&mut app);
+        assert_eq!(state.doc.get_heads(), heads);
         assert!(
             read_bool(
-                &doc,
+                &state.doc,
                 &automerge::ROOT,
                 settings::panes::network::WIFI_ENABLED_KEY
             )
@@ -265,13 +189,16 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
 fn all_panels_navigate_and_seed_their_controls() {
     let config = crate::support::ScratchConfig::new();
     for &target in Category::ALL {
-        let mut app = config.app();
-        let mut doc = AutoCommit::new();
-        let _ = navigate(&mut app, &mut doc, target);
+        let mut app = lay_out_at(config.app(), W, H);
+        if target == Category::DEFAULT {
+            continue;
+        }
+        navigate(&mut app, target);
         // The pane rebuilt by navigate's final layout seeds on its next
         // sync; run one so the seed lands before we assert on it.
-        let heads_before_idle_sync = doc.get_heads();
-        app.sync(&mut doc, &automerge::ROOT);
+        let heads_before_idle_sync = Framed::split(&mut app).1.doc.get_heads();
+        sync(&mut app);
+        let (_, state) = Framed::split(&mut app);
         // Hardware panes render from process-local snapshots and must not
         // seed their primary device state into the collaborative document.
         let seeded_key = match target {
@@ -287,12 +214,17 @@ fn all_panels_navigate_and_seed_their_controls() {
         };
         if let Some(key) = seeded_key {
             assert_eq!(
-                doc.get_heads(),
+                state.doc.get_heads(),
                 heads_before_idle_sync,
                 "{target:?} idle sync must leave the collaborative document unchanged"
             );
             assert!(
-                doc.get(&automerge::ROOT, key).ok().flatten().is_none(),
+                state
+                    .doc
+                    .get(&automerge::ROOT, key)
+                    .ok()
+                    .flatten()
+                    .is_none(),
                 "{target:?} must keep device-local control key {key} out of collaboration"
             );
         }
