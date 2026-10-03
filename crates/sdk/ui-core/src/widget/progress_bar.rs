@@ -229,12 +229,15 @@ impl Widget for ProgressBar {
         // The track is always painted: it provides the visual anchor
         // even at `progress == 0.0`. The fill is conditional — see
         // `progress_bar_at_zero_paints_no_fill` for the contract.
-        let radius = f64::from(theme.tokens.radii.control);
+        // A detail inside its row: the detail radius. The track is a lift
+        // of the ground, as a slider's unfilled half is, so it reads on
+        // every material; the raised tier is white on white in light.
+        let radius = f64::from(theme.tokens.radii.detail);
         let track_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            theme.tokens.colors.intent.selection,
             None,
             &track_shape,
         );
