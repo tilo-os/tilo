@@ -18,8 +18,9 @@ use crate::model::{Artwork, Shape};
 use crate::render::{Options, Renderer};
 use crate::resource::{Export, Inspect, Look};
 
-/// The default longest side of a look, in pixels.
-pub const LOOK_SIZE: u32 = 1024;
+/// The default longest side of a look, in pixels: enough to judge a
+/// composition; a region look shows detail. A model pays for every pixel.
+pub const LOOK_SIZE: u32 = 768;
 /// The largest look.
 pub const MAX_LOOK_SIZE: u32 = 1536;
 /// The longest side of each half of a diff's picture.
@@ -29,12 +30,19 @@ const DIFF_GAP: u32 = 8;
 /// The neutral backdrop outside the artwork, the same in every theme so
 /// two looks at one revision are the same picture.
 const BACKDROP: [u8; 4] = [120, 120, 120, 255];
-/// The most marks `inspect` lists.
+/// The most marks `inspect` lists, and how many when the caller names no
+/// limit.
 pub const MAX_LISTED: usize = 400;
+pub const LISTED: usize = 100;
+/// JPEG quality of a look: paint and edges read as they are, at a fraction
+/// of a PNG's bytes.
+const JPEG_QUALITY: u8 = 85;
 
-/// A rendered picture.
+/// A rendered picture, encoded.
 pub struct Picture {
-    pub png: Vec<u8>,
+    pub bytes: Vec<u8>,
+    /// `png` or `jpeg`.
+    pub format: &'static str,
     pub width: u32,
     pub height: u32,
 }
@@ -66,7 +74,8 @@ fn side(value: f64) -> u32 {
     value.round().clamp(1.0, 8192.0) as u32
 }
 
-/// Render `region` of `art` with `pixels_per_unit`, as a PNG.
+/// Render `region` of `art` with `pixels_per_unit`, as a PNG, or as a
+/// JPEG when `jpeg`.
 ///
 /// # Errors
 /// Returns why nothing could be rendered: no GPU adapter, a failed encode.
@@ -74,13 +83,19 @@ pub fn render(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
-    region: Rect,
-    pixels_per_unit: f64,
+    (region, pixels_per_unit): (Rect, f64),
     options: &Options,
+    jpeg: bool,
 ) -> Result<Picture, String> {
     let (rgba, width, height) = render_rgba(renderer, text, art, region, pixels_per_unit, options)?;
+    let (bytes, format) = if jpeg {
+        (encode_jpeg(&rgba, width, height)?, "jpeg")
+    } else {
+        (encode_png(&rgba, width, height)?, "png")
+    };
     Ok(Picture {
-        png: encode_png(&rgba, width, height)?,
+        bytes,
+        format,
         width,
         height,
     })
@@ -104,6 +119,22 @@ fn render_rgba(
     let [r, g, b, a] = BACKDROP;
     let rgba = offscreen.render(&scene, Color::from_rgba8(r, g, b, a));
     Ok((rgba, width, height))
+}
+
+/// Opaque RGBA8 as JPEG bytes; alpha is dropped.
+///
+/// # Errors
+/// Returns the encoder's error.
+pub fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let rgb: Vec<u8> = rgba
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel.iter().take(3).copied())
+        .collect();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|error| error.to_string())?;
+    Ok(jpeg)
 }
 
 /// RGBA8 as PNG bytes.
@@ -145,16 +176,22 @@ pub fn look(
     {
         return Err(format!("there is no layer {unknown:?}"));
     }
+    let jpeg = match look.format.as_deref() {
+        None | Some("jpeg") => true,
+        Some("png") => false,
+        Some(other) => return Err(format!("format {other:?} is jpeg or png")),
+    };
     let scale = f64::from(size) / region.width().max(region.height());
     let options = Options {
         layers: look.layers.clone(),
         grid: look.grid.unwrap_or(false),
         view: Some(region),
     };
-    let picture = render(renderer, text, art, region, scale, &options)?;
+    let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
         "width": picture.width,
         "height": picture.height,
+        "format": picture.format,
         "region": [region.x0, region.y0, region.width(), region.height()],
         "pixels_per_unit": round(scale),
         "marks": art.marks.len(),
@@ -182,9 +219,9 @@ pub fn export(
         renderer,
         text,
         art,
-        art.bounds(),
-        scale,
+        (art.bounds(), scale),
         &Options::default(),
+        false,
     )?;
     let info = json!({"width": picture.width, "height": picture.height, "format": "png"});
     Ok((picture, info))
@@ -192,6 +229,44 @@ pub fn export(
 
 fn round(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
+}
+
+/// A coordinate to the artwork unit: a tenth more is noise to a caller and
+/// bytes in every row.
+fn whole(value: f64) -> f64 {
+    value.round()
+}
+
+/// One mark as `inspect` lists it; its layer only when the caller did not
+/// name one.
+fn mark_entry(mark: &crate::model::Mark, named_layer: bool) -> Value {
+    let bounds = mark.bounds();
+    let mut entry = json!({
+        "id": mark.id,
+        "kind": mark.shape.kind(),
+        "bounds": [whole(bounds.x0), whole(bounds.y0), whole(bounds.width()), whole(bounds.height())],
+    });
+    if let Value::Object(fields) = &mut entry {
+        if !named_layer {
+            fields.insert("layer".into(), mark.layer.clone().into());
+        }
+        if !mark.name.is_empty() {
+            fields.insert("name".into(), mark.name.clone().into());
+        }
+        if let Some(fill) = &mark.style.fill {
+            fields.insert("fill".into(), fill.clone().into());
+        }
+        if let Some(stroke) = &mark.style.stroke {
+            fields.insert("stroke".into(), stroke.clone().into());
+        }
+        if let Shape::Text { text, .. } = &mark.shape {
+            fields.insert("text".into(), text.clone().into());
+        }
+        if let Shape::Stroke { size, .. } = &mark.shape {
+            fields.insert("size".into(), round(*size).into());
+        }
+    }
+    entry
 }
 
 /// The layers and marks, as an agent reads them.
@@ -219,55 +294,42 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         })
         .filter(|mark| region.is_none_or(|region| mark.bounds().intersect(region).area() > 0.0))
         .collect();
+    let limit = inspect
+        .limit
+        .map_or(LISTED, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
+    if !(1..=MAX_LISTED).contains(&limit) {
+        return Err(format!("limit must be within 1..={MAX_LISTED}"));
+    }
     let marks: Vec<Value> = matching
         .iter()
         .rev()
-        .take(MAX_LISTED)
+        .take(limit)
         .rev()
-        .map(|mark| {
-            let bounds = mark.bounds();
-            let mut entry = json!({
-                "id": mark.id,
-                "kind": mark.shape.kind(),
-                "layer": mark.layer,
-                "bounds": [round(bounds.x0), round(bounds.y0), round(bounds.width()), round(bounds.height())],
-            });
-            if let Value::Object(fields) = &mut entry {
-                if !mark.name.is_empty() {
-                    fields.insert("name".into(), mark.name.clone().into());
-                }
-                if let Some(fill) = &mark.style.fill {
-                    fields.insert("fill".into(), fill.clone().into());
-                }
-                if let Some(stroke) = &mark.style.stroke {
-                    fields.insert("stroke".into(), stroke.clone().into());
-                }
-                if let Shape::Text { text, .. } = &mark.shape {
-                    fields.insert("text".into(), text.clone().into());
-                }
-                if let Shape::Stroke { size, .. } = &mark.shape {
-                    fields.insert("size".into(), round(*size).into());
-                }
-            }
-            entry
-        })
+        .map(|mark| mark_entry(mark, inspect.layer.is_some()))
         .collect();
     let layers: Vec<Value> = art
         .layers
         .iter()
         .rev()
         .map(|layer| {
-            json!({
+            let mut entry = json!({
                 "id": layer.id,
                 "name": layer.name,
                 "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
-                "opacity": layer.opacity,
-                "visible": layer.visible,
                 "marks": art.marks_of(&layer.id).count(),
-            })
+            });
+            if let Value::Object(fields) = &mut entry {
+                if layer.opacity < 1.0 {
+                    fields.insert("opacity".into(), layer.opacity.into());
+                }
+                if !layer.visible {
+                    fields.insert("visible".into(), false.into());
+                }
+            }
+            entry
         })
         .collect();
-    Ok(json!({
+    let mut answer = json!({
         "artwork": {
             "title": art.title,
             "width": art.width,
@@ -279,10 +341,31 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "marks_bottom_first": marks,
         "listed": marks.len(),
         "matching": matching.len(),
-    }))
+    });
+    if marks.len() < matching.len()
+        && let Value::Object(fields) = &mut answer
+    {
+        fields.insert(
+            "more".into(),
+            format!(
+                "the newest {} of {} marks; a layer, region or limit (at most {MAX_LISTED}) lists others",
+                marks.len(),
+                matching.len()
+            )
+            .into(),
+        );
+    }
+    Ok(answer)
 }
 
-/// The media layers can use.
+/// A medium's number as an agent reads it: two decimals say what an f32
+/// slider value means; its float noise says nothing.
+fn hundredths(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+/// The media layers can use. Each pigment palette is listed once, under
+/// the first medium that uses it, and named by every medium that does.
 pub fn media(art: &Artwork) -> Value {
     let engines = tilo_wet_media::Engines::builtin();
     let engines: Vec<Value> = engines
@@ -295,30 +378,51 @@ pub fn media(art: &Artwork) -> Value {
                 "parameters": engine.parameters().iter().map(|spec| json!({
                     "id": spec.id,
                     "description": spec.description,
-                    "min": spec.min,
-                    "max": spec.max,
-                    "default": spec.default,
+                    "min": hundredths(f64::from(spec.min)),
+                    "max": hundredths(f64::from(spec.max)),
+                    "default": hundredths(f64::from(spec.default)),
                 })).collect::<Vec<_>>(),
             })
         })
         .collect();
+    let mut palettes = serde_json::Map::new();
+    let mut seen: Vec<(Vec<String>, String)> = Vec::new();
     let media: Vec<Value> = media::available(art)
         .iter()
         .map(|medium| {
+            let pigments: Vec<String> = medium
+                .palette
+                .iter()
+                .map(|pigment| format!("{} {}", pigment.name, pigment.colour))
+                .collect();
+            let palette = if let Some((_, id)) = seen.iter().find(|(listed, _)| *listed == pigments)
+            {
+                id.clone()
+            } else {
+                palettes.insert(medium.id.clone(), pigments.clone().into());
+                seen.push((pigments, medium.id.clone()));
+                medium.id.clone()
+            };
+            let params: serde_json::Map<String, Value> = medium
+                .params
+                .iter()
+                .map(|(name, value)| (name.clone(), hundredths(*value).into()))
+                .collect();
             json!({
                 "id": medium.id,
                 "label": medium.label,
                 "engine": medium.engine,
                 "description": medium.description,
                 "ground": medium.ground,
-                "params": medium.params,
+                "params": params,
                 "saved_in_artwork": art.media.contains_key(&medium.id),
-                "pigments": medium.palette.iter().map(|pigment| format!("{} {}", pigment.name, pigment.colour)).collect::<Vec<_>>(),
+                "palette": palette,
             })
         })
         .collect();
     json!({
         "media": media,
+        "palettes": palettes,
         "engines": engines,
         "textures": ["smooth", "paper", "cold-press", "rough", "linen"],
         "plain_layers": "a layer with no medium draws crisp vector art; pigment:<name> resolves against every palette there",
@@ -475,7 +579,8 @@ fn side_by_side(
         rest.split_at_mut(bytes(DIFF_GAP)).1.copy_from_slice(after);
     }
     Ok(Picture {
-        png: encode_png(&rgba, total, height)?,
+        bytes: encode_png(&rgba, total, height)?,
+        format: "png",
         width: total,
         height,
     })

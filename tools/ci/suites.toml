@@ -157,6 +157,7 @@ suites = [
   "os/tests/test_windows_provider_candidates.py",
   "os/tests/test_fetch_windows_direct_manifests.py",
   "os/tests/test_forgejo_dev_installer_metadata.py",
+  "os/tests/test_download_dev_installer.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/test_wpe_recipe_inputs.py",
   "os/tests/test_wpe_stage_artifact.py",
@@ -343,9 +344,10 @@ suites = [
 name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
-  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py",
+  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
+  "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
   "scripts/tests/test_demo_scripts.py",
   "scripts/tests/test_runtime_mcp_proof.py",
