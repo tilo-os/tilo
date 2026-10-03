@@ -824,7 +824,7 @@ fn execute_owned(
                 let action = services
                     .registry
                     .decode(&encoded)
-                    .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+                    .map_err(DoorError::decoding)?;
                 if action.locus() != tilo_actions::ExecutionLocus::ClientLocal {
                     return Err(refused(
                         "legacy_document_route_unsupported",
