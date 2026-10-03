@@ -20,6 +20,7 @@
 //! periodic work is the 50 ms live permission observation and the session
 //! janitor, both on tokio intervals.
 
+pub mod install;
 mod legacy;
 mod live;
 mod sessions;
@@ -670,12 +671,19 @@ fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
     hex::decode(value).ok()?.try_into().ok()
 }
 
-fn cors(web: &Web, origin: Option<&header::HeaderValue>, response: &mut Response<Body>) {
+/// Headers a page may send to the browser routes.
+const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session";
+
+fn cors(
+    allowed_origins: &[String],
+    allowed_headers: &str,
+    origin: Option<&header::HeaderValue>,
+    response: &mut Response<Body>,
+) {
     let Some(origin) = origin.and_then(|value| value.to_str().ok()) else {
         return;
     };
-    if !web
-        .allowed_origins
+    if !allowed_origins
         .iter()
         .any(|allowed| allowed == origin || allowed == "*")
     {
@@ -690,10 +698,9 @@ fn cors(web: &Web, origin: Option<&header::HeaderValue>, response: &mut Response
         header::ACCESS_CONTROL_ALLOW_METHODS,
         header::HeaderValue::from_static("POST, OPTIONS"),
     );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        header::HeaderValue::from_static("content-type, x-tilo-session, x-tilo-live-session"),
-    );
+    if let Ok(allowed) = header::HeaderValue::from_str(allowed_headers) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed);
+    }
     headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         header::HeaderValue::from_static("x-tilo-live-session"),
@@ -711,7 +718,12 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .await
             .unwrap_or_else(|response| response)
     };
-    cors(web, origin.as_ref(), &mut response);
+    cors(
+        &web.allowed_origins,
+        ALLOWED_HEADERS,
+        origin.as_ref(),
+        &mut response,
+    );
     response
 }
 

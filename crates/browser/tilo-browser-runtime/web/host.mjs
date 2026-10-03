@@ -52,6 +52,8 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** Open a profile's durable storage for state kept outside any mount (the
  * relay peer). Shares the lease with mounts of the same profile/device;
  * `flush()` resolves when writes are durable; call `release()` once. */
+/** The wasm runtime module, once loaded (the peer's codec and certificates). */
+export async function loadRuntime(){await ready();return runtime;}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
