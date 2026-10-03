@@ -146,6 +146,12 @@ pub enum FileCommand {
     RevealInFolder(PathBuf),
     /// Remove `path` from the Recent list; the file itself is untouched.
     ForgetRecent(PathBuf),
+    /// Open what is wrong with the cloud account with this id (chosen from
+    /// the places list, where its folder is not mounted).
+    ShowRemoteAccount(String),
+    /// Read the cloud account with this id again (after the person signed in
+    /// elsewhere) and open its folder if it is now available.
+    RecheckRemoteAccount(String),
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,
