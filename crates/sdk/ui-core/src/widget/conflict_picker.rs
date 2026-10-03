@@ -471,9 +471,8 @@ fn draw_card(
 
     let pick_button = chrome.pick_button;
     let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.detail));
-    // Fill and ink share one ground — the primary accent stop — so the label
-    // is resolved against the colour it is painted on (the `Button` primary
-    // convention: white ink stepped until it clears the fill).
+    // A primary action: the emphasis fill under its own label
+    // (`intent.on_inverted`), resolved against the fill it is painted on.
     let fill = theme.tokens.colors.intent.inverted;
     scene.fill(
         vello::peniko::Fill::NonZero,
@@ -487,13 +486,11 @@ fn draw_card(
     text_renderer.draw_style(
         scene,
         content.button_label,
-        // `Button`'s tone convention: white is the *candidate* ink, which the
-        // theme resolves against the fill (it walks to dark ink on a bright
-        // fill), so the literal is the request, not the colour painted.
-        theme
-            .tokens
-            .colors
-            .ink_on(fill, vello::peniko::Color::WHITE, ON_FILL_MIN_CONTRAST),
+        theme.tokens.colors.ink_on(
+            fill,
+            theme.tokens.colors.intent.on_inverted,
+            ON_FILL_MIN_CONTRAST,
+        ),
         translated(
             transform,
             pick_button.x0 + (pick_button.width() - f64::from(bw)) / 2.0,

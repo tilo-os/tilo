@@ -1,9 +1,9 @@
 //! The appearance a standalone app takes from the operating system it runs
 //! on. Inside Tilo OS the shell supplies appearance through settings and
 //! nothing here runs; outside it, light/dark, the contrast and motion
-//! preferences follow the host, and the host's accent becomes the person's
-//! own colour (focus ring, caret, selection), so an SDK app looks at home
-//! without choosing a colour of its own.
+//! preferences follow the host, and the presence hue nearest the host's
+//! accent becomes the person's own colour (focus ring, caret, selection), so
+//! an SDK app looks at home without choosing a colour of its own.
 //!
 //! Light/dark comes from winit (`Window::theme`, `ThemeChanged`) where it
 //! reports one; `tilo_appearance` adds what the desktop itself reports, and
@@ -19,8 +19,11 @@ pub(crate) fn theme(host: HostAppearance) -> Theme {
         Some(Scheme::Light) => Theme::light(),
         Some(Scheme::Dark) | None => Theme::dark(),
     };
-    match host.accent {
-        Some(accent) => base.with_your_colour(accent),
+    let accent = host.accent.and_then(|[r, g, b]| {
+        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+    });
+    match accent {
+        Some(hue) => base.with_your_colour(hue),
         None => base,
     }
 }
@@ -161,7 +164,14 @@ mod tests {
         assert_eq!(theme.border_focus, you);
         let (a, y) = (Oklch::from_color(accent), Oklch::from_color(you));
         let d = (a.h - y.h).rem_euclid(360.0);
-        assert!(d.min(360.0 - d) < 3.0, "the host's hue is kept");
+        assert!(
+            d.min(360.0 - d) <= 15.0,
+            "the presence hue nearest the host's is taken"
+        );
+        assert_eq!(
+            Some(theme.tokens.colors.you),
+            crate::tokens::PresenceHue::nearest(accent)
+        );
         assert!(
             (y.l - theme.tokens.colors.presence.lightness).abs() < 0.01,
             "at the presence lightness, not the host's"

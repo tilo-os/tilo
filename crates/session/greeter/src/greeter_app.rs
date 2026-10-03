@@ -354,11 +354,7 @@ impl Widget for VStack {
                 transform,
                 ui::tokens::Colors::hairline_on(
                     ground,
-                    if theme.name == "High Contrast" {
-                        180
-                    } else {
-                        26
-                    },
+                    if theme.colors_are_forced() { 180 } else { 26 },
                 ),
                 None,
                 &shape,
