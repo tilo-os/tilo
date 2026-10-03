@@ -1394,30 +1394,36 @@ impl FeedsApp {
     }
 
     /// Parse OPML `text`, merge it into the store (creating folders as needed,
-    /// de-duplicating by URL), and persist the folders + feeds to the document.
+    /// de-duplicating by URL), and subscribe to what it added as one action.
     /// Hermetic — performs no network I/O. Returns the ids of the feeds that
     /// were newly subscribed (so the caller can fetch just those).
     fn apply_opml_import(&mut self, text: &str, doc: &mut AutoCommit) -> Vec<Id> {
         let parsed = opml::parse(text);
-        let before: std::collections::HashSet<Id> = self.store.feeds.iter().map(|f| f.id).collect();
+        let had_feeds: std::collections::HashSet<Id> =
+            self.store.feeds.iter().map(|f| f.id).collect();
+        let had_folders: std::collections::HashSet<Id> =
+            self.store.folders.iter().map(|f| f.id).collect();
         opml::import_into(&mut self.store, &parsed);
-        // Persist all folders + feeds. The upserts are change-guarded, so
-        // re-writing entries that already existed is a no-op on the document.
-        let folders = self.store.folders.clone();
-        for f in &folders {
-            FeedsDoc::upsert_folder(doc, f);
-        }
-        let feeds = self.store.feeds.clone();
-        for f in &feeds {
-            FeedsDoc::upsert_feed(doc, f);
-        }
-        doc.commit();
-        self.store
+        let feeds: Vec<Feed> = self
+            .store
             .feeds
             .iter()
-            .filter(|f| !before.contains(&f.id))
-            .map(|f| f.id)
-            .collect()
+            .filter(|f| !had_feeds.contains(&f.id))
+            .cloned()
+            .collect();
+        if feeds.is_empty() {
+            return Vec::new();
+        }
+        let folders = self
+            .store
+            .folders
+            .iter()
+            .filter(|f| !had_folders.contains(&f.id))
+            .cloned()
+            .collect();
+        let added = feeds.iter().map(|f| f.id).collect();
+        self.perform_action(doc, &FeedsAction::ImportSubscriptions { folders, feeds });
+        added
     }
 
     /// Enqueue a background refresh for a specific set of feeds (used right
@@ -4511,17 +4517,11 @@ impl Widget for FeedsApp {
                     self.select_featured();
                 }
             }
-            // Seed reading settings on first run; otherwise adopt the persisted
-            // (and possibly collaborator-updated) preferences.
+            // Adopt the persisted (and possibly collaborator-updated)
+            // preferences; until someone changes one, the defaults stand
+            // without being written.
             if FeedsDoc::has_settings(state) {
                 self.settings = FeedsDoc::read_settings(state);
-            } else {
-                self.perform_action(
-                    state,
-                    &FeedsAction::SetReadSettings {
-                        settings: self.settings,
-                    },
-                );
             }
             self.synced = true;
             self.store_heads = state.get_heads();
@@ -5725,12 +5725,11 @@ mod tests {
                 app.empty_onboarding_prompt().is_some(),
                 "the empty store still shows onboarding after a live sync",
             );
-            assert!(FeedsDoc::has_settings(&doc));
-            let recorded = app
-                .actions
-                .last_dispatched()
-                .expect("reading settings are an action");
-            assert!(String::from_utf8_lossy(&recorded.payload).contains("SetReadSettings"));
+            assert!(
+                !FeedsDoc::has_settings(&doc),
+                "opening writes nothing: the default reading settings stand unwritten"
+            );
+            assert!(app.actions.last_dispatched().is_none());
         }
 
         // --- phase: demo_build_is_populated_and_hides_onboarding ---
