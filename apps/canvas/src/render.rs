@@ -375,7 +375,7 @@ impl Renderer {
         let palette = preset.palette;
         let marks: Vec<Painted> = art
             .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, &palette, scale))
+            .flat_map(|mark| wet_marks(mark, art.clip_of(mark), &palette, scale))
             .collect();
         let mut key = blake3::Hasher::new();
         for mark in &marks {
@@ -408,7 +408,7 @@ impl Renderer {
                     || now.duration_since(preview.at) >= (preview.cost * 2).max(WET_INTERVAL)
             });
             if due {
-                let strokes = wet_marks(wet, &palette, scale);
+                let strokes = wet_marks(wet, art.clip_of(wet), &palette, scale);
                 let pixels = entry.painter.preview(&marks, &strokes);
                 self.wet = Some(WetPreview {
                     layer: layer.id.clone(),
@@ -506,8 +506,20 @@ fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
     contours
 }
 
-/// What a mark is as paint: a laid-in region, a stroke, or both.
-fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
+/// The outline a stroke's paint is cut to, in cells: its clip's silhouette.
+fn clip_contours(clip: Option<&Mark>, scale: f64) -> Vec<Vec<(f32, f32)>> {
+    clip.map(|clip| {
+        contours(
+            &silhouette(&clip.shape),
+            Affine::scale(scale) * clip.affine(),
+        )
+    })
+    .unwrap_or_default()
+}
+
+/// What a mark is as paint: a laid-in region, a stroke, or both. A stroke
+/// stays inside `clip` when it is cut to one.
+fn wet_marks(mark: &Mark, clip: Option<&Mark>, palette: &[Pigment], scale: f64) -> Vec<Painted> {
     let style = &mark.style;
     let to_cells = Affine::scale(scale) * mark.affine();
     let params = style
@@ -522,7 +534,7 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
     };
     let mut painted = Vec::new();
     match &mark.shape {
-        Shape::Stroke { points, size } => {
+        Shape::Stroke { points, size, .. } => {
             if let Some(colour) = paint(&style.stroke).or_else(|| paint(&style.fill)) {
                 let points = points
                     .iter()
@@ -548,6 +560,11 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
                         opacity,
                         wet: style.wet,
                         params,
+                        form: mark
+                            .shape
+                            .form(style.angle)
+                            .map(|form| form.scaled(narrow(scale))),
+                        clip: clip_contours(clip, scale),
                     }),
                 ));
             }
@@ -659,6 +676,8 @@ fn outline_strokes(
                     opacity: narrow(mark.style.opacity()),
                     wet: true,
                     params: params.clone(),
+                    form: None,
+                    clip: Vec::new(),
                 }),
             )
         })
@@ -719,13 +738,13 @@ pub fn mix(blend: &str) -> Option<Mix> {
 /// outline, a text's box, any other shape's outline.
 pub fn silhouette(shape: &Shape) -> BezPath {
     match shape {
-        Shape::Stroke { points, size } => ink_path(points, *size),
+        Shape::Stroke { points, size, .. } => ink_path(points, *size),
         shape => shape.path(),
     }
 }
 
-fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
-    let points: Vec<WetPoint> = points
+fn wet_points(points: &[Vec<f64>]) -> Vec<WetPoint> {
+    points
         .iter()
         .map(|point| {
             WetPoint::new(
@@ -734,9 +753,49 @@ fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
                 narrow(point.get(2).copied().unwrap_or(1.0)),
             )
         })
-        .collect();
-    let samples = tilo_wet_media::brush::smooth(&points, 0.75);
-    let outline = tilo_wet_media::brush::ink_outline(&samples, narrow(size));
+        .collect()
+}
+
+fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
+    ink_outline(&wet_points(points), narrow(size))
+}
+
+/// A stroke drawn in ink on a plain layer: its own line, or every twig or
+/// dab it grows into, grown from the mark's id as a painted layer grows it.
+fn ink_strokes(mark: &Mark, points: &[Vec<f64>], size: f64) -> BezPath {
+    let Some(form) = mark.shape.form(mark.style.angle) else {
+        return ink_path(points, size);
+    };
+    let stroke = WetStroke {
+        points: wet_points(points),
+        size: narrow(size),
+        paint: tilo_wet_media::Paint {
+            colour: tilo_wet_media::Rgb::WHITE,
+            alpha: 1.0,
+            granulation: 0.0,
+            strength: 1.0,
+        },
+        opacity: 1.0,
+        wet: false,
+        params: std::collections::BTreeMap::new(),
+        form: Some(form),
+        clip: Vec::new(),
+    };
+    let mut path = BezPath::new();
+    for (piece, _) in stroke.pieces(tilo_wet_media::painter::seed_of(&mark.id)) {
+        path.extend(
+            ink_outline(&piece.points, piece.size)
+                .elements()
+                .iter()
+                .copied(),
+        );
+    }
+    path
+}
+
+fn ink_outline(points: &[WetPoint], size: f32) -> BezPath {
+    let samples = tilo_wet_media::brush::smooth(points, 0.75);
+    let outline = tilo_wet_media::brush::ink_outline(&samples, size);
     let mut path = BezPath::new();
     for (index, (x, y)) in outline.iter().enumerate() {
         let point = Point::new(f64::from(*x), f64::from(*y));
@@ -987,11 +1046,17 @@ pub fn draw_vector(
             .map(|value| with_opacity(value, opacity))
     };
     match &mark.shape {
-        Shape::Stroke { points, size } => {
+        Shape::Stroke { points, size, .. } => {
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
                 return;
             };
-            scene.fill(Fill::NonZero, at, ink, None, &ink_path(points, *size));
+            scene.fill(
+                Fill::NonZero,
+                at,
+                ink,
+                None,
+                &ink_strokes(mark, points, *size),
+            );
         }
         Shape::Text { .. } => {
             let Some(ink) = named(&style.fill).or_else(|| named(&style.stroke)) else {

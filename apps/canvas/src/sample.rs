@@ -23,6 +23,7 @@ fn stroke(points: &[[f64; 3]], size: f64, colour: &str, wet: bool) -> NewStroke 
         opacity: None,
         wet: Some(wet),
         params: None,
+        ..NewStroke::default()
     }
 }
 
