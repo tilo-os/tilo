@@ -88,6 +88,7 @@ impl Resource for Vpn {
                 anchor: Some(format!("vpn.connection:{}", connection.id)),
                 title: connection.name.clone(),
                 text: connection.kind.as_str().to_owned(),
+                action: None,
             })
             .collect()
     }

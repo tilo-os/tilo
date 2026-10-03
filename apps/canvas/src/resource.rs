@@ -605,6 +605,7 @@ impl Resource for ArtworkResource {
                 .map(|layer| layer.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
+            action: None,
         }];
         entries.extend(
             art.marks
@@ -614,6 +615,7 @@ impl Resource for ArtworkResource {
                     anchor: Some(mark.id.clone()),
                     title: mark.name.clone(),
                     text: mark.shape.kind().into(),
+                    action: None,
                 }),
         );
         entries

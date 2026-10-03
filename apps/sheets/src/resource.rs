@@ -189,6 +189,7 @@ impl Resource for SheetsWorkbook {
                 anchor: Some(sheet.id.clone()),
                 title: sheet.name.clone(),
                 text: sheet.name.clone(),
+                action: None,
             })
             .collect()
     }
@@ -339,6 +340,12 @@ impl ResourceSurface<SheetsWorkbook> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<SheetsWorkbook>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

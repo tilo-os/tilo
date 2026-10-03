@@ -71,11 +71,13 @@ impl Resource for DbClient {
             anchor: Some(format!("connection:{}", profile.id)),
             title: profile.name.clone(),
             text: format!("{} {}", profile.engine.as_key(), profile.host),
+            action: None,
         });
         let queries = state.saved_queries.iter().map(|query| SearchEntry {
             anchor: Some(format!("saved-query:{}", query.id)),
             title: query.name.clone(),
             text: query.sql.clone(),
+            action: None,
         });
         connections.chain(queries).collect()
     }

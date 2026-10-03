@@ -93,6 +93,7 @@ impl Resource for Tube {
                 anchor: Some(format!("tube.queue:{video_id}")),
                 title: video_id.clone(),
                 text: "queue".into(),
+                action: None,
             })
             .chain(
                 state
@@ -103,6 +104,7 @@ impl Resource for Tube {
                         anchor: Some(format!("tube.subscription:{channel_id}")),
                         title: channel_id.clone(),
                         text: "subscription".into(),
+                        action: None,
                     }),
             )
             .collect()
@@ -230,6 +232,12 @@ impl ResourceSurface<Tube> for TubeApp {
 
     fn attach(&mut self, cx: SurfaceCx<Tube>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

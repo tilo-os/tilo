@@ -24,9 +24,11 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
 use super::live::Live;
+use super::rows::{find, join, merge, outside_document};
 use super::scenario::Run;
 use super::stage::Stages;
-use super::view::{Updaters, ViewCx};
+use super::surface::SurfacePublication;
+use super::view::{Bindings, Updaters, ViewCx};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -50,6 +52,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     run: Run,
     /// The settings the view follows, re-read when their document changes.
     storage: Rc<super::settings::ViewStorage>,
+    /// Edits the views bound to their local state.
+    bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
     effects: Effects<R>,
     content: Element,
@@ -161,6 +165,7 @@ impl<R: Resource> ResourceRoot<R> {
             feeds: cx.feeds,
             run: cx.run,
             storage: cx.storage,
+            bindings: cx.bindings,
             effects: cx.effects,
             content,
             presentation: Vec::new(),
@@ -223,6 +228,95 @@ impl<R: Resource> ResourceRoot<R> {
 
     pub(crate) fn live(&self) -> &Live<R> {
         &self.live
+    }
+
+    /// Every hosted surface of this resource in the view, in tree order.
+    fn surfaces(&self, visit: &mut dyn FnMut(&dyn SurfacePublication<R>)) {
+        fn walk<R: Resource>(
+            widget: &dyn Widget,
+            visit: &mut dyn FnMut(&dyn SurfacePublication<R>),
+        ) {
+            if let Some(surface) =
+                ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(widget)
+            {
+                visit(surface);
+            }
+            widget.for_each_child(&mut |child| walk(child, visit));
+        }
+        walk(self.content.as_ref(), visit);
+    }
+
+    /// The resource as published: its own actions and children, the edits
+    /// views and surfaces bound to where the user is, the live rows surfaces
+    /// show, and the framework's operations every app answers.
+    fn publication(&self) -> tilo_actions::Resource {
+        let state = self.live.get();
+        let mut resource =
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &state);
+        let mut bound = self.bindings.declarations(&state);
+        let mut rows = Vec::new();
+        self.surfaces(&mut |surface| {
+            bound.extend(surface.bound_declarations());
+            rows.extend(
+                surface
+                    .live_rows()
+                    .into_iter()
+                    .map(super::LiveRow::into_resource),
+            );
+        });
+        for decl in bound {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == decl.id)
+            {
+                resource = resource.with_action(tilo_resource::declaration_spec(&decl));
+            }
+        }
+        merge(&mut resource.children, rows);
+        for spec in &self.presentation {
+            if spec.kind == tilo_actions::OperationKind::Document {
+                continue;
+            }
+            if resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                continue;
+            }
+            resource = resource.with_action(spec.clone());
+        }
+        if cfg!(not(target_family = "wasm"))
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "render")
+        {
+            resource = resource.with_action(render_spec());
+        }
+        for spec in super::history::specs() {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                resource = resource.with_action(spec);
+            }
+        }
+        for spec in self.effects.specs() {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
+        }
+        resource
     }
 
     /// The view as a stored PNG, at `scale` pixels per point.
@@ -386,14 +480,20 @@ impl SearchProvider for ResourceSearch {
             .into_iter()
             .filter_map(|hit| {
                 let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
-                Some(
-                    SearchResult::new(
+                let result = match &entry.action {
+                    Some(action) => {
+                        SearchResult::for_action(self.name, entry.title.clone(), action)
+                    }
+                    None => SearchResult::new(
                         self.name,
                         entry.title.clone(),
                         entry.anchor.clone().unwrap_or_default(),
-                    )
-                    .with_preview(entry.text.clone())
-                    .with_score(hit.rank.unwrap_or(0)),
+                    ),
+                };
+                Some(
+                    result
+                        .with_preview(entry.text.clone())
+                        .with_score(hit.rank.unwrap_or(0)),
                 )
             })
             .collect()
@@ -613,57 +713,56 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resource =
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &self.live.get());
-        for spec in &self.presentation {
-            if spec.kind == tilo_actions::OperationKind::Document {
-                continue;
+        let mut resource = self.publication();
+        // The content may add live external entities beside the resource,
+        // never a document action: those are the resource's own. A hosted
+        // surface has already admitted what it adds. One naming the resource
+        // joins it rather than publishing it twice.
+        let surface = ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(
+            self.content.as_ref(),
+        )
+        .is_some();
+        let mut extras = Vec::new();
+        for extra in ui_core::resources::resources_for(self.content.as_ref(), participant, doc) {
+            let extra = if surface {
+                extra
+            } else {
+                outside_document(extra)
+            };
+            if extra.id == resource.id {
+                join(&mut resource, extra);
+            } else {
+                extras.push(extra);
             }
-            if resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                continue;
-            }
-            resource = resource.with_action(spec.clone());
-        }
-        if cfg!(not(target_family = "wasm"))
-            && !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == "render")
-        {
-            resource = resource.with_action(render_spec());
-        }
-        for spec in super::history::specs() {
-            if !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                resource = resource.with_action(spec);
-            }
-        }
-        for spec in self.effects.specs() {
-            let shadowed = resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            resource = resource.with_action(spec);
         }
         let mut resources = vec![resource];
-        resources.extend(ui_core::resources::resources_for(
-            self.content.as_ref(),
-            participant,
-            doc,
-        ));
+        resources.append(&mut extras);
         resources
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        ui_core::resources::PublishesResources::resource_for(self, None, doc, id)
+    }
+    /// Resource `id` in the published tree, or one the tree leaves out: a
+    /// child the resource resolves by id, or a live row a surface resolves.
+    fn resource_for(
+        &self,
+        _participant: Option<&tilo_actions::ParticipantId>,
+        _doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        if let Some(published) = find(&[self.publication()], id) {
+            return Some(published);
+        }
+        if let Some(child) = R::child(&self.live.get(), id) {
+            return Some(child);
+        }
+        let mut row = None;
+        self.surfaces(&mut |surface| {
+            if row.is_none() {
+                row = surface.live_row(id).map(super::LiveRow::into_resource);
+            }
+        });
+        row
     }
     fn document_action_result(
         &self,
@@ -743,5 +842,29 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_search_entry_naming_an_action_is_a_hit_that_invokes_it() {
+        let open = tilo_actions::ActionAddress::new("notes.page:1", "open");
+        let search = ResourceSearch {
+            name: "Notes",
+            indexed: Arc::new(IndexedEntries::new(vec![
+                SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
+                SearchEntry::new("Garden", "roses").anchored("page:2"),
+            ])),
+        };
+        let groceries = search.search("groceries");
+        assert_eq!(groceries.len(), 1);
+        assert_eq!(groceries[0].action_address(), Some(open));
+        let garden = search.search("garden");
+        assert_eq!(garden.len(), 1);
+        assert_eq!(garden[0].action_address(), None);
+        assert_eq!(garden[0].action_id, "page:2");
     }
 }

@@ -123,6 +123,7 @@ impl Resource for Notebook {
                 anchor: Some(format!("notes.page:{}", page.id)),
                 title: page.title.clone(),
                 text: String::new(),
+                action: None,
             })
             .collect()
     }

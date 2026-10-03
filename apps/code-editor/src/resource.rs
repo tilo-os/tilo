@@ -156,6 +156,7 @@ impl Resource for CodeEditor {
                 anchor: Some(format!("code_editor.{}:{}", file.kind, file.id)),
                 title: file.name.clone(),
                 text: file.path.clone(),
+                action: None,
             })
             .collect()
     }

@@ -43,6 +43,12 @@ impl ResourceSurface<SlidesDeck> for SlidesApp {
     fn attach(&mut self, cx: SurfaceCx<SlidesDeck>) {
         self.attach_framework(cx.dispatcher());
     }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

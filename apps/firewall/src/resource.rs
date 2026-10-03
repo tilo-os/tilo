@@ -60,6 +60,7 @@ impl Resource for Firewall {
                 anchor: Some(format!("firewall.zone:{}", zone.kind.name())),
                 title: zone.kind.name().to_owned(),
                 text: format!("{} rules", zone.rules.len()),
+                action: None,
             })
             .collect()
     }

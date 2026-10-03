@@ -76,11 +76,13 @@ impl Resource for ApiTester {
             anchor: Some(format!("api_tester.collection:{id}")),
             title: name.clone(),
             text: String::new(),
+            action: None,
         });
         let environments = state.environments.iter().map(|(id, name)| SearchEntry {
             anchor: Some(format!("api_tester.environment:{id}")),
             title: name.clone(),
             text: String::new(),
+            action: None,
         });
         collections.chain(environments).collect()
     }

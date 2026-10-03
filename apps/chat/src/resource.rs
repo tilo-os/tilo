@@ -171,11 +171,13 @@ impl Resource for Chat {
             anchor: Some(format!("chat.workspace:{}", workspace.id)),
             title: workspace.name.clone(),
             text: String::new(),
+            action: None,
         });
         let channels = state.channels.iter().map(|channel| SearchEntry {
             anchor: Some(format!("chat.channel:{}", channel.id)),
             title: channel.name.clone(),
             text: channel.topic.clone(),
+            action: None,
         });
         workspaces.chain(channels).collect()
     }
