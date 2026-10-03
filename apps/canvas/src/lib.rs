@@ -179,7 +179,8 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
         dock,
     )
     .underline()
-    .with_flexible_width();
+    .with_flexible_width()
+    .with_id("canvas-dock");
     let tools_for_dock = tools.clone();
     let docked = cx.switch(dock, move |cx, dock| match dock {
         Dock::Layers => panels::layers::panel(cx, &tools_for_dock),
