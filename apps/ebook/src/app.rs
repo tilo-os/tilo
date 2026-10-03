@@ -8769,13 +8769,15 @@ impl BooksApp {
         let (content_x, content_w) = (pane.x, pane.w);
         // The layout engine guarantees line bounds, while this paint clip is
         // the final containment guard for font backends with generous glyph
-        // overhang. Leave a small left allowance for list bullets/quote
-        // ornament, but never let body glyphs escape the page on the right.
+        // overhang. Leave an allowance for list bullets and quote ornament on
+        // the left and for hanging punctuation and overhang on the right, both
+        // inside the page's own margin, so no glyph escapes the page.
         if clip_to_narrow_page {
+            let margin = f64::from(ui::tokens::spacing::Spacing::BASE.s3);
             let paint_bounds = Rect::new(
-                content_x - 24.0,
+                content_x - 2.0 * margin,
                 pane.y,
-                content_x + f64::from(content_w),
+                content_x + f64::from(content_w) + margin,
                 pane.y + f64::from(pane.win_end - pane.win_start),
             );
             ctx.scene.push_layer(
