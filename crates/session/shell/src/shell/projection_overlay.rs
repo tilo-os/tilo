@@ -37,6 +37,7 @@ use crate::shell::projection::{
     ProjectionProtocol, ProjectionStatus,
 };
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
@@ -1722,10 +1723,10 @@ impl ProjectionOverlay {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(action, &label)
-                .style(if connected {
-                    ui::widget::ButtonStyle::DangerOutline
+                .role(if connected {
+                    ButtonRole::Destructive
                 } else {
-                    ui::widget::ButtonStyle::Neutral
+                    ButtonRole::Secondary
                 })
                 .disabled(connecting),
         );

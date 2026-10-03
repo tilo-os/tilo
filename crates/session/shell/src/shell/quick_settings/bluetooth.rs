@@ -20,6 +20,7 @@ use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, GLYPH, LIST_TOP, STATUS_DOT, trailing_dot_center,
     trailing_status_glyph,
 };
+use ui::widget::ButtonRole;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BluetoothOutcome {
@@ -274,7 +275,7 @@ impl QuickSettingsBluetoothPane {
                 text,
                 theme,
                 &ButtonFace::new(Self::back_rect(panel), "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::ChevronLeft)
                     .focused(true)
                     .accessible_name(&t("qs-back")),
@@ -310,7 +311,7 @@ impl QuickSettingsBluetoothPane {
                     text,
                     theme,
                     &ButtonFace::new(*row, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .focused(true)
                         .accessible_name(&device.name),
                 );

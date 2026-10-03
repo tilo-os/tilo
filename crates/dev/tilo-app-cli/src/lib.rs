@@ -1550,7 +1550,7 @@ fn screen_artifact_writes(
                 click_value: None,
                 navigate: Some(tilo_ui_graph::UiNavigation::Back),
                 enabled: true,
-                style: tilo_ui_graph::UiButtonStyle::Ghost,
+                role: tilo_ui_graph::UiButtonRole::Plain,
             },
         )?;
         messages.push(back);
@@ -1889,7 +1889,7 @@ fn primary_action_button(
         click_value: Some("yes".into()),
         navigate: None,
         enabled: true,
-        style: tilo_ui_graph::UiButtonStyle::Primary,
+        role: tilo_ui_graph::UiButtonRole::Primary,
     }
 }
 
@@ -2067,7 +2067,7 @@ fn navigation_link_write(
                 route: to.to_owned(),
             }),
             enabled: true,
-            style: tilo_ui_graph::UiButtonStyle::Neutral,
+            role: tilo_ui_graph::UiButtonRole::Secondary,
         },
     )?;
     let mut source = document.to_json_pretty()?;
@@ -3359,8 +3359,7 @@ mod tests {{
                             "Open",
                             Some("open-requested"),
                         )
-                        .with_click_value(index.to_string())
-                        .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
+                        .with_click_value(index.to_string()),
                     )
                 }}),
         ];
@@ -3420,6 +3419,7 @@ fn text_component_source(
     let mut source = format!(
         r#"use ui::widget::Text;
 use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextRole}};
+use ui::widget::ButtonRole;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Props {{

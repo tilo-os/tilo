@@ -35,6 +35,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::{Metrics, Spacing};
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -1598,11 +1599,11 @@ impl FilePicker {
             self.draw_filter_chip(scene, transform, text_renderer, theme, &row_style);
         }
 
-        let cancel = footer_button(theme, self.cancel_rect, "Cancel", false)
+        let cancel = footer_button(self.cancel_rect, "Cancel", false)
             .hovered(self.hover_button == Some(0))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
-        let confirm = footer_button(theme, self.open_rect, self.confirm_label(), true)
+        let confirm = footer_button(self.open_rect, self.confirm_label(), true)
             .hovered(self.hover_button == Some(1))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
             .disabled(!self.can_commit_open());
@@ -1959,19 +1960,12 @@ impl FilePicker {
 /// A footer button in the canonical immediate-mode button face, so the
 /// picker footer stays visually locked to the retained widget and every
 /// converted app. Callers add the hover, focus and disabled state.
-fn footer_button<'a>(
-    theme: &Theme,
-    rect: Rect,
-    label: &'a str,
-    is_primary: bool,
-) -> crate::widget::ButtonFace<'a> {
-    crate::widget::ButtonFace::new(rect, label)
-        .radius(f64::from(theme.tokens.radii.control))
-        .style(if is_primary {
-            crate::widget::ButtonStyle::Primary
-        } else {
-            crate::widget::ButtonStyle::Neutral
-        })
+fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::ButtonFace<'_> {
+    crate::widget::ButtonFace::new(rect, label).role(if is_primary {
+        ButtonRole::Primary
+    } else {
+        ButtonRole::Secondary
+    })
 }
 
 #[cfg(test)]

@@ -7,8 +7,9 @@ use ui::launch::LaunchError;
 use ui::record::RecordKind;
 use ui::theme::Theme;
 use ui::ui_graph::{
-    UiButtonStyle, UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource,
+    UiButtonRole, UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource,
 };
+use ui::widget::ButtonRole;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
@@ -197,7 +198,7 @@ fn surface() -> UiDocument {
                 click_value: Some("yes".into()),
                 navigate: None,
                 enabled: true,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
             },
         ],
         gap: Some(8.0),

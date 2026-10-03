@@ -28,6 +28,7 @@ use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
@@ -115,7 +116,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
 
         // Accent-filled control: white label on the accent.
         let mut primary = Button::new("d_primary", "Publish", None)
-            .primary()
+            .role(ButtonRole::Primary)
             .with_permission_scope(locked());
         stamp(
             &mut scene,

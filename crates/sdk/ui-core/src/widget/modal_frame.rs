@@ -25,7 +25,7 @@ use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::button::{Button, ButtonFace, ButtonStyle};
+use crate::widget::button::{Button, ButtonFace, ButtonRole};
 
 /// Strength of the scrim painted over everything behind the modal. 0.45
 /// rather than the 0.30 a design tool would specify: vello has no backdrop
@@ -587,9 +587,8 @@ impl ModalFrame {
         // ring every other control has.
         if let Some(c) = layout.close {
             let face = ButtonFace::new(c, "")
-                .style(ButtonStyle::Ghost)
+                .role(ButtonRole::Plain)
                 .icon(Icon::X)
-                .radius(f64::from(tokens.radii.detail) * scale)
                 .hovered(spec.close_hovered)
                 .focused(spec.close_focused)
                 .accessible_name("Close");
@@ -610,18 +609,18 @@ impl ModalFrame {
             let Some(rect) = layout.actions.get(i).copied() else {
                 continue;
             };
-            let style = match a.emphasis {
-                ModalEmphasis::Primary => ButtonStyle::Primary,
-                ModalEmphasis::Secondary => ButtonStyle::Neutral,
-                ModalEmphasis::Danger => ButtonStyle::Danger,
-            };
-            let face = ButtonFace::new(rect, a.label)
-                .style(style)
-                .radius(Self::action_height(theme) / 2.0)
-                .hovered(a.hovered && a.enabled)
-                .pressed(a.pressed && a.enabled)
-                .focused(a.focused && a.enabled)
-                .disabled(!a.enabled);
+            let face = ButtonFace::new(rect, a.label);
+            // A modal's danger action is the confirmation step, the one
+            // place a destructive button is filled.
+            let face = match a.emphasis {
+                ModalEmphasis::Primary => face.role(ButtonRole::Primary),
+                ModalEmphasis::Secondary => face.role(ButtonRole::Secondary),
+                ModalEmphasis::Danger => face.role(ButtonRole::Destructive).confirming(),
+            }
+            .hovered(a.hovered && a.enabled)
+            .pressed(a.pressed && a.enabled)
+            .focused(a.focused && a.enabled)
+            .disabled(!a.enabled);
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
     }
@@ -1118,14 +1117,18 @@ mod tests {
         // actually resolves, so it keeps holding when the accent ramp is re-themed.
         {
             let styles = [
-                (ModalEmphasis::Primary, ButtonStyle::Primary),
-                (ModalEmphasis::Secondary, ButtonStyle::Neutral),
-                (ModalEmphasis::Danger, ButtonStyle::Danger),
+                (ModalEmphasis::Primary, ButtonRole::Primary),
+                (ModalEmphasis::Secondary, ButtonRole::Secondary),
+                (ModalEmphasis::Danger, ButtonRole::Destructive),
             ];
             for (name, theme) in themes() {
                 for (emphasis, style) in styles {
-                    let face = ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite")
-                        .style(style);
+                    let face = ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite");
+                    let face = if style == ButtonRole::Destructive {
+                        face.role(style).confirming()
+                    } else {
+                        face.role(style)
+                    };
                     let (bg, _border, painted) = face.colors(&theme);
                     let r = contrast_ratio(painted, bg);
                     assert!(

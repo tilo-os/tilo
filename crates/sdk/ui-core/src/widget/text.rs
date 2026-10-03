@@ -1682,9 +1682,7 @@ mod tests {
                 I18nManager::install("en-US", "en-US", &[("en-US", EN), ("de", DE)]).unwrap();
                 let root = Column::new()
                     .push(Box::new(Text::new("title")))
-                    .push(Box::new(
-                        Button::new("localized-action", "action", None).fit_content(40.0),
-                    ));
+                    .push(Box::new(Button::new("localized-action", "action", None)));
                 let mut driver = crate::headless::Driver::new_with_controlled_inputs(
                     crate::State::new(),
                     Box::new(root),

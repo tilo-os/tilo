@@ -16,6 +16,7 @@ use ui::chrome::{ChromeRole, SelectionState, selection_tier};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
+use ui::widget::ButtonRole;
 use ui::widget::{Button, ButtonFace};
 
 // ---------- one rhythm for the whole panel (HIG §7b) ----------
@@ -397,7 +398,7 @@ impl DrillInList {
             text,
             theme,
             &ButtonFace::new(self.back, "")
-                .ghost()
+                .role(ButtonRole::Plain)
                 .icon(ui::icons::Icon::ChevronLeft)
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
                 .accessible_name(&crate::i18n::t("drill-in-back")),

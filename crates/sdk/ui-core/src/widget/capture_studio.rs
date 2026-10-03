@@ -25,6 +25,7 @@ use std::collections::HashMap;
 
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
@@ -2670,12 +2671,11 @@ impl CaptureStudio {
         icon: Icon,
     ) {
         let face = if on {
-            ButtonFace::new(r, "").primary()
+            ButtonFace::new(r, "").role(ButtonRole::Primary)
         } else {
             ButtonFace::new(r, "")
         }
         .icon(icon)
-        .radius(10.0)
         .hovered(hovered);
         Button::paint(scene, t, tr, theme, &face);
     }
@@ -3063,12 +3063,11 @@ impl CaptureStudio {
 
     fn option_face(rect: Rect, label: &str, icon: Icon, active: bool) -> ButtonFace<'_> {
         if active {
-            ButtonFace::new(rect, label).primary()
+            ButtonFace::new(rect, label).role(ButtonRole::Primary)
         } else {
             ButtonFace::new(rect, label)
         }
         .icon(icon)
-        .radius(9.0)
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -4901,7 +4900,7 @@ impl Widget for CaptureStudio {
                 let hovered = chrome.remove.contains(self.cursor);
                 let face = if hovered {
                     ButtonFace::new(chrome.remove, "")
-                        .danger()
+                        .role(ButtonRole::Destructive)
                         .icon(Icon::X)
                         .accessible_name("Remove selection")
                 } else {
@@ -4909,7 +4908,6 @@ impl Widget for CaptureStudio {
                         .icon(Icon::X)
                         .accessible_name("Remove selection")
                 }
-                .radius(12.0)
                 .hovered(hovered);
                 Button::paint(s, t, tr, theme, &face);
                 self.region_remove_rects.push(chrome.remove);
@@ -5263,14 +5261,13 @@ impl Widget for CaptureStudio {
                 ""
             };
             let face = if danger_action && emphasized {
-                ButtonFace::new(r, label).danger()
+                ButtonFace::new(r, label).role(ButtonRole::Destructive)
             } else if emphasized {
-                ButtonFace::new(r, label).primary()
+                ButtonFace::new(r, label).role(ButtonRole::Primary)
             } else {
                 ButtonFace::new(r, label)
             }
             .icon(icon)
-            .radius(10.0)
             .hovered(hovered)
             .disabled(!active);
             Button::paint(s, bottom_t, tr, theme, &face);

@@ -637,7 +637,6 @@ impl Widget for CollaborationLaunchpad {
             text,
             theme,
             &ButtonFace::new(button, &t("launchpad-open-app"))
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
                 .control_size(ui::widget::ControlSize::Large)
                 .focused(self.focused && self.selected == 6)
                 .hovered(button.contains(self.last_cursor)),

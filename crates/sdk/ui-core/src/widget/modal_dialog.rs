@@ -24,7 +24,7 @@ use crate::tokens::TextRole;
 use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::button::{Button, ButtonFace, ButtonStyle};
+use crate::widget::button::{Button, ButtonFace, ButtonRole};
 use crate::widget::modal_frame::MODAL_SCRIM_ALPHA;
 
 pub const MAX_DIALOG_WIDTH: f64 = 480.0;
@@ -625,19 +625,20 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // painter had to re-derive (HIG §8: never hand-roll a control).
         let hovered = |rect: Rect| self.pointer_inside && rect.contains(self.last_cursor);
         if let Some(action) = &self.primary_action {
-            let style = if self.destructive {
-                ButtonStyle::Danger
+            // A destructive dialog is the confirmation step, the one place
+            // a destructive button is filled.
+            let face = ButtonFace::new(self.primary_rect, &action.label);
+            let face = if self.destructive {
+                face.role(ButtonRole::Destructive).confirming()
             } else {
-                ButtonStyle::Primary
-            };
-            let face = ButtonFace::new(self.primary_rect, &action.label)
-                .style(style)
-                .hovered(hovered(self.primary_rect));
+                face.role(ButtonRole::Primary)
+            }
+            .hovered(hovered(self.primary_rect));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
         if let Some(action) = &self.secondary_action {
             let face = ButtonFace::new(self.secondary_rect, &action.label)
-                .style(ButtonStyle::Neutral)
+                .role(ButtonRole::Secondary)
                 .hovered(hovered(self.secondary_rect));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }

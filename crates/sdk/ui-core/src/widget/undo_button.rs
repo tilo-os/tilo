@@ -27,13 +27,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::undo::{UndoAccess, UndoRequest, UndoStatus};
 use crate::widget::Widget;
-use crate::widget::{Button, ButtonFace, ButtonStyle};
-
-/// Default footprint of an icon-only history control — a square toolbar
-/// button, matching the density icon buttons are placed at elsewhere.
-const ICON_ONLY_SIZE: (f32, f32) = (32.0, 32.0);
-/// Default footprint once a visible label is set.
-const LABELLED_SIZE: (f32, f32) = (96.0, 32.0);
+use crate::widget::button::FaceSizer;
+use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 
 /// An Undo or Redo button wired to the host's history.
 ///
@@ -51,8 +46,10 @@ pub struct UndoButton {
     /// Hover tooltip, which also names the shortcut so the control teaches it
     /// rather than replacing it.
     tooltip: String,
-    style: ButtonStyle,
-    size: Option<(f32, f32)>,
+    role: ButtonRole,
+    control_size: ControlSize,
+    /// The face geometry seen in `build_layout`, for `measure`.
+    sizer: FaceSizer,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -72,8 +69,9 @@ impl UndoButton {
             kind,
             label: String::new(),
             tooltip: format!("{} ({})", kind.title(), kind.shortcut()),
-            style: ButtonStyle::Ghost,
-            size: None,
+            role: ButtonRole::Plain,
+            control_size: ControlSize::Regular,
+            sizer: FaceSizer::stock(ControlSize::Regular),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -114,18 +112,18 @@ impl UndoButton {
         self
     }
 
-    /// Override the button style. Defaults to
-    /// [`Ghost`](crate::widget::button::ButtonStyle::Ghost) — a history control
-    /// belongs in a toolbar, not competing with the primary action.
+    /// What the control does. Defaults to [`ButtonRole::Plain`]: a history
+    /// control belongs in a toolbar, not competing with the primary action.
     #[must_use]
-    pub fn with_style(mut self, style: ButtonStyle) -> Self {
-        self.style = style;
+    pub fn role(mut self, role: ButtonRole) -> Self {
+        self.role = role;
         self
     }
 
+    /// Its height and label role.
     #[must_use]
-    pub fn with_size(mut self, width: f32, height: f32) -> Self {
-        self.size = Some((width, height));
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
         self
     }
 
@@ -185,14 +183,22 @@ impl Widget for UndoButton {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let (w, h) = self.size.unwrap_or(if self.label.is_empty() {
-            ICON_ONLY_SIZE
+        // An icon-only control is a square of its size's height; a labelled
+        // one is measured (`measure`) to hold its label.
+        self.sizer = FaceSizer::of(self.control_size, theme);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "logical pixel counts far below f32 precision"
+        )]
+        let h = self.sizer.height() as f32;
+        let w = if self.label.is_empty() {
+            Dimension::length(h)
         } else {
-            LABELLED_SIZE
-        });
+            Dimension::auto()
+        };
         #[allow(
             clippy::expect_used,
             reason = "a fixed-size leaf style is valid and Widget cannot return a layout error"
@@ -201,7 +207,7 @@ impl Widget for UndoButton {
             .new_leaf(Style {
                 flex_shrink: 0.0,
                 size: Size {
-                    width: Dimension::length(w),
+                    width: w,
                     height: Dimension::length(h),
                 },
                 ..Default::default()
@@ -209,6 +215,27 @@ impl Widget for UndoButton {
             .expect("fixed-size leaf style is valid");
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut crate::text_render::TextRenderer,
+    ) -> Size<f32> {
+        let label = crate::i18n!(&self.label);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "logical pixel counts far below f32 precision"
+        )]
+        let (width, height) = (
+            self.sizer.intrinsic_width(text, Some(self.icon()), &label) as f32,
+            self.sizer.height() as f32,
+        );
+        Size {
+            width: known.width.unwrap_or(width),
+            height: known.height.unwrap_or(height),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -247,7 +274,8 @@ impl Widget for UndoButton {
         // The shared button painter, not a private one: an Undo button must be
         // indistinguishable from the toolbar buttons beside it.
         let face = ButtonFace::new(self.rect, &label)
-            .style(self.style)
+            .role(self.role)
+            .control_size(self.control_size)
             .icon(self.icon())
             .accessible_name(&name)
             .hovered(self.is_hovered && self.is_available())
