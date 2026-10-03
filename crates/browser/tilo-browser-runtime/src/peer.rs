@@ -422,6 +422,131 @@ pub async fn issue_device_cert(
     serde_json::to_string(&cert).map_err(js_error)
 }
 
+fn join_reply_json(reply: tilo_relay_protocol::rooms::JoinReply) -> serde_json::Value {
+    use tilo_relay_protocol::rooms::JoinReply;
+    match reply {
+        JoinReply::Invitation {
+            room,
+            workspace_id,
+            name,
+            role,
+            expires_at_ns,
+        } => serde_json::json!({
+            "kind": "invitation", "room": room, "workspaceId": workspace_id.to_string(),
+            "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
+        }),
+        JoinReply::Challenge { .. } => serde_json::json!({"kind": "challenge"}),
+        JoinReply::Waiting => serde_json::json!({"kind": "waiting"}),
+        JoinReply::Admitted {
+            room,
+            workspace_id,
+            name,
+            role,
+        } => serde_json::json!({
+            "kind": "admitted", "room": room, "workspaceId": workspace_id.to_string(),
+            "name": name, "role": role,
+        }),
+        JoinReply::Declined => serde_json::json!({"kind": "declined"}),
+        JoinReply::Refused(reason) => serde_json::json!({"kind": "refused", "reason": reason}),
+    }
+}
+
+fn request_id(text: &str) -> Result<[u8; 32], JsError> {
+    hex::decode(text)
+        .map_err(js_error)?
+        .try_into()
+        .map_err(|_| js_error("request id must be 32 bytes"))
+}
+
+/// What `invitation` (the signed invitation's bytes) offers at the host
+/// `post` reaches: `{kind: 'invitation', room, workspaceId, name, role,
+/// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.
+///
+/// # Errors
+///
+/// Rejects when the host is not reached or answers badly.
+#[wasm_bindgen(js_name = inspectInvitation)]
+pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
+    let reply = tilo_browser_peer::invite::join(
+        &PageHttp(post),
+        &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation },
+    )
+    .await
+    .map_err(js_error)?;
+    Ok(join_reply_json(reply).to_string())
+}
+
+/// Ask to join with `invitation` as this page's device (`custody`),
+/// certified by the person's own root (`root`) as `label`, named `name` to
+/// the room's owner, under request `requestIdHex`. Resolves to JSON
+/// `{reply, cert}`: the host's answer (`waiting`, `admitted`, `declined`,
+/// `refused`) and the device certificate the page then connects with.
+///
+/// # Errors
+///
+/// Rejects when the host is not reached, answers badly, or a key does not
+/// sign.
+#[wasm_bindgen(js_name = askToJoin)]
+pub async fn ask_to_join(
+    post: Function,
+    invitation: Vec<u8>,
+    root: JsValue,
+    custody: JsValue,
+    request_id_hex: String,
+    name: String,
+    label: String,
+) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let signer = PageSigner::from_js(&custody)?;
+    let cert = tilo_browser_peer::invite::guest_certificate(
+        &root,
+        signer.device_public_key(),
+        &label,
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
+            .unwrap_or_default(),
+    )
+    .await
+    .map_err(js_error)?;
+    let reply = tilo_browser_peer::invite::ask_to_join(
+        &PageHttp(post),
+        &invitation,
+        &cert,
+        &signer,
+        request_id(&request_id_hex)?,
+        &name,
+    )
+    .await
+    .map_err(js_error)?;
+    Ok(serde_json::json!({"reply": join_reply_json(reply), "cert": cert}).to_string())
+}
+
+/// Where join request `requestIdHex` of device `devicePublicKeyHex` stands:
+/// JSON as [`ask_to_join`]'s `reply`.
+///
+/// # Errors
+///
+/// Rejects when the host is not reached or answers badly.
+#[wasm_bindgen(js_name = joinStatus)]
+pub async fn join_status(
+    post: Function,
+    request_id_hex: String,
+    device_public_key_hex: String,
+) -> Result<String, JsError> {
+    let reply = tilo_browser_peer::invite::join(
+        &PageHttp(post),
+        &tilo_relay_protocol::rooms::JoinStep::Status {
+            request_id: request_id(&request_id_hex)?,
+            device_public_key: device_key(&device_public_key_hex)?,
+        },
+    )
+    .await
+    .map_err(js_error)?;
+    Ok(join_reply_json(reply).to_string())
+}
+
 /// The canonical encoding of a certificate (JSON in): what a native device
 /// keeps on disk.
 ///
