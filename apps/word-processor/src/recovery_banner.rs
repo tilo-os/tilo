@@ -8,18 +8,17 @@ use std::path::{Path, PathBuf};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
 
-use ui::text_render::{TextRenderer, TextStyle};
+use ui::icons::Icon;
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 
 use crate::i18n::t;
 
 /// Write a recovery copy after this many document-modifying edits.
 pub(crate) const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
-
-/// Height reserved for the recovery banner while an offer is active.
-pub(crate) const BANNER_HEIGHT: f64 = 40.0;
 
 #[derive(Clone, Debug)]
 struct RecoveryOffer {
@@ -40,23 +39,12 @@ pub(crate) enum RecoveryDecision {
     Discard,
 }
 
-/// Theme colours needed by the banner, kept independent of the editor's much
-/// larger chrome palette.
-#[derive(Clone, Copy)]
-pub(crate) struct RecoveryPalette {
-    pub(crate) border: Color,
-    pub(crate) chip: Color,
-    pub(crate) text: Color,
-    pub(crate) on_accent: Color,
-    pub(crate) accent: Color,
-    pub(crate) notice: Color,
-}
-
 /// Stateful crash-recovery surface owned by the word processor.
 #[derive(Default)]
 pub(crate) struct RecoveryBanner {
     offer: Option<RecoveryOffer>,
     buttons: Vec<(RecoveryAction, Rect)>,
+    hovered: Option<RecoveryAction>,
     base_dir: Option<PathBuf>,
     edits_since_autosave: u32,
 }
@@ -66,8 +54,28 @@ impl RecoveryBanner {
         self.offer.is_some()
     }
 
-    pub(crate) fn height(&self) -> f64 {
-        if self.is_active() { BANNER_HEIGHT } else { 0.0 }
+    /// The band the banner reserves: one regular control row with the
+    /// sibling step above and below, or nothing while no offer is staged.
+    pub(crate) fn height(&self, theme: &Theme) -> f64 {
+        if self.is_active() {
+            ButtonFace::height(ControlSize::Regular, theme)
+                + 2.0 * f64::from(theme.tokens.spacing.s2)
+        } else {
+            0.0
+        }
+    }
+
+    /// Track the pointer for the buttons' hover state; returns whether it
+    /// changed.
+    pub(crate) fn pointer_moved(&mut self, point: Point) -> bool {
+        let hovered = self
+            .buttons
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(action, _)| *action);
+        let changed = hovered != self.hovered;
+        self.hovered = hovered;
+        changed
     }
 
     /// Override the recovery store, primarily for isolated tests.
@@ -183,92 +191,70 @@ impl RecoveryBanner {
             .find_map(|(action, rect)| (*action == RecoveryAction::Discard).then_some(*rect))
     }
 
-    /// Draw the banner and rebuild its button hit map.
+    /// Draw the banner and rebuild its button hit map: an info icon and the
+    /// offer in `Body` on the band's own ground, Restore as the view's
+    /// primary action and Discard as the destructive one, one hairline under
+    /// the band.
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        palette: RecoveryPalette,
         bar: Rect,
     ) {
         self.buttons.clear();
         if !self.is_active() {
             return;
         }
-        scene.fill(Fill::NonZero, transform, palette.notice, None, &bar);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            palette.border,
-            None,
-            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
-        );
-        // Every value is a theme token: `s3` bar inset, `s2` between the two
-        // sibling buttons, a button is its measured label plus `s3` each side
-        // at the bar-control height, `md` corners, the `base` type role
-        // (passed through the renderer-input mapping so it is scaled once);
-        // every line box is centred on the bar's centre line.
+        ui::widget::toolbar::paint_band(scene, transform, theme, bar);
         let sp = &theme.tokens.spacing;
         let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
-        let font = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base))
-            .size;
-        // The bar-control height, but never taller than the bar less `s1`
-        // above and below: the banner band itself is a fixed reservation.
-        let s1 = f64::from(sp.s1);
-        let button_h =
-            f64::from(theme.tokens.metrics.bar_control_height).min(bar.height() - 2.0 * s1);
-        let radius = f64::from(theme.tokens.radii.md);
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        let banner = t("recovery-banner");
-        let (_, banner_h) = tr.measure(&banner, font, None);
-        tr.draw_text(
-            scene,
-            &banner,
-            font,
-            palette.text,
-            transform * Affine::translate((bar.x0 + s3, cy - f64::from(banner_h) / 2.0)),
-            None,
-        );
+        let cy = bar.center().y;
+        let icon = f64::from(theme.tokens.metrics.icon_md);
+        let icon_rect =
+            Rect::from_center_size(Point::new(bar.x0 + s3 + icon / 2.0, cy), (icon, icon));
+        Icon::Info.draw(scene, transform, icon_rect, theme.tokens.colors.text_dim);
+        let button_h = ButtonFace::height(ControlSize::Regular, theme);
         let mut x = bar.x1 - s3;
-        for (action, label, primary) in [
-            (RecoveryAction::Discard, t("recovery-discard"), false),
-            (RecoveryAction::Restore, t("recovery-restore"), true),
+        for (action, label, role) in [
+            (
+                RecoveryAction::Restore,
+                t("recovery-restore"),
+                ButtonRole::Primary,
+            ),
+            (
+                RecoveryAction::Discard,
+                t("recovery-discard"),
+                ButtonRole::Destructive,
+            ),
         ] {
-            let (label_w, label_h) = tr.measure(&label, font, None);
-            let width = f64::from(label_w) + 2.0 * s3;
+            let width = ButtonFace::new(Rect::ZERO, &label)
+                .role(role)
+                .intrinsic_width(tr, theme);
             x -= width;
             let rect = Rect::new(x, cy - button_h / 2.0, x + width, cy + button_h / 2.0);
-            let foreground = if primary {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    palette.accent,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(rect, radius),
-                );
-                palette.on_accent
-            } else {
-                ui::surface::card(scene, transform, rect, radius, palette.chip);
-                palette.text
-            };
-            tr.draw_text(
-                scene,
-                &label,
-                font,
-                foreground,
-                transform
-                    * Affine::translate((
-                        rect.x0 + (width - f64::from(label_w)) / 2.0,
-                        cy - f64::from(label_h) / 2.0,
-                    )),
-                None,
-            );
+            let face = ButtonFace::new(rect, &label)
+                .role(role)
+                .hovered(self.hovered == Some(action));
+            Button::paint(scene, transform, tr, theme, &face);
             self.buttons.push((action, rect));
             x -= s2;
         }
+        let banner = t("recovery-banner");
+        let style = theme.text(TextRole::Body);
+        let text_x = icon_rect.x1 + s2;
+        let max_w = (x - s2 - text_x).max(1.0);
+        let line = tr.elide_to_width_style(&banner, crate::num::f32_of_f64(max_w), &style);
+        let (_, line_h) = tr.measure_style(&line, None, &style);
+        tr.draw_style(
+            scene,
+            &line,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((text_x, cy - f64::from(line_h) / 2.0)),
+            None,
+            &style,
+        );
     }
 }
 

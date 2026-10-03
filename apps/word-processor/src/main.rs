@@ -69,7 +69,6 @@ use ui::text_render::TextRenderer;
 use ui::{PresenceCtx, State, Theme, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 use word_processor::{WordProcessorWidget, open_document, word_processor::Caret};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -150,6 +149,7 @@ fn main() {
                 "--find",
                 "--error",
                 "--image-object",
+                "--blank",
             ])
             .shot_handler(run_shot)
             .prepare_legacy_with_args(prepare_launch),
@@ -193,7 +193,13 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     // Plain and scenario shots share the real widget. Scenario flags only seed
     // state that a user could reach through the normal UI, keeping visual
     // review representative rather than maintaining a second mock renderer.
-    let (state, mut wp) = build_concrete(file)?;
+    // Without a file, shots open a realistic sample report (`--blank` shows
+    // the empty document instead).
+    let (state, mut wp) = if file.is_none() && !args.has("--blank") {
+        build_sample()
+    } else {
+        build_concrete(file)?
+    };
     let mut state = state;
     if args.has("--comments") || args.has("--threaded-comments") {
         seed_review(&mut state, &mut wp)?;
@@ -237,20 +243,30 @@ fn seed_selected_image(
     state: &mut State,
     wp: &mut WordProcessorWidget,
 ) -> Result<(), Box<dyn Error>> {
-    // A tiny valid RGB PNG. Its pixels are intentionally unimportant: this is
-    // a control-layout scenario, while using real decodable bytes still covers
-    // the renderer's normal blob and image-cache path.
-    const SHOT_PNG: &[u8] = &[
-        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
-        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
-        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
-        66, 96, 130,
-    ];
+    // A chart of the season's water use, placed after the summary the way a
+    // person would insert it.
+    const SHOT_PNG: &[u8] = include_bytes!("../tests/fixtures/shot-chart.png");
 
     wp.sync(&mut state.doc, &state.root);
-    wp.model_mut()
-        .insert_str(&mut state.doc, "Product direction image");
-    wp.model_mut().enter(&mut state.doc);
+    let containers = tilo_doc::model::open(&state.doc, &state.root)?;
+    let anchor = tilo_doc::model::blocks_in_order(&state.doc, &containers)
+        .into_iter()
+        .filter_map(|id| {
+            let text = tilo_doc::model::block_text(&state.doc, &containers, &id)?;
+            Some((id, text))
+        })
+        .find(|(_, text)| text.starts_with("Water use fell"));
+    if let Some((block, text)) = anchor {
+        wp.model_mut().set_caret(Caret {
+            block,
+            offset: text.chars().count(),
+        });
+        wp.model_mut().enter(&mut state.doc);
+    } else {
+        wp.model_mut()
+            .insert_str(&mut state.doc, "Water use by month");
+        wp.model_mut().enter(&mut state.doc);
+    }
     wp.model_mut().insert_image_bytes(&mut state.doc, SHOT_PNG);
     wp.sync(&mut state.doc, &state.root);
 
@@ -263,7 +279,7 @@ fn seed_selected_image(
     // Set an intentional frame size so the canvas itself visibly exercises the
     // selected object alongside the inspector controls.
     wp.model_mut()
-        .set_image_size(&mut state.doc, &image.id, 300.0, 180.0);
+        .set_image_size(&mut state.doc, &image.id, 384.0, 216.0);
     wp.model_mut().set_caret(Caret {
         block: image.id,
         offset: 0,
@@ -314,13 +330,25 @@ fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Bo
         end,
         "Maya Chen",
         "",
-        "Could we make this opening more specific?",
+        "Could we name the partner farms in the opening?",
     )
     .apply(&mut state.doc)?;
+    // A suggested insertion in the summary, where a reviewer would add it.
+    let (target, at) = tilo_doc::model::blocks_in_order(&state.doc, &containers)
+        .into_iter()
+        .find_map(|id| {
+            let text = tilo_doc::model::block_text(&state.doc, &containers, &id)?;
+            let at = text.find("18 percent").map(|byte| {
+                text.get(..byte + "18 percent".len())
+                    .map_or(0, |head| head.chars().count())
+            })?;
+            Some((id, at))
+        })
+        .unwrap_or((block, len));
     word_processor::actions::RichTextAction::TrackInsert {
-        block,
-        at: len,
-        text: " — reviewed".into(),
+        block: target,
+        at,
+        text: " (about 110 million gallons)".into(),
         author: "Jonas Weber".into(),
         date: "2026-09-05".into(),
     }
@@ -431,19 +459,21 @@ fn prepare_launch_inputs(
 fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
     state
         .doc
-        .set_actor(automerge::ActorId::from("alice".as_bytes()));
+        .set_actor(automerge::ActorId::from("Ana Duarte".as_bytes()));
     wp.sync(&mut state.doc, &state.root);
     state.commit_action(None, None);
 
     wp.model_mut()
-        .insert_str(&mut state.doc, "Quarterly report");
+        .insert_str(&mut state.doc, "Irrigation trial update");
     wp.model_mut()
         .set_paragraph_style(&mut state.doc, "heading", Some(1), None);
     wp.model_mut().enter(&mut state.doc);
     wp.model_mut()
         .set_paragraph_style(&mut state.doc, "paragraph", None, None);
-    wp.model_mut()
-        .insert_str(&mut state.doc, "Revenue held steady through the quarter.");
+    wp.model_mut().insert_str(
+        &mut state.doc,
+        "All twelve farms reported through the season.",
+    );
     state.commit_action(None, None);
 
     let now = ui::time::wall()
@@ -452,9 +482,15 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     let base = now - 5 * 3600;
 
     // Session one: five more sentences, half a minute apart.
-    for i in 0..5 {
-        wp.model_mut()
-            .insert_str(&mut state.doc, " Margins improved slightly.");
+    let session_one = [
+        " Water use fell by 18 percent.",
+        " Yields held close to the average.",
+        " The orchards saved the most.",
+        " Two probes were replaced in July.",
+        " One gateway lost power for a weekend.",
+    ];
+    for (i, sentence) in (0_i64..).zip(session_one) {
+        wp.model_mut().insert_str(&mut state.doc, sentence);
         ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + i * 30);
     }
 
@@ -462,7 +498,13 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     let mut peer = state.doc.fork();
     peer.set_actor(automerge::ActorId::from("Bob Chen".as_bytes()));
     let mut peer_first = None;
-    for i in 0..4 {
+    let session_two = [
+        " Vineyards on clay held steady.",
+        " The vegetable farms used more water in August.",
+        " The controllers extended the morning cycles.",
+        " Evening runs fell by almost half on sandy soil.",
+    ];
+    for (i, sentence) in (0_i64..).zip(session_two) {
         let c = tilo_doc::model::open(&peer, &state.root)?;
         let blocks = tilo_doc::model::materialize(&peer, &c).blocks;
         let last = blocks
@@ -474,7 +516,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
             block: last.id.clone(),
             at,
             del: 0,
-            ins: " Costs fell by four percent.".into(),
+            ins: sentence.into(),
         }
         .apply(&mut peer)?;
         let hash = ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
@@ -487,7 +529,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     if let (Some(first), Some(last)) = (peer_first, peer.get_heads().first().copied()) {
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
-        ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
+        ui::history_groups::name_range(&mut peer, &start, Some(&end), "Results by site");
         ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
     state.doc.merge_incoming(&mut peer)?;
@@ -495,9 +537,13 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     // Session three, three hours after that, back to the local author.
     wp.sync(&mut state.doc, &state.root);
     let mut session_three_start = None;
-    for i in 0..6 {
-        wp.model_mut()
-            .insert_str(&mut state.doc, " Headcount is unchanged.");
+    let session_three = [
+        " The eastern terraces join in spring.",
+        " Farm managers will get weekly summaries.",
+        " The heat wave override needs a review.",
+    ];
+    for (i, sentence) in (0_i64..).zip(session_three) {
+        wp.model_mut().insert_str(&mut state.doc, sentence);
         let hash =
             ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
         if i == 0 {
@@ -509,7 +555,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     {
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
-        ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
+        ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Next steps");
         ui::tilo_resource::history::commit_stamped_at(&mut state.doc, now - 120);
     }
 
@@ -528,6 +574,20 @@ fn build_concrete(file: Option<&Path>) -> Result<(State, WordProcessorWidget), B
         }
         None => Ok((State::new(), WordProcessorWidget::new())),
     }
+}
+
+/// A fresh document holding the sample report shots show: imported through
+/// the same Markdown path a user's file takes.
+fn build_sample() -> (State, WordProcessorWidget) {
+    const SAMPLE: &str = include_str!("../tests/fixtures/shot-document.md");
+    let mut state = State::new();
+    let mut importer = word_processor::word_processor::WordProcessor::new();
+    importer.bind(&mut state.doc, &state.root);
+    if !importer.replace_with_markdown(&mut state.doc, SAMPLE.as_bytes()) {
+        eprintln!("word-processor: the sample document failed to import");
+    }
+    state.doc.commit();
+    (state, WordProcessorWidget::new())
 }
 
 /// Build the document state + widget: open `file` if given, else a blank doc. The document's
@@ -608,7 +668,8 @@ fn render_shot(
     {
         let _ = tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root());
     }
-    OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
+    // Shots land on the window ground, as the framework paints it.
+    OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("word-processor: wrote shot to {}", out.display());
     Ok(())
 }

@@ -1,19 +1,15 @@
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
+
+use ui::chrome::{self, NavRowFace, NavSectionFace, SelectionState};
+use ui::surface::Region;
+use ui::theme::Theme;
+use ui::tokens::TextRole;
 
 use crate::i18n::t;
 use crate::num;
 use crate::paint_context::PaintContext;
 use crate::word_processor::Heading;
-
-#[derive(Clone, Copy)]
-pub(super) struct OutlinePalette {
-    pub background: Color,
-    pub border: Color,
-    pub chip: Color,
-    pub text: Color,
-    pub text_dim: Color,
-}
 
 /// The document-outline surface and its frame-local interaction geometry.
 ///
@@ -25,6 +21,7 @@ pub(super) struct OutlinePane {
     open: bool,
     rect: Rect,
     hits: Vec<(Rect, String)>,
+    pointer: Option<Point>,
 }
 
 impl OutlinePane {
@@ -50,35 +47,52 @@ impl OutlinePane {
             .map(|(_, id)| id.as_str())
     }
 
+    /// Track the pointer for the rows' hover lift; returns whether the
+    /// hovered row changed.
+    pub fn pointer_moved(&mut self, point: Point) -> bool {
+        let before = self
+            .pointer
+            .and_then(|p| self.heading_at(p).map(str::to_owned));
+        self.pointer = Some(point);
+        before.as_deref() != self.heading_at(point)
+    }
+
+    /// Where heading `id`'s row was drawn this frame.
+    #[cfg(test)]
+    pub fn heading_rect(&self, id: &str) -> Option<Rect> {
+        self.hits
+            .iter()
+            .find(|(_, heading)| heading == id)
+            .map(|(rect, _)| *rect)
+    }
+
     pub fn clear_frame(&mut self) {
         self.rect = Rect::ZERO;
         self.hits.clear();
     }
 
+    /// Paint the outline as the window's navigation column: the sidebar
+    /// region, an "Outline" section header and one navigation row per
+    /// heading, indented by its level, with the heading the caret is in
+    /// lifted.
     pub fn draw(
         &mut self,
         context: &mut PaintContext<'_>,
+        theme: &Theme,
         panel: Rect,
         entries: &[Heading],
         active_id: Option<&str>,
-        palette: OutlinePalette,
     ) {
         self.rect = panel;
         self.hits.clear();
-        context.scene.fill(
-            Fill::NonZero,
+        ui::surface::region(
+            context.scene,
             context.transform,
-            palette.background,
-            None,
-            &panel,
+            panel,
+            Region::Sidebar,
+            theme,
         );
-        context.scene.fill(
-            Fill::NonZero,
-            context.transform,
-            palette.border,
-            None,
-            &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1),
-        );
+        let local = theme.in_region(Region::Sidebar);
         context.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -86,73 +100,57 @@ impl OutlinePane {
             context.transform,
             &panel,
         );
-
-        let pad = 14.0;
-        let x0 = panel.x0 + pad;
-        let right = panel.x1 - pad;
-        let inner_w = (right - x0).max(40.0);
-        let mut y = panel.y0 + 14.0;
-
-        context.text.draw_text(
+        let inset = f64::from(local.tokens.spacing.s2);
+        let x0 = panel.x0 + inset;
+        let x1 = panel.x1 - inset;
+        let mut y = panel.y0 + inset;
+        let header_h = chrome::nav_section_height(&local, true);
+        let header = t("outline-header");
+        chrome::paint_nav_section(
             context.scene,
-            &t("outline-header"),
-            10.5,
-            palette.text_dim,
-            context.transform * Affine::translate((x0, y)),
-            None,
+            context.transform,
+            context.text,
+            &local,
+            &NavSectionFace::new(Rect::new(x0, y, x1, y + header_h), &header),
         );
-        y += 18.0;
+        y += header_h;
 
         if entries.is_empty() {
-            context.text.draw_text(
+            let style = local.text(TextRole::Body);
+            let pad = f64::from(local.tokens.spacing.s3);
+            context.text.draw_style(
                 context.scene,
                 &t("outline-empty"),
-                12.5,
-                palette.text_dim,
-                context.transform * Affine::translate((x0, y)),
-                Some(num::f32_of_f64(inner_w)),
+                local.tokens.colors.text_dim,
+                context.transform * Affine::translate((x0 + pad, y)),
+                Some(num::f32_of_f64((x1 - x0 - 2.0 * pad).max(1.0))),
+                &style,
             );
             context.scene.pop_layer();
             return;
         }
 
-        let row_h = 24.0;
+        let row_h = chrome::nav_row_height(&local);
         for heading in entries {
-            if y > panel.y1 - 4.0 {
+            if y > panel.y1 {
                 break;
             }
-            let indent = ((heading.level.max(1) - 1) as f64) * 14.0;
-            let rect = Rect::new(x0, y, right, y + row_h);
+            let rect = Rect::new(x0, y, x1, y + row_h);
             let active = active_id == Some(heading.id.as_str());
-            if active {
-                // The current heading is a lifted row: the chip face with
-                // its derived edge, never an accent wash (HIG §9.3).
-                ui::surface::card(context.scene, context.transform, rect, 5.0, palette.chip);
-            }
-            let (size, ink) = match heading.level {
-                1 => (13.5, palette.text),
-                2 => (12.5, palette.text),
-                _ => (
-                    11.5,
-                    if active {
-                        palette.text
-                    } else {
-                        palette.text_dim
-                    },
-                ),
-            };
+            let hovered = self.pointer.is_some_and(|p| rect.contains(p));
             let label = if heading.text.trim().is_empty() {
                 t("outline-untitled")
             } else {
                 heading.text.trim().to_string()
             };
-            context.text.draw_text(
+            chrome::paint_nav_row(
                 context.scene,
-                &label,
-                size,
-                ink,
-                context.transform * Affine::translate((x0 + indent, y + 4.0)),
-                Some(num::f32_of_f64((inner_w - indent).max(20.0))),
+                context.transform,
+                context.text,
+                &local,
+                &NavRowFace::new(rect, &label)
+                    .depth(usize::try_from(heading.level.max(1) - 1).unwrap_or(0))
+                    .state(SelectionState::new(active, hovered, false)),
             );
             self.hits.push((rect, heading.id.clone()));
             y += row_h;
@@ -171,6 +169,7 @@ mod tests {
             open: true,
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             hits: vec![(Rect::new(5.0, 5.0, 50.0, 25.0), "heading".into())],
+            pointer: None,
         };
         assert_eq!(pane.heading_at(Point::new(10.0, 10.0)), Some("heading"));
 
