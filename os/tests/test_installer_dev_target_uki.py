@@ -73,6 +73,12 @@ class DevelopmentTarget(unittest.TestCase):
                               f'initrd /EFI/Linux/bootc_composefs-{DIGEST}/initrd\n'
                               f'options quiet root=tilo-auto composefs={DIGEST} tilo.install\n')
         self.selected = {'target_digest': MANIFEST, 'update_origin': ORIGIN}
+        # Split-kernel tests model the constructor alongside the fake build()
+        # output. Do not depend on ukify being installed on the CI test runner.
+        # Sealed/no-constructor tests override this lookup to return None.
+        constructor = patch.object(dev.shutil, 'which', return_value='/fixture/bin/ukify')
+        constructor.start()
+        self.addCleanup(constructor.stop)
         self.dtb = self.kdir / 'dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb'
         self.dtb.write_bytes(DTB)
         tools = self.root / 'runtime/usr/lib/tilo'
