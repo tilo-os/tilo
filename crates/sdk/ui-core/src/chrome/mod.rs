@@ -6,16 +6,23 @@
 //! around and between apps — top bar, window decorations, workspace disc,
 //! quick settings, collaborator surfaces (see `crates/sdk/ui-core/HIG.md` §9).
 
+pub mod nav_row;
 pub mod page;
 pub mod shell;
 pub mod status_bar;
 pub mod toolbar;
 
+pub use nav_row::{
+    NavCount, NavRowFace, NavRowLayout, NavRowStyle, NavSectionFace, NavSectionLayout,
+    nav_rail_row_height, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
+    paint_nav_row, paint_nav_section,
+};
 pub use page::PageGeometry;
 pub use shell::{
-    ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, SelectionState, SelectionTier,
-    chrome_hairline, fill_scrim, glass_selector, panel_border, panel_ground, panel_shadow,
-    scrim_maps, selection_tier, selection_tier_on,
+    ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, SELECTION_MIN_STEP, SelectionState,
+    SelectionTier, chrome_hairline, fill_scrim, glass_selector, lightness_step,
+    paint_row_selection, panel_border, panel_ground, panel_shadow, scrim_maps,
+    selection_floor_ramp, selection_tier, selection_tier_on,
 };
 pub use toolbar::{
     LabelCue, TOOLBAR_HEIGHT, ToolbarItem, ToolbarMetrics, bar_padding, item_rects, paint_bar,
