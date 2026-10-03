@@ -38,6 +38,8 @@ mod device_certification;
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
 mod end_to_end_sync;
+#[path = "environment_sessions.rs"]
+mod environment_sessions;
 #[path = "federation_cross_user_reject.rs"]
 mod federation_cross_user_reject;
 #[path = "federation_echo_suppression.rs"]
