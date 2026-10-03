@@ -659,6 +659,9 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
         .then(|| {
             Arc::new(ClientState {
                 pid: Some(pid),
+                legacy_guest: std::fs::read(format!("/proc/{pid}/environ")).ok().and_then(
+                    |environ| legacy_agent_protocol::window::guest_from_environ(&environ),
+                ),
                 ..ClientState::default()
             })
         })

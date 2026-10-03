@@ -84,6 +84,9 @@ pub struct GuestPlan {
     pub readable_dirs: Vec<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
+    /// Installed legacy apps' commands: shims that ask the broker for a
+    /// `LegacyLaunch`.
+    pub legacy_commands: Vec<String>,
     pub broker_socket: PathBuf,
     /// The compiled seccomp blob for [`Self::profile`].
     pub seccomp_blob: PathBuf,
@@ -278,6 +281,11 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
         if !crate::guest_command_available(&plan.base, cmd) {
             continue;
         }
+        a.push("--symlink".into());
+        a.push("tilo-ush".into());
+        a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
+    }
+    for cmd in &plan.legacy_commands {
         a.push("--symlink".into());
         a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
@@ -741,6 +749,7 @@ mod tests {
             trusted_dirs: Vec::new(),
             readable_dirs: Vec::new(),
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
+            legacy_commands: vec!["code".into()],
             broker_socket: PathBuf::from("/store/sessions/s1/broker.sock"),
             seccomp_blob: PathBuf::from("/store/sessions/s1/ush.bpf"),
             command: Vec::new(),
@@ -1066,6 +1075,12 @@ mod tests {
                     "`{cmd}` has no shim in the guest"
                 );
             }
+            assert!(
+                w3.iter().any(|w| w[0] == "--symlink"
+                    && w[1] == "tilo-ush"
+                    && w[2] == format!("{}/code", crate::GUEST_BIN_DIR)),
+                "an installed legacy app has no shim in the guest"
+            );
         }
         // phase: management_shims_follow_provider_availability
         {

@@ -25,6 +25,8 @@ bounded-command = { path = "../../system/bounded-command" }
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 tilo-files = { path = "../../platform/tilo-files" }
+# Installed legacy apps become commands in every guest (`LegacyLaunch`).
+legacy-vm = { path = "../legacy-vm" }
 
 anyhow.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
