@@ -55,6 +55,7 @@ suites = [
   "os/tests/disk_image_user_labels.sh",
   "os/tests/rockchip_boot_gap.sh",
   "os/tests/rockchip_loader_test.py",
+  "os/tests/disk_sectors_test.py",
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
@@ -195,6 +196,13 @@ inputs = [
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
+name = "no-cisco-openh264"
+# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
+# finished-rootfs gate, and the CI/developer environments that alone may carry it.
+inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
 name = "dev-feature-targets"
 # The dev features os/components.toml names, against the packages' manifests:
 # `pkg/feature` must reach the package, not a dependency of it named pkg.
@@ -321,6 +329,11 @@ suites = [
   "scripts/browser/test_package.py",
   "scripts/browser/test_scroll_presentation.py",
 ]
+
+[[group]]
+name = "vm-acceptance"
+inputs = ["scripts/vm-acceptance/"]
+suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
 
 [[group]]
 name = "perf-tools"

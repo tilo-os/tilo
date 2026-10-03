@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::Kind;
+use crate::id::{Kind, PackageId};
 
 /// Top-level manifest. All fields except `Option` ones are required;
 /// missing ones fail TOML decode with a helpful path.
@@ -61,6 +61,10 @@ pub struct Manifest {
     /// `[package.isa]`. Written by the packer, never by the app author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Target>,
+    /// `[image]` block — what an `env-runtime` or `tool` image is built on
+    /// and holds. Required for those kinds, refused for every other one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<Image>,
     /// `[capabilities]` block — the host capabilities the app uses. Signed
     /// with the rest of the manifest so every host can check them before
     /// launch.
@@ -151,6 +155,28 @@ pub struct Target {
     pub runtime: String,
     /// Payload path of the WebAssembly module the loader instantiates.
     pub module: String,
+}
+
+/// `[image]` — an environment image's binding and contents.
+///
+/// ```toml
+/// [image]
+/// runtime = "9f3c…"   # tool only: the exact env-runtime package id (hex)
+/// packages = ["pandoc-0:3.1.11.1-2.fc44.x86_64"]
+/// ```
+///
+/// A `tool` holds the files its packages add on top of one exact
+/// `env-runtime`; `runtime` names that package, and a tool is never stacked
+/// on any other. An `env-runtime` names none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    /// The `env-runtime` package a `tool` was built for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<PackageId>,
+    /// The distribution packages the image holds, as exact
+    /// `name-epoch:version-release.arch` strings, sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<String>,
 }
 
 /// Optional accessibility acceptance data for an application package.

@@ -303,6 +303,9 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
+# A browser in the room a node governs, for the node's own session to share
+# sealed records with.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
 # The CPU replay of shell scenes, checked against vello on the same scenes.
 tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 rand_chacha.workspace = true
@@ -362,9 +365,11 @@ wayland-protocols = "0.32.12"
 # The compositor's own input method connection, which commits text the
 # shell inserts (a picked emoji) while no trusted input method owns the seat.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# No `backend_winit`: the hosted backend drives its window itself
+# (`compositor/backend/winit.rs`), and Smithay's backend matches every winit
+# event, so it would not build against the fork's `WindowEvent::PenSample`.
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
-    "backend_winit",
     "desktop",
     # DRM/KMS + libseat + udev + libinput backend for running on a bare TTY.
     "backend_drm",

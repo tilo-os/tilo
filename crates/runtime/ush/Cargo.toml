@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Application runtime that hosts a shell: read-only host base, user-owned overlay layers, brokered permissions."
+description = "Application runtime that hosts a shell: a guest built from an environment record, read-only images, brokered permissions."
 
 [lib]
 name = "ush"
@@ -16,15 +16,26 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
-fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
-bounded-command = { path = "../../system/bounded-command" }
+# The environment record a guest is built from, and the tool builder seam.
+tilo-environment = { path = "../environment" }
+# Builds the tool images `pkg install` adds.
+env-tools = { path = "../env-tools" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+# The record is stored as Terminal stores its own records.
+tilo-app-state = { path = "../../system/app-state" }
+durable-store = { path = "../../system/durable-store" }
+# Images are tapp packages the package store materialises read-only.
+package-store = { path = "../../packaging/package-store", features = ["store"] }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+semver.workspace = true
+# This device's key signs the tool images its builder makes.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
-tilo-files = { path = "../../platform/tilo-files" }
 # Installed legacy apps become commands in every guest (`LegacyLaunch`).
 legacy-vm = { path = "../legacy-vm" }
 
@@ -40,7 +51,6 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-walkdir.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

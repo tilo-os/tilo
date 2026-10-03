@@ -114,7 +114,7 @@ fn a_painted_gradient_that_starts_clear_fades_in() {
             stops: vec![(0.0, "#20304000".into()), (1.0, "#203040".into())],
             focal: None,
         }),
-        brush: Some(20.0),
+        brush_size: Some(20.0),
         ..NewMark::new(Shape::Rect {
             x: 0.0,
             y: 0.0,

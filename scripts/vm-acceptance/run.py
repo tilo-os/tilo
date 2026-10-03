@@ -29,7 +29,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, report  # noqa: E402
-from acceptance.checks import apps, basics, provenance, resources, search, ui, window  # noqa: E402,F401
+from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
+                               ui, window)
 from acceptance.context import Context  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
@@ -44,9 +45,15 @@ BUDGETS = {
     # processes and the compositor by anonymous RSS, the memory they hold privately.
     "app_memory_mb": 400, "app_anon_mb": 250,
     "shell_anon_mb": 500, "process_anon_mb": 300, "session_memory_mb": 2500,
-    # Frames at 60 Hz.
+    # Frames at 60 Hz. Work per frame: CPU everywhere, wall time on real display hardware.
     "work_ms_p95": 16.7, "work_ms_p99": 33.4,
-    "paint_period_ms_p95": 33.4, "paint_gap_ms_max": 100.0, "animation_min_frames": 8,
+    # Transitions, the compositor's side: frames painted, lateness against its own
+    # deadlines, the longest CPU tick, input to first frame less time the display held it.
+    "animation_min_frames": 8, "frame_late_ms_p95": 16.7, "frame_cpu_ms_max": 33.4,
+    "input_first_frame_ms": 33.4,
+    # Transitions, the display's side (painted-to-painted, and first to last frame, which
+    # a held transition stretches while the display is slow), judged on real hardware only.
+    "paint_period_ms_p95": 33.4, "paint_gap_ms_max": 100.0, "transition_ms_max": 1000.0,
 }
 
 # Run in a German session (a second slot), after the main pass.
@@ -55,6 +62,7 @@ ORDER = ["P01", "P02", "R01", "R02", "R03", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
+         "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "P03"]
 
@@ -122,7 +130,16 @@ def provenance_of(vm: TiloVm, disk: Path | None, want_commit: str | None) -> dic
     return p
 
 
-def renderer(vm: TiloVm) -> str:
+# Kernel drivers of real display hardware. Anything else (virtio-gpu, qxl, bochs, a
+# firmware framebuffer) presents through a hypervisor or firmware, whose timing is
+# not the compositor's.
+HARDWARE_DRM_DRIVERS = {"i915", "xe", "amdgpu", "radeon", "nouveau", "nvidia", "nvidia-drm",
+                        "msm", "panfrost", "panthor", "lima", "v3d", "vc4", "etnaviv",
+                        "rockchip-drm", "mediatek-drm", "imx-drm", "apple-drm", "asahi"}
+
+
+def renderer(vm: TiloVm) -> tuple[str, dict]:
+    """The renderer as a readable line, and whether frames reach real display hardware."""
     out = vm.exec(
         "echo nodes: $(ls /dev/dri 2>/dev/null | tr '\\n' ' '); "
         "echo drivers: $(for c in /sys/class/drm/card*/device/driver; do basename $(readlink $c); done 2>/dev/null | sort -u | tr '\\n' ' '); "
@@ -130,8 +147,17 @@ def renderer(vm: TiloVm) -> str:
         "\"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null | cut -c1-160", check=False)
     lines = [l for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
     text = " | ".join(lines)
+    drivers = next((l.split(":", 1)[1].split() for l in lines if l.startswith("drivers:")), [])
     soft = "renderD" not in text or "dri2" in text
-    return ("software (no GPU render node; wgpu on a CPU rasterizer): " if soft else "GPU (virgl): ") + text
+    hardware = sorted(set(drivers) & HARDWARE_DRM_DRIVERS)
+    virgl = any(d.startswith("virtio") for d in drivers)
+    label = ("software (no GPU render node; wgpu on a CPU rasterizer): " if soft
+             else "GPU (virgl): " if virgl else f"GPU ({', '.join(hardware) or 'unknown driver'}): ")
+    display = {"hardware": bool(hardware) and not virgl, "drivers": drivers,
+               "why": (f"frames reach {', '.join(hardware)} hardware" if hardware and not virgl
+                       else "frames are presented through a virtual display (virtio-gpu, a hypervisor "
+                            "framebuffer or a CPU rasterizer), whose timing is the host's")}
+    return label + text, display
 
 
 def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
@@ -171,7 +197,8 @@ def main() -> int:
     src.add_argument("--vm", help="an existing VM from vms.toml")
     ap.add_argument("--commit", help="the commit the disk must be built from (sha or ref)")
     ap.add_argument("--slot", default="acceptance")
-    ap.add_argument("--outputs", default="1920x1080@1,1280x800@1")
+    # The second output is fractionally scaled, so apps are checked at a fractional scale too.
+    ap.add_argument("--outputs", default="1920x1080@1,1280x800@1.25")
     ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German slot)")
     ap.add_argument("--only", help="comma-separated check ids or areas")
     ap.add_argument("--idle-seconds", type=int, default=30)
@@ -238,7 +265,8 @@ def main() -> int:
         meta["provenance"] = facts["provenance"]
         slot_create(vm, outputs, None)
         time.sleep(5)
-        facts["renderer"] = meta["renderer"] = renderer(vm)
+        facts["renderer"], facts["display"] = renderer(vm)
+        meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
         config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
         ctx.facts.update(facts)

@@ -22,10 +22,10 @@ use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::tilo_actions::{self, ActionOutput, InvocationUpdate};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
-use ui::vello::peniko::{Color, Fill};
+use ui::vello::peniko::Fill;
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, ResourceOperation, ResourceOperationStart, SelectionHandle,
-    SelectionHandles, Widget,
+    AppModel, EventCtx, ModelPath, PenSample, ResourceOperation, ResourceOperationStart,
+    SelectionHandle, SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -33,8 +33,10 @@ use ui::winit::window::CursorIcon;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::actions::{CanvasAction, Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
+use crate::gesture::area::{self, AreaGesture};
 use crate::gesture::brush::BrushDraft;
-use crate::gesture::outline::{Outline, Part, PenDraft, PointRef, constrain_45};
+use crate::gesture::outline::{Part, PenDraft, PointRef, constrain_45};
+use crate::gesture::points::Editable;
 use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
@@ -55,11 +57,6 @@ const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-scree
 const ZOOM_STEP: f64 = 1.25;
 
 pub use crate::tools::{Tool, Tools, ViewRequest};
-
-fn hex(colour: Color) -> String {
-    let rgba = colour.to_rgba8();
-    format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
-}
 
 /// A pointer drag in progress.
 enum Drag {
@@ -94,6 +91,15 @@ enum Drag {
         draft: BrushDraft,
         id: String,
         ink: Ink,
+        /// The eraser's stroke, taking paint off rather than laying it.
+        erase: bool,
+        /// The stroke this one carries on from its end.
+        extends: Option<String>,
+    },
+    /// The stroke eraser dragged across strokes, taking each it crosses.
+    Sweep {
+        path: Vec<Point>,
+        crossed: Vec<String>,
     },
     Shape {
         start: Point,
@@ -107,6 +113,8 @@ enum Drag {
         start: Point,
         moved: bool,
     },
+    /// An area being selected ([`AreaGesture`] holds it).
+    Area,
 }
 
 /// A path's points being edited: its outline in the mark's own coordinates.
@@ -114,7 +122,7 @@ struct PointEdit {
     id: String,
     shape: Shape,
     affine: Affine,
-    outline: Outline,
+    outline: Editable,
     active: Option<PointRef>,
 }
 
@@ -142,6 +150,8 @@ pub struct CanvasSurface {
     /// Marks just made or pasted, selected before the artwork has them.
     expected: Vec<String>,
     pen: Option<PenDraft>,
+    /// An area being selected.
+    area: AreaGesture,
     points: Option<PointEdit>,
     text: Option<TextSession>,
     guides: Vec<Guide>,
@@ -163,6 +173,9 @@ pub struct CanvasSurface {
     was_narrow: Option<bool>,
     space: bool,
     modifiers: ModifiersState,
+    /// What the pen reported with the pointer's newest move or press; none
+    /// when a mouse moved it.
+    stylus: Option<PenSample>,
     results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
     /// The theme's sizes as of the last layout, for handles hit-tested
     /// between frames.
@@ -197,6 +210,7 @@ impl CanvasSurface {
             selection: Vec::new(),
             expected: Vec::new(),
             pen: None,
+            area: AreaGesture::default(),
             points: None,
             text: None,
             guides: Vec::new(),
@@ -210,6 +224,7 @@ impl CanvasSurface {
             was_narrow: None,
             space: false,
             modifiers: ModifiersState::empty(),
+            stylus: None,
             results: HashMap::new(),
             metrics: ui::tokens::Metrics::BASE,
             spacing: ui::tokens::Spacing::BASE,
@@ -335,6 +350,7 @@ impl CanvasSurface {
         self.tool = tool;
         self.finish_pen();
         self.finish_text();
+        self.area.cancel();
         if tool != Tool::Select {
             self.points = None;
         }
@@ -379,7 +395,7 @@ impl CanvasSurface {
         let Some(mark) = self.art.mark(id) else {
             return false;
         };
-        let Some(outline) = Outline::of_shape(&mark.shape) else {
+        let Some(outline) = Editable::of_shape(&mark.shape) else {
             return false;
         };
         self.points = Some(PointEdit {
@@ -421,7 +437,7 @@ impl CanvasSurface {
             self.points = None;
             self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
                 ids: vec![id],
-                layer: None,
+                ..RemoveMarks::default()
             }));
             return;
         }
@@ -478,11 +494,7 @@ impl CanvasSurface {
         }
         self.drag = match tool {
             Tool::Select => self.press_select(at, double),
-            Tool::Brush => Some(Drag::Stroke {
-                draft: BrushDraft::new(at),
-                id: edit::fresh_id(&self.art, "s", &[]),
-                ink: self.ink(),
-            }),
+            Tool::Brush | Tool::Eraser => Some(self.press_brush(at, tool)),
             Tool::Rect | Tool::Ellipse | Tool::Line => {
                 let start = self.snapped(at, &[]).0;
                 Some(Drag::Shape { start, now: start })
@@ -522,7 +534,118 @@ impl CanvasSurface {
                 self.tools.pick(colour);
                 None
             }
+            Tool::Marquee | Tool::Oval => {
+                self.area.press(at, Some(tool == Tool::Oval));
+                Some(Drag::Area)
+            }
+            Tool::Lasso => {
+                if double && !self.area.polygon.is_empty() {
+                    let mode = self.area_mode();
+                    if let Some(action) = self.area.finish(mode) {
+                        self.dispatch(&action);
+                    }
+                    return;
+                }
+                self.area.press(at, None);
+                Some(Drag::Area)
+            }
+            Tool::Wand | Tool::Bucket => {
+                self.find_colour(at, tool == Tool::Bucket);
+                None
+            }
         };
+    }
+
+    /// How a new area meets the selection, from the held keys.
+    fn area_mode(&self) -> Option<String> {
+        area::mode(self.modifiers.shift_key(), self.modifiers.alt_key())
+    }
+
+    /// The magic wand's or the fill bucket's click: like colour touching
+    /// `at`, as the canvas shows it, selected or filled.
+    fn find_colour(&mut self, at: Point, fill: bool) {
+        if !self.art.bounds().contains(at) {
+            return;
+        }
+        let query = crate::author::ColourQuery {
+            at: Some(at),
+            tolerance: crate::author::TOLERANCE,
+            // Ctrl finds the colour everywhere, touching or not.
+            everywhere: !fill && self.modifiers.control_key(),
+            ..crate::author::ColourQuery::default()
+        };
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let found = crate::author::colour_region(
+            &mut self.tools.renderer.borrow_mut(),
+            text,
+            &self.art,
+            &query,
+        );
+        // A canvas that cannot draw a picture of itself finds nothing.
+        let Ok(found) = found else {
+            return;
+        };
+        let action = if fill {
+            area::bucket(
+                &self.art,
+                &found,
+                self.ink(),
+                edit::fresh_id(&self.art, "fill", &[]),
+            )
+        } else {
+            Some(area::found(&found, self.area_mode()))
+        };
+        if let Some(action) = action {
+            self.dispatch(&action);
+        }
+    }
+
+    /// The brush or eraser lands at `at`: a stroke, carried on from the
+    /// selected stroke when it lands on its end; or the stroke eraser.
+    fn press_brush(&self, at: Point, tool: Tool) -> Drag {
+        let erase = tool == Tool::Eraser || self.stylus.is_some_and(|stylus| stylus.eraser);
+        let ink = self.ink();
+        if erase && self.tools.erasing.with(|erasing| *erasing) == crate::tools::Erasing::Strokes {
+            let crossed = crate::strokes::crossed(&self.art, &[[at.x, at.y]], ink.layer.as_deref());
+            return Drag::Sweep {
+                path: vec![at],
+                crossed,
+            };
+        }
+        let pressure = self.pressure();
+        Drag::Stroke {
+            draft: BrushDraft::new(at, pressure),
+            id: edit::fresh_id(&self.art, "s", &[]),
+            extends: (!erase).then(|| self.extendable(at)).flatten(),
+            ink,
+            erase,
+        }
+    }
+
+    /// The selected stroke whose end `at` lands on, to carry it on.
+    fn extendable(&self, at: Point) -> Option<String> {
+        let [id] = self.selection.as_slice() else {
+            return None;
+        };
+        let mark = self.art.mark(id)?;
+        let Shape::Stroke { points, size, .. } = &mark.shape else {
+            return None;
+        };
+        if mark.erases() || mark.transform.is_some() || self.mark_painted(mark) {
+            return None;
+        }
+        let reach = (size * 0.5).max(self.units(f64::from(self.metrics.min_pointer_target) / 2.0));
+        let end = |point: Option<&Vec<f64>>| {
+            point.is_some_and(|point| {
+                Point::new(
+                    point.first().copied().unwrap_or(0.0),
+                    point.get(1).copied().unwrap_or(0.0),
+                )
+                .distance(at)
+                    <= reach
+            })
+        };
+        (end(points.first()) || end(points.last())).then(|| id.clone())
     }
 
     /// A press while a path's points are edited: `true` when it was the
@@ -538,6 +661,21 @@ impl CanvasSurface {
         let stretch = points.affine.determinant().abs().sqrt().max(1e-6);
         let reach = reach_screen / zoom / stretch;
         if let Some(point) = points.outline.hit(local, reach, points.active) {
+            if alt
+                && point.part == Part::Anchor
+                && let Some(cut) = points.outline.stroke_point(point)
+            {
+                // Alt on a stroke's point cuts the stroke in two there.
+                let at = points.affine * cut;
+                let id = points.id.clone();
+                self.points = None;
+                self.dispatch(&CanvasAction::edit(EditMarks {
+                    ids: vec![id],
+                    split: Some([at.x, at.y]),
+                    ..EditMarks::default()
+                }));
+                return true;
+            }
             if alt && point.part == Part::Anchor {
                 points.outline.toggle_smooth(point.contour, point.anchor);
                 points.active = Some(point);
@@ -659,6 +797,7 @@ impl CanvasSurface {
         let at = self.content_point(screen);
         let zoom = self.zoom();
         let seconds = ui::time::now().duration_since(self.epoch).as_secs_f64();
+        let pressure = self.pressure();
         match &mut self.drag {
             Some(Drag::Pan) => {
                 self.moved_by_hand |= self.viewport.update_pan(screen);
@@ -671,7 +810,26 @@ impl CanvasSurface {
             ) => {
                 *now = at;
             }
-            Some(Drag::Stroke { draft, .. }) => draft.push(at, seconds, zoom),
+            Some(Drag::Stroke { draft, .. }) => {
+                draft.push(at, seconds, zoom, pressure);
+            }
+            Some(Drag::Sweep { path, crossed }) => {
+                let from = path.last().copied().unwrap_or(at);
+                path.push(at);
+                let layer = self.tools.ink().layer;
+                for id in crate::strokes::crossed(
+                    &self.art,
+                    &[[from.x, from.y], [at.x, at.y]],
+                    layer
+                        .as_deref()
+                        .filter(|layer| self.art.layer(layer).is_some()),
+                ) {
+                    if !crossed.contains(&id) {
+                        crossed.push(id);
+                    }
+                }
+            }
+            Some(Drag::Area) => self.area.drag_to(at, 2.0 / zoom),
             Some(Drag::Pen) => {
                 if let Some(pen) = &mut self.pen {
                     pen.pull(at);
@@ -798,6 +956,15 @@ impl CanvasSurface {
         }
     }
 
+    /// The pressure the pen behind the pointer reports, when it reports
+    /// one: a pen without a pressure sensor, like a mouse, leaves the hand's
+    /// speed to stand in for it.
+    fn pressure(&self) -> Option<f64> {
+        self.stylus
+            .map(|pen| pen.pressure)
+            .filter(|pressure| *pressure > 0.0)
+    }
+
     fn release(&mut self) {
         let Some(drag) = self.drag.take() else {
             return;
@@ -852,25 +1019,7 @@ impl CanvasSurface {
                     self.dispatch(&action);
                 }
             }
-            Drag::Stroke { draft, id, ink } => {
-                let params = self
-                    .tools
-                    .stroke_params(&self.art, ink.layer.as_deref().unwrap_or_default());
-                self.dispatch(&CanvasAction::Paint(Paint {
-                    layer: ink.layer,
-                    strokes: vec![NewStroke {
-                        id: Some(id),
-                        name: None,
-                        points: draft.finish(),
-                        size: ink.width,
-                        colour: ink.colour,
-                        opacity: None,
-                        wet: Some(true),
-                        params,
-                        ..NewStroke::default()
-                    }],
-                }));
-            }
+            drag @ (Drag::Stroke { .. } | Drag::Sweep { .. }) => self.finish_brush(drag),
             Drag::Shape { start, now } => self.finish_shape(start, now),
             Drag::Pen => {
                 if let Some(pen) = &mut self.pen {
@@ -887,6 +1036,111 @@ impl CanvasSurface {
                     self.commit_points();
                 }
             }
+            Drag::Area => self.release_area(),
+        }
+    }
+
+    /// An area tool let go: the area it selected, if any.
+    fn release_area(&mut self) {
+        let slop = self.units(self.click_slop());
+        let mode = self.area_mode();
+        if let Some(action) = self.area.release(slop, mode) {
+            self.dispatch(&action);
+        }
+    }
+
+    /// The brush or eraser lifts: its stroke is laid, carried on from the
+    /// stroke it extends, or the strokes it swept are taken away.
+    fn finish_brush(&mut self, drag: Drag) {
+        match drag {
+            Drag::Stroke {
+                draft,
+                id,
+                ink,
+                erase,
+                extends,
+            } => {
+                let points = draft.finish();
+                if let Some(extended) = extends {
+                    self.dispatch(&CanvasAction::edit(EditMarks {
+                        ids: vec![extended],
+                        extend: Some(points),
+                        ..EditMarks::default()
+                    }));
+                    return;
+                }
+                let stroke = self.new_stroke(id, points, &ink, erase);
+                self.dispatch(&CanvasAction::Paint(Paint {
+                    layer: ink.layer,
+                    strokes: vec![stroke],
+                }));
+            }
+            Drag::Sweep { crossed, .. } if !crossed.is_empty() => {
+                self.selection.retain(|id| !crossed.contains(id));
+                self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+                    ids: crossed,
+                    ..RemoveMarks::default()
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    /// The stroke the brush or eraser laid, as `paint` takes it.
+    fn new_stroke(&self, id: String, points: Vec<Vec<f64>>, ink: &Ink, erase: bool) -> NewStroke {
+        let layer = ink
+            .layer
+            .clone()
+            .or_else(|| self.art.layers.last().map(|layer| layer.id.clone()))
+            .unwrap_or_default();
+        // Painting and erasing keep inside the selection while there is one.
+        let clip = self
+            .art
+            .selection
+            .is_some()
+            .then(|| crate::actions::SELECTION_CLIP.to_owned());
+        if erase {
+            let hardness = self.tools.eraser_hardness.with(|value| *value);
+            let strength = self.tools.eraser_strength.with(|value| *value);
+            return NewStroke {
+                id: Some(id),
+                points,
+                size: ink.width,
+                brush: Some("eraser".into()),
+                clip,
+                opacity: (strength < 1.0).then_some((strength * 100.0).round() / 100.0),
+                params: (hardness < 0.995).then(|| {
+                    std::collections::BTreeMap::from([(
+                        "hardness".to_owned(),
+                        (hardness * 100.0).round() / 100.0,
+                    )])
+                }),
+                ..NewStroke::default()
+            };
+        }
+        let opacity = self.tools.opacity.with(|value| *value);
+        let brush = self.tools.brush_name(&self.art, &layer);
+        // A broad nib is held at the angle the pen leans, when one does.
+        let angle = (brush.as_deref() == Some("calligraphy"))
+            .then(|| {
+                self.stylus
+                    .filter(|stylus| stylus.tilt.0.hypot(stylus.tilt.1) > 5.0)
+                    .map(|stylus| (stylus.tilt.1.atan2(stylus.tilt.0).to_degrees() + 90.0).round())
+            })
+            .flatten();
+        NewStroke {
+            id: Some(id),
+            name: None,
+            points,
+            size: ink.width,
+            colour: ink.colour.clone(),
+            opacity: (opacity < 1.0).then_some((opacity * 100.0).round() / 100.0),
+            wet: Some(true),
+            params: self.tools.stroke_params(&self.art, &layer),
+            brush,
+            angle,
+            clip,
+            ..NewStroke::default()
         }
     }
 
@@ -1062,6 +1316,9 @@ impl CanvasSurface {
         if self.points.is_some() && self.points_key(key, modifiers) {
             return true;
         }
+        if self.area_key(key) {
+            return true;
+        }
         if self.pen.is_some() {
             match key {
                 Key::Named(NamedKey::Enter | NamedKey::Escape) => {
@@ -1098,7 +1355,10 @@ impl CanvasSurface {
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if !self.selection.is_empty() => {
                 let ids = std::mem::take(&mut self.selection);
-                self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks { ids, layer: None }));
+                self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+                    ids,
+                    ..RemoveMarks::default()
+                }));
                 true
             }
             Key::Named(NamedKey::Enter) if self.selection.len() == 1 => {
@@ -1130,6 +1390,48 @@ impl CanvasSurface {
         }
     }
 
+    /// Keys for the selected area: Enter ends a lasso being clicked out,
+    /// Escape drops it or the selection, Delete clears the selection from
+    /// the layer. Marks picked on the canvas come first.
+    fn area_key(&mut self, key: &Key) -> bool {
+        let Key::Named(named) = key else {
+            return false;
+        };
+        if !self.area.polygon.is_empty() {
+            match named {
+                NamedKey::Enter => {
+                    let mode = self.area_mode();
+                    if let Some(action) = self.area.finish(mode) {
+                        self.dispatch(&action);
+                    }
+                    return true;
+                }
+                NamedKey::Escape => {
+                    self.area.cancel();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if !self.selection.is_empty() || self.art.selection.is_none() {
+            return false;
+        }
+        match named {
+            NamedKey::Escape => self.dispatch(&area::none()),
+            NamedKey::Delete | NamedKey::Backspace => {
+                self.dispatch(&CanvasAction::UseSelection(
+                    crate::selection::UseSelection {
+                        what: "clear".into(),
+                        layer: self.ink().layer,
+                        ..crate::selection::UseSelection::default()
+                    },
+                ));
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Ctrl/Cmd with a letter: the clipboard, select all, duplicate, group.
     fn command_key(&mut self, ch: &str, shift: bool) -> bool {
         let offset = Vec2::new(
@@ -1148,7 +1450,10 @@ impl CanvasSurface {
                 self.pastes = 0;
                 if ch == "x" {
                     let ids = std::mem::take(&mut self.selection);
-                    self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks { ids, layer: None }));
+                    self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+                        ids,
+                        ..RemoveMarks::default()
+                    }));
                 }
             }
             ("v", _) => {
@@ -1169,6 +1474,15 @@ impl CanvasSurface {
                 };
                 self.dispatch_all(&actions);
                 self.select_made(made);
+            }
+            ("d", false) if self.selection.is_empty() && self.art.selection.is_some() => {
+                self.dispatch(&area::none());
+            }
+            ("i", true) if self.art.selection.is_some() => {
+                self.dispatch(&CanvasAction::Select(Box::new(crate::selection::Select {
+                    invert: Some(true),
+                    ..crate::selection::Select::default()
+                })));
             }
             ("d", false) => {
                 if self.selection.is_empty() {
@@ -1240,6 +1554,18 @@ impl CanvasSurface {
     fn shown(&self) -> Option<Artwork> {
         let mut shown: Option<Artwork> = None;
         match &self.drag {
+            Some(Drag::Stroke {
+                draft,
+                extends: Some(id),
+                ..
+            }) => {
+                let art = shown.get_or_insert_with(|| (*self.art).clone());
+                if let Some(mark) = art.marks.iter_mut().find(|mark| mark.id == *id)
+                    && let Shape::Stroke { points, .. } = &mut mark.shape
+                {
+                    crate::strokes::extend(points, &draft.preview());
+                }
+            }
             Some(Drag::Move { ids, affine, .. } | Drag::Handle { ids, affine, .. })
                 if *affine != Affine::IDENTITY =>
             {
@@ -1294,15 +1620,20 @@ impl CanvasSurface {
         shown
     }
 
-    /// The stroke being painted on a painted layer, as the medium will
-    /// paint it.
+    /// The stroke being laid, shown on its layer as it will be drawn or
+    /// painted: an eraser's clears what is under it.
     fn wet(&self) -> Option<Mark> {
-        let Some(Drag::Stroke { draft, id, ink }) = &self.drag else {
+        let Some(Drag::Stroke {
+            draft,
+            id,
+            ink,
+            erase,
+            extends: None,
+        }) = &self.drag
+        else {
             return None;
         };
-        if !self.painted(ink.layer.as_deref()) {
-            return None;
-        }
+        let stroke = self.new_stroke(id.clone(), draft.preview(), ink, *erase);
         let layer = ink
             .layer
             .clone()
@@ -1312,15 +1643,19 @@ impl CanvasSurface {
             layer,
             order: String::new(),
             name: String::new(),
-            shape: Shape::plain_stroke(draft.preview(), ink.width),
+            shape: Shape::plain_stroke(stroke.points, stroke.size),
             style: crate::model::Style {
-                stroke: Some(ink.colour.clone()),
+                stroke: (!stroke.colour.is_empty()).then_some(stroke.colour),
+                brush: stroke.brush,
+                opacity: stroke.opacity,
+                params: stroke.params.unwrap_or_default(),
+                angle: stroke.angle,
                 wet: true,
                 ..crate::model::Style::default()
             },
             transform: None,
             group: String::new(),
-            clip: String::new(),
+            clip: stroke.clip.unwrap_or_default(),
         })
     }
 
@@ -1412,6 +1747,7 @@ impl CanvasSurface {
             .collect();
         let mut renderer = self.tools.renderer.borrow_mut();
         let renderer = &mut *renderer;
+        let dabbed = renderer.dabbed_pictures(art, 2.0);
         let svg = crate::svg::export(
             art,
             ground,
@@ -1426,6 +1762,7 @@ impl CanvasSurface {
                     .map(|picture| picture.bytes)
             },
             outlines,
+            dabbed,
         );
         let address = crate::resource::store(svg.as_bytes())?;
         let mut value = json!({
@@ -1586,11 +1923,23 @@ impl CanvasSurface {
         theme: &Theme,
         text: &mut TextRenderer,
     ) {
+        self.overlay_area(scene, to_screen);
         self.overlay_selection(scene, to_screen, theme);
-        self.overlay_drag(scene, to_screen, theme, text);
+        self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
+        }
+    }
+
+    /// The selected area's outline, and the area being selected.
+    fn overlay_area(&self, scene: &mut Scene, to_screen: Affine) {
+        if let Some(path) = area::selection_path(&self.art, to_screen) {
+            area::draw_outline(scene, &path, 0.0);
+        }
+        if let Some(mut path) = self.area.outline(self.content_point(self.cursor)) {
+            path.apply_affine(to_screen);
+            area::draw_outline(scene, &path, 0.0);
         }
     }
 
@@ -1697,13 +2046,7 @@ impl CanvasSurface {
     }
 
     /// What a drag is making: a marquee, a shape, a stroke on a plain layer.
-    fn overlay_drag(
-        &self,
-        scene: &mut Scene,
-        to_screen: Affine,
-        theme: &Theme,
-        text: &mut TextRenderer,
-    ) {
+    fn overlay_drag(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
         let accent = theme.accent_primary;
         let hair = Stroke::new(1.0);
         match &self.drag {
@@ -1740,24 +2083,41 @@ impl CanvasSurface {
                     scene.stroke(&hair, Affine::IDENTITY, accent, None, &edge);
                 }
             }
-            Some(Drag::Stroke { draft, ink, .. }) if !self.painted(ink.layer.as_deref()) => {
-                let colour = self.tools.colour();
-                let points = draft.preview();
-                let preview = Mark {
-                    id: String::new(),
-                    layer: String::new(),
-                    order: String::new(),
-                    name: String::new(),
-                    shape: Shape::plain_stroke(points, ink.width),
-                    style: crate::model::Style {
-                        stroke: Some(hex(colour)),
-                        ..crate::model::Style::default()
-                    },
-                    transform: None,
-                    group: String::new(),
-                    clip: String::new(),
-                };
-                crate::render::draw_vector(&preview, &[], scene, to_screen, text);
+            Some(Drag::Sweep { path, crossed }) => {
+                // The strokes the eraser has crossed, outlined, and its path.
+                for mark in crossed.iter().filter_map(|id| self.art.mark(id)) {
+                    let mut outline = crate::render::silhouette(mark);
+                    outline.apply_affine(to_screen * mark.affine());
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        theme.tokens.colors.semantic.danger.multiply_alpha(0.25),
+                        None,
+                        &outline,
+                    );
+                    scene.stroke(
+                        &hair,
+                        Affine::IDENTITY,
+                        theme.tokens.colors.semantic.danger,
+                        None,
+                        &outline,
+                    );
+                }
+                let mut trail = BezPath::new();
+                for (index, point) in path.iter().enumerate() {
+                    if index == 0 {
+                        trail.move_to(to_screen * *point);
+                    } else {
+                        trail.line_to(to_screen * *point);
+                    }
+                }
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    Affine::IDENTITY,
+                    accent.multiply_alpha(0.6),
+                    None,
+                    &trail,
+                );
             }
             _ => {}
         }
@@ -2080,6 +2440,7 @@ impl Widget for CanvasSurface {
                 self.update_drag();
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.stylus = ctx.pen();
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.drag.is_some() {
@@ -2089,6 +2450,7 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) if self.rect.contains(self.cursor) => {
+                    self.stylus = ctx.pen();
                     if !self.focused {
                         self.pressed_into_focus = true;
                     }
@@ -2260,9 +2622,15 @@ impl Widget for CanvasSurface {
             Tool::Eyedropper
             | Tool::Pen
             | Tool::Brush
+            | Tool::Eraser
             | Tool::Rect
             | Tool::Ellipse
-            | Tool::Line => CursorIcon::Crosshair,
+            | Tool::Line
+            | Tool::Marquee
+            | Tool::Oval
+            | Tool::Lasso
+            | Tool::Wand
+            | Tool::Bucket => CursorIcon::Crosshair,
         })
     }
 
@@ -2299,7 +2667,7 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
                 Some(mark) => {
                     if mark.shape != points.shape
                         && !matches!(self.drag, Some(Drag::Point { .. }))
-                        && let Some(outline) = Outline::of_shape(&mark.shape)
+                        && let Some(outline) = Editable::of_shape(&mark.shape)
                     {
                         points.outline = outline;
                         points.shape = mark.shape.clone();
@@ -2316,6 +2684,8 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
             self.text = None;
         }
         self.art = Rc::clone(state);
+        // What the window shows is what the magic wand finds colour in.
+        crate::author::see(&self.tools.renderer, &self.art);
     }
 
     fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {

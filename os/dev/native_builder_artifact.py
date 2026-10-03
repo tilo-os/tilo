@@ -22,6 +22,7 @@ require = tools.require
 METADATA = 'out/tilo-native-builder-artifact.json'
 ROOTS = ('out', 'usr/lib/tilo-runtime', 'usr/share/tilo-apps')
 ANCESTORS = {'usr', 'usr/lib', 'usr/share'}
+IMAGE_TREE = re.compile(r'usr/share/tilo-apps/pkgs/[0-9a-f]{64}/.+')
 PURPOSE = 'tilo-development-native-builder'
 REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-model-gateway '
             'tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer '
@@ -95,8 +96,12 @@ def inventory(root, inputs):
             continue
         row = {'mode': stat.S_IMODE(info.st_mode)}
         if stat.S_ISLNK(info.st_mode):
-            require(not path.readlink().is_absolute(), 'absolute artifact symlink forbidden')
-            path.resolve(strict=True).relative_to(root)
+            # Application trees never hold links; an environment image's tree
+            # (the env-runtime) does, signed with it, and its targets are read
+            # inside an environment, never on this host. Record them verbatim.
+            if not IMAGE_TREE.match(name):
+                require(not path.readlink().is_absolute(), 'absolute artifact symlink forbidden')
+                path.resolve(strict=True).relative_to(root)
             row.update(type='symlink', target=str(path.readlink()))
         elif stat.S_ISDIR(info.st_mode):
             row['type'] = 'directory'

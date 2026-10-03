@@ -52,13 +52,22 @@ revealing a caret, opening a system file picker. Open/save of a file that lives 
 shared filesystem is a document action on that file resource, not an effect. `View` stays
 local presentation (which week, where the caret is).
 
+An app's effects are a typed vocabulary (`#[derive(Effect)]` on an enum) answered by the
+view or surface that holds the state they need (`ViewCx::effects`,
+`ResourceSurface::effect`). The framework publishes them on the resource with their live
+availability, and routes every caller to the handler as a typed value. Long work is a job
+(`EffectCx::thread` / `spawn` / `reply`) with progress and cancellation; it completes on the
+UI thread and changes the document only through the resource's actions.
+
 ### Sync and undo of outside consequences
 
 Collaborators sync the document actions (the CRDT). An external system (CalDAV, the shared
 filesystem) is a **projection** drained by an `Effect` that reads queues the document
 actions wrote. Peers replay those actions and converge; the Effect on each machine drains
 the queue — it is not itself the history, and Effects are not undoable (they have no
-heads).
+heads). The framework runs the drain (`ViewCx::drain`): in the live app after every
+change, on every participant's device, never in History; the drain acknowledges each
+entry with an action.
 
 If an action's `apply` records an outside consequence in the document (outbox,
 `del_outbox`, a filesystem op queue), undo of that action is the **inverse document
@@ -66,6 +75,37 @@ action run through `apply`**, so the compensating queue entry is recorded the sa
 Inverse Automerge patches remain correct for pure CRDT actions with no outside
 consequence (a text splice). A shared file write and a calendar create are document
 actions, so they are undoable — including the compensating remote queue entry.
+
+### Who did it, and what is an undo step
+
+Every action knows its author: the participant that invoked it, pinned with the action
+like its time, so every replica's `apply` reads the same one (`ActionCx::author`). A
+view knows its reader (`ViewCx::me`). Resource state is the same for everyone; "your
+message" is a view comparing the recorded author with `me`, never a reader baked into
+the state or an author carried in the payload.
+
+A record's genesis (`Resource::initialize`) is the same change on every device, so two
+people creating the same record before they sync converge on one. What a new record
+starts with that depends on who creates it or where — the creator as owner, an import
+of settings that already exist — is the app's seed: actions applied once after the
+genesis, by the creator, and nobody's undo step.
+
+An action declares what it is to the people sharing the document (`change_kind`):
+content, housekeeping about it (a read marker), or content from outside (fetched rows,
+a process's output). All three sync and stay in history; only content is an undo step.
+Edits that continue one another (`Resource::coalesces`: a word typed, a slider dragged)
+are one step until the gesture ends.
+
+### Settings, files and secrets
+
+What follows a person or a device but is not shared with a room is not the
+document. A preference is a typed `Settings<T>` whose type declares its scope:
+`Personal` roams across the person's own devices, `DeviceLocal` never leaves
+this one, `Shared` reads a per-user section every app follows (locale,
+spelling). Views and surfaces get settings, the app's files and its secrets
+from their context; a secret of one document item is keyed by the item's id,
+so the document names it and the secret stays on the device. See
+`storage.md` §13.6.
 
 ### Views
 

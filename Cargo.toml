@@ -14,7 +14,6 @@ exclude = [
     "vendor/google-cast-protocol",
     "vendor/libspa-sys",
     "vendor/winit",
-    "crates/forks/winit",
     "vendor/accesskit_winit",
     "vendor/wgpu",
     "vendor/wgpu-hal",
@@ -76,7 +75,6 @@ members = [
     "apps/firewall",
     "apps/git-client",
     "apps/hex-editor",
-    "apps/image-editor",
     "apps/imager",
     "apps/logs",
     "apps/mail",
@@ -255,7 +253,9 @@ members = [
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
+    "crates/runtime/environment",
     "crates/runtime/ush",
+    "crates/runtime/env-tools",
 
     # Session
     "crates/session/console-control",
@@ -881,9 +881,6 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
-# crates.io crates that depend on winit (accesskit_winit, smithay) get the
-# fork through a re-exporting facade, so they share its types.
-winit = { path = "crates/forks/winit" }
 # The pure-Rust server used by Smithay used to panic if a client disappeared
 # from inside a request callback which had just created a child object. OAuth
 # browser launches make that race easy to hit: a probing helper can connect,

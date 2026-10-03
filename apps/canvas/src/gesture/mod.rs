@@ -2,9 +2,11 @@
 //! finished gesture is one of the artwork's actions, made here from the
 //! marks and the pointer's path, so it can be tested without a window.
 
+pub mod area;
 pub mod brush;
 pub mod edit;
 pub mod outline;
+pub mod points;
 pub mod snap;
 pub mod text;
 

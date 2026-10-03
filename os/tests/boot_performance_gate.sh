@@ -164,8 +164,18 @@ switch_root_steps() {
     | cut -c1-160 | sed 's/^/  /' | head -12 || true
 }
 
-# ldconfig.service and systemd-update-done.service run on a boot only when
-# /usr looks newer than /etc/.updated; the image records the two as equal.
+# bootc removes /etc/.updated from every deployment, so its first boot runs the
+# ConditionNeedsUpdate= units. The caches the image builds (the linker cache in
+# /etc, the hardware database in /usr) must not be among them.
+image_cache_units=(ldconfig.service systemd-hwdb-update.service)
+rebuilt_image_caches() {
+  local unit
+  for unit in "${image_cache_units[@]}"; do
+    [ "$(systemctl show "$unit" --property=ConditionResult --value 2>/dev/null || true)" != yes ] \
+      || printf '%s\n' "$unit"
+  done
+}
+
 first_boot_update_check() {
   local result path
   result="$(systemctl show ldconfig.service --property=ConditionResult --value 2>/dev/null || true)"
@@ -255,3 +265,9 @@ fi
 boot_phases
 printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
   "$seconds" "$milliseconds" "$budget_seconds"
+rebuilt="$(rebuilt_image_caches)"
+if [ -n "$rebuilt" ]; then
+  printf 'this boot rebuilt caches the image already carries: %s\n' "$(tr '\n' ' ' <<<"$rebuilt")" >&2
+  first_boot_update_check >&2
+  exit 1
+fi

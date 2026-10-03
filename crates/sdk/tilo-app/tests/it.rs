@@ -7,10 +7,14 @@
 pub mod action_groups;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
+#[path = "effects.rs"]
+pub mod effects;
 #[path = "framework.rs"]
 pub mod framework;
 #[path = "history_actions.rs"]
 pub mod history_actions;
+#[path = "identity.rs"]
+pub mod identity;
 #[path = "incremental.rs"]
 pub mod incremental;
 #[path = "item_actions.rs"]
@@ -21,5 +25,7 @@ pub mod live_permissions;
 pub mod model_contract;
 #[path = "scenarios.rs"]
 pub mod scenarios;
+#[path = "settings.rs"]
+pub mod settings;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;

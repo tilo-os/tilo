@@ -156,6 +156,19 @@ pub trait BlobFetcher: Sync {
     fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> io::Result<()>;
 }
 
+/// Where a whole package can be fetched by its id: its signed metadata as a
+/// `.tapp` (thin or full), and through [`BlobFetcher`] the payload blobs a
+/// thin one does not carry. Nothing it returns is trusted; the receiver
+/// checks the package hashes to the id it asked for.
+pub trait PackageFetcher: BlobFetcher {
+    /// The `.tapp` bytes of `id`, or `Ok(None)` when this source lacks it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source cannot be asked.
+    fn fetch_package(&self, id: &crate::id::PackageId) -> io::Result<Option<Vec<u8>>>;
+}
+
 impl BlobSource for BTreeMap<BlobHash, Vec<u8>> {
     fn open_blob(&self, hash: &BlobHash) -> io::Result<Option<OpenBlob<'_>>> {
         Ok(self.get(hash).map(|bytes| OpenBlob {

@@ -67,6 +67,59 @@
 //!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
+//!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
+//!   inside an action: the same id, pinned with the action so every replica
+//!   reads it. The resource state stays the same for everyone; a view
+//!   compares the authors it records with `me`, and an action signs what it
+//!   writes with its author rather than carrying one in its payload.
+//! * **A brand-new record** starts with the resource's
+//!   [`initialize`](tilo_resource::Resource::initialize), its genesis: the
+//!   same change on every device, so two people creating the same record
+//!   converge on one. What depends on who creates it or where (the creator
+//!   as owner, a first-run import of existing settings) is
+//!   [`ResourceApp::seed`]: actions applied once after the genesis, by the
+//!   creator, that are nobody's undo step.
+//! * **Which changes are undo steps** is declared by the action
+//!   ([`tilo_actions::Action::change_kind`], `#[action(external)]`): content
+//!   from outside — fetched rows, a process's output — syncs to everyone but
+//!   no undo takes it back. Values applied immediately that continue one
+//!   another ([`Resource::coalesces`](tilo_resource::Resource::coalesces)) are
+//!   one step — a word typed, a slider dragged — until the surface
+//!   [settles](Dispatcher::settle) the gesture.
+//! * **Settings** — preferences that follow a person or stay on a device,
+//!   never seen by collaborators — are a typed
+//!   [`SettingsSchema`](crate::storage::SettingsSchema) whose
+//!   [`Scope`](crate::storage::Scope) says how far they travel: `Personal`
+//!   roams across the person's own devices, `DeviceLocal` never leaves this
+//!   one, `Shared` reads a per-user section every app follows (`locale`,
+//!   `text_assistance`). [`ViewCx::settings`] and [`SurfaceCx::settings`]
+//!   hand out a [`Setting`] kept current while the view lives; a write from
+//!   another window or device reaches it on the next frame. Files and
+//!   secrets come from the same context ([`ViewCx::storage`],
+//!   [`SurfaceCx::secrets`], [`SurfaceCx::files`]); a secret that belongs to
+//!   one document item (a profile's password) is
+//!   `secrets().item(purpose, id)`, so the document names the item and the
+//!   secret stays on the device.
+//! * **Effects** — work with no document delta (reload, back up now,
+//!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
+//!   an enum, one variant per effect. A view answers it with
+//!   [`ViewCx::effects`], a custom surface with
+//!   [`ResourceSurface::effect`] (`impl ResourceSurface<R, MyEffect>`); the
+//!   framework publishes it beside the resource's actions, with the
+//!   availability and labels the handler reports now ([`EffectStatus`]),
+//!   and every caller — a button ([`ViewCx::effect_button`],
+//!   [`Dispatcher::effect`]), the palette, an agent, a script — reaches the
+//!   handler as a typed value. Long work is a job started through the
+//!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
+//!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
+//!   finishes on the UI thread, changing the document with ordinary actions
+//!   and answering its caller. Effects never run in History mode.
+//! * **Projections** — an outside consequence an action recorded in the
+//!   document (an outbox, a filesystem operation, a device's configuration)
+//!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
+//!   the live app after every change, on every participant's device, and
+//!   the drain acknowledges each entry with an action.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
 //!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
 //!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
@@ -81,10 +134,12 @@ mod controls;
 pub mod dev_reload;
 mod dispatch;
 mod each;
+mod effect;
 pub mod history;
 mod live;
 mod preview;
 mod root;
+mod settings;
 mod stage;
 mod surface;
 mod switch;
@@ -98,12 +153,15 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{ResourceApp, definition};
+pub use app::{ResourceApp, SeedCx, definition};
 pub use controls::{ActionControl, Actions};
-pub use dispatch::{DispatchGroup, Dispatcher};
+pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
+pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
 pub use live::Live;
 pub use preview::PastVersion;
+pub use settings::Setting;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
-pub use view::ViewCx;
+pub use tilo_resource::{Effect, NoEffect};
+pub use view::{EffectsHandle, ViewCx};

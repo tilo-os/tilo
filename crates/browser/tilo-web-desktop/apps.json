@@ -74,12 +74,6 @@
       "version": "0.1.0"
     },
     {
-      "id": "so.tilo.image-editor",
-      "name": "Image Editor",
-      "category": "Multimedia",
-      "version": "0.1.0"
-    },
-    {
       "id": "so.tilo.maps",
       "name": "Maps",
       "category": "Utility",
