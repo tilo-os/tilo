@@ -22,6 +22,11 @@ pub struct Metrics {
     pub bar_control_height: f32,
     /// One row of a Panel — a settings toggle row, a roster entry.
     pub panel_row_height: f32,
+    /// One row of a menu (context menu, dropdown list).
+    pub menu_row_height: f32,
+    /// Room a scroll view keeps on its trailing edge for its scroll bar, so
+    /// the bar never covers content.
+    pub scrollbar_gutter: f32,
     /// A compact selector (chip, tab pill, dropdown trigger in a Panel).
     pub selector_height: f32,
     /// No pointer target is smaller than this, whatever glyph it shows.
@@ -64,6 +69,8 @@ impl Metrics {
         bar_height: 40.0,
         bar_control_height: 28.0,
         panel_row_height: 44.0,
+        menu_row_height: 32.0,
+        scrollbar_gutter: 12.0,
         selector_height: 28.0,
         min_pointer_target: 32.0,
         panel_width_utility: 320.0,
@@ -108,6 +115,8 @@ impl Metrics {
             bar_height: self.bar_height * factor,
             bar_control_height: self.bar_control_height * factor,
             panel_row_height: self.panel_row_height * factor,
+            menu_row_height: self.menu_row_height * factor,
+            scrollbar_gutter: self.scrollbar_gutter * factor,
             selector_height: self.selector_height * factor,
             min_pointer_target: self.min_pointer_target * factor,
             panel_width_utility: self.panel_width_utility * factor,
