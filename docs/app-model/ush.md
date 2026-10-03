@@ -274,10 +274,36 @@ session behave as if the kernel refused the filter.
   granted directory holding one reaches whatever listens on it.
 - **Images are not fetched from the registry yet.** The supervisor
   materialises images through the package store (`materialized_tree`), from
-  the system app store and the user's store. Images this device signed (its
-  own tool builds) are trusted; one another device of yours built is rebuilt
-  here rather than fetched, until the store has a registry fetcher and the
-  fleet's device keys as publishers.
+  the system app store, the user's store and the shelf in the user's synced
+  files; CI catalog images that ship with neither are not fetched.
+
+## Images your other devices built
+
+A tool built on one of your devices opens on the others — your relay
+included — without being built again:
+
+- **Trust.** The supervisor's store trusts, besides the publishers the
+  installation ships and this device's own key, every device key your
+  identity has certified (`ImageTrust::with_fleet`). The fleet is read again
+  at every use (`ush::fleet`: this device's certificate, the identity host's
+  fleet record, the certificates your home peers were enrolled with), so a
+  device you remove stops counting at once. Its images are refused from then
+  on, the ones already materialised here included and whenever they claim to
+  have been signed, because a lost key can back-date a signature; your other
+  devices build their own. A relay is one of your devices exactly when it
+  holds a certificate from your identity; a relay without one is anyone, and
+  its images open only when the CI catalog key signed them. Another person's
+  devices are never trusted this way: only your identity speaks for your
+  fleet.
+- **Transport.** A device shares each tool it builds by putting the whole
+  package on the shelf at `.tilo/images/<id>.tapp` in your synced files, and
+  every device looks there for an image it lacks before building one. The
+  synced files already reach all your devices and are fully replicated on your
+  home peer, which serves them by content hash when a device reads one, so no
+  new protocol or peer service is involved. Nothing on the shelf is trusted:
+  the store checks each package is the image asked for and admits it by its
+  publisher, as it does a registry's. A session with no synced files mounted
+  neither shares nor fetches, and builds what it lacks.
 
 ## Verifying it yourself
 

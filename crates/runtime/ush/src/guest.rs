@@ -124,9 +124,6 @@ pub struct GuestPlan {
     pub trusted_dirs: Vec<PathBuf>,
     /// Directories granted read but not write.
     pub readable_dirs: Vec<PathBuf>,
-    /// Where the granted directories' contents are, when not at their own
-    /// paths: a grant of `/a/b` binds `<grant_root>/a/b` at `/a/b`.
-    pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
     pub broker_socket: PathBuf,
@@ -145,14 +142,6 @@ pub struct GuestPlan {
 }
 
 impl GuestPlan {
-    /// Where a granted directory's contents are on this machine.
-    pub fn grant_source(&self, granted: &Path) -> PathBuf {
-        match &self.grant_root {
-            Some(root) => root.join(granted.strip_prefix("/").unwrap_or(granted)),
-            None => granted.to_path_buf(),
-        }
-    }
-
     /// The generated tree stacked on top of the images' `/etc`.
     pub fn etc_overlay(&self) -> PathBuf {
         self.session_dir.join("root")
@@ -435,39 +424,26 @@ fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
 
     for dir in &plan.readable_dirs {
         a.push("--ro-bind-try".into());
-        a.push(plan.grant_source(dir).into_os_string());
+        a.push(dir.clone().into_os_string());
         a.push(dir.clone().into_os_string());
     }
     for dir in &plan.trusted_dirs {
         a.push("--bind-try".into());
-        a.push(plan.grant_source(dir).into_os_string());
+        a.push(dir.clone().into_os_string());
         a.push(dir.clone().into_os_string());
     }
     // After the grants, so a grant of a directory that contains the store (the
     // whole home, say) still cannot reach the store: other environments' homes,
     // the audit log, and the records that decide what the next session sees.
     for masked in &plan.masked {
-        let covered: Vec<PathBuf> = plan
+        if plan
             .trusted_dirs
             .iter()
             .chain(&plan.readable_dirs)
-            .filter_map(|granted| {
-                let inside = masked.strip_prefix(plan.grant_source(granted)).ok()?;
-                Some(if inside.as_os_str().is_empty() {
-                    granted.clone()
-                } else {
-                    granted.join(inside)
-                })
-            })
-            .collect();
-        for guest_path in covered {
-            let already = a.windows(2).any(|w| {
-                matches!(w, [flag, covered] if flag == "--tmpfs" && covered == guest_path.as_os_str())
-            });
-            if !already {
-                a.push("--tmpfs".into());
-                a.push(guest_path.into_os_string());
-            }
+            .any(|granted| masked.starts_with(granted))
+        {
+            a.push("--tmpfs".into());
+            a.push(masked.clone().into_os_string());
         }
     }
 }
@@ -637,7 +613,6 @@ mod tests {
             masked: vec![dir.join("store")],
             trusted_dirs: Vec::new(),
             readable_dirs: Vec::new(),
-            grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
             broker_socket: dir.join("store/sessions/s1/broker.sock"),
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
@@ -822,27 +797,6 @@ mod tests {
             .position(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0]))
             .expect("the store must be covered under a grant that contains it");
         assert!(mask > grant);
-    }
-
-    #[test]
-    fn with_a_grant_root_a_grant_binds_its_contents_there_at_its_own_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut p = plan_in(dir.path());
-        let files = dir.path().join("member/files");
-        p.grant_root = Some(files.clone());
-        p.trusted_dirs = vec![PathBuf::from("/home/alice/src")];
-        // The member's store sits inside a granted source: it is covered at
-        // the path the guest sees it by.
-        p.masked = vec![files.join("home/alice/src/.store")];
-        let w3 = windows(&build_argv(&p, Some(9)), 3);
-        assert!(w3.iter().any(|w| w[0] == "--bind-try"
-            && w[1] == path(&files.join("home/alice/src"))
-            && w[2] == "/home/alice/src"));
-        let flat = strings(&build_argv(&p, Some(9)));
-        assert!(
-            flat.windows(2)
-                .any(|w| w[0] == "--tmpfs" && w[1] == "/home/alice/src/.store")
-        );
     }
 
     #[test]

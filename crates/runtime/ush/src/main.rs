@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ush::broker::{Request, Response};
-use ush::images::{DirImages, Images, NoImages, StoreImages};
+use ush::images::{DirImages, Images, NoImages, SharedBuilds, StoreImages};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -161,7 +161,9 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
 
     init_tracing(opts.verbose);
     let store = Store::discover();
-    let mut session = Session::new(store, opts, images(), builder());
+    let images = images();
+    let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
+    let mut session = Session::new(store, opts, images, builder);
     if let Some(script) = script {
         let resolved = session.resolve()?;
         let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
