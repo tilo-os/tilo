@@ -249,6 +249,15 @@ if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then
   die "systemd-run is required for the enforced installer backend"
 fi
 
+# Only the transient backend owns this lock. The greeter launcher re-execs
+# through systemd first and must neither access root-private state nor hold
+# the lock while waiting for its child unit.
+if [ -d /run/tilo-installer/code-refresh ]; then
+  exec {installer_code_lock}>/run/tilo-installer/code-refresh/lock
+  flock -n "$installer_code_lock" || { echo 'installer code refresh is running' >&2; exit 1; }
+  python3 -c 'import json; from pathlib import Path; p=Path("/run/tilo-installer/code-refresh/active.json"); assert not p.exists() or json.loads(p.read_text())["state"] == "applied", "installer code refresh is incomplete"'
+fi
+
 # --- parse args --------------------------------------------------------------
 DISK=""
 USERNAME=""

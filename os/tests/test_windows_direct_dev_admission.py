@@ -36,6 +36,8 @@ def fixture(directory):
               'preserved_gpt_verified': True, 'preserved_edge_samples_verified': True,
               'final_partition_count': 3, 'final_partuuids': ids}
     board = {'schema': 'tilo.windows-vm-install-proof-check.v4', 'guest_proof': guest,
+             'installer_code_runtime': {'schema':'tilo.installer-code-runtime.v1',
+                 'channel':{'schema':'tilo.installer-code-runtime.v1', 'enabled':False, 'port':None, 'source':None}, 'history':[]},
              'source_check': source, 'installer_composefs': 'f' * 128,
              'first_boot_verified': False, 'installer_medium_sha256': '1' * 64}
     generic = json.loads(json.dumps(board))
