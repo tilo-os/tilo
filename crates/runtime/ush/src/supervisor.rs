@@ -753,10 +753,18 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
             if name.is_empty() {
                 return Err("an environment needs a name".into());
             }
-            let runtime = match records.load(tilo_environment::DEFAULT_RECORD) {
-                Ok(Some(default)) => default.runtime_id(),
-                _ => crate::images::on_this_device().current_runtime(),
-            }?;
+            // A new environment starts on the default environment's runtime
+            // release, or on the newest one this device holds.
+            let env = if let Ok(Some(default)) = records.load(tilo_environment::DEFAULT_RECORD) {
+                Environment {
+                    name: name.to_owned(),
+                    runtime: default.runtime,
+                    ..Environment::default()
+                }
+            } else {
+                let (release, image) = crate::images::on_this_device().current_runtime()?;
+                Environment::new(name, &release, tilo_environment::host_arch(), &image)
+            };
             let id: String = uuid::Uuid::new_v4()
                 .simple()
                 .to_string()
@@ -764,9 +772,7 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
                 .take(12)
                 .collect();
             let key = format!("env-{id}");
-            records
-                .create(&key, &Environment::new(name, &runtime))
-                .map_err(|e| e.to_string())?;
+            records.create(&key, &env).map_err(|e| e.to_string())?;
         }
         ServeRequest::EnvironmentAction {
             record,
@@ -1248,6 +1254,75 @@ mod tests {
             Arc::new(FixtureImages(images)),
             Arc::new(tilo_environment::NoToolBuilder),
         )
+    }
+
+    #[test]
+    fn the_environment_directory_lists_creates_and_renames_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        let records = Records::at(store.records_root());
+        let mut default = Environment::new(
+            tilo_environment::DEFAULT_NAME,
+            "2026.10",
+            tilo_environment::host_arch(),
+            &PackageId::from_bytes([1; 32]),
+        );
+        default.tools.clear();
+        records.create(DEFAULT_RECORD, &default).unwrap();
+
+        let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].key, DEFAULT_RECORD);
+
+        let created = directory(
+            &ServeRequest::CreateEnvironment {
+                name: " Writing ".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let writing = created
+            .iter()
+            .find(|entry| entry.key != DEFAULT_RECORD)
+            .expect("the new environment is listed");
+        assert_eq!(writing.name, "Writing");
+        assert!(writing.tools.is_empty() && writing.grants.is_empty());
+        assert_eq!(
+            records.load(&writing.key).unwrap().unwrap().runtime,
+            default.runtime,
+            "a new environment starts on the default environment's runtime"
+        );
+
+        let renamed = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "rename".into(),
+                args: serde_json::json!({"name": "Prose"}),
+            },
+            &store,
+        )
+        .unwrap();
+        assert!(renamed.iter().any(|entry| entry.name == "Prose"));
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "set-runtime".into(),
+                    args: serde_json::Value::Null,
+                },
+                &store,
+            )
+            .is_err(),
+            "only the actions an app may ask for here are applied"
+        );
+        assert!(
+            directory(
+                &ServeRequest::CreateEnvironment { name: "  ".into() },
+                &store
+            )
+            .is_err()
+        );
     }
 
     #[test]
