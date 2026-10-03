@@ -18,7 +18,7 @@ use crate::{
     surface,
     text_render::{TextRenderer, TextStyle, TextWeight},
     theme::Theme,
-    widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
+    widget::{Button, ButtonFace, ChipFace, ChipLead, ChipStyle, TaffyTreeExt, Tone, Widget},
 };
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -1516,7 +1516,9 @@ impl CaptureStudio {
         let visible = labels.into_iter().flatten().collect::<Vec<_>>();
         let width = visible
             .iter()
-            .map(|label| Chip::natural_width_at(label, 24.0, ChipLead::None, theme, text_renderer))
+            .map(|label| {
+                ChipFace::intrinsic_width(label, ChipLead::None, false, text_renderer, theme)
+            })
             .sum::<f64>()
             + visible.len().saturating_sub(1) as f64 * 4.0;
         let chrome = Self::region_chrome_layout(region, width, self.selection_bounds(), regions);
@@ -4872,29 +4874,16 @@ impl Widget for CaptureStudio {
                 .into_iter()
                 .flatten()
                 {
-                    let width = Chip::natural_width_at(
-                        label,
-                        chrome.metadata.height(),
-                        ChipLead::None,
-                        theme,
-                        tr,
-                    );
+                    let width = ChipFace::intrinsic_width(label, ChipLead::None, false, tr, theme);
                     let rect = Rect::new(
                         metadata_x,
                         chrome.metadata.y0,
                         metadata_x + width,
                         chrome.metadata.y1,
                     );
-                    Chip::draw_at(
-                        s,
-                        t,
-                        rect,
-                        label,
-                        ChipLead::None,
-                        ChipStyle::tinted(selection_color),
-                        theme,
-                        tr,
-                    );
+                    ChipFace::new(rect, label)
+                        .style(ChipStyle::Tinted(Tone::Presence(selection_color)))
+                        .paint(s, t, tr, theme);
                     metadata_x = rect.x1 + 4.0;
                 }
                 let hovered = chrome.remove.contains(self.cursor);

@@ -19,10 +19,10 @@ use tilo_ui::widget::table;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{
-    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
-    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
-    Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
-    ToggleGroup, Toolbar, Trend, Widget,
+    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, ChipLead,
+    ChipStyle, Column, Container, Divider, Dropdown, EmptyState, NumberInput, ProgressBar,
+    RingGauge, Row, SearchField, Series, Slider, Spacer, Sparkline, StatTile, TabBar,
+    TabDescriptor, Table, Text, TextInput, Toggle, ToggleGroup, Tone, Toolbar, Trend, Widget,
 };
 use tilo_ui::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign, State,
@@ -425,7 +425,6 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
 /// Badges, chips and avatars. Split out of `build_showcase` to keep that
 /// under the line cap.
 fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
-    let accent = theme.tokens.colors.intent.inverted;
     card(
         Some(CARD_W),
         "Badges, Chips & Avatars",
@@ -434,8 +433,10 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Badges", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Badge::pill("NEW", accent)))
-                        .push(Box::new(Badge::text("β")))
+                        .push(Box::new(
+                            Badge::text("New").style(ChipStyle::Tinted(Tone::Info)),
+                        ))
+                        .push(Box::new(Badge::text("Beta")))
                         .push(Box::new(Badge::count(3)))
                         .push(Box::new(Badge::count(128)))
                         .push(Box::new(Badge::dot())),
@@ -443,9 +444,9 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Chips — plain, selected, selectable, removable", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Chip::new("Design").with_dot(theme.tokens.colors.semantic.info),
-                        ))
+                        .push(Box::new(Chip::new("Design").with_lead(ChipLead::Dot(
+                            theme.tokens.colors.presence.series(0),
+                        ))))
                         .push(Box::new(Chip::new("Rust").selected(true)))
                         .push(Box::new(Chip::new("Filter").selectable()))
                         .push(Box::new(Chip::new("alice@example.com").removable())),
