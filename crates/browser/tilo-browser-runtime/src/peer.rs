@@ -392,8 +392,10 @@ fn device_key(text: &str) -> Result<[u8; 32], JsError> {
 
 /// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
 /// `{publicKey, sign}` from `root-identity.mjs`) as `role`: `browser` (a
-/// member, 30 days) or `node` (hosts and governs the person's workspaces,
-/// admits no devices). Resolves to the certificate JSON.
+/// member, 30 days), `node` (hosts and governs the person's workspaces,
+/// admits no devices) or `session` (the session beside a node that runs
+/// the person's apps and agents: a member, one year). Resolves to the
+/// certificate JSON.
 ///
 /// # Errors
 ///
@@ -408,7 +410,8 @@ pub async fn issue_device_cert(
     let role = match role.as_str() {
         "browser" => tilo_browser_peer::IssuedRole::Browser,
         "node" => tilo_browser_peer::IssuedRole::Node,
-        _ => return Err(js_error("role must be browser or node")),
+        "session" => tilo_browser_peer::IssuedRole::Session,
+        _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;
     let cert = tilo_browser_peer::issue_device_cert(
