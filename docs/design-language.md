@@ -129,9 +129,11 @@ shadow plus, on dark themes, a 1 px light inner edge.
 ## Type
 
 The UI face is Instrument Sans, one face for the whole system (why, and its
-provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). Noto remains the
-fallback for scripts the UI face lacks (Greek, Cyrillic, Vietnamese and every
-non-Latin script).
+provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). Greek and
+Cyrillic fall back to faces matched to it, at its x-height and stem weight
+(Geologica, Onest); Vietnamese and every other script fall back to Noto. A
+theme or the accessibility layer may choose the built-in Hyperlegible face
+(Atkinson Hyperlegible Next) instead.
 Reading text is serif and code is mono, both from the font catalog.
 
 | Role | Size / weight / leading | Use |
@@ -149,6 +151,9 @@ Reading text is serif and code is mono, both from the font catalog.
 
 - Sizes derive from one base (Body = base); text scale changes everything at once.
 - Modifiers keep the role: `.strong()`, `.numeric()` (tabular figures), `.italic()`.
+- Apps never pick OpenType features: text says what it is (numeric, secret,
+  identifier, code) and the toolkit applies what the face supports
+  (`docs/typography.md`, Text kinds).
 - **No all-caps or letter-spaced labels.** Section headers are sentence case
   in `Subheading` or `Heading`.
 - Hierarchy comes from size and weight contrast plus ink tier, never from
