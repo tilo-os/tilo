@@ -21,6 +21,12 @@ RUN dnf install -y --setopt=install_weak_deps=False \
  && dnf clean all \
  && flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
+# The VM boots UEFI only (libvirt `firmware='efi'`). Without its BIOS
+# component bootupd installs only the EFI one, so a generic disk install needs
+# no BIOS boot partition.
+RUN rm -f /usr/lib/bootupd/updates/BIOS.json \
+ && test -f /usr/lib/bootupd/updates/EFI.json
+
 COPY os/legacy-guest/rootfs/ /
 COPY --chmod=0755 os/legacy-guest/agent/tilo-legacy-agent /usr/libexec/tilo-legacy-agent
 
