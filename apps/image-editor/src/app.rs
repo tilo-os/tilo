@@ -5,6 +5,7 @@ use crate::{
         UpdateAdjustment,
     },
     doc::ProjectDoc,
+    i18n::{t, t_args},
     model::{Operation, Project},
 };
 use automerge::{AutoCommit, ObjId};
@@ -18,8 +19,8 @@ use ui::{
     taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree},
     vello::{
         Scene,
-        kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
-        peniko::Fill,
+        kurbo::{Affine, BezPath, Point, Rect, Stroke},
+        peniko::{Blob, Fill, ImageAlphaType, ImageData, ImageFormat},
     },
     winit::{
         event::{ElementState, MouseButton, WindowEvent},
@@ -27,24 +28,23 @@ use ui::{
     },
 };
 use ui::{
+    paint::PaintCtx,
     presence::PresenceCtx,
-    text_render::{TextRenderer, TextWeight},
+    surface::Region,
+    text_render::TextRenderer,
     theme::Theme,
+    tokens::TextRole,
     widget::{
-        Button, ButtonStyle, CropSelection, Image, ImageCropEditor, Slider, SliderFace,
-        TaffyTreeExt, Widget,
+        AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, CropSelection, EmptyState, Image,
+        ImageCropEditor, ListRowFace, RowLeading, Slider, SliderFace, TaffyTreeExt, Toolbar,
+        Widget, toolbar::Orientation,
     },
 };
 
-const COMPACT_TOOLBAR_BREAKPOINT: f64 = 1_060.0;
 /// The operation a toolkit button's invocation carries.
 const CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
-fn compact_toolbar_for(width: f64) -> bool {
-    width < COMPACT_TOOLBAR_BREAKPOINT
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ToolbarCommand {
     Open,
     Undo,
@@ -58,20 +58,190 @@ enum ToolbarCommand {
     Fit,
     Compare,
     Graph,
-    More,
     Export,
 }
+
+impl ToolbarCommand {
+    /// The catalogue key of the command's name.
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::Open => "image-editor-open",
+            Self::Undo => "image-editor-undo",
+            Self::Redo => "image-editor-redo",
+            Self::Exposure => "image-editor-exposure",
+            Self::Contrast => "image-editor-contrast",
+            Self::Colour => "image-editor-colour",
+            Self::Mono => "image-editor-mono",
+            Self::Rotate => "image-editor-rotate",
+            Self::Crop => "image-editor-crop",
+            Self::Fit => "image-editor-fit",
+            Self::Compare => "image-editor-compare",
+            Self::Graph => "image-editor-graph",
+            Self::Export => "image-editor-export",
+        }
+    }
+
+    /// The stable semantic target assistive technology and agents address.
+    fn target(self) -> &'static str {
+        match self {
+            Self::Open => "image-editor.open",
+            Self::Undo => "image-editor.undo",
+            Self::Redo => "image-editor.redo",
+            Self::Exposure => "image-editor.exposure",
+            Self::Contrast => "image-editor.contrast",
+            Self::Colour => "image-editor.colour",
+            Self::Mono => "image-editor.b&w",
+            Self::Rotate => "image-editor.rotate",
+            Self::Crop => "image-editor.crop",
+            Self::Fit => "image-editor.fit",
+            Self::Compare => "image-editor.compare",
+            Self::Graph => "image-editor.graph",
+            Self::Export => "image-editor.export",
+        }
+    }
+
+    const ALL: [Self; 13] = [
+        Self::Open,
+        Self::Undo,
+        Self::Redo,
+        Self::Exposure,
+        Self::Contrast,
+        Self::Colour,
+        Self::Mono,
+        Self::Rotate,
+        Self::Crop,
+        Self::Fit,
+        Self::Compare,
+        Self::Graph,
+        Self::Export,
+    ];
+}
+
+/// The commands that add an adjustment, in toolbar order.
+const ADJUSTMENT_COMMANDS: [ToolbarCommand; 6] = [
+    ToolbarCommand::Exposure,
+    ToolbarCommand::Contrast,
+    ToolbarCommand::Colour,
+    ToolbarCommand::Mono,
+    ToolbarCommand::Rotate,
+    ToolbarCommand::Crop,
+];
+
+/// The adjustment's name as a person reads it, from what it does.
+pub(crate) fn operation_label(operation: Option<&Operation>) -> Option<String> {
+    let key = match operation? {
+        Operation::Exposure { .. } => "image-editor-exposure",
+        Operation::Contrast { .. } => "image-editor-contrast",
+        Operation::Saturation { .. } => "image-editor-colour",
+        Operation::Grayscale => "image-editor-mono",
+        Operation::Rotate { .. } => "image-editor-rotate",
+        Operation::Crop { .. } => "image-editor-crop",
+        Operation::Source { .. } => "image-editor-original",
+        Operation::Output => "image-editor-result",
+    };
+    Some(t(key))
+}
+
+/// The header's toolbar: the adjustments, then the view commands. With no
+/// image there is nothing to adjust or view, so it holds no commands.
+fn build_toolbar(
+    pending: &Rc<Cell<Option<ToolbarCommand>>>,
+    has_image: bool,
+    compare: bool,
+    graph: bool,
+) -> Toolbar {
+    let mut toolbar = Toolbar::new(Orientation::Horizontal);
+    if !has_image {
+        return toolbar;
+    }
+    let sink = |command: ToolbarCommand| {
+        let pending = Rc::clone(pending);
+        move || pending.set(Some(command))
+    };
+    for command in ADJUSTMENT_COMMANDS {
+        toolbar = toolbar.push_button(&t(command.label_key()), sink(command));
+    }
+    toolbar
+        .push_separator()
+        .push_button(
+            &t(ToolbarCommand::Fit.label_key()),
+            sink(ToolbarCommand::Fit),
+        )
+        .push_toggle(
+            &t(ToolbarCommand::Compare.label_key()),
+            compare,
+            sink(ToolbarCommand::Compare),
+        )
+        .push_toggle(
+            &t(ToolbarCommand::Graph.label_key()),
+            graph,
+            sink(ToolbarCommand::Graph),
+        )
+}
+
+/// Where the Compare and Graph toggles sit in [`build_toolbar`]'s toolbar.
+const COMPARE_ITEM: usize = ADJUSTMENT_COMMANDS.len() + 2;
+const GRAPH_ITEM: usize = ADJUSTMENT_COMMANDS.len() + 3;
+
+/// The header's trailing buttons, in order.
+fn header_button(pending: &Rc<Cell<Option<ToolbarCommand>>>, command: ToolbarCommand) -> Button {
+    let sink = Rc::clone(pending);
+    let id = command.target();
+    let label = t(command.label_key());
+    let button = match command {
+        ToolbarCommand::Undo => Button::icon_only(id, ui::icons::Icon::Undo2, &label),
+        ToolbarCommand::Redo => Button::icon_only(id, ui::icons::Icon::Redo2, &label),
+        ToolbarCommand::Export => Button::new(id, &label, None).role(ButtonRole::Primary),
+        _ => Button::new(id, &label, None),
+    };
+    button.on_view(move || sink.set(Some(command)))
+}
+
+/// A signed value set with a true minus sign, as wide as the plus it
+/// stands in for.
+fn signed(value: &str) -> String {
+    value.replacen('-', "\u{2212}", 1)
+}
+
+/// A step image kept small for the adjustment list and the graph.
+fn thumbnail(image: &image::RgbaImage) -> ImageData {
+    let small = image::imageops::thumbnail(image, 192, 192);
+    let (width, height) = small.dimensions();
+    ImageData {
+        data: Blob::new(std::sync::Arc::new(small.into_raw())),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width,
+        height,
+    }
+}
+
+/// What the selected step lets a person change in the inspector.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StepControls {
+    None,
+    Slider,
+    Rotate,
+    Crop,
+    RemoveOnly,
+}
+
 pub struct ImageEditorApp {
     project: Project,
     search: crate::search::ProjectSearch,
     indexed_project: Project,
     editor: GraphEditor,
     rect: Rect,
-    text_scale: f64,
+    header_rect: Rect,
+    title: String,
+    title_origin: Point,
     graph_rect: Rect,
     cursor: Point,
     serial: u64,
+    /// The last thing that happened, spoken to assistive technology and
+    /// shown once in the status bubble.
     notice: String,
+    status: ui::StatusBubble,
     picker: Option<ui::portal::PortalChannel>,
     /// A chooser delivering contents, where files have no path (the web).
     contents_picker: Option<ui::portal::ContentsChannel>,
@@ -85,8 +255,14 @@ pub struct ImageEditorApp {
     original_preview: Option<Image>,
     rendered_project: Option<Project>,
     canvas_rect: Rect,
-    stack_rect: Rect,
     inspector_rect: Rect,
+    /// The scrolling viewport of the adjustment list.
+    list_rect: Rect,
+    /// The selected step's settings under the list.
+    controls_rect: Rect,
+    slider_rect: Rect,
+    rotate_rects: (Rect, Rect),
+    remove_rect: Rect,
     inspector_dragging: bool,
     inspector_focused: bool,
     inspector_touch: Option<u64>,
@@ -94,8 +270,13 @@ pub struct ImageEditorApp {
     graph_pan_touch: Option<u64>,
     graph_connection_touch: Option<u64>,
     graph_keyboard_target: Option<ConnectionTarget>,
+    /// The graph is centred in its canvas until the person pans or zooms it.
+    graph_moved: bool,
+    /// The graph's how-to line shows until the person first works in it.
+    graph_hint_seen: bool,
     step_rects: Vec<(String, Rect)>,
     stack_scroll: f64,
+    stack_content: f64,
     stack_touch: Option<u64>,
     stack_touch_y: f64,
     advanced_graph: bool,
@@ -105,12 +286,20 @@ pub struct ImageEditorApp {
     panning_from: Option<Point>,
     touches: HashMap<u64, Point>,
     pinch_distance: Option<f64>,
-    step_previews: Vec<(String, Image)>,
-    toolbar: Vec<(ToolbarCommand, Button)>,
-    empty_open: Button,
+    step_previews: Vec<(String, ImageData)>,
+    toolbar: Toolbar,
+    toolbar_has_image: bool,
+    toolbar_toggles: (bool, bool),
+    inspector_text: InspectorText,
+    header_buttons: Vec<(ToolbarCommand, Button)>,
+    /// The History button: the app owns the window's one header row, so
+    /// History lives in it instead of a bar of its own.
+    history: Button,
+    empty_state: EmptyState,
     toolbar_pending: Rc<Cell<Option<ToolbarCommand>>>,
-    more_open: bool,
-    more_rect: Rect,
+    /// A screenshot asked for the toolbar's More menu; opened once the
+    /// toolbar has been measured.
+    staged_overflow: bool,
     undo_stack: Vec<Project>,
     redo_stack: Vec<Project>,
     gesture_checkpoint: Option<Project>,
@@ -122,63 +311,20 @@ pub struct ImageEditorApp {
 impl ImageEditorApp {
     pub fn new() -> Self {
         let pending = Rc::new(Cell::new(None));
-        let specs = [
-            (ToolbarCommand::Open, "Open", ui::icons::Icon::FolderOpen),
-            (ToolbarCommand::Undo, "Undo", ui::icons::Icon::Undo2),
-            (ToolbarCommand::Redo, "Redo", ui::icons::Icon::Redo2),
-            (
-                ToolbarCommand::Exposure,
-                "Exposure",
-                ui::icons::Icon::Sparkles,
-            ),
-            (ToolbarCommand::Contrast, "Contrast", ui::icons::Icon::Eye),
-            (ToolbarCommand::Colour, "Colour", ui::icons::Icon::Settings2),
-            (ToolbarCommand::Mono, "B&W", ui::icons::Icon::Image),
-            (ToolbarCommand::Rotate, "Rotate", ui::icons::Icon::RotateCw),
-            (ToolbarCommand::Crop, "Crop", ui::icons::Icon::Scissors),
-            (ToolbarCommand::Fit, "Fit", ui::icons::Icon::Maximize2),
-            (ToolbarCommand::Compare, "Compare", ui::icons::Icon::Eye),
-            (ToolbarCommand::Graph, "Graph", ui::icons::Icon::Layers),
-            (
-                ToolbarCommand::More,
-                "More",
-                ui::icons::Icon::MoreHorizontal,
-            ),
-            (ToolbarCommand::Export, "Export", ui::icons::Icon::Download),
-        ];
-        let toolbar = specs
-            .into_iter()
-            .map(|(command, label, icon)| {
-                let sink = pending.clone();
-                let button = Button::new(
-                    &format!("image-editor.{}", label.to_lowercase()),
-                    label,
-                    None,
-                )
-                .with_icon(icon)
-                .with_size(
-                    if matches!(command, ToolbarCommand::Open | ToolbarCommand::Export) {
-                        88.0
-                    } else {
-                        82.0
-                    },
-                    34.0,
-                )
-                .with_style(if matches!(command, ToolbarCommand::Export) {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Ghost
-                })
-                .on_view(move || sink.set(Some(command)));
-                (command, button)
-            })
-            .collect();
-        let empty_sink = pending.clone();
-        let empty_open = Button::new("image-editor.empty.open", "Open image", None)
-            .with_icon(ui::icons::Icon::FolderOpen)
-            .with_size(140.0, 44.0)
-            .primary()
-            .on_view(move || empty_sink.set(Some(ToolbarCommand::Open)));
+        let header_buttons = [
+            ToolbarCommand::Undo,
+            ToolbarCommand::Redo,
+            ToolbarCommand::Open,
+            ToolbarCommand::Export,
+        ]
+        .into_iter()
+        .map(|command| (command, header_button(&pending, command)))
+        .collect();
+        let empty_state = EmptyState::new(t("image-editor-empty-title"))
+            .with_icon(ui::icons::Icon::Image)
+            .with_message(t("image-editor-empty-message"))
+            .with_action(t("image-editor-open-image"))
+            .with_action_id("image-editor.empty.open");
         let project = Project::blank();
         let search = crate::search::ProjectSearch::new(&project);
         Self {
@@ -187,11 +333,14 @@ impl ImageEditorApp {
             indexed_project: project,
             editor: GraphEditor::default(),
             rect: Rect::ZERO,
-            text_scale: 1.0,
+            header_rect: Rect::ZERO,
+            title: String::new(),
+            title_origin: Point::ZERO,
             graph_rect: Rect::ZERO,
             cursor: Point::ZERO,
             serial: 0,
-            notice: "Every step is editable. Changes update the final image automatically.".into(),
+            notice: String::new(),
+            status: ui::StatusBubble::new(),
             picker: None,
             contents_picker: None,
             save_contents: None,
@@ -204,8 +353,12 @@ impl ImageEditorApp {
             original_preview: None,
             rendered_project: None,
             canvas_rect: Rect::ZERO,
-            stack_rect: Rect::ZERO,
             inspector_rect: Rect::ZERO,
+            list_rect: Rect::ZERO,
+            controls_rect: Rect::ZERO,
+            slider_rect: Rect::ZERO,
+            rotate_rects: (Rect::ZERO, Rect::ZERO),
+            remove_rect: Rect::ZERO,
             inspector_dragging: false,
             inspector_focused: false,
             inspector_touch: None,
@@ -213,8 +366,11 @@ impl ImageEditorApp {
             graph_pan_touch: None,
             graph_connection_touch: None,
             graph_keyboard_target: None,
+            graph_moved: false,
+            graph_hint_seen: false,
             step_rects: Vec::new(),
             stack_scroll: 0.0,
+            stack_content: 0.0,
             stack_touch: None,
             stack_touch_y: 0.0,
             advanced_graph: false,
@@ -225,81 +381,63 @@ impl ImageEditorApp {
             touches: HashMap::new(),
             pinch_distance: None,
             step_previews: Vec::new(),
-            toolbar,
-            empty_open,
+            toolbar: build_toolbar(&pending, false, false, false),
+            toolbar_has_image: false,
+            toolbar_toggles: (false, false),
+            inspector_text: InspectorText::default(),
+            header_buttons,
+            history: ui::widget::history_button(),
+            empty_state,
             toolbar_pending: pending,
-            more_open: false,
-            more_rect: Rect::ZERO,
+            staged_overflow: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gesture_checkpoint: None,
             actions: crate::resource::ActionSink::default(),
         }
     }
-    pub fn seed_shot(&mut self, doc: &mut AutoCommit, path: &std::path::Path, advanced: bool) {
-        self.project = Project::blank();
-        if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
-        {
-            *source = path.to_string_lossy().into_owned();
+
+    /// Stage the view state of a screenshot scenario over the project its
+    /// actions built: which step is selected and which view shows.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        let select = match scenario {
+            "crop" => "crop-sample",
+            "long-stack" => "touch-7",
+            _ => "colour-sample",
+        };
+        if self.project.graph.nodes.contains_key(select) {
+            self.editor.select_only(select);
+            self.rebuild_crop_editor();
         }
-        self.project.name = "Harbour light".into();
-        let _ = self.project.insert_before_output(
-            "exposure-demo",
-            "Exposure",
-            Operation::Exposure { stops: 0.4 },
-        );
-        let _ = self.project.insert_before_output(
-            "colour-demo",
-            "Colour",
-            Operation::Saturation { amount: 1.25 },
-        );
-        let _ = self.project.insert_before_output(
-            "crop-demo",
-            "Crop",
-            Operation::Crop {
-                x: 0.06,
-                y: 0.06,
-                width: 0.88,
-                height: 0.82,
-            },
-        );
-        self.editor.select_only("colour-demo");
-        self.advanced_graph = advanced;
-        ProjectDoc::write(doc, &self.project);
-        self.rendered_project = None;
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.gesture_checkpoint = None;
+        self.advanced_graph = scenario.contains("graph");
+        self.compare_original = scenario == "compare";
+        self.staged_overflow = scenario == "narrow-more";
     }
-    pub fn open_more_for_shot(&mut self) {
-        self.more_open = true;
+
+    /// Whether an image is open.
+    fn has_image(&self) -> bool {
+        !crate::actions::source_path(&self.project).is_empty()
     }
-    pub fn seed_long_stack_for_shot(&mut self, doc: &mut AutoCommit) {
-        for index in 0..9 {
-            let id = format!("review-{index}");
-            let title = if index % 2 == 0 {
-                "Exposure"
-            } else {
-                "Contrast"
-            };
-            let operation = if index % 2 == 0 {
-                Operation::Exposure { stops: 0.1 }
-            } else {
-                Operation::Contrast { amount: 0.1 }
-            };
-            let _ = self.project.insert_before_output(&id, title, operation);
+
+    /// Say what just happened: assistive technology reads it from the
+    /// canvas, and the status bubble shows it once.
+    fn say(&mut self, notice: impl Into<String>) {
+        self.notice = notice.into();
+        if !self.notice.is_empty() {
+            self.status.show(&self.notice, ui::time::now());
         }
-        ProjectDoc::write(doc, &self.project);
-        self.rendered_project = None;
     }
+
+    /// The graph node size, in graph units.
+    fn node_size() -> (f64, f64) {
+        (168.0, 138.0)
+    }
+
     fn node_rect(&self, id: &str) -> Option<Rect> {
         let n = self.project.graph.nodes.get(id)?;
         let p = self.editor.screen_position(n.position);
-        let (width, height) = if self.advanced_graph {
-            (168.0, 138.0)
-        } else {
-            (148.0, 72.0)
-        };
+        let (width, height) = Self::node_size();
+        let (width, height) = (width * self.editor.zoom, height * self.editor.zoom);
         Some(Rect::new(
             self.graph_rect.x0 + p.x,
             self.graph_rect.y0 + p.y,
@@ -308,11 +446,16 @@ impl ImageEditorApp {
         ))
     }
 
+    /// A port's touch target: a finger's width around its small dot.
+    fn port_target(center: Point) -> Rect {
+        Rect::from_center_size(center, (44.0, 44.0))
+    }
+
     fn input_port_center(&self, id: &str) -> Option<Point> {
         let node = self.project.graph.nodes.get(id)?;
         (!node.inputs.is_empty()).then(|| {
             let rect = self.node_rect(id).unwrap_or(Rect::ZERO);
-            Point::new(rect.x0, rect.y0 + 54.0)
+            Point::new(rect.x0, rect.center().y)
         })
     }
 
@@ -320,7 +463,7 @@ impl ImageEditorApp {
         let node = self.project.graph.nodes.get(id)?;
         (!node.outputs.is_empty()).then(|| {
             let rect = self.node_rect(id).unwrap_or(Rect::ZERO);
-            Point::new(rect.x1, rect.y0 + 54.0)
+            Point::new(rect.x1, rect.center().y)
         })
     }
 
@@ -331,7 +474,7 @@ impl ImageEditorApp {
             } else {
                 self.input_port_center(id)
             }?;
-            Rect::from_center_size(center, (44.0, 44.0))
+            Self::port_target(center)
                 .contains(point)
                 .then(|| {
                     let port = if output {
@@ -347,7 +490,7 @@ impl ImageEditorApp {
 
     fn begin_keyboard_connection(&mut self) -> bool {
         let Some(node) = self.editor.selection.iter().next().cloned() else {
-            self.notice = "Select a step before connecting it".into();
+            self.say(t("image-editor-connect-select"));
             return false;
         };
         let Some(port) = self
@@ -358,7 +501,7 @@ impl ImageEditorApp {
             .and_then(|node| node.outputs.first())
             .map(|port| port.id.clone())
         else {
-            self.notice = "This step has no output to connect".into();
+            self.say(t("image-editor-connect-no-output"));
             return false;
         };
         let Some(center) = self.output_port_center(&node) else {
@@ -378,7 +521,7 @@ impl ImageEditorApp {
         self.graph_keyboard_target =
             GraphEditor::next_connection_target(&self.project.graph, &node, &port, None, false);
         self.update_keyboard_connection_pointer();
-        self.notice = "Choose an input with Tab, then press Enter to connect".into();
+        self.say(t("image-editor-connect-choose"));
         true
     }
 
@@ -415,7 +558,7 @@ impl ImageEditorApp {
     fn finish_keyboard_connection(&mut self, state: &mut AutoCommit) -> bool {
         let Some(target) = self.graph_keyboard_target.take() else {
             self.editor.cancel_connection();
-            self.notice = "No compatible input is available".into();
+            self.say(t("image-editor-connect-no-input"));
             return true;
         };
         self.begin_gesture();
@@ -425,11 +568,10 @@ impl ImageEditorApp {
         {
             Ok(_) => {
                 self.commit_connection(state, &target.node, &target.port);
-                self.notice = "Connection updated".into();
+                self.say(t("image-editor-connected"));
             }
             Err(_) => {
-                self.notice =
-                    "Those steps cannot be connected; the previous path is unchanged".into();
+                self.say(t("image-editor-connect-refused"));
             }
         }
         self.finish_gesture();
@@ -614,32 +756,43 @@ impl ImageEditorApp {
         if !selection_survives {
             self.editor.select_only(self.project.output.clone());
         }
-        self.notice = format!("{label}. The final image was recomputed.");
+        self.say(t(label));
     }
 
     fn undo(&mut self, state: &mut AutoCommit) {
         self.finish_gesture();
         let Some(previous) = self.undo_stack.pop() else {
-            self.notice = "Nothing to undo".into();
+            self.say(t("image-editor-nothing-to-undo"));
             return;
         };
         self.redo_stack.push(self.project.clone());
-        self.restore_project(state, previous, "Undid the last change");
+        self.restore_project(state, previous, "image-editor-undone");
     }
 
     fn redo(&mut self, state: &mut AutoCommit) {
         self.finish_gesture();
         let Some(next) = self.redo_stack.pop() else {
-            self.notice = "Nothing to redo".into();
+            self.say(t("image-editor-nothing-to-redo"));
             return;
         };
         self.push_undo(self.project.clone());
-        self.restore_project(state, next, "Redid the change");
+        self.restore_project(state, next, "image-editor-redone");
     }
 
-    fn add(&mut self, state: &mut AutoCommit, op: Operation, title: &str) {
+    fn add(&mut self, state: &mut AutoCommit, op: Operation) {
         self.checkpoint();
-        let stem = title.to_lowercase();
+        let title = operation_label(Some(&op)).unwrap_or_default();
+        // The id's stem names the operation, never the localized title, so
+        // ids read the same for every collaborator.
+        let stem = match op {
+            Operation::Exposure { .. } => "exposure",
+            Operation::Contrast { .. } => "contrast",
+            Operation::Saturation { .. } => "colour",
+            Operation::Grayscale => "mono",
+            Operation::Rotate { .. } => "rotate",
+            Operation::Crop { .. } => "crop",
+            Operation::Source { .. } | Operation::Output => "step",
+        };
         let actor = state.get_actor().to_hex_string();
         loop {
             self.serial = self.serial.saturating_add(1);
@@ -654,13 +807,14 @@ impl ImageEditorApp {
             ADD_ADJUSTMENT_TYPE,
             &AddAdjustment {
                 id: id.clone(),
-                title: title.into(),
+                title: title.clone(),
                 operation: op,
             },
         );
         if self.project.graph.nodes.contains_key(&id) {
             self.editor.select_only(id);
-            self.notice = format!("Added {title}. Earlier steps remain editable.");
+            self.rebuild_crop_editor();
+            self.say(t_args("image-editor-added", &[("step", title.into())]));
         } else {
             // Refusal is already logged by ActionHost; don't leave a stale
             // local undo checkpoint behind when no shared graph change landed.
@@ -669,7 +823,7 @@ impl ImageEditorApp {
     }
     fn open_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
         if image::image_dimensions(path).is_err() {
-            self.notice = "That file is not a supported image".into();
+            self.say(t("image-editor-unsupported"));
             return false;
         }
         self.checkpoint();
@@ -677,14 +831,13 @@ impl ImageEditorApp {
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("Untitled image")
-            .to_string();
+            .map_or_else(|| t("image-editor-untitled"), str::to_owned);
         self.dispatch_graph_action(
             state,
             crate::actions::SET_SOURCE_TYPE,
             &crate::actions::SetSource { path: source, name },
         );
-        self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
+        self.say(t("image-editor-opened"));
         true
     }
     /// Adopt an image chosen by contents: kept in the app's state and named
@@ -696,7 +849,7 @@ impl ImageEditorApp {
             .and_then(|reader| reader.into_dimensions().ok())
             .is_some();
         if !readable {
-            self.notice = "That file is not a supported image".into();
+            self.say(t("image-editor-unsupported"));
             return false;
         }
         crate::web_file::remember(name, bytes);
@@ -705,8 +858,7 @@ impl ImageEditorApp {
         let title = std::path::Path::new(name)
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("Untitled image")
-            .to_string();
+            .map_or_else(|| t("image-editor-untitled"), str::to_owned);
         self.dispatch_graph_action(
             state,
             crate::actions::SET_SOURCE_TYPE,
@@ -717,39 +869,48 @@ impl ImageEditorApp {
         );
         // The kept bytes may be a new image under the same name.
         self.rendered_project = None;
-        self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
+        self.say(t("image-editor-opened"));
         true
     }
     fn request_open(&mut self) {
         if self.picker.is_some() || self.contents_picker.is_some() {
             return;
         }
-        self.notice = "Waiting for the system file picker…".into();
-        if !crate::web_file::native_paths() {
-            self.contents_picker = Some(
-                ui::portal::PickRequest::open("Open an image", "Open")
-                    .filter(
-                        ui::portal::FileFilter::new("Images")
-                            .mimetype("image/png")
-                            .mimetype("image/jpeg")
-                            .mimetype("image/webp"),
-                    )
-                    .send_contents(),
-            );
-            return;
-        }
-        self.picker = Some(
-            ui::portal::PickRequest::open("Open an image", "Open")
-                .thread_name("image-editor-portal-open")
+        self.notice.clear();
+        let request =
+            ui::portal::PickRequest::open(&t("image-editor-pick-title"), &t("image-editor-open"))
                 .filter(
-                    ui::portal::FileFilter::new("Images")
+                    ui::portal::FileFilter::new(&t("image-editor-pick-filter"))
                         .mimetype("image/png")
                         .mimetype("image/jpeg")
                         .mimetype("image/webp"),
-                )
+                );
+        if !crate::web_file::native_paths() {
+            self.contents_picker = Some(request.send_contents());
+            return;
+        }
+        self.picker = Some(
+            request
+                .thread_name("image-editor-portal-open")
                 .all_files()
                 .send(),
         );
+    }
+
+    /// The file name an export of this project gets.
+    fn export_name(&self) -> String {
+        let stem = match self.project.operations.get("source") {
+            Some(Operation::Source { path }) if !path.is_empty() => {
+                let name = crate::engine::source_file_name(path);
+                std::path::Path::new(name)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or(name)
+                    .to_owned()
+            }
+            _ => self.project.name.clone(),
+        };
+        format!("{stem}-edited.png")
     }
     fn poll_contents(&mut self, state: &mut AutoCommit) {
         if let Some(rx) = self.contents_picker.as_ref() {
@@ -763,11 +924,14 @@ impl ImageEditorApp {
                 }
                 Ok(ui::portal::ContentsOutcome::Cancelled) => {
                     self.contents_picker = None;
-                    self.notice = "Open cancelled".into();
+                    self.notice.clear();
                 }
                 Ok(ui::portal::ContentsOutcome::Failed(message)) => {
                     self.contents_picker = None;
-                    self.notice = format!("Could not open file picker: {message}");
+                    self.say(t_args(
+                        "image-editor-picker-failed",
+                        &[("error", message.as_str().into())],
+                    ));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.contents_picker = None,
             }
@@ -777,15 +941,21 @@ impl ImageEditorApp {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Ok(ui::portal::SaveOutcome::Saved) => {
                     self.save_contents = None;
-                    self.notice = "Exported".into();
+                    self.say(t_args(
+                        "image-editor-exported",
+                        &[("file", self.export_name().into())],
+                    ));
                 }
                 Ok(ui::portal::SaveOutcome::Cancelled) => {
                     self.save_contents = None;
-                    self.notice = "Export cancelled".into();
+                    self.notice.clear();
                 }
                 Ok(ui::portal::SaveOutcome::Failed(message)) => {
                     self.save_contents = None;
-                    self.notice = format!("Export failed: {message}");
+                    self.say(t_args(
+                        "image-editor-export-failed",
+                        &[("error", message.as_str().into())],
+                    ));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.save_contents = None,
             }
@@ -822,7 +992,7 @@ impl ImageEditorApp {
             }
             Ok(ui::portal::PortalOutcome::Cancelled) => {
                 self.picker = None;
-                self.notice = "Open cancelled".into();
+                self.notice.clear();
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
@@ -832,7 +1002,10 @@ impl ImageEditorApp {
             }
             Ok(ui::portal::PortalOutcome::Failed(message)) => {
                 self.picker = None;
-                self.notice = format!("Could not open file picker: {message}");
+                self.say(t_args(
+                    "image-editor-picker-failed",
+                    &[("error", message.as_str().into())],
+                ));
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
@@ -847,48 +1020,68 @@ impl ImageEditorApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.picker = None;
-                self.notice = "The system file picker stopped responding".into();
+                self.say(t("image-editor-picker-stopped"));
             }
         }
     }
     fn export_beside_source(&self) -> Result<String, String> {
         let source = match self.project.operations.get("source") {
-            Some(Operation::Source { path }) if !path.is_empty() => std::path::Path::new(path),
+            Some(Operation::Source { path })
+                if !path.is_empty()
+                    && !path.starts_with(crate::engine::OPENED_SOURCE)
+                    && path != crate::engine::SAMPLE_SOURCE =>
+            {
+                std::path::Path::new(path)
+            }
             _ => {
-                return Err("Open an image before exporting".into());
+                return Err(t("image-editor-export-needs-image"));
             }
         };
-        let out = source.with_file_name(format!(
-            "{}-edited.png",
-            source
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("image")
-        ));
+        let out = source.with_file_name(self.export_name());
         crate::engine::export(&self.project, &out)
-            .map(|()| format!("Exported {}", out.display()))
-            .map_err(|error| format!("Export failed: {error:?}"))
+            .map(|()| {
+                t_args(
+                    "image-editor-exported",
+                    &[("file", self.export_name().into())],
+                )
+            })
+            .map_err(|error| {
+                t_args(
+                    "image-editor-export-failed",
+                    &[("error", format!("{error:?}").into())],
+                )
+            })
     }
 
     fn export_and_notice(&mut self) {
-        if !crate::web_file::native_paths() {
+        let has_file = self.project.operations.get("source").is_some_and(|source| {
+            matches!(source, Operation::Source { path }
+                if !path.starts_with(crate::engine::OPENED_SOURCE)
+                    && path != crate::engine::SAMPLE_SOURCE)
+        });
+        if !crate::web_file::native_paths() || (self.has_image() && !has_file) {
             if self.save_contents.is_none() {
                 match crate::engine::export_png(&self.project) {
                     Ok(bytes) => {
-                        let name = format!("{}-edited.png", self.project.name);
                         self.save_contents = Some(
-                            ui::portal::PickRequest::save("Export image", "Export", &name)
-                                .send_save_contents(bytes),
+                            ui::portal::PickRequest::save(
+                                &t("image-editor-save-title"),
+                                &t("image-editor-export"),
+                                &self.export_name(),
+                            )
+                            .send_save_contents(bytes),
                         );
                     }
-                    Err(error) => self.notice = format!("Export failed: {error:?}"),
+                    Err(error) => self.say(t_args(
+                        "image-editor-export-failed",
+                        &[("error", format!("{error:?}").into())],
+                    )),
                 }
             }
             return;
         }
         match self.export_beside_source() {
-            Ok(notice) => self.notice = notice,
-            Err(error) => self.notice = error,
+            Ok(notice) | Err(notice) => self.say(notice),
         }
     }
     fn rebuild_preview(&mut self) {
@@ -898,21 +1091,21 @@ impl ImageEditorApp {
         self.preview = crate::engine::evaluate(&self.project).ok().map(|rgba| {
             let (w, h) = rgba.dimensions();
             Image::from_rgba(std::sync::Arc::from(rgba.into_raw()), w, h)
-                .with_alt("Edited image preview")
+                .with_alt(t("image-editor-edited-preview"))
         });
         self.original_preview = match self.project.operations.get("source") {
             Some(Operation::Source { path }) if !path.is_empty() => {
                 crate::engine::open_source(path).ok().map(|rgba| {
                     let (w, h) = rgba.dimensions();
                     Image::from_rgba(std::sync::Arc::from(rgba.into_raw()), w, h)
-                        .with_alt("Original image preview")
+                        .with_alt(t("image-editor-original-preview"))
                 })
             }
             _ => None,
         };
-        // The advanced graph promises an image state at every point, not just
-        // at adjustment nodes. Evaluate Source and Export as well so the
-        // original and final result never become blank endpoint cards.
+        // The graph promises an image state at every point, not just at
+        // adjustment nodes. Evaluate the source and the result as well so
+        // the original and final image never become blank endpoint cards.
         self.step_previews = self
             .project
             .graph
@@ -922,20 +1115,7 @@ impl ImageEditorApp {
             .filter_map(|id| {
                 crate::engine::evaluate_at(&self.project, &id)
                     .ok()
-                    .map(|rgba| {
-                        let (w, h) = rgba.dimensions();
-                        let title = self
-                            .project
-                            .graph
-                            .nodes
-                            .get(&id)
-                            .map_or_else(|| id.clone(), |node| node.title.clone());
-                        (
-                            id,
-                            Image::from_rgba(std::sync::Arc::from(rgba.into_raw()), w, h)
-                                .with_alt(format!("Image after {title}")),
-                        )
-                    })
+                    .map(|rgba| (id, thumbnail(&rgba)))
             })
             .collect();
         self.rendered_project = Some(self.project.clone());
@@ -1044,7 +1224,7 @@ impl ImageEditorApp {
                 },
             );
         }
-        self.notice = "Crop updated. Later steps were recomputed.".into();
+        self.notice.clear();
     }
     fn steps(&self) -> Vec<String> {
         self.project
@@ -1056,77 +1236,34 @@ impl ImageEditorApp {
             .collect()
     }
 
-    fn stack_row_geometry(&self) -> (f64, f64) {
-        let scale = self.text_scale.max(1.0);
-        if self.rect.width() < 820.0 {
-            (52.0 * scale, 46.0 * scale)
-        } else {
-            (50.0 * scale, 42.0 * scale)
-        }
-    }
-
-    fn stack_viewport(&self) -> Rect {
-        Rect::new(
-            self.stack_rect.x0,
-            self.stack_rect.y0 + 58.0 * self.text_scale.max(1.0),
-            self.stack_rect.x1,
-            self.inspector_rect.y0 - 6.0,
-        )
-    }
-
+    /// The furthest the adjustment list scrolls.
     fn max_stack_scroll(&self) -> f64 {
-        let (row_step, row_height) = self.stack_row_geometry();
-        let content = self.steps().len().saturating_sub(1) as f64 * row_step + row_height;
-        (content - self.stack_viewport().height().max(0.0)).max(0.0)
+        (self.stack_content - self.list_rect.height().max(0.0)).max(0.0)
     }
 
     fn scroll_stack_by(&mut self, delta: f64) {
         self.stack_scroll = (self.stack_scroll + delta).clamp(0.0, self.max_stack_scroll());
     }
 
-    fn empty_card_rect(&self) -> Rect {
-        let viewport = self.canvas_rect.inflate(-28.0, -28.0);
-        let height = if viewport.width() < 500.0 {
-            240.0
-        } else {
-            220.0
+    /// What the selected step offers in the inspector.
+    fn step_controls(&self) -> StepControls {
+        let Some(id) = self.editor.selection.iter().next() else {
+            return StepControls::None;
         };
-        Rect::from_center_size(viewport.center(), (viewport.width().min(460.0), height))
-    }
-
-    fn empty_open_rect(&self) -> Rect {
-        let card = self.empty_card_rect();
-        let top = if card.width() < 400.0 {
-            card.y0 + 166.0
-        } else {
-            card.y0 + 142.0
-        };
-        Rect::new(card.x0 + 32.0, top, card.x0 + 172.0, top + 44.0)
-    }
-    fn inspector_controls(&self) -> (Rect, Rect) {
-        (
-            Rect::new(
-                self.inspector_rect.x1 - 156.0,
-                self.inspector_rect.y0 + 8.0,
-                self.inspector_rect.x1 - 112.0,
-                self.inspector_rect.y1 - 8.0,
-            ),
-            Rect::new(
-                self.inspector_rect.x1 - 104.0,
-                self.inspector_rect.y0 + 8.0,
-                self.inspector_rect.x1 - 60.0,
-                self.inspector_rect.y1 - 8.0,
-            ),
-        )
-    }
-
-    fn inspector_remove_rect(&self) -> Rect {
-        Rect::new(
-            self.inspector_rect.x1 - 52.0,
-            self.inspector_rect.y0 + 8.0,
-            self.inspector_rect.x1 - 8.0,
-            self.inspector_rect.y1 - 8.0,
-        )
+        if id == "source" || id == &self.project.output {
+            return StepControls::None;
+        }
+        match self.project.operations.get(id) {
+            Some(
+                Operation::Exposure { .. }
+                | Operation::Contrast { .. }
+                | Operation::Saturation { .. },
+            ) => StepControls::Slider,
+            Some(Operation::Rotate { .. }) => StepControls::Rotate,
+            Some(Operation::Crop { .. }) => StepControls::Crop,
+            Some(Operation::Grayscale) => StepControls::RemoveOnly,
+            _ => StepControls::None,
+        }
     }
 
     fn selected_is_removable(&self) -> bool {
@@ -1157,7 +1294,7 @@ impl ImageEditorApp {
         } else {
             self.editor.select_only(self.project.output.clone());
         }
-        self.notice = "Adjustment removed. Later steps remain connected.".into();
+        self.say(t_args("image-editor-removed", &[("count", 1.into())]));
         true
     }
 
@@ -1166,11 +1303,11 @@ impl ImageEditorApp {
         match self.project.operations.get(id)? {
             Operation::Exposure { stops } => {
                 let value = f64::from((*stops + 5.0) / 10.0);
-                Some((value, format!("{stops:+.1} EV")))
+                Some((value, signed(&format!("{stops:+.1} EV"))))
             }
             Operation::Contrast { amount } => {
                 let value = f64::from((*amount + 1.0) / 3.0);
-                Some((value, format!("{:+.0}%", *amount * 100.0)))
+                Some((value, signed(&format!("{:+.0}%", *amount * 100.0))))
             }
             Operation::Saturation { amount } => {
                 let value = f64::from(*amount / 3.0);
@@ -1180,18 +1317,9 @@ impl ImageEditorApp {
         }
     }
 
-    fn inspector_slider_rect(&self) -> Rect {
-        Rect::new(
-            self.inspector_rect.x0 + 142.0,
-            self.inspector_rect.y0 + 8.0,
-            self.inspector_rect.x1 - 128.0,
-            self.inspector_rect.y1 - 8.0,
-        )
-    }
-
     fn inspector_value_at(&self, x: f64) -> f64 {
-        let rect = self.inspector_slider_rect();
-        ((x - (rect.x0 + 5.0)) / (rect.width() - 10.0).max(1.0)).clamp(0.0, 1.0)
+        let track = SliderFace::new(self.slider_rect, 0.0).track_rect();
+        ((x - track.x0) / track.width().max(1.0)).clamp(0.0, 1.0)
     }
 
     fn set_selected_slider(&mut self, state: &mut AutoCommit, normalized: f64) -> bool {
@@ -1244,7 +1372,7 @@ impl ImageEditorApp {
                 },
             },
         );
-        self.notice = "Adjustment updated. Later steps were recomputed.".into();
+        self.notice.clear();
         true
     }
     fn select_relative_step(&mut self, direction: isize) {
@@ -1311,36 +1439,25 @@ impl ImageEditorApp {
             },
         );
     }
-    /// The toolbar and empty-state buttons, which the app holds rather than
-    /// exposing as children. Control custody still reaches them here.
+    /// The header buttons, which the app holds rather than exposing as
+    /// children. Control custody still reaches them here.
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
-        self.toolbar
+        self.header_buttons
             .iter_mut()
             .map(|(_, button)| button)
-            .chain(std::iter::once(&mut self.empty_open))
+            .chain(std::iter::once(&mut self.history))
             .collect()
     }
     fn run_toolbar(&mut self, state: &mut AutoCommit, command: ToolbarCommand) {
-        if self.more_open && !matches!(command, ToolbarCommand::More) {
-            self.more_open = false;
-        }
         match command {
             ToolbarCommand::Open => self.request_open(),
             ToolbarCommand::Undo => self.undo(state),
             ToolbarCommand::Redo => self.redo(state),
-            ToolbarCommand::Exposure => {
-                self.add(state, Operation::Exposure { stops: 0.5 }, "Exposure")
-            }
-            ToolbarCommand::Contrast => {
-                self.add(state, Operation::Contrast { amount: 0.15 }, "Contrast")
-            }
-            ToolbarCommand::Colour => {
-                self.add(state, Operation::Saturation { amount: 1.2 }, "Colour")
-            }
-            ToolbarCommand::Mono => self.add(state, Operation::Grayscale, "B&W"),
-            ToolbarCommand::Rotate => {
-                self.add(state, Operation::Rotate { quarter_turns: 1 }, "Rotate")
-            }
+            ToolbarCommand::Exposure => self.add(state, Operation::Exposure { stops: 0.5 }),
+            ToolbarCommand::Contrast => self.add(state, Operation::Contrast { amount: 0.15 }),
+            ToolbarCommand::Colour => self.add(state, Operation::Saturation { amount: 1.2 }),
+            ToolbarCommand::Mono => self.add(state, Operation::Grayscale),
+            ToolbarCommand::Rotate => self.add(state, Operation::Rotate { quarter_turns: 1 }),
             ToolbarCommand::Crop => self.add(
                 state,
                 Operation::Crop {
@@ -1349,19 +1466,782 @@ impl ImageEditorApp {
                     width: 1.0,
                     height: 1.0,
                 },
-                "Crop",
             ),
             ToolbarCommand::Fit => {
                 self.zoom = 1.0;
-                self.pan = ui::vello::kurbo::Vec2::ZERO
+                self.pan = ui::vello::kurbo::Vec2::ZERO;
+                self.graph_moved = false;
             }
             ToolbarCommand::Compare => self.compare_original = !self.compare_original,
             ToolbarCommand::Graph => self.advanced_graph = !self.advanced_graph,
-            ToolbarCommand::More => self.more_open = !self.more_open,
             ToolbarCommand::Export => self.export_and_notice(),
         }
+        self.sync_toolbar();
+    }
+
+    /// Whether the processing graph shows in place of the canvas.
+    fn graph_shown(&self) -> bool {
+        self.advanced_graph && self.has_image()
+    }
+
+    /// A press in the inspector: a step in the list, the slider, the rotate
+    /// buttons or Remove. `touch` names the finger that drags the slider.
+    fn press_inspector(&mut self, state: &mut AutoCommit, point: Point, touch: Option<u64>) {
+        let (left, right) = self.rotate_rects;
+        if self.selected_is_removable() && self.remove_rect.contains(point) {
+            self.inspector_focused = false;
+            self.remove_selected(state);
+        } else if self.selected_slider().is_some() && self.slider_rect.contains(point) {
+            self.begin_gesture();
+            match touch {
+                Some(id) => self.inspector_touch = Some(id),
+                None => self.inspector_dragging = true,
+            }
+            self.inspector_focused = true;
+            self.panning_from = None;
+            self.set_selected_slider(state, self.inspector_value_at(point.x));
+        } else if left.contains(point) {
+            self.inspector_focused = false;
+            self.adjust_selected(state, -1.0);
+        } else if right.contains(point) {
+            self.inspector_focused = false;
+            self.adjust_selected(state, 1.0);
+        } else if self.list_rect.contains(point)
+            && let Some((id, _)) = self
+                .step_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(point))
+                .cloned()
+        {
+            self.inspector_focused = false;
+            self.editor.select_only(id);
+            self.rebuild_crop_editor();
+        }
+    }
+
+    /// Keep the toolbar's commands and toggles, and the header buttons'
+    /// availability, in step with the project.
+    fn sync_toolbar(&mut self) {
+        let has_image = self.has_image();
+        if has_image != self.toolbar_has_image {
+            self.toolbar = build_toolbar(
+                &self.toolbar_pending,
+                has_image,
+                self.compare_original,
+                self.advanced_graph,
+            );
+            self.toolbar_has_image = has_image;
+        } else if has_image && self.toolbar_toggles != (self.compare_original, self.advanced_graph)
+        {
+            self.toolbar.set_active(COMPARE_ITEM, self.compare_original);
+            self.toolbar.set_active(GRAPH_ITEM, self.advanced_graph);
+        }
+        self.toolbar_toggles = (self.compare_original, self.advanced_graph);
+        let (can_undo, can_redo) = (!self.undo_stack.is_empty(), !self.redo_stack.is_empty());
+        for (command, button) in &mut self.header_buttons {
+            button.set_enabled(match command {
+                ToolbarCommand::Undo => can_undo,
+                ToolbarCommand::Redo => can_redo,
+                ToolbarCommand::Export => has_image,
+                _ => true,
+            });
+        }
+    }
+
+    /// Place the header, the canvas or graph, the inspector and the selected
+    /// step's settings for this frame.
+    fn lay_out(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let spacing = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        let (s1, s2, s3, s4, s6) = (
+            f64::from(spacing.s1),
+            f64::from(spacing.s2),
+            f64::from(spacing.s3),
+            f64::from(spacing.s4),
+            f64::from(spacing.s6),
+        );
+        let rect = self.rect;
+        let has_image = self.has_image();
+
+        // The header: the project's name, its toolbar, then undo and redo,
+        // Open and Export at the trailing edge.
+        self.header_rect = Rect::new(
+            rect.x0,
+            rect.y0,
+            rect.x1,
+            rect.y0 + f64::from(metrics.header_height),
+        );
+        let band = self.header_rect;
+        let control_h = ButtonFace::height(ControlSize::Regular, theme);
+        let control_y = band.center().y - control_h / 2.0;
+        let mut x = band.x1 - s4;
+        for (command, button) in self.header_buttons.iter_mut().rev() {
+            let label = t(command.label_key());
+            let face = match command {
+                ToolbarCommand::Undo => {
+                    ButtonFace::icon_only(Rect::ZERO, ui::icons::Icon::Undo2, &label)
+                }
+                ToolbarCommand::Redo => {
+                    ButtonFace::icon_only(Rect::ZERO, ui::icons::Icon::Redo2, &label)
+                }
+                _ => ButtonFace::new(Rect::ZERO, &label),
+            };
+            let width = face.intrinsic_width(tr, theme);
+            button.apply_layout_external(Rect::new(x - width, control_y, x, control_y + control_h));
+            x -= width
+                + match command {
+                    ToolbarCommand::Open => s4,
+                    ToolbarCommand::Redo => s1,
+                    _ => s2,
+                };
+        }
+        // History shows its name while the toolbar has room for every
+        // command, and only its icon when that keeps a command out of More.
+        let history_label = ui::i18n::I18nManager::lookup_plain("standalone-history-title");
+        let trailing_end = x - (s4 - s2);
+        let title_style = theme.text(TextRole::Title);
+        let toolbar_h = f64::from(metrics.min_pointer_target);
+        for compact in [false, true] {
+            self.history.set_compact_toolbar_presentation(compact);
+            let history_face = if compact {
+                ButtonFace::icon_only(Rect::ZERO, ui::icons::Icon::History, &history_label)
+            } else {
+                ButtonFace::new(Rect::ZERO, &history_label).icon(ui::icons::Icon::History)
+            };
+            let history_w = history_face.intrinsic_width(tr, theme);
+            self.history.apply_layout_external(Rect::new(
+                trailing_end - history_w,
+                control_y,
+                trailing_end,
+                control_y + control_h,
+            ));
+            let trailing_x0 = trailing_end - history_w;
+            // The project's name, unless the window is too narrow to read it.
+            let room = (trailing_x0 - band.x0) * 0.4;
+            self.title = if has_image && room >= f64::from(metrics.min_pointer_target) * 3.0 {
+                tr.elide_to_width_style(&self.project.name, room as f32, &title_style)
+            } else {
+                String::new()
+            };
+            let title_w = f64::from(tr.measure_style(&self.title, None, &title_style).0);
+            self.title_origin = Point::new(band.x0 + s4, band.y0);
+            let toolbar_x0 = if self.title.is_empty() {
+                band.x0 + s4
+            } else {
+                band.x0 + s4 + title_w + s6
+            };
+            let toolbar_rect = Rect::new(
+                toolbar_x0,
+                band.center().y - toolbar_h / 2.0,
+                (trailing_x0 - s4).max(toolbar_x0),
+                band.center().y + toolbar_h / 2.0,
+            );
+            self.toolbar.lay_out_in(toolbar_rect, tr, theme);
+            if self.toolbar.visible_count() == 0 && self.toolbar.has_overflow() {
+                // Only the More button fits: it leads the row, where the
+                // commands would have started.
+                let chip = Rect::new(
+                    toolbar_rect.x0,
+                    toolbar_rect.y0,
+                    toolbar_rect.x0 + toolbar_h,
+                    toolbar_rect.y1,
+                );
+                self.toolbar.lay_out_in(chip, tr, theme);
+            }
+            if !self.toolbar.has_overflow() {
+                break;
+            }
+        }
+
+        // The body: the canvas (or the graph) and, once there is an image,
+        // the inspector beside it, or under it in a narrow window.
+        let body = Rect::new(rect.x0, band.y1, rect.x1, rect.y1.max(band.y1));
+        let inspector_w = f64::from(metrics.inspector_width);
+        let (main, inspector) = if !has_image {
+            (body, Rect::ZERO)
+        } else if body.width() >= f64::from(metrics.content_min_width) + inspector_w {
+            (
+                Rect::new(body.x0, body.y0, body.x1 - inspector_w, body.y1),
+                Rect::new(body.x1 - inspector_w, body.y0, body.x1, body.y1),
+            )
+        } else {
+            let height = (body.height() * 0.45).round();
+            (
+                Rect::new(body.x0, body.y0, body.x1, body.y1 - height),
+                Rect::new(body.x0, body.y1 - height, body.x1, body.y1),
+            )
+        };
+        self.inspector_rect = inspector;
+        if self.graph_shown() {
+            self.graph_rect = main;
+            self.canvas_rect = Rect::ZERO;
+        } else {
+            self.graph_rect = Rect::ZERO;
+            self.canvas_rect = main;
+        }
+        self.empty_state.apply_layout_external(main);
+
+        // The inspector: the "Adjustments" heading, the list of steps, and
+        // the selected step's settings under it.
+        self.slider_rect = Rect::ZERO;
+        self.rotate_rects = (Rect::ZERO, Rect::ZERO);
+        self.remove_rect = Rect::ZERO;
+        self.controls_rect = Rect::ZERO;
+        self.list_rect = Rect::ZERO;
+        self.inspector_text = InspectorText::default();
+        if inspector.area() <= 0.0 {
+            return;
+        }
+        let content_x0 = inspector.x0 + s2 + s3;
+        let content_x1 = inspector.x1 - s2 - s3;
+        let heading_h = f64::from(
+            tr.measure_style("Ag", None, &theme.text(TextRole::Heading))
+                .1,
+        );
+        self.inspector_text.heading = Point::new(content_x0, inspector.y0 + s4);
+        let list_top = inspector.y0 + s4 + heading_h + s2;
+
+        let controls = self.step_controls();
+        let line = |role: TextRole, tr: &mut TextRenderer| {
+            f64::from(tr.measure_style("Ag", None, &theme.text(role)).1)
+        };
+        let row_h = f64::from(metrics.min_pointer_target);
+        let remove_h = control_h;
+        // A parameter is one line naming it and showing its value, then
+        // its control across the whole column.
+        let label_line = line(TextRole::Label, tr);
+        let body_h = match controls {
+            StepControls::None => 0.0,
+            StepControls::RemoveOnly => remove_h,
+            StepControls::Crop => {
+                let hint = t("image-editor-crop-hint");
+                let (_, h) = tr.measure_style(
+                    &hint,
+                    Some((content_x1 - content_x0).max(1.0) as f32),
+                    &theme.text(TextRole::Caption),
+                );
+                f64::from(h) + s3 + remove_h
+            }
+            StepControls::Slider | StepControls::Rotate => label_line + s2 + row_h + s4 + remove_h,
+        };
+        if body_h <= 0.0 {
+            self.list_rect = Rect::new(inspector.x0, list_top, inspector.x1, inspector.y1 - s2);
+            return;
+        }
+        let controls_top = (inspector.y1 - body_h - 2.0 * s4).max(list_top);
+        self.controls_rect = Rect::new(inspector.x0, controls_top, inspector.x1, inspector.y1);
+        self.list_rect = Rect::new(inspector.x0, list_top, inspector.x1, controls_top);
+        let mut y = controls_top + s4;
+        match controls {
+            StepControls::Slider | StepControls::Rotate => {
+                let band = Rect::new(content_x0, y, content_x1, y + label_line);
+                self.inspector_text.label = Some(band);
+                self.inspector_text.value = Some(band);
+                y = band.y1 + s2;
+                let row = Rect::new(content_x0, y, content_x1, y + row_h);
+                if controls == StepControls::Slider {
+                    self.slider_rect = row;
+                } else {
+                    let left = Rect::new(row.x0, row.y0, row.x0 + row_h, row.y1);
+                    let right = Rect::new(left.x1 + s2, row.y0, left.x1 + s2 + row_h, row.y1);
+                    self.rotate_rects = (left, right);
+                }
+                y = row.y1 + s4;
+            }
+            StepControls::Crop => {
+                let hint = t("image-editor-crop-hint");
+                let width = (content_x1 - content_x0).max(1.0);
+                let (_, h) =
+                    tr.measure_style(&hint, Some(width as f32), &theme.text(TextRole::Caption));
+                self.inspector_text.hint =
+                    Some(Rect::new(content_x0, y, content_x1, y + f64::from(h)));
+                y += f64::from(h) + s3;
+            }
+            StepControls::RemoveOnly | StepControls::None => {}
+        }
+        if controls != StepControls::None {
+            let label = t("image-editor-remove");
+            let width = ButtonFace::new(Rect::ZERO, &label)
+                .icon(ui::icons::Icon::Trash2)
+                .intrinsic_width(tr, theme);
+            self.remove_rect = Rect::new(content_x0, y, content_x0 + width, y + remove_h);
+        }
+    }
+
+    /// The name of the selected step's one parameter.
+    fn selected_parameter_label(&self) -> String {
+        let operation = self
+            .editor
+            .selection
+            .iter()
+            .next()
+            .and_then(|id| self.project.operations.get(id));
+        match operation {
+            Some(Operation::Rotate { .. }) => t("image-editor-rotation"),
+            Some(Operation::Saturation { .. }) => t("image-editor-saturation"),
+            other => operation_label(other).unwrap_or_default(),
+        }
+    }
+
+    /// The selected rotation, as a person reads it.
+    fn selected_rotation(&self) -> Option<String> {
+        let id = self.editor.selection.iter().next()?;
+        match self.project.operations.get(id)? {
+            Operation::Rotate { quarter_turns } => Some(format!("{}°", (quarter_turns % 4) * 90)),
+            _ => None,
+        }
+    }
+
+    /// Fit the graph into its canvas, centred, until the person moves it.
+    /// A graph too long for the canvas, even at its smallest legible size,
+    /// starts at its first step and pans from there.
+    fn centre_graph(&mut self, theme: &Theme) {
+        if self.graph_moved || self.graph_rect.area() <= 0.0 {
+            return;
+        }
+        let mut bounds: Option<Rect> = None;
+        let (width, height) = Self::node_size();
+        for node in self.project.graph.nodes.values() {
+            let r = Rect::new(
+                node.position.x,
+                node.position.y,
+                node.position.x + width,
+                node.position.y + height,
+            );
+            bounds = Some(bounds.map_or(r, |b| b.union(r)));
+        }
+        let Some(bounds) = bounds else {
+            return;
+        };
+        let margin = f64::from(theme.tokens.spacing.s8);
+        let area = self.graph_rect;
+        let room_w = (area.width() - 2.0 * margin).max(1.0);
+        let room_h = (area.height() - 2.0 * margin).max(1.0);
+        let zoom = (room_w / bounds.width())
+            .min(room_h / bounds.height())
+            .clamp(0.6, 1.0);
+        self.editor.zoom = zoom;
+        let fit_x = (area.width() - bounds.width() * zoom) / 2.0;
+        let fit_y = (area.height() - bounds.height() * zoom) / 2.0;
+        self.editor.pan.x = fit_x.max(margin) - bounds.x0 * zoom;
+        self.editor.pan.y = fit_y.max(margin) - bounds.y0 * zoom;
     }
 }
+
+/// Where the inspector's text goes this frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct InspectorText {
+    heading: Point,
+    /// The parameter's name, centred on its control's line.
+    label: Option<Rect>,
+    /// The parameter's value, trailing, centred on the same line.
+    value: Option<Rect>,
+    /// The crop instructions.
+    hint: Option<Rect>,
+}
+
+impl ImageEditorApp {
+    /// The image on the window ground: the edited result, the original while
+    /// comparing, or the crop editor over the step before a selected crop.
+    fn draw_canvas(&mut self, s: &mut Scene, a: Affine, theme: &Theme) {
+        let inset = f64::from(theme.tokens.spacing.s6);
+        let viewport = self.canvas_rect.inset(-inset);
+        if viewport.width() <= 0.0 || viewport.height() <= 0.0 {
+            return;
+        }
+        let target = Rect::from_center_size(
+            viewport.center(),
+            (viewport.width() * self.zoom, viewport.height() * self.zoom),
+        ) + self.pan;
+        s.push_clip_layer(Fill::NonZero, a, &self.canvas_rect);
+        if !self.compare_original
+            && let Some(editor) = self.crop_editor.as_mut()
+        {
+            editor.paint_at(s, a, theme, target);
+        } else if let Some(image) = if self.compare_original {
+            self.original_preview.as_mut()
+        } else {
+            self.preview.as_mut()
+        } {
+            image.paint_at_on(s, a, target, theme);
+        }
+        s.pop_layer();
+    }
+
+    /// The inspector region: the adjustment list, latest step first, and the
+    /// selected step's settings under it.
+    fn draw_inspector(&mut self, s: &mut Scene, a: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let ground = ui::surface::region(s, a, self.inspector_rect, Region::Inspector, theme);
+        let local = theme.in_region(Region::Inspector);
+        let spacing = &local.tokens.spacing;
+        let (s2, s3) = (f64::from(spacing.s2), f64::from(spacing.s3));
+        let gutter = f64::from(local.tokens.metrics.scrollbar_gutter);
+        let mut ctx = PaintCtx::new(s, a, tr, &local);
+        ctx.text_role(
+            &t("image-editor-adjustments"),
+            TextRole::Heading,
+            local.text_primary,
+            self.inspector_text.heading,
+            None,
+        );
+
+        // The list, latest step first.
+        let steps = self.steps();
+        let count = steps.len();
+        let rows: Vec<(String, String, String)> = steps
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(index, id)| {
+                let title = operation_label(self.project.operations.get(id))
+                    .or_else(|| self.project.graph.nodes.get(id).map(|n| n.title.clone()))
+                    .unwrap_or_default();
+                let step = t_args("image-editor-step", &[("number", (count - index).into())]);
+                (id.clone(), title, step)
+            })
+            .collect();
+        let list = self.list_rect;
+        let selected: Vec<bool> = rows
+            .iter()
+            .map(|(id, _, _)| self.editor.selection.contains(id))
+            .collect();
+        let faces: Vec<ListRowFace<'_>> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, (id, title, step))| {
+                let thumb = self
+                    .step_previews
+                    .iter()
+                    .find(|(step_id, _)| step_id == id)
+                    .map(|(_, image)| image);
+                let face = ListRowFace::new(title)
+                    .secondary(step)
+                    .leading(RowLeading::Avatar(
+                        AvatarFace::new(title, id).image(thumb).square(),
+                    ))
+                    .selected(selected[index]);
+                match selected.get(index + 1) {
+                    Some(next) => face.separator(*next),
+                    None => face,
+                }
+            })
+            .collect();
+        let heights: Vec<f64> = faces
+            .iter()
+            .map(|face| face.height(ctx.text, ctx.theme))
+            .collect();
+        self.stack_content = heights.iter().sum();
+        self.stack_scroll = self.stack_scroll.clamp(0.0, self.max_stack_scroll());
+        let overflows = self.stack_content > list.height();
+        let row_x0 = list.x0 + s2;
+        let row_x1 = if overflows {
+            list.x1 - gutter
+        } else {
+            list.x1 - s2
+        };
+        self.step_rects.clear();
+        ctx.scene.push_clip_layer(Fill::NonZero, a, &list);
+        let mut y = list.y0 - self.stack_scroll;
+        for ((face, height), (id, _, _)) in faces.iter().zip(&heights).zip(&rows) {
+            let row = Rect::new(row_x0, y, row_x1, y + height);
+            y += height;
+            if row.y1 < list.y0 || row.y0 > list.y1 {
+                continue;
+            }
+            let hovered = row.contains(self.cursor) && list.contains(self.cursor);
+            face.clone()
+                .interaction(ui::widget::Interaction {
+                    hovered,
+                    ..Default::default()
+                })
+                .paint(&mut ctx, row);
+            self.step_rects.push((id.clone(), row));
+        }
+        ctx.scene.pop_layer();
+        if overflows {
+            let track = Rect::new(list.x1 - gutter, list.y0, list.x1, list.y1);
+            Scrollbar::vertical().draw(
+                ctx.scene,
+                a,
+                track,
+                ScrollMetrics::new(self.stack_content, list.height(), self.stack_scroll),
+                &local,
+                false,
+            );
+        }
+
+        // The selected step's settings.
+        if self.controls_rect.area() <= 0.0 {
+            return;
+        }
+        ui::surface::separator(
+            ctx.scene,
+            a,
+            self.controls_rect.x0,
+            self.controls_rect.x1,
+            self.controls_rect.y0,
+            s2 + s3,
+            ground,
+        );
+        if let Some(band) = self.inspector_text.label {
+            let label = self.selected_parameter_label();
+            ctx.text_role_in_band(
+                &label,
+                TextRole::Label,
+                local.text_primary,
+                band.x0,
+                band,
+                None,
+            );
+        }
+        let value = self
+            .selected_slider()
+            .map(|(_, value)| value)
+            .or_else(|| self.selected_rotation());
+        if let (Some(band), Some(value)) = (self.inspector_text.value, value) {
+            let style = local.text(TextRole::Label).numeric();
+            let width = f64::from(ctx.text.measure_style(&value, None, &style).0);
+            let height = f64::from(ctx.text.measure_style("Ag", None, &style).1);
+            let top = band.center().y - height / 2.0;
+            ctx.text(
+                &value,
+                &style,
+                local.text_dim,
+                Point::new(band.x1 - width, top),
+                None,
+            );
+        }
+        if let Some(hint) = self.inspector_text.hint {
+            ctx.text_role(
+                &t("image-editor-crop-hint"),
+                TextRole::Caption,
+                local.text_dim,
+                Point::new(hint.x0, hint.y0),
+                Some(hint.width() as f32),
+            );
+        }
+        if let Some((value, _)) = self.selected_slider()
+            && self.slider_rect.area() > 0.0
+        {
+            Slider::paint(
+                ctx.scene,
+                a,
+                &local,
+                &SliderFace::new(self.slider_rect, value)
+                    .hovered(self.slider_rect.contains(self.cursor))
+                    .dragging(self.inspector_dragging)
+                    .focused(self.inspector_focused),
+            );
+        }
+        let (left, right) = self.rotate_rects;
+        for (rect, icon, key) in [
+            (left, ui::icons::Icon::RotateCcw, "image-editor-rotate-left"),
+            (
+                right,
+                ui::icons::Icon::RotateCw,
+                "image-editor-rotate-right",
+            ),
+        ] {
+            if rect.area() > 0.0 {
+                let label = t(key);
+                Button::paint(
+                    ctx.scene,
+                    a,
+                    ctx.text,
+                    &local,
+                    &ButtonFace::icon_only(rect, icon, &label)
+                        .role(ButtonRole::Secondary)
+                        .hovered(rect.contains(self.cursor)),
+                );
+            }
+        }
+        if self.remove_rect.area() > 0.0 {
+            let label = t("image-editor-remove");
+            Button::paint(
+                ctx.scene,
+                a,
+                ctx.text,
+                &local,
+                &ButtonFace::new(self.remove_rect, &label)
+                    .icon(ui::icons::Icon::Trash2)
+                    .role(ButtonRole::Destructive)
+                    .hovered(self.remove_rect.contains(self.cursor)),
+            );
+        }
+    }
+
+    /// The processing graph: every step as a card with its image, joined
+    /// from each output to the inputs it feeds.
+    fn draw_graph(&self, s: &mut Scene, a: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        let spacing = &theme.tokens.spacing;
+        let (s2, s3, s4) = (
+            f64::from(spacing.s2),
+            f64::from(spacing.s3),
+            f64::from(spacing.s4),
+        );
+        s.push_clip_layer(Fill::NonZero, a, &self.graph_rect);
+        let contributing = self.project.graph.contributing_nodes("output");
+        let curve = |from: Point, to: Point| {
+            let reach = ((to.x - from.x).abs() / 2.0).max(s4 * 3.0);
+            let mut path = BezPath::new();
+            path.move_to(from);
+            path.curve_to((from.x + reach, from.y), (to.x - reach, to.y), (to.x, to.y));
+            path
+        };
+        for e in &self.project.graph.edges {
+            if let (Some(from), Some(to)) = (
+                self.output_port_center(&e.from_node),
+                self.input_port_center(&e.to_node),
+            ) {
+                let active =
+                    contributing.contains(&e.from_node) && contributing.contains(&e.to_node);
+                s.stroke(
+                    &Stroke::new(if active { 2.0 } else { 1.0 }),
+                    a,
+                    if active {
+                        theme.text_dim
+                    } else {
+                        theme.text_tertiary
+                    },
+                    None,
+                    &curve(from, to),
+                );
+            }
+        }
+        if let Some((from_node, _, pointer)) = self.editor.connection_preview()
+            && let Some(from) = self.output_port_center(from_node)
+        {
+            let to = Point::new(
+                self.graph_rect.x0 + pointer.x,
+                self.graph_rect.y0 + pointer.y,
+            );
+            s.stroke(
+                &Stroke::new(2.0),
+                a,
+                colors.intent.you,
+                None,
+                &curve(from, to),
+            );
+        }
+        let radius = f64::from(theme.tokens.radii.tile);
+        let order = self.steps();
+        let mut ctx = PaintCtx::new(s, a, tr, theme);
+        for (id, n) in &self.project.graph.nodes {
+            let Some(r) = self.node_rect(id) else {
+                continue;
+            };
+            let selected = self.editor.selection.contains(id);
+            let active = contributing.contains(id);
+            let raised = colors.surfaces.raised;
+            let fill = if selected {
+                colors.lift_on(raised, 1.0)
+            } else {
+                raised
+            };
+            ui::surface::card(ctx.scene, a, r, radius, fill);
+            let title = match id.as_str() {
+                "source" => self.project.name.clone(),
+                _ => operation_label(self.project.operations.get(id))
+                    .unwrap_or_else(|| n.title.clone()),
+            };
+            let state = match id.as_str() {
+                "source" => t("image-editor-original"),
+                "output" => String::new(),
+                _ if !active => t("image-editor-unused"),
+                _ => order
+                    .iter()
+                    .position(|step| step == id)
+                    .map(|index| t_args("image-editor-step", &[("number", (index + 1).into())]))
+                    .unwrap_or_default(),
+            };
+            let ink = if active {
+                theme.text_primary
+            } else {
+                theme.text_tertiary
+            };
+            let width = (r.width() - 2.0 * s3) as f32;
+            let title_style = theme.text(TextRole::Label).strong();
+            let title = ctx.text.elide_to_width_style(&title, width, &title_style);
+            let title_h = f64::from(ctx.text.measure_style("Ag", None, &title_style).1);
+            ctx.text(
+                &title,
+                &title_style,
+                ink,
+                Point::new(r.x0 + s3, r.y0 + s3),
+                None,
+            );
+            let caption_h = ctx.line_box(TextRole::Caption);
+            if !state.is_empty() {
+                ctx.text_role(
+                    &state,
+                    TextRole::Caption,
+                    theme.text_dim,
+                    Point::new(r.x0 + s3, r.y0 + s3 + title_h),
+                    Some(width),
+                );
+            }
+            let thumb_top = r.y0 + s3 + title_h + caption_h + s2;
+            if let Some((_, preview)) = self.step_previews.iter().find(|(step, _)| step == id) {
+                let thumb = Rect::new(r.x0 + s2, thumb_top, r.x1 - s2, r.y1 - s2);
+                ui::image_store::paint_image_cover(
+                    ctx.scene,
+                    a,
+                    thumb,
+                    preview,
+                    theme
+                        .tokens
+                        .radii
+                        .concentric(theme.tokens.radii.tile, spacing.s2)
+                        .into(),
+                );
+            }
+            for (center, focused) in [
+                (
+                    self.input_port_center(id),
+                    self.graph_keyboard_target
+                        .as_ref()
+                        .is_some_and(|target| target.node == *id),
+                ),
+                (self.output_port_center(id), false),
+            ]
+            .into_iter()
+            .filter_map(|(center, focused)| center.map(|center| (center, focused)))
+            {
+                // A port is a dot on the card's edge, hollow on the canvas
+                // ground and ringed in the ink of its connection.
+                let port = s2 * 0.75;
+                let dot = Rect::from_center_size(center, (2.0 * port, 2.0 * port));
+                ctx.fill_round(dot, port, colors.surfaces.content);
+                ctx.stroke_round(
+                    dot,
+                    port,
+                    if focused {
+                        colors.intent.you
+                    } else if active {
+                        theme.text_dim
+                    } else {
+                        theme.text_tertiary
+                    },
+                    2.0,
+                );
+            }
+        }
+        if !self.graph_hint_seen {
+            let hint = t("image-editor-graph-hint");
+            let width = (self.graph_rect.width() - 2.0 * s4).max(1.0) as f32;
+            ctx.text_role(
+                &hint,
+                TextRole::Caption,
+                theme.text_dim,
+                Point::new(self.graph_rect.x0 + s4, self.graph_rect.y0 + s4),
+                Some(width),
+            );
+        }
+        ctx.scene.pop_layer();
+    }
+}
+
 impl Widget for ImageEditorApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
@@ -1382,16 +2262,19 @@ impl Widget for ImageEditorApp {
         if let Some(command) = self.toolbar_pending.take() {
             self.run_toolbar(state, command);
         }
+        if self.empty_state.take_action() {
+            self.request_open();
+        }
         self.poll_picker(state);
         self.rebuild_preview();
+        self.sync_toolbar();
     }
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
-        theme: &Theme,
+        _theme: &Theme,
         m: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale);
         let n = t.leaf_node(Style {
             position: Position::Absolute,
             size: Size {
@@ -1411,142 +2294,6 @@ impl Widget for ImageEditorApp {
             o.x + f64::from(l.location.x + l.size.width),
             o.y + f64::from(l.location.y + l.size.height),
         );
-        let compact = compact_toolbar_for(self.rect.width());
-        // At large type sizes toolbar labels cannot remain legible in the
-        // five compact cells. Keep the familiar glyphs, but preserve the full
-        // name for AT and the shared tooltip host.
-        let icon_first_toolbar = self.text_scale > 1.25;
-        // Normal type keeps the familiar 44px toolbar origin. Enlarged type
-        // reserves a full title line before the controls instead of drawing
-        // the first row through the project name.
-        let toolbar_top = self.rect.y0 + 44.0 + (self.text_scale - 1.0).max(0.0) * 64.0;
-        let header_extra = (toolbar_top + 48.0 - (self.rect.y0 + 92.0)).max(0.0);
-        let gap = 6.0;
-        let top_count = if compact { 5 } else { self.toolbar.len() - 1 };
-        let advanced_graph = self.advanced_graph;
-        let width = ((self.rect.width() - 24.0 - gap * (top_count - 1) as f64) / top_count as f64)
-            .min(if compact { 104.0 } else { 96.0 });
-        let mut x = self.rect.x0 + 12.0;
-        for (command, button) in &mut self.toolbar {
-            button.set_compact_toolbar_presentation(icon_first_toolbar);
-            let top_level = if compact {
-                matches!(
-                    command,
-                    ToolbarCommand::Open
-                        | ToolbarCommand::Undo
-                        | ToolbarCommand::Redo
-                        | ToolbarCommand::More
-                        | ToolbarCommand::Export
-                )
-            } else {
-                !matches!(command, ToolbarCommand::More)
-            };
-            if top_level {
-                button.apply_layout_external(Rect::new(
-                    x,
-                    toolbar_top,
-                    x + width,
-                    toolbar_top + 44.0,
-                ));
-                x += width + gap;
-            } else {
-                button.apply_layout_external(Rect::ZERO);
-            }
-        }
-        self.more_rect = Rect::ZERO;
-        if compact && self.more_open {
-            let more_width = (self.rect.width() - 24.0).min(420.0);
-            self.more_rect = Rect::new(
-                self.rect.x0 + 12.0,
-                toolbar_top + 52.0,
-                self.rect.x0 + 12.0 + more_width,
-                (toolbar_top + 284.0).min(self.rect.y1 - 12.0),
-            );
-            let cell_gap = 6.0;
-            let cell_width = (self.more_rect.width() - 24.0 - cell_gap) / 2.0;
-            let mut index = 0;
-            for (command, button) in &mut self.toolbar {
-                if matches!(
-                    command,
-                    ToolbarCommand::Contrast
-                        | ToolbarCommand::Colour
-                        | ToolbarCommand::Mono
-                        | ToolbarCommand::Rotate
-                        | ToolbarCommand::Crop
-                        | ToolbarCommand::Fit
-                        | ToolbarCommand::Compare
-                        | ToolbarCommand::Graph
-                ) && !(advanced_graph && matches!(command, ToolbarCommand::Graph))
-                {
-                    let column = index % 2;
-                    let row = index / 2;
-                    let x0 = self.more_rect.x0 + 12.0 + column as f64 * (cell_width + cell_gap);
-                    let y0 = self.more_rect.y0 + 32.0 + row as f64 * 48.0;
-                    button.apply_layout_external(Rect::new(x0, y0, x0 + cell_width, y0 + 44.0));
-                    index += 1;
-                }
-            }
-        }
-        let status_extra = 48.0 * (self.text_scale - 1.0).max(0.0);
-        let adaptive = ui::graph_editor::AdaptiveEditorLayout::resolve(
-            self.rect.width(),
-            (self.rect.height() - header_extra - status_extra).max(0.0),
-        );
-        let cv = adaptive.canvas;
-        let st = adaptive.stack;
-        let ins = adaptive.inspector;
-        let mut canvas = Rect::new(
-            self.rect.x0 + cv.x0,
-            self.rect.y0 + cv.y0 + header_extra,
-            self.rect.x0 + cv.x1,
-            self.rect.y0 + cv.y1 + header_extra,
-        );
-        let mut stack = Rect::new(
-            self.rect.x0 + st.x0,
-            self.rect.y0 + st.y0 + header_extra,
-            self.rect.x0 + st.x1,
-            self.rect.y0 + st.y1 + header_extra,
-        );
-        if self.rect.width() < 820.0 && self.text_scale > 1.0 {
-            // Favour a scrollable adjustment list over a nearly unusable
-            // preview when large type is requested. The canvas remains
-            // available for direct crop/zoom work above it.
-            let wanted_stack_height =
-                (300.0 + 48.0 * (self.text_scale - 1.0)).min((stack.y1 - canvas.y0 - 1.0).max(0.0));
-            stack.y0 = stack.y1 - wanted_stack_height;
-            canvas.y1 = stack.y0 - 1.0;
-        }
-        if self.advanced_graph {
-            self.graph_rect = Rect::new(
-                self.rect.x0,
-                self.rect.y0 + 92.0 + header_extra,
-                self.rect.x1,
-                self.rect.y1 - 48.0 - status_extra,
-            );
-            self.canvas_rect = Rect::ZERO;
-            self.stack_rect = Rect::ZERO;
-        } else {
-            self.stack_rect = stack;
-            self.canvas_rect = canvas;
-        }
-        self.inspector_rect = Rect::new(
-            self.rect.x0 + ins.x0,
-            self.rect.y0 + ins.y0 + header_extra,
-            self.rect.x0 + ins.x1,
-            self.rect.y0 + ins.y1 + header_extra,
-        );
-        if !self.advanced_graph && self.text_scale > 1.0 {
-            let inspector_height =
-                (68.0 * self.text_scale).min((stack.height() - 58.0 * self.text_scale).max(44.0));
-            self.inspector_rect = Rect::new(
-                stack.x0 + 12.0,
-                stack.y1 - 8.0 - inspector_height,
-                stack.x1 - 12.0,
-                stack.y1 - 8.0,
-            );
-        }
-        let empty_open_rect = self.empty_open_rect();
-        self.empty_open.apply_layout_external(empty_open_rect);
     }
     fn draw(
         &mut self,
@@ -1554,584 +2301,120 @@ impl Widget for ImageEditorApp {
         a: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
-        s.fill(Fill::NonZero, a, c.surfaces.base, None, &self.rect);
-        let title = tr.elide_to_width_weighted(
-            &self.project.name,
-            20.0,
-            (self.rect.width() - 36.0).max(0.0) as f32,
-            TextWeight::Semibold,
-        );
-        tr.draw_text_weighted(
-            s,
-            &title,
-            20.0,
-            c.text_primary,
-            a.pre_translate((18.0 + self.rect.x0, 8.0 * self.text_scale + self.rect.y0).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        for (command, button) in &mut self.toolbar {
-            button.set_enabled(match command {
-                ToolbarCommand::Undo => !self.undo_stack.is_empty(),
-                ToolbarCommand::Redo => !self.redo_stack.is_empty(),
-                _ => true,
-            });
-            button.set_style(if matches!(command, ToolbarCommand::Export) {
-                ButtonStyle::Primary
-            } else if (matches!(command, ToolbarCommand::Graph) && self.advanced_graph)
-                || (matches!(command, ToolbarCommand::Compare) && self.compare_original)
-                || (matches!(command, ToolbarCommand::More) && self.more_open)
-            {
-                ButtonStyle::Neutral
-            } else {
-                ButtonStyle::Ghost
-            });
-            if button.get_rect().area() > 0.0
-                && !self.more_rect.contains(button.get_rect().center())
-            {
-                button.draw(s, a, tr, theme, &PresenceCtx::empty());
-            }
+        self.sync_toolbar();
+        self.lay_out(tr, theme);
+        if self.staged_overflow && self.toolbar.has_overflow() {
+            self.staged_overflow = false;
+            let mut scratch = AutoCommit::new();
+            let _ = self.toolbar.perform_semantic_action(
+                "toolbar.overflow",
+                &ui::a11y::Action::Activate,
+                &mut scratch,
+                &automerge::ROOT,
+            );
         }
-        if !self.advanced_graph {
-            s.fill(Fill::NonZero, a, c.neutral[1], None, &self.canvas_rect);
-            let viewport = self.canvas_rect.inflate(-28.0, -28.0);
-            let target = Rect::from_center_size(
-                viewport.center(),
-                (viewport.width() * self.zoom, viewport.height() * self.zoom),
-            ) + self.pan;
-            if !self.compare_original
-                && let Some(editor) = self.crop_editor.as_mut()
-            {
-                editor.paint_at(s, a, theme, target);
-                s.stroke(&Stroke::new(1.0), a, c.border_standard, None, &target);
-            } else if let Some(image) = if self.compare_original {
-                self.original_preview.as_mut()
-            } else {
-                self.preview.as_mut()
-            } {
-                image.paint_at(s, a, target);
-                s.stroke(&Stroke::new(1.0), a, c.border_standard, None, &target);
-            } else {
-                let card = self.empty_card_rect();
-                s.fill(
-                    Fill::NonZero,
-                    a,
-                    c.surfaces.raised,
-                    None,
-                    &RoundedRect::from_rect(card, 18.0),
-                );
-                tr.draw_text_weighted(
-                    s,
-                    "Make something beautiful",
-                    if card.width() < 400.0 { 22.0 } else { 24.0 },
-                    c.text_primary,
-                    a.pre_translate(
-                        (
-                            card.x0 + 32.0,
-                            card.y0 + if card.width() < 400.0 { 44.0 } else { 58.0 },
-                        )
-                            .into(),
-                    ),
-                    Some((card.width() - 64.0) as f32),
-                    TextWeight::Semibold,
-                );
-                tr.draw_text_weighted(s,"Open an image or drop it anywhere. Every adjustment remains editable, in any order.",14.0,c.text_dim,a.pre_translate((card.x0+32.0,card.y0+if card.width()<400.0 {108.0}else{98.0}).into()),Some((card.width()-64.0) as f32),TextWeight::Regular);
-                self.empty_open.draw(s, a, tr, theme, &PresenceCtx::empty());
-            }
-            s.fill(Fill::NonZero, a, c.surfaces.raised, None, &self.stack_rect);
-            tr.draw_text_weighted(
-                s,
-                "Adjustments",
-                17.0,
-                c.text_primary,
-                a.pre_translate(
-                    (
-                        self.stack_rect.x0 + 16.0,
-                        self.stack_rect.y0 + 28.0 * self.text_scale.max(1.0),
-                    )
-                        .into(),
-                ),
+
+        // Header.
+        ui::widget::toolbar::paint_band(s, a, theme, self.header_rect);
+        if !self.title.is_empty() {
+            PaintCtx::new(s, a, tr, theme).text_role_in_band(
+                &self.title,
+                TextRole::Title,
+                theme.text_primary,
+                self.title_origin.x,
+                self.header_rect,
                 None,
-                TextWeight::Semibold,
             );
-            tr.draw_text_weighted(
-                s,
-                if self.text_scale > 1.25 {
-                    "Select any step to revise."
-                } else {
-                    "Latest result at top. Select any step to revise."
-                },
-                11.0,
-                c.text_dim,
-                a.pre_translate(
-                    (
-                        self.stack_rect.x0 + 16.0,
-                        self.stack_rect.y0 + 48.0 * self.text_scale.max(1.0),
-                    )
-                        .into(),
-                ),
-                Some((self.stack_rect.width() - 32.0) as f32),
-                TextWeight::Regular,
-            );
-            self.step_rects.clear();
-            let steps = self.steps();
-            self.stack_scroll = self.stack_scroll.clamp(0.0, self.max_stack_scroll());
-            let viewport = self.stack_viewport();
-            s.push_clip_layer(Fill::NonZero, a, &viewport);
-            for (index, id) in steps.iter().rev().enumerate() {
-                let (row_step, row_height) = self.stack_row_geometry();
-                let y =
-                    self.stack_rect.y0 + 62.0 * self.text_scale.max(1.0) + index as f64 * row_step
-                        - self.stack_scroll;
-                if y + row_height < viewport.y0 || y > viewport.y1 {
-                    continue;
-                }
-                let r = Rect::new(
-                    self.stack_rect.x0 + 10.0,
-                    y,
-                    self.stack_rect.x1 - 10.0,
-                    y + row_height,
-                );
-                self.step_rects.push((id.clone(), r));
-                let selected = self.editor.selection.contains(id);
-                s.fill(
-                    Fill::NonZero,
-                    a,
-                    if selected {
-                        c.overlay_medium
-                    } else {
-                        c.lift(0.35)
-                    },
-                    None,
-                    &RoundedRect::from_rect(r, 9.0),
-                );
-                if selected {
-                    s.stroke(
-                        &Stroke::new(2.0),
-                        a,
-                        c.accent[5],
-                        None,
-                        &RoundedRect::from_rect(r, 9.0),
-                    );
-                }
-                let label = self
-                    .project
-                    .graph
-                    .nodes
-                    .get(id)
-                    .map_or(id.as_str(), |n| n.title.as_str());
-                tr.draw_text_weighted(
-                    s,
-                    label,
-                    14.0,
-                    c.text_primary,
-                    a.pre_translate((r.x0 + 12.0, r.y0 + 7.0 * self.text_scale.max(1.0)).into()),
-                    Some((r.width() - 92.0) as f32),
-                    TextWeight::Semibold,
-                );
-                tr.draw_text_weighted(
-                    s,
-                    &format!("Step {}, editable", steps.len() - index),
-                    10.0,
-                    c.text_dim,
-                    a.pre_translate((r.x0 + 12.0, r.y0 + 25.0 * self.text_scale.max(1.0)).into()),
-                    None,
-                    TextWeight::Regular,
-                );
-                if let Some((_, thumbnail)) =
-                    self.step_previews.iter_mut().find(|(step, _)| step == id)
-                {
-                    let thumb = Rect::new(r.x1 - 70.0, r.y0 + 5.0, r.x1 - 8.0, r.y1 - 5.0);
-                    thumbnail.paint_at(s, a, thumb);
-                    s.stroke(
-                        &Stroke::new(1.0),
-                        a,
-                        c.border_standard,
-                        None,
-                        &RoundedRect::from_rect(thumb, 4.0),
-                    );
-                }
-            }
-            s.pop_layer();
-            let track = Rect::new(
-                viewport.x1 - 5.0,
-                viewport.y0 + 4.0,
-                viewport.x1 - 2.0,
-                viewport.y1 - 4.0,
-            );
-            let (row_step, row_height) = self.stack_row_geometry();
-            let content = steps.len().saturating_sub(1) as f64 * row_step + row_height;
-            let metrics = ScrollMetrics::new(content, viewport.height(), self.stack_scroll);
-            if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
-                s.fill(
-                    Fill::NonZero,
-                    a,
-                    c.border_standard,
-                    None,
-                    &RoundedRect::from_rect(thumb, 2.0),
-                );
-            }
-            s.fill(
-                Fill::NonZero,
-                a,
-                c.lift(0.35),
-                None,
-                &RoundedRect::from_rect(self.inspector_rect, 10.0),
-            );
-            let selected = self
-                .editor
-                .selection
-                .iter()
-                .next()
-                .and_then(|id| self.project.graph.nodes.get(id))
-                .map(|node| node.title.as_str());
-            if let Some(selected) = selected {
-                tr.draw_text_weighted(
-                    s,
-                    selected,
-                    13.0,
-                    c.text_primary,
-                    a.pre_translate(
-                        (
-                            self.inspector_rect.x0 + 12.0,
-                            self.inspector_rect.y0
-                                + if self.rect.width() < 820.0 {
-                                    28.0
-                                } else {
-                                    23.0
-                                },
-                        )
-                            .into(),
-                    ),
-                    Some((self.inspector_rect.width() - 80.0) as f32),
-                    TextWeight::Semibold,
-                );
-            }
-            if let Some((value, label)) = self.selected_slider() {
-                let slider = self.inspector_slider_rect();
-                Slider::paint(
-                    s,
-                    a,
-                    theme,
-                    &SliderFace::new(slider, value)
-                        .hovered(slider.contains(self.cursor))
-                        .dragging(self.inspector_dragging)
-                        .focused(self.inspector_focused),
-                );
-                tr.draw_text_weighted(
-                    s,
-                    &label,
-                    12.0,
-                    c.text_primary,
-                    a.pre_translate(
-                        (
-                            self.inspector_rect.x1 - 118.0,
-                            self.inspector_rect.y0 + 22.0,
-                        )
-                            .into(),
-                    ),
-                    Some(54.0),
-                    TextWeight::Medium,
-                );
-            } else if self
-                .editor
-                .selection
-                .iter()
-                .next()
-                .and_then(|id| self.project.operations.get(id))
-                .is_some_and(|operation| matches!(operation, Operation::Rotate { .. }))
-            {
-                let (minus, plus) = self.inspector_controls();
-                ui::widget::Button::paint(
-                    s,
-                    a,
-                    tr,
-                    theme,
-                    &ui::widget::ButtonFace::new(minus, "")
-                        .icon(ui::icons::Icon::RotateCcw)
-                        .ghost(),
-                );
-                ui::widget::Button::paint(
-                    s,
-                    a,
-                    tr,
-                    theme,
-                    &ui::widget::ButtonFace::new(plus, "")
-                        .icon(ui::icons::Icon::RotateCw)
-                        .ghost(),
-                );
-            } else {
-                let (hint, x) = if selected.is_none() {
-                    (
-                        "Select an adjustment to edit",
-                        self.inspector_rect.x0 + 12.0,
-                    )
-                } else if self.crop_editor.is_some() {
-                    ("Drag a corner on the image", self.inspector_rect.x1 - 250.0)
-                } else {
-                    ("No settings for this step", self.inspector_rect.x1 - 250.0)
-                };
-                tr.draw_text_weighted(
-                    s,
-                    hint,
-                    12.0,
-                    c.text_dim,
-                    a.pre_translate((x, self.inspector_rect.y0 + 22.0).into()),
-                    Some(186.0),
-                    TextWeight::Regular,
-                );
-            }
-            if self.selected_is_removable() {
-                ui::widget::Button::paint(
-                    s,
-                    a,
-                    tr,
-                    theme,
-                    &ui::widget::ButtonFace::new(self.inspector_remove_rect(), "")
-                        .icon(ui::icons::Icon::Trash2)
-                        .style(ui::widget::ButtonStyle::Danger),
-                );
-            }
+        }
+        self.toolbar.draw(s, a, tr, theme, presence);
+        for (_, button) in &mut self.header_buttons {
+            button.draw(s, a, tr, theme, presence);
+        }
+        self.history.draw(s, a, tr, theme, presence);
+
+        // The canvas, the graph, or the empty state.
+        let main = if self.graph_shown() {
+            self.graph_rect
         } else {
-            s.fill(Fill::NonZero, a, c.neutral[1], None, &self.graph_rect);
-            let graph_hint = if self.rect.width() < 820.0 {
-                "Drag empty space to pan. Drag ports to reconnect. Tap Graph to return."
-            } else {
-                "Drag ports to reconnect. Keyboard: select a step, Ctrl+Enter, Tab, Enter. Press G to return."
-            };
-            tr.draw_text_weighted(
-                s,
-                graph_hint,
-                12.0,
-                c.text_dim,
-                a.pre_translate((self.graph_rect.x0 + 18.0, self.graph_rect.y0 + 22.0).into()),
-                None,
-                TextWeight::Regular,
-            );
-            let contributing = self.project.graph.contributing_nodes("output");
-            for e in &self.project.graph.edges {
-                if let (Some(from), Some(to)) = (
-                    self.output_port_center(&e.from_node),
-                    self.input_port_center(&e.to_node),
-                ) {
-                    let mut p = BezPath::new();
-                    p.move_to(from);
-                    p.curve_to((from.x + 50.0, from.y), (to.x - 50.0, to.y), (to.x, to.y));
-                    let active =
-                        contributing.contains(&e.from_node) && contributing.contains(&e.to_node);
-                    s.stroke(
-                        &Stroke::new(if active { 2.0 } else { 1.0 }),
-                        a,
-                        if active {
-                            c.accent[5]
-                        } else {
-                            c.text_dim.with_alpha(0.45)
-                        },
-                        None,
-                        &p,
-                    );
-                }
-            }
-            if let Some((from_node, _, pointer)) = self.editor.connection_preview()
-                && let Some(from) = self.output_port_center(from_node)
-            {
-                let to = Point::new(
-                    self.graph_rect.x0 + pointer.x,
-                    self.graph_rect.y0 + pointer.y,
-                );
-                let mut p = BezPath::new();
-                p.move_to(from);
-                p.curve_to((from.x + 50.0, from.y), (to.x - 50.0, to.y), (to.x, to.y));
-                s.stroke(&Stroke::new(2.0), a, c.accent[6], None, &p);
-            }
-            for (id, n) in &self.project.graph.nodes {
-                if let Some(r) = self.node_rect(id) {
-                    let selected = self.editor.selection.contains(id);
-                    let active = contributing.contains(id);
-                    s.fill(
-                        Fill::NonZero,
-                        a,
-                        if selected {
-                            c.lift(0.22)
-                        } else if !active {
-                            c.surfaces.raised.with_alpha(0.62)
-                        } else {
-                            c.surfaces.raised
-                        },
-                        None,
-                        &RoundedRect::from_rect(r, 10.0),
-                    );
-                    s.stroke(
-                        &Stroke::new(if selected { 2.0 } else { 1.0 }),
-                        a,
-                        if selected {
-                            c.accent[5]
-                        } else {
-                            c.border_standard
-                        },
-                        None,
-                        &RoundedRect::from_rect(r, 10.0),
-                    );
-                    tr.draw_text_weighted(
-                        s,
-                        &n.title,
-                        14.0,
-                        if active { c.text_primary } else { c.text_dim },
-                        a.pre_translate((r.x0 + 14.0, r.y0 + 23.0).into()),
-                        Some(120.0),
-                        TextWeight::Semibold,
-                    );
-                    let node_state = match id.as_str() {
-                        "source" => "Original image",
-                        "output" => "Final result",
-                        _ if !active => "Not in final image",
-                        _ if n.enabled => "Enabled",
-                        _ => "Bypassed",
-                    };
-                    tr.draw_text_weighted(
-                        s,
-                        node_state,
-                        12.0,
-                        c.text_dim,
-                        a.pre_translate((r.x0 + 14.0, r.y0 + 50.0).into()),
-                        Some(120.0),
-                        TextWeight::Regular,
-                    );
-                    if let Some((_, preview)) =
-                        self.step_previews.iter_mut().find(|(step, _)| step == id)
-                    {
-                        let thumb = Rect::new(r.x0 + 10.0, r.y0 + 68.0, r.x1 - 10.0, r.y1 - 10.0);
-                        preview.paint_at(s, a, thumb);
-                        s.stroke(
-                            &Stroke::new(1.0),
-                            a,
-                            c.border_standard,
-                            None,
-                            &RoundedRect::from_rect(thumb, 5.0),
-                        );
-                    }
-                    for (center, focused) in [
-                        (
-                            self.input_port_center(id),
-                            self.graph_keyboard_target
-                                .as_ref()
-                                .is_some_and(|target| target.node == *id),
-                        ),
-                        (self.output_port_center(id), false),
-                    ]
-                    .into_iter()
-                    .filter_map(|(center, focused)| center.map(|center| (center, focused)))
-                    {
-                        if focused {
-                            s.fill(
-                                Fill::NonZero,
-                                a,
-                                c.accent[5].with_alpha(0.22),
-                                None,
-                                &Circle::new(center, 14.0),
-                            );
-                        }
-                        s.fill(
-                            Fill::NonZero,
-                            a,
-                            c.surfaces.base,
-                            None,
-                            &Circle::new(center, 7.0),
-                        );
-                        s.stroke(
-                            &Stroke::new(if focused { 3.0 } else { 2.0 }),
-                            a,
-                            c.accent[5],
-                            None,
-                            &Circle::new(center, 7.0),
-                        );
-                    }
-                }
-            }
+            self.canvas_rect
+        };
+        if self.graph_shown() {
+            self.centre_graph(theme);
+            self.draw_graph(s, a, tr, theme);
+        } else if self.has_image() && self.preview.is_some() {
+            self.draw_canvas(s, a, theme);
+        } else {
+            self.empty_state.draw(s, a, tr, theme, presence);
         }
-        tr.draw_text_weighted(
-            s,
-            if self.text_scale > 1.25 {
-                "Every step stays editable."
-            } else {
-                &self.notice
-            },
-            12.0,
-            c.text_dim,
-            a.pre_translate(
-                (
-                    self.rect.x0 + 14.0,
-                    self.rect.y1 - 48.0 * self.text_scale.max(1.0)
-                        + 20.0 * self.text_scale.max(1.0),
-                )
-                    .into(),
-            ),
-            Some((self.rect.width() - 28.0).max(1.0) as f32),
-            TextWeight::Regular,
-        );
-        if self.more_rect.area() > 0.0 {
-            s.fill(
-                Fill::NonZero,
-                a,
-                c.overlay_medium,
-                None,
-                &RoundedRect::from_rect(self.more_rect.inflate(4.0, 4.0), 16.0),
-            );
-            s.fill(
-                Fill::NonZero,
-                a,
-                c.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(self.more_rect, 14.0),
-            );
-            s.stroke(
-                &Stroke::new(1.0),
-                a,
-                c.border_standard,
-                None,
-                &RoundedRect::from_rect(self.more_rect, 14.0),
-            );
-            tr.draw_text_weighted(
-                s,
-                "Tools",
-                14.0,
-                c.text_primary,
-                a.pre_translate((self.more_rect.x0 + 14.0, self.more_rect.y0 + 22.0).into()),
-                None,
-                TextWeight::Semibold,
-            );
-            for (_, button) in &mut self.toolbar {
-                if button.get_rect().area() > 0.0
-                    && self.more_rect.contains(button.get_rect().center())
-                {
-                    button.draw(s, a, tr, theme, &PresenceCtx::empty());
-                }
-            }
+        if self.inspector_rect.area() > 0.0 {
+            self.draw_inspector(s, a, tr, theme);
         }
+        self.status.paint(s, a, tr, theme, main, ui::time::now());
     }
+
+    fn draw_overlay(
+        &mut self,
+        s: &mut Scene,
+        a: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.toolbar.draw_overlay(s, a, tr, theme, presence);
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.status.needs_frame(ui::time::now())
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.toolbar.modal_capture()
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.toolbar.traps_focus()
+    }
+
+    /// The History button is shown to the window, which then draws no
+    /// History bar of its own.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.history);
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.history]
+    }
+
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        for (_, button) in &mut self.toolbar {
-            if button.get_rect().area() > 0.0 {
-                button.handle_event(
-                    e,
-                    &mut ui::widget::EventCtx {
-                        modifiers: &ui::winit::event::Modifiers::default(),
-                        ..ctx.reborrow(&automerge::ROOT, ctx.node_id)
-                    },
-                );
+        // The toolbar's More menu is modal while it is open.
+        let menu_was_open = self.toolbar.is_overflow_open();
+        self.toolbar
+            .handle_event(e, &mut ctx.reborrow(ctx.path, ctx.node_id));
+        if menu_was_open {
+            if let Some(command) = self.toolbar_pending.take() {
+                self.run_toolbar(ctx.state, command);
             }
+            *ctx.handled = true;
+            return;
         }
-        if !self.advanced_graph && self.preview.is_none() {
-            self.empty_open.handle_event(
+        for button in self.retained_buttons_mut() {
+            button.handle_event(
                 e,
                 &mut ui::widget::EventCtx {
                     modifiers: &ui::winit::event::Modifiers::default(),
                     ..ctx.reborrow(&automerge::ROOT, ctx.node_id)
                 },
             );
+        }
+        if !self.graph_shown() && self.preview.is_none() {
+            self.empty_state
+                .handle_event(e, &mut ctx.reborrow(&automerge::ROOT, ctx.node_id));
+            if self.empty_state.take_action() {
+                self.request_open();
+                *ctx.handled = true;
+            }
         }
         if let Some(command) = self.toolbar_pending.take() {
             self.run_toolbar(ctx.state, command);
@@ -2165,13 +2448,13 @@ impl Widget for ImageEditorApp {
             })
         );
         if starts_direct_gesture
-            && !self.advanced_graph
+            && !self.graph_shown()
             && !self.compare_original
             && self.crop_editor.is_some()
         {
             self.begin_gesture();
         }
-        if !self.advanced_graph
+        if !self.graph_shown()
             && !self.compare_original
             && let Some(editor) = self.crop_editor.as_mut()
         {
@@ -2191,13 +2474,13 @@ impl Widget for ImageEditorApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if self.advanced_graph && self.editor.is_connecting() {
+                if self.graph_shown() && self.editor.is_connecting() {
                     self.editor.update_connection(ui::graph_editor::GraphPoint {
                         x: next.x - self.graph_rect.x0,
                         y: next.y - self.graph_rect.y0,
                     });
                     *ctx.handled = true;
-                } else if self.advanced_graph && self.editor.is_dragging_node() {
+                } else if self.graph_shown() && self.editor.is_dragging_node() {
                     let point = ui::graph_editor::GraphPoint {
                         x: next.x - self.graph_rect.x0,
                         y: next.y - self.graph_rect.y0,
@@ -2205,7 +2488,7 @@ impl Widget for ImageEditorApp {
                     if self.editor.update_node_drag(&mut self.project.graph, point) {
                         *ctx.handled = true;
                     }
-                } else if self.advanced_graph && self.editor.is_panning() {
+                } else if self.graph_shown() && self.editor.is_panning() {
                     if self.editor.update_pan(ui::graph_editor::GraphPoint {
                         x: next.x - self.graph_rect.x0,
                         y: next.y - self.graph_rect.y0,
@@ -2222,12 +2505,13 @@ impl Widget for ImageEditorApp {
                 self.cursor = next
             }
             WindowEvent::MouseWheel { delta, .. }
-                if self.advanced_graph && self.graph_rect.contains(self.cursor) =>
+                if self.graph_shown() && self.graph_rect.contains(self.cursor) =>
             {
                 let amount = match delta {
                     ui::winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     ui::winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 80.0,
                 };
+                self.graph_moved = true;
                 self.editor.zoom_about(
                     ui::graph_editor::GraphPoint {
                         x: self.cursor.x - self.graph_rect.x0,
@@ -2238,7 +2522,7 @@ impl Widget for ImageEditorApp {
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. }
-                if self.stack_viewport().contains(self.cursor) && self.max_stack_scroll() > 0.0 =>
+                if self.list_rect.contains(self.cursor) && self.max_stack_scroll() > 0.0 =>
             {
                 let amount = match delta {
                     ui::winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 44.0,
@@ -2268,12 +2552,10 @@ impl Widget for ImageEditorApp {
                         {
                             Ok(_) => {
                                 self.commit_connection(ctx.state, &node, &port);
-                                self.notice = "Connection updated".into();
+                                self.say(t("image-editor-connected"));
                             }
                             Err(_) => {
-                                self.notice =
-                                    "Those steps cannot be connected; the previous path is unchanged"
-                                        .into();
+                                self.say(t("image-editor-connect-refused"));
                             }
                         }
                     } else {
@@ -2299,51 +2581,21 @@ impl Widget for ImageEditorApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.more_open && !self.more_rect.contains(self.cursor) {
-                    self.more_open = false;
+                if self.header_rect.contains(self.cursor) {
                     *ctx.handled = true;
-                } else if self.more_rect.contains(self.cursor) {
-                    *ctx.handled = true;
-                } else if self.cursor.y < self.rect.y0 + 94.0 {
-                    *ctx.handled = true;
-                } else if !self.advanced_graph {
-                    let (minus, plus) = self.inspector_controls();
-                    let remove = self.inspector_remove_rect();
-                    let slider = self.inspector_slider_rect();
-                    if self.selected_is_removable() && remove.contains(self.cursor) {
-                        self.inspector_focused = false;
-                        self.remove_selected(ctx.state);
-                    } else if self.selected_slider().is_some() && slider.contains(self.cursor) {
-                        self.begin_gesture();
-                        self.inspector_dragging = true;
-                        self.inspector_focused = true;
-                        self.panning_from = None;
-                        self.set_selected_slider(ctx.state, self.inspector_value_at(self.cursor.x));
-                    } else if minus.contains(self.cursor) {
-                        self.inspector_focused = false;
-                        self.adjust_selected(ctx.state, -1.0);
-                    } else if plus.contains(self.cursor) {
-                        self.inspector_focused = false;
-                        self.adjust_selected(ctx.state, 1.0);
-                    } else if let Some((id, _)) = self
-                        .step_rects
-                        .iter()
-                        .find(|(_, r)| r.contains(self.cursor))
-                        .cloned()
-                    {
-                        self.inspector_focused = false;
-                        self.editor.select_only(id);
-                        self.rebuild_crop_editor();
-                    } else if self.canvas_rect.contains(self.cursor) {
+                } else if self.inspector_rect.contains(self.cursor) {
+                    self.press_inspector(ctx.state, self.cursor, None);
+                } else if !self.graph_shown() {
+                    if self.canvas_rect.contains(self.cursor) {
                         self.inspector_focused = false;
                         self.panning_from = Some(self.cursor);
                     }
-                } else if self.advanced_graph
-                    && self.graph_touch.is_none()
+                } else if self.graph_touch.is_none()
                     && self.graph_pan_touch.is_none()
                     && self.graph_connection_touch.is_none()
                     && let Some((node, port)) = self.graph_port_at(self.cursor, true)
                 {
+                    self.graph_hint_seen = true;
                     self.begin_gesture();
                     self.editor.begin_connection(
                         &self.project.graph,
@@ -2365,6 +2617,8 @@ impl Widget for ImageEditorApp {
                         .find(|id| self.node_rect(id).is_some_and(|r| r.contains(self.cursor)))
                         .cloned()
                 {
+                    self.graph_hint_seen = true;
+                    self.graph_moved = true;
                     self.begin_gesture();
                     let point = ui::graph_editor::GraphPoint {
                         x: self.cursor.x - self.graph_rect.x0,
@@ -2372,7 +2626,9 @@ impl Widget for ImageEditorApp {
                     };
                     self.editor.begin_node_drag(&self.project.graph, &id, point);
                     self.rebuild_crop_editor();
-                } else if self.advanced_graph && self.graph_rect.contains(self.cursor) {
+                } else if self.graph_rect.contains(self.cursor) {
+                    self.graph_hint_seen = true;
+                    self.graph_moved = true;
                     self.editor.begin_pan(ui::graph_editor::GraphPoint {
                         x: self.cursor.x - self.graph_rect.x0,
                         y: self.cursor.y - self.graph_rect.y0,
@@ -2387,14 +2643,22 @@ impl Widget for ImageEditorApp {
                 );
                 match touch.phase {
                     ui::winit::event::TouchPhase::Started => {
-                        if self.more_open {
-                            if !self.more_rect.contains(point) {
-                                self.more_open = false;
-                            }
+                        if self.header_rect.contains(point) {
                             *ctx.handled = true;
                             return;
                         }
-                        if self.advanced_graph {
+                        if self.inspector_rect.contains(point) {
+                            self.touches.insert(touch.id, point);
+                            if self.list_rect.contains(point) {
+                                self.stack_touch = Some(touch.id);
+                                self.stack_touch_y = point.y;
+                            }
+                            self.press_inspector(ctx.state, point, Some(touch.id));
+                            *ctx.handled = true;
+                            return;
+                        }
+                        if self.graph_shown() {
+                            self.graph_hint_seen = true;
                             if self.graph_touch.is_none()
                                 && self.graph_pan_touch.is_none()
                                 && self.graph_connection_touch.is_none()
@@ -2437,6 +2701,7 @@ impl Widget for ImageEditorApp {
                                     } else if self.graph_rect.contains(point)
                                         && self.editor.begin_pan(graph_point)
                                     {
+                                        self.graph_moved = true;
                                         self.graph_pan_touch = Some(touch.id);
                                     }
                                 }
@@ -2445,45 +2710,9 @@ impl Widget for ImageEditorApp {
                             return;
                         }
                         self.touches.insert(touch.id, point);
-                        if self.stack_viewport().contains(point) {
-                            self.stack_touch = Some(touch.id);
-                            self.stack_touch_y = point.y;
-                        }
-                        {
-                            let (minus, plus) = self.inspector_controls();
-                            let remove = self.inspector_remove_rect();
-                            let slider = self.inspector_slider_rect();
-                            if self.selected_is_removable() && remove.contains(point) {
-                                self.inspector_focused = false;
-                                self.remove_selected(ctx.state);
-                            } else if self.selected_slider().is_some() && slider.contains(point) {
-                                self.begin_gesture();
-                                self.inspector_touch = Some(touch.id);
-                                self.inspector_focused = true;
-                                self.panning_from = None;
-                                self.set_selected_slider(
-                                    ctx.state,
-                                    self.inspector_value_at(point.x),
-                                );
-                            } else if minus.contains(point) {
-                                self.inspector_focused = false;
-                                self.adjust_selected(ctx.state, -1.0);
-                            } else if plus.contains(point) {
-                                self.inspector_focused = false;
-                                self.adjust_selected(ctx.state, 1.0);
-                            } else if let Some((id, _)) = self
-                                .step_rects
-                                .iter()
-                                .find(|(_, rect)| rect.contains(point))
-                                .cloned()
-                            {
-                                self.inspector_focused = false;
-                                self.editor.select_only(id);
-                                self.rebuild_crop_editor();
-                            } else if self.canvas_rect.contains(point) {
-                                self.inspector_focused = false;
-                                self.panning_from = Some(point);
-                            }
+                        if self.canvas_rect.contains(point) {
+                            self.inspector_focused = false;
+                            self.panning_from = Some(point);
                         }
                         if self.touches.len() == 2 {
                             let points = self.touches.values().copied().collect::<Vec<_>>();
@@ -2495,7 +2724,7 @@ impl Widget for ImageEditorApp {
                         *ctx.handled = true;
                     }
                     ui::winit::event::TouchPhase::Moved => {
-                        if self.advanced_graph {
+                        if self.graph_shown() {
                             let graph_point = ui::graph_editor::GraphPoint {
                                 x: point.x - self.graph_rect.x0,
                                 y: point.y - self.graph_rect.y0,
@@ -2543,7 +2772,7 @@ impl Widget for ImageEditorApp {
                     }
                     ui::winit::event::TouchPhase::Ended
                     | ui::winit::event::TouchPhase::Cancelled => {
-                        if self.advanced_graph {
+                        if self.graph_shown() {
                             if self.graph_connection_touch == Some(touch.id) {
                                 self.graph_connection_touch = None;
                                 if matches!(touch.phase, ui::winit::event::TouchPhase::Cancelled) {
@@ -2557,10 +2786,10 @@ impl Widget for ImageEditorApp {
                                     ) {
                                         Ok(_) => {
                                             self.commit_connection(ctx.state, &node, &port);
-                                            self.notice = "Connection updated".into();
+                                            self.say(t("image-editor-connected"));
                                         }
                                         Err(_) => {
-                                            self.notice = "Those steps cannot be connected; the previous path is unchanged".into();
+                                            self.say(t("image-editor-connect-refused"));
                                         }
                                     }
                                 } else {
@@ -2615,35 +2844,35 @@ impl Widget for ImageEditorApp {
                 {
                     self.redo(ctx.state);
                     *ctx.handled = true;
-                } else if self.advanced_graph
+                } else if self.graph_shown()
                     && self.editor.is_connecting()
                     && self.graph_keyboard_target.is_some()
                     && matches!(event.logical_key, Key::Named(NamedKey::Tab))
                 {
                     self.cycle_keyboard_connection(ctx.modifiers.state().shift_key());
                     *ctx.handled = true;
-                } else if self.advanced_graph
+                } else if self.graph_shown()
                     && self.editor.is_connecting()
                     && self.graph_keyboard_target.is_some()
                     && matches!(event.logical_key, Key::Named(NamedKey::Enter))
                 {
                     self.finish_keyboard_connection(ctx.state);
                     *ctx.handled = true;
-                } else if self.advanced_graph
+                } else if self.graph_shown()
                     && self.editor.is_connecting()
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
                 {
                     self.editor.cancel_connection();
                     self.graph_keyboard_target = None;
-                    self.notice = "Connection cancelled".into();
+                    self.say(t("image-editor-connect-cancelled"));
                     *ctx.handled = true;
-                } else if self.advanced_graph
+                } else if self.graph_shown()
                     && ctx.modifiers.state().control_key()
                     && matches!(event.logical_key, Key::Named(NamedKey::Enter))
                 {
                     self.begin_keyboard_connection();
                     *ctx.handled = true;
-                } else if self.advanced_graph
+                } else if self.graph_shown()
                     && ctx.modifiers.state().alt_key()
                     && matches!(
                         event.logical_key,
@@ -2692,12 +2921,8 @@ impl Widget for ImageEditorApp {
                         );
                     }
                     *ctx.handled = true;
-                } else if matches!(event.logical_key, Key::Named(NamedKey::Escape))
-                    && self.more_open
-                {
-                    self.more_open = false;
-                    *ctx.handled = true;
                 } else if matches!(&event.logical_key,Key::Character(s) if s.eq_ignore_ascii_case("g"))
+                    && self.has_image()
                 {
                     self.advanced_graph = !self.advanced_graph;
                     *ctx.handled = true;
@@ -2765,11 +2990,7 @@ impl Widget for ImageEditorApp {
                         self.editor.select_only(self.project.output.clone());
                         self.rendered_project = None;
                         self.rebuild_crop_editor();
-                        self.notice = if removed == 1 {
-                            "Adjustment removed. Later steps remain connected.".into()
-                        } else {
-                            format!("Removed {removed} adjustments. Later steps remain connected.")
-                        };
+                        self.say(t_args("image-editor-removed", &[("count", removed.into())]));
                     }
                     *ctx.handled = true;
                 }
@@ -2793,7 +3014,7 @@ impl Widget for ImageEditorApp {
         self.rect
     }
     fn cursor_shape(&self, point: Point) -> Option<ui::winit::window::CursorIcon> {
-        if self.advanced_graph && self.graph_rect.contains(point) {
+        if self.graph_shown() && self.graph_rect.contains(point) {
             Some(
                 if self.editor.is_connecting() || self.graph_port_at(point, true).is_some() {
                     ui::winit::window::CursorIcon::Crosshair
@@ -2817,11 +3038,12 @@ impl Widget for ImageEditorApp {
             || self.graph_connection_touch.is_some()
             || self.editor.is_panning()
             || self.panning_from.is_some()
+            || self.toolbar.wants_pointer_capture()
     }
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut out = vec![
             ("canvas".into(), self.canvas_rect),
-            ("adjustments".into(), self.stack_rect),
+            ("adjustments".into(), self.list_rect),
             ("inspector".into(), self.inspector_rect),
         ];
         out.extend(
@@ -2908,40 +3130,60 @@ impl Widget for ImageEditorApp {
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let mut children = self
-            .toolbar
+            .header_buttons
             .iter()
-            .filter(|(_, button)| button.get_rect().area() > 0.0)
-            .filter_map(|(_, button)| button.accessibility())
+            .map(|(_, button)| button)
+            .chain(std::iter::once(&self.history))
+            .filter_map(Widget::accessibility)
             .collect::<Vec<_>>();
-        if !self.advanced_graph && self.preview.is_none() {
+        if let Some(toolbar) = self.toolbar.accessibility()
+            && !toolbar.children.is_empty()
+        {
+            children.push(toolbar);
+        }
+        let graph = self.graph_shown();
+        if !graph && self.preview.is_none() {
+            if let Some(mut empty) = self.empty_state.accessibility() {
+                let action = self.empty_state.action_rect();
+                for child in &mut empty.children {
+                    child.bounds = Some(action.into());
+                }
+                children.push(empty.with_bounds(self.canvas_rect));
+            }
+        } else if !graph {
             children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Open image")
-                    .with_action_target("image-editor.empty.open")
-                    .with_bounds(self.empty_open.get_rect())
-                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Image)
+                    .with_name(t(if self.compare_original {
+                        "image-editor-original-preview"
+                    } else {
+                        "image-editor-edited-preview"
+                    }))
+                    .with_bounds(self.canvas_rect),
             );
         }
-        children.push(
-            AccessNode::new(Role::Image).with_name(if self.compare_original {
-                "Original image"
-            } else {
-                "Live edited image"
-            }),
-        );
-        if let Some(crop) = self.crop_editor.as_ref()
+        if !graph
+            && let Some(crop) = self.crop_editor.as_ref()
             && let Some(access) = crop.accessibility()
         {
             children.push(access);
         }
         let contributing = self.project.graph.contributing_nodes("output");
+        let name_of = |id: &str| -> String {
+            match id {
+                "source" => self.project.name.clone(),
+                _ => operation_label(self.project.operations.get(id))
+                    .or_else(|| self.project.graph.nodes.get(id).map(|n| n.title.clone()))
+                    .unwrap_or_default(),
+            }
+        };
         children.extend(
             self.project
                 .graph
                 .nodes
                 .iter()
+                .filter(|(id, _)| graph || (id.as_str() != "source" && id.as_str() != "output"))
                 .map(|(id, node)| {
-                    let bounds = if self.advanced_graph {
+                    let bounds = if graph {
                         self.node_rect(id)
                     } else {
                         self.step_rects
@@ -2949,14 +3191,14 @@ impl Widget for ImageEditorApp {
                             .find_map(|(candidate, rect)| (candidate == id).then_some(*rect))
                     };
                     let mut access = AccessNode::new(Role::Button)
-                        .with_name(node.title.clone())
-                        .with_value(if !contributing.contains(id) {
-                            "Not in final image"
+                        .with_name(name_of(id))
+                        .with_value(t(if !contributing.contains(id) {
+                            "image-editor-unused"
                         } else if node.enabled {
-                            "Enabled"
+                            "image-editor-enabled"
                         } else {
-                            "Bypassed"
-                        })
+                            "image-editor-bypassed"
+                        }))
                         .with_action_target(format!("image-editor.step.{id}"))
                         .with_state(AccessState {
                             focusable: true,
@@ -2970,86 +3212,75 @@ impl Widget for ImageEditorApp {
                 })
                 .collect::<Vec<_>>(),
         );
-        if self.advanced_graph {
+        if graph {
             for (id, node) in &self.project.graph.nodes {
-                if let (Some(port), Some(center)) =
-                    (node.outputs.first(), self.output_port_center(id))
+                let step = name_of(id);
+                if let (Some(_), Some(center)) = (node.outputs.first(), self.output_port_center(id))
                 {
                     children.push(
                         AccessNode::new(Role::Button)
-                            .with_name(format!("Connect from {} {}", node.title, port.label))
+                            .with_name(t_args(
+                                "image-editor-connect-from",
+                                &[("step", step.as_str().into())],
+                            ))
                             .with_action_target(format!("image-editor.output.{id}"))
-                            .with_bounds(Rect::from_center_size(center, (44.0, 44.0)))
+                            .with_bounds(Self::port_target(center))
                             .with_state(AccessState::new().focusable(true)),
                     );
                 }
-                if let (Some(port), Some(center)) =
-                    (node.inputs.first(), self.input_port_center(id))
-                {
+                if let (Some(_), Some(center)) = (node.inputs.first(), self.input_port_center(id)) {
                     children.push(
                         AccessNode::new(Role::Button)
-                            .with_name(format!("Connect to {} {}", node.title, port.label))
+                            .with_name(t_args(
+                                "image-editor-connect-to",
+                                &[("step", step.as_str().into())],
+                            ))
                             .with_action_target(format!("image-editor.input.{id}"))
-                            .with_bounds(Rect::from_center_size(center, (44.0, 44.0)))
+                            .with_bounds(Self::port_target(center))
                             .with_state(AccessState::new().focusable(true)),
                     );
                 }
             }
         }
-        if !self.advanced_graph {
-            if let Some((_, value)) = self.selected_slider() {
-                let name = self
-                    .editor
-                    .selection
-                    .iter()
-                    .next()
-                    .and_then(|id| self.project.graph.nodes.get(id))
-                    .map(|node| node.title.as_str())
-                    .unwrap_or("Image adjustment");
-                children.push(
-                    AccessNode::new(Role::Slider)
-                        .with_name(name)
-                        .with_value(value)
-                        .with_action_target("image-editor.adjust.slider")
-                        .with_bounds(self.inspector_slider_rect())
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .focused(self.inspector_focused),
-                        ),
-                );
-            } else if self
-                .editor
-                .selection
-                .iter()
-                .next()
-                .and_then(|id| self.project.operations.get(id))
-                .is_some_and(|operation| matches!(operation, Operation::Rotate { .. }))
-            {
-                let (left, right) = self.inspector_controls();
-                children.extend([
-                    AccessNode::new(Role::Button)
-                        .with_name("Rotate left")
-                        .with_action_target("image-editor.adjust.decrease")
-                        .with_bounds(left)
-                        .with_state(AccessState::new().focusable(true)),
-                    AccessNode::new(Role::Button)
-                        .with_name("Rotate right")
-                        .with_action_target("image-editor.adjust.increase")
-                        .with_bounds(right)
-                        .with_state(AccessState::new().focusable(true)),
-                ]);
-            }
-            if self.selected_is_removable() {
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Remove selected adjustment")
-                        .with_description("Later steps remain connected; this can be undone")
-                        .with_action_target("image-editor.adjust.remove")
-                        .with_bounds(self.inspector_remove_rect())
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
+        if let Some((_, value)) = self.selected_slider()
+            && self.slider_rect.area() > 0.0
+        {
+            children.push(
+                AccessNode::new(Role::Slider)
+                    .with_name(self.selected_parameter_label())
+                    .with_value(value)
+                    .with_action_target("image-editor.adjust.slider")
+                    .with_bounds(self.slider_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.inspector_focused),
+                    ),
+            );
+        }
+        let (left, right) = self.rotate_rects;
+        if left.area() > 0.0 {
+            children.extend([
+                AccessNode::new(Role::Button)
+                    .with_name(t("image-editor-rotate-left"))
+                    .with_action_target("image-editor.adjust.decrease")
+                    .with_bounds(left)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name(t("image-editor-rotate-right"))
+                    .with_action_target("image-editor.adjust.increase")
+                    .with_bounds(right)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        if self.selected_is_removable() && self.remove_rect.area() > 0.0 {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(t("image-editor-remove"))
+                    .with_action_target("image-editor.adjust.remove")
+                    .with_bounds(self.remove_rect)
+                    .with_state(AccessState::new().focusable(true)),
+            );
         }
         // Action targets already have stable keys. Key passive/container
         // siblings too so this custom canvas never mixes identity- and
@@ -3066,11 +3297,11 @@ impl Widget for ImageEditorApp {
         }
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name(if self.advanced_graph {
-                    "Advanced image processing graph"
+                .with_name(t(if graph {
+                    "image-editor-graph-canvas"
                 } else {
-                    "Image editor canvas and adjustment stack"
-                })
+                    "image-editor-canvas"
+                }))
                 .with_value(self.notice.clone())
                 .with_state(AccessState {
                     focusable: true,
@@ -3087,6 +3318,16 @@ impl Widget for ImageEditorApp {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with("toolbar.") {
+            let handled = self
+                .toolbar
+                .perform_semantic_action(target, action, state, path);
+            if let Some(command) = self.toolbar_pending.take() {
+                let (state, _) = ui::doc::document(state, path);
+                self.run_toolbar(state, command);
+            }
+            return handled;
+        }
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("crop.")
             && let Some(editor) = self.crop_editor.as_mut()
@@ -3125,23 +3366,9 @@ impl Widget for ImageEditorApp {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        let toolbar_command = match target {
-            "image-editor.open" => Some(ToolbarCommand::Open),
-            "image-editor.undo" => Some(ToolbarCommand::Undo),
-            "image-editor.redo" => Some(ToolbarCommand::Redo),
-            "image-editor.exposure" => Some(ToolbarCommand::Exposure),
-            "image-editor.contrast" => Some(ToolbarCommand::Contrast),
-            "image-editor.colour" => Some(ToolbarCommand::Colour),
-            "image-editor.b&w" => Some(ToolbarCommand::Mono),
-            "image-editor.rotate" => Some(ToolbarCommand::Rotate),
-            "image-editor.crop" => Some(ToolbarCommand::Crop),
-            "image-editor.fit" => Some(ToolbarCommand::Fit),
-            "image-editor.compare" => Some(ToolbarCommand::Compare),
-            "image-editor.graph" => Some(ToolbarCommand::Graph),
-            "image-editor.more" => Some(ToolbarCommand::More),
-            "image-editor.export" => Some(ToolbarCommand::Export),
-            _ => None,
-        };
+        let toolbar_command = ToolbarCommand::ALL
+            .into_iter()
+            .find(|command| command.target() == target);
         if let Some(command) = toolbar_command {
             self.run_toolbar(state, command);
             return true;
@@ -3226,10 +3453,10 @@ impl ui::resources::PublishesResources for ImageEditorApp {
 impl ImageEditorApp {
     fn control_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut out = Vec::new();
-        for (_, button) in &self.toolbar {
+        for (_, button) in &self.header_buttons {
             out.extend(ui::resources::resources(button, doc));
         }
-        out.extend(ui::resources::resources(&self.empty_open, doc));
+        out.extend(ui::resources::resources(&self.history, doc));
         out
     }
 
@@ -3293,7 +3520,7 @@ impl ui::widget::controls::ActionControls for ImageEditorApp {
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        for (_, button) in &self.toolbar {
+        for (_, button) in &self.header_buttons {
             if button.get_rect().area() > 0.0
                 && let Some(id) = button.test_id()
             {
@@ -3342,15 +3569,9 @@ impl ImageEditorApp {
                 if !self.project.graph.nodes.contains_key(&id) {
                     return Err("that image-editor resource no longer exists".into());
                 }
-                self.editor.select_only(id.clone());
+                self.editor.select_only(id);
                 self.rebuild_crop_editor();
-                self.notice = if id == "source" {
-                    "Original source selected".into()
-                } else if id == self.project.output {
-                    "Final export selected".into()
-                } else {
-                    "Adjustment selected".into()
-                };
+                self.notice.clear();
             }
         }
         Ok(true)
@@ -3371,14 +3592,14 @@ impl ImageEditorApp {
         {
             self.resource_result = Some(match self.export_beside_source() {
                 Ok(notice) => {
-                    self.notice = notice;
+                    self.say(notice);
                     tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
                         output: tilo_actions::ActionOutput::default(),
                     }
                 }
                 Err(message) => {
-                    self.notice = message.clone();
+                    self.say(message.clone());
                     tilo_actions::InvocationUpdate::Failed {
                         invocation,
                         error: tilo_actions::ActionFailure {
@@ -3418,12 +3639,12 @@ mod portal_tests {
     use image::{Rgba, RgbaImage};
     use ui::headless::Framed;
 
-    /// Responsive layout: the toolbar compacts before collisions, and every published
-    /// target (empty-state open, phone toolbar, More menu, inspector, graph ports) is
-    /// touch sized, disjoint and semantically reachable.
+    /// Responsive layout: the header never overlaps and sends what does not fit
+    /// to the toolbar's More menu, and every published target (empty-state
+    /// open, header, inspector, graph ports) is placed, disjoint and
+    /// semantically reachable.
     #[test]
     fn responsive_layout_publishes_touch_sized_disjoint_targets() {
-        toolbar_compacts_before_desktop_actions_can_collide();
         empty_state_open_is_a_real_touch_sized_semantic_button();
         phone_toolbar_targets_are_touch_sized_and_never_overlap();
         phone_more_exposes_every_tool_as_disjoint_touch_targets();
@@ -3431,22 +3652,20 @@ mod portal_tests {
         advanced_graph_exposes_touch_sized_accessible_ports();
     }
 
-    fn toolbar_compacts_before_desktop_actions_can_collide() {
-        assert!(compact_toolbar_for(820.0));
-        assert!(compact_toolbar_for(1_024.0));
-        assert!(!compact_toolbar_for(1_280.0));
-    }
-
     fn empty_state_open_is_a_real_touch_sized_semantic_button() {
         let mut app = framed(ImageEditorApp::new(), 390.0, 760.0);
-        let rect = app.empty_open.get_rect();
-        assert!(rect.width() >= 44.0 && rect.height() >= 44.0);
+        let rect = app.empty_state.action_rect();
+        let target = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
+        assert!(rect.width() >= target && rect.height() >= target);
         assert!(app.canvas_rect.contains(rect.center()));
 
         let access = app.accessibility().unwrap();
         assert!(access.children.iter().any(|child| {
-            child.action_target.as_deref() == Some("image-editor.empty.open")
-                && child.role == Role::Button
+            child.children.iter().any(|action| {
+                action.action_target.as_deref() == Some("image-editor.empty.open")
+                    && action.role == Role::Button
+                    && action.bounds.is_some()
+            })
         }));
         let mut state = AutoCommit::new();
         assert!(app.perform_semantic_action(
@@ -3491,19 +3710,67 @@ mod portal_tests {
         )
     }
 
+    /// The bundled sample with `steps` added in order.
+    fn sample_project(steps: &[(&str, Operation)]) -> Project {
+        let mut project = Project::blank();
+        if let Some(Operation::Source { path }) = project.operations.get_mut("source") {
+            *path = crate::engine::SAMPLE_SOURCE.into();
+        }
+        project.name = "Harbour light".into();
+        for (id, operation) in steps {
+            let title = operation_label(Some(operation)).unwrap_or_default();
+            assert!(project.insert_before_output(id, &title, operation.clone()));
+        }
+        project
+    }
+
+    /// `project` open in the editor, its first frame run at `width`x`height`.
+    fn framed_project(project: &Project, width: f32, height: f32) -> Framed<ImageEditorApp> {
+        let mut state = ui::State::new();
+        ProjectDoc::write(&mut state.doc, project);
+        framed_state(state, width, height)
+    }
+
+    fn framed_state(state: ui::State, width: f32, height: f32) -> Framed<ImageEditorApp> {
+        Framed::new(
+            state,
+            ImageEditorApp::new(),
+            ui::headless::viewport((width, height)),
+            ui::Theme::dark(),
+        )
+    }
+
+    /// Select `id` and run a frame so the inspector lays its settings out.
+    fn select(app: &mut Framed<ImageEditorApp>, id: &str) {
+        app.editor.select_only(id);
+        app.rebuild_crop_editor();
+        Framed::harness_mut(app).relayout();
+    }
+
     fn phone_toolbar_targets_are_touch_sized_and_never_overlap() {
-        for width in [360.0, 390.0] {
-            let app = framed(ImageEditorApp::new(), width, 640.0);
-            let visible = app
-                .toolbar
+        let project = sample_project(&[("exposure", Operation::Exposure { stops: 0.2 })]);
+        for width in [360.0, 390.0, 800.0, 1_280.0] {
+            let app = framed_project(&project, width, 640.0);
+            let control = ButtonFace::height(ControlSize::Regular, &ui::Theme::dark());
+            let mut placed = app
+                .header_buttons
                 .iter()
-                .filter_map(|(_, button)| {
-                    (button.get_rect().area() > 0.0).then_some(button.get_rect())
-                })
+                .map(|(_, button)| button.get_rect())
                 .collect::<Vec<_>>();
-            assert_eq!(visible.len(), 5);
-            assert!(visible.iter().all(|rect| rect.height() >= 44.0));
-            assert!(visible.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
+            assert_eq!(placed.len(), 4);
+            assert!(placed.iter().all(|rect| rect.height() >= control));
+            assert!(placed.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
+            placed.push(app.toolbar.get_rect());
+            placed.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+            assert!(
+                placed.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
+                "header controls overlap at {width}: {placed:?}"
+            );
+            assert!(
+                placed
+                    .iter()
+                    .all(|rect| app.header_rect.contains(rect.center()))
+            );
         }
     }
 
@@ -3553,7 +3820,7 @@ mod portal_tests {
         let mut state = AutoCommit::new();
         let original = app.project.clone();
 
-        app.add(&mut state, Operation::Exposure { stops: 0.5 }, "Exposure");
+        app.add(&mut state, Operation::Exposure { stops: 0.5 });
         let edited = app.project.clone();
         assert_ne!(edited, original);
         assert_eq!(app.undo_stack.len(), 1);
@@ -3573,11 +3840,7 @@ mod portal_tests {
         let mut document = AutoCommit::new();
         ProjectDoc::seed(&mut document);
 
-        app.add(
-            &mut document,
-            Operation::Exposure { stops: 0.5 },
-            "Exposure",
-        );
+        app.add(&mut document, Operation::Exposure { stops: 0.5 });
         assert_eq!(
             app.actions.last_dispatched().unwrap().type_id,
             ADD_ADJUSTMENT_TYPE
@@ -3602,7 +3865,7 @@ mod portal_tests {
     fn continuous_adjustment_is_one_undoable_gesture() {
         let mut app = ImageEditorApp::new();
         let mut state = AutoCommit::new();
-        app.add(&mut state, Operation::Exposure { stops: 0.5 }, "Exposure");
+        app.add(&mut state, Operation::Exposure { stops: 0.5 });
         app.undo_stack.clear();
         let before = app.project.clone();
 
@@ -3618,8 +3881,10 @@ mod portal_tests {
     }
 
     fn advanced_graph_exposes_touch_sized_accessible_ports() {
-        let mut app = framed(ImageEditorApp::new(), 1_280.0, 800.0);
+        let project = sample_project(&[("exposure", Operation::Exposure { stops: 0.2 })]);
+        let mut app = framed_project(&project, 1_280.0, 800.0);
         app.advanced_graph = true;
+        Framed::harness_mut(&mut app).relayout();
         let access = app.accessibility().unwrap();
         let ports = access
             .children
@@ -3639,37 +3904,30 @@ mod portal_tests {
                 .to_rect();
             assert!(bounds.width() >= 44.0);
             assert!(bounds.height() >= 44.0);
-            assert!(
-                port.name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Connect "))
-            );
+            assert!(app.graph_rect.contains(bounds.center()));
         }
     }
 
     fn phone_more_exposes_every_tool_as_disjoint_touch_targets() {
+        let project = sample_project(&[("exposure", Operation::Exposure { stops: 0.2 })]);
+        let wide = framed_project(&project, 1_280.0, 800.0);
+        assert!(
+            !wide.toolbar.has_overflow(),
+            "every command fits a wide window"
+        );
         for width in [360.0, 390.0] {
-            let mut app = ImageEditorApp::new();
-            app.more_open = true;
-            let app = framed(app, width, 640.0);
-            let menu_targets = app
-                .toolbar
-                .iter()
-                .filter_map(|(_, button)| {
-                    let rect = button.get_rect();
-                    (rect.area() > 0.0 && app.more_rect.contains(rect.center())).then_some(rect)
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(menu_targets.len(), 8);
-            assert!(menu_targets.iter().all(|rect| rect.height() >= 44.0));
-            for (index, rect) in menu_targets.iter().enumerate() {
-                assert!(app.more_rect.contains(rect.center()));
-                assert!(
-                    menu_targets[index + 1..]
-                        .iter()
-                        .all(|other| rect.intersect(*other).area() == 0.0)
-                );
-            }
+            let app = framed_project(&project, width, 640.0);
+            assert!(
+                app.toolbar.has_overflow(),
+                "a phone keeps the commands that do not fit in More"
+            );
+            let access = app.toolbar.accessibility().unwrap();
+            assert!(
+                access
+                    .children
+                    .iter()
+                    .any(|child| { child.action_target.as_deref() == Some("toolbar.overflow") })
+            );
         }
     }
 
@@ -3709,23 +3967,26 @@ mod portal_tests {
         recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         app.request_open();
         app.poll_picker(&mut doc);
-        assert_eq!(app.notice, "Open cancelled");
+        assert!(app.notice.is_empty(), "a cancelled pick says nothing");
         assert!(app.picker.is_none());
     }
 
     fn compact_inspector_controls_remain_touch_sized_and_disjoint() {
-        let mut app = ImageEditorApp::new();
-        app.inspector_rect = Rect::new(12.0, 680.0, 608.0, 740.0);
-        let (minus, plus) = app.inspector_controls();
-        let remove = app.inspector_remove_rect();
-        assert!(minus.width() >= 44.0 && minus.height() >= 44.0);
-        assert!(plus.width() >= 44.0 && plus.height() >= 44.0);
-        assert!(remove.width() >= 44.0 && remove.height() >= 44.0);
+        let project = sample_project(&[("rotate", Operation::Rotate { quarter_turns: 1 })]);
+        let mut app = framed_project(&project, 390.0, 760.0);
+        select(&mut app, "rotate");
+        let (minus, plus) = app.rotate_rects;
+        let remove = app.remove_rect;
+        let target = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
+        for rect in [minus, plus] {
+            assert!(rect.width() >= target && rect.height() >= target);
+        }
+        assert!(remove.height() >= target);
         assert!(minus.x1 < plus.x0);
-        assert!(plus.x1 < remove.x0);
-        assert!(app.inspector_rect.contains(minus.center()));
-        assert!(app.inspector_rect.contains(plus.center()));
-        assert!(app.inspector_rect.contains(remove.center()));
+        assert!(plus.y1 < remove.y0 || remove.y1 < minus.y0);
+        for rect in [minus, plus, remove] {
+            assert!(app.inspector_rect.contains(rect.center()));
+        }
     }
 
     /// The inspector slider and its assistive counterparts do real graph work.
@@ -3760,14 +4021,12 @@ mod portal_tests {
     }
 
     fn inspector_semantics_offer_only_controls_that_do_real_work() {
-        let mut app = ImageEditorApp::new();
-        app.inspector_rect = Rect::new(12.0, 680.0, 608.0, 740.0);
-        assert!(app.project.insert_before_output(
-            "exposure",
-            "Exposure",
-            Operation::Exposure { stops: 0.0 },
-        ));
-        app.editor.select_only("exposure");
+        let project = sample_project(&[
+            ("exposure", Operation::Exposure { stops: 0.0 }),
+            ("mono", Operation::Grayscale),
+        ]);
+        let mut app = framed_project(&project, 1_280.0, 800.0);
+        select(&mut app, "exposure");
         let access = app.accessibility().unwrap();
         let slider = access
             .children
@@ -3775,13 +4034,14 @@ mod portal_tests {
             .find(|node| node.action_target.as_deref() == Some("image-editor.adjust.slider"))
             .expect("numeric adjustment has one real slider");
         assert_eq!(slider.role, Role::Slider);
-        assert!(slider.bounds.unwrap().to_rect().height() >= 44.0);
-
+        let target = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
+        assert!(slider.bounds.unwrap().to_rect().height() >= target);
         assert!(
-            app.project
-                .insert_before_output("mono", "Black and white", Operation::Grayscale,)
+            slider.bounds.unwrap().to_rect().width() >= 120.0,
+            "the track keeps its minimum travel"
         );
-        app.editor.select_only("mono");
+
+        select(&mut app, "mono");
         let access = app.accessibility().unwrap();
         assert!(access.children.iter().all(|node| {
             !node.action_target.as_deref().is_some_and(|target| {
@@ -3795,7 +4055,7 @@ mod portal_tests {
         }));
         assert!(access.children.iter().any(|node| {
             node.action_target.as_deref() == Some("image-editor.adjust.remove")
-                && node.bounds.unwrap().to_rect().height() >= 44.0
+                && node.bounds.unwrap().to_rect().height() >= target
         }));
     }
 
@@ -3882,17 +4142,20 @@ mod portal_tests {
     }
 
     fn long_adjustment_stacks_scroll_to_every_step_and_clamp() {
-        let mut app = ImageEditorApp::new();
-        app.rect = Rect::new(0.0, 0.0, 390.0, 760.0);
-        app.stack_rect = Rect::new(0.0, 410.0, 390.0, 712.0);
-        app.inspector_rect = Rect::new(12.0, 644.0, 378.0, 704.0);
-        for index in 0..12 {
-            assert!(app.project.insert_before_output(
-                &format!("exposure-{index}"),
-                "Exposure",
-                Operation::Exposure { stops: 0.0 },
-            ));
-        }
+        let steps = (0..12)
+            .map(|index| {
+                (
+                    format!("exposure-{index}"),
+                    Operation::Exposure { stops: 0.0 },
+                )
+            })
+            .collect::<Vec<_>>();
+        let steps = steps
+            .iter()
+            .map(|(id, operation)| (id.as_str(), operation.clone()))
+            .collect::<Vec<_>>();
+        let project = sample_project(&steps);
+        let mut app = framed_project(&project, 390.0, 760.0);
 
         let maximum = app.max_stack_scroll();
         assert!(maximum > 0.0);
@@ -3912,11 +4175,7 @@ mod portal_tests {
         let mut document = AutoCommit::new();
         ProjectDoc::seed(&mut document);
         assert!(app.open_path(&mut document, &source));
-        app.add(
-            &mut document,
-            Operation::Exposure { stops: 1.0 },
-            "Exposure",
-        );
+        app.add(&mut document, Operation::Exposure { stops: 1.0 });
 
         app.rebuild_preview();
         let preview_ids = app
@@ -3941,11 +4200,7 @@ mod portal_tests {
         ProjectDoc::seed(&mut document);
         assert!(app.open_path(&mut document, &source));
         app.run_toolbar(&mut document, ToolbarCommand::Crop);
-        app.add(
-            &mut document,
-            Operation::Contrast { amount: 0.2 },
-            "Contrast",
-        );
+        app.add(&mut document, Operation::Contrast { amount: 0.2 });
         let crop = app
             .project
             .operations
@@ -3981,6 +4236,6 @@ mod portal_tests {
                 .values()
                 .any(|operation| matches!(operation, Operation::Contrast { .. }))
         );
-        assert_eq!(app.notice, "Crop updated. Later steps were recomputed.");
+        assert!(app.notice.is_empty(), "a crop drag says nothing");
     }
 }
