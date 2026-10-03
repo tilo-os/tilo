@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Dev image only: the page the VM acceptance suite opens in Chromium. The
+     banner keeps the first frame from being a flat fill; the text field takes
+     focus so typed keys and pasted text land in it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tilo acceptance</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; background: #f4f1ea; color: #1d1d1b; }
+  header { padding: 24px 32px; background: linear-gradient(90deg, #1f4e79, #2e8b57, #c0392b); color: #fff; }
+  h1 { margin: 0; font-size: 28px; }
+  textarea { display: block; box-sizing: border-box; margin: 24px 32px; width: calc(100% - 64px);
+             height: 240px; font: 20px monospace; border: 2px solid #1f4e79; }
+</style>
+</head>
+<body>
+<header><h1>Tilo acceptance: typed and pasted text</h1></header>
+<textarea id="text" autofocus spellcheck="false"></textarea>
+<script>document.getElementById("text").focus();</script>
+</body>
+</html>

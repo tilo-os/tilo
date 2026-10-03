@@ -69,7 +69,7 @@ use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_to
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
@@ -673,6 +673,9 @@ pub struct State {
     /// XDG popups are separate surfaces, not tabs.  They are captured and
     /// composed above their parent through this registry.
     pub(crate) popups: Vec<TrackedPopup>,
+    /// Answers to `xdg_wm_base.ping`, per client: how a screenshot after
+    /// input learns the clients in it finished answering the input.
+    pub shell_pongs: crate::compositor::client_settle::Pongs,
     pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
@@ -1161,6 +1164,7 @@ impl State {
             content_type_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
+            shell_pongs: crate::compositor::client_settle::Pongs::default(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             seat_input_method,
@@ -3930,6 +3934,11 @@ impl State {
         self.input_method_popup_surfaces()
     }
 
+    /// The xdg popups mapped over a window, in the order they opened.
+    pub fn xdg_popups(&self) -> impl Iterator<Item = &PopupSurface> + '_ {
+        self.popups.iter().map(|popup| &popup.surface)
+    }
+
     pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
         self.popups
             .iter()
@@ -4413,6 +4422,14 @@ fn logical_extent(px: f64, scale: f64) -> i32 {
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
+    }
+
+    fn client_pong(&mut self, client: ShellClient) {
+        self.shell_pongs.note(client);
+    }
+
+    fn client_destroyed(&mut self, client: ShellClient) {
+        self.shell_pongs.forget(&client);
     }
 
     /// A client has created an `xdg_toplevel`. Adopt it into the active

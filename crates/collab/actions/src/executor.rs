@@ -65,8 +65,11 @@ fn envelope_for(
     context: Option<ActionContext>,
 ) -> ActionEnvelope {
     let base = doc.get_heads();
+    // The action declares what it is; a context may only say a content
+    // action is nobody's step this time (a record's first-run seed).
     let change = action.change_kind();
     let context = match context {
+        Some(context) if change.is_content() => Some(context),
         Some(context) => Some(context.with_change(change)),
         None => (!change.is_content()).then(|| ActionContext::default().with_change(change)),
     };

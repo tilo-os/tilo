@@ -11,6 +11,8 @@ pub mod control_custody_raw_holder;
 pub mod framework;
 #[path = "history_actions.rs"]
 pub mod history_actions;
+#[path = "identity.rs"]
+pub mod identity;
 #[path = "incremental.rs"]
 pub mod incremental;
 #[path = "item_actions.rs"]
