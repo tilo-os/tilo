@@ -7,6 +7,8 @@
 pub mod golden_path;
 #[path = "incremental.rs"]
 pub mod incremental;
+#[path = "kinds.rs"]
+pub mod kinds;
 #[path = "schema.rs"]
 pub mod schema;
 #[path = "shape.rs"]
