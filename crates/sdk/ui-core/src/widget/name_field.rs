@@ -30,7 +30,7 @@ use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::richtext::RichTextLayout;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 
 /// Composes `base` with a translation for text placement. Affine
@@ -222,8 +222,8 @@ impl NameField {
         }
     }
 
-    /// Paint the field into `rect` at `size`, with a caret at the end of the
-    /// text.
+    /// Paint the field into `rect` in `style` (a resolved role), with a caret
+    /// at the end of the text.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -231,7 +231,7 @@ impl NameField {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        size: f32,
+        style: &TextStyle,
     ) {
         if rect.width() < 24.0 || rect.height() < 12.0 {
             return;
@@ -249,7 +249,7 @@ impl NameField {
                 colors.text_primary,
             )
         };
-        self.reshape_if_stale(tr, &display, size);
+        self.reshape_if_stale(tr, &display, style);
 
         let mut visual = self.visual.borrow_mut();
         // Just-populated above (or already current) — but degrade to
@@ -328,16 +328,17 @@ impl NameField {
     }
 
     /// Re-shapes `display` into `self.visual` if the cached layout is
-    /// missing or stale (text, size, buffer length or preedit cursor
+    /// missing or stale (text, style, buffer length or preedit cursor
     /// changed since the last shape).
-    fn reshape_if_stale(&self, tr: &mut TextRenderer, display: &str, size: f32) {
-        let style = TextStyle::new(size).with_family(FontChoice::SansSerif);
+    fn reshape_if_stale(&self, tr: &mut TextRenderer, display: &str, style: &TextStyle) {
         let signature = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut hash = DefaultHasher::new();
             display.hash(&mut hash);
-            size.to_bits().hash(&mut hash);
+            style.size.to_bits().hash(&mut hash);
+            style.weight.hash(&mut hash);
+            style.family.hash(&mut hash);
             self.buffer.len().hash(&mut hash);
             self.preedit_cursor.hash(&mut hash);
             hash.finish()
@@ -352,7 +353,7 @@ impl NameField {
             let mut layout = RichTextLayout::shape_plain_browser(
                 &mut tr.font_system,
                 display,
-                &style,
+                style,
                 None,
                 browser_emoji,
             );
@@ -386,8 +387,8 @@ impl NameField {
     }
 }
 
-/// Shorten `s` until it fits `budget` pixels at `size`, appending an ellipsis
-/// when anything was dropped.
+/// Shorten `s` until it fits `budget` pixels in `style`, appending an
+/// ellipsis when anything was dropped.
 ///
 /// Binary chop on the char index; `measure` is cheap and the common case (a short
 /// label in a wide slot) exits on the first measurement. Returns an empty string
@@ -396,15 +397,15 @@ impl NameField {
 ///
 /// Shared by every history surface: a version name that ellipsises one way in the
 /// activity pane and another on the version strip reads as two different names.
-pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
+pub fn fit(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> String {
     const ELLIPSIS: &str = "\u{2026}";
     if budget <= 0.0 {
         return String::new();
     }
-    if f64::from(tr.measure(s, size, None).0) <= budget {
+    if f64::from(tr.measure_style(s, None, style).0) <= budget {
         return s.to_string();
     }
-    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
+    let ell_w = f64::from(tr.measure_style(ELLIPSIS, None, style).0);
     if ell_w > budget {
         return String::new();
     }
@@ -418,7 +419,7 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
         // than relying on the invariant holding at every call site.
         let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
         let candidate: String = s.chars().take(mid).collect();
-        if f64::from(tr.measure(&candidate, size, None).0) <= inner {
+        if f64::from(tr.measure_style(&candidate, None, style).0) <= inner {
             lo = mid;
         } else {
             // `mid >= lo + 1 >= 1` whenever `lo < hi`, so this never
@@ -437,15 +438,15 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
 
 /// Keep the **tail** of `s`. What a person is typing is at the end, so a field
 /// that has run out of room drops the beginning, not the caret.
-pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
+pub fn fit_tail(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> String {
     const ELLIPSIS: &str = "\u{2026}";
     if budget <= 0.0 {
         return String::new();
     }
-    if f64::from(tr.measure(s, size, None).0) <= budget {
+    if f64::from(tr.measure_style(s, None, style).0) <= budget {
         return s.to_string();
     }
-    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
+    let ell_w = f64::from(tr.measure_style(ELLIPSIS, None, style).0);
     if ell_w > budget {
         return String::new();
     }
@@ -459,7 +460,7 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
         // invariant is ever wrong.
         let start = chars.len().saturating_sub(take.saturating_add(1));
         let candidate: String = chars.get(start..).unwrap_or(&[]).iter().collect();
-        if f64::from(tr.measure(&candidate, size, None).0) > inner {
+        if f64::from(tr.measure_style(&candidate, None, style).0) > inner {
             break;
         }
         take = take.saturating_add(1);
@@ -484,7 +485,7 @@ mod tests {
             &mut renderer,
             &Theme::dark(),
             rect,
-            14.0,
+            &Theme::dark().text(crate::tokens::TextRole::Body),
         );
     }
 
@@ -654,7 +655,8 @@ mod tests {
         {
             let mut tr = TextRenderer::new();
             let long = "a very long version name that will not fit in the box";
-            let shown = fit_tail(&mut tr, long, 13.0, 80.0);
+            let style = Theme::dark().text(crate::tokens::TextRole::Label);
+            let shown = fit_tail(&mut tr, long, &style, 80.0);
             assert!(shown.starts_with('\u{2026}'), "got {shown:?}");
             assert!(
                 long.ends_with(shown.trim_start_matches('\u{2026}')),
@@ -666,8 +668,9 @@ mod tests {
         // Case `a_box_squeezed_to_nothing_draws_nothing_rather_than_overflowing`.
         {
             let mut tr = TextRenderer::new();
-            assert_eq!(fit_tail(&mut tr, "anything", 13.0, 0.0), "");
-            assert_eq!(fit_tail(&mut tr, "anything", 13.0, -5.0), "");
+            let style = Theme::dark().text(crate::tokens::TextRole::Label);
+            assert_eq!(fit_tail(&mut tr, "anything", &style, 0.0), "");
+            assert_eq!(fit_tail(&mut tr, "anything", &style, -5.0), "");
         }
     }
 
@@ -679,13 +682,13 @@ mod tests {
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let field = NameField::new("مَرْحَبًا");
-        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));
         assert_eq!(
             renderer.take_browser_font_demands(),
             ["NotoSansArabic[wght].ttf"]
         );
         renderer.browser_font_failed();
-        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));
         assert_eq!(
             renderer.take_browser_font_demands(),
             ["NotoSansArabic[wght].ttf"]
@@ -696,7 +699,7 @@ mod tests {
                 std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
             )
             .unwrap();
-        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));
         assert!(
             field
                 .visual

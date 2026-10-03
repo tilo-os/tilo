@@ -75,6 +75,7 @@ use crate::compositor::surface_readback::{
     OwnedShmFrame, ReadbackError, buffer_to_rgba, owned_shm_to_rgba,
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
+use ui::TextRole;
 
 mod sheets;
 pub use sheets::{PointRoute, SheetLink};
@@ -2810,31 +2811,31 @@ impl Widget for ForeignSurfaceWidget {
         let tiers = theme.tokens.colors.on_content();
         let on_card = tiers.ink;
         let on_card_dim = tiers.ink_dim;
-        let size = theme.tokens.typography.scale.xl;
-        let (tw, _) = text_renderer.measure(&headline, size, None);
+        let style = theme.text(TextRole::Title);
+        let (tw, _) = text_renderer.measure_style(&headline, None, &style);
         let cx = self.rect.center().x;
-        let y = self.rect.center().y - f64::from(size) / 2.0;
-        text_renderer.draw_text(
+        let y = self.rect.center().y - f64::from(style.size) / 2.0;
+        text_renderer.draw_style(
             scene,
             &headline,
-            size,
             on_card,
             translated(transform, cx - f64::from(tw) / 2.0, y),
             None,
+            &style,
         );
-        let sm = theme.tokens.typography.scale.sm;
-        let (dw, _) = text_renderer.measure(&detail, sm, None);
-        text_renderer.draw_text(
+        let sm = theme.text(TextRole::Caption);
+        let (dw, _) = text_renderer.measure_style(&detail, None, &sm);
+        text_renderer.draw_style(
             scene,
             &detail,
-            sm,
             on_card_dim,
             translated(
                 transform,
                 cx - f64::from(dw) / 2.0,
-                y + f64::from(size) + 8.0,
+                y + f64::from(style.size) + 8.0,
             ),
             None,
+            &sm,
         );
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }

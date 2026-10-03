@@ -17,8 +17,9 @@ use crate::shell::i18n::t;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, RELATED_GAP, TOGGLE_H, TOGGLE_W,
-    centred_text_top, leading_glyph, paint_control, trailing_toggle, type_size,
+    centred_text_top, leading_glyph, paint_control, trailing_toggle,
 };
+use ui::TextRole;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VpnPaneOutcome {
@@ -344,11 +345,12 @@ impl QuickSettingsVpnPane {
                 theme,
                 &ToggleFace::new(toggle, profile.active).hovered(hovered),
             );
-            let name_size = type_size(text, theme.tokens.typography.scale.sm);
-            let status_size = type_size(text, theme.tokens.typography.scale.xs);
+            let name_style = theme.text(TextRole::Caption);
+            let status_style = theme.text(TextRole::Caption);
             let text_x = glyph.x1 + CONTROL_INSET;
             let text_width = (toggle.x0 - RELATED_GAP - text_x).max(1.0);
-            let name = text.elide_to_width(&profile.name, name_size, f64_to_f32_lossy(text_width));
+            let name =
+                text.elide_to_width_style(&profile.name, f64_to_f32_lossy(text_width), &name_style);
             let status = t(if profile.active {
                 "qs-connected"
             } else {
@@ -356,22 +358,24 @@ impl QuickSettingsVpnPane {
             });
             // Name and status are one measured block on the row's centre
             // line (HIG §7), not two lines pinned from the row's top.
-            let (_, name_h) = text.measure_weighted(&name, name_size, None, TextWeight::Medium);
-            let (_, status_h) = text.measure(&status, status_size, None);
+            let (_, name_h) = text.measure_style(
+                &name,
+                None,
+                &name_style.clone().with_weight(TextWeight::Medium),
+            );
+            let (_, status_h) = text.measure_style(&status, None, &status_style);
             let block_top = centred_text_top(*row, f64::from(name_h) + f64::from(status_h));
-            text.draw_text_weighted(
+            text.draw_style(
                 scene,
                 &name,
-                name_size,
                 colors.text_primary,
                 transform.pre_translate((text_x, block_top).into()),
                 None,
-                TextWeight::Medium,
+                &name_style.clone().with_weight(TextWeight::Medium),
             );
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &status,
-                status_size,
                 if profile.active {
                     colors.intent.inverted
                 } else {
@@ -379,6 +383,7 @@ impl QuickSettingsVpnPane {
                 },
                 transform.pre_translate((text_x, block_top + f64::from(name_h)).into()),
                 Some(f64_to_f32_lossy(text_width)),
+                &status_style,
             );
         }
     }

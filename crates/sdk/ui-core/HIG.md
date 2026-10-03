@@ -264,11 +264,14 @@ When commands or panes no longer fit, use wrapping, a labelled disclosure, or
 the existing overview/detail navigation. Preserve selected state and the return
 route through the transition.
 
-For custom text painting, measure and draw with the same style and width.
-Theme typography tokens are already resolved logical sizes; pass those styles
-through `TextRenderer::renderer_input_style` once before calling the legacy
-renderer-relative APIs. Base font sizes supplied to editor controls remain base
-sizes. Do not compensate for a scale mismatch with smaller fonts or offsets.
+For custom text painting, measure and draw with the same style and width:
+`theme.text(role)` (or the `PaintCtx` helpers `text_role`, `measure_role`,
+`line_box`, `text_role_in_band`). A role style is already scaled by the UI
+and text scale and the renderer paints it as given. Never build a
+`TextStyle::new(px)` for UI text and never multiply or divide a size by the
+text scale; do not compensate for a scale mismatch with smaller fonts or
+offsets. Text that is sized by its content (a canvas, a slide) uses
+`with_content_size` instead. See `docs/typography.md`.
 
 An empty state's title and action can exceed a physically small pane even after
 decoration is removed. Retained callers can use `EmptyState::into_scrollable()`;
@@ -730,17 +733,19 @@ fractional coordinate is two half-covered rows that fall under
 
 ### 9.6 Type and density
 
-Chrome type is a **compressed** version of the app scale — chrome labels a thing,
-it does not host prose.
+Chrome uses the same type roles as apps (`docs/typography.md`), from the
+compact end of the scale — chrome labels a thing, it does not host prose.
+There is no all-caps or letter-spaced chrome text; section headers are
+sentence case.
 
-| Use | Size | Weight | Colour |
-|---|---|---|---|
-| Panel title | `scale.base` (14) | `semibold` | `text_primary` |
-| Section header inside a Panel | `scale.xs` (10) | `medium` | `text_tertiary` |
-| Control label | `scale.sm` (12) | `medium` | `text_primary` |
-| Control sub-line / value | `scale.sm` (12) | `regular` | `text_dim` |
-| Bar label | `scale.sm` (12) | `medium` | `text_primary` |
-| Numeric readout | `scale.sm` (12) | `semibold`, tabular | `text_primary` |
+| Use | Role | Colour |
+|---|---|---|
+| Panel title | `Heading` | `text_primary` |
+| Section header inside a Panel | `Subheading`, sentence case | `text_dim` |
+| Control label | `Label` (a control's `ControlSize`) | `text_primary` |
+| Control sub-line / value | `Caption` | `text_dim` |
+| Bar label | `Label` | `text_primary` |
+| Numeric readout | `Label.numeric()` | `text_primary` |
 
 Density, so two panels built by two people come out the same size. Each value
 is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by

@@ -2,13 +2,13 @@
 //! document info, cursor position, …).
 //!
 //! Application chrome, so it reads the app type scale: a status readout is
-//! a `scale.sm` label in the dim ink, inset by `spacing.s4` from either end
-//! and centred on its own measured line — never a literal colour, size or
-//! `(height - 15.0) / 2.0`.
+//! a `Caption` with tabular figures in the dim ink, inset by `spacing.s4`
+//! from either end and centred on its own measured line — never a literal
+//! colour, size or `(height - 15.0) / 2.0`.
 
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Fill;
@@ -18,13 +18,10 @@ use vello::peniko::Fill;
 /// as the same tier.
 pub const STATUS_BAR_HEIGHT: f64 = 28.0;
 
-/// Weight of a status readout — a label, not a value the eye must find.
-const LABEL_WEIGHT: TextWeight = TextWeight::Regular;
-
-/// Renderer-relative label size: `scale.sm`, divided once by the renderer's
-/// text scale because the renderer applies it again.
-fn label_size(theme: &Theme, tr: &TextRenderer) -> f32 {
-    renderer_type_size(tr, theme.tokens.typography.scale.sm)
+/// A status readout: a caption, with tabular figures so a changing cursor
+/// position does not jitter.
+fn label_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption).numeric()
 }
 
 /// Where the two readouts start, given the measured widths of the right
@@ -66,10 +63,10 @@ pub fn draw(
         );
     }
 
-    let size = label_size(theme, tr);
+    let style = label_style(theme);
     let ink = colors.text_dim;
-    let (right_w, line_h) = tr.measure_weighted(right, size, None, LABEL_WEIGHT);
-    let (left_w, left_h) = tr.measure_weighted(left, size, None, LABEL_WEIGHT);
+    let (right_w, line_h) = tr.measure_style(right, None, &style);
+    let (left_w, left_h) = tr.measure_style(left, None, &style);
     // Both readouts share one line box, so their baselines agree even when
     // one side is empty.
     let line_h = f64::from(line_h.max(left_h));
@@ -78,27 +75,25 @@ pub fn draw(
     // run into it: a cursor position is what the eye looks for.
     let left_max = (rx - lx - f64::from(theme.tokens.spacing.s2)).max(0.0);
     let left_shown = if f64::from(left_w) > left_max {
-        tr.elide_to_width_weighted(left, size, narrow(left_max), LABEL_WEIGHT)
+        tr.elide_to_width_style(left, narrow(left_max), &style)
     } else {
         left.to_string()
     };
-    tr.draw_text_weighted(
+    tr.draw_style(
         scene,
         &left_shown,
-        size,
         ink,
         transform.pre_translate(Vec2::new(lx, ly)),
         None,
-        LABEL_WEIGHT,
+        &style,
     );
-    tr.draw_text_weighted(
+    tr.draw_style(
         scene,
         right,
-        size,
         ink,
         transform.pre_translate(Vec2::new(rx, ry)),
         None,
-        LABEL_WEIGHT,
+        &style,
     );
 }
 
@@ -132,18 +127,12 @@ mod tests {
             );
         }
 
-        // Case `label_size_divides_the_text_scale_back_out`.
+        // Case `label_is_a_resolved_caption`.
         {
-            let base = Theme::dark();
-            let base_tr = TextRenderer::new();
             let scaled = Theme::dark().with_text_scale(2.0);
-            let mut scaled_tr = TextRenderer::new();
-            scaled_tr.set_text_scale(2.0);
-            assert!((label_size(&base, &base_tr) - label_size(&scaled, &scaled_tr)).abs() < 0.01);
-            assert!(
-                (label_size(&base, &base_tr) - 12.0).abs() < 0.01,
-                "scale.sm at 1×"
-            );
+            let style = label_style(&scaled);
+            assert_eq!(style.size, scaled.text(TextRole::Caption).size);
+            assert_eq!(style.scaling, crate::text_render::TextScaling::Resolved);
         }
 
         // Case `draw_paints_without_a_literal_colour_and_elides_a_long_left_readout`.

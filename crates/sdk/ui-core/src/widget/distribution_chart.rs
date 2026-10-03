@@ -19,6 +19,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
 };
@@ -412,14 +413,13 @@ impl Widget for DistributionChart {
             self.pointer = Point::new(self.center_x(index), plot.center().y);
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         for step in 0_u32..=4 {
@@ -436,14 +436,14 @@ impl Widget for DistributionChart {
                 );
             }
             let label = format_compact(value);
-            let (width, _) = tr.measure(&label, theme.tokens.typography.scale.xs, None);
-            tr.draw_text(
+            let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
+            tr.draw_style(
                 scene,
                 &label,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((plot.x0 - f64::from(width) - 9.0, y - 6.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         for (index, (series, summary)) in self.series.iter().zip(summaries.iter()).enumerate() {
@@ -563,14 +563,14 @@ impl Widget for DistributionChart {
                     ),
                 );
             }
-            let (width, _) = tr.measure(&series.label, theme.tokens.typography.scale.xs, None);
-            tr.draw_text(
+            let (width, _) = tr.measure_style(&series.label, None, &theme.text(TextRole::Caption));
+            tr.draw_style(
                 scene,
                 &series.label,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
                 Some(crate::num::f32_of_f64(self.slot_width())),
+                &theme.text(TextRole::Caption),
             );
         }
         if let Some(index) = self.hovered.filter(|_| self.style.tooltip)
@@ -588,8 +588,8 @@ impl Widget for DistributionChart {
             } else {
                 series.detail.clone()
             };
-            let (tw, _) = tr.measure(&series.label, theme.tokens.typography.scale.sm, None);
-            let (dw, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let (tw, _) = tr.measure_style(&series.label, None, &theme.text(TextRole::Caption));
+            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
             let width = f64::from(tw.max(dw)).max(210.0) + 28.0;
             let mut x = self.pointer.x + 16.0;
             let mut y = self.pointer.y + 16.0;
@@ -607,22 +607,23 @@ impl Widget for DistributionChart {
                 None,
                 &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &series.label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

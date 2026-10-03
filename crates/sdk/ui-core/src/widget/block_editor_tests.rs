@@ -141,8 +141,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
                 let preview = editor.image_preview_rects[0].unwrap();
                 assert!((preview.width() - f64::from(width)).abs() < 0.01);
                 assert!(
-                    (preview.height() - f64::from(width) * 100.0 / 160.0).abs() < 0.01,
-                    "image must occupy its full available width at its native aspect: {preview:?}"
+                    (preview.height() - f64::from(width) * 100.0 / 160.0).abs() <= 0.5,
+                    "image must occupy its full available width at its native aspect \
+                     (within the layout's whole-pixel rounding): {preview:?}"
                 );
                 let source = editor.blocks[0].line.get_rect();
                 let following = editor.blocks[1].line.get_rect();
@@ -185,7 +186,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             source.height() > 28.0,
             "long image source must not be clipped to one line"
         );
-        assert!((preview.height() - 220.0).abs() < 0.01);
+        // The preview's edges snap to whole pixels below a fractional
+        // source block, so its height may differ by up to half a pixel.
+        assert!((preview.height() - 220.0).abs() <= 0.5, "{preview:?}");
         assert!(preview.y0 > source.y1);
     }
 
@@ -1042,11 +1045,13 @@ fn block_typography_scales_and_bands_each_kind() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![heading, paragraph, numbered]);
 
-        // H1 is the `x3l` step (32) — the heading sizes moved onto the type
-        // scale in the 2026-09-17 review; what this test guards is that the
-        // shaped size is that step once, then exactly doubled at 2×.
+        // H1 is the `LargeTitle` role; what this test guards is that the
+        // shaped size is that role's size once, then exactly doubled at 2×.
         let h1 = BlockKind::Heading(1).font_size();
-        assert_eq!(h1, crate::tokens::TypeScale::default().x3l);
+        assert_eq!(
+            h1,
+            Theme::dark().text(crate::tokens::TextRole::LargeTitle).size
+        );
         layout_and_draw_editor(&mut editor, &Theme::dark());
         assert_eq!(
             editor.blocks[0].line.inner().shaped_font_size_for_test(),
@@ -1054,7 +1059,7 @@ fn block_typography_scales_and_bands_each_kind() {
         );
         assert_eq!(
             editor.blocks[1].line.inner().shaped_font_size_for_test(),
-            Some(16.0)
+            Some(BlockKind::Paragraph.font_size())
         );
 
         let large = Theme::dark().with_text_scale(2.0);
@@ -1069,23 +1074,25 @@ fn block_typography_scales_and_bands_each_kind() {
                     .line
                     .inner()
                     .shaped_font_size_for_test(),
-                Some(32.0)
+                Some(BlockKind::Paragraph.font_size() * 2.0)
             );
         }
         let selection = editor.blocks[1].line.selection_rect(&large, 0, 6);
-        assert!((selection.height() - 40.0).abs() < 0.1);
+        assert!(
+            (selection.height() - f64::from(BlockKind::Paragraph.font_size()) * 2.5).abs() < 0.1
+        );
 
         let numbered_line = &editor.blocks[2].line;
         let line_rect = numbered_line.get_rect();
         let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
-        let (label_width, _) = renderer.measure("1.", 16.0, None);
+        let (label_width, _) = renderer.measure("1.", BlockKind::Paragraph.font_size(), None);
         let origin = numbered_prefix_origin(
             line_rect,
             line_rect.x0 - gutter,
             f64::from(label_width),
-            16.0,
+            BlockKind::Paragraph.font_size(),
             2.0,
             large.tokens.metrics.icon_label_gap,
         );
@@ -1120,11 +1127,15 @@ fn block_typography_scales_and_bands_each_kind() {
 
         let checklist = editor.blocks[0].line.get_rect();
         let code = editor.blocks[1].line.get_rect();
+        let band = |kind: BlockKind| f64::from(kind.font_size()) * 2.0 * 1.5;
         assert!(
-            checklist.height() >= 48.0,
-            "2× checklist text needs a 48px band"
+            checklist.height() >= band(BlockKind::Paragraph),
+            "2× checklist text needs its 1.5-line band"
         );
-        assert!(code.height() >= 42.0, "2× code text needs a 42px band");
+        assert!(
+            code.height() >= band(BlockKind::CodeBlock { lang: None }),
+            "2× code text needs its 1.5-line band"
+        );
         assert!(checklist.y1 <= code.y0, "scaled rows must not collide");
         assert!(code.x0 >= prefix_gutter_for(&editor.blocks[1].kind) * 2.0);
     }

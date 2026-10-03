@@ -35,9 +35,10 @@ use winit::keyboard::{Key, NamedKey};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 
@@ -48,7 +49,6 @@ const MAX_LIST_HEIGHT: f64 = 240.0;
 const LIST_GAP: f64 = 4.0;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
-const FONT: f32 = 15.0;
 const LINE_PX: f32 = 60.0;
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
@@ -776,7 +776,7 @@ impl Widget for Dropdown {
                     self.rect.x1 - CHEVRON_W,
                     self.rect.y1,
                 ),
-                &TextStyle::new(FONT),
+                &theme.text(TextRole::Body),
                 QueryInk::of(&theme.tokens.colors),
             );
         } else {
@@ -791,16 +791,18 @@ impl Widget for Dropdown {
                 // width handed to `draw_text` wraps instead, and a wrapped
                 // second line lands under the control's bottom edge.
                 let room = px((self.rect.width() - PAD_X - CHEVRON_W).max(0.0));
-                let shown = text_renderer.elide_to_width(label, FONT, room);
-                let (_, th) = text_renderer.measure(&shown, FONT, None);
+                let shown =
+                    text_renderer.elide_to_width_style(label, room, &theme.text(TextRole::Body));
+                let (_, th) =
+                    text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
                 let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &shown,
-                    FONT,
                     color,
                     translated(transform, self.rect.x0 + PAD_X, ty),
                     None,
+                    &theme.text(TextRole::Body),
                 );
                 scene.pop_layer();
             }
@@ -868,15 +870,16 @@ impl Widget for Dropdown {
         if filtered.is_empty() {
             // Centre on the measured line, not the font size (the face's
             // ascent/descent otherwise sits the label low in the row).
-            let (_, hint_h) = text_renderer.measure("No matches", FONT, None);
+            let (_, hint_h) =
+                text_renderer.measure_style("No matches", None, &theme.text(TextRole::Body));
             let ty = list.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 "No matches",
-                FONT,
                 theme.text_dim,
                 translated(transform, list.x0 + PAD_X, ty),
                 None,
+                &theme.text(TextRole::Body),
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
@@ -921,20 +924,21 @@ impl Widget for Dropdown {
                 };
                 // Rows are one `ITEM_HEIGHT` tall, so a long option elides
                 // rather than wrapping into the row beneath it.
-                let shown = text_renderer.elide_to_width(
+                let shown = text_renderer.elide_to_width_style(
                     opt,
-                    FONT,
                     px((list.width() - PAD_X * 2.0).max(0.0)),
+                    &theme.text(TextRole::Body),
                 );
-                let (_, opt_h) = text_renderer.measure(&shown, FONT, None);
+                let (_, opt_h) =
+                    text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
                 let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &shown,
-                    FONT,
                     color,
                     translated(transform, list.x0 + PAD_X, ty),
                     None,
+                    &theme.text(TextRole::Body),
                 );
             }
         }

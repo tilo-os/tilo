@@ -271,6 +271,81 @@ A label that was hard-coded `Color::WHITE` on an accent fill must become
 
 ## Typography
 
+Text names a role; the theme decides size, weight, leading and family, scaled
+once by the UI and text scale. The ten roles, their sizes and when to use each
+are in `docs/design-language.md` and `docs/typography.md`; pick the role from
+the [`typography` ratchet table](#typography) when the old code only has a
+pixel size. There is no all-caps, overline or letter-spaced role: write the
+string in sentence case and use `Subheading` (or `Heading` for a top-level
+section).
+
+### New API
+
+| API | Use |
+|---|---|
+| `ui::TextRole::{Display, LargeTitle, Title, Heading, Subheading, Body, Label, Caption, Reading, Code}` | What a piece of text is. |
+| `theme.text(role) -> TextStyle` | The complete, already-scaled style for custom measuring, painting and eliding. |
+| `TextStyle::strong()` / `Text::strong()` | Emphasis inside the role: one weight step up (Regular/Medium → Semibold, Semibold → Bold). |
+| `TextStyle::numeric()` / `Text::numeric()` | Tabular lining figures for counters, clocks, sizes and columns. |
+| `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
+| `PaintCtx::text_role`, `measure_role`, `line_box`, `text_role_in_band` | Custom painters: paint, measure, size a row, or centre one line in a band in a role. |
+| `ui::widget::ControlSize::{Small, Regular, Large}` | A control's size: label role (`Label`, `Label`, `Body`) and height (`bar_control_height`, `min_pointer_target`, `bar_height`). |
+| `with_text_role(role)` on `TextInput`, `Autocomplete`, `EditableLabel`, `Link`, `RichTextLine`, `RichTextEditor`; `set_text_role` on `TextInput`, `EditableLabel`, `RichTextLine`; `TextInput::text_role()`, `BlockEditor::text_role()` | The role a text widget sets its text in. `RichTextEditor` maps `Reading` to the serif and `Code` to the mono family. |
+| `Typography::with_base_size(body_px)`, `typography.size(role)`, `ui::tokens::REFERENCE_BODY_PX` (14) | Theme authors and geometry only: the body size every role derives from, and a role's resolved size. Not for building a style. |
+| `ui::TextScaling::{Renderer, Resolved, Content}` (field `TextStyle::scaling`) | What a style's size is relative to. Role styles are `Resolved`, `content(px)` is `Content`; `TextStyle::new(px)` is `Renderer`, kept for the few renderer-relative callers in the toolkit. |
+
+### Replace
+
+| Old | New |
+|---|---|
+| `Text::new(s).with_size(px)` / `.with_scaled_size(px)` / `.with_fixed_size(px)` | `Text::new(s).with_role(role)`; for content-sized text `.with_content_size(px)` |
+| `Text::new(s).with_style(TextStyle::new(px).with_weight(w)…)` | `.with_role(role)` plus the modifiers that remain: `.strong()`, `.numeric()`, `.with_weight(w)`, `.with_italic(b)`, `.with_font_family(f)`, `.with_line_height(m)`, hyphenation and OpenType builders. Modifiers survive theme changes. |
+| `Text::with_letter_spacing`, `with_tracking`, `with_small_caps` | Delete (no tracked or small-caps UI text). |
+| `TextStyle::new(theme.tokens.typography.scale.sm)` (any `scale.xs`…`scale.x4l`) | `theme.text(role)` |
+| `theme.tokens.typography.scale.<step>` used as a size number for layout | `theme.tokens.typography.size(role)`, or better a measured line: `ctx.line_box(role)` |
+| `theme.tokens.typography.font_size_base` | `theme.tokens.typography.size(TextRole::Body)` |
+| `typography.weights.{regular,medium,semibold,bold}` | `TextRole::weight()` via the role, or `.strong()` |
+| `typography.line_height_{tight,normal,relaxed}` | The role's leading (in `theme.text(role)`); `with_line_height(m)` only for a genuine exception |
+| `TypeScale { .. }` literal, `TypeScale::BASE`, `TypeScale::default()` | Delete; `Typography::with_base_size(px)` sets the base |
+| `tr.renderer_input_style(&style)`, `text_metrics::renderer_type_size(tr, px)`, `size / theme.text_scale` | Delete; pass `theme.text(role)` straight to `measure_style` / `draw_style` / `elide_to_width_style` |
+| `tr.draw_text(scene, s, px, color, t, w)` / `draw_text_weighted(…, px, …, weight)` | `tr.draw_style(scene, s, color, t, w, &theme.text(role))` or `ctx.text_role(s, role, color, origin, w)` |
+| `tr.measure(s, px, w)` / `measure_weighted` / `measure_styled` | `tr.measure_style(s, w, &theme.text(role))` or `ctx.measure_role(s, role, w)` |
+| `tr.elide_to_width(s, px, max)` / `elide_to_width_weighted` | `tr.elide_to_width_style(s, max, &theme.text(role))` |
+| `tr.clamp_to_lines(s, px, max_w, n)` | `tr.clamp_to_lines(s, &theme.text(role), max_w, n)` |
+| `TextInput::with_font_size(px)` / `set_font_size(px)` | `with_text_role(role)` / `set_text_role(role)` (default `Body`) |
+| `Autocomplete::with_font_size`, `Link::with_font_size`, `EditableLabel::with_font_size` / `set_font_size` | `with_text_role(role)` / `set_text_role(role)` |
+| `RichTextLine::with_size(px)` / `set_size(px)` / `font_size()` | `with_text_role(role)` / `set_text_role(role)`; a block kind's role comes from `BlockKind` (paragraphs `Body`, H1 `LargeTitle`, H2 `Title`, H3+ `Heading`, code and tables `Code`) |
+| `BlockEditor::font_size()` | `BlockEditor::text_role()` |
+| `RichTextEditor::with_font_size(px)` | `with_text_role(TextRole::Body / Reading / Code)` |
+| `CodeEditor::with_font_size(px)` | Delete; a code editor is `Code` |
+| `ButtonFace::text_size(px).weight(w)`, `Button` label size | `.control_size(ControlSize::Small / Regular / Large)` |
+| `SegmentedFace::text_size(px)` / `.weight(w)` | Delete; segments are `Label`, the selected one `.strong()` |
+| `Chip::label_size_for_height(h, theme)` | Delete; chip labels are `Label` |
+| `tooltip::chip_size(label, tr, px)` | `tooltip::chip_size(label, tr, theme)` (`Caption`) |
+| `status_bubble::pill_size(text, tr, px, control)`, `pill_height(px, scale)`, `draw_pill(…, text, px)` | `pill_size(text, tr, theme, control)`, `pill_height(theme)`, `draw_pill(…, text)` (`Label`) |
+| `name_field::fit(tr, s, px, budget)` / `fit_tail`, `NameField::draw(…, px)` | Same with `&TextStyle` in place of `px` |
+| `data_table::type_line_height(px)` | `type_line_height(&theme.tokens.typography, role)` |
+| `filters::filter_label_size(theme, tr)` | `filters::filter_label_style(theme)` |
+| `"SECTION"` drawn as an overline (small, bold, tracked, upper case) | `"Section"` in `Subheading` |
+| ui-graph `UiNode::Text { size: Some(px), .. }`, property `size` | `role: <role>` (`display`, `large-title`, `title`, `heading`, `subheading`, `body`, `label`, `caption`, `reading`, `code`); the `size` field and the `TextSize` editable property are gone |
+
+### Delete
+
+- Module constants holding a font size (`const FONT: f32 = 13.0`,
+  `const TITLE_SIZE: f32 = …`): name the role where the text is made.
+- Any arithmetic on a type size (`scale.sm - 1.0`, `size * 0.9`,
+  `.max(11.0)`): a size between roles does not exist.
+- `TextStyle::new(px)` for UI text. It remains only for renderer-relative
+  toolkit internals and is counted by the `literal_font_size` ratchet.
+- Uppercasing of labels (`.to_uppercase()`, `"SETTINGS"`).
+
+### The UI face
+
+The system UI face is Instrument Sans; Noto Sans is its fallback for Greek,
+Cyrillic and Vietnamese. Code never names a family: `TextRole` picks sans,
+serif (`Reading`) or mono (`Code`), and `FontChoice::{SansSerif, Serif,
+Monospace}` remains for the rare explicit choice.
+
 ## Ground & regions
 
 ## Navigation

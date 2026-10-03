@@ -22,6 +22,7 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
 use tilo_ui::presence::PresenceCtx;
@@ -94,13 +95,13 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     let c = &theme.tokens.colors;
 
     let caption = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, y: f64, s: &str| {
-        tr.draw_text(
+        tr.draw_style(
             scene,
             s,
-            theme.tokens.typography.scale.sm,
             c.text_dim,
             Affine::translate((x, y)),
             None,
+            &theme.text(TextRole::Caption),
         );
     };
     caption(&mut scene, &mut tr, COL_ENABLED, 16.0, "granted");

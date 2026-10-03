@@ -17,9 +17,9 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -514,7 +514,7 @@ impl Widget for TimePicker {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.detail);
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
+        let text_style = theme.text(TextRole::Heading);
 
         let mut cells: Vec<(Rect, u8)> = vec![
             (self.hour_rect, self.hours),
@@ -551,16 +551,16 @@ impl Widget for TimePicker {
             scene.stroke(&Stroke::new(width), transform, color, None, &outline);
 
             let label = format!("{value:02}");
-            let (w, h) = text_renderer.measure(&label, text_size, None);
+            let (w, h) = text_renderer.measure_style(&label, None, &text_style);
             let tx = value_rect.x0 + (value_rect.width() - f64::from(w)) / 2.0;
             let ty = value_rect.y0 + (value_rect.height() - f64::from(h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                text_size,
                 colors.text_primary,
                 translated(transform, tx, ty),
                 None,
+                &text_style,
             );
 
             Self::draw_chevron(scene, transform, up_rect, colors.text_dim, true);
@@ -571,11 +571,10 @@ impl Widget for TimePicker {
         let between_h_m_x = f64::midpoint(self.hour_rect.x1, self.minute_rect.x0);
         let centre_y = self.rect.center().y;
         let colon = ":";
-        let (cw, ch) = text_renderer.measure(colon, text_size, None);
-        text_renderer.draw_text(
+        let (cw, ch) = text_renderer.measure_style(colon, None, &text_style);
+        text_renderer.draw_style(
             scene,
             colon,
-            text_size,
             colors.text_dim,
             translated(
                 transform,
@@ -583,13 +582,13 @@ impl Widget for TimePicker {
                 centre_y - f64::from(ch) / 2.0,
             ),
             None,
+            &text_style,
         );
         if self.seconds.is_some() {
             let between_m_s_x = f64::midpoint(self.minute_rect.x1, self.second_rect.x0);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 colon,
-                text_size,
                 colors.text_dim,
                 translated(
                     transform,
@@ -597,6 +596,7 @@ impl Widget for TimePicker {
                     centre_y - f64::from(ch) / 2.0,
                 ),
                 None,
+                &text_style,
             );
         }
     }

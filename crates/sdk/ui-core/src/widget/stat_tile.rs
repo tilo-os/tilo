@@ -24,9 +24,9 @@ use vello::peniko::Color;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -74,10 +74,10 @@ impl Trend {
 
 /// The tile height with a delta line vs. without.
 fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
-    let caption = f64::from(theme.tokens.typography.scale.sm);
-    let value = f64::from(theme.tokens.typography.scale.x2l);
+    let caption = f64::from(theme.tokens.typography.size(TextRole::Caption));
+    let value = f64::from(theme.tokens.typography.size(TextRole::LargeTitle));
     let delta = if has_delta {
-        6.0 + f64::from(theme.tokens.typography.scale.sm)
+        6.0 + f64::from(theme.tokens.typography.size(TextRole::Caption))
     } else {
         0.0
     };
@@ -113,19 +113,19 @@ fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent
         theme.tokens.colors.surfaces.raised,
     );
 
-    // Row positions follow the theme sizes that `tile_height` reserves;
-    // glyphs are drawn at the renderer-relative size so the accessibility
-    // scale is applied exactly once.
-    let caption_step = f64::from(theme.tokens.typography.scale.sm);
-    let value_step = f64::from(theme.tokens.typography.scale.x2l);
-    let caption_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
-    let value_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.x2l);
-    let caption_style = TextStyle::new(caption_size);
+    // Row positions follow the role sizes that `tile_height` reserves; the
+    // resolved roles are painted as given, so the scale lands exactly once.
+    let caption_style = theme.text(TextRole::Caption);
+    let value_style = theme.text(TextRole::LargeTitle).numeric();
+    let caption_step = f64::from(caption_style.size);
+    let value_step = f64::from(value_style.size);
 
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
-    let (_, caption_h) = ctx.text.measure(content.caption, caption_size, None);
+    let (_, caption_h) = ctx
+        .text
+        .measure_style(content.caption, None, &caption_style);
     ctx.text(
         content.caption,
         &caption_style,
@@ -148,7 +148,7 @@ fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent
 
     ctx.text(
         content.value,
-        &TextStyle::new(value_size),
+        &value_style,
         content.value_color,
         Point::new(x, y),
         None,
@@ -161,7 +161,7 @@ fn paint_stat_tile(ctx: &mut PaintCtx<'_>, rect: Rect, content: &StatTileContent
         if let Some(arrow) = trend.arrow() {
             // Centre the arrow on the delta text's measured line, like the
             // icon on the caption line.
-            let (_, delta_h) = ctx.text.measure(delta_text, caption_size, None);
+            let (_, delta_h) = ctx.text.measure_style(delta_text, None, &caption_style);
             let ar = Rect::from_center_size(
                 Point::new(dx + caption_step / 2.0, y + f64::from(delta_h) / 2.0),
                 (caption_step, caption_step),

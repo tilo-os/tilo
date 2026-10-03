@@ -428,7 +428,7 @@ impl RecoveryVerifyScreen {
         // Each blank takes its whole grid cell (the body clip trims its
         // paint); its pointer target is the part inside the visible body.
         for (editor, rect) in self.editors.iter_mut().zip(resolved.plan.slots.iter()) {
-            place_field(editor, *rect, text_renderer, theme);
+            place_field(editor, *rect);
         }
         for (slot, rect) in self.slot_rects.iter_mut().zip(resolved.plan.slots.iter()) {
             *slot = BodyScroll::visible(body, *rect);

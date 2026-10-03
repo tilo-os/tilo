@@ -21,9 +21,10 @@ use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
+use crate::widget::data_table::{text_band, type_line_height};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
@@ -285,8 +286,8 @@ impl Widget for IconGrid {
             // label across (96 px at 1×) and the glyph, its label gap and one
             // label line plus a section inset above and below (88 px at 1×).
             // An authored `with_cell_size` is left exactly as written.
-            let label_size = f64::from(tokens.typography.scale.sm);
-            let label_line = type_line_height(tokens.typography.scale.sm);
+            let label_size = f64::from(tokens.typography.size(TextRole::Caption));
+            let label_line = type_line_height(&tokens.typography, TextRole::Caption);
             self.cell_w = text_band(DEFAULT_CELL_W, label_size * DEFAULT_CELL_LABEL_EMS, 0.0);
             self.cell_h = text_band(
                 DEFAULT_CELL_H,
@@ -345,7 +346,7 @@ impl Widget for IconGrid {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let label_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let label_style = tokens.typography.style(TextRole::Caption);
         let label_gap = f64::from(tokens.spacing.s2);
         let label_inset = f64::from(tokens.spacing.s2);
         for (i, item) in self.items.iter().enumerate() {
@@ -365,12 +366,12 @@ impl Widget for IconGrid {
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
-            let label = text_renderer.elide_to_width(
+            let label = text_renderer.elide_to_width_style(
                 &item.label,
-                label_size,
                 crate::num::f32_of_f64(self.cell_w - label_inset),
+                &label_style,
             );
-            let (tw, th) = text_renderer.measure(&label, label_size, None);
+            let (tw, th) = text_renderer.measure_style(&label, None, &label_style);
             // The glyph + label block is centred in the cell so the margins
             // above and below match; the label is centred under the glyph.
             let block_h = self.icon_px + label_gap + f64::from(th);
@@ -390,13 +391,13 @@ impl Widget for IconGrid {
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + label_gap;
             let label_color = tokens.colors.text_primary;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 label_color,
                 translated(transform, tx, ty),
                 None,
+                &label_style,
             );
         }
 

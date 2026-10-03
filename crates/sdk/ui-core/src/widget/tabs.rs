@@ -3,10 +3,10 @@ use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
 use crate::widget::TaffyTreeExt;
@@ -244,7 +244,7 @@ pub struct TabBar {
     /// Keyed by tab id, alongside the title/size it was measured at, so a rename or
     /// theme change invalidates rather than reusing a stale advance. Set from `draw`
     /// (the only pass with a [`TextRenderer`]) and read back by `apply_layout`.
-    title_advance: HashMap<u64, (String, f32, f64)>,
+    title_advance: HashMap<u64, (String, TextStyle, f64)>,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
     pending_context_menu: Option<(u64, Point)>,
@@ -601,9 +601,13 @@ impl TabBar {
         } else {
             text_dim
         };
-        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
-        let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
+        let (_tw, th) = tr.measure_style(
+            &t.title,
+            None,
+            &text_style.clone().with_weight(title_weight),
+        );
         let accent = self.accent_ids.get(&t.id).copied();
         if is_pinned {
             Self::draw_pill_pinned_marker(scene, transform, r, t, accent, text_color);
@@ -635,14 +639,13 @@ impl TabBar {
             transform,
             &clip_r,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             label,
-            text_size,
             text_color,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            title_weight,
+            &text_style.clone().with_weight(title_weight),
         );
         scene.pop_layer();
     }
@@ -965,9 +968,13 @@ impl TabBar {
             &pill_appearance(theme, false, true, false),
             1.0,
         );
-        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
-        let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
+        let (_tw, th) = tr.measure_style(
+            &c.desc.title,
+            None,
+            &text_style.clone().with_weight(title_weight),
+        );
         let leading_shift = if let Some(kind) = c.desc.app_kind {
             draw_app_icon(scene, transform, leading_glyph_rect(r), kind, text_dim);
             ICON_W + ICON_GAP
@@ -986,14 +993,13 @@ impl TabBar {
             transform,
             &clip_r,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &c.desc.title,
-            text_size,
             text_dim,
             compose(transform, Affine::translate((title_x, title_y))),
             None,
-            title_weight,
+            &text_style.clone().with_weight(title_weight),
         );
         scene.pop_layer();
         icons::draw_icon(
@@ -1297,14 +1303,18 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Label);
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of
         // its own, so it reads this back on the next pass.
-        let (full_w, _) = tr.measure_weighted(&title, size, None, TextWeight::Semibold);
+        let (full_w, _) = tr.measure_style(
+            &title,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
         self.title_advance
-            .insert(id, (title.clone(), size, f64::from(full_w)));
+            .insert(id, (title.clone(), style.clone(), f64::from(full_w)));
         let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         // A pill's title zone is a few hundred px at most, well inside `f32`'s
@@ -1329,7 +1339,11 @@ impl TabBar {
                         .collect();
                     let candidate = format!("…{tail}{suffix}");
                     if tr
-                        .measure_weighted(&candidate, size, None, TextWeight::Semibold)
+                        .measure_style(
+                            &candidate,
+                            None,
+                            &style.clone().with_weight(TextWeight::Semibold),
+                        )
                         .0
                         <= budget
                     {
@@ -1338,7 +1352,11 @@ impl TabBar {
                 }
             }
         }
-        Some(tr.elide_to_width_weighted(&title, size, budget, TextWeight::Semibold))
+        Some(tr.elide_to_width_style(
+            &title,
+            budget,
+            &style.clone().with_weight(TextWeight::Semibold),
+        ))
     }
 
     pub fn tabs(&self) -> &[TabDescriptor] {
@@ -3500,7 +3518,7 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .all(|run| run.font_size <= theme.tokens.typography.scale.sm)
+                    .all(|run| run.font_size <= theme.tokens.typography.size(TextRole::Label))
             );
             assert!(
                 scene
@@ -3508,7 +3526,10 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01),
+                    .any(
+                        |run| (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs()
+                            < 0.01
+                    ),
                 "tab title must retain the requested 200% font size"
             );
         }

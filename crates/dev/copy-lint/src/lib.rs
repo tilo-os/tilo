@@ -47,6 +47,9 @@ const BUILDER_CALLS: &[&str] = &[
     "push_notification(",
     ".draw_text(",
     ".draw_text_weighted(",
+    ".draw_style(",
+    ".text_role(",
+    ".text_role_in_band(",
     "draw_task_button(",
     "draw_more_row(",
 ];

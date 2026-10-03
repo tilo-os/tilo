@@ -23,8 +23,10 @@ use crate::chrome::{
 };
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
+use ui::TextRole;
 use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, user_color};
+use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -691,7 +693,7 @@ struct TrayLayout {
     tray_pad: f64,
     tray_gap: f64,
     icon_px: f64,
-    pct_size: f32,
+    pct_style: TextStyle,
     pct_label: Option<String>,
     /// Width reserved for the unread-count badge, zero without one.
     badge_w: f64,
@@ -2098,7 +2100,7 @@ impl TopBarChrome {
     fn workspace_label(
         &self,
         text_renderer: &mut TextRenderer,
-        ws_text_size: f32,
+        ws_text_style: &TextStyle,
         label_budget: f32,
     ) -> String {
         // Workspace identity has priority over a redundant single-workspace count.
@@ -2113,14 +2115,17 @@ impl TopBarChrome {
         };
         let ws_weight = self.workspace_name_text_weight();
         let suffix_width = text_renderer
-            .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
+            .measure_style(
+                &position_suffix,
+                None,
+                &ws_text_style.clone().with_weight(ws_weight),
+            )
             .0;
         let name_budget = (label_budget - suffix_width).max(0.0);
-        let visible_name = text_renderer.elide_to_width_weighted(
+        let visible_name = text_renderer.elide_to_width_style(
             &self.workspace_name,
-            ws_text_size,
             name_budget,
-            ws_weight,
+            &ws_text_style.clone().with_weight(ws_weight),
         );
         format!("{visible_name}{position_suffix}")
     }
@@ -2138,7 +2143,7 @@ impl TopBarChrome {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let ws_text_size = tokens.typography.scale.sm;
+        let ws_text_style = tokens.typography.style(TextRole::Caption);
         // Measured at the same weight it's drawn at (Semibold), so the
         // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
@@ -2160,8 +2165,12 @@ impl TopBarChrome {
         let breathing = f64::from(tokens.spacing.s4);
         let label_budget =
             ui::num::f32_of_f64((center_left - x - pill_chrome - breathing).clamp(32.0, 260.0));
-        let ws_label = self.workspace_label(text_renderer, ws_text_size, label_budget);
-        let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
+        let ws_label = self.workspace_label(text_renderer, &ws_text_style, label_budget);
+        let (ws_w, ws_h) = text_renderer.measure_style(
+            &ws_label,
+            None,
+            &ws_text_style.clone().with_weight(ws_weight),
+        );
         let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
             x - pad,
@@ -2211,14 +2220,13 @@ impl TopBarChrome {
                 &context_rule,
             );
         }
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &ws_label,
-            ws_text_size,
             colors.text_primary,
             at(transform, (x, ws_y)),
             None,
-            ws_weight,
+            &ws_text_style.clone().with_weight(ws_weight),
         );
         let gear_x = x + f64::from(ws_w) + pad;
         let gear_rect = Rect::new(
@@ -2423,22 +2431,21 @@ impl TopBarChrome {
             None,
             &rr,
         );
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &t("topbar-editor-title"),
-            theme.tokens.typography.scale.base,
             theme.tokens.colors.text_primary,
             at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Subheading),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &t("topbar-editor-hint"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
             None,
+            &theme.text(TextRole::Caption),
         );
         let metrics =
             ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
@@ -2471,29 +2478,29 @@ impl TopBarChrome {
                 TopBarWidget::SystemMonitor => "topbar-widget-system-monitor",
                 TopBarWidget::Calendar => "topbar-widget-calendar",
             });
-            text.draw_text(
+            text.draw_style(
                 scene,
                 "⠿",
-                theme.tokens.typography.scale.base,
                 theme.tokens.colors.text_dim,
                 at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
                 None,
+                &theme.text(TextRole::Body),
             );
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &t("topbar-editor-remove"),
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.semantic.danger,
                 at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         if let Some(ghost) =
@@ -2523,13 +2530,13 @@ impl TopBarChrome {
                     TopBarWidget::SystemMonitor => "topbar-editor-add-monitor-chip",
                     TopBarWidget::Calendar => "topbar-editor-add-calendar-chip",
                 });
-                text.draw_text(
+                text.draw_style(
                     scene,
                     &label,
-                    theme.tokens.typography.scale.xs,
                     theme.tokens.colors.intent.inverted,
                     at(transform, (x, y)),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
                 x += 82.0;
             }
@@ -2573,21 +2580,20 @@ impl TopBarChrome {
                     }
                 },
             );
-        let size = tokens.typography.scale.base;
+        let style = tokens.typography.style(TextRole::Body);
         // Measured at the draw weight — Bold advances wider
         // than Regular, so centering would drift otherwise.
         let weight = self.clock_text_weight();
-        let (tw, th) = text_renderer.measure_weighted(&s, size, None, weight);
+        let (tw, th) = text_renderer.measure_style(&s, None, &style.clone().with_weight(weight));
         let tx = content_cx - f64::from(tw) / 2.0;
         let ty = center_y - f64::from(th) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &s,
-            size,
             colors.text_primary,
             at(transform, (tx, ty)),
             None,
-            weight,
+            &style.with_weight(weight),
         );
     }
 
@@ -2605,39 +2611,43 @@ impl TopBarChrome {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let label_size = tokens.typography.scale.xs;
-        let value_size = tokens.typography.scale.sm;
+        let label_style = tokens.typography.style(TextRole::Caption);
+        let value_style = tokens.typography.style(TextRole::Caption);
         // Each run sits on the bar's centre line by its own measured line
         // height: the label and the value are set at different sizes, so a
         // shared fixed offset would seat one of them off-centre — and
         // drift further the moment the text scale changes.
-        let (_, label_h) =
-            text_renderer.measure_weighted(spec.label, label_size, None, TextWeight::Semibold);
-        let (_, value_h) =
-            text_renderer.measure_weighted(spec.value_str, value_size, None, TextWeight::Bold);
-        text_renderer.draw_text_weighted(
+        let (_, label_h) = text_renderer.measure_style(
+            spec.label,
+            None,
+            &label_style.clone().with_weight(TextWeight::Semibold),
+        );
+        let (_, value_h) = text_renderer.measure_style(
+            spec.value_str,
+            None,
+            &value_style.clone().with_weight(TextWeight::Bold),
+        );
+        text_renderer.draw_style(
             scene,
             spec.label,
-            label_size,
             self.metric_label_color(theme, spec.kind),
             at(
                 transform,
                 (spec.label_x, spec.center_y - f64::from(label_h) / 2.0),
             ),
             None,
-            TextWeight::Semibold,
+            &label_style.with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             spec.value_str,
-            value_size,
             colors.text_primary,
             at(
                 transform,
                 (spec.value_x, spec.center_y - f64::from(value_h) / 2.0),
             ),
             None,
-            TextWeight::Bold,
+            &value_style.with_weight(TextWeight::Bold),
         );
     }
 
@@ -2711,16 +2721,23 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let s1 = f64::from(tokens.spacing.s1);
         let s3 = f64::from(tokens.spacing.s3);
-        let label_size = tokens.typography.scale.xs;
-        let value_size = tokens.typography.scale.sm;
+        let label_style = tokens.typography.style(TextRole::Caption);
+        let value_style = tokens.typography.style(TextRole::Caption);
         let label_w = |tr: &mut TextRenderer, t: &str| {
             f64::from(
-                tr.measure_weighted(t, label_size, None, TextWeight::Semibold)
-                    .0,
+                tr.measure_style(
+                    t,
+                    None,
+                    &label_style.clone().with_weight(TextWeight::Semibold),
+                )
+                .0,
             )
         };
         let value_w = |tr: &mut TextRenderer, t: &str| {
-            f64::from(tr.measure_weighted(t, value_size, None, TextWeight::Bold).0)
+            f64::from(
+                tr.measure_style(t, None, &value_style.clone().with_weight(TextWeight::Bold))
+                    .0,
+            )
         };
         let widths = MetricWidths {
             cpu_label: label_w(text_renderer, "CPU"),
@@ -2803,15 +2820,23 @@ impl TopBarChrome {
         let prefix = weekday.as_str();
         let event = date.as_str();
         let time = note.as_str();
-        let size = tokens.typography.scale.sm;
+        let size = tokens.typography.style(TextRole::Caption);
         // prefix/time dim Medium, event a Semibold primary anchor.
         let prefix_weight = TextWeight::Medium;
         let event_weight = TextWeight::Semibold;
         let time_weight = TextWeight::Medium;
-        let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
-        let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
-        let (tw, th) =
-            text_renderer.measure_weighted(time, tokens.typography.scale.xs, None, time_weight);
+        let (pw, ph) =
+            text_renderer.measure_style(prefix, None, &size.clone().with_weight(prefix_weight));
+        let (ew, _) =
+            text_renderer.measure_style(event, None, &size.clone().with_weight(event_weight));
+        let (tw, th) = text_renderer.measure_style(
+            time,
+            None,
+            &tokens
+                .typography
+                .style(TextRole::Caption)
+                .with_weight(time_weight),
+        );
         let gap = f64::from(tokens.spacing.s2);
         let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
         let mut tx = content_cx - total / 2.0;
@@ -2819,34 +2844,34 @@ impl TopBarChrome {
         // The smaller note is centred on its own line height rather than
         // nudged off the prefix's baseline by a fixed pixel.
         let time_y = center_y - f64::from(th) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             prefix,
-            size,
             colors.text_dim,
             at(transform, (tx, ty)),
             None,
-            prefix_weight,
+            &size.clone().with_weight(prefix_weight),
         );
         tx += f64::from(pw) + gap;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             event,
-            size,
             colors.text_primary,
             at(transform, (tx, ty)),
             None,
-            event_weight,
+            &size.with_weight(event_weight),
         );
         tx += f64::from(ew) + gap;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             time,
-            tokens.typography.scale.xs,
             colors.text_dim,
             at(transform, (tx, time_y)),
             None,
-            time_weight,
+            &tokens
+                .typography
+                .style(TextRole::Caption)
+                .with_weight(time_weight),
         );
     }
 
@@ -2872,12 +2897,12 @@ impl TopBarChrome {
         let tray_pad = f64::from(tokens.spacing.s2);
         let tray_gap = f64::from(tokens.spacing.s1);
         let icon_px = 17.0_f64;
-        let pct_size = tokens.typography.scale.xs;
+        let pct_style = tokens.typography.style(TextRole::Caption);
         // The unread count rides beside the bell; its width is measured
         // here so the pill is sized for it before anything is painted.
         let badge_w = if self.notification_badge > 0 {
             let label = Self::notification_badge_label(self.notification_badge);
-            let (w, h) = text_renderer.measure(&label, pct_size, None);
+            let (w, h) = text_renderer.measure_style(&label, None, &pct_style);
             Self::notification_badge_size(w, h, theme).0
         } else {
             0.0
@@ -2887,12 +2912,9 @@ impl TopBarChrome {
         let has_link = self.status.link.is_some();
         let battery_pct = self.status.battery_percent();
         let pct_label = battery_pct.map(|p| format!("{p}%"));
+        let pct_strong = pct_style.clone().with_weight(TextWeight::Semibold);
         let pct_w = pct_label.as_ref().map_or(0.0, |s| {
-            f64::from(
-                text_renderer
-                    .measure_weighted(s, pct_size, None, TextWeight::Semibold)
-                    .0,
-            )
+            f64::from(text_renderer.measure_style(s, None, &pct_strong).0)
         });
         let mut slots = 0usize;
         if has_volume {
@@ -2961,7 +2983,7 @@ impl TopBarChrome {
             tray_pad,
             tray_gap,
             icon_px,
-            pct_size,
+            pct_style,
             pct_label,
             badge_w,
             slots,
@@ -3011,8 +3033,8 @@ impl TopBarChrome {
         let label = Self::notification_badge_label(self.notification_badge);
         // The count is set at the chrome's numeric-readout size, so it
         // follows the person's text scale like every other bar label.
-        let label_size = layout.pct_size;
-        let (label_w, label_h) = text_renderer.measure(&label, label_size, None);
+        let label_style = &layout.pct_style;
+        let (label_w, label_h) = text_renderer.measure_style(&label, None, label_style);
         // The width was reserved in `draw_tray_pill_body` from the same
         // label; reading it back keeps the pill and the badge in agreement.
         let (_, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
@@ -3040,10 +3062,9 @@ impl TopBarChrome {
             .tokens
             .colors
             .ink_on(layout.danger, layout.bright, 4.5);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            label_size,
             ink,
             at(
                 transform,
@@ -3053,6 +3074,7 @@ impl TopBarChrome {
                 ),
             ),
             None,
+            label_style,
         );
         sx + layout.tray_slot + badge_w + layout.tray_gap
     }
@@ -3211,12 +3233,14 @@ impl TopBarChrome {
         if let Some(label) = layout.pct_label.as_ref() {
             // The gauge is the at-a-glance read; the number is
             // what you check when the gauge worries you.
-            let (_, lh) =
-                text_renderer.measure_weighted(label, layout.pct_size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
+            let (_, lh) = text_renderer.measure_style(
+                label,
+                None,
+                &layout.pct_style.clone().with_weight(TextWeight::Semibold),
+            );
+            text_renderer.draw_style(
                 scene,
                 label,
-                layout.pct_size,
                 if status.battery_is_low() {
                     hue
                 } else {
@@ -3227,7 +3251,7 @@ impl TopBarChrome {
                     (label_x + 3.0, layout.center_y - f64::from(lh) / 2.0),
                 ),
                 None,
-                TextWeight::Semibold,
+                &layout.pct_style.clone().with_weight(TextWeight::Semibold),
             );
         }
     }
@@ -3304,9 +3328,12 @@ impl TopBarChrome {
                 String::new()
             };
             let label = format!("{}{suffix}", labels.first().copied().unwrap_or_default());
-            let size = tokens.typography.scale.xs;
-            let (label_w, label_h) =
-                text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+            let style = tokens.typography.style(TextRole::Caption);
+            let (label_w, label_h) = text_renderer.measure_style(
+                &label,
+                None,
+                &style.clone().with_weight(TextWeight::Semibold),
+            );
             let icon_count = usize::from(has_mic).saturating_add(usize::from(has_camera));
             let width = 16.0 + small_count_to_f64(icon_count) * 15.0 + f64::from(label_w);
             self.media_indicator_rect = Rect::new(
@@ -3344,14 +3371,13 @@ impl TopBarChrome {
                 );
                 ix += 15.0;
             }
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                size,
                 colors.text_primary,
                 at(transform, (ix + 2.0, center_y - f64::from(label_h) / 2.0)),
                 None,
-                TextWeight::Semibold,
+                &style.with_weight(TextWeight::Semibold),
             );
         } else {
             self.media_indicator_rect = Rect::new(
@@ -3467,16 +3493,18 @@ impl TopBarChrome {
         } else {
             colors.intent.inverted
         };
-        let size = tokens.typography.scale.xs;
+        let style = tokens.typography.style(TextRole::Caption);
         let available = (right_x - self.center_rect.x1 - 48.0).clamp(28.0, 180.0);
-        let label = text_renderer.elide_to_width_weighted(
+        let label = text_renderer.elide_to_width_style(
             &label,
-            size,
             ui::num::f32_of_f64(available),
-            TextWeight::Semibold,
+            &style.clone().with_weight(TextWeight::Semibold),
         );
-        let (label_w, label_h) =
-            text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+        let (label_w, label_h) = text_renderer.measure_style(
+            &label,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
         let width = f64::from(label_w) + 31.0;
         self.sharing_indicator_rect =
             Rect::new(right_x - width, center_y - 11.0, right_x, center_y + 11.0);
@@ -3504,10 +3532,9 @@ impl TopBarChrome {
             color,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             colors.text_primary,
             at(
                 transform,
@@ -3517,7 +3544,7 @@ impl TopBarChrome {
                 ),
             ),
             None,
-            TextWeight::Semibold,
+            &style.with_weight(TextWeight::Semibold),
         );
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
@@ -3556,9 +3583,12 @@ impl TopBarChrome {
         let colors = &tokens.colors;
         let label = t("topbar-invite");
         let label = label.as_str();
-        let label_size = tokens.typography.scale.xs;
-        let (label_w, label_h) =
-            text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
+        let label_style = tokens.typography.style(TextRole::Caption);
+        let (label_w, label_h) = text_renderer.measure_style(
+            label,
+            None,
+            &label_style.clone().with_weight(TextWeight::Medium),
+        );
         let chip_r = 7.5_f64;
         let pill_x1 = stack_right_x + 2.0;
         let chip_cx = pill_x1 - 6.0 - chip_r;
@@ -3571,14 +3601,13 @@ impl TopBarChrome {
             None,
             &RoundedRect::from_rect(pill, f64::from(tokens.radii.detail)),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             label,
-            label_size,
             colors.text_dim,
             at(transform, (label_x, center_y - f64::from(label_h) / 2.0)),
             None,
-            TextWeight::Medium,
+            &label_style.with_weight(TextWeight::Medium),
         );
         let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
         scene.stroke(
@@ -3802,7 +3831,7 @@ impl TopBarChrome {
         let Some(_headline) = self.activity_headline.as_deref() else {
             return;
         };
-        let size = theme.tokens.typography.scale.sm;
+        let style = theme.text(TextRole::Caption);
         // Keep activity in one line. `measure(..., Some(width))` wraps at
         // word boundaries, which made a large-text notification grow to two
         // lines inside the fixed-height selector and clip into the bar edge.
@@ -3810,19 +3839,22 @@ impl TopBarChrome {
         // inset reserves the right breathing room. Elision preserves that
         // geometry at every text scale and viewport width.
         let max_width = self.activity_content_width(theme);
-        let label = self.activity_display_label(text_renderer, size, max_width);
-        let (w, h) = text_renderer.measure_weighted(&label, size, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
+        let label = self.activity_display_label(text_renderer, &style, max_width);
+        let (w, h) = text_renderer.measure_style(
+            &label,
+            None,
+            &style.clone().with_weight(TextWeight::Medium),
+        );
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             at(
                 transform,
                 (center_x - f64::from(w) / 2.0, center_y - f64::from(h) / 2.0),
             ),
             None,
-            TextWeight::Medium,
+            &style.clone().with_weight(TextWeight::Medium),
         );
     }
 
@@ -3837,7 +3869,7 @@ impl TopBarChrome {
     fn activity_display_label(
         &self,
         text_renderer: &mut TextRenderer,
-        size: f32,
+        style: &TextStyle,
         max_width: f32,
     ) -> String {
         let Some(headline) = self.activity_headline.as_deref() else {
@@ -3854,7 +3886,11 @@ impl TopBarChrome {
                 ],
             )
         };
-        let (full_width, _) = text_renderer.measure_weighted(&full, size, None, TextWeight::Medium);
+        let (full_width, _) = text_renderer.measure_style(
+            &full,
+            None,
+            &style.clone().with_weight(TextWeight::Medium),
+        );
         if full_width <= max_width {
             return full;
         }
@@ -3865,8 +3901,11 @@ impl TopBarChrome {
         // explicit detail chevron over eliding its last words to preserve
         // the trailing count in a compact top bar.
         let detail = format!("{headline}  ›");
-        let (detail_width, _) =
-            text_renderer.measure_weighted(&detail, size, None, TextWeight::Medium);
+        let (detail_width, _) = text_renderer.measure_style(
+            &detail,
+            None,
+            &style.clone().with_weight(TextWeight::Medium),
+        );
         if detail_width <= max_width {
             return detail;
         }
@@ -3876,13 +3915,20 @@ impl TopBarChrome {
         // instead of cutting it part-way through an example list.
         if let Some((summary, _examples)) = headline.split_once(':') {
             let compact = format!("{summary}  ›");
-            let (compact_width, _) =
-                text_renderer.measure_weighted(&compact, size, None, TextWeight::Medium);
+            let (compact_width, _) = text_renderer.measure_style(
+                &compact,
+                None,
+                &style.clone().with_weight(TextWeight::Medium),
+            );
             if compact_width <= max_width {
                 return compact;
             }
         }
-        text_renderer.elide_to_width_weighted(headline, size, max_width, TextWeight::Medium)
+        text_renderer.elide_to_width_style(
+            headline,
+            max_width,
+            &style.clone().with_weight(TextWeight::Medium),
+        )
     }
 
     fn draw_activity_badge(
@@ -3908,19 +3954,18 @@ impl TopBarChrome {
             None,
             &vello::kurbo::Circle::new(center, radius),
         );
-        let size = (theme.tokens.typography.scale.sm - 2.0).max(8.0);
-        let (w, h) = text_renderer.measure(&label, size, None);
-        text_renderer.draw_text_weighted(
+        let style = theme.text(TextRole::Caption);
+        let (w, h) = text_renderer.measure_style(&label, None, &style);
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             at(
                 transform,
                 (center.x - f64::from(w) / 2.0, center.y - f64::from(h) / 2.0),
             ),
             None,
-            TextWeight::Medium,
+            &style.clone().with_weight(TextWeight::Medium),
         );
     }
 
@@ -4130,13 +4175,15 @@ impl TopBarChrome {
                     &vello::kurbo::Circle::new(icon_rect.center(), icon_px / 2.0),
                 );
                 let label = letter.to_string();
-                let size = tokens.typography.scale.xs;
-                let (w, h) =
-                    text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
-                text_renderer.draw_text_weighted(
+                let style = tokens.typography.style(TextRole::Caption);
+                let (w, h) = text_renderer.measure_style(
+                    &label,
+                    None,
+                    &style.clone().with_weight(TextWeight::Semibold),
+                );
+                text_renderer.draw_style(
                     scene,
                     &label,
-                    size,
                     colors.text_primary,
                     at(
                         transform,
@@ -4146,7 +4193,7 @@ impl TopBarChrome {
                         ),
                     ),
                     None,
-                    TextWeight::Semibold,
+                    &style.with_weight(TextWeight::Semibold),
                 );
             }
         }
@@ -4357,28 +4404,26 @@ impl TopBarChrome {
             None,
             &grip,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &activity.label,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_dim,
             at(transform, (panel.x0 + 18.0, panel.y0 + 21.0)),
             None,
-            TextWeight::Medium,
+            &theme.text(TextRole::Label),
         );
         let elapsed = format!(
             "{:02}:{:02}",
             activity.remaining_secs / 60,
             activity.remaining_secs % 60
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &elapsed,
-            theme.tokens.typography.scale.lg,
             theme.tokens.colors.text_primary,
             at(transform, (panel.x0 + 18.0, panel.y0 + 43.0)),
             None,
-            TextWeight::Bold,
+            &theme.text(TextRole::Heading).with_weight(TextWeight::Bold),
         );
         [
             self.clock_pause_rect,
@@ -5487,15 +5532,16 @@ mod tests {
         assert!(!runs.is_empty());
         assert!(
             runs.iter()
-                .all(|run| run.font_size <= theme.tokens.typography.scale.lg)
+                .all(|run| run.font_size <= theme.tokens.typography.size(TextRole::Heading))
         );
         assert_eq!(renderer.text_scale(), 2.0);
         renderer.set_text_scale(1.0);
-        let (_, height) = renderer.measure_weighted(
+        let (_, height) = renderer.measure_style(
             "Home  1/1",
-            theme.tokens.typography.scale.sm,
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
         assert!(f64::from(height) <= bar.ws_pill_rect.height());
         assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
@@ -5808,11 +5854,13 @@ mod tests {
         bar.activity_unread = 3;
         let mut renderer = TextRenderer::new();
         let theme = Theme::default().with_text_scale(1.5);
-        let size = theme.tokens.typography.scale.sm;
+        let style = theme.text(TextRole::Caption);
         let max_width = bar.activity_content_width(&theme);
-        let label = bar.activity_display_label(&mut renderer, size, max_width);
-        let (_, height) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
-        let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
+        let label = bar.activity_display_label(&mut renderer, style, max_width);
+        let (_, height) =
+            renderer.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
+        let (width, _) =
+            renderer.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
         assert!(
             !label.contains('\n'),
             "activity headline must never wrap in the fixed topbar pill: {label:?}"
@@ -5851,10 +5899,11 @@ mod tests {
         );
         let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
         let theme = Theme::default().with_text_scale(1.3);
-        let size = theme.tokens.typography.scale.sm;
+        let style = theme.text(TextRole::Caption);
         let max_width = bar.activity_content_width(&theme);
-        let label = bar.activity_display_label(&mut renderer, size, max_width);
-        let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
+        let label = bar.activity_display_label(&mut renderer, style, max_width);
+        let (width, _) =
+            renderer.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
         assert_eq!(label, "Quinten · 2 permission changes  ›");
         assert!(width <= max_width + 0.5);
 

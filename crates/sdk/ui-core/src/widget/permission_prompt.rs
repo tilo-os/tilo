@@ -21,9 +21,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::{centered_text_top, renderer_type_size};
+use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -320,18 +321,18 @@ fn draw_button(
         theme.tokens.colors.text_primary
     };
 
-    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let text_style = theme.text(TextRole::Caption);
     // Centre on the measured line in both axes, not on the font size.
-    let (text_w, text_h) = text_renderer.measure(label, text_size, None);
+    let (text_w, text_h) = text_renderer.measure_style(label, None, &text_style);
     let text_x = rect.center().x - (f64::from(text_w) / 2.0);
     let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        text_size,
         text_color,
         transform.pre_translate(Vec2::new(text_x, text_y)),
         None,
+        &text_style,
     );
 }
 
@@ -421,40 +422,40 @@ impl Widget for PermissionPrompt {
         let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
         let label_max_w =
             (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
-        let app_id_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let cap_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+        let app_id_style = theme.text(TextRole::Caption);
+        let cap_style = theme.text(TextRole::Body);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "bounded screen-space width; f32 precision is sufficient for text layout"
         )]
         let label_max_w = label_max_w as f32;
-        let app_id = text_renderer.elide_to_width(&self.app_id, app_id_size, label_max_w);
+        let app_id = text_renderer.elide_to_width_style(&self.app_id, label_max_w, &app_id_style);
         let capability =
-            text_renderer.elide_to_width(&self.capability_label, cap_size, label_max_w);
+            text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style);
         // Centre the two-line block on its measured line boxes, not on the
         // font sizes, so both lines sit where the band says they are.
-        let (_, app_id_h) = text_renderer.measure(&app_id, app_id_size, None);
-        let (_, cap_h) = text_renderer.measure(&capability, cap_size, None);
+        let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
+        let (_, cap_h) = text_renderer.measure_style(&capability, None, &cap_style);
         let label_y = centered_text_top(
             self.rect.y0,
             PROMPT_HEIGHT,
             f64::from(app_id_h) + 4.0 + f64::from(cap_h),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &app_id,
-            app_id_size,
             theme.tokens.colors.text_dim,
             transform.pre_translate(Vec2::new(label_x, label_y)),
             None,
+            &app_id_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &capability,
-            cap_size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
             None,
+            &cap_style,
         );
 
         let buttons = [

@@ -35,6 +35,7 @@ use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, Scrollable, TaffyTreeExt, Widget};
 
@@ -113,38 +114,27 @@ struct StackStyle {
 }
 
 impl StackStyle {
-    /// Theme styles before renderer scaling, as the retained widget lays out.
+    /// The theme's roles, as the retained widget lays out.
     fn layout(theme: &Theme) -> Self {
-        let typography = &theme.tokens.typography.scale;
+        let wrapped = |role| theme.text(role).with_wrap_mode(TextWrapMode::WordOrGlyph);
         Self {
-            title: TextStyle::new(typography.xl).with_wrap_mode(TextWrapMode::WordOrGlyph),
-            message: TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph),
-            action: TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph),
+            title: wrapped(TextRole::Title),
+            message: wrapped(TextRole::Body),
+            action: wrapped(TextRole::Label),
             gap: f64::from(theme.tokens.spacing.s4),
             pad_y: f64::from(theme.tokens.spacing.s2),
         }
     }
 
-    /// Centered, renderer-scaled styles for painting.
-    fn resolved(text_renderer: &TextRenderer, theme: &Theme) -> Self {
+    /// The same roles centred, for painting.
+    fn resolved(theme: &Theme) -> Self {
         let layout = Self::layout(theme);
-        let centered = |style: TextStyle| {
-            text_renderer.renderer_input_style(&style.with_align(ParagraphAlign::Center))
-        };
+        let centered = |style: TextStyle| style.with_align(ParagraphAlign::Center);
         Self {
             title: centered(layout.title),
             message: centered(layout.message),
             action: centered(layout.action),
             ..layout
-        }
-    }
-
-    fn renderer_input(&self, text_renderer: &TextRenderer) -> Self {
-        Self {
-            title: text_renderer.renderer_input_style(&self.title),
-            message: text_renderer.renderer_input_style(&self.message),
-            action: text_renderer.renderer_input_style(&self.action),
-            ..*self
         }
     }
 
@@ -244,7 +234,7 @@ fn paint_empty_state(
     }
     let theme = ctx.theme;
     let transform = ctx.transform;
-    let mut style = StackStyle::resolved(ctx.text, theme);
+    let mut style = StackStyle::resolved(theme);
     let mut metrics = style.measure(ctx.text, rect.width(), content);
     let gap = metrics.gap;
 
@@ -529,8 +519,7 @@ impl EmptyState {
             action_label,
             ..EmptyStateContent::new(title)
         };
-        let metrics =
-            StackStyle::resolved(text_renderer, theme).measure(text_renderer, width, &content);
+        let metrics = StackStyle::resolved(theme).measure(text_renderer, width, &content);
         metrics.title_h + action_label.map_or(0.0, |_| metrics.gap + metrics.btn_h)
     }
 
@@ -611,11 +600,9 @@ impl Widget for EmptyState {
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
         });
         let measured_width = width.unwrap_or(240.0).max(1.0);
-        let metrics = self.layout_style.renderer_input(text_renderer).measure(
-            text_renderer,
-            f64::from(measured_width),
-            &self.content(),
-        );
+        let metrics =
+            self.layout_style
+                .measure(text_renderer, f64::from(measured_width), &self.content());
         let essential_height = metrics.title_h
             + self
                 .action_label
@@ -1005,10 +992,12 @@ mod tests {
             let width = (rect.width() - gap * 2.0).max(1.0) as f32;
             let title = "Couldn’t open this page";
             let message = "The site did not respond. Check your connection and try again.";
-            let title_style =
-                TextStyle::new(theme.tokens.typography.scale.xl).with_align(ParagraphAlign::Center);
-            let message_style =
-                TextStyle::new(theme.tokens.typography.scale.sm).with_align(ParagraphAlign::Center);
+            let title_style = theme
+                .text(TextRole::Title)
+                .with_align(ParagraphAlign::Center);
+            let message_style = theme
+                .text(TextRole::Caption)
+                .with_align(ParagraphAlign::Center);
             let mut renderer = TextRenderer::new();
             renderer.set_text_scale(theme.text_scale);
             let (_, title_one_line_height) = renderer.measure_style(title, None, &title_style);
@@ -1036,11 +1025,10 @@ mod tests {
             );
             let action = state.action_rect();
             assert!(rect.contains(action.center()));
-            let action_style = renderer.renderer_input_style(
-                &TextStyle::new(theme.tokens.typography.scale.sm)
-                    .with_wrap_mode(TextWrapMode::WordOrGlyph)
-                    .with_align(ParagraphAlign::Center),
-            );
+            let action_style = theme
+                .text(TextRole::Label)
+                .with_wrap_mode(TextWrapMode::WordOrGlyph)
+                .with_align(ParagraphAlign::Center);
             let (_, action_line_height) =
                 renderer.measure_style("Try again", Some(width), &action_style);
             assert!(

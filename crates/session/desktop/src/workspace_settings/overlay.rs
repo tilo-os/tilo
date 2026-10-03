@@ -26,6 +26,8 @@ use super::{
     draw_permissions_pane, members_pane_rows, ownership_action_rect, ownership_transfer_resource,
     permission_profiles_rect, permissions_pane_layout,
 };
+use ui::TextRole;
+use ui::text_render::TextStyle;
 
 /// The "At a glance" stat tiles: the base surface inside the raised summary
 /// card, with a hairline derived against the card. Where a palette makes
@@ -280,15 +282,15 @@ impl WorkspaceSettingsOverlay {
         theme: &Theme,
     ) {
         let hint = t("workspace-settings-close-hint");
-        let size = theme.tokens.typography.scale.xs;
-        let (width, _) = text_renderer.measure(&hint, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (width, _) = text_renderer.measure_style(&hint, None, &style);
+        text_renderer.draw_style(
             scene,
             &hint,
-            size,
             theme.tokens.colors.text_dim,
             transform.pre_translate((card.x1 - f64::from(width) - 24.0, card.y1 - 24.0).into()),
             None,
+            &style,
         );
     }
 
@@ -838,15 +840,15 @@ impl WorkspaceSettingsOverlay {
         } else {
             "workspace-settings-close-hint"
         });
-        let hsize = tokens.typography.scale.xs;
-        let (hw, _hh) = text_renderer.measure(&hint, hsize, None);
-        text_renderer.draw_text(
+        let hsize = tokens.typography.style(TextRole::Caption);
+        let (hw, _hh) = text_renderer.measure_style(&hint, None, &hsize);
+        text_renderer.draw_style(
             scene,
             &hint,
-            hsize,
             colors.text_dim,
             transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
             None,
+            &hsize,
         );
         self.draw_member_sheet(scene, transform, text_renderer, theme, rect, model);
     }
@@ -946,22 +948,22 @@ impl WorkspaceSettingsOverlay {
                 Some(super::short_id(cap_id)),
             ),
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &title,
-            tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((card.x0 + 20.0, card.y0 + 20.0).into()),
             None,
+            &tokens.typography.style(TextRole::Heading),
         );
         if let Some(subject) = subject {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &subject,
-                tokens.typography.scale.sm,
                 colors.intent.inverted_hover,
                 transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         let desc_y = if role_sheet {
@@ -969,18 +971,18 @@ impl WorkspaceSettingsOverlay {
         } else {
             card.y0 + 72.0
         };
-        let description = text_renderer.elide_to_width(
+        let description = text_renderer.elide_to_width_style(
             &description,
-            tokens.typography.scale.sm,
             f64_to_f32_lossy(card.width() - 40.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((card.x0 + 20.0, desc_y).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
 
         self.member_sheet_option_rects.clear();
@@ -1055,33 +1057,33 @@ impl WorkspaceSettingsOverlay {
                 None,
                 &rr,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                tokens.typography.scale.sm,
                 colors.text_primary,
                 transform.pre_translate((option.x0 + 12.0, option.y0 + 9.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
             if role_sheet {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     preview,
-                    tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((option.x0 + 12.0, option.y0 + 29.0).into()),
                     None,
+                    &tokens.typography.style(TextRole::Caption),
                 );
             }
         }
         let hint = t("workspace-settings-sheet-keyboard-hint");
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &hint,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((card.x0 + 20.0, card.y1 - 22.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
     }
 
@@ -1112,82 +1114,86 @@ impl WorkspaceSettingsOverlay {
                 .and_then(|workspace| workspace.role_of(model.local_user))
                 .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
             let width = f64_to_f32_lossy(close.x0 - identity.x0 - 88.0);
-            let caption = text_renderer.elide_to_width(
+            let caption = text_renderer.elide_to_width_style(
                 &t_args(
                     "workspace-settings-identity-caption",
                     &[("role", role.into())],
                 ),
-                tokens.typography.scale.xs,
                 width,
+                &tokens.typography.style(TextRole::Caption),
             );
-            let name = text_renderer.elide_to_width(&name, tokens.typography.scale.base, width);
-            text_renderer.draw_text(
+            let name = text_renderer.elide_to_width_style(
+                &name,
+                width,
+                &tokens.typography.style(TextRole::Body),
+            );
+            text_renderer.draw_style(
                 scene,
                 &caption,
-                tokens.typography.scale.xs,
                 colors.intent.inverted_hover,
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 8.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &name,
-                tokens.typography.scale.base,
                 colors.text_primary,
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 38.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Body),
             );
             return model.desktop.active_workspace().map_or_else(
                 || t("workspace-settings-workspace-fallback"),
                 |workspace| workspace.name.clone(),
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-current-workspace"),
-            tokens.typography.scale.xs,
             colors.intent.inverted_hover,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let active_name = model.desktop.active_workspace().map_or_else(
             || t("workspace-settings-workspace-fallback"),
             |w| w.name.clone(),
         );
-        let tsize = tokens.typography.scale.xl;
-        let shown_name = text_renderer.elide_to_width(
+        let tsize = tokens.typography.style(TextRole::Title);
+        let shown_name = text_renderer.elide_to_width_style(
             &active_name,
-            tsize,
             f64_to_f32_lossy(close.x0 - (identity.x0 + 76.0) - 12.0),
+            &tsize,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &shown_name,
-            tsize,
             colors.text_primary,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 34.0).into()),
             None,
+            &tsize,
         );
         let active_role = model
             .desktop
             .active_workspace()
             .and_then(|workspace| workspace.role_of(model.local_user))
             .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
-        let label = text_renderer.elide_to_width(
+        let label = text_renderer.elide_to_width_style(
             &t_args(
                 "workspace-settings-role-policy-line",
                 &[("role", active_role.into())],
             ),
-            tokens.typography.scale.sm,
             f64_to_f32_lossy(identity.x1 - identity.x0 - 92.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 58.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         active_name
     }
@@ -1277,7 +1283,7 @@ impl WorkspaceSettingsOverlay {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let lsize = tokens.typography.scale.base;
+        let label_style = tokens.typography.style(TextRole::Body);
         let tabs = WsTab::all();
         let nav = Self::nav_rect_for(rect);
         // The strip's track: a quiet lift under the Selector pills and a
@@ -1299,7 +1305,11 @@ impl WorkspaceSettingsOverlay {
         // Every pill gets the same treatment: the plan is measured once for
         // the whole strip, so the strip never shows one elided label next to
         // four intact ones or one icon next to four bare labels.
-        let plan = tab_strip_plan(text_renderer, lsize, segment_w - 2.0 * Self::PILL_INSET);
+        let plan = tab_strip_plan(
+            text_renderer,
+            &label_style,
+            segment_w - 2.0 * Self::PILL_INSET,
+        );
         // Segment widths follow the measured labels once equal fifths cannot
         // hold the widest one (the `s1` pill margins each side are part of
         // the need), so "General" at 200 % is not elided beside pills with
@@ -1319,7 +1329,7 @@ impl WorkspaceSettingsOverlay {
                 } else {
                     tab.label()
                 };
-                f64::from(text_renderer.measure(&label, lsize, None).0) + reserved
+                f64::from(text_renderer.measure_style(&label, None, &label_style).0) + reserved
             })
             .collect();
         let widths = tab_pill_widths(&needs, nav.width());
@@ -1381,12 +1391,12 @@ impl WorkspaceSettingsOverlay {
             let show_icon = plan.icons;
             let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
             let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
-            let label = text_renderer.elide_to_width(
+            let label = text_renderer.elide_to_width_style(
                 &label,
-                lsize,
                 f64_to_f32_lossy(pill_rect.width() - icon_size - icon_gap - 8.0),
+                &label_style,
             );
-            let (w, h) = text_renderer.measure(&label, lsize, None);
+            let (w, h) = text_renderer.measure_style(&label, None, &label_style);
             let content_w = icon_size + icon_gap + f64::from(w);
             let content_x = pill_rect.center().x - content_w / 2.0;
             if show_icon {
@@ -1408,10 +1418,9 @@ impl WorkspaceSettingsOverlay {
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                lsize,
                 color,
                 transform.pre_translate(
                     (
@@ -1421,6 +1430,7 @@ impl WorkspaceSettingsOverlay {
                         .into(),
                 ),
                 None,
+                &label_style,
             );
         }
         self.tab_pill_rects = pill_rects;
@@ -1671,17 +1681,17 @@ impl WorkspaceSettingsOverlay {
     fn name_selection_geometry(
         text_renderer: &mut TextRenderer,
         shown: &str,
-        input_size: f32,
+        input_style: &TextStyle,
         input_rect: Rect,
         selection: ui::text_selection::Selection,
     ) -> (Rect, Rect) {
         let x = input_rect.x0 + 12.0;
-        let (_, height) = text_renderer.measure("Ag", input_size, None);
+        let (_, height) = text_renderer.measure_style("Ag", None, input_style);
         let y = input_rect.y0 + (input_rect.height() - f64::from(height)) / 2.0;
         let advance = |renderer: &mut TextRenderer, offset| {
             f64::from(
                 renderer
-                    .measure(shown.get(..offset).unwrap_or(shown), input_size, None)
+                    .measure_style(shown.get(..offset).unwrap_or(shown), None, input_style)
                     .0,
             )
         };
@@ -1727,10 +1737,9 @@ impl WorkspaceSettingsOverlay {
             f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-identity-title"),
-            tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -1740,16 +1749,16 @@ impl WorkspaceSettingsOverlay {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
-        let description = text_renderer.elide_to_width(
+        let description = text_renderer.elide_to_width_style(
             &t("workspace-settings-identity-description"),
-            tokens.typography.scale.xs,
             f64_to_f32_lossy(identity_card.width() - 32.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -1759,6 +1768,7 @@ impl WorkspaceSettingsOverlay {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let input_rect = self.name_rect();
         let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.detail));
@@ -1782,11 +1792,11 @@ impl WorkspaceSettingsOverlay {
         } else {
             active_name
         };
-        let input_size = tokens.typography.scale.base / text_renderer.text_scale();
+        let input_style = tokens.typography.style(TextRole::Body);
         let (selected, caret) = Self::name_selection_geometry(
             text_renderer,
             shown,
-            input_size,
+            &input_style,
             input_rect,
             model.name_selection,
         );
@@ -1799,13 +1809,13 @@ impl WorkspaceSettingsOverlay {
                 &selected,
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             shown,
-            input_size,
             colors.text_primary,
             transform.pre_translate((input_rect.x0 + 12.0, caret.y0).into()),
             None,
+            &input_style,
         );
         if editing {
             scene.fill(
@@ -1816,13 +1826,13 @@ impl WorkspaceSettingsOverlay {
                 &caret,
             );
         } else if !can_rename {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t("workspace-settings-rename-admin-only"),
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((identity_card.x0 + 16.0, identity_card.y1 - 12.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         editing
@@ -1863,18 +1873,18 @@ impl WorkspaceSettingsOverlay {
         } else {
             "workspace-settings-invite-admin-only"
         });
-        let invite_url = text_renderer.elide_to_width(
+        let invite_url = text_renderer.elide_to_width_style(
             &invite_url,
-            tokens.typography.scale.sm,
             f64_to_f32_lossy(url_pill.width() - 24.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &invite_url,
-            tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let invite_btn = self.invite_rect();
         scene.fill(
@@ -1892,11 +1902,14 @@ impl WorkspaceSettingsOverlay {
             ),
         );
         let invite_label = t("workspace-settings-invite-create");
-        let (cw, _ch) = text_renderer.measure(&invite_label, tokens.typography.scale.sm, None);
-        text_renderer.draw_text(
+        let (cw, _ch) = text_renderer.measure_style(
+            &invite_label,
+            None,
+            &tokens.typography.style(TextRole::Caption),
+        );
+        text_renderer.draw_style(
             scene,
             &invite_label,
-            tokens.typography.scale.sm,
             if can_invite {
                 colors.text_primary
             } else {
@@ -1910,6 +1923,7 @@ impl WorkspaceSettingsOverlay {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         invite_y
     }
@@ -1961,10 +1975,9 @@ impl WorkspaceSettingsOverlay {
             colors.intent.inverted_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-invite-title"),
-            tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -1974,16 +1987,16 @@ impl WorkspaceSettingsOverlay {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
-        let description = text_renderer.elide_to_width(
+        let description = text_renderer.elide_to_width_style(
             &t("workspace-settings-invite-description"),
-            tokens.typography.scale.xs,
             f64_to_f32_lossy(sharing_card.width() - 76.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -1993,6 +2006,7 @@ impl WorkspaceSettingsOverlay {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         sharing_card
     }
@@ -2024,10 +2038,9 @@ impl WorkspaceSettingsOverlay {
             f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-glance-title"),
-            tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -2037,6 +2050,7 @@ impl WorkspaceSettingsOverlay {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
         let (members, grants, app_rules) =
             model.desktop.active_workspace().map_or((0, 0, 0), |ws| {
@@ -2094,25 +2108,25 @@ impl WorkspaceSettingsOverlay {
                 None,
                 &stat_rr,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 value,
-                tokens.typography.scale.lg,
                 colors.text_primary,
                 transform.pre_translate(
                     (stat.x0 + 12.0, stat.y0 + 8.0 * f64::from(theme.text_scale)).into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Heading),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate(
                     (stat.x0 + 12.0, stat.y0 + 33.0 * f64::from(theme.text_scale)).into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
     }
@@ -2147,13 +2161,13 @@ pub(crate) struct TabStripPlan {
 /// an icon. Elision is the last resort, applied uniformly, never the first.
 pub(crate) fn tab_strip_plan(
     text_renderer: &mut TextRenderer,
-    size: f32,
+    style: &TextStyle,
     pill_w: f64,
 ) -> TabStripPlan {
     let mut widest = |labels: &[String]| -> f64 {
         labels
             .iter()
-            .map(|label| f64::from(text_renderer.measure(label, size, None).0))
+            .map(|label| f64::from(text_renderer.measure_style(label, None, style).0))
             .fold(0.0, f64::max)
     };
     let full: Vec<String> = WsTab::all().iter().map(WsTab::label).collect();
@@ -2233,7 +2247,7 @@ mod tests {
         let (selected, caret) = WorkspaceSettingsOverlay::name_selection_geometry(
             &mut tr,
             "Home",
-            16.0,
+            &Theme::dark().with_text_scale(2.0).text(TextRole::Heading),
             rect,
             ui::text_selection::Selection {
                 anchor: 4,
@@ -2457,17 +2471,17 @@ mod tests {
             let mut text = TextRenderer::new();
             // The 540 px laptop lens at 100 %: five ~95 px pills.
             let base = Theme::dark();
-            let plan = tab_strip_plan(&mut text, base.tokens.typography.scale.base, 95.6);
+            let plan = tab_strip_plan(&mut text, &base.text(TextRole::Body), 95.6);
             assert!(plan.icons, "at 100% every pill has room for its icon");
             // The same lens at 200 % text: no pill can hold a full label, so the
             // whole strip drops to compact labels (and icons only if they all
             // fit) instead of eliding the active tab alone.
             let large = Theme::dark().with_text_scale(2.0);
-            let lsize = large.tokens.typography.scale.base;
+            let label_style = large.text(TextRole::Body);
             // In the 540 px lens even compact labels overflow a 95.6 px pill at
             // 28 px type, so the plan drops to compact labels without icons and
             // every pill elides by the same rule — never the active tab alone.
-            let plan = tab_strip_plan(&mut text, lsize, 95.6);
+            let plan = tab_strip_plan(&mut text, &label_style, 95.6);
             assert_eq!(
                 plan,
                 TabStripPlan {
@@ -2476,7 +2490,7 @@ mod tests {
                 }
             );
             // In the 800 px lens (145.6 px pills) compact labels fit with icons.
-            let plan = tab_strip_plan(&mut text, lsize, 145.6);
+            let plan = tab_strip_plan(&mut text, &label_style, 145.6);
             assert_eq!(
                 plan,
                 TabStripPlan {
@@ -2486,7 +2500,12 @@ mod tests {
             );
             let widest = WsTab::all()
                 .iter()
-                .map(|tab| f64::from(text.measure(&tab.compact_label(), lsize, None).0))
+                .map(|tab| {
+                    f64::from(
+                        text.measure_style(&tab.compact_label(), None, &label_style)
+                            .0,
+                    )
+                })
                 .fold(0.0, f64::max);
             assert!(
                 widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
