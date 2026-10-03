@@ -5,9 +5,10 @@
   "manifest": "https://code.tilo.so/api/packages/tilo/generic/tilo-extension-media-codecs/{arch}-{base}/manifest.json",
   "hosts": [
     "download1.rpmfusion.org",
-    "codecs.fedoraproject.org",
     "download.fedoraproject.org",
-    "dl.fedoraproject.org"
+    "dl.fedoraproject.org",
+    "codecs.fedoraproject.org",
+    "ciscobinary.openh264.org"
   ],
   "parts": ["tilo-codecs", "tilo-codecs-mesa"]
 }

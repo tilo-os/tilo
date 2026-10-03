@@ -160,12 +160,15 @@ share one manifest.
   "id": "media-codecs",
   "kind": "media-codecs",
   "manifest": "https://code.tilo.so/api/packages/tilo/generic/tilo-extension-media-codecs/{arch}-{base}/manifest.json",
-  "hosts": ["download1.rpmfusion.org", "codecs.fedoraproject.org"],
+  "hosts": ["download1.rpmfusion.org", "download.fedoraproject.org", "ciscobinary.openh264.org"],
   "parts": ["tilo-codecs", "tilo-codecs-mesa"]
 }
 ```
 
-`kind` is display/policy metadata for the desktop; it grants nothing. The
+`kind` is display/policy metadata for the desktop; it grants nothing. Every
+artifact URL's host must be in `hosts`. A publisher's own redirect (to one of
+its mirrors) is followed as long as it stays on HTTPS; the SHA-256 pin, not the
+mirror, is what makes the bytes acceptable. The
 signature is fetched from the manifest URL plus `.sig`. `{arch}` is the rpm
 architecture (`x86_64`, `aarch64`), `{base}` the base package fingerprint.
 
