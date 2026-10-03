@@ -161,12 +161,13 @@ impl Widget for DiskRow {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        let raised = theme.tokens.colors.surfaces.raised;
         let bg = if self.selected {
-            theme.bg_active
+            theme.tokens.colors.lift_on(raised, 1.0)
         } else if self.is_hovered {
-            theme.bg_hover
+            theme.tokens.colors.lift_on(raised, 0.5)
         } else {
-            theme.bg_primary
+            raised
         };
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, bg, None, &shape);

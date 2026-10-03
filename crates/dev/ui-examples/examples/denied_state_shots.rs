@@ -165,7 +165,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     Ok(())
 }

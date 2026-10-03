@@ -90,20 +90,23 @@ impl<'a> ActionRowFace<'a> {
 
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
+        let rest = if self.outlined {
+            colors.surfaces.content
+        } else {
+            colors.surfaces.raised
+        };
         let background = if self.interact.disabled {
-            colors.surfaces.base
+            colors.surfaces.content
         } else if self.interact.pressed {
-            theme.bg_active
+            colors.lift_on(rest, 1.0)
         } else if self.accented && self.interact.hovered {
             theme.tokens.colors.intent.inverted_hover
         } else if self.accented {
             theme.tokens.colors.intent.inverted
         } else if self.interact.hovered {
-            theme.bg_hover
-        } else if self.outlined {
-            colors.surfaces.base
+            colors.lift_on(rest, 0.5)
         } else {
-            colors.surfaces.raised
+            rest
         };
         let shape = RoundedRect::from_rect(self.rect, self.radius);
         scene.fill(

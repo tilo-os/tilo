@@ -73,9 +73,9 @@ fn relative_motion_from_device_event(focused: bool, event: &DeviceEvent) -> Opti
         .then_some((*dx, *dy))
 }
 
-/// Base color for the first few frames before a theme arrives. Matches
-/// `ui::theme::Theme::dark().bg_app` so the window doesn't flash white on
-/// boot; overridden each frame via [`WinitBackend::set_base_color`].
+/// Base color for the first few frames before a theme arrives: a dark
+/// desktop ground, so the window doesn't flash white on boot; overridden
+/// each frame via [`WinitBackend::set_base_color`].
 const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
 
 pub struct WinitBackend {
@@ -181,7 +181,7 @@ impl WinitBackend {
     }
 
     /// Override the per-frame clear color; the compositor calls this each
-    /// tick with `theme.bg_app` so theme changes apply without touching the
+    /// tick with the desktop ground (`surfaces.base`) so theme changes apply without touching the
     /// backend trait.
     pub fn set_base_color(&mut self, color: Color) {
         self.inner.base_color = color;

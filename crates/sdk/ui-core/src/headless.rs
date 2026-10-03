@@ -2115,7 +2115,7 @@ impl FrameHarness {
         self.drain_component_wakes();
         FrameRenderInput {
             scene: &self.scene,
-            background: self.theme.bg_app,
+            background: self.theme.tokens.colors.surfaces.content,
         }
     }
 
@@ -2124,7 +2124,7 @@ impl FrameHarness {
         let schedule = self.frame_schedule();
         FrameOutput {
             scene: &self.scene,
-            background: self.theme.bg_app,
+            background: self.theme.tokens.colors.surfaces.content,
             logical_size: self.viewport,
             device_size: (
                 (f64::from(self.viewport.0) * self.input_scale).ceil() as u32,
@@ -2182,11 +2182,13 @@ impl FrameHarness {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
-    /// Capture the composited native-window appearance, including its theme
-    /// background. Use this for rendered contrast measurements. Nothing is
-    /// written in a browser page, as for [`FrameHarness::render_png`].
+    /// Capture the composited native-window appearance: the frame over the
+    /// window ground (`surfaces.content`), exactly as a live window clears
+    /// before drawing. `--shots` writes this. Use it for rendered contrast
+    /// measurements. Nothing is written in a browser page, as for
+    /// [`FrameHarness::render_png`].
     pub fn render_window_png(&self, out: &std::path::Path) {
-        self.render_png_on(out, self.theme.bg_app);
+        self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
     }
 
     /// Rasterise the most recently laid-out frame over a transparent
@@ -2196,10 +2198,10 @@ impl FrameHarness {
         self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
-    /// [`FrameHarness::render_rgba`] over the theme background, as the
-    /// native window composites it.
+    /// [`FrameHarness::render_rgba`] over the window ground, as the native
+    /// window composites it.
     pub fn render_window_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(self.theme.bg_app)
+        self.render_rgba_on(self.theme.tokens.colors.surfaces.content)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

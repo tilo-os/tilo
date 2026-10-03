@@ -920,7 +920,7 @@ impl Table {
         let r = self.empty_add_rect();
         let hovered = self.hover == Hover::EmptyAdd;
         let box_color = if hovered {
-            theme.bg_active
+            tk.colors.lift_on(tk.colors.surfaces.raised, 0.5)
         } else {
             tk.colors.surfaces.raised
         };
