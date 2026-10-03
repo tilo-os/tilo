@@ -24,7 +24,9 @@
 //! be on its way to the host. The host carries every message as retained,
 //! opaque governance and never holds a key. Member state and the room governors
 //! are exported for the profile's durable store, so a reloaded page keeps
-//! its access instead of asking again.
+//! its access instead of asking again. Member state is sealed under a vault
+//! key the store keeps apart from it: in the page, wrapped by a
+//! non-extractable `WebCrypto` key.
 
 use std::collections::HashMap;
 
@@ -131,12 +133,18 @@ pub(crate) struct SavedMember {
     pub sealed: Vec<u8>,
 }
 
-/// This page's channel state for the durable store.
+/// This page's channel state for the durable store. Member state in it is
+/// sealed under the store's vault ([`crate::PeerStore::channel_vault`]),
+/// which is kept apart from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SavedChannels {
-    /// Seals member state at rest. It lives beside what it seals: the
-    /// profile store is the page's only private storage, and the device key
-    /// that could wrap it never leaves page custody.
+    pub governors: Vec<(String, [u8; 32])>,
+    pub members: Vec<SavedMember>,
+}
+
+/// Channel state as pages stored it while the vault was kept inside it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct LegacySavedChannels {
     pub vault: [u8; 32],
     pub governors: Vec<(String, [u8; 32])>,
     pub members: Vec<SavedMember>,
@@ -148,7 +156,6 @@ pub(crate) struct Channels {
     /// The identity that certified this device; only its devices govern
     /// the rooms this page takes part in.
     user: [u8; 32],
-    vault_bytes: [u8; 32],
     vault: VaultKey,
     /// Certificates announced through the host, bound to the device the
     /// host authenticated as their sender.
@@ -167,13 +174,12 @@ pub(crate) struct Channels {
 }
 
 impl Channels {
-    pub(crate) fn new(device: [u8; 32], user: [u8; 32]) -> Self {
-        let vault_bytes: [u8; 32] = rand::random();
+    /// Channel state for `device` of `user`, sealed at rest under `vault`.
+    pub(crate) fn new(device: [u8; 32], user: [u8; 32], vault: [u8; 32]) -> Self {
         Self {
             device: Ed25519PublicKey::from_bytes(device),
             user,
-            vault_bytes,
-            vault: VaultKey::new(vault_bytes),
+            vault: VaultKey::new(vault),
             certs: HashMap::new(),
             routes: HashMap::new(),
             unopened: HashMap::new(),
@@ -185,11 +191,9 @@ impl Channels {
         }
     }
 
-    /// Pick up where a previous page left off: its vault, the governors it
-    /// learned and its members' state.
+    /// Pick up where a previous page left off: the governors it learned and
+    /// its members' state.
     pub(crate) fn restore(&mut self, saved: SavedChannels) {
-        self.vault_bytes = saved.vault;
-        self.vault = VaultKey::new(saved.vault);
         for (room, governor) in saved.governors {
             self.rooms.insert(
                 room,
@@ -201,6 +205,37 @@ impl Channels {
             .into_iter()
             .map(|member| (member.channel, member))
             .collect();
+    }
+
+    /// Pick up state stored with its vault beside it: its members are
+    /// sealed again under this page's vault, and the next export stores
+    /// them without the old one.
+    pub(crate) fn restore_legacy(&mut self, legacy: LegacySavedChannels) {
+        let old = VaultKey::new(legacy.vault);
+        let members = legacy
+            .members
+            .into_iter()
+            .filter_map(|saved| {
+                let steward = Ed25519PublicKey::from_bytes(saved.steward);
+                let member = ChannelMember::restore_in_memory(
+                    saved.channel,
+                    self.device,
+                    steward,
+                    &saved.sealed,
+                    &old,
+                )
+                .ok()?;
+                Some(SavedMember {
+                    sealed: member.export_sealed(&self.vault).ok()?,
+                    ..saved
+                })
+            })
+            .collect();
+        self.restore(SavedChannels {
+            governors: legacy.governors,
+            members,
+        });
+        self.dirty = true;
     }
 
     /// Have the next [`Self::export_if_changed`] export.
@@ -240,11 +275,7 @@ impl Channels {
         governors.sort();
         let mut members: Vec<SavedMember> = members.into_values().collect();
         members.sort_by_key(|member| member.channel.0);
-        Some(SavedChannels {
-            vault: self.vault_bytes,
-            governors,
-            members,
-        })
+        Some(SavedChannels { governors, members })
     }
 
     pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
@@ -294,12 +325,13 @@ impl Channels {
     }
 
     /// Whether `author`'s verified certificate lets it govern a room this
-    /// page takes part in.
+    /// page takes part in: a device of this identity that owns workspaces.
+    /// A host governs only when its root also granted it that (a node that
+    /// hosts and governs a person's workspaces); a plain host never does.
     fn may_govern(&self, author: &[u8; 32]) -> bool {
         self.certs.get(author).is_some_and(|cert| {
             cert.user_public_key == self.user
                 && cert.capabilities.can_own_workspaces
-                && !cert.capabilities.can_act_as_host
                 && !cert.capabilities.foreign
         })
     }
@@ -689,7 +721,7 @@ mod tests {
         let desktop = SigningKey::from_bytes(&[5; 32]);
         let stranger = SigningKey::from_bytes(&[6; 32]);
         let server = SigningKey::from_bytes(&[7; 32]);
-        let mut channels = Channels::new(device(&browser), device(&user));
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
         let note = route("note-1");
         let other = route("note-2");
         assert_eq!(requests(&channels.open(&note, 0)), 0);
@@ -726,6 +758,34 @@ mod tests {
         assert_eq!(steward_of(&channels, &note), Some(device(&desktop)));
     }
 
+    /// A node the person's root certified to host and govern their
+    /// workspaces governs; a foreign device that owns workspaces does not.
+    #[test]
+    fn a_node_that_hosts_and_governs_names_the_governor() {
+        let user = SigningKey::from_bytes(&[1; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let foreign = SigningKey::from_bytes(&[4; 32]);
+        let server = SigningKey::from_bytes(&[5; 32]);
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
+        let note = route("note-1");
+        channels.open(&note, 0);
+        let mut foreign_capabilities = DeviceCapabilities::primary();
+        foreign_capabilities.foreign = true;
+        channels.note_cert(
+            device(&foreign),
+            cert(&user, &foreign, foreign_capabilities),
+            0,
+        );
+        channels.receive_frame(device(&foreign), ROOM, genesis(&foreign, &note), 0);
+        assert_eq!(steward_of(&channels, &note), None);
+
+        let capabilities = tilo_user_identity::cloud_enrollment::host_capabilities();
+        channels.note_cert(device(&server), cert(&user, &server, capabilities), 0);
+        let changes = channels.receive_frame(device(&server), ROOM, genesis(&server, &note), 0);
+        assert_eq!(requests(&changes), 1);
+        assert_eq!(steward_of(&channels, &note), Some(device(&server)));
+    }
+
     /// A room whose governor has not shown up is not ungoverned: a genesis
     /// that arrives later still names it, and the route asks for access.
     #[test]
@@ -733,7 +793,7 @@ mod tests {
         let user = SigningKey::from_bytes(&[1; 32]);
         let browser = SigningKey::from_bytes(&[3; 32]);
         let laptop = SigningKey::from_bytes(&[4; 32]);
-        let mut channels = Channels::new(device(&browser), device(&user));
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
         let note = route("note-1");
         let changes = channels.open(&note, 0);
         assert!(changes.keys.is_empty() && changes.outgoing.is_empty());
@@ -763,7 +823,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut steward =
             ChannelSteward::open_or_create(dir.path(), channel, laptop.clone(), &vault).unwrap();
-        let mut channels = Channels::new(device(&browser), device(&user));
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
         channels.open(&note, 0);
         channels.note_cert(
             device(&laptop),
@@ -806,10 +866,36 @@ mod tests {
             "nothing new to save"
         );
 
-        let mut reloaded = Channels::new(device(&browser), device(&user));
-        reloaded.restore(saved);
+        let mut reloaded = Channels::new(device(&browser), device(&user), [4; 32]);
+        reloaded.restore(saved.clone());
         let changes = reloaded.open(&note, 0);
         assert_eq!(requests(&changes), 0, "a reload does not ask again");
+        let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
+        assert_eq!(restored.epoch(), keys.epoch());
+
+        // Under another vault the stored state does not open, so the page
+        // asks again.
+        let mut elsewhere = Channels::new(device(&browser), device(&user), [5; 32]);
+        elsewhere.restore(saved.clone());
+        let changes = elsewhere.open(&note, 0);
+        assert!(changes.keys.is_empty());
+        assert_eq!(requests(&changes), 1);
+
+        // State stored with its vault beside it moves under the page's vault
+        // and is stored without the old one.
+        let mut migrated = Channels::new(device(&browser), device(&user), [5; 32]);
+        migrated.restore_legacy(LegacySavedChannels {
+            vault: [4; 32],
+            governors: saved.governors,
+            members: saved.members,
+        });
+        let resaved = migrated
+            .export_if_changed()
+            .expect("migrated state to save");
+        let mut after = Channels::new(device(&browser), device(&user), [5; 32]);
+        after.restore(resaved);
+        let changes = after.open(&note, 0);
+        assert_eq!(requests(&changes), 0, "a migrated page does not ask again");
         let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
         assert_eq!(restored.epoch(), keys.epoch());
     }

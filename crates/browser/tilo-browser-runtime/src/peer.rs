@@ -5,7 +5,9 @@
 //! non-extractable `WebCrypto` Ed25519 key that signs through a JavaScript
 //! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
 //! `IndexedDB` straight into this module, which keeps it only in wasm
-//! memory. Nothing here generates or holds a user root.
+//! memory. Nothing here generates or holds a user root: a page that holds
+//! one (`web/root-identity.mjs`) lends it as a signer, the same shape as
+//! custody, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) is kept in the
 //! profile's durable store when the page names a profile
@@ -138,6 +140,10 @@ struct DurablePeerStore {
     key: durable_store::StorageKey,
     /// Channel membership and the edits held for it, beside the record.
     channels_key: durable_store::StorageKey,
+    /// Seals the member state in `channels_key`. The page keeps it wrapped
+    /// by a non-extractable `WebCrypto` key (`channel-vault.mjs`), never in
+    /// this store.
+    channel_vault: [u8; 32],
 }
 
 thread_local! {
@@ -145,7 +151,11 @@ thread_local! {
 }
 
 impl DurablePeerStore {
-    fn open(namespace: &str, user_public_key: &[u8; 32]) -> Result<Self, JsError> {
+    fn open(
+        namespace: &str,
+        user_public_key: &[u8; 32],
+        channel_vault: [u8; 32],
+    ) -> Result<Self, JsError> {
         #[derive(Deserialize)]
         struct Namespace {
             profile: String,
@@ -166,6 +176,7 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.channels", hex::encode(user_public_key)),
             ),
+            channel_vault,
         })
     }
 }
@@ -201,6 +212,10 @@ impl PeerStore for DurablePeerStore {
             )
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    fn channel_vault(&self) -> Option<[u8; 32]> {
+        Some(self.channel_vault)
     }
 }
 
@@ -361,6 +376,84 @@ pub async fn certify_device(
     })
     .await
     .map_err(js_error)?;
+    serde_json::to_string(&Certified {
+        cert: &cert,
+        host_cert: &host_cert,
+    })
+    .map_err(js_error)
+}
+
+fn device_key(text: &str) -> Result<[u8; 32], JsError> {
+    hex::decode(text)
+        .map_err(js_error)?
+        .try_into()
+        .map_err(|_| js_error("device public key must be 32 bytes"))
+}
+
+/// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
+/// `{publicKey, sign}` from `root-identity.mjs`) as `role`: `browser` (a
+/// member, 30 days) or `node` (hosts and governs the person's workspaces,
+/// admits no devices). Resolves to the certificate JSON.
+///
+/// # Errors
+///
+/// Rejects for an unknown role, the root's own key, or a failed signature.
+#[wasm_bindgen(js_name = issueDeviceCert)]
+pub async fn issue_device_cert(
+    root: JsValue,
+    device_public_key_hex: String,
+    label: String,
+    role: String,
+) -> Result<String, JsError> {
+    let role = match role.as_str() {
+        "browser" => tilo_browser_peer::IssuedRole::Browser,
+        "node" => tilo_browser_peer::IssuedRole::Node,
+        _ => return Err(js_error("role must be browser or node")),
+    };
+    let root = PageSigner::from_js(&root)?;
+    let cert = tilo_browser_peer::issue_device_cert(
+        &root,
+        device_key(&device_public_key_hex)?,
+        &label,
+        role,
+    )
+    .await
+    .map_err(js_error)?;
+    serde_json::to_string(&cert).map_err(js_error)
+}
+
+/// The canonical encoding of a certificate (JSON in): what a native device
+/// keeps on disk.
+///
+/// # Errors
+///
+/// Throws for JSON that is not a certificate.
+#[wasm_bindgen(js_name = deviceCertCanonical)]
+pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
+    let cert: DeviceCert = serde_json::from_str(cert_json).map_err(js_error)?;
+    tilo_user_identity::canonical::canonical_bytes(&cert).map_err(js_error)
+}
+
+/// Certify this page's device key (`custody`) with the user root the page
+/// holds, for the host at `post`, whose certificate must be a host of that
+/// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
+///
+/// # Errors
+///
+/// Rejects when the host is unreachable or not a host of this root.
+#[wasm_bindgen(js_name = certifyWithRoot)]
+pub async fn certify_with_root(
+    post: Function,
+    root: JsValue,
+    custody: JsValue,
+    label: String,
+) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let signer = PageSigner::from_js(&custody)?;
+    let (cert, host_cert) =
+        tilo_browser_peer::certify_with_root(&PageHttp(post), &root, &signer, &label)
+            .await
+            .map_err(js_error)?;
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
@@ -1046,11 +1139,13 @@ impl WasmPeer {
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
     /// it. `post(path, session, body)` reaches the host origin.
+    /// `channelVault` (32 bytes, from `channel-vault.mjs`) seals the
+    /// profile's channel state at rest; a peer with a namespace needs it.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed configuration, custody object or namespace,
-    /// or neither a namespace nor a save callback.
+    /// Throws for a malformed configuration, custody object, namespace or
+    /// channel vault, or neither a namespace nor a save callback.
     #[allow(
         clippy::arc_with_non_send_sync,
         reason = "the session takes shared handles; in the page they stay on its one thread"
@@ -1066,6 +1161,7 @@ impl WasmPeer {
         record: Option<Vec<u8>>,
         save: Option<Function>,
         post: Function,
+        channel_vault: Option<Vec<u8>>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
         let signer = PageSigner::from_js(custody)?;
@@ -1074,7 +1170,12 @@ impl WasmPeer {
         }
         let mut profile_store = None;
         let store: Arc<dyn PeerStore> = if let Some(namespace) = namespace {
-            let durable = DurablePeerStore::open(&namespace, &config.cert.user_public_key)?;
+            let channel_vault: [u8; 32] = channel_vault
+                .as_deref()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
+            let durable =
+                DurablePeerStore::open(&namespace, &config.cert.user_public_key, channel_vault)?;
             profile_store = Some(Rc::clone(&durable.store));
             Arc::new(durable)
         } else {

@@ -133,6 +133,47 @@ enum Command {
         #[arg(long)]
         expected_service: Option<String>,
     },
+    #[command(flatten)]
+    OutOfBand(OutOfBand),
+}
+
+/// Certification delivered outside a pairing session.
+#[derive(Subcommand)]
+enum OutOfBand {
+    /// Create this device's key if it has none and print, as one JSON line,
+    /// its public key and the endpoint id of a relay it runs.
+    DeviceKey {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+    },
+    /// Certify a device's key with a root key kept in a file, for delivery
+    /// out of band. Writes the canonical certificate to OUT.
+    Certify {
+        /// The user root signing key (32 bytes, owner-only).
+        #[arg(long)]
+        root_key: PathBuf,
+        /// The device's public key, hex.
+        #[arg(long)]
+        device: String,
+        #[arg(long, default_value = "Tilo device")]
+        label: String,
+        /// own, admit, host or read-all; repeatable.
+        #[arg(long = "capability", value_name = "CAPABILITY")]
+        capabilities: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Join the identity that certified this device's key without a pairing
+    /// session: install a root-signed certificate delivered out of band.
+    InstallCert {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+        #[arg(long)]
+        identity_dir: PathBuf,
+        /// The certificate, canonically encoded.
+        #[arg(long)]
+        cert: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -870,7 +911,6 @@ fn recover_personal_enrollments(
     Ok(())
 }
 
-#[cfg(test)]
 fn install_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -2243,6 +2283,136 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
+fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
+    let paths = IdentityPaths::under(identity_root);
+    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "device_public_key": hex::encode(device.verifying_key().to_bytes()),
+            "relay_service_node_id": hex::encode(tilo_relay::daemon::relay_service_node_id(&device)),
+        })
+    );
+    Ok(())
+}
+
+/// The personal projection a certificate alone implies: the public identity
+/// of its root, and a fleet of this device.
+fn out_of_band_payload(
+    cert: DeviceCert,
+    device: &ed25519_dalek::SigningKey,
+) -> anyhow::Result<ResponsePayload> {
+    let user = cert.user_public_key;
+    let fleet = FleetProjection {
+        schema_version: 1,
+        identity_id: hex::encode(user),
+        certificates: vec![cert.clone()],
+        revocations: Vec::new(),
+    };
+    let digest = blake3::hash(&tilo_user_identity::canonical::canonical_bytes(&cert)?);
+    let mut nonce = [0; 16];
+    nonce.copy_from_slice(&digest.as_bytes()[..16]);
+    Ok(ResponsePayload {
+        nonce,
+        recipient_device_public_key: cert.device_public_key,
+        relay_service_node_id: tilo_relay::daemon::relay_service_node_id(device),
+        home_peer_toml: None,
+        public_identity_json: Some(public_identity_record(user, "My Tilo identity")?),
+        fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
+        home_peers_json: Some(b"[]".to_vec()),
+        cert,
+    })
+}
+
+fn certify(
+    root_key: &std::path::Path,
+    device: &str,
+    label: &str,
+    capabilities: &[String],
+    out: &std::path::Path,
+) -> anyhow::Result<()> {
+    let root = tilo_user_identity::persist::read_owned_signing_key(root_key)
+        .with_context(|| format!("read {}", root_key.display()))?;
+    let device_public_key: [u8; 32] = hex::decode(device.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("--device must be a 32-byte hex public key")?;
+    let mut granted = DeviceCapabilities {
+        can_own_workspaces: false,
+        can_admit_devices: false,
+        can_act_as_host: false,
+        can_read_all_workspaces: false,
+        foreign: false,
+    };
+    for capability in capabilities {
+        match capability.as_str() {
+            "own" => granted.can_own_workspaces = true,
+            "admit" => granted.can_admit_devices = true,
+            "host" => granted.can_act_as_host = true,
+            "read-all" => granted.can_read_all_workspaces = true,
+            other => bail!("unknown capability {other}: expected own, admit, host or read-all"),
+        }
+    }
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key,
+        device_label: label.into(),
+        capabilities: granted,
+        issued_at_ns: now_ns()?,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root)?;
+    tilo_user_identity::persist::write_device_cert(out, &cert)?;
+    Ok(())
+}
+
+fn install_cert(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    cert_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let cert = tilo_user_identity::persist::read_device_cert(cert_path)
+        .with_context(|| format!("read {}", cert_path.display()))?;
+    verify_device_cert_at(&cert, now_ns()?).context("the certificate does not verify")?;
+    let paths = IdentityPaths::under(identity_root);
+    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        .context("this device has no key; run device-key first")?;
+    if device.verifying_key().to_bytes() != cert.device_public_key {
+        bail!("the certificate names another device");
+    }
+    if let Ok(user) = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+        && user != cert.user_public_key
+    {
+        bail!("this device already belongs to another identity");
+    }
+    let record = install_personal_projection(
+        identity_root,
+        identity_dir,
+        &out_of_band_payload(cert, &device)?,
+    )?;
+    println!("installed {}", record.display());
+    Ok(())
+}
+
+fn out_of_band(command: OutOfBand) -> anyhow::Result<()> {
+    match command {
+        OutOfBand::DeviceKey { identity_root } => device_key(&identity_root),
+        OutOfBand::Certify {
+            root_key,
+            device,
+            label,
+            capabilities,
+            out,
+        } => certify(&root_key, &device, &label, &capabilities, &out),
+        OutOfBand::InstallCert {
+            identity_root,
+            identity_dir,
+            cert,
+        } => install_cert(&identity_root, &identity_dir, &cert),
+    }
+}
+
 fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
@@ -2391,6 +2561,7 @@ fn run() -> anyhow::Result<()> {
             port: NEARBY_PORT,
             ready: None,
         }),
+        Command::OutOfBand(command) => out_of_band(command),
     }
 }
 
@@ -2400,6 +2571,77 @@ mod tests {
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
     };
+
+    #[test]
+    fn an_out_of_band_certificate_joins_its_identity() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        device_key(identity_root.path()).unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let user = root.verifying_key().to_bytes();
+        let issue = |device_public_key: [u8; 32], root: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key,
+                device_label: "Node".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, root).unwrap();
+            let path = identity_dir
+                .path()
+                .join(format!("{}.cert", hex::encode(&cert.signature[..8])));
+            tilo_user_identity::persist::write_device_cert(&path, &cert).unwrap();
+            path
+        };
+
+        let other_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let foreign = issue(other_device.verifying_key().to_bytes(), &root);
+        assert!(install_cert(identity_root.path(), identity_dir.path(), &foreign).is_err());
+        assert!(!paths.device_cert.exists());
+
+        let root_key = identity_dir.path().join("root.key");
+        tilo_user_identity::persist::write_signing_key(&root_key, &root).unwrap();
+        let own = identity_dir.path().join("own.cert");
+        let capabilities = ["own", "host", "read-all"].map(String::from);
+        certify(
+            &root_key,
+            &hex::encode(device.verifying_key().to_bytes()),
+            "Node",
+            &capabilities,
+            &own,
+        )
+        .unwrap();
+        install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
+        // Delivered again (a restart before the launcher noticed): unchanged.
+        install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
+        let installed = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        assert_eq!(installed.user_public_key, user);
+        assert!(
+            installed.capabilities.can_act_as_host && !installed.capabilities.can_admit_devices
+        );
+        assert_eq!(
+            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user
+        );
+        let record =
+            runtime_identity::load_from_path(identity_record_path(identity_dir.path(), user))
+                .unwrap();
+        assert_eq!(record.group_public_key(), user);
+        assert!(record.sign(b"root-only operation").is_err());
+
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+        let takeover = issue(device.verifying_key().to_bytes(), &stranger);
+        assert!(install_cert(identity_root.path(), identity_dir.path(), &takeover).is_err());
+        assert_eq!(
+            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user
+        );
+    }
 
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,

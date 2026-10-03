@@ -95,6 +95,7 @@ pub mod nofollow;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
+pub mod root_envelope;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
@@ -128,8 +129,8 @@ pub use image::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, joined_device_is_ready,
-    load_or_create_device_key, provision_joined_device,
+    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, install_device_cert,
+    joined_device_is_ready, load_or_create_device_key, provision_joined_device,
 };
 pub use projection::{
     GovernedDeviceIdentityV2, GovernedHumanIdentityV1, GovernedHumanIdentityV2,
