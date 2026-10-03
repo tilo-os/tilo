@@ -151,6 +151,12 @@ impl ResourceApp for PasswordsShell {
     const TITLE: &'static str = "Passwords";
     const ICON: Option<&'static str> = Some("passwords");
     const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    // The window shows secrets: captures, recordings and remote viewers get
+    // a placeholder in every launch, not only in a standalone build.
+    const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
+        capture_protected: true,
+        ..ui::application::ComponentBehaviour::DEFAULT
+    };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
         cx.surface(PasswordsSurface::live())
@@ -240,8 +246,6 @@ pub fn provide_resources(state: &VaultState) -> Vec<PublishedResource> {
 
 /// Live launch with capture protection for stored secrets.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
     ui::framework::launch_spec::<PasswordsShell>()
 }
 
@@ -249,6 +253,13 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
 mod tests {
     use super::*;
     use ui::widget::Widget;
+
+    #[test]
+    fn every_launch_withholds_the_vault_window_from_captures() {
+        // The framework applies the declaration to every window hosting the
+        // component; mounting the live view here would open the user's vault.
+        assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected);
+    }
 
     #[test]
     #[allow(
