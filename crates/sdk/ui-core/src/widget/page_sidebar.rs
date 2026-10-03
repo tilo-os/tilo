@@ -847,7 +847,14 @@ impl PageSidebar {
                 rect.x1 + inset,
                 rect.y1 + inset,
             );
-            crate::widget::list_row::paint_row_fill(scene, base, theme, plate, true, false);
+            crate::chrome::paint_row_selection(
+                scene,
+                base,
+                plate,
+                crate::chrome::SelectionState::active(true),
+                c.surfaces.content,
+                theme,
+            );
         }
 
         thumb(scene, tr, base, i, rect);
