@@ -41,6 +41,7 @@ vendor/fonts/tilo-sans/
   scripts/pairs.py         neighbouring letters colliding after kerning
   scripts/inkgeom.py       glyph ink as polygons (shared by the two checks)
   scripts/verify_upstream.py   every upstream glyph unchanged?
+  scripts/il_kern.py       kerning of the distinct I and l (ss13), solved from the built fonts
   scripts/import_upstream.py   how sources/ was made from upstream (do not rerun)
   sources/
     TiloSans.designspace           upright: 4 masters
@@ -82,6 +83,7 @@ uv run vendor/fonts/tilo-sans/scripts/kerning.py [--reset]      # regenerate the
 uv run vendor/fonts/tilo-sans/scripts/components.py [--all] [--glyphs Abreveacute]
 uv run vendor/fonts/tilo-sans/scripts/pairs.py [--show 40] [--text "đĩa Tĩnh"]
 uv run vendor/fonts/tilo-sans/scripts/verify_upstream.py
+uv run vendor/fonts/tilo-sans/scripts/il_kern.py [--check]   # after build; repeat until --check is clean
 ```
 
 `verify_upstream.py` and `proof.py --fallback instrument` need the upstream
@@ -192,7 +194,83 @@ convention (an underscore after each capital: `Aacute` → `A_acute.glif`,
 Stylistic sets in use: ss01 Round dots, ss02 Single Story a, ss03 Alternate y,
 ss04 Alternate K, ss05 Alternate R, ss06 Alternate M, ss07 Alternate G, ss08
 Alternate J, ss09 Alternate Q, ss10 Alternate 2, ss11 Alternate Ampersand, ss12
-Alternate Currency. New sets start at ss13.
+Alternate Currency, ss13 Distinct I and l. New sets start at ss14.
+
+### Distinct forms for identifiers (`features/il.fea`)
+
+Off by default. The UI toolkit turns on `ss13` and `zero` for text that must be
+unambiguous: usernames, user-submitted identifiers, passwords, codes.
+
+| feature | name | glyphs |
+|---|---|---|
+| `ss13` | Distinct I and l | `I` → `I.ss13` (short slab serifs, as thick as `E`'s arms), `l` → `l.ss13` (the `t`'s tail, cut shorter), with every precomposed form: `Iacute.ss13` … `Iogonek.ss13`, `IJ.ss13`, `Idieresis.ss01.ss13`, `lacute.ss13`, `lcaron.ss13`, `lcommaaccent.ss13`, `lslash.ss13`, and the ligatures `f_l.ss13`, `f_f_l.ss13` |
+| `cv01` | Capital I with serifs | the `I` half of `ss13` |
+| `cv02` | Lowercase l with tail | the `l` half of `ss13` |
+| `zero` | (slashed zero) | `zero.zero`, `zero.tf.zero`: the slash stays inside the counter, so it never reads as `Ø` |
+
+`1`, `|` and `!` keep their upstream forms: the flagged `1`, the long thin bar
+and the dotted `!` already differ from both new forms. The lookups run after
+`liga` and `ss01`, so `fl` becomes `f_l.ss13` and `Ï` with round dots becomes
+`Idieresis.ss01.ss13`. All four features are in `aalt`, so glyph palettes reach
+the alternates.
+
+Every new precomposed `I` or `l` needs its `.ss13` composite, a line in `il.fea`
+and a place in the kern groups below, in the same change that adds it; otherwise
+`ss13` silently leaves a plain stem in an identifier. Pending, as those letters
+land: Vietnamese `Ĩ Ỉ Ị` (`Itilde.ss13`, `Ihookabove.ss13`, `Idotbelow.ss13`, plus
+`itilde`/`ihookabove` in the lowercase-i accent kerning below); Cyrillic `І Ї Ӏ`
+and Greek `Ι Ϊ Ί` (decide per script whether the serif form follows; a bare stem
+next to a serif Latin `I` is ambiguous again). `I.ss13` carries `topleft` for
+the Greek tonos, placed as far from the serif as upstream's `I` places it from
+its stem.
+
+Spacing and kerning. `I.ss13`'s sidebearings come from its serifs; the condensed
+masters are 15 (Regular) and 10 (Bold) units wider per side than first drawn so
+`II` and `AIA` keep Instrument's Z+Z / H+A rhythm. `l.ss13` keeps `l`'s left
+sidebearing and takes the right sidebearing Instrument's `t` keeps after its
+tail. Groups: `public.kern1.KO_I.ss13` / `public.kern2.KO_I.ss13` (with
+`IJ.ss13` on the left side; its right side carries `IJ`'s pairs);
+`public.kern1.KO_l.ss13` for `l.ss13`, its accented forms, `lslash.ss13` and the
+tailed ligatures; `public.kern1.KO_lcaron.ss13` for `lcaron.ss13` alone (it must
+not share `ď`'s values: the caron overhang sets those, and the tail would run
+into the next letter). `f_l.ss13` and `f_f_l.ss13` stay in `public.kern2.KO_f`
+and `zero.zero` in both `KO_zero` groups (with copies of `zero`'s glyph-level
+pairs), so the alternates keep every upstream pair.
+
+Every pair with one of these groups (or their members) is written by
+`scripts/il_kern.py`, never by hand. It measures ink gaps on the shaped fonts at
+all eight masters, with `ss13` on and off, and solves these rules (the script's
+docstring has the detail):
+
+- the white beside the bare stem (between the serifs, above the tail) is the
+  plain `I`/`l` gap plus a little: 14 / 12 units for most partners (`t f v w y r`,
+  figures, operators), two thirds of the extra width next to rounds for the
+  serif I (`O C Q`, `o e`, `0 6 9`; one third for the tailed l, whose tail
+  already fills under a round), half of it next to top and middle shapes
+  (`T V W Y 7`, quotes, dashes, guillemets, `·`). Tightening stops where the tail
+  or a serif would sit closer to the partner than it sits to a straight stem
+  (`l n`, `I H`), so neither the tail nor the serifs collide and no hole opens
+  above the tail or beside the inset stem;
+- floors: the serif I at least 40 units from anything (or the plain `I`'s gap
+  where that is already closer), and always 40 against lowercase accents,
+  apostrophe carons and between accented serif I's (`ÏÏ ÎÏ ÍÌ ĪĪ`, accent to
+  accent); `II` at Instrument's `ZZ`; `IJ tI ťI` at `LZ`; `lI` at the larger of
+  `LZ` and `ZZ`; `ď ľ ť ř` before `I` 45; the tailed l never tighter than
+  Instrument's `t` or plain `l`; Condensed Bold `ll` and `lI` 10 units more so
+  they keep a pixel of white at 12–13 px;
+- `lcaron.ss13` takes the looser of the tailed l's value and plain `ľ`'s value
+  moved by the advance difference: the caron keeps `ľ`'s clearance, the tail
+  keeps `l.ss13`'s;
+- Catalan `l·l` (`locl CAT`): the middle dot stays centred between tailed l's.
+
+The italic masters are measured on their own outlines.
+
+A new letter that can sit next to a serif I or tailed l (Vietnamese `Ĩ Ỉ Ị`,
+Cyrillic `і`, Greek `ι`, a new accent) needs no hand kerning against them: build,
+run `il_kern.py`, build again, and `il_kern.py --check` must report no changes.
+Upstream's glyph-level pairs on accented plain I's (`Ï`/`-`, `-`/`Î`, `«`/`Î`) and
+`f_l`/`_ ~` do not carry over: with `ss13` on, an accented serif I kerns like the
+serif I, and `f_l.ss13` like `l.ss13`.
 
 ## Anchors
 

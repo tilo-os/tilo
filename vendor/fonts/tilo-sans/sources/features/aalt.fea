@@ -16,4 +16,8 @@ feature ss09;
 feature ss10;
 feature ss11;
 feature ss12;
+feature ss13;
+feature cv01;
+feature cv02;
+feature zero;
 } aalt;
