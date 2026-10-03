@@ -1880,6 +1880,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     "$vm_firmware" \
     freerdp \
     xwayland-satellite \
+    waypipe \
+    virtiofsd \
+    skopeo \
     virt-viewer \
     xorriso \
     genisoimage \
