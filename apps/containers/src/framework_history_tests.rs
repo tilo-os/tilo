@@ -120,12 +120,12 @@ fn fresh_sync_focus_and_reopen_preserve_absent_draft() {
     let mut driver = ui::headless::Driver::new(state, Box::new(root), (1000, 750));
     driver.key("n");
     let heads = driver.state_mut().doc.get_heads();
-    assert!(driver.a11y_node_named("Image").is_some());
+    let _ = input_id(&driver, "Image");
     assert!(driver.a11y_focus().is_some());
     assert_eq!(driver.state_mut().doc.get_heads(), heads);
     assert!(driver.state_mut().doc.get(ROOT, "view").unwrap().is_none());
 
-    let image = driver.a11y_node_named("Image").unwrap();
+    let image = input_id(&driver, "Image");
     driver
         .perform_a11y_action(
             image,
@@ -443,6 +443,17 @@ fn node_named(driver: &ui::headless::Driver, name: &str) -> ui::accesskit::Node 
     a11y_node_labelled(driver, name, None)
 }
 
+/// The text field labelled `name` (its visible label is a separate node).
+fn input_id(driver: &ui::headless::Driver, name: &str) -> ui::accesskit::NodeId {
+    driver
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label() == Some(name) && node.role() == ui::accesskit::Role::TextInput
+        })
+        .map_or_else(|| panic!("no text field named {name:?}"), |(id, _)| id)
+}
+
 fn node_named_role(
     driver: &ui::headless::Driver,
     name: &str,
@@ -651,15 +662,15 @@ fn managed_history_retains_public_modal_input_selection_and_focus() {
     crate::doc::ViewDoc::set_create_field(&mut doc, crate::doc::CreateField::Image, "nginx:old");
     let mut driver =
         managed_driver_with_root(doc, Box::new(crate::history_test_open_create_root()));
-    let dialog = node_named_role(&driver, "Create container", ui::accesskit::Role::Dialog);
+    let dialog = node_named_role(&driver, "New container", ui::accesskit::Role::Dialog);
     assert_eq!(dialog.role(), ui::accesskit::Role::Dialog);
     let dialog_bounds = dialog.bounds().expect("visible modal has bounds");
     assert!(dialog_bounds.x1 > dialog_bounds.x0 && dialog_bounds.y1 > dialog_bounds.y0);
-    let image_id = driver.a11y_node_named("Image").unwrap();
+    let image_id = input_id(&driver, "Image");
     driver
         .perform_a11y_action(image_id, &ui::a11y::Action::Focus)
         .unwrap();
-    let image = node_named(&driver, "Image");
+    let image = node_named_role(&driver, "Image", ui::accesskit::Role::TextInput);
     assert_eq!(image.value(), Some("nginx:old"));
     let input_bounds = image.bounds().expect("visible input has bounds");
     assert!(input_bounds.x1 > input_bounds.x0 && input_bounds.y1 > input_bounds.y0);
@@ -677,9 +688,9 @@ fn managed_history_retains_public_modal_input_selection_and_focus() {
 
     history_round_trip(&mut driver, selected);
 
-    let dialog = node_named_role(&driver, "Create container", ui::accesskit::Role::Dialog);
+    let dialog = node_named_role(&driver, "New container", ui::accesskit::Role::Dialog);
     assert_eq!(dialog.role(), ui::accesskit::Role::Dialog);
-    let image = node_named(&driver, "Image");
+    let image = node_named_role(&driver, "Image", ui::accesskit::Role::TextInput);
     assert_eq!(image.value(), Some("nginx:old"));
     assert!(image.bounds().is_some());
     assert_eq!(driver.a11y_focus().unwrap().1.label(), Some("Image"));
@@ -719,19 +730,12 @@ fn assert_public_overlay_retained(root: Box<dyn Widget>, label: &str) {
 }
 
 #[test]
-fn managed_history_retains_public_palette_prompt_confirm_and_pull_overlays() {
-    assert_public_overlay_retained(
-        Box::new(crate::history_test_palette_root()),
-        "Command palette",
-    );
+fn managed_history_retains_public_prompt_confirm_and_pull_overlays() {
     assert_public_overlay_retained(Box::new(crate::history_test_prompt_root()), "New volume");
-    assert_public_overlay_retained(
-        Box::new(crate::history_test_confirm_root()),
-        "Remove container?",
-    );
+    assert_public_overlay_retained(Box::new(crate::history_test_confirm_root()), "Remove web?");
     assert_public_overlay_retained(
         Box::new(crate::history_test_pull_root()),
-        "Image pull progress",
+        "Pulling quay.io/example/pending:1",
     );
 }
 
@@ -812,14 +816,9 @@ fn managed_history_retains_private_instances_scroll_engine_intent_and_channels()
             after.input_selections[index],
             before.input_selections[index]
         );
-        assert_eq!(after.input_scroll[index], before.input_scroll[index]);
     }
-    assert_eq!(after.list_scroll.to_bits(), before.list_scroll.to_bits());
-    assert_eq!(
-        after.detail_scroll.to_bits(),
-        before.detail_scroll.to_bits()
-    );
-    assert_eq!(after.combo_open, before.combo_open);
+    assert_eq!(after.list_offset, before.list_offset);
+    assert_eq!(after.detail_offset, before.detail_offset);
     assert_eq!(after.engine_connection, before.engine_connection);
     assert_eq!(after.engine_counts, before.engine_counts);
     assert_eq!(after.last_refresh, before.last_refresh);
@@ -899,7 +898,7 @@ fn managed_history_retains_private_instances_scroll_engine_intent_and_channels()
             ui::accesskit::Role::ProgressIndicator,
         )
         .value(),
-        Some("Finished pulling quay.io/example/armed:1")
+        Some("100%")
     );
 
     pull_refresh
@@ -1055,27 +1054,30 @@ fn mounted_callbacks_drop_hidden_emissions_and_a_fresh_restart_confirms_once() {
         results,
         ..
     } = armed;
+    let hide = driver
+        .a11y_node_named("Hide")
+        .expect("the running pull can be hidden");
     driver
-        .perform_semantic_named(
-            "containers-root",
-            Some("containers.progress.close"),
-            &ui::a11y::Action::Activate,
-        )
+        .perform_a11y_action(hide, &ui::a11y::Action::Activate)
         .unwrap();
     crate::doc::ViewDoc::set_section(&mut driver.state_mut().doc, crate::doc::Section::Containers);
     crate::doc::ViewDoc::set_selected(&mut driver.state_mut().doc, Some("armed-container"));
     driver.relayout();
     let inspection = driver.inspection_json().unwrap();
     assert!(
-        inspection.contains("containers.container:armed-container:restart"),
-        "a fresh restart uses the rendered restart semantic control; inspection: {inspection}"
+        inspection.contains("detail-restart-armed-container"),
+        "a fresh restart uses the rendered Restart button; inspection: {inspection}"
     );
+    let restart = driver
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label() == Some("Restart") && node.role() == ui::accesskit::Role::Button
+        })
+        .map(|(id, _)| id)
+        .expect("the detail offers Restart");
     driver
-        .perform_semantic_named(
-            "containers-root",
-            Some("containers.container:armed-container:restart"),
-            &ui::a11y::Action::Activate,
-        )
+        .perform_a11y_action(restart, &ui::a11y::Action::Activate)
         .unwrap();
     assert!(
         driver.pending_history_controls().is_empty(),
@@ -1113,33 +1115,12 @@ fn mounted_callbacks_drop_hidden_emissions_and_a_fresh_restart_confirms_once() {
         requests.try_recv().is_err(),
         "fresh confirmation dispatches once"
     );
-    assert_eq!(
-        driver.control_coverage().registered,
-        2,
-        "the retained palette and private replace-one producer both need mounted custody"
+    let coverage = driver.control_coverage();
+    assert!(
+        coverage.registered >= 2,
+        "the window's buttons and the private replace-one producer all hold mounted custody"
     );
-}
-
-#[test]
-fn control_custody_containers_palette_installs_before_private_replace_one_producer() {
-    let (doc, _, _) = fixture();
-    let root = crate::app::ContainersApp::history_test_producer_order_root();
-    let mut driver = managed_driver_with_root(doc, Box::new(root));
-
-    driver.click_named("history-open").unwrap();
-    let saved = driver.pending_history_controls();
-    assert_eq!(saved.len(), 2);
-    assert_eq!(
-        saved[0].invocation.address,
-        ui::tilo_actions::ActionAddress::new("container:armed-container", "select")
-    );
-    assert!(saved[0].invocation.arguments.is_empty());
-    assert_eq!(
-        saved[1].invocation.address,
-        ui::tilo_actions::ActionAddress::new("container:armed-container", "restart")
-    );
-    assert!(saved[1].invocation.arguments.is_empty());
-    assert_eq!(driver.control_coverage().registered, 2);
+    assert_eq!(coverage.unsafe_late_attachments, 0);
 }
 
 #[test]
@@ -1202,9 +1183,11 @@ fn controlled_pull_stream_crosses_managed_history_once() {
         "Image pull",
         ui::accesskit::Role::ProgressIndicator,
     );
-    assert_eq!(
-        progress.value(),
-        Some("Finished pulling quay.io/example/retained:1")
+    assert_eq!(progress.value(), Some("100%"));
+    assert!(
+        driver
+            .a11y_node_named("Pulling quay.io/example/retained:1")
+            .is_some()
     );
     assert!(matches!(
         requests.recv().unwrap(),

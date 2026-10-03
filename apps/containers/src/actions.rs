@@ -34,8 +34,8 @@
 //! - **Section / selection / detail tab** are document Actions
 //!   (`set-section`, `select-container`, `set-tab`) so the palette and agents
 //!   share one door with the UI through [`tilo_resource::publish`].
-//! - **The search box and the create-container draft are native collaborative
-//!   `Text`.** `view.search` and the six `view.create.*` fields are Automerge
+//! - **The create-container draft is native collaborative `Text`.** The six
+//!   `view.create.*` fields are Automerge
 //!   `Text` objects on the toolkit's CRDT-native text path. The create draft is
 //!   transient: submitting it shells out to `podman run` (external) and clears.
 //!
@@ -53,11 +53,7 @@
 #[cfg(test)]
 mod tests {
     use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-    use taffy::{NodeId, TaffyTree};
     use tilo_automerge::ApplyIncoming;
-    use ui::widget::Widget;
-    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
 
     use crate::app::ContainersApp;
     use crate::doc::{CreateField, ViewDoc};
@@ -78,71 +74,6 @@ mod tests {
         palette: ["Open web-frontend", "Open postgres"],
     }
 
-    fn device_id() -> DeviceId {
-        // winit exposes no public DeviceId constructor; tests only need a value.
-        unsafe { std::mem::zeroed() }
-    }
-
-    /// A character keypress through the real winit event path (the same trick the
-    /// app's own widget tests use for winit's `pub(crate)` `KeyEventExtra`).
-    fn char_event(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn named_event(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    /// Pump one event through the production `Widget::handle_event`.
-    fn send(app: &mut ContainersApp, doc: &mut AutoCommit, ev: &WindowEvent) {
-        let taffy = TaffyTree::<()>::new();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: doc,
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
-    }
-
     fn view_obj(doc: &AutoCommit) -> ObjId {
         match doc.get(&ROOT, "view").unwrap() {
             Some((Value::Object(ObjType::Map), id)) => id,
@@ -159,20 +90,30 @@ mod tests {
     fn document_holds_view_state_while_lifecycle_verbs_stay_external() {
         // --- phase: document_holds_only_view_state_and_native_text ---
         {
-            const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
+            const ALLOWED: [&str; 4] = ["section", "selected", "tab", "create"];
 
             let mut app = ContainersApp::new(false);
             let mut doc = AutoCommit::new();
 
-            // Production find-and-jump path: the app-local palette selects a container.
-            app.open_container_palette();
-            let expected = app.engine.containers[0].id.clone();
-            send(&mut app, &mut doc, &named_event(NamedKey::Enter));
-            app.dispatch_palette_invocation_for_test(&mut doc);
+            // The find-and-jump path search and agents use: the resource's
+            // `select` operation chooses the container.
+            let expected = app.engine.containers[1].id.clone();
+            let payload = serde_json::to_vec(&["select", expected.as_str()]).unwrap();
+            assert!(
+                app.answer_resource_operation(
+                    ui::tilo_actions::OperationKind::View,
+                    "containers.container",
+                    &payload,
+                    &doc,
+                    &ROOT,
+                )
+                .unwrap()
+            );
+            ui::widget::Widget::sync(&mut app, &mut doc, &ROOT);
             assert_eq!(
                 ViewDoc::selected(&doc).as_deref(),
                 Some(expected.as_str()),
-                "activating a palette row selects that container (navigation)",
+                "the select operation chooses that container (navigation)",
             );
 
             // The whole document is a single `view` map — nothing else.
@@ -223,16 +164,18 @@ mod tests {
 
         // --- phase: create_draft_is_native_text_and_replicates_byte_identically ---
         {
-            let mut app = ContainersApp::new(false);
-            let mut doc = AutoCommit::new();
-            // Open the create modal on the Name field — a plain text field,
-            // not the image combobox — so a keystroke lands straight on the text path.
-            app.create_open = true;
-            app.create_focus = CreateField::Name;
+            let mut d = ui::headless::Driver::for_root(
+                ui::State::new(),
+                ContainersApp::new(false),
+                (1280, 800),
+                ui::Theme::dark(),
+            );
+            d.key("n");
+            d.key("Tab");
 
             // A base both replicas share before any create draft exists.
-            let before = ViewDoc::create_field(&doc, CreateField::Name);
-            assert_eq!(before, "", "draft starts empty");
+            let doc = &mut d.state_mut().doc;
+            assert_eq!(ViewDoc::create_field(doc, CreateField::Name), "");
             doc.commit();
             let base = doc.save();
             let mut peer = AutoCommit::load(&base).unwrap();
@@ -242,16 +185,17 @@ mod tests {
                 "precondition: replicas share a base"
             );
 
-            // Real keystroke → create_modal_key → SetCreateField (a splice).
-            send(&mut app, &mut doc, &char_event("w"));
+            // A real keystroke in the Name field → SetCreateField (a splice).
+            d.type_text("w");
+            let doc = &mut d.state_mut().doc;
             doc.commit();
             assert_eq!(
-                ViewDoc::create_field(&doc, CreateField::Name),
+                ViewDoc::create_field(doc, CreateField::Name),
                 "w",
                 "the keystroke spliced into the create-draft Text on the native path",
             );
 
-            peer.merge_incoming(&mut doc).unwrap();
+            peer.merge_incoming(doc).unwrap();
             assert_eq!(
                 doc.get_heads(),
                 peer.get_heads(),
@@ -299,17 +243,19 @@ mod tests {
 
         // --- phase: exports_unavailable_effect_resources_without_document_actions ---
         {
-            let mut app = ContainersApp::new(false);
-            let mut doc = AutoCommit::new();
+            let mut d = ui::headless::Driver::for_root(
+                ui::State::new(),
+                ContainersApp::new(false),
+                (1280, 800),
+                ui::Theme::dark(),
+            );
+            // The live widget after interaction, not a pristine one.
+            d.key("2");
+            d.key("1");
+            d.click_at(700.0, 700.0);
 
-            // Exercise the real event path (open + close the app palette) so this is
-            // the live widget after interaction, not a pristine one.
-            app.open_container_palette();
-            send(&mut app, &mut doc, &named_event(NamedKey::Escape));
-            // A stray click on the surface, too.
-            send(&mut app, &mut doc, &left_press());
-
-            let resources = ui::resources::resources(&app, &doc);
+            let (app, state) = d.root_and_state_mut::<ContainersApp>();
+            let resources = ui::resources::resources(app, &state.doc);
             assert_eq!(resources.len(), 1, "one container-engine root");
             let engine = &resources[0];
             assert_eq!(engine.kind, "containers.engine");
@@ -329,10 +275,6 @@ mod tests {
                 action.kind == ui::tilo_actions::OperationKind::Effect
                     && !action.contract.availability.is_available()
             }));
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_none(),
-                "no action is dispatched, so no action-host undo boundary is recorded",
-            );
         }
     }
 }

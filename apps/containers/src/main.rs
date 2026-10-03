@@ -67,7 +67,7 @@ pub fn main() {
 fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
     LaunchSpec::new("so.tilo.containers", root)
         .shot_root(shot_root)
-        .scenarios(&["confirm", "prompt"])
+        .scenarios(containers::SCENARIOS)
         .history(&containers::framework_history::HISTORY)
 }
 
