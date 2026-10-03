@@ -684,7 +684,6 @@ impl Presentation {
                 preview,
                 radius,
             );
-            render::seat_slide(ctx.scene, transform, preview, radius, &local);
         }
     }
 
@@ -860,7 +859,6 @@ fn draw_presenter_current(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area
             radius,
         );
     }
-    render::seat_slide(ctx.scene, ctx.transform, destination, radius, ctx.theme);
 }
 
 fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: Rect) -> Rect {
@@ -894,7 +892,6 @@ fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: R
             destination,
             radius,
         );
-        render::seat_slide(ctx.scene, ctx.transform, destination, radius, theme);
     } else {
         // After the last slide: an empty well saying so.
         ui::surface::card(

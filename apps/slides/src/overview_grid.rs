@@ -191,7 +191,7 @@ impl OverviewGrid {
         assets: DeckAssets<'_>,
     ) {
         let theme = ctx.theme;
-        self.measure(ctx.text, theme, window, deck);
+        self.capture_metrics(ctx.text, theme, window, deck);
         let header = self.header(window);
         ui::surface::separator(
             ctx.scene,
@@ -239,7 +239,6 @@ impl OverviewGrid {
             // The card's art is the slide itself.
             let art = face.art_rect(rect);
             render::draw_slide(ctx, assets, slide, art, radius);
-            render::seat_slide(ctx.scene, ctx.transform, art, radius, theme);
         }
         ctx.scene.pop_layer();
         if let Some((track, _)) = self.scrollbar_rects(area, self.scroll.clamp(0.0, max), max) {
@@ -260,7 +259,7 @@ impl OverviewGrid {
 
     /// Capture the theme's measures and the tallest card text for the
     /// renderer-free geometry.
-    fn measure(&self, text: &mut TextRenderer, theme: &Theme, window: Rect, deck: &Deck) {
+    fn capture_metrics(&self, text: &mut TextRenderer, theme: &Theme, window: Rect, deck: &Deck) {
         let mut m = GridMetrics::of(theme);
         self.metrics.set(m);
         let (_, cards, _) = self.geometry(window, deck.slides.len());

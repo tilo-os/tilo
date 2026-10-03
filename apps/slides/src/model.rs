@@ -648,6 +648,10 @@ pub struct Palette {
     inks: [(Color, Color); 3],
 }
 
+/// The deck's deep tone: an authored dark treatment in every OS theme (a
+/// theme-tracking neutral would flip near-white in the light palette).
+const DEEP: Color = Color::from_rgb8(15, 23, 42);
+
 /// A deck's colours are content: they come from the presence palette's
 /// evenly spaced hues, never from the status colours, and a deck looks the
 /// same in either theme, so its hues are the light palette's (deep enough to
@@ -670,14 +674,14 @@ impl Palette {
         let mut palette = Palette {
             accent,
             accent_soft: with_alpha(accent, 56),
-            accent_deep: mix(accent, c.surfaces.base, 0.62),
+            accent_deep: mix(accent, DEEP, 0.62),
             surface: c.surfaces.raised,
-            surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
+            surface_dim: mix(c.surfaces.raised, c.surfaces.content, 0.5),
             // A "Deep" slide is an authored dark treatment in every OS theme
             // — a theme-tracking neutral flips near-white in the light
             // palette. A fixed deep tone keeps it dramatic; its text inks
             // are chosen against it below.
-            deep: Color::from_rgb8(15, 23, 42),
+            deep: DEEP,
             text: c.text_primary,
             text_dim: c.text_dim,
             // White on the accent where it reads, else the legible ink.
@@ -789,7 +793,7 @@ impl Palette {
     /// otherwise whichever of the palette's inks reads best on it.
     pub fn ink_on(&self, ground: Color, dim: bool) -> Color {
         use ui::a11y::contrast_ratio;
-        const AA: f64 = 4.5;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST as AA;
         let text = if contrast_ratio(self.text, ground) >= AA {
             self.text
         } else {
