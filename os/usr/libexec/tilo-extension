@@ -36,6 +36,7 @@ import contextlib
 import dataclasses
 import datetime
 import fcntl
+import errno
 import hashlib
 import json
 import os
@@ -757,6 +758,9 @@ def verify_signature(layout: Layout, data: bytes, signature: bytes, workdir: Pat
     sig.write_bytes(signature)
     result = run([tilo_crypto(), "verify-p256-sha256", str(key), str(manifest), str(sig)], check=False)
     if result.returncode != 0:
+        # The reason goes to the journal: a sandbox refusing to open the key
+        # must not look like a forged manifest to whoever reads the logs.
+        print(f"tilo-extension: tilo-crypto: {(result.stderr or result.stdout).strip()[:300]}", file=sys.stderr)
         raise PackError("the manifest's signature is not valid for this image; nothing was changed")
 
 
@@ -813,12 +817,35 @@ class Store:
                 problems.append(str(error))
                 continue
             if sha256_file(part) == artifact.sha256:
-                os.replace(part, self.object(artifact))
+                self._promote(part, self.object(artifact))
                 return self.object(artifact)
             part.unlink()
             problems.append(f"{artifact.package} from {urllib.parse.urlsplit(url).hostname} does not match "
                             "the signed manifest")
         raise PackError("; ".join(problems)[:600] or f"{artifact.package} could not be downloaded")
+
+    @staticmethod
+    def _promote(part: Path, target: Path) -> None:
+        """Move a verified download into the object store.
+
+        The cache and the state directory are separate mounts inside the
+        install unit (CacheDirectory=, StateDirectory= under
+        ProtectSystem=strict), so a rename between them fails with EXDEV
+        even though both live on /var. Copy next to the object, then rename.
+        """
+        try:
+            os.replace(part, target)
+            return
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
+        staging = target.with_name(f".{target.name}.new")
+        with part.open("rb") as source, open(staging, "wb") as out:
+            shutil.copyfileobj(source, out, CHUNK)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(staging, target)
+        part.unlink()
 
     def _download(self, url: str, part: Path, artifact: Artifact, report) -> None:
         offset = part.stat().st_size if part.exists() else 0
@@ -1200,6 +1227,18 @@ def sysext_refresh(layout: Layout) -> None:
     run(["systemd-sysext", "refresh"])
 
 
+def sysext_unmerge(layout: Layout) -> None:
+    """Take every extension off /usr without merging anything.
+
+    For the paths that refuse: a refresh there would merge whatever else is
+    in the search path, which is exactly what was refused. Module-level for
+    tests.
+    """
+    if layout.root != Path("/") or not Path("/run/systemd/system").is_dir():
+        return
+    run(["systemd-sysext", "unmerge"])
+
+
 @dataclasses.dataclass
 class Activation:
     states: dict[str, str]
@@ -1270,7 +1309,7 @@ def activate(layout: Layout) -> int:
         # Without knowing the base nothing can be shown to fit it: merge none.
         for name in ours:
             shutil.rmtree(layout.extensions / name, ignore_errors=True)
-        sysext_refresh(layout)
+        sysext_unmerge(layout)
         raise
     failed = False
     outcome = {}
@@ -1286,11 +1325,14 @@ def activate(layout: Layout) -> int:
             for name in ours:
                 shutil.rmtree(layout.extensions / name, ignore_errors=True)
             for catalogue in catalogues:
+                if not layout.desired(catalogue.id).exists():
+                    continue
                 Status(layout, catalogue.id).write(
+                    state="failed",
                     parts={p: "off" for p in catalogue.parts},
                     last_error="Not merged: unexpected system extensions are present "
                                f"({', '.join(foreign)[:200]}).")
-            sysext_refresh(layout)
+            sysext_unmerge(layout)
             return 1
         sysext_refresh(layout)
     for catalogue in catalogues:
@@ -1301,8 +1343,11 @@ def activate(layout: Layout) -> int:
         changes: dict = {"parts": result.states, "message": " ".join(result.messages)}
         if result.changed:
             changes["generation"] = int(status.read().get("generation", 0)) + 1
-        if result.errors:
-            changes["last_error"] = "; ".join(result.errors)[:MAX_TEXT]
+        changes["last_error"] = "; ".join(result.errors)[:MAX_TEXT]
+        if layout.desired(catalogue.id).exists() and status.read().get("state") == "failed" \
+                and any(v == "enabled" for v in result.states.values()):
+            # Merged again: an earlier refusal no longer applies.
+            changes["state"] = "installed"
         status.write(**changes)
         failed = failed or bool(result.errors)
     return 1 if failed else 0
