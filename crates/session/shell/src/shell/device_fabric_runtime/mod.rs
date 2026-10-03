@@ -8227,6 +8227,63 @@ mod tests {
     use crate::shell::personal_continuity::DeviceId;
 
     #[test]
+    fn roaming_settings_travel_through_the_session_records_and_their_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
+        let open = || {
+            settings_store::install_source(Some(Arc::new(
+                settings_store::SessionSettings::open(paths.clone()).unwrap(),
+            )));
+        };
+        open();
+
+        // A winner from another device reaches this process's readers and the
+        // copy the compositor boots from and apps read.
+        apply_roaming_settings(&BTreeMap::from([(
+            "tilo.appearance.theme".to_string(),
+            Value::from("Light"),
+        )]));
+        assert_eq!(settings_store::load_section("appearance")["theme"], "Light");
+        assert_eq!(
+            settings_store::load_section_at(&paths.copy, "appearance")["theme"],
+            "Light"
+        );
+
+        // Settings, in its own process, writes the copy; the fabric publishes
+        // that edit, and a device-local leaf beside it stays out.
+        settings_store::update_section_at(
+            &paths.copy,
+            "appearance",
+            serde_json::json!({"theme": "Dark", "wallpaper_path": "/home/ada/sea.png"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            roaming_setting_values(),
+            BTreeMap::from([("tilo.appearance.theme".to_string(), Value::from("Dark"))])
+        );
+
+        // A restarted session reads the same records.
+        settings_store::install_source(None);
+        std::fs::remove_file(&paths.copy).unwrap();
+        open();
+        assert_eq!(
+            settings_store::load_section("appearance"),
+            serde_json::json!({"theme": "Dark", "wallpaper_path": "/home/ada/sea.png"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        assert_eq!(
+            settings_store::load_section_at(&paths.copy, "appearance")["theme"],
+            "Dark"
+        );
+        settings_store::install_source(None);
+    }
+
+    #[test]
     fn health_probes_every_online_peer_once_per_cadence() {
         let speaker = DeviceId::new("health-speaker").unwrap();
         let tablet = DeviceId::new("health-tablet").unwrap();
