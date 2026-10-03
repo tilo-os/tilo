@@ -1,0 +1,12 @@
+# The app-paint ratchet for apps-notes: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/notes/src/app.rs desktop_ground 1
+apps/notes/src/app.rs raw_paint 6
+apps/notes/src/framework_history.rs legacy_alias 1
+apps/notes/src/framework_history.rs raw_paint 5
+apps/notes/src/main_panel.rs desktop_ground 1
+apps/notes/src/main_panel.rs literal_radius 1
+apps/notes/src/main_panel.rs ramp_slot 3
+apps/notes/src/main_panel.rs raw_paint 6
+apps/notes/src/sidebar.rs desktop_ground 2
