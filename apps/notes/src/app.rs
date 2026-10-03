@@ -3174,7 +3174,7 @@ impl NotesApp {
             return ui::widget::ActionDirectoryInvocationDomain::Unsupported;
         }
         let mut parts = vec![
-            chrono::Local::now()
+            ui::clock::local_now()
                 .format("%Y-%m-%d")
                 .to_string()
                 .into_bytes(),
@@ -3791,6 +3791,28 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn note_menu_open_for_test(&self) -> bool {
         self.note_menu.is_open()
+    }
+
+    /// Test hook: the open note menu's laid-out rect, and the rect of the
+    /// button that opens it.
+    #[doc(hidden)]
+    pub fn note_menu_rects_for_test(&self) -> Option<(Rect, Rect)> {
+        let button = self.header_button_rect(NOTE_MENU_BUTTON_ID)?;
+        let first = self.note_menu.item_rect(0)?;
+        let last = self
+            .note_menu
+            .items()
+            .len()
+            .checked_sub(1)
+            .and_then(|index| self.note_menu.item_rect(index))?;
+        Some((first.union(last), button))
+    }
+
+    /// Test hook: centre of the note header's "Note actions" button.
+    #[doc(hidden)]
+    pub fn note_menu_button_center_for_test(&self) -> Point {
+        self.header_button_rect(NOTE_MENU_BUTTON_ID)
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
     /// Test hook: whether the sidebar's right-click context menu is open.
@@ -4517,16 +4539,10 @@ impl Widget for NotesApp {
             } else {
                 theme.in_region(ui::surface::Region::Sidebar)
             };
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
-                &geometry.sidebar_column,
-            );
+            // Unclipped: the page tree's context menu is a floating surface
+            // that reaches past its column.
             self.sidebar
                 .draw(scene, transform, text_renderer, &sidebar_theme, presence);
-            scene.pop_layer();
         }
         // Transient floating status bubble (bottom-right).
         self.draw_status_bubble(scene, transform, text_renderer, theme);

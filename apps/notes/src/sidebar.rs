@@ -749,6 +749,31 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_note_is_the_one_danger_row_and_sits_apart_at_the_end() {
+        let items = note_menu_items();
+        let danger: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                matches!(
+                    item,
+                    MenuItem::Action {
+                        destructive: true,
+                        ..
+                    }
+                )
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(danger, vec![menu_row::DELETE]);
+        assert_eq!(menu_row::DELETE, items.len() - 1);
+        assert!(
+            matches!(items.get(menu_row::DELETE - 1), Some(MenuItem::Separator)),
+            "a separator sets the destructive row apart"
+        );
+    }
+
+    #[test]
     fn heading_resolves_before_any_other_notes_widget_registers_the_catalog() {
         // The catalog is per thread; a fresh one has seen no Notes widget yet.
         let (name, catalog) = std::thread::spawn(|| {

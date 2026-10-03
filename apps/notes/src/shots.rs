@@ -154,7 +154,7 @@ Active work, one note each.
             formulas,
             r#"# Formula notebook
 
-Edit the source; the mathematical preview stays live underneath.
+Three formulas I keep reaching for, written once so I stop re-deriving them.
 
 ## TeX
 
@@ -185,23 +185,42 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
         storage::write_page_body(
             root,
             launch,
-            "## Two separate examples\n\nEach Python example keeps its own code block.\n\n```python\nmessage = \"First example\"\nprint(message)\n```\n\n```python\nmessage = \"Second example\"\nprint(message.upper())\n```\n\nContinue writing below either block with Ctrl+Enter.\n",
+            "## Two small examples\n\nThe same greeting, plain and then shouted.\n\n```python\nmessage = \"Hello, Ada\"\nprint(message)\n```\n\n```python\nmessage = \"Hello, Ada\"\nprint(message.upper())\n```\n\nBoth print in under a millisecond.\n",
         )?;
     }
     if scenario == Some("scrolled") {
+        const FOLLOW_UPS: [&str; 20] = [
+            "Ask design for the final empty-state illustration.",
+            "Check that the onboarding emails link to the right guide.",
+            "Update the screenshots in the help centre.",
+            "Confirm the release date with the support team.",
+            "Move the beta feedback into one shared document.",
+            "Review the changelog wording with the writers.",
+            "Make sure the migration guide mentions the new import.",
+            "Test the checklist on a phone-sized window.",
+            "Plan the walkthrough recording for Thursday.",
+            "Collect the open questions from the planning notes.",
+            "Agree who answers the first wave of messages.",
+            "Archive the old launch board once we ship.",
+            "Send the press kit to the two partner blogs.",
+            "Double-check the licence text in the installer.",
+            "Ask legal about the privacy wording on the download page.",
+            "Schedule a retro for the week after the launch.",
+            "Pin the final version of the brand assets.",
+            "Share the metrics dashboard with the whole team.",
+            "Write down what we would do differently next time.",
+            "Thank everyone who helped in the final week.",
+        ];
         let mut body = storage::read_page_body(root, launch)?;
-        for index in 1..=20 {
-            let _ = write!(
-                body,
-                "\nFollow-up item {index}: keep the document readable while scrolling.\n\n"
-            );
+        for item in FOLLOW_UPS {
+            let _ = write!(body, "\n{item}\n\n");
         }
         storage::write_page_body(root, launch, &body)?;
     }
     if matches!(scenario, Some("image" | "image_edit")) {
         // Reuse a checked-in PNG fixture to exercise the real decoder and
         // workspace-relative loader without network access.
-        let fixture = include_bytes!("../../settings/shots/settings.png");
+        let fixture = include_bytes!("../fixtures/roadmap.png");
         crate::files::write(&root.join(storage::PAGES_DIR).join("image.png"), fixture)
             .map_err(std::io::Error::other)?;
     }
