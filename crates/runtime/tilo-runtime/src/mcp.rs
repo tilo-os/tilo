@@ -587,13 +587,26 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         #[serde(deny_unknown_fields)]
         struct Batch {
             actions: Vec<crate::computer::Action>,
+            #[serde(default)]
+            app_id: Option<String>,
         }
         let Some(computer) = self.computer.clone() else {
             return tool_result(Err("Unknown tool".into()));
         };
         let batch = name == "computer_batch";
         let actions = if batch {
-            parse::<Batch>(args).map(|batch| batch.actions)
+            parse::<Batch>(args).map(|batch| {
+                let Batch {
+                    mut actions,
+                    app_id,
+                } = batch;
+                for action in &mut actions {
+                    if action.app_id.is_none() {
+                        action.app_id.clone_from(&app_id);
+                    }
+                }
+                actions
+            })
         } else {
             parse::<crate::computer::Action>(args).map(|action| vec![action])
         };
@@ -617,6 +630,17 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             id: run.id.clone(),
             label: run.label.clone(),
         })
+    }
+    /// End this connection's agent on the compositor: it releases whatever
+    /// the agent still holds and the agent's claim on its strip. Blocking
+    /// socket I/O; for a transport whose connection just closed.
+    pub fn leave_computer(&self) {
+        let (Some(computer), Some(agent)) = (self.computer.as_ref(), self.agent()) else {
+            return;
+        };
+        if let Err(error) = computer.leave(&agent) {
+            tracing::debug!(%error, "agent seat release");
+        }
     }
     /// Seat this connection's agent before it opens something through the
     /// workspace, so the window lands in the agent's strip. Best effort: an

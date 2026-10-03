@@ -764,17 +764,18 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    if let Err(error) = serve_connection(
-                        stream,
-                        McpServer::new(host, room, actor)
-                            .with_computer(computer)
-                            .with_media(media),
-                        &status,
-                        joiner.as_ref(),
-                        &search,
-                    ) {
+                    let mut server = McpServer::new(host, room, actor)
+                        .with_computer(computer)
+                        .with_media(media);
+                    if let Err(error) =
+                        serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
+                    {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
+                    // The connection was one agent run: what it still holds
+                    // on the compositor's seat, and the strip it worked in,
+                    // are released with it.
+                    server.leave_computer();
                 })?;
         }
         Ok(())
@@ -789,7 +790,7 @@ impl Drop for ConnectionSlot {
 
 fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     mut stream: UnixStream,
-    mut server: McpServer<H>,
+    server: &mut McpServer<H>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,
