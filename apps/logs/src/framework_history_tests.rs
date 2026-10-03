@@ -74,7 +74,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
     let heads = driver.state_mut().doc.get_heads();
     let pending = driver.state_mut().doc.pending_ops();
     assert!(
-        live.contains("Back to entries"),
+        live.contains("Hide inspector"),
         "offline detail selection is visible"
     );
     assert!(live.contains("Error"), "offline error query is applied");
@@ -100,7 +100,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
 
     driver.click_named("history-open").unwrap();
     let returned = driver.inspection_json().unwrap();
-    assert!(returned.contains("Back to entries"));
+    assert!(returned.contains("Hide inspector"));
     assert!(returned.contains("Error"));
     assert!(returned.contains("Failed to set privacy: Rejected"));
     assert_eq!(resource_snapshot(&driver), resources);
