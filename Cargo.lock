@@ -16368,8 +16368,13 @@ name = "tilo-secrets"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "libc",
  "security-framework",
+ "sha2 0.11.0",
+ "tempfile",
  "tilo-rt",
+ "tilo-seal",
+ "tilo-test-env",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
