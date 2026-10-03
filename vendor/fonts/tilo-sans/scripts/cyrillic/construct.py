@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["ufoLib2", "fonttools[ufo]>=4.60", "skia-pathops"]
+# dependencies = ["ufoLib2", "fonttools[ufo]>=4.60", "skia-pathops", "numpy"]
 # ///
 """Construct the Cyrillic glyphs of Tilo Sans from Instrument Sans' own
 drawings, in all eight masters.
@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import geom as G  # noqa: E402
 import kern  # noqa: E402
 import checks  # noqa: E402
+from ink import Ink  # noqa: E402
 from ctx import ITALIC, UPRIGHT, Ctx, Glyph, pmap, xcuts, ycuts, zmap  # noqa: E402
 from parts import bowl_for_counter, foot_leg, p_bowl, p_params  # noqa: E402
 
@@ -299,18 +300,35 @@ def Ii(c):
     return Glyph(w, cons, anchors(w / 2, 720))
 
 
+def upright_leg(c, leg, yt):
+    """In the italic, a leg running down to the left from height yt has its
+    foot moved right by the slant over that height: slanted as a whole it
+    would lie flatter than the upright's and the letter would lean
+    backwards; this way it keeps the upright leg's angle."""
+    if not c.italic:
+        return leg
+    return [[p[0] + G.SLANT * yt if p[1] < yt / 2 else p[0], p[1], p[2], p[3]] for p in leg]
+
+
 @glyph("Ya-cy", 0x042F)
 def Ya(c):
     cons, w = mirrored(c, "R", roman=True)
+    yt = max(p[1] for p in cons[1])
+    cons[1] = upright_leg(c, cons[1], yt)
     return Glyph(w, cons, anchors(centre(cons), 720, centre(cons)))
 
 
+E_OPEN_V = 0.4  # Э Є э є: terminal cut to bar, vertically, in bar thicknesses
+E_OPEN_H = 0.6  # terminal tips to the bar's end, horizontally, in bar thicknesses
+
+
 def round_e(c, name, centre, bar_t, reverse, share):
-    """Э Є э є from C or c: the terminals shortened along their own curves
-    so both openings next to the bar stay at least 0.65 of the bar's
-    thickness. The bar runs from the closed side into the counter and stops
-    `share` of the width short of the open side, clear of the terminal
-    tips. Reversed in the italic, the upright C or c is mirrored and the
+    """Э Є э є from C or c: the terminals run as far round as C's or c's,
+    shortened along their own curves only where they would come within
+    E_OPEN_V of the bar's thickness of it vertically; the bar runs from the
+    closed side into the counter and stops `share` of the width short of the
+    open side, and at least E_OPEN_H bar thicknesses clear of the terminal
+    tips, so both openings stay open without chopping the terminals. Reversed in the italic, the upright C or c is mirrored and the
     whole slanted, so the stress leans with the italic and not backwards as
     a mirrored italic C would."""
     src = c.roman if (reverse and c.italic) else c
@@ -319,7 +337,7 @@ def round_e(c, name, centre, bar_t, reverse, share):
     con = con[0]
     w = src.w(name)
     lo, hi = G.terminal_cuts(con)
-    g = 0.65 * bar_t
+    g = E_OPEN_V * bar_t
     new_hi = max(hi, centre + bar_t / 2 + g)
     new_lo = min(lo, centre - bar_t / 2 - g)
     con = G.trim_terminals(con, {hi: new_hi, lo: new_lo})
@@ -332,9 +350,9 @@ def round_e(c, name, centre, bar_t, reverse, share):
     b = G.bounds(cons)
     reach = share * (b[2] - b[0])  # how far the bar reaches into the counter
     if reverse:
-        x0, x1 = max(b[0] + reach, tips[-1] + 0.2 * bar_t), inner[-2] + 10
+        x0, x1 = max(b[0] + reach, tips[-1] + E_OPEN_H * bar_t), inner[-2] + 10
     else:
-        x0, x1 = inner[1] - 10, min(b[2] - reach, tips[0] - 0.2 * bar_t)
+        x0, x1 = inner[1] - 10, min(b[2] - reach, tips[0] - E_OPEN_H * bar_t)
     bar = G.rect(x0, centre - bar_t / 2, x1, centre + bar_t / 2)
     return cons, bar, w
 
@@ -558,6 +576,22 @@ def fit_ring(c, ring, x0, x1, y0=None, y1=None, side=None, top=None):
 
 
 YU_RING = 0.9  # Ю ю: the O's width in every master, as a share of O's
+YU_WEIGHT = 0.8  # the bold Ю ю rings are drawn from O and o at this share of the bold weight
+YU_COUNTER = 0.85  # and keep at least this share of O's or o's counter
+
+
+def yu_ring(c, name, x0, ring_w):
+    """Ю ю's ring: O or o from a slightly lighter drawing in the bold masters,
+    narrowed as a whole to ring_w, or less narrowed where its counter would
+    fall under YU_COUNTER of the Latin letter's; next to the full stem a
+    ring at the bold weight pinches into a slit."""
+    full = c.g(name)
+    src = c.blend(name, c.wt * YU_WEIGHT) if c.wt > 0 else full
+    ob, ib = G.bounds([src[0]]), G.bounds([src[1]])
+    side = (ib[0] - ob[0] + ob[2] - ib[2]) / 2
+    fc = G.bounds([full[1]])
+    ring_w = max(ring_w, 2 * side + YU_COUNTER * (fc[2] - fc[0]))
+    return fit_ring(c, src, x0, x0 + ring_w)
 
 
 @glyph("Yu-cy", 0x042E)
@@ -571,13 +605,18 @@ def Yu(c):
     ob = G.bounds([O[0]])
     gap = 0.55 * light_V(c, False) + 0.1 * h_counter(c)
     ox0 = m["Lx1"] + gap
-    ox1 = ox0 + YU_RING * (ob[2] - ob[0])
-    W = ox1 + m["Olsb"]
-    O = fit_ring(c, O, ox0, ox1)
+    O = yu_ring(c, "O", ox0, YU_RING * (ob[2] - ob[0]))
     ob, oin = G.bounds([O[0]]), G.bounds([O[1]])
+    W = ob[2] + m["Olsb"]
     bar = G.rect(m["Lx1"] - V / 2, m["bar0"] - 15, ob[0] + (oin[0] - ob[0]) / 2, m["bar1"] - 15)
     cons = [H[0], bar] + O
     return Glyph(W, cons, anchors(centre(cons), 720))
+
+
+EF_WIDTH = 1.07  # Ф's oval, as a share of O's outer width
+EF_HALF = (0.45, 0.49)  # each half-counter of Ф, as a share of O's counter (light, bold): the
+# bold counters sit beside a heavier stem and need more room to read as open
+EF_WEIGHT = 0.55  # the bold Ф's oval is drawn from O at this share of the bold weight
 
 
 @glyph("Ef-cy", 0x0424)
@@ -586,13 +625,14 @@ def Ef(c):
     drawn from a lighter O so the counters stay open."""
     m = c.cap
     V = m["V"]
-    O = c.blend("O", c.wt * 0.72) if c.wt > 0 else c.g("O")
+    O = c.blend("O", c.wt * EF_WEIGHT) if c.wt > 0 else c.g("O")
     ob, ib = G.bounds([O[0]]), G.bounds([O[1]])
     side = (ib[0] - ob[0] + ob[2] - ib[2]) / 2
-    # each half-counter at least 0.42 of O's counter
+    # Ф is one of the widest capitals: EF_WIDTH of O in every master, and
+    # wider where needed so each half-counter keeps EF_HALF of O's counter
     Oc = c.g("O")
     oc = G.bounds([Oc[1]])[2] - G.bounds([Oc[1]])[0]
-    ow = max((ob[2] - ob[0]) * (1.06 - 0.06 * c.wt), 2 * 0.38 * oc + 2 * side + V)
+    ow = max(EF_WIDTH * (G.bounds([Oc[0]])[2] - G.bounds([Oc[0]])[0]), 2 * (EF_HALF[0] + c.wt * (EF_HALF[1] - EF_HALF[0])) * oc + 2 * side + V)
     x0 = m["Olsb"] * 0.9
     oval = fit_ring(c, O, x0, x0 + ow, 70, 650, top=0.9 * (ob[3] - ib[3]))
     cx = x0 + ow / 2
@@ -616,9 +656,25 @@ def Zhe(c):
     cx = sb + half + V / 2
     right = G.shift(arms, cx + V / 2 - kstem[2])
     left = G.mirror_x(right, cx)
+    W = 2 * cx
+    if c.italic and c.condensed:
+        # slanted, the upper-left arm and the lower-right leg turn nearly
+        # vertical in the narrow italics (Ж reads as two posts and a K):
+        # their outer ends move out so they keep a diagonal
+        d = ZHE_ITALIC_SPREAD[0] + c.wt * (ZHE_ITALIC_SPREAD[1] - ZHE_ITALIC_SPREAD[0])
+        up_l = max(range(len(left)), key=lambda i: G.bounds([left[i]])[3] - G.bounds([left[i]])[1] * 0.001)
+        lo_r = min(range(len(right)), key=lambda i: G.bounds([right[i]])[1] + G.bounds([right[i]])[3] * 0.001)
+        left[up_l] = [[p[0] - d * max(0.0, (p[1] - 360) / 360), p[1], p[2], p[3]] for p in left[up_l]]
+        right[lo_r] = [[p[0] + d * max(0.0, (360 - p[1]) / 360), p[1], p[2], p[3]] for p in right[lo_r]]
+        left, right = G.shift(left, d), G.shift(right, d)
+        cx += d
+        W += 2 * d
     stem = G.rect(cx - V / 2, 0, cx + V / 2, 720)
     cons = left + [stem] + right
-    return Glyph(2 * cx, cons, anchors(cx, 720))
+    return Glyph(W, cons, anchors(cx, 720))
+
+
+ZHE_ITALIC_SPREAD = (12, 26)  # Ж, condensed italic: how far the outer arm ends move out (light, bold)
 
 
 @glyph("U-cy", 0x0423)
@@ -830,12 +886,26 @@ def Shha(c):
     h = c.g("h")
     l = c.lc
     arch = G.shift([h[1]], m["Lx1"] - l["Lx1"])
-    arch = G.move_points(arch, lambda x, y: y > 200, dy=0.64 * 720 - 520)
+    # H's width and a shoulder at 0.6 of the cap height, so Һ does not read
+    # as Latin h (whose shoulder sits at the x-height) in Kazakh capitals.
+    # h's arch is zone-mapped there: the leg keeps its weight, the arch its
+    # top thickness, the counter takes the extra width and loses height
     ab = G.bounds(arch)
-    target_r = 0.93 * m["W"] - m["lsb"]
-    arch = G.stretch(arch, "x", (ab[0] + ab[2]) / 2, target_r - ab[2])
+    xs = xcuts(arch, 100)
+    mid = (ab[0] + xs[-2]) / 2
+    ys = [y for y in ycuts(arch, mid) if y > 300]
+    top = SHHA_SHOULDER * 720 + (ab[3] - 510)  # overshoot as h's
+    target_r = m["W"] - m["lsb"]
+    V = m["V"]
+    xp = [(ab[0], ab[0]), (m["Lx1"], m["Lx1"]), (xs[-2], target_r - V), (xs[-1], target_r)]
+    leg_top = 0.45 * ab[3]
+    yp = [(0, 0), (leg_top, leg_top * top / ab[3]), (ys[0], top - (ab[3] - ys[0])), (ab[3], top)]
+    arch = zm(arch, xp, yp)
     cons = [H[0]] + arch
     return Glyph(target_r + m["lsb"], cons, anchors(centre(cons), 720))
+
+
+SHHA_SHOULDER = 0.6  # Һ: the top of the shoulder, in cap heights
 
 
 @glyph("Kadescender-cy", 0x049A)
@@ -1112,8 +1182,8 @@ def soft_lc_metrics(c):
     """Bars and bowl height of the lowercase Ь bowl. The bars thin a little
     as the weight rises and the bowl grows, so the counter stays open."""
     l, lo = c.lc, c.light.lc
-    bar = l["H"] - 0.2 * (l["H"] - lo["H"])
-    top = 0.6 * 510 + 1.1 * (bar - lo["H"])
+    bar = l["H"] - 0.25 * (l["H"] - lo["H"])
+    top = 0.6 * 510 + 1.5 * (bar - lo["H"])
     return bar, top
 
 
@@ -1155,9 +1225,10 @@ def hardsign(c):
 @glyph("yeru-cy", 0x044B)
 def yeru(c):
     l = c.lc
-    # the bowl narrows with weight: ы carries a second stem, and with ь's
-    # bowl it widened twice as fast as n
-    cons = [lc_stem(c), soft_lc(c, l["Lx1"], 0.8 - 0.15 * c.wt)]
+    # the bowl narrows a little with weight (ы carries a second stem, and
+    # with ь's bowl it widened twice as fast as n), but its counter stays at
+    # least 0.8 of ь's
+    cons = [lc_stem(c), soft_lc(c, l["Lx1"], 0.8 - 0.06 * c.wt)]
     b = G.bounds(cons)
     gap = l["lsb"] * 1.05
     stem = G.rect(b[2] + gap, 0, b[2] + gap + l["V"], 510)
@@ -1165,25 +1236,47 @@ def yeru(c):
     return Glyph(b[2] + gap + l["V"] + l["lsb"], cons, anchors(centre(cons), 510))
 
 
+VE_UPPER = 0.72  # в: the upper counter at least this share of n's counter wide, in every master
+
+
+def ve_bars(c):
+    """в's bars: o's top and bottom thickness in the light masters, a fifth
+    lighter by the bold ones (as the Ь bowl's), the middle bar e's crossbar
+    weight at most; with three bars in 510 units the bold counters otherwise
+    close to pinholes."""
+    l, lo = c.lc, c.light.lc
+    bar = l["H"] - 0.3 * (l["H"] - lo["H"])
+    return bar, min(bar, 0.95 * lc_bar(c))
+
+
 @glyph("ve-cy", 0x0432)
 def ve(c):
-    _m, l = c.cap, c.lc
+    """в: B at x-height (its bowls, joins and curve tensions zone-mapped),
+    with lighter bars and sides in the bold masters, and widened until the
+    upper counter is at least VE_UPPER of n's counter wide."""
+    _m, l, lo_ = c.cap, c.lc, c.light.lc
     B = c.g("B")
     stemb = G.bounds([B[1]])
     # B's bars: bottom, middle, top (outer/inner pairs) under the stem's right
     xs_probe = stemb[2] + 60
     ys = ycuts([B[0]], xs_probe)  # 0, arm, mid0, mid1, top-arm, 720
     lo = xcuts([B[0]], 180)
-    xcuts([B[0]], 560)
+    side = l["oside"] - 0.25 * (l["oside"] - lo_["oside"])
+    bar, mbar = ve_bars(c)
+    mid = 0.5 * 510 + 8 + 12 * c.wt  # the upper bowl keeps a little more room as the bars grow
+    yp = [(ys[0], 0), (ys[1], bar), (ys[2], mid - mbar / 2), (ys[3], mid + mbar / 2),
+          (ys[4], 510 - bar), (ys[5], 510)]
+    y_up = (mid + mbar / 2 + 510 - bar) / 2
+    need = VE_UPPER * n_counter(c)
     W = 0.84 * (l["Rx1"] + l["lsb"])
-    out_lo = W - l["olsb"]
-    side = l["oside"]
-    lo[-1] - out_lo
-    xp = [(stemb[0], l["Lx0"]), (stemb[2], l["Lx1"]), (lo[-2], out_lo - side), (lo[-1], out_lo)]
-    mid = 0.5 * 510 + 8
-    yp = [(ys[0], 0), (ys[1], l["H"]), (ys[2], mid - l["H"] / 2), (ys[3], mid + l["H"] / 2),
-          (ys[4], 510 - l["H"]), (ys[5], 510)]
-    cons = zm(B, xp, yp)
+    for _ in range(6):
+        out_lo = W - l["olsb"]
+        xp = [(stemb[0], l["Lx0"]), (stemb[2], l["Lx1"]), (lo[-2], out_lo - side), (lo[-1], out_lo)]
+        cons = zm(B, xp, yp)
+        got = max(checks.gaps(cons, y=y_up) or [0])
+        if got >= need - 1:
+            break
+        W += (need - got) * 1.15
     b = G.bounds(cons)
     return Glyph(b[2] + l["olsb"] + 6, cons, anchors(centre(cons), 510))
 
@@ -1251,7 +1344,7 @@ def ya(c):
     for _ in range(6):  # horizontal cuts of a leg at this angle
         cosa = math.cos(math.atan2((xr_t - wt / 2) - (xl_b + wb / 2), yt))
         wb, wt = pb / cosa, pt / cosa
-    legc = G.poly((xl_b, 0), (xl_b + wb, 0), (xr_t, yt), (xr_t - wt, yt))
+    legc = upright_leg(c, G.poly((xl_b, 0), (xl_b + wb, 0), (xr_t, yt), (xr_t - wt, yt)), yt)
     cons = [bowl, stem, legc]
     cons, W, dx = place(cons, l["olsb"] * 0.35, l["lsb"])
     return Glyph(W, cons, anchors(centre(cons), 510))
@@ -1277,9 +1370,9 @@ def yu(c, stem_top=510):
     ob = G.bounds([o[0]])
     gap = 0.5 * light_V(c) + 0.1 * n_counter(c)
     ox0 = l["Lx1"] + gap
-    W = ox0 + YU_RING * (ob[2] - ob[0]) + l["olsb"]
-    o = fit_ring(c, o, ox0, W - l["olsb"])
+    o = yu_ring(c, "o", ox0, YU_RING * (ob[2] - ob[0]))
     ob, ib = G.bounds([o[0]]), G.bounds([o[1]])
+    W = ob[2] + l["olsb"]
     stem = G.rect(l["Lx0"], 0, l["Lx1"], stem_top)
     bar = G.rect(l["Lx1"] - V / 2, 262 - l["arm"] / 2, ob[0] + (ib[0] - ob[0]) / 2, 262 + l["arm"] / 2)
     cons = [stem, bar] + o
@@ -1323,8 +1416,10 @@ def ef(c):
     thinning where they meet the stem as b and d do."""
     l = c.lc
     V = l["V"]
-    t = c.wt * 0.7
-    f = 0.96 if c.condensed else 0.84
+    # the bold bowls come from a lighter p and q and narrow less, so the
+    # counters beside the full stem stay as open as o's
+    t = c.wt * 0.6
+    f = (0.96 if c.condensed else 0.84) + 0.04 * c.wt
     right, edge = ef_half(c, "p", f, t)
     cx = 0.0
     right = G.shift(right, cx + V / 2 - edge)
@@ -1477,20 +1572,29 @@ def be(c):
     return Glyph(w, cons, anchors(centre(o), 510))
 
 
+YI_DOT = (0.92, 0.7)  # ї Ї: dot size relative to the Latin dieresis' (light, bold)
+YI_GAP = 0.55  # the gap inside ї's dieresis, in dot widths
+YI_APART = 1.5  # beside another ї (or і), the gap between the letters' dots, in inner gaps
+YI_OVERHANG = 0.25  # how far the dots may overhang the advance on each side, in inner gaps
+
+
 def yi_form(c, base, source):
     """ї Ї: the base with its own dieresis, dots set closer than the Latin
-    one and kept inside the advance (widening it if needed), so that in
-    'її' the dots of neighbouring letters stay apart."""
+    one and a little smaller in the bold masters, with a clear gap between
+    them (YI_GAP). The dots may overhang the advance by YI_OVERHANG of that
+    gap; past that the advance widens, so ї keeps і's stem rhythm in text.
+    Beside another ї the letters are kerned apart (extra_kerning) so the
+    two pairs of dots stay two pairs."""
     src = c.g(source)
     bw = c.w(base)
     stem = G.bounds(c.g(base))
     dots = sorted(src[-2:], key=lambda d: G.bounds([d])[0])
     d0 = G.bounds([dots[0]])
     dw, dh = d0[2] - d0[0], d0[3] - d0[1]
-    k = 0.86 - 0.16 * c.wt  # dot size, relative to the Latin dieresis
-    gap = 0.38 * k * dw
+    k = YI_DOT[0] + c.wt * (YI_DOT[1] - YI_DOT[0])  # dot size, relative to the Latin dieresis
+    gap = YI_GAP * k * dw
     span = 2 * k * dw + gap
-    adv = max(bw, span + 0.5 * gap)  # at least a quarter of the gap clear on each side
+    adv = max(bw, span - 2 * YI_OVERHANG * gap)
     shift = (adv - bw) / 2
     cx = (stem[0] + stem[2]) / 2 + shift
     out = []
@@ -1634,24 +1738,34 @@ SRB_UPRIGHT = {"be-cy.loclSRB": "be-cy", "ge-cy.loclSRB": "ge-cy", "de-cy.loclSR
                "pe-cy.loclSRB": "pe-cy", "te-cy.loclSRB": "te-cy"}
 
 
+SRB_MACRON_WEIGHT = 0.8  # the Serbian italic macron's thickness, in i-dot heights at most
+SRB_MACRON_GE = 2.2  # the macron of the italic г: its width in stems, at least
+SRB_MACRON_INSET = 0.3  # the macrons of the italic п т: their inset from the outer stems, in stems
+
+
 def srb_italic(c, name):
     l = c.lc
     mac = G.bounds(c.g("macroncomb"))
     # the macron's own weight, its top level with i's dot in every master
     # (macroncomb itself sits at a different height in each)
+    # a little lighter than i's dot, so it reads as a bar and not as a dot
+    dot = G.bounds([c.g("i")[-1]])
     my1 = 720
-    my0 = my1 - (mac[3] - mac[1])
+    my0 = my1 - min(mac[3] - mac[1], SRB_MACRON_WEIGHT * (dot[3] - dot[1]))
+    V = l["V"]
     if name == "de-cy.loclSRB":
         return Glyph(c.w("g"), components=[("g", 0, 0)])
     if name in ("pe-cy.loclSRB", "te-cy.loclSRB", "ge-cy.loclSRB"):
         base = {"pe-cy.loclSRB": "n", "te-cy.loclSRB": "m", "ge-cy.loclSRB": "idotless"}[name]
         b = G.bounds(c.g(base))
         if base == "idotless":
+            # the bar at least SRB_MACRON_GE stems wide, or it reads as i's dot
             cx = (b[0] + b[2]) / 2
-            half = 0.62 * (mac[2] - mac[0]) / 2
+            half = max(0.62 * (mac[2] - mac[0]), SRB_MACRON_GE * V) / 2
             x0, x1 = cx - half, cx + half
         else:
-            x0, x1 = b[0], b[2]
+            # over n and m: inset from the outer stems, so neighbouring bars stay apart
+            x0, x1 = b[0] + SRB_MACRON_INSET * V, b[2] - SRB_MACRON_INSET * V
         bar = G.rect(x0, my0, x1, my1)
         g = Glyph(c.w(base), [bar], components=[(base, 0, 0)])
         return g
@@ -1932,10 +2046,16 @@ def check_glyphs(c, built):
         free = G.bounds([cons[-1]])[0] - G.bounds([cons[0]])[2]
         if free < UPTURN_FREE * V - 0.5:
             out.append(f"{name}: arm runs free for {free:.0f}, need {UPTURN_FREE * V:.0f}")
-    yi = built["yi-cy"]
-    b = G.bounds(yi.contours)
-    if b[0] < -1.5 or b[2] > yi.width + 1.5:
-        out.append(f"yi-cy: dieresis {b[0]:.0f}..{b[2]:.0f} leaves the advance 0..{yi.width:.0f}")
+    for name in ("yi-cy", "Yi-cy"):
+        yi = built[name]
+        dots = sorted(yi.contours, key=lambda d: G.bounds([d])[0])
+        b = G.bounds(yi.contours)
+        gap = G.bounds([dots[1]])[0] - G.bounds([dots[0]])[2]
+        over = YI_OVERHANG * gap + 1.5
+        if b[0] < -over or b[2] > yi.width + over:
+            out.append(f"{name}: dieresis {b[0]:.0f}..{b[2]:.0f} overhangs the advance 0..{yi.width:.0f} by more than {over:.0f}")
+        if gap < YI_GAP * (G.bounds([dots[0]])[2] - G.bounds([dots[0]])[0]) - 1:
+            out.append(f"{name}: the gap inside the dieresis is {gap:.0f}, under {YI_GAP} of a dot")
     return [f"{c.master}: {p}" for p in out]
 
 
@@ -1960,9 +2080,8 @@ GROWTH_REF = {
 }
 
 
-# ї Ї: the width is set by the dieresis, which must stay inside the advance.
-GROWTH_EXEMPT = {"yi-cy", "Yi-cy",
-                 "geupturn-cy", "Geupturn-cy"}  # Ґ ґ: lengthened where the arm must run free (with_upturn)
+# Ґ ґ: lengthened where the arm must run free (with_upturn)
+GROWTH_EXEMPT = {"geupturn-cy", "Geupturn-cy"}
 
 
 def growth_problems(results):
@@ -2002,12 +2121,13 @@ def extra_kerning(c, built):
     """Glyph pairs no group covers: dotted і ї next to each other keep the
     space between their dots wider than the space inside ї's dieresis."""
     out = {}
-    g = built["yi-cy"]
-    dots = sorted(g.contours, key=lambda d: G.bounds([d])[0])
-    inner = G.bounds([dots[1]])[0] - G.bounds([dots[0]])[2]
-    for a, b in (("yi-cy", "yi-cy"), ("yi-cy", "i-cy"), ("i-cy", "yi-cy")):
-        between = dot_edges(c, built, a)[1] + dot_edges(c, built, b)[0]
-        out[(a, b)] = max(0, round(1.7 * inner - between))
+    for yi, pairs in (("yi-cy", (("yi-cy", "yi-cy"), ("yi-cy", "i-cy"), ("i-cy", "yi-cy"))),
+                      ("Yi-cy", (("Yi-cy", "Yi-cy"),))):
+        dots = sorted(built[yi].contours, key=lambda d: G.bounds([d])[0])
+        inner = G.bounds([dots[1]])[0] - G.bounds([dots[0]])[2]
+        for a, b in pairs:
+            between = dot_edges(c, built, a)[1] + dot_edges(c, built, b)[0]
+            out[(a, b)] = max(0, round(YI_APART * inner - between))
     return out
 
 
@@ -2034,7 +2154,7 @@ def main():
         write_master(master, c, built)
         if not only:
             kern.update_kerning(SOURCES / f"TiloSans-{master}.ufo", c.italic, list(built),
-                                {k: v[0] for k, v in LOOKALIKES.items()}, extra)
+                                {k: v[0] for k, v in LOOKALIKES.items()}, extra, Ink(c, built))
     print(f"{len(results)} masters, {len(results[-1][2]) if not only else len(only)} glyphs each")
 
 
