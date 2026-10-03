@@ -1556,6 +1556,7 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-font-catalog",
  "tilo-wet-media",
  "usvg",
  "uuid",

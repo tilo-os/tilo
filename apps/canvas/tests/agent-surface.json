@@ -72,6 +72,20 @@
           "description": "Put the new layer directly above this layer instead of on top."
         },
         "nullable": true
+      },
+      {
+        "name": "texture",
+        "ty": "number",
+        "required": false,
+        "description": "`0..=1`: let the ground's tooth show through the layer's marks.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
+        },
+        "nullable": true
       }
     ]
   },
@@ -319,7 +333,7 @@
     "action": "diff",
     "resource_kind": "canvas.artwork",
     "label": "Compare versions",
-    "description": "Compare two versions: marks and layers added, removed or changed by id, the changed region, and with look a before|after picture of it.",
+    "description": "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
     "operation": "View",
     "params": [
       {
@@ -573,7 +587,7 @@
                           "string",
                           "null"
                         ],
-                        "description": "`sans`, `serif`, `mono` or a family name."
+                        "description": "`sans`, `serif`, `mono` or a family `media` lists under fonts."
                       },
                       "weight": {
                         "type": [
@@ -582,7 +596,7 @@
                         ],
                         "minimum": 0,
                         "maximum": 65535,
-                        "description": "400 regular to 700 bold."
+                        "description": "100 to 900; 400 regular, 700 bold, any value between."
                       },
                       "italic": {
                         "type": "boolean"
@@ -607,6 +621,20 @@
                           "null"
                         ],
                         "description": "Wrap width."
+                      },
+                      "tracking": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Letter spacing in thousandths of the size: 80 opens up capitals, negative tightens."
+                      },
+                      "path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "SVG path data the baseline follows instead of starting at x, y; align sets the words at its start, middle or end."
                       },
                       "kind": {
                         "type": "string",
@@ -733,6 +761,18 @@
                       "maxItems": 2
                     },
                     "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
+                  },
+                  "focal": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "Radial only: where the light sits inside the circle, off its centre."
                   }
                 },
                 "additionalProperties": false,
@@ -847,12 +887,55 @@
                 "additionalProperties": false,
                 "description": "A soft shadow cast by a mark."
               },
+              "inner_shadow": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "offset": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "`[dx, dy]` in units."
+                  },
+                  "blur": {
+                    "type": "number",
+                    "description": "Softness in units; 0 is hard."
+                  },
+                  "colour": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Inside the mark from its edge; light colour = highlight."
+              },
+              "grain": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "`0..=1` film grain."
+              },
+              "feather": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Soften the edge outward over this many units."
+              },
               "group": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "description": "A group id: edits naming it change the members as one."
+                "description": "A group id: edits naming it change the members as one; `a/b` nests group b in a."
               },
               "clip": {
                 "type": [
@@ -964,6 +1047,20 @@
             "null"
           ],
           "description": "`front`, `back`, `forward` or `backward` among the layers."
+        },
+        "nullable": true
+      },
+      {
+        "name": "texture",
+        "ty": "number",
+        "required": false,
+        "description": "`0..=1`: let the ground's tooth show through the layer's marks.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
         },
         "nullable": true
       }
@@ -1176,7 +1273,7 @@
                         "string",
                         "null"
                       ],
-                      "description": "`sans`, `serif`, `mono` or a family name."
+                      "description": "`sans`, `serif`, `mono` or a family `media` lists under fonts."
                     },
                     "weight": {
                       "type": [
@@ -1185,7 +1282,7 @@
                       ],
                       "minimum": 0,
                       "maximum": 65535,
-                      "description": "400 regular to 700 bold."
+                      "description": "100 to 900; 400 regular, 700 bold, any value between."
                     },
                     "italic": {
                       "type": "boolean"
@@ -1210,6 +1307,20 @@
                         "null"
                       ],
                       "description": "Wrap width."
+                    },
+                    "tracking": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Letter spacing in thousandths of the size: 80 opens up capitals, negative tightens."
+                    },
+                    "path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "SVG path data the baseline follows instead of starting at x, y; align sets the words at its start, middle or end."
                     },
                     "kind": {
                       "type": "string",
@@ -1386,16 +1497,80 @@
         "nullable": true
       },
       {
+        "name": "inner_shadow",
+        "ty": "object",
+        "required": false,
+        "description": "Zero offset and blur removes it.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "offset": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "`[dx, dy]` in units."
+            },
+            "blur": {
+              "type": "number",
+              "description": "Softness in units; 0 is hard."
+            },
+            "colour": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "description": "Zero offset and blur removes it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "grain",
+        "ty": "number",
+        "required": false,
+        "description": "0 removes it.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "0 removes it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "feather",
+        "ty": "number",
+        "required": false,
+        "description": "0 removes it.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "0 removes it."
+        },
+        "nullable": true
+      },
+      {
         "name": "group",
         "ty": "text",
         "required": false,
-        "description": "Put into this group; empty takes out of any.",
+        "description": "Put into this group (`a/b` nests b in a); empty takes out of any.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Put into this group; empty takes out of any."
+          "description": "Put into this group (`a/b` nests b in a); empty takes out of any."
         },
         "nullable": true
       },
@@ -1472,6 +1647,18 @@
                 "maxItems": 2
               },
               "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
+            },
+            "focal": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Radial only: where the light sits inside the circle, off its centre."
             }
           },
           "additionalProperties": false,
@@ -1701,6 +1888,20 @@
           "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set."
         },
         "nullable": true
+      },
+      {
+        "name": "outline_text",
+        "ty": "boolean",
+        "required": false,
+        "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1906,7 +2107,7 @@
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
-    "description": "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
+    "description": "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
     "operation": "View",
     "params": [
       {
@@ -1983,6 +2184,23 @@
             "null"
           ],
           "description": "Also each mark's shape, style and transform, to edit exactly."
+        },
+        "nullable": true
+      },
+      {
+        "name": "measure",
+        "ty": "array",
+        "required": false,
+        "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes."
         },
         "nullable": true
       }
@@ -2111,7 +2329,7 @@
     "action": "media",
     "resource_kind": "canvas.artwork",
     "label": "List media",
-    "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes.",
+    "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
     "operation": "View",
     "params": []
   },
@@ -2587,13 +2805,13 @@
         "name": "image",
         "ty": "text",
         "required": false,
-        "description": "A PNG or JPEG: an absolute file path or a content address.",
+        "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "A PNG or JPEG: an absolute file path or a content address."
+          "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`."
         },
         "nullable": true
       },

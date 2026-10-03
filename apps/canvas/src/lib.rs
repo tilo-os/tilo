@@ -15,6 +15,7 @@ pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
 pub mod doc;
+pub mod fonts;
 pub mod gesture;
 pub mod locales;
 pub mod media;

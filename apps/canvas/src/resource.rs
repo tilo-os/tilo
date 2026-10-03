@@ -83,6 +83,10 @@ pub struct Inspect {
     pub version: Option<String>,
     /// Also each mark's shape, style and transform, to edit exactly.
     pub full: Option<bool>,
+    /// Marks or groups to measure as the eye sees them: ink box, ink area,
+    /// centre of mass and its offset from the box's middle (for balancing
+    /// icons optically), and a text's letter boxes.
+    pub measure: Option<Vec<String>>,
 }
 
 /// Render the artwork beside, over or against the reference picture, with
@@ -115,6 +119,9 @@ pub struct ExportSvg {
     /// Only these marks or groups, cropped to them and without the ground:
     /// one icon of a set.
     pub ids: Option<Vec<String>>,
+    /// Write text as outlines, which look the same without its fonts.
+    /// Text along a path is always outlined.
+    pub outline_text: Option<bool>,
 }
 
 /// A view or effect the canvas answers.
@@ -214,6 +221,29 @@ fn store_picture(path: &str) -> Result<String, String> {
     let bytes = read_file(path, crate::render::MAX_REFERENCE_BYTES)?;
     crate::render::decode_picture(&bytes)
         .map_err(|error| format!("{path} is not a PNG or JPEG: {error}"))?;
+    store(&bytes)
+}
+
+/// Keep a picture the caller sent itself (`data:image/png;base64,…`) in
+/// the content store, as [`store_picture`] does a file: the action names it
+/// by content, so every replica shows the same picture.
+fn store_inline_picture(data: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let encoded = data
+        .split_once(";base64,")
+        .map(|(_, encoded)| encoded.trim())
+        .ok_or("an inline picture is data:image/png;base64,… or data:image/jpeg;base64,…")?;
+    if encoded.len() > crate::render::MAX_REFERENCE_BYTES.saturating_mul(4) / 3 {
+        return Err(format!(
+            "the picture is over {} bytes",
+            crate::render::MAX_REFERENCE_BYTES
+        ));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("the inline picture is not base64: {error}"))?;
+    crate::render::decode_picture(&bytes)
+        .map_err(|error| format!("the inline picture is not a PNG or JPEG: {error}"))?;
     store(&bytes)
 }
 
@@ -383,6 +413,10 @@ impl Resource for ArtworkResource {
                     && image.starts_with('/')
                 {
                     set.image = Some(store_picture(image)?);
+                } else if let Some(image) = &set.image
+                    && image.starts_with("data:")
+                {
+                    set.image = Some(store_inline_picture(image)?);
                 }
                 Ok(CanvasAction::SetReference(set))
             })
@@ -416,13 +450,13 @@ impl Resource for ArtworkResource {
             ViewOp::Inspect(read_args(args).unwrap_or_default())
         })
         .with_description(
-            "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
+            "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
         );
         inspect.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
         };
         let mut media = view("media", "List media", Vec::new(), |_| ViewOp::Media).with_description(
-            "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes.",
+            "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
         );
         media.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
@@ -456,7 +490,7 @@ impl Resource for ArtworkResource {
             ViewOp::Diff(read_args(args).unwrap_or_default())
         })
         .with_description(
-            "Compare two versions: marks and layers added, removed or changed by id, the changed region, and with look a before|after picture of it.",
+            "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
         );
         diff.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
