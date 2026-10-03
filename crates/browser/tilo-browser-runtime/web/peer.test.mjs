@@ -88,8 +88,9 @@ function fakeRuntime({phase = 'ready'} = {}) {
       return JSON.stringify({kind: 'invitation', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
         inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
-    async askToJoin(post, invitation, root, custody, requestId, name, label) {
-      calls.asked = {invitation: [...invitation], root, requestId, name, label};
+    async askToJoin(post, invitation, root, custody, requestId, name, label, token) {
+      calls.asked = {invitation: [...invitation], root, requestId, name, label, token: token && new TextDecoder().decode(token)};
+      if (token) return JSON.stringify({reply: {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
       return JSON.stringify({reply: {kind: 'waiting'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
     },
     async joinStatus(post, requestId, device) {
@@ -788,5 +789,22 @@ test('joining with an invitation waits for the owner, then connects with the roo
   assert.deepEqual(runtime.peer.config.cert, {guest: true, device_public_key: Array(32).fill(0xdd)});
   assert.equal(runtime.peer.room, ROOM);
   assert.equal(rows.get('tilo-join-requests'), '{}', 'the answered request is forgotten');
+  await peer.dispose();
+});
+
+test('a pre-admitted person joins without waiting for the owner', async () => {
+  const runtime = fakeRuntime();
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const progress = [];
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Cy',
+    admissionToken: 'one-time-token', runtime, custody, store: memoryStore(), storage: null,
+    onProgress: event => progress.push(event.phase),
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.deepEqual(progress, ['asking', 'admitted']);
+  assert.equal(runtime.calls.asked.token, 'one-time-token');
+  assert.equal(runtime.calls.status, undefined, 'never polled');
+  assert.equal(runtime.peer.room, ROOM);
   await peer.dispose();
 });

@@ -60,7 +60,16 @@ const invitation = value => ({
   expiresAtMs: Math.floor(value.expires_at_ns / 1e6),
 });
 
-export function createMembership({rooms, room, displayName = '', now = () => Date.now()}) {
+const notice = value => {
+  const {PreAdmitted: admitted} = value;
+  if (!admitted) return {kind: 'unknown'};
+  return {
+    kind: 'pre-admitted', userPublicKey: hex(admitted.user_public_key), name: admitted.name,
+    label: admitted.label, role: pageRole(admitted.role), atMs: Math.floor(admitted.at_ns / 1e6),
+  };
+};
+
+export function createMembership({rooms, room, displayName = '', preAdmit, now = () => Date.now()}) {
   const ask = async request => {
     if (!room) throw new Error('this peer joined no room');
     const reply = JSON.parse(await rooms(JSON.stringify(request)));
@@ -97,13 +106,38 @@ export function createMembership({rooms, room, displayName = '', now = () => Dat
       return encodeInvitation(issued.signed_invitation);
     },
     /**
+     * Pre-admit a person someone else vouches for: whoever redeems the
+     * returned invitation text with the one-time token whose SHA-256 is
+     * `tokenSha256` (hex) is admitted as `role` without the owner deciding
+     * again. The owner's unlocked root signs the grant; `label` names the
+     * person in the owner's notices (an email address, say).
+     */
+    async preAdmit({tokenSha256, label, role = 'editor', expiresIn = DEFAULT_INVITATION_SECONDS} = {}) {
+      if (!preAdmit) throw new Error('pre-admitting needs the owner\'s unlocked identity');
+      bytesOf(tokenSha256);
+      if (typeof label !== 'string' || !label.trim()) throw new TypeError('a pre-admission needs a label');
+      if (!Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > MAX_INVITATION_SECONDS) {
+        throw new RangeError(`expiresIn must be 1 to ${MAX_INVITATION_SECONDS} seconds`);
+      }
+      if (!room) throw new Error('this peer joined no room');
+      const name = displayName.trim().slice(0, 80);
+      const reply = JSON.parse(await preAdmit(JSON.stringify({
+        requestId: hex(requestId()), room, role: wireRole(role), tokenSha256, label: label.trim(),
+        expiresInSeconds: Math.floor(expiresIn), inviterName: name || null,
+      })));
+      if (reply.Refused !== undefined) throw new Error(reply.Refused);
+      return encodeInvitation(expect(reply, 'Invitation').signed_invitation);
+    },
+    /**
      * The room as governance records it: `{room, name, generation, members,
-     * waiting, invitations}`. `members` include removed people (`removed`);
-     * `waiting` are people who redeemed an invitation and wait for `admit`
-     * or `decline`; `invitations` are those still redeemable.
+     * waiting, invitations, notices}`. `members` include removed people
+     * (`removed`); `waiting` are people who redeemed an invitation and wait
+     * for `admit` or `decline`; `invitations` are those still redeemable;
+     * `notices` tell the owner who joined under a pre-admission
+     * (`{kind: 'pre-admitted', userPublicKey, name, label, role, atMs}`).
      */
     async list() {
-      const [state, requests, pending] = await Promise.all([
+      const [state, requests, pending, notices] = await Promise.all([
         ask('List').then(reply => {
           const found = expect(reply, 'Rooms').find(value => value.room === room);
           if (!found) throw new Error('the host does not govern this room');
@@ -111,8 +145,12 @@ export function createMembership({rooms, room, displayName = '', now = () => Dat
         }),
         ask({Requests: {room}}).then(reply => expect(reply, 'Requests')),
         ask({Pending: {room}}).then(reply => expect(reply, 'Pending')),
+        ask({Notices: {room}}).then(reply => expect(reply, 'Notices')),
       ]);
-      return {...state, waiting: requests.map(waiting), invitations: pending.map(invitation)};
+      return {
+        ...state, waiting: requests.map(waiting), invitations: pending.map(invitation),
+        notices: notices.map(notice),
+      };
     },
     /** Admit a waiting person (`requestId` from `list().waiting`). */
     async admit(requestIdHex) {

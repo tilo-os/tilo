@@ -826,7 +826,10 @@ export async function connectPeer({
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
-  const membership = createMembership({rooms: request => peer.rooms(request), room, displayName});
+  const membership = createMembership({
+    rooms: request => peer.rooms(request), room, displayName,
+    preAdmit: identity ? options => peer.preAdmit(identity, options) : undefined,
+  });
   const certifiedPeer = {
     get host() { return host; },
     /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
@@ -1000,11 +1003,13 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  * the room's owner (`onProgress({phase: 'waiting'})`, polled every
  * `pollMs`), and once admitted the page connects. Resolves to the
  * `CertifiedPeer` in the room; rejects when declined or refused. A page that
- * reloads while waiting asks again under the same request.
+ * reloads while waiting asks again under the same request. With
+ * `admissionToken` (the one-time token of the owner's pre-admission for this
+ * invitation) the host admits the page at once.
  */
 export async function joinWorkspace({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
-  runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, ...connectOptions
+  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, ...connectOptions
 }) {
   identity ??= currentIdentity();
   if (!identity) throw new IdentityError('locked', 'Unlock the identity first');
@@ -1029,7 +1034,8 @@ export async function joinWorkspace({
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
   const asked = JSON.parse(await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId,
-    (displayName || label).slice(0, 64), label));
+    (displayName || label).slice(0, 64), label,
+    admissionToken ? new TextEncoder().encode(admissionToken) : undefined));
   let reply = asked.reply;
   const device = hexOf(asked.cert.device_public_key);
   while (reply.kind === 'waiting') {
