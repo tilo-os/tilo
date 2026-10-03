@@ -13,22 +13,7 @@ pub const GENERIC: [(&str, &str); 3] = [
 /// The families Tilo ships, in catalog order.
 pub fn families() -> &'static [String] {
     static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
-    FAMILIES.get_or_init(|| {
-        let mut families: Vec<String> = Vec::new();
-        for asset in tilo_font_catalog::manifest()
-            .map(|manifest| manifest.font.as_slice())
-            .unwrap_or_default()
-            .iter()
-            .filter(|asset| asset.scope == tilo_font_catalog::Scope::Product)
-        {
-            for face in &asset.faces {
-                if !families.contains(&face.family) {
-                    families.push(face.family.clone());
-                }
-            }
-        }
-        families
-    })
+    FAMILIES.get_or_init(ui::font_catalog::shipped_families)
 }
 
 /// The shipped family `font` names (a generic name or a family, any case).
