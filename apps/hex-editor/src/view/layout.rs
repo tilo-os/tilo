@@ -6,12 +6,11 @@
 //! recomputes it whenever the window, the theme or the chrome (the inspector
 //! drawer, the find band) changes, and from the draw path before painting.
 
-use ui::icons::Icon;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::ScrollMetrics;
-use ui::widget::{ButtonFace, ControlSize, SegmentedFace};
+use ui::widget::{ControlSize, SegmentedFace};
 use vello::kurbo::{Point, Rect};
 
 use super::HexView;
@@ -22,6 +21,12 @@ const MAX_BYTES_PER_ROW: usize = 64;
 const MIN_BYTES_PER_ROW: usize = 8;
 /// Rows hold a whole number of these, so a row never ends mid-group.
 const ROW_STEP: usize = 4;
+/// The row length the inspector must leave room for before it docks: below
+/// this the inspector is a drawer and the grid keeps the whole window.
+const DOCKED_BYTES_PER_ROW: usize = 16;
+/// How far the gaps of a row may stretch or shrink so the row fills the
+/// width it is given.
+const GAP_SCALE: (f64, f64) = (0.5, 2.0);
 /// Bytes between the extra group gaps of the hex columns.
 pub(super) const GROUP: usize = 8;
 
@@ -80,6 +85,61 @@ impl CellMetrics {
     }
 }
 
+/// The widths a row of `n` bytes is made of: glyphs that never change and
+/// gaps that stretch so the row fills the content width.
+struct RowPlan {
+    /// Padding before the offset column and after the ASCII column (which
+    /// keeps the scroll bar's lane clear).
+    left: f64,
+    right: f64,
+    /// One ASCII cell: a glyph advance and a hairline of air, so a cursor box
+    /// around one glyph never touches its neighbours.
+    ascii_gap: f64,
+    ascii_pitch: f64,
+    gutter_w: f64,
+    byte_w: f64,
+    /// The gaps at their natural size.
+    byte_gap: f64,
+    group_gap: f64,
+    col_gap: f64,
+}
+
+impl RowPlan {
+    fn new(cell: CellMetrics, theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let s = |v: f32| f64::from(v);
+        let ascii_gap = s(sp.s1) / 2.0;
+        Self {
+            left: s(sp.s4),
+            right: s(theme.tokens.metrics.scrollbar_gutter) + s(sp.s1),
+            ascii_gap,
+            ascii_pitch: cell.glyph_w + ascii_gap,
+            gutter_w: cell.glyph_w * 8.0,
+            byte_w: cell.glyph_w * 2.0,
+            byte_gap: s(sp.s2),
+            group_gap: s(sp.s2),
+            col_gap: s(sp.s6),
+        }
+    }
+
+    /// Glyph widths and padding of an `n`-byte row.
+    fn fixed(&self, n: usize) -> f64 {
+        self.left + self.gutter_w + n as f64 * (self.byte_w + self.ascii_pitch) + self.right
+    }
+
+    /// The gaps of an `n`-byte row at their natural size.
+    fn gaps(&self, n: usize) -> f64 {
+        n.saturating_sub(1) as f64 * self.byte_gap
+            + (n.saturating_sub(1) / GROUP) as f64 * self.group_gap
+            + 2.0 * self.col_gap
+    }
+
+    /// The natural width of an `n`-byte row.
+    fn width(&self, n: usize) -> f64 {
+        self.fixed(n) + self.gaps(n)
+    }
+}
+
 /// Where everything is this frame. All in window coordinates.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Geo {
@@ -121,6 +181,9 @@ pub(super) struct Geo {
     pub line_h: f64,
     /// One monospace glyph.
     pub glyph_w: f64,
+    /// One ASCII cell (a glyph and the air around it) and that air.
+    pub ascii_pitch: f64,
+    pub ascii_gap: f64,
     /// Two glyphs: one byte's hex digits.
     pub byte_w: f64,
     /// Space between two bytes' digits.
@@ -145,7 +208,12 @@ impl Geo {
 
     /// Left edge of byte `c`'s ASCII glyph.
     pub fn ascii_x(&self, c: usize) -> f64 {
-        self.ascii_x0 + c as f64 * self.glyph_w
+        self.ascii_x0 + c as f64 * self.ascii_pitch + self.ascii_gap / 2.0
+    }
+
+    /// Left edge of byte `c`'s ASCII cell.
+    pub fn ascii_cell_x(&self, c: usize) -> f64 {
+        self.ascii_x0 + c as f64 * self.ascii_pitch
     }
 
     /// The column under `x` in the hex region.
@@ -157,10 +225,10 @@ impl Geo {
 
     /// The column under `x` in the ASCII region.
     pub fn ascii_column_at(&self, x: f64, bytes_per_row: usize) -> Option<usize> {
-        if x < self.ascii_x0 || x >= self.ascii_x1 || self.glyph_w <= 0.0 {
+        if x < self.ascii_x0 || x >= self.ascii_x1 || self.ascii_pitch <= 0.0 {
             return None;
         }
-        let c = ((x - self.ascii_x0) / self.glyph_w) as usize;
+        let c = ((x - self.ascii_x0) / self.ascii_pitch) as usize;
         (c < bytes_per_row).then_some(c)
     }
 
@@ -182,12 +250,11 @@ impl HexView {
         self.cell = cell;
         let mut geo = Geo::default();
         self.place_inspector(&mut geo, theme, tick);
-        let history = self.place_header_controls(&mut geo, tr, theme);
+        self.place_header_controls(&mut geo, tr, theme);
         self.place_bands(&mut geo, theme);
         self.place_grid(&mut geo, cell, theme);
         Self::place_inspector_controls(&mut geo, theme);
         self.visible_rows = geo.visible_rows;
-        self.history.apply_layout_external(history);
         self.mode_group.apply_layout_external(geo.mode);
         self.endian_group.apply_layout_external(geo.endian);
         self.geo = geo;
@@ -201,8 +268,12 @@ impl HexView {
         let outer = self.rect;
         let base = ui::tokens::Metrics::BASE;
         self.drawer.scale_for(theme);
-        self.drawer
-            .set_breakpoint(f64::from(base.content_min_width + base.inspector_width));
+        // The inspector docks while the grid keeps a useful row beside it;
+        // narrower than that it is a drawer over a full-width grid.
+        let docked_row = RowPlan::new(self.cell, theme).width(DOCKED_BYTES_PER_ROW);
+        self.drawer.set_breakpoint(
+            docked_row.max(f64::from(base.content_min_width)) + f64::from(base.inspector_width),
+        );
         self.drawer
             .set_docked_width(f64::from(base.inspector_width));
         let has_inspector = self.has_file;
@@ -264,44 +335,24 @@ impl HexView {
         geo.header = Rect::new(content.x0, outer.y0, content.x1, outer.y0 + header_h);
     }
 
-    /// The header's controls, right-aligned in the content header and beside
-    /// the toggle when the toggle sits in this header: History, then the
-    /// edit-mode strip. Returns the History button's rect.
-    fn place_header_controls(&self, geo: &mut Geo, tr: &mut TextRenderer, theme: &Theme) -> Rect {
+    /// The header's edit-mode strip, right-aligned in the content header and
+    /// beside the toggle when the toggle sits in this header.
+    fn place_header_controls(&self, geo: &mut Geo, tr: &mut TextRenderer, theme: &Theme) {
         if !self.has_file {
             geo.mode = Rect::ZERO;
-            return Rect::ZERO;
+            return;
         }
         let sp = &theme.tokens.spacing;
         let strip_h = SegmentedFace::height(ControlSize::Small, theme);
         let mode_w = SegmentedFace::intrinsic_width(&MODE_LABELS, ControlSize::Small, tr, theme);
-        let history_w = ButtonFace::new(Rect::ZERO, "History")
-            .icon(Icon::History)
-            .control_size(ControlSize::Small)
-            .intrinsic_width(tr, theme);
-        let history_h = ButtonFace::height(ControlSize::Small, theme);
         let toggle_in_content = !(geo.inspector_visible && geo.docked);
         let right = if toggle_in_content {
             geo.toggle.x0 - f64::from(sp.s2)
         } else {
             geo.header.x1 - f64::from(sp.s3)
         };
-        let top = geo.header.y0;
-        let band = |h: f64| top + f64::midpoint(0.0, geo.header_h - h);
-        let history = Rect::new(
-            right - history_w,
-            band(history_h),
-            right,
-            band(history_h) + history_h,
-        );
-        let mode_right = history.x0 - f64::from(sp.s2);
-        geo.mode = Rect::new(
-            mode_right - mode_w,
-            band(strip_h),
-            mode_right,
-            band(strip_h) + strip_h,
-        );
-        history
+        let top = geo.header.y0 + f64::midpoint(0.0, geo.header_h - strip_h);
+        geo.mode = Rect::new(right - mode_w, top, right, top + strip_h);
     }
 
     /// The find band under the header and the status bar at the foot.
@@ -332,30 +383,34 @@ impl HexView {
         let content = geo.content;
         let region = geo.grid;
         let row_h = (cell.line_h + s(sp.s1) / 2.0).ceil();
-        let byte_w = cell.glyph_w * 2.0;
-        let (byte_gap, group_gap, col_gap) = (s(sp.s2), s(sp.s2), s(sp.s6));
-        let (left, right) = (s(sp.s4), s(sp.s4));
-        let gutter_w = cell.glyph_w * 8.0;
-        let hex_span = |n: usize| {
-            n as f64 * (byte_w + byte_gap) - byte_gap
-                + (n.saturating_sub(1) / GROUP) as f64 * group_gap
-        };
-        let row_width = |n: usize| {
-            left + gutter_w + col_gap + hex_span(n) + col_gap + n as f64 * cell.glyph_w + right
-        };
+        let plan = RowPlan::new(cell, theme);
         let fit = (MIN_BYTES_PER_ROW / ROW_STEP..=MAX_BYTES_PER_ROW / ROW_STEP)
             .rev()
             .map(|steps| steps * ROW_STEP)
-            .find(|&n| row_width(n) <= content.width())
+            .find(|&n| plan.width(n) <= content.width())
             .unwrap_or(MIN_BYTES_PER_ROW);
         if fit != self.model.bytes_per_row() {
             self.model.set_bytes_per_row(fit);
         }
         let bpr = self.model.bytes_per_row();
 
-        let gutter_x0 = content.x0 + left;
+        // The glyphs keep their size; the gaps between bytes and columns
+        // absorb what is left of the width, so the row ends at the scroll
+        // bar's lane and no band of empty space is left beside it.
+        let scale =
+            ((content.width() - plan.fixed(bpr)) / plan.gaps(bpr)).clamp(GAP_SCALE.0, GAP_SCALE.1);
+        let (byte_gap, group_gap, col_gap) = (
+            plan.byte_gap * scale,
+            plan.group_gap * scale,
+            plan.col_gap * scale,
+        );
+        let (byte_w, gutter_w) = (plan.byte_w, plan.gutter_w);
+        let hex_span = bpr as f64 * (byte_w + byte_gap) - byte_gap
+            + (bpr.saturating_sub(1) / GROUP) as f64 * group_gap;
+
+        let gutter_x0 = content.x0 + plan.left;
         let hex_x0 = gutter_x0 + gutter_w + col_gap;
-        let ascii_x0 = hex_x0 + hex_span(bpr) + col_gap;
+        let ascii_x0 = hex_x0 + hex_span + col_gap;
         let head_top = region.y0 + s(sp.s2);
         geo.column_head = Rect::new(content.x0, head_top, content.x1, head_top + row_h);
         let grid_top = geo.column_head.y1 + s(sp.s1);
@@ -363,13 +418,15 @@ impl HexView {
         geo.row_h = row_h;
         geo.line_h = cell.line_h;
         geo.glyph_w = cell.glyph_w;
+        geo.ascii_pitch = plan.ascii_pitch;
+        geo.ascii_gap = plan.ascii_gap;
         geo.byte_w = byte_w;
         geo.byte_gap = byte_gap;
         geo.group_gap = group_gap;
         geo.gutter_x0 = gutter_x0;
         geo.hex_x0 = hex_x0;
         geo.ascii_x0 = ascii_x0;
-        geo.ascii_x1 = ascii_x0 + bpr as f64 * cell.glyph_w;
+        geo.ascii_x1 = ascii_x0 + bpr as f64 * plan.ascii_pitch;
         geo.rule_hex = hex_x0 - col_gap / 2.0;
         geo.rule_ascii = ascii_x0 - col_gap / 2.0;
         geo.visible_rows = ((geo.grid.height() / row_h).floor().max(1.0)) as usize;
@@ -382,11 +439,14 @@ impl HexView {
                 .top_row()
                 .min(rows.saturating_sub(geo.visible_rows)),
         );
-        let gutter = s(theme.tokens.metrics.scrollbar_gutter);
+        // The thumb is the quiet bar every scroll view has: two thirds of the
+        // lane, standing off the region's edge by an `s1` step.
+        let lane = s(theme.tokens.metrics.scrollbar_gutter);
+        let inset = s(sp.s1);
         geo.scroll_track = Rect::new(
-            content.x1 - gutter,
+            content.x1 - inset - lane * 2.0 / 3.0,
             geo.grid.y0,
-            content.x1,
+            content.x1 - inset,
             geo.grid.y0 + geo.visible_rows as f64 * row_h,
         );
     }

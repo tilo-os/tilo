@@ -129,9 +129,6 @@ pub struct HexView {
     // --- chrome ---
     /// The inspector: docked when wide, a floating drawer when narrow.
     drawer: SidebarDrawer,
-    /// The window's History button, presented in this header so the window
-    /// draws no History bar above the editor.
-    history: ui::widget::Button,
     /// The edit-mode strip in the header, and the pick the person made.
     mode_group: ToggleGroup,
     mode_pick: Rc<Cell<Option<usize>>>,
@@ -219,7 +216,6 @@ impl HexView {
             drawer: SidebarDrawer::new()
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
-            history: ui::widget::history_button().control_size(ControlSize::Small),
             mode_group: strip("hex.mode", &MODE_LABELS, &mode_pick),
             mode_pick,
             endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
@@ -695,7 +691,6 @@ impl HexView {
 
     /// Hand a pointer event to the two strips; true when one took it.
     fn route_to_strips(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
-        self.history.handle_event(event, ctx);
         self.mode_group.handle_event(event, ctx);
         if self.geo.inspector_visible {
             self.endian_group.handle_event(event, ctx);
@@ -1131,7 +1126,7 @@ impl Widget for HexView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.history];
+        let mut children: Vec<&dyn Widget> = Vec::new();
         if self.goto.is_open() {
             children.push(&self.goto);
         }
@@ -1139,14 +1134,13 @@ impl Widget for HexView {
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(&self.history);
         if self.goto.is_open() {
             visitor(&self.goto);
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.history];
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         if self.goto.is_open() {
             children.push(&mut self.goto);
         }
@@ -1949,7 +1943,9 @@ mod tests {
             let theme = Theme::dark().with_text_scale(scale);
             tr.set_text_scale(scale);
             let mut view = HexView::new(vec![0xAB; 960], "scale.bin");
-            view.rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+            // Wide at every text scale: the inspector docks beside a grid
+            // that keeps a full row.
+            view.rect = Rect::new(0.0, 0.0, 1600.0 * f64::from(scale), 1000.0);
             let before = CellMetrics::measure(&mut tr, &theme);
             paint_frame(&mut view, &mut tr, &theme);
             assert_eq!(view.cell, before, "draw measures the same cell metrics");
@@ -1973,6 +1969,11 @@ mod tests {
             assert!(
                 g.ascii_x1 <= g.content.x1,
                 "the grid fits the content width: {g:?}"
+            );
+            let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+            assert!(
+                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
+                "the ASCII column ends at the scroll bar's lane, no empty band: {g:?}"
             );
             for off in [0usize, 1, bpr - 1, bpr, 2 * bpr + 3] {
                 let (row, col) = (off / bpr, off % bpr);
@@ -2002,6 +2003,28 @@ mod tests {
         assert!(!view.geo.inspector_visible, "closed by default when narrow");
         assert!((view.geo.content.x1 - view.rect.x1).abs() < 1e-6);
         assert!(view.model.bytes_per_row() >= 8);
+
+        // The grid fills every width: whatever the window, the gaps absorb
+        // what a whole number of bytes leaves over.
+        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+        for width in (640..=1600).step_by(37) {
+            let mut view = HexView::new(vec![0; 4096], "fill.bin");
+            view.rect = Rect::new(0.0, 0.0, f64::from(width), 700.0);
+            paint_frame(&mut view, &mut tr, &theme);
+            let g = &view.geo;
+            assert!(
+                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
+                "width {width}: dead space right of the ASCII column: {g:?}"
+            );
+        }
+
+        // An 800 px window keeps 16 bytes a row by floating the inspector.
+        let mut view = HexView::new(vec![0; 4096], "compact.bin");
+        view.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        paint_frame(&mut view, &mut tr, &theme);
+        assert!(!view.geo.docked, "too narrow for a docked inspector");
+        assert!(view.model.bytes_per_row() >= 16);
+
         view.toggle_inspector();
         view.drawer.snap(true);
         paint_frame(&mut view, &mut tr, &theme);

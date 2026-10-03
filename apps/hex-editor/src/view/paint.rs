@@ -102,8 +102,7 @@ impl HexView {
         }
         self.paint_header(scene, transform, tr, theme, presence);
         if self.find_open {
-            self.find_bar.layout(self.geo.find, theme, tr);
-            self.find_bar.paint(scene, transform, tr, theme, presence);
+            self.paint_find(scene, transform, tr, theme, presence);
         }
         self.paint_grid(scene, transform, tr, theme);
         let metrics = self.scroll_metrics();
@@ -160,10 +159,41 @@ impl HexView {
             0.0,
             colors.surfaces.content,
         );
-        Widget::draw(&mut self.history, scene, transform, tr, theme, presence);
         self.mode_group
             .set_selected(super::layout::mode_index(self.model.mode()));
         Widget::draw(&mut self.mode_group, scene, transform, tr, theme, presence);
+    }
+
+    /// The find band under the header. The bar insets its field by the
+    /// shell's `s3` gutter; the band starts `s4` in, so the field's edge is the
+    /// file name's and the offset column's, and the hairline under it still
+    /// runs the full width like the header's.
+    fn paint_find(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let band = self.geo.find;
+        let sp = &theme.tokens.spacing;
+        let lead = f64::from(sp.s4 - sp.s3);
+        self.find_bar.layout(
+            Rect::new(band.x0 + lead, band.y0, band.x1, band.y1),
+            theme,
+            tr,
+        );
+        self.find_bar.paint(scene, transform, tr, theme, presence);
+        ui::surface::separator(
+            scene,
+            transform,
+            band.x0,
+            band.x1,
+            band.y1,
+            0.0,
+            theme.tokens.colors.surfaces.content,
+        );
     }
 
     /// The column labels, the rules between the columns and the rows of
@@ -272,9 +302,7 @@ impl HexView {
             };
             let dirty = self.model.is_dirty(off);
             let style = if dirty { ctx.code_strong } else { ctx.code };
-            let hex_ink = if dirty {
-                colors.semantic.warning
-            } else if byte == 0 {
+            let hex_ink = if byte == 0 && !dirty {
                 colors.text_tertiary
             } else {
                 colors.text_primary
@@ -288,9 +316,7 @@ impl HexView {
                 None,
                 style,
             );
-            let ascii_ink = if dirty {
-                colors.semantic.warning
-            } else if (0x20..=0x7E).contains(&byte) {
+            let ascii_ink = if dirty || (0x20..=0x7E).contains(&byte) {
                 colors.text_primary
             } else {
                 colors.text_tertiary
@@ -323,7 +349,6 @@ impl HexView {
         let bpr = ctx.bytes_per_row;
         let radius = f64::from(theme.tokens.radii.detail);
         let half = g.byte_gap / 2.0;
-        let pad = f64::from(theme.tokens.spacing.s1) / 2.0;
         let hex_band = |first: usize, last: usize| {
             Rect::new(
                 g.hex_x(first) - half,
@@ -334,9 +359,9 @@ impl HexView {
         };
         let ascii_band = |first: usize, last: usize| {
             Rect::new(
-                g.ascii_x(first) - pad,
+                g.ascii_cell_x(first),
                 y,
-                g.ascii_x(last) + g.glyph_w + pad,
+                g.ascii_cell_x(last) + g.ascii_pitch,
                 y + g.row_h,
             )
         };
@@ -349,6 +374,16 @@ impl HexView {
                 &RoundedRect::from_rect(rect, radius),
             );
         };
+
+        // An edited byte stands on a neutral lift in both columns, in heavier
+        // ink: it is changed, not a warning and nobody's presence.
+        let edited = colors.lift_on(colors.surfaces.content, 1.0);
+        for c in 0..bpr {
+            if self.model.is_dirty(row_off + c) {
+                fill(scene, hex_band(c, c), edited);
+                fill(scene, ascii_band(c, c), edited);
+            }
+        }
 
         if let Some((lo, hi)) = ctx.inspected
             && let Some((a, b)) = span_in_row(lo, hi, row_off, bpr)
