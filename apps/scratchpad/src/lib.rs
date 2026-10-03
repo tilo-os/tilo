@@ -58,7 +58,8 @@ impl ResourceApp for Scratchpad {
         let editor = cx
             .input(|note| note.body.clone(), Note::EDIT)
             .with_id("note-editor")
-            .with_placeholder("Start typing")
+            .with_accessible_name("Note")
+            .with_plain_chrome()
             .with_text_role(TextRole::Reading)
             .with_font_family(ui::FontChoice::Serif)
             .multiline(true);
@@ -73,7 +74,12 @@ impl ResourceApp for Scratchpad {
         .with_role(TextRole::Caption)
         .dimmed()
         .with_live(ui::a11y::Politeness::Polite);
+        // The note is writing, not a form field: the editor is a plain surface
+        // on the content ground, so the scrolling text runs to the pane's own
+        // edge. The status sits directly under it (no gap), so an idle note,
+        // whose status is empty, reserves nothing.
         let content = Column::new()
+            .with_gap(0.0)
             .push(Box::new(
                 Column::new()
                     .with_no_padding()
