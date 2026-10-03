@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Idieresis.ss01.ss13" format="2">
+  <advance width="300"/>
+  <outline>
+    <component base="I.ss13"/>
+    <component base="dieresiscomb.ss01" xOffset="-7" yOffset="210"/>
+  </outline>
+</glyph>

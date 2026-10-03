@@ -1,0 +1,40 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Q.ss09" format="2">
+  <advance width="536"/>
+  <outline>
+    <contour>
+      <point x="268" y="-10" type="curve" smooth="yes"/>
+      <point x="423" y="-10"/>
+      <point x="506" y="119"/>
+      <point x="506" y="362" type="curve" smooth="yes"/>
+      <point x="506" y="604"/>
+      <point x="424" y="730"/>
+      <point x="267" y="730" type="curve" smooth="yes"/>
+      <point x="112" y="730"/>
+      <point x="30" y="603"/>
+      <point x="30" y="363" type="curve" smooth="yes"/>
+      <point x="30" y="120"/>
+      <point x="113" y="-10"/>
+    </contour>
+    <contour>
+      <point x="267" y="92" type="curve" smooth="yes"/>
+      <point x="203" y="92"/>
+      <point x="169" y="171"/>
+      <point x="169" y="364" type="curve" smooth="yes"/>
+      <point x="169" y="545"/>
+      <point x="202" y="618"/>
+      <point x="267" y="618" type="curve" smooth="yes"/>
+      <point x="333" y="618"/>
+      <point x="367" y="543"/>
+      <point x="367" y="364" type="curve" smooth="yes"/>
+      <point x="367" y="101"/>
+      <point x="332" y="92"/>
+    </contour>
+    <contour>
+      <point x="220" y="188" type="line"/>
+      <point x="395" y="-116" type="line"/>
+      <point x="491" y="-61" type="line"/>
+      <point x="316" y="243" type="line"/>
+    </contour>
+  </outline>
+</glyph>

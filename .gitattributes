@@ -21,3 +21,7 @@ os/external-assets/bootc/*.patch whitespace=-blank-at-eol,-blank-at-eof
 
 # Cargo checks vendor/git against the checksums `cargo vendor` recorded.
 vendor/git/** -text
+
+# Font sources: a UFO glyph set's name-to-file map gains one entry per new
+# glyph, so two branches adding different glyphs merge by keeping both.
+vendor/fonts/*/sources/*.ufo/glyphs/contents.plist merge=union

@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<designspace format="5.0">
+  <axes>
+    <axis tag="wdth" name="Width" minimum="75" maximum="100" default="100">
+      <map input="75" output="75"/>
+      <map input="88" output="87.5"/>
+      <map input="100" output="100"/>
+      <labels>
+        <label uservalue="75" name="Condensed"/>
+        <label uservalue="87.5" name="SemiCondensed"/>
+        <label uservalue="100" name="Normal" elidable="true"/>
+      </labels>
+    </axis>
+    <axis tag="wght" name="Weight" minimum="400" maximum="700" default="400">
+      <labels>
+        <label uservalue="400" name="Regular" elidable="true" linkeduservalue="700"/>
+        <label uservalue="500" name="Medium"/>
+        <label uservalue="600" name="SemiBold"/>
+        <label uservalue="700" name="Bold"/>
+      </labels>
+    </axis>
+  </axes>
+  <sources>
+    <source filename="TiloSans-CondensedItalic.ufo" name="Condensed Italic" familyname="Tilo Sans" stylename="Condensed Italic">
+      <location>
+        <dimension name="Width" xvalue="75"/>
+        <dimension name="Weight" xvalue="400"/>
+      </location>
+    </source>
+    <source filename="TiloSans-CondensedBoldItalic.ufo" name="Condensed Bold Italic" familyname="Tilo Sans" stylename="Condensed Bold Italic">
+      <location>
+        <dimension name="Width" xvalue="75"/>
+        <dimension name="Weight" xvalue="700"/>
+      </location>
+    </source>
+    <source filename="TiloSans-Italic.ufo" name="Italic" familyname="Tilo Sans" stylename="Italic">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="400"/>
+      </location>
+    </source>
+    <source filename="TiloSans-BoldItalic.ufo" name="Bold Italic" familyname="Tilo Sans" stylename="Bold Italic">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="700"/>
+      </location>
+    </source>
+  </sources>
+  <instances>
+    <instance familyname="Tilo Sans" stylename="Italic">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="400"/>
+      </location>
+    </instance>
+    <instance familyname="Tilo Sans" stylename="Medium Italic">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="500"/>
+      </location>
+    </instance>
+    <instance familyname="Tilo Sans" stylename="SemiBold Italic">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="600"/>
+      </location>
+    </instance>
+    <instance familyname="Tilo Sans" stylename="Bold Italic">
+      <location>
+        <dimension name="Width" xvalue="100"/>
+        <dimension name="Weight" xvalue="700"/>
+      </location>
+    </instance>
+  </instances>
+</designspace>

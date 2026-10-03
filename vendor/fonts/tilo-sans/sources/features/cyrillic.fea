@@ -1,0 +1,46 @@
+# Cyrillic: language forms and dotless і/ј under top marks.
+
+@CyrillicCombiningTop = [acutecomb brevecomb caroncomb circumflexcomb dieresiscomb dotaccentcomb gravecomb hungarumlautcomb macroncomb ringcomb tildecomb];
+
+feature ccmp {
+lookup ccmp_cyrl {
+	sub [i-cy je-cy]' @CyrillicCombiningTop by [idotless jdotless];
+} ccmp_cyrl;
+} ccmp;
+
+lookup locl_cyrl_BGR {
+	# Bulgarian lowercase forms
+	sub de-cy by de-cy.loclBGR;
+	sub zhe-cy by zhe-cy.loclBGR;
+	sub ii-cy by ii-cy.loclBGR;
+	sub iishort-cy by iishort-cy.loclBGR;
+	sub iigrave-cy by iigrave-cy.loclBGR;
+	sub ka-cy by ka-cy.loclBGR;
+	sub el-cy by el-cy.loclBGR;
+	sub pe-cy by pe-cy.loclBGR;
+	sub te-cy by te-cy.loclBGR;
+	sub tse-cy by tse-cy.loclBGR;
+	sub sha-cy by sha-cy.loclBGR;
+	sub shcha-cy by shcha-cy.loclBGR;
+	sub yu-cy by yu-cy.loclBGR;
+} locl_cyrl_BGR;
+
+lookup locl_cyrl_SRB {
+	# Serbian and Macedonian (the italic forms differ)
+	sub be-cy by be-cy.loclSRB;
+	sub ge-cy by ge-cy.loclSRB;
+	sub gje-cy by gje-cy.loclSRB;
+	sub de-cy by de-cy.loclSRB;
+	sub pe-cy by pe-cy.loclSRB;
+	sub te-cy by te-cy.loclSRB;
+} locl_cyrl_SRB;
+
+feature locl {
+script cyrl;
+language BGR;
+lookup locl_cyrl_BGR;
+language SRB;
+lookup locl_cyrl_SRB;
+language MKD;
+lookup locl_cyrl_SRB;
+} locl;

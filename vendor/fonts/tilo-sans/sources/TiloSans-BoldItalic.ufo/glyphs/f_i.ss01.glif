@@ -1,0 +1,55 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="f_i.ss01" format="2">
+  <advance width="645"/>
+  <anchor x="102" y="0" name="bottom_1"/>
+  <anchor x="425" y="0" name="bottom_2"/>
+  <anchor x="322.5" y="0" name="caret_1"/>
+  <anchor x="273" y="740" name="top_1"/>
+  <anchor x="596" y="740" name="top_2"/>
+  <outline>
+    <contour>
+      <point x="40" y="0" type="line"/>
+      <point x="190" y="0" type="line"/>
+      <point x="316" y="546" type="line" smooth="yes"/>
+      <point x="325" y="586"/>
+      <point x="347" y="612"/>
+      <point x="400" y="612" type="curve" smooth="yes"/>
+      <point x="417" y="612"/>
+      <point x="433" y="609"/>
+      <point x="444" y="605" type="curve"/>
+      <point x="470" y="718" type="line"/>
+      <point x="439" y="727"/>
+      <point x="412" y="730"/>
+      <point x="382" y="730" type="curve" smooth="yes"/>
+      <point x="261" y="730"/>
+      <point x="196" y="674"/>
+      <point x="170" y="563" type="curve" smooth="yes"/>
+    </contour>
+    <contour>
+      <point x="370" y="0" type="line"/>
+      <point x="520" y="0" type="line"/>
+      <point x="638" y="510" type="line"/>
+      <point x="488" y="510" type="line"/>
+    </contour>
+    <contour>
+      <point x="585" y="561" type="curve" smooth="yes"/>
+      <point x="634" y="561"/>
+      <point x="680" y="605"/>
+      <point x="680" y="661" type="curve" smooth="yes"/>
+      <point x="680" y="704"/>
+      <point x="648" y="735"/>
+      <point x="604" y="735" type="curve" smooth="yes"/>
+      <point x="553" y="735"/>
+      <point x="509" y="694"/>
+      <point x="509" y="638" type="curve" smooth="yes"/>
+      <point x="509" y="597"/>
+      <point x="540" y="561"/>
+    </contour>
+    <contour>
+      <point x="47" y="396" type="line"/>
+      <point x="503" y="396" type="line"/>
+      <point x="529" y="510" type="line"/>
+      <point x="73" y="510" type="line"/>
+    </contour>
+  </outline>
+</glyph>

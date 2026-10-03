@@ -1,0 +1,11 @@
+feature ss03 {
+featureNames {
+  name "Alternate y";
+};
+sub y by y.ss03;
+sub yacute by yacute.ss03;
+sub ycircumflex by ycircumflex.ss03;
+sub ydieresis by ydieresis.ss03;
+sub ygrave by ygrave.ss03;
+sub ydieresis.ss01 by ydieresis.ss01.ss03;
+} ss03;

@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Endescender-cy" format="2">
+  <advance width="493"/>
+  <unicode hex="04A2"/>
+  <anchor x="250" y="0" name="bottom"/>
+  <anchor x="250" y="720" name="top"/>
+  <outline>
+    <contour>
+      <point x="70" y="0" type="line"/>
+      <point x="140" y="0" type="line"/>
+      <point x="140" y="720" type="line"/>
+      <point x="70" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="360" y="0" type="line"/>
+      <point x="430" y="0" type="line"/>
+      <point x="430" y="720" type="line"/>
+      <point x="360" y="720" type="line"/>
+    </contour>
+    <contour>
+      <point x="112" y="406" type="line"/>
+      <point x="112" y="344" type="line"/>
+      <point x="386" y="344" type="line"/>
+      <point x="386" y="406" type="line"/>
+    </contour>
+    <contour>
+      <point x="395" y="0" type="line"/>
+      <point x="465" y="0" type="line"/>
+      <point x="465" y="62" type="line"/>
+      <point x="395" y="62" type="line"/>
+    </contour>
+    <contour>
+      <point x="401" y="-160" type="line"/>
+      <point x="465" y="-160" type="line"/>
+      <point x="465" y="62" type="line"/>
+      <point x="401" y="62" type="line"/>
+    </contour>
+  </outline>
+</glyph>

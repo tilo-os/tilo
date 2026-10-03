@@ -1,0 +1,6 @@
+feature ss06 {
+featureNames {
+  name "Alternate M";
+};
+sub M by M.ss06;
+} ss06;

@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="abrevedotbelow.ss01" format="2">
+  <advance width="533"/>
+  <outline>
+    <component base="a"/>
+    <component base="brevecomb" xOffset="34"/>
+    <component base="dotbelowcomb.ss01" xOffset="166"/>
+  </outline>
+</glyph>

@@ -1,0 +1,52 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="ampersand.ss11" format="2">
+  <advance width="790"/>
+  <outline>
+    <contour>
+      <point x="220" y="0" type="curve" smooth="yes"/>
+      <point x="505" y="0" type="line"/>
+      <point x="530" y="110" type="line"/>
+      <point x="280" y="110" type="line" smooth="yes"/>
+      <point x="215" y="110"/>
+      <point x="181" y="151"/>
+      <point x="181" y="209" type="curve" smooth="yes"/>
+      <point x="181" y="279"/>
+      <point x="229" y="322"/>
+      <point x="313" y="322" type="curve" smooth="yes"/>
+      <point x="775" y="322" type="line"/>
+      <point x="800" y="432" type="line"/>
+      <point x="375" y="432" type="line" smooth="yes"/>
+      <point x="320" y="432"/>
+      <point x="279" y="467"/>
+      <point x="279" y="520" type="curve" smooth="yes"/>
+      <point x="279" y="572"/>
+      <point x="320" y="611"/>
+      <point x="396" y="611" type="curve" smooth="yes"/>
+      <point x="440" y="611"/>
+      <point x="493" y="603"/>
+      <point x="536" y="582" type="curve"/>
+      <point x="563" y="696" type="line"/>
+      <point x="499" y="723"/>
+      <point x="444" y="730"/>
+      <point x="382" y="730" type="curve" smooth="yes"/>
+      <point x="229" y="730"/>
+      <point x="131" y="655"/>
+      <point x="131" y="545" type="curve" smooth="yes"/>
+      <point x="131" y="457"/>
+      <point x="193" y="387"/>
+      <point x="278" y="387" type="curve"/>
+      <point x="268" y="410" type="line"/>
+      <point x="136" y="410"/>
+      <point x="22" y="326"/>
+      <point x="22" y="195" type="curve" smooth="yes"/>
+      <point x="22" y="86"/>
+      <point x="101" y="0"/>
+    </contour>
+    <contour>
+      <point x="419" y="0" type="line"/>
+      <point x="573" y="0" type="line"/>
+      <point x="698" y="542" type="line"/>
+      <point x="544" y="542" type="line"/>
+    </contour>
+  </outline>
+</glyph>
