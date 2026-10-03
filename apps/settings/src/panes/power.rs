@@ -232,13 +232,12 @@ pub(crate) fn lock_from_label(label: &str) -> Option<u32> {
 }
 
 fn battery_status_shown(battery: &BatteryInfo) -> String {
-    let capacity = ArgValue::from(i64::from(battery.capacity));
-    match battery.status.as_str() {
-        "Full" => t("power-status-full"),
-        "Charging" => t_args("power-status-charging", &[("capacity", capacity)]),
-        "Not charging" => t_args("power-status-plugged", &[("capacity", capacity)]),
-        _ => t_args("power-status-battery", &[("capacity", capacity)]),
-    }
+    t(match battery.status.as_str() {
+        "Full" => "power-status-full",
+        "Charging" => "power-state-charging",
+        "Not charging" => "power-state-plugged",
+        _ => "power-state-battery",
+    })
 }
 
 fn health_explanation_shown(battery: &BatteryInfo) -> String {
@@ -639,15 +638,6 @@ impl PowerPane {
                         .with_placeholder(&format!("{}%", capability.current)),
                 ),
             ));
-            let detail = match capability.backend {
-                ChargeCapBackend::ConservationMode => t("power-charge-cap-conservation"),
-                ChargeCapBackend::HuaweiWmi => t("power-charge-cap-huawei"),
-                ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
-                    t("power-charge-cap-start-stop")
-                }
-                ChargeCapBackend::PowerSupply => t("power-charge-cap-stop"),
-            };
-            battery_rows.push(caption(&detail));
         } else {
             battery_rows.push(value_row(
                 &t("power-charge-cap"),

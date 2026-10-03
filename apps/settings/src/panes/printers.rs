@@ -455,6 +455,10 @@ impl PrintersPane {
         crate::widgets::cards(cards)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one printer row declares its state, supplies and every action together"
+    )]
     fn printer_row(&self, printer: &PrinterQueue) -> El {
         let default_key = format!("settings.printers.default.{}", slug(&printer.name));
         let enabled_key = format!("settings.printers.enabled.{}", slug(&printer.name));
@@ -649,10 +653,7 @@ fn job_row(job: &PrintJob) -> El {
     let retry_label = t("settings-printers-retry");
     let cancel_label = t("settings-printers-cancel");
     let mut action_row = Row::new()
-        .push(Box::new(Text::new(&format!(
-            "{} → {}",
-            job.id, job.destination
-        ))))
+        .push(Box::new(Text::new(job.title.as_deref().unwrap_or(&job.id))))
         .push(Box::new(Spacer::new()));
     if matches!(
         job.state,
@@ -672,9 +673,12 @@ fn job_row(job: &PrintJob) -> El {
             .with_intrinsic_height()
             .push(Box::new(action_row))
             .push(Box::new(
-                Text::new(&format!("{}, {}, {}", job.owner, size, job.submitted))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
+                Text::new(&format!(
+                    "{}, {}, {}, {}",
+                    job.destination, job.owner, size, job.submitted
+                ))
+                .with_role(ui::TextRole::Caption)
+                .dimmed(),
             ))
             .push(Box::new(
                 Text::new(&format!("{state}, {progress}{reason}"))
@@ -899,6 +903,126 @@ impl Widget for PrintersPane {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+}
+/// Fixture data for captures: two queues, a job in flight and a scanner.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{
+        Arc, DiscoveredPrinter, JobState, PrintJob, PrintService, PrinterQueue, PrintersPane,
+        Scanner,
+    };
+    use os_actions::printing::{PrinterSupply, PrinterTelemetry, QueueState};
+
+    struct Bench;
+
+    impl PrintService for Bench {
+        fn queues(&self) -> Result<Vec<PrinterQueue>, String> {
+            Ok(queues())
+        }
+        fn jobs(&self) -> Result<Vec<PrintJob>, String> {
+            Ok(jobs())
+        }
+        fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String> {
+            Ok(Vec::new())
+        }
+        fn scanners(&self) -> Result<Vec<Scanner>, String> {
+            Ok(scanners())
+        }
+        fn add(&self, _printer: &DiscoveredPrinter) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_default(&self, _name: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn remove(&self, _name: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn cancel(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn retry(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn supply(name: &str, color: &str, level: u8) -> PrinterSupply {
+        PrinterSupply {
+            name: name.to_string(),
+            color: Some(color.to_string()),
+            level_percent: Some(level),
+        }
+    }
+
+    fn queues() -> Vec<PrinterQueue> {
+        vec![
+            PrinterQueue {
+                name: "Office laser".into(),
+                state: QueueState::Printing,
+                default: true,
+                accepting_jobs: true,
+                reason: None,
+                telemetry: PrinterTelemetry {
+                    available: true,
+                    state_reasons: Vec::new(),
+                    supplies: Some(vec![
+                        supply("Black", "#000000", 64),
+                        supply("Cyan", "#00ffff", 41),
+                        supply("Magenta", "#ff00ff", 38),
+                        supply("Yellow", "#ffff00", 72),
+                    ]),
+                },
+            },
+            PrinterQueue {
+                name: "Studio inkjet".into(),
+                state: QueueState::Ready,
+                default: false,
+                accepting_jobs: true,
+                reason: None,
+                telemetry: PrinterTelemetry {
+                    available: true,
+                    state_reasons: Vec::new(),
+                    supplies: None,
+                },
+            },
+        ]
+    }
+
+    fn jobs() -> Vec<PrintJob> {
+        vec![PrintJob {
+            id: "Office laser-41".into(),
+            title: Some("Quarterly report.pdf".into()),
+            owner: "ada".into(),
+            size_bytes: 1_843_200,
+            submitted: "10:38".into(),
+            destination: "Office laser".into(),
+            state: Some(JobState::Processing),
+            state_reasons: Vec::new(),
+            impressions_completed: Some(3),
+            impressions_total: Some(8),
+        }]
+    }
+
+    fn scanners() -> Vec<Scanner> {
+        vec![Scanner {
+            device: "airscan:e0:Office laser".into(),
+            description: "Office laser (eSCL network scanner)".into(),
+        }]
+    }
+
+    impl PrintersPane {
+        /// The pane over a fixed print service: what a capture shows, the
+        /// same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::empty(Arc::new(Bench));
+            pane.printers = queues();
+            pane.jobs = jobs();
+            pane.scanners = scanners();
+            pane
+        }
     }
 }
 

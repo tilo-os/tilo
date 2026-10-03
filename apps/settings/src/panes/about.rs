@@ -117,6 +117,22 @@ impl AboutInfo {
         }
     }
 
+    /// The facts of a fixed machine, for captures: the same on every host.
+    #[cfg(not(feature = "thin"))]
+    pub(crate) fn for_shot() -> Self {
+        Self {
+            pretty_name: "Tilo 1.0".to_string(),
+            kernel: "6.14.2-tilo".to_string(),
+            uptime: "2d 3h 18m".to_string(),
+            hostname: "ada-laptop".to_string(),
+            arch: "x86_64".to_string(),
+            cpu: "AMD Ryzen 7 7840U".to_string(),
+            memory: "32.0 GiB".to_string(),
+            identity_name: Some("Ada Lovelace".to_string()),
+            identity_public_key: Some([0x3a; 32]),
+        }
+    }
+
     /// A short, stable workspace identity fingerprint.
     ///
     /// Connected workspaces use the public group key that identifies the
@@ -138,7 +154,7 @@ impl AboutInfo {
         );
         let hex = format!("{fingerprint:016x}");
         format!(
-            "{}·{}·{}·{}",
+            "{} {} {} {}",
             hex.get(0..4).unwrap_or_default(),
             hex.get(4..8).unwrap_or_default(),
             hex.get(8..12).unwrap_or_default(),
@@ -337,7 +353,7 @@ mod tests {
         // Architecture is a compile-time fact, always present.
         assert!(!info.arch.is_empty());
         info.identity_public_key = Some([0xab; 32]);
-        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
+        assert_eq!(info.fingerprint(), "abab abab abab abab");
 
         let info = AboutInfo {
             pretty_name: "x".into(),
@@ -351,8 +367,9 @@ mod tests {
             identity_public_key: None,
         };
         let fp = info.fingerprint();
-        // 4 groups of 4 hex chars separated by middots.
-        assert_eq!(fp.matches('\u{00B7}').count(), 3);
+        // 4 groups of 4 hex chars separated by spaces.
+        assert_eq!(fp.split(' ').count(), 4);
+        assert!(fp.split(' ').all(|group| group.len() == 4));
         assert_eq!(info.fingerprint(), fp, "deterministic");
 
         let intent = portable_identity_backup_intent();

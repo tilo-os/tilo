@@ -197,6 +197,17 @@ fn identities_for_display() -> (Vec<IdentitySummary>, Option<DiskIdentityAdmin>)
     (ids, Some(DiskIdentityAdmin { dir }))
 }
 
+/// How an identity's key is kept, in words a person recognises.
+fn protection_label(protection: KeyProtection) -> String {
+    t(match protection {
+        KeyProtection::SecretService => "settings-users-protection-service",
+        KeyProtection::BrokerFile => "settings-users-protection-file",
+        KeyProtection::HardwareBacked => "settings-users-protection-hardware-backed",
+        KeyProtection::LegacyPlaintext => "settings-users-protection-legacy",
+        KeyProtection::Unavailable => "settings-users-protection-unavailable",
+    })
+}
+
 pub struct UsersPane {
     users: Vec<DeviceUser>,
     identities: Vec<IdentitySummary>,
@@ -247,7 +258,7 @@ impl UsersPane {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "thin")))]
     fn with_data(
         users: Vec<DeviceUser>,
         identities: Vec<IdentitySummary>,
@@ -312,30 +323,13 @@ impl UsersPane {
             )
         };
         cards.push(card(&t("settings-users-identities-title"), identity_rows));
-        let mut protection_rows: Vec<El> =
-            vec![caption(&t("settings-users-protection-secret-service"))];
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::BrokerFile)
         {
-            protection_rows.push(caption(&t("settings-users-protection-broker-file")));
+            cards.push(caption(&t("settings-users-protection-broker-file")));
         }
-        if self
-            .identities
-            .iter()
-            .any(|identity| identity.protection == KeyProtection::HardwareBacked)
-        {
-            protection_rows.push(caption(&t("settings-users-protection-hardware")));
-        }
-        cards.push(card(
-            &t("settings-users-protection-title"),
-            rows(protection_rows),
-        ));
-        cards.push(card(
-            &t("settings-users-boundary-title"),
-            rows(vec![caption(&t("settings-users-boundary-body"))]),
-        ));
         crate::widgets::cards(cards)
     }
 
@@ -544,7 +538,7 @@ impl UsersPane {
                 Some(&protect),
             )));
         }
-        let protection = id.protection.label();
+        let protection = protection_label(id.protection);
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -554,11 +548,8 @@ impl UsersPane {
                     Text::new(&t_args(
                         "settings-users-identity-detail",
                         &[
-                            ("id", id.id.as_str().into()),
                             ("key", key.as_str().into()),
-                            ("threshold", id.threshold.into()),
-                            ("total", id.total_shares.into()),
-                            ("protection", protection.into()),
+                            ("protection", protection.as_str().into()),
                         ],
                     ))
                     .with_role(ui::TextRole::Caption)
@@ -894,6 +885,93 @@ impl Widget for UsersPane {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+}
+/// Fixture data for captures: two login accounts and a signing identity.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{
+        Arc, DeviceUser, IdentityAdmin, IdentitySummary, KeyProtection, UserAdmin, UsersPane,
+    };
+
+    struct Bench;
+
+    impl UserAdmin for Bench {
+        fn create(
+            &self,
+            _username: &str,
+            _full_name: &str,
+            _password: &mut [u8],
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&self, _user: &DeviceUser, _remove_files: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_admin(&self, _username: &str, _admin: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_autologin(&self, _username: &str, _enabled: bool) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl IdentityAdmin for Bench {
+        fn activate(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn remove(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn protect(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl UsersPane {
+        /// The pane over fixed accounts and identities: what a capture shows,
+        /// the same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let users = vec![
+                DeviceUser {
+                    username: "ada".into(),
+                    full_name: "Ada Lovelace".into(),
+                    uid: 1000,
+                    admin: true,
+                    current: true,
+                    automatic_login: true,
+                },
+                DeviceUser {
+                    username: "grace".into(),
+                    full_name: "Grace Hopper".into(),
+                    uid: 1001,
+                    admin: false,
+                    current: false,
+                    automatic_login: false,
+                },
+            ];
+            let identities = vec![
+                IdentitySummary {
+                    id: "personal".into(),
+                    display_name: "Ada Lovelace".into(),
+                    public_key: [0x3a; 32],
+                    threshold: 2,
+                    total_shares: 3,
+                    active: true,
+                    protection: KeyProtection::SecretService,
+                },
+                IdentitySummary {
+                    id: "work".into(),
+                    display_name: "Ada at Analytical Engines".into(),
+                    public_key: [0x7c; 32],
+                    threshold: 2,
+                    total_shares: 3,
+                    active: false,
+                    protection: KeyProtection::SecretService,
+                },
+            ];
+            Self::with_data(users, identities, Arc::new(Bench), Arc::new(Bench))
+        }
     }
 }
 
