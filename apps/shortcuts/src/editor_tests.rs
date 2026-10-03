@@ -85,7 +85,9 @@ fn problems_name_the_offending_step() {
         "{found:?}"
     );
     assert!(
-        at_create.iter().any(|reason| reason.contains("pinned")),
+        at_create
+            .iter()
+            .any(|reason| reason == "Pin it needs a value"),
         "the required `pinned` is unbound: {found:?}"
     );
     assert!(!found.contains_key("0"), "the list step is fine: {found:?}");

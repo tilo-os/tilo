@@ -364,20 +364,20 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         &Action::Activate,
     );
 
-    // The checker's verdict on the unbound create step shows on it.
+    // The checker's verdict on the unbound create step shows in the summary.
     app.harness()
         .expect(
-            &SemanticExpectation::named("step-problems-1")
-                .name_contains("title")
+            &SemanticExpectation::named("draft-problems")
+                .name("2 problems to fix before saving")
                 .within(tilo_test_env::hang_bound()),
         )
-        .expect("the missing argument is reported on the step");
+        .expect("the missing argument is reported");
 
     // `title` is offered the text input, not the list's array.
     act(
         &mut app,
         "arg-1-title",
-        &Action::SetValue("input who (text)".into()),
+        &Action::SetValue("input who".into()),
     );
     // `pinned` gets a typed value.
     act(
