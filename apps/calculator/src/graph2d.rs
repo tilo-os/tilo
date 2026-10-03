@@ -16,7 +16,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use crate::engine;
 use crate::mathfield::MathField;
 use crate::model::{CalcModel, View2d};
-use crate::plot_panel::{CURVES, Hover, Park, PlotPanel};
+use crate::plot_panel::{CURVES, Formulas, Hover, PlotPanel};
 use crate::zoom::ZoomAnim2d;
 
 pub struct Graph2dScreen {
@@ -145,12 +145,7 @@ impl Graph2dScreen {
 
     /// Reconcile the per-row editors with `model.funcs`.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        self.panel.sync_fields(&model.funcs, model.active_fn);
-    }
-
-    /// Where a freshly built editor parks its caret.
-    pub fn set_park(&mut self, park: Park) {
-        self.panel.set_park(park);
+        self.panel.sync_fields(&model.funcs);
     }
 
     /// The math field for the active function row, if any.
@@ -183,7 +178,7 @@ impl Graph2dScreen {
     /// Measure the formulas and lay the screen out for this frame, then
     /// advance the eased zoom. Call once per draw, before painting.
     pub fn prepare(&mut self, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, area: Rect) {
-        self.panel.fit(&model.funcs, model.active_fn, tr, theme);
+        self.panel.fit(&model.funcs, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
         // Advance the smooth-zoom ease one frame toward the model target.
@@ -226,9 +221,14 @@ impl Graph2dScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
+        focused: bool,
     ) {
-        self.panel
-            .draw(scene, t, tr, theme, &model.funcs, model.active_fn);
+        let formulas = Formulas {
+            rows: &model.funcs,
+            active: model.active_fn,
+            focused,
+        };
+        self.panel.draw(scene, t, tr, theme, formulas);
     }
 
     /// The plot canvas: grid, curves and the trace crosshair (if any).
