@@ -1,0 +1,200 @@
+//! Typography ratchet: the font sizes, size constants and pixel-size text
+//! APIs that a `TextRole` should own.
+//!
+//! Apps say what text *is* (`Title`, `Body`, `Caption`, ...) and the theme
+//! decides its size, weight and leading, so one text scale changes every
+//! screen at once. Every literal size, every size constant and every call
+//! into the pixel-size measuring and drawing API is a place where that chain
+//! breaks. They are counted per file in widget, chrome, shell and app
+//! production code (`tests/baselines/typography/<unit>.txt`, see
+//! `support::ratchet`) and may only fall.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::path::Path;
+
+use regex::Captures;
+
+use crate::support::ratchet::{Pattern, Ratchet};
+
+/// The type system's own definitions and the text engine behind it.
+fn is_type_engine(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    s.ends_with("/tokens/typography.rs")
+        || s.contains("/text_render/")
+        || name.starts_with("text_render")
+        || name == "text_metrics.rs"
+}
+
+/// A size constant whose name says it is a content size in pixels
+/// (`READING_CONTENT_PX`) belongs to a document engine, not to chrome.
+fn not_a_content_size(c: &Captures<'_>) -> bool {
+    !c[1].contains("CONTENT_PX")
+}
+
+pub fn typography_ratchet() -> Ratchet {
+    Ratchet {
+        name: "typography",
+        roots: &[
+            "crates/sdk/ui-core/src/widget",
+            "crates/sdk/ui-core/src/chrome",
+            "crates/session/shell/src",
+            "apps/*/src",
+        ],
+        patterns: vec![
+            Pattern::new(
+                "literal_font_size",
+                r"(?:TextStyle::new|\.with_(?:scaled_|fixed_)?size|\.text_size|\.with_font_size|\.set_font_size)\(\s*\d+(?:\.\d+)?(?:_f32)?\s*\)",
+                "literal font size — give the text a TextRole",
+            ),
+            Pattern::new(
+                "legacy_size_api",
+                r"\.(?:draw_text|draw_text_weighted|measure|measure_weighted|measure_styled|elide_to_width|elide_to_width_weighted)\(",
+                "pixel-size text API — measure, draw and elide through the role-based text \
+                 API, or compose a Text widget",
+            ),
+            Pattern::new(
+                "font_size_const",
+                r"^\s*(?:pub(?:\([a-z]+\))?\s+)?const\s+([A-Z0-9_]*(?:FONT|TEXT|SIZE|TITLE|LABEL|CAPTION|HEADING)[A-Z0-9_]*)\s*:\s*f32\s*=\s*\d",
+                "named font size — delete the constant and give the text a TextRole",
+            )
+            .keep(not_a_content_size),
+            Pattern::new(
+                "type_step_arithmetic",
+                r"typography\.scale\.\w+\s*[-+*/]",
+                "arithmetic on a type step invents a size between roles — pick the role that fits",
+            ),
+            Pattern::new(
+                "raw_type_step",
+                r"typography\.scale\.|TypeScale::default\(\)",
+                "raw type-scale step — name the TextRole instead of a size",
+            ),
+            Pattern::new(
+                "renderer_scale_helper",
+                r"renderer_input_style|renderer_type_size",
+                "renderer-scale helper — a role is scaled once by the theme; do not scale it again",
+            ),
+        ],
+        exempt: is_type_engine,
+        advice: "Give text a TextRole (Display, LargeTitle, Title, Heading, Subheading, Body, \
+                 Label, Caption, Reading, Code) with .strong() / .numeric() / .italic() \
+                 modifiers; the theme owns size, weight and leading.",
+    }
+}
+
+/// Every key counts the shapes it names and nothing else, so a regex edit
+/// that stops matching fails here instead of passing an empty audit.
+#[test]
+fn typography_patterns_match_exactly_the_shapes_they_name() {
+    let ratchet = typography_ratchet();
+    let cases: [(&str, &[&str], &[&str]); 6] = [
+        (
+            "literal_font_size",
+            &[
+                "MathField::new(\"\").with_size(20.0)",
+                "TextStyle::new(13.0)",
+                "label.with_scaled_size(11.5)",
+                "t.with_fixed_size(12)",
+                "input.text_size(14.0_f32)",
+                "Text::new(s).with_font_size( 15.0 )",
+                "editor.set_font_size(16.0)",
+            ],
+            &[
+                "Container::with_size(10.0, 20.0)",
+                "TextStyle::content(px)",
+                "Text::new(s).with_size(size)",
+                "TextStyle::role(TextRole::Body)",
+            ],
+        ),
+        (
+            "legacy_size_api",
+            &[
+                "tr.draw_text(scene, \"x\", 13.0, ink, p)",
+                "tr.draw_text_weighted(scene, s, 12.0, w, ink, p)",
+                "let (w, h) = tr.measure(\"x\", 12.0, None);",
+                "tr.measure_weighted(s, 11.0, None, TextWeight::Bold)",
+                "tr.measure_styled(s, &style)",
+                "tr.elide_to_width(s, 12.0, w)",
+                "tr.elide_to_width_weighted(s, 12.0, w, wt)",
+            ],
+            &[
+                "tr.measure_role(s, TextRole::Body)",
+                "layout.measured_size()",
+                "draw_text_role(scene, s)",
+            ],
+        ),
+        (
+            "font_size_const",
+            &[
+                "const TITLE_FONT: f32 = 15.0;",
+                "pub const LABEL_SIZE: f32 = 12.0;",
+                "pub(crate) const CAPTION_TEXT: f32 = 11.5;",
+                "    const HEADING: f32 = 18.0;",
+            ],
+            &[
+                "const READING_CONTENT_PX: f32 = 18.0;",
+                "const TITLE_FONT: f64 = 15.0;",
+                "const PAD: f32 = 12.0;",
+                "const LABEL_SIZE: f32 = theme_size();",
+                "let title_size: f32 = 12.0;",
+            ],
+        ),
+        (
+            "type_step_arithmetic",
+            &[
+                "theme.tokens.typography.scale.sm - 1.0",
+                "t.typography.scale.base * 1.2",
+                "typography.scale.xs/2.0",
+            ],
+            &["theme.tokens.typography.scale.sm", "typography.scale.lg)"],
+        ),
+        (
+            "raw_type_step",
+            &["theme.tokens.typography.scale.sm", "TypeScale::default()"],
+            &["TextRole::Caption", "TypeScale::for_base(b)"],
+        ),
+        (
+            "renderer_scale_helper",
+            &[
+                "let style = renderer_input_style(tr, theme);",
+                "renderer_type_size(tr, 14.0)",
+            ],
+            &["renderer_scale(tr)"],
+        ),
+    ];
+    for (key, hits, misses) in cases {
+        let pattern = ratchet.pattern(key);
+        for line in hits {
+            assert!(pattern.hits(line) > 0, "{key} must count {line:?}");
+        }
+        for line in misses {
+            assert_eq!(pattern.hits(line), 0, "{key} must not count {line:?}");
+        }
+    }
+    let exempt = ratchet.exempt;
+    for path in [
+        "crates/sdk/ui-core/src/tokens/typography.rs",
+        "crates/sdk/ui-core/src/text_render.rs",
+        "crates/sdk/ui-core/src/text_render/shaping.rs",
+        "crates/sdk/ui-core/src/text_render_cache.rs",
+        "crates/sdk/ui-core/src/text_metrics.rs",
+    ] {
+        assert!(exempt(Path::new(path)), "{path} is the type engine");
+    }
+    assert!(!exempt(Path::new("apps/mail/src/app.rs")));
+}
+
+/// Literal sizes, size constants and pixel-size text calls may not grow.
+#[test]
+fn typography_literals_do_not_grow() {
+    typography_ratchet().check();
+}
