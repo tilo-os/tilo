@@ -12,9 +12,12 @@ published actions. This script only sets up and tears down what is around it:
   mcp APP     the MCP endpoint for that session on stdio: what an agent
               (`.cursor/mcp.json`, Claude Code, a model harness) runs.
   status APP  whether the session is up, and its paths.
+  usage APP   what each MCP connection of the session cost: calls, bytes
+              and estimated tokens of what the agent read, time (see
+              usage.py for how tokens are estimated).
   report APP  what the agent made and how, from the app's own views (its
               `history`, `inspect` and `look` actions, where it publishes
-              them), written to target/agent-runs/APP-TIME.
+              them), and what it cost, written to target/agent-runs/APP-TIME.
   stop APP    stop the session and remove its runtime directory.
 
 Everything lives under target/agent-loop/APP (state, logs) and a private
@@ -34,7 +37,11 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import usage as cost  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TARGET = REPO / "target"
@@ -295,12 +302,100 @@ def mcp(args) -> int:
     if not session.state_file.exists():
         sys.exit(f"no {session.name} session; start one: {sys.argv[0]} start apps/{session.name}")
     env = session.env()
-    os.execve(
-        str(RUNTIME_HOST),
-        [str(RUNTIME_HOST), "--profile", str(session.profile), "--connect"],
-        env,
-    )
-    return 1
+    command = [str(RUNTIME_HOST), "--profile", str(session.profile), "--connect"]
+    if args.no_usage:
+        os.execve(str(RUNTIME_HOST), command, env)
+    return relay(command, env, usage_dir(session) / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl")
+
+
+def usage_dir(session: Session) -> pathlib.Path:
+    return session.root / "logs" / "usage"
+
+
+def relay(command: list, env: dict, log_path: pathlib.Path) -> int:
+    """The endpoint on stdio, unchanged, with one line per answered request
+    appended to `log_path`: what the agent read and how long it waited."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    child = subprocess.Popen(command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    asked = {}
+    lock = threading.Lock()
+
+    def forward_requests() -> None:
+        assert child.stdin is not None
+        for line in sys.stdin.buffer:
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                message = None
+            if isinstance(message, dict) and "id" in message and "method" in message:
+                params = message.get("params") or {}
+                with lock:
+                    asked[json.dumps(message["id"])] = (message["method"], params, time.time())
+            try:
+                child.stdin.write(line)
+                child.stdin.flush()
+            except BrokenPipeError:
+                break
+        try:
+            child.stdin.close()
+        except BrokenPipeError:
+            pass
+
+    threading.Thread(target=forward_requests, daemon=True).start()
+    assert child.stdout is not None
+    with open(log_path, "a") as log:
+        for line in child.stdout:
+            log_answer(log, line, asked, lock)
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+    return child.wait()
+
+
+def log_answer(log, line: bytes, asked: dict, lock: threading.Lock) -> None:
+    """Log one answer before the client reads it: a client that stops
+    right after its last answer stops the relay too."""
+    try:
+        message = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    with lock:
+        request = asked.pop(json.dumps(message.get("id")), None) if isinstance(message, dict) else None
+    if request is None:
+        return
+    method, params, started = request
+    record = {"method": method, "start": round(started, 3), "ms": round((time.time() - started) * 1000, 1)}
+    if method == "tools/call":
+        tool = params.get("name", "")
+        record["tool"] = tool
+        record["what"], record["actions"] = cost.what(tool, params.get("arguments") or {})
+    record.update(cost.measure(message.get("result", message.get("error", {}))))
+    record["wire_bytes"] = len(line)
+    log.write(json.dumps(record) + "\n")
+    log.flush()
+
+
+def usage_logs(session: Session) -> list:
+    return sorted(usage_dir(session).glob("*.jsonl"))
+
+
+def usage(args) -> int:
+    """Each MCP connection's cost, newest last; --last 1 is the latest."""
+    session = Session(app_name(args.app))
+    logs = usage_logs(session)[-args.last:]
+    if not logs:
+        sys.exit(f"no MCP connection of the {session.name} session is logged yet")
+    for path in logs:
+        records = cost.read_log(path)
+        summary = cost.summarise(records)
+        if args.json:
+            print(json.dumps({"connection": path.stem, **summary}))
+            continue
+        print(f"{path.stem}: {cost.format_summary(summary)}")
+        if args.calls:
+            for record in records:
+                images = " ".join(f"{i['width']}x{i['height']} {i['mime']} {i['bytes']:,}B" for i in record.get("images", []))
+                print(f"    {record.get('what', record['method']):<40} {record['text_bytes']:>8,}B text  ~{record['tokens']:>6,} tok  {images}")
+    return 0
 
 
 class McpClient:
@@ -365,6 +460,9 @@ def report(args) -> int:
     session = Session(app_name(args.app))
     if not session.state_file.exists():
         sys.exit(f"no {session.name} session is running")
+    connections = [
+        {"connection": path.stem, **cost.summarise(cost.read_log(path))} for path in usage_logs(session)
+    ]
     client = McpClient(session)
     apps, _ = client.tool("tilo_list_apps", {})
     peers = [app["peer_id"] for app in apps.get("apps", [])]
@@ -398,7 +496,12 @@ def report(args) -> int:
                 (out / name).write_bytes(base64.b64decode(image["data"]))
                 written.append(name)
     client.close()
+    if connections:
+        (out / "usage.json").write_text(json.dumps(connections, indent=2))
+        written.append("usage.json")
     print(f"{out}")
+    for connection in connections:
+        print(f"  {connection['connection']}: {cost.format_summary(connection)}")
     for name in written:
         print(f"  {name}")
     return 0 if written else 1
@@ -415,12 +518,21 @@ def main() -> int:
     for name, run, text in (
         ("stop", stop, "stop the session"),
         ("status", status, "report the session"),
-        ("mcp", mcp, "the MCP endpoint on stdio"),
-        ("report", report, "record history, inspection and a final look"),
+        ("report", report, "record history, inspection, a final look and the session's cost"),
     ):
         command = commands.add_parser(name, help=text)
         command.add_argument("app", help="the app name or directory")
         command.set_defaults(run=run)
+    endpoint = commands.add_parser("mcp", help="the MCP endpoint on stdio")
+    endpoint.add_argument("app", help="the app name or directory")
+    endpoint.add_argument("--no-usage", action="store_true", help="do not log what each call cost")
+    endpoint.set_defaults(run=mcp)
+    spent = commands.add_parser("usage", help="what each MCP connection cost")
+    spent.add_argument("app", help="the app name or directory")
+    spent.add_argument("--last", type=int, default=1, help="how many connections, newest last")
+    spent.add_argument("--calls", action="store_true", help="list every call")
+    spent.add_argument("--json", action="store_true", help="one JSON summary per connection")
+    spent.set_defaults(run=usage)
     args = parser.parse_args()
     return args.run(args)
 

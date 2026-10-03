@@ -343,9 +343,10 @@ suites = [
 name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
-  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py",
+  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
+  "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
   "scripts/tests/test_demo_scripts.py",
   "scripts/tests/test_runtime_mcp_proof.py",

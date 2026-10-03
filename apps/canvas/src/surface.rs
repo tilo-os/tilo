@@ -454,7 +454,7 @@ impl CanvasSurface {
             |result: Result<(view_ops::Picture, Value), String>| -> Result<ActionOutput, String> {
                 let (picture, mut info) = result?;
                 let hash = tilo_content::ContentStore::for_app()
-                    .put(&picture.png)
+                    .put(&picture.bytes)
                     .map_err(|error| format!("the picture could not be stored: {error}"))?;
                 let address = tilo_actions::content_resource(&hash)
                     .ok_or_else(|| "the picture has no content address".to_owned())?;
