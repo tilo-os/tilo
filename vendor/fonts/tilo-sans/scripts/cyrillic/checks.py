@@ -90,6 +90,102 @@ def curve_problems(name, contours, max_tension=MAX_TENSION, check_x=True, slack=
     return out
 
 
+def stem_top_problems(name, contours, height, near=60, min_len=150):
+    """Vertical straight edges at least min_len long whose top ends within
+    `near` of `height` must end exactly on it: a stem that stops short of
+    the x-height (or cap height) is a construction slip, not a design."""
+    out = []
+    for ci, con in enumerate(contours):
+        n = len(con)
+        for i, p in enumerate(con):
+            q = con[(i + 1) % n]
+            if not (G.is_on(p) and q[2] == "line") or abs(p[0] - q[0]) > 0.5 or abs(p[1] - q[1]) < min_len:
+                continue
+            top = max(p[1], q[1])
+            # a stem's top is a flat cut: the next or previous edge runs level
+            # for a good part of a stem (M's notch edges do not)
+            j = (i + 1) % n if q[1] > p[1] else i
+            k = (j + 1) % n if q[1] > p[1] else (i - 1) % n
+            a, b = con[j], con[k]
+            flat = G.is_on(a) and G.is_on(b) and abs(a[1] - b[1]) < 0.5 and abs(a[0] - b[0]) >= 30
+            if flat and abs(top - height) <= near and abs(top - height) > 0.5:
+                out.append(f"{name}: contour {ci}: stem edge at x={p[0]:.0f} ends at y={top:.0f}, not {height}")
+    return out
+
+
+def twisted_area(con):
+    """Area where a contour winds against its own direction: where its
+    inner side has crossed its outer one. Instrument's own outlines overlap
+    themselves on purpose (a diagonal running on into a stem: winding 2);
+    a twist (winding -1 inside a counter-clockwise contour) never is.
+    With A the signed area, U the nonzero and E the even-odd area of the
+    contour, the twisted area is (2U - E - |A|) / 2."""
+    import pathops
+    from fontTools.pens.areaPen import AreaPen
+
+    def draw(pen):
+        pts = [((p[0], p[1]), p[2]) for p in con]
+        start = next(i for i, (_, t) in enumerate(pts) if t is not None)
+        pts = pts[start + 1:] + pts[:start + 1]
+        pen.moveTo(pts[-1][0])
+        buf = []
+        for xy, t in pts:
+            if t is None:
+                buf.append(xy)
+            elif t == "line":
+                pen.lineTo(xy)
+            else:
+                pen.curveTo(*buf, xy)
+                buf = []
+        pen.closePath()
+
+    ap = AreaPen()
+    draw(ap)
+    path = pathops.Path()
+    draw(path.getPen())
+    U = pathops.simplify(path, fix_winding=False).area
+    path.fillType = pathops.FillType.EVEN_ODD
+    E = pathops.simplify(path, fix_winding=False).area
+    return (2 * U - E - abs(ap.value)) / 2
+
+
+def self_intersection_problems(name, contours, limit=40.0):
+    """Contours whose inner and outer sides cross (see twisted_area)."""
+    out = []
+    for ci, con in enumerate(contours):
+        t = twisted_area(con)
+        if t > limit:
+            out.append(f"{name}: contour {ci} crosses itself ({t:.0f} units² wound backwards)")
+    return out
+
+
+def backward_extreme_problems(name, contours, slant, tol=0.05):
+    """Italic only, on outlines slanted back upright: the tangent at every
+    point on a curve's side (a smooth on-curve point between two handles,
+    tangent within about 27 degrees of vertical) must be vertical there (the
+    slanted design leans with the italic) or lean forward (Instrument's
+    italic draws its extremes vertical in the slanted design, which leans
+    them back by the slant here); a side leaning the other way belongs to a
+    mirrored italic curve whose stress runs backwards."""
+    out = []
+    for ci, con in enumerate(contours):
+        n = len(con)
+        for i, p in enumerate(con):
+            a, b = con[i - 1], con[(i + 1) % n]
+            if not G.is_on(p) or G.is_on(a) or G.is_on(b):
+                continue
+            dy = b[1] - a[1]
+            if abs(dy) < 1:
+                continue
+            k = (b[0] - a[0]) / dy
+            if abs(k) > 0.5:  # not a side: a top, bottom or diagonal curve
+                continue
+            if k > tol:
+                out.append(f"{name}: contour {ci}: side extreme at ({p[0]:.0f},{p[1]:.0f}) leans {k:+.2f} "
+                           f"(upright 0, italic {-slant:+.2f})")
+    return out
+
+
 def ink_runs(contours, y=None, x=None):
     """Filled intervals along a scanline (nonzero winding)."""
     hits = []
@@ -141,4 +237,4 @@ def has_ink(contours, x0, y0, x1, y1, step=4):
     return False
 
 
-__all__ = ["curve_problems", "counter_problems", "gaps", "has_ink", "ink_runs", "tension", "xcuts", "ycuts"]
+__all__ = ["curve_problems", "counter_problems", "self_intersection_problems", "backward_extreme_problems", "stem_top_problems", "gaps", "has_ink", "ink_runs", "tension", "xcuts", "ycuts"]

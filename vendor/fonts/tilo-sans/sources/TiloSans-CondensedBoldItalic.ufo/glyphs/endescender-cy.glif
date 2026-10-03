@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="endescender-cy" format="2">
-  <advance width="508"/>
+  <advance width="473"/>
   <unicode hex="04A3"/>
   <anchor x="174" y="0" name="bottom"/>
   <anchor x="292" y="510" name="top"/>
@@ -25,15 +25,15 @@
     </contour>
     <contour>
       <point x="294" y="0" type="line"/>
-      <point x="433" y="0" type="line"/>
-      <point x="457" y="108" type="line"/>
+      <point x="398" y="0" type="line"/>
+      <point x="422" y="108" type="line"/>
       <point x="319" y="108" type="line"/>
     </contour>
     <contour>
-      <point x="268" y="-160" type="line"/>
-      <point x="396" y="-160" type="line"/>
-      <point x="457" y="108" type="line"/>
-      <point x="330" y="108" type="line"/>
+      <point x="233" y="-160" type="line"/>
+      <point x="361" y="-160" type="line"/>
+      <point x="422" y="108" type="line"/>
+      <point x="295" y="108" type="line"/>
     </contour>
   </outline>
 </glyph>

@@ -243,64 +243,6 @@ def _line_meet(p, d, q, e):
     return p[0] + t * d[0], p[1] + t * d[1]
 
 
-def retilt(contours, slope_from, slope_to, tol=0.12):
-    """Turn the tangents at side extremes from dx/dy = slope_from to
-    slope_to, keeping each curve's tension (handle length over the distance
-    to where its tangents meet). Mirroring an italic outline flips the lean
-    of its side extremes; retilt(mirrored, s, -s) puts it back."""
-    k = slope_to - slope_from
-    out = []
-    for con in contours:
-        n = len(con)
-        # on-curve points whose tangent (through both neighbours) leans slope_from
-        turn = set()
-        for i, p in enumerate(con):
-            if not is_on(p):
-                continue
-            a, b = con[i - 1], con[(i + 1) % n]
-            if is_on(a) and is_on(b):
-                continue
-            dx, dy = b[0] - a[0], b[1] - a[1]
-            if is_on(a):
-                dx, dy = b[0] - p[0], b[1] - p[1]
-            elif is_on(b):
-                dx, dy = p[0] - a[0], p[1] - a[1]
-            if abs(dy) > 1e-6 and abs(dx / dy - slope_from) < tol:
-                turn.add(i)
-        nc = [p[:] for p in con]
-        on = [i for i, p in enumerate(con) if is_on(p)]
-        for j, i in enumerate(on):
-            prev = on[j - 1]
-            if (i - prev) % n != 3 or not ({prev, i} & turn):
-                continue
-            h1, h2 = (prev + 1) % n, (prev + 2) % n
-            P0, P3 = con[prev], con[i]
-            d0 = (con[h1][0] - P0[0], con[h1][1] - P0[1])
-            d1 = (con[h2][0] - P3[0], con[h2][1] - P3[1])
-            n0 = (d0[0] + k * d0[1], d0[1]) if prev in turn else d0
-            n1 = (d1[0] + k * d1[1], d1[1]) if i in turn else d1
-            I0 = _line_meet(P0, d0, P3, d1)
-            I1 = _line_meet(P0, n0, P3, n1)
-            ok = I0 is not None and I1 is not None
-            if ok:
-                t0 = math.hypot(*d0) / max(math.hypot(I0[0] - P0[0], I0[1] - P0[1]), 1e-9)
-                t1 = math.hypot(*d1) / max(math.hypot(I0[0] - P3[0], I0[1] - P3[1]), 1e-9)
-                e0 = (I1[0] - P0[0], I1[1] - P0[1])
-                e1 = (I1[0] - P3[0], I1[1] - P3[1])
-                # the new meeting point must lie ahead of both handles
-                ok = e0[0] * n0[0] + e0[1] * n0[1] > 0 and e1[0] * n1[0] + e1[1] * n1[1] > 0 and t0 < 1.5 and t1 < 1.5
-            if ok:
-                nc[h1][0], nc[h1][1] = P0[0] + t0 * e0[0], P0[1] + t0 * e0[1]
-                nc[h2][0], nc[h2][1] = P3[0] + t1 * e1[0], P3[1] + t1 * e1[1]
-            else:  # S-curve or parallel tangents: turn the handles, keep their lengths
-                for hi, Pt, d, dn in ((h1, P0, d0, n0), (h2, P3, d1, n1)):
-                    L, Ln = math.hypot(*d), math.hypot(*dn)
-                    if Ln:
-                        nc[hi][0], nc[hi][1] = Pt[0] + dn[0] / Ln * L, Pt[1] + dn[1] / Ln * L
-        out.append(nc)
-    return out
-
-
 def cap_tension(contours, limit):
     """Shorten the handles of curves tighter than `limit` (zone maps can
     stretch a handle past its curve's proportions) to exactly `limit`."""
@@ -331,9 +273,69 @@ def cap_tension(contours, limit):
     return out
 
 
-def mirror_x_italic(contours, axis, italic):
-    """mirror_x for outlines in upright-equivalent space: in the italic the
-    side extremes are turned back to Instrument's lean (vertical once
-    slanted)."""
-    out = mirror_x(contours, axis)
-    return retilt(out, SLANT, -SLANT) if italic else out
+def split_cubic(seg, t):
+    """de Casteljau: the two halves of a cubic (four [x, y] points) at t."""
+    p0, p1, p2, p3 = [(p[0], p[1]) for p in seg]
+
+    def lerp(a, b):
+        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+    a, b, c = lerp(p0, p1), lerp(p1, p2), lerp(p2, p3)
+    d, e = lerp(a, b), lerp(b, c)
+    f = lerp(d, e)
+    return (p0, a, d, f), (f, e, c, p3)
+
+
+def cubic_t_at_y(seg, y, steps=60):
+    """Parameter where a cubic monotonic in y crosses height y."""
+    lo, hi = 0.0, 1.0
+    y0 = _cubic(seg, 0)[1]
+    rising = _cubic(seg, 1)[1] > y0
+    for _ in range(steps):
+        mid = (lo + hi) / 2
+        if (_cubic(seg, mid)[1] < y) == rising:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def trim_terminals(con, cuts):
+    """Move the horizontal terminal cuts of a C- or c-shaped contour to new
+    heights by shortening the curves on either side of each cut along their
+    own path, so the arc keeps its exact shape and only gets shorter.
+    `cuts` maps a cut's current height to its new height."""
+    n = len(con)
+    nc = [p[:] for p in con]
+    for i, p in enumerate(con):
+        q = con[(i + 1) % n]
+        if not (is_on(p) and q[2] == "line" and abs(p[1] - q[1]) < 0.5):
+            continue
+        y_new = next((v for k, v in cuts.items() if abs(k - p[1]) < 0.5), None)
+        if y_new is None or abs(y_new - p[1]) < 0.01:
+            continue
+        # curve ending at p: points i-3..i ; curve starting at q: i+1..i+4
+        before = [(i - 3 + k) % n for k in range(4)]
+        after = [(i + 1 + k) % n for k in range(4)]
+        assert all(is_on(con[j]) for j in (before[0], after[3])), "terminal not between two cubics"
+        seg = [con[j] for j in before]
+        keep = split_cubic(seg, cubic_t_at_y(seg, y_new))[0]
+        for j, pt in zip(before, keep):
+            nc[j][0], nc[j][1] = pt
+        seg = [con[j] for j in after]
+        keep = split_cubic(seg, cubic_t_at_y(seg, y_new))[1]
+        for j, pt in zip(after, keep):
+            nc[j][0], nc[j][1] = pt
+    return nc
+
+
+def terminal_cuts(con):
+    """Heights of a contour's horizontal terminal cuts (line segments
+    between two curves)."""
+    n = len(con)
+    out = []
+    for i, p in enumerate(con):
+        q = con[(i + 1) % n]
+        if is_on(p) and q[2] == "line" and abs(p[1] - q[1]) < 0.5 and not is_on(con[i - 1]) and not is_on(con[(i + 2) % n]):
+            out.append(p[1])
+    return sorted(out)

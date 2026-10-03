@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="shcha-cy.loclBGR" format="2">
-  <advance width="726"/>
+  <advance width="691"/>
   <anchor x="340" y="0" name="bottom"/>
   <anchor x="340" y="510" name="top"/>
   <outline>
@@ -50,15 +50,15 @@
     </contour>
     <contour>
       <point x="570" y="0" type="line"/>
-      <point x="708" y="0" type="line"/>
-      <point x="708" y="108" type="line"/>
+      <point x="673" y="0" type="line"/>
+      <point x="673" y="108" type="line"/>
       <point x="570" y="108" type="line"/>
     </contour>
     <contour>
-      <point x="581" y="-160" type="line"/>
-      <point x="708" y="-160" type="line"/>
-      <point x="708" y="108" type="line"/>
-      <point x="581" y="108" type="line"/>
+      <point x="546" y="-160" type="line"/>
+      <point x="673" y="-160" type="line"/>
+      <point x="673" y="108" type="line"/>
+      <point x="546" y="108" type="line"/>
     </contour>
   </outline>
 </glyph>

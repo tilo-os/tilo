@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="Tse-cy" format="2">
-  <advance width="555"/>
+  <advance width="519"/>
   <unicode hex="0426"/>
   <anchor x="257" y="0" name="bottom"/>
   <anchor x="257" y="720" name="top"/>
@@ -19,15 +19,15 @@
     </contour>
     <contour>
       <point x="121" y="0" type="line"/>
-      <point x="535" y="0" type="line"/>
-      <point x="535" y="110" type="line"/>
+      <point x="499" y="0" type="line"/>
+      <point x="499" y="110" type="line"/>
       <point x="121" y="110" type="line"/>
     </contour>
     <contour>
-      <point x="404" y="-160" type="line"/>
-      <point x="535" y="-160" type="line"/>
-      <point x="535" y="110" type="line"/>
-      <point x="404" y="110" type="line"/>
+      <point x="368" y="-160" type="line"/>
+      <point x="499" y="-160" type="line"/>
+      <point x="499" y="110" type="line"/>
+      <point x="368" y="110" type="line"/>
     </contour>
   </outline>
 </glyph>

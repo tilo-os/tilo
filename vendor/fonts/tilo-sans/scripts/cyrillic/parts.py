@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import geom as G
 from checks import tension
-from ctx import pmap
 
 
 def _tension(con, idx):
@@ -99,24 +98,64 @@ def bowl_for_counter(c, stem_in, counter, Y0, Y1, t_top, t_bot, side):
     return p_bowl(c, x_ov, stem_in + counter + side, Y0, Y1, t_top, t_bot, side)
 
 
-def j_tail(c, x_left, V, y_top, reach, depth=1.0, base=None):
-    """A vertical stem from y_top down whose foot is J's tail turned to the
-    left: `reach` is how far the terminal reaches left of the stem; `depth`
-    scales the height of the curve. With `base`, the overshoot is clipped to
-    the baseline and the terminal is kept under y=base (Д's leg running into
-    its base bar)."""
+def remap(con, on):
+    """Move a contour's on-curve points to new positions (`on`: index ->
+    (x, y)); each handle keeps its place relative to the box of its own
+    segment, so every curve keeps its tangent directions and tension
+    however much the segments are stretched, independently of each other."""
+    n = len(con)
+    out = [p[:] for p in con]
+    for i, (x, y) in on.items():
+        out[i][0], out[i][1] = x, y
+    idx = [i for i, p in enumerate(con) if G.is_on(p)]
+    for k, i in enumerate(idx):
+        j = idx[(k + 1) % len(idx)]
+        span = (j - i) % n
+        if span < 2:
+            continue
+        a, b = con[i], con[j]
+        A, B = out[i], out[j]
+        for h in range(1, span):
+            hi = (i + h) % n
+            q = con[hi]
+            u = (q[0] - a[0]) / (b[0] - a[0]) if abs(b[0] - a[0]) > 1e-6 else 0.0
+            v = (q[1] - a[1]) / (b[1] - a[1]) if abs(b[1] - a[1]) > 1e-6 else 0.0
+            out[hi][0] = A[0] + u * (B[0] - A[0]) if abs(b[0] - a[0]) > 1e-6 else A[0] + (q[0] - a[0])
+            out[hi][1] = A[1] + v * (B[1] - A[1]) if abs(b[1] - a[1]) > 1e-6 else A[1] + (q[1] - a[1])
+    return out
+
+
+def foot_leg(c, x_left, V, y_top, reach):
+    """A vertical stem from y_top down whose foot turns left as J's tail
+    does, drawn at a smaller size: the terminal (J's vertical cut) ends
+    `reach` left of the stem. J's proportions set the rest: the bottom
+    stroke's thickness relative to the stem, the outer turn's height to
+    width, the rise of the terminal, and each curve's handles (see remap),
+    so the foot is a short J tail with J's modulation, not a squeezed one."""
     J = c.g("J")[0]
     assert len(J) == 16, "J topology changed"
-    pts = [(p[0], p[1]) for p in J]
-    s_in, s_out = pts[5][0], pts[4][0]  # J's stem: inner (left) and outer edge
-    term = pts[12][0]
-    xf = pmap([(term, x_left - reach), (s_in, x_left), (s_out, x_left + V)])
-    y_bot, y_in = pts[0][1], pts[9][1]  # overshoot bottom, top of the bottom stroke
-    y_curve = max(pts[3][1], pts[6][1])
-    ypairs = [(y_bot, y_bot), (y_in, y_in), (y_curve, y_in + (y_curve - y_in) * depth), (pts[4][1], y_top)]
-    if base is not None:
-        t_top = pts[12][1]
-        ypairs = [(y_bot, 0), (y_in, base - (t_top - y_in) - 2), (t_top, base - 2),
-                  (y_curve, t_top + (y_curve - t_top) * depth), (pts[4][1], y_top)]
-    yf = pmap(ypairs)
-    return [[xf(p[0]), yf(p[1]), p[2], p[3]] for p in J]
+    q = [(p[0], p[1]) for p in J]
+    s_out, s_in = q[4][0], q[5][0]
+    Vj = s_out - s_in
+    y_b, y_i = q[0][1], q[9][1]  # outer bottom (overshoot), inner bottom
+    tb = (y_i - y_b) * V / Vj  # bottom stroke thickness, as J's relative to its stem
+    tb = min(tb, y_i - y_b + 0.5 * (V - Vj))
+    # the inner turn takes 0.45 of the reach, the rest is a short run to the cut
+    xi = x_left - 0.45 * reach
+    term = x_left - reach
+    k_out = (q[3][1] - y_b) / (s_out - q[0][0])  # outer turn: height / width
+    k_in = (q[6][1] - y_i) / (s_in - q[9][0])
+    rise = (q[12][1] - y_i) / (q[9][0] - q[12][0])  # the tail's lift towards the cut
+    lift = (q[13][1] - y_b) / (q[9][0] - q[12][0])
+    x_r = x_left + V
+    on = {
+        0: (xi, y_b),
+        3: (x_r, y_b + k_out * (x_r - xi)),
+        4: (x_r, y_top),
+        5: (x_left, y_top),
+        6: (x_left, y_b + tb + max(k_in * (x_left - xi), 0.35 * tb)),
+        9: (xi, y_b + tb),
+        12: (term, y_b + tb + rise * (xi - term)),
+        13: (term, y_b + lift * (xi - term)),
+    }
+    return remap(J, on)

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["ufoLib2", "fonttools[ufo]>=4.60"]
+# dependencies = ["ufoLib2", "fonttools[ufo]>=4.60", "skia-pathops"]
 # ///
 """Construct the Cyrillic glyphs of Tilo Sans from Instrument Sans' own
 drawings, in all eight masters.
@@ -22,6 +22,7 @@ afterwards should either be refined here or no longer be passed to it.
 from __future__ import annotations
 
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -32,8 +33,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import geom as G  # noqa: E402
 import kern  # noqa: E402
 import checks  # noqa: E402
-from ctx import HEAVY, ITALIC, LIGHT, UPRIGHT, Ctx, Glyph, pmap, xcuts, ycuts, zmap  # noqa: E402
-from parts import bowl_for_counter, j_tail, p_bowl, p_params  # noqa: E402
+from ctx import ITALIC, UPRIGHT, Ctx, Glyph, pmap, xcuts, ycuts, zmap  # noqa: E402
+from parts import bowl_for_counter, foot_leg, p_bowl, p_params  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ROOT / "sources"
@@ -59,6 +60,13 @@ def zm(contours, xpairs=None, ypairs=None):
     """A zone map whose curves are kept within Instrument's tension: a
     piecewise map can stretch a handle further than its curve."""
     return G.cap_tension(zmap(contours, xpairs, ypairs), 0.78)
+
+
+def light_V(c, lc=True):
+    """The stem of this master's light (400) master: overhangs and gaps
+    measured in it keep their size as the weight grows, as Instrument's
+    sidebearings and joins do, instead of widening the letter."""
+    return c.light.lc["V"] if lc else c.light.cap["V"]
 
 
 def anchors(x, top, bottom_x=None):
@@ -161,11 +169,31 @@ def Ge(c):
 
 @glyph("Geupturn-cy", 0x0490)
 def Geupturn(c):
-    g = Ge(c)
-    m = c.cap
-    xe = G.bounds([g.contours[1]])[2]
-    up = G.rect(xe - m["V"] * 0.96, 720 - m["arm"] / 2, xe, UPTURN)
-    g.contours.append(up)
+    return with_upturn(c, Ge(c), c.cap, 720, UPTURN)
+
+
+UPTURN_WEIGHT = 0.85  # Ґ ґ: the upturn's width, in stems
+UPTURN_FREE = 0.7  # the arm runs free of the stem for at least this many stems
+
+
+def with_upturn(c, g, mt, height, top):
+    """Ґ ґ: Г with an upturn at the end of its arm, a little lighter than
+    the stem. The arm is lengthened where needed so that it runs free
+    between stem and upturn for UPTURN_FREE stems in every master; without
+    that the bold upturn starts inside the stem and the letter reads as a
+    notched block."""
+    V = mt["V"]
+    stem, arm = g.contours[0], g.contours[1]
+    stem_r = G.bounds([stem])[2]
+    end = G.bounds([arm])[2]
+    up_w = UPTURN_WEIGHT * V
+    need = stem_r + UPTURN_FREE * V + up_w
+    if end < need:
+        arm = G.stretch([arm], "x", stem_r + 1, need - end)[0]
+        g.width += need - end
+        end = need
+    up = G.rect(end - up_w, height - mt["arm"] / 2, end, top)
+    g.contours = [stem, arm] + g.contours[2:] + [up]
     return g
 
 
@@ -173,7 +201,8 @@ def Geupturn(c):
 def Gestroke(c):
     g = Ge(c)
     m = c.cap
-    bar = G.rect(m["Lx0"] - 0.62 * m["V"], m["bar0"] - 20, m["Lx1"] + 1.75 * m["V"], m["bar1"] - 20)
+    VL = light_V(c, False)
+    bar = G.rect(m["Lx0"] - 0.62 * VL, m["bar0"] - 20, m["Lx1"] + 1.75 * VL, m["bar1"] - 20)
     cons = g.contours + [bar]
     cons, width, dx = place(cons, m["lsb"] * 0.42, c.w("F") - G.bounds(g.contours)[2])
     return Glyph(width, cons, {k: (x + dx, y) for k, (x, y) in g.anchors.items()})
@@ -254,9 +283,14 @@ def Yeru(c):
     return Glyph(b[2] + gap + m["V"] + m["lsb"], cons, anchors(centre(cons), 720))
 
 
-def mirrored(c, name):
-    w = c.w(name)
-    return G.mirror_x_italic(c.g(name), w / 2, c.italic), w
+def mirrored(c, name, roman=False):
+    """`name` mirrored about its advance's centre. In the italic, outlines
+    are mirrored upright (slanted back) and slanted again afterwards; with
+    `roman`, the upright master's drawing is mirrored instead, for curves
+    whose italic stress must not turn backwards."""
+    src = c.roman if roman else c
+    w = src.w(name)
+    return G.mirror_x(src.g(name), w / 2), w
 
 
 @glyph("Ii-cy", 0x0418)
@@ -267,40 +301,67 @@ def Ii(c):
 
 @glyph("Ya-cy", 0x042F)
 def Ya(c):
-    cons, w = mirrored(c, "R")
-    G.bounds(cons)
+    cons, w = mirrored(c, "R", roman=True)
     return Glyph(w, cons, anchors(centre(cons), 720, centre(cons)))
+
+
+def round_e(c, name, centre, bar_t, reverse, share):
+    """Э Є э є from C or c: the terminals shortened along their own curves
+    so both openings next to the bar stay at least 0.65 of the bar's
+    thickness, the bar inside the counter from the inner side to under the
+    terminals (`share` of the width from the open side, at least clear of
+    the tips). Reversed in the italic, the upright C or c is mirrored and
+    the whole slanted, so the stress follows the italic O's and not a
+    backward-leaning mirror of the italic C."""
+    src = c.roman if (reverse and c.italic) else c
+    con = src.g(name)
+    assert len(con) == 1, f"{name} topology changed"
+    con = con[0]
+    w = src.w(name)
+    lo, hi = G.terminal_cuts(con)
+    g = 0.65 * bar_t
+    new_hi = max(hi, centre + bar_t / 2 + g)
+    new_lo = min(lo, centre - bar_t / 2 - g)
+    con = G.trim_terminals(con, {hi: new_hi, lo: new_lo})
+    cons = [con]
+    if reverse:
+        cons = G.mirror_x(cons, w / 2)
+    # the terminal tips: the two ends of the upper cut
+    tips = sorted(p[0] for p in cons[0] if G.is_on(p) and abs(p[1] - new_hi) < 0.5)
+    inner = xcuts(cons, centre)
+    b = G.bounds(cons)
+    reach = share * (b[2] - b[0])  # how far the bar reaches into the counter
+    if reverse:
+        x0, x1 = max(b[0] + reach, tips[-1] + 0.2 * bar_t), inner[-2] + 10
+    else:
+        x0, x1 = inner[1] - 10, min(b[2] - reach, tips[0] - 0.2 * bar_t)
+    bar = G.rect(x0, centre - bar_t / 2, x1, centre + bar_t / 2)
+    return cons, bar, w
+
+
+def lc_bar(c):
+    """Thickness of e's crossbar."""
+    e = c.g("e")
+    ys = ycuts(e, c.w("e") * 0.5)
+    return ys[3] - ys[2]
 
 
 @glyph("Ereversed-cy", 0x042D)
 def Ereversed(c):
     m = c.cap
-    C = c.g("C")
-    w = c.w("C")
-    cons = G.mirror_x_italic(C, w / 2, c.italic)
+    cons, bar, w = round_e(c, "C", (m["bar0"] + m["bar1"]) / 2 - 15, m["bar1"] - m["bar0"], True, 0.33)
     narrow = 0.04 * w
-    cons = G.shift(scale_about(c, cons, 0.96, 1, w / 2, 360), -narrow / 2)
-    w -= narrow
-    b = G.bounds(cons)
-    inner = xcuts(cons, 360)
-    xin = inner[-2]  # inner edge of the right side
-    bar = G.rect(b[0] + 0.33 * (b[2] - b[0]), m["bar0"] - 15, xin + 10, m["bar1"] - 15)
-    return Glyph(w, cons + [bar], anchors(centre(cons), 720))
+    cons = G.shift(scale_about(c, cons + [bar], 0.96, 1, w / 2, 360), -narrow / 2)
+    return Glyph(w - narrow, cons, anchors(centre(cons), 720))
 
 
 @glyph("E-cy", 0x0404)
 def Eukr(c):
     m = c.cap
-    C = c.g("C")
-    w = c.w("C")
+    cons, bar, w = round_e(c, "C", (m["bar0"] + m["bar1"]) / 2 - 15, m["bar1"] - m["bar0"], False, 0.33)
     narrow = 0.04 * w
-    cons = G.shift(scale_about(c, C, 0.96, 1, w / 2, 360), -narrow / 2)
-    w -= narrow
-    b = G.bounds(cons)
-    inner = xcuts(cons, 360)
-    xin = inner[1]
-    bar = G.rect(xin - 10, m["bar0"] - 15, b[0] + 0.67 * (b[2] - b[0]), m["bar1"] - 15)
-    return Glyph(w, cons + [bar], anchors(centre(cons), 720))
+    cons = G.shift(scale_about(c, cons + [bar], 0.96, 1, w / 2, 360), -narrow / 2)
+    return Glyph(w - narrow, cons, anchors(centre(cons), 720))
 
 
 @glyph("Ze-cy", 0x0417)
@@ -312,42 +373,54 @@ def Ze(c):
     return Glyph(w + wider, cons, anchors(centre(cons), 720))
 
 
-def el_parts(c, height, V, counter, arm, reach, depth, x_term):
-    """Л: a vertical left leg whose foot is J's tail turned left (terminal at
-    x_term), a top bar and a right stem, `counter` apart."""
+def el_parts(c, height, V, counter, arm, reach, x_term):
+    """Л: a vertical left leg whose foot turns left as J's tail does
+    (terminal at x_term), a top bar and a right stem, `counter` apart."""
     x_left = x_term + reach
-    lg = j_tail(c, x_left, V, height, reach, depth)
+    lg = foot_leg(c, x_left, V, height, reach)
     stem_l = x_left + V + counter
     bar = G.rect(x_left + V / 2, height - arm, stem_l + V / 2, height)
     stem = G.rect(stem_l, 0, stem_l + V, height)
     return [lg, bar, stem], stem_l + V
 
 
-def el_foot(c, V):
-    """Reach and curve depth of Л's foot: short, about a stem."""
-    return 0.95 * V, 0.62
+def el_reach(V, V_light):
+    """How far Л's foot reaches left of its leg: about a stem in the light
+    masters, growing at a sixth of the stem's rate, so the bold letters
+    keep their width (the foot of a heavier J is no longer either)."""
+    return 0.9 * V_light + 0.15 * (V - V_light)
 
 
 @glyph("El-cy", 0x041B)
 def El(c):
     m = c.cap
     V = m["V"]
-    reach, depth = el_foot(c, V)
-    x_term = 0.32 * m["lsb"]
-    cons, xr = el_parts(c, 720, V, 0.9 * h_counter(c), m["arm"], reach, depth, x_term)
+    reach = el_reach(V, c.light.cap["V"])
+    cons, xr = el_parts(c, 720, V, el_counter(c) * h_counter(c), m["arm"], reach, 0.32 * m["lsb"])
     return Glyph(xr + m["lsb"], cons, anchors(centre(cons), 720))
 
 
-def de_parts(c, height, V, arm, lsb, counter, tail_w, ext):
-    """Д: a vertical left leg running into the base through J's curve, top
-    bar, right stem, base and two tails."""
-    xl = lsb
-    reach = 0.9 * V + tail_w * 0.5
-    x_left = xl + reach  # the leg's left edge; its foot ends inside the left tail
-    lg = j_tail(c, x_left, V, height, reach - tail_w * 0.4, 0.55, base=arm)
+def el_counter(c, share=0.86):
+    """Л л Љ љ: the counter as a share of H's or n's, a little narrower in
+    the bold masters, where the foot already takes room on the left."""
+    return share - 0.06 * c.wt
+DE_COUNTER, DE_OVERHANG = 0.82, 0.25  # Д: counter and base overhang as shares of H's counter
+DE_COUNTER_LC, DE_OVERHANG_LC = 0.85, 0.28  # д: the same, of n's counter
+
+
+def de_parts(c, height, V, arm, sb, counter, ov):
+    """Д: two vertical stems `counter` apart under a top bar, standing on a
+    base that runs `ov` past each of them and descends at both ends. The
+    left stem meets the base square, as Ц's stems do; counter and overhang
+    are shares of H's or n's counter, so the letter keeps H's or n's width
+    in every master."""
+    tail_w = 0.9 * V
+    xl = sb
+    x_left = xl + ov
+    lg = G.rect(x_left, 0, x_left + V, height)
     stem_l = x_left + V + counter
     stem_r = stem_l + V
-    xr = stem_r + ext
+    xr = stem_r + ov
     top = G.rect(x_left + V / 2, height - arm, stem_l + V / 2, height)
     stem = G.rect(stem_l, 0, stem_r, height)
     base = G.rect(xl, 0, xr, arm)
@@ -359,13 +432,16 @@ def de_parts(c, height, V, arm, lsb, counter, tail_w, ext):
 @glyph("De-cy", 0x0414)
 def De(c):
     m = c.cap
-    V = m["V"]
-    cons, xr = de_parts(c, 720, V, m["arm"], m["lsb"] * 0.36, 0.86 * h_counter(c), V * 0.9, V * 0.48)
-    return Glyph(xr + m["lsb"] * 0.36, cons, anchors(centre(cons), 720))
+    hc = h_counter(c)
+    sb = m["lsb"] * 0.36
+    cons, xr = de_parts(c, 720, m["V"], m["arm"], sb, DE_COUNTER * hc, DE_OVERHANG * hc)
+    return Glyph(xr + sb, cons, anchors(centre(cons), 720))
 
 
 def tail_right(xr_stem, V, arm, ext, tail_w, x_from):
-    """Base bar from x_from to past the right stem plus a descending tail."""
+    """Base bar from x_from to past the right stem plus a descending tail.
+    Callers give `ext` in the light master's stems (see light_V), so the
+    tail does not widen the letter faster than its stems do."""
     xr = xr_stem + ext
     return [G.rect(x_from, 0, xr, arm), G.rect(xr - tail_w, DESC, xr, arm)], xr
 
@@ -375,7 +451,7 @@ def Tse(c):
     m = c.cap
     V = m["V"]
     H = c.g("H")
-    extra, xr = tail_right(m["Rx1"], V, m["arm"], V * 0.5, V * 0.92, m["Lx0"] + V / 2)
+    extra, xr = tail_right(m["Rx1"], V, m["arm"], light_V(c, False) * 0.5, V * 0.92, m["Lx0"] + V / 2)
     cons = [H[0], H[1]] + extra
     return Glyph(xr + m["lsb"] * 0.4, cons, anchors(m["W"] / 2, 720))
 
@@ -402,7 +478,7 @@ def Shcha(c):
     m = c.cap
     V = m["V"]
     cons, xr = sha_parts(c, m, 720, 0.72)
-    extra, xr2 = tail_right(xr, V, m["arm"], V * 0.5, V * 0.92, xr - V / 2)
+    extra, xr2 = tail_right(xr, V, m["arm"], light_V(c, False) * 0.5, V * 0.92, xr - V / 2)
     return Glyph(xr2 + m["lsb"] * 0.4, cons + extra, anchors((xr + m["lsb"]) / 2, 720))
 
 
@@ -491,7 +567,7 @@ def Yu(c):
     H = c.g("H")
     O = c.g("O")
     ob = G.bounds([O[0]])
-    gap = 0.55 * V + 0.1 * h_counter(c)
+    gap = 0.55 * light_V(c, False) + 0.1 * h_counter(c)
     ox0 = m["Lx1"] + gap
     ox1 = ox0 + YU_RING * (ob[2] - ob[0])
     W = ox1 + m["Olsb"]
@@ -514,7 +590,7 @@ def Ef(c):
     # each half-counter at least 0.42 of O's counter
     Oc = c.g("O")
     oc = G.bounds([Oc[1]])[2] - G.bounds([Oc[1]])[0]
-    ow = max((ob[2] - ob[0]) * (1.06 - 0.06 * c.wt), 2 * 0.42 * oc + 2 * side + V)
+    ow = max((ob[2] - ob[0]) * (1.06 - 0.06 * c.wt), 2 * 0.38 * oc + 2 * side + V)
     x0 = m["Olsb"] * 0.9
     oval = fit_ring(c, O, x0, x0 + ow, 70, 650, top=0.9 * (ob[3] - ib[3]))
     cx = x0 + ow / 2
@@ -653,7 +729,9 @@ def tshe_dje(c, dje):
     cons = [bar, stem] + arch
     if dje:
         counter = xcuts(arch, 100)[0] - (sx0 + V)
-        cons = [bar, stem, arch_with_tail(arch[0], c.g("J")[0], reach=0.62 * counter, depth=0.95)]
+        # the hook ends nearly half the counter clear of the stem, so the
+        # counter stays open at small sizes
+        cons = [bar, stem, arch_with_tail(arch[0], c.g("J")[0], reach=0.55 * counter, depth=0.85)]
     return Glyph(ab[2] + m["lsb"], cons, anchors(centre([bar, stem]), 720, centre(cons)))
 
 
@@ -678,9 +756,8 @@ def arch_with_tail(arch, tail, reach=None, depth=1.0):
 def Lje(c):
     m = c.cap
     V = m["V"]
-    reach, depth = el_foot(c, V)
-    x_term = 0.32 * m["lsb"]
-    cons, xr = el_parts(c, 720, V, 0.8 * h_counter(c), m["arm"], reach, depth, x_term)
+    reach = el_reach(V, c.light.cap["V"])
+    cons, xr = el_parts(c, 720, V, el_counter(c, 0.8) * h_counter(c), m["arm"], reach, 0.32 * m["lsb"])
     bowl = soft_bowl(c, xr, 0.86 * p_counter(c))
     cons = cons + [bowl]
     return Glyph(G.bounds([bowl])[2] + p_rsb(c), cons, anchors(centre(cons), 720))
@@ -765,7 +842,7 @@ def Kadescender(c):
     V = m["V"]
     K = c.g("K")
     foot = xcuts([K[2]], 1)
-    extra, xr = tail_right(foot[1], V, m["arm"], V * 0.42, V * 0.92, foot[0] + 0.25 * (foot[1] - foot[0]))
+    extra, xr = tail_right(foot[1], V, m["arm"], light_V(c, False) * 0.42, V * 0.92, foot[0] + 0.25 * (foot[1] - foot[0]))
     cons = K + extra
     return Glyph(max(c.w("K"), xr + m["lsb"] * 0.3), cons, anchors(c.anchor("K", "top")[0], 720))
 
@@ -775,7 +852,7 @@ def Endescender(c):
     m = c.cap
     V = m["V"]
     H = c.g("H")
-    extra, xr = tail_right(m["Rx1"], V, m["arm"], V * 0.5, V * 0.92, m["Rx0"] + V / 2)
+    extra, xr = tail_right(m["Rx1"], V, m["arm"], light_V(c, False) * 0.5, V * 0.92, m["Rx0"] + V / 2)
     return Glyph(xr + m["lsb"] * 0.4, H + extra, anchors(m["W"] / 2, 720))
 
 
@@ -797,26 +874,23 @@ def ge(c):
     l = c.lc
     V = l["V"]
     stem = G.rect(l["Lx0"], 0, l["Lx1"], 510)
-    end = l["Lx1"] + 0.6 * (l["Rx0"] - l["Lx1"])
+    W = 0.96 * c.w("r")  # r's width: the same stem and arm, in every master
+    end = W - l["lsb"] * 0.38
     bar = G.rect(l["Lx0"] + V / 2, 510 - l["arm"], end, 510)
-    return Glyph(end + l["lsb"] * 0.38, [stem, bar], anchors((l["Lx0"] + end) / 2, 510, l["Lx0"] + V / 2))
+    return Glyph(W, [stem, bar], anchors((l["Lx0"] + end) / 2, 510, l["Lx0"] + V / 2))
 
 
 @glyph("geupturn-cy", 0x0491)
 def geupturn(c):
-    g = ge(c)
-    l = c.lc
-    end = G.bounds([g.contours[1]])[2]
-    g.contours.append(G.rect(end - l["V"] * 0.96, 510 - l["arm"] / 2, end, UPTURN_LC))
-    return g
+    return with_upturn(c, ge(c), c.lc, 510, UPTURN_LC)
 
 
 @glyph("gestroke-cy", 0x0493)
 def gestroke(c):
     g = ge(c)
     l = c.lc
-    V = l["V"]
-    bar = G.rect(l["Lx0"] - 0.62 * V, 255 - l["arm"] / 2, l["Lx1"] + 1.6 * V, 255 + l["arm"] / 2)
+    VL = light_V(c)
+    bar = G.rect(l["Lx0"] - 0.62 * VL, 255 - l["arm"] / 2, l["Lx1"] + 1.6 * VL, 255 + l["arm"] / 2)
     cons = g.contours + [bar]
     cons, width, dx = place(cons, l["lsb"] * 0.4, g.width - G.bounds(g.contours)[2])
     return Glyph(width, cons, {k: (x + dx, y) for k, (x, y) in g.anchors.items()})
@@ -850,14 +924,18 @@ def tse(c):
     V = l["V"]
     x1 = l["Rx1"]
     stems = [G.rect(l["Lx0"], 0, l["Lx1"], 510), G.rect(x1 - V, 0, x1, 510)]
-    extra, xr = tail_right(x1, V, l["arm"], V * 0.5, V * 0.92, l["Lx0"] + V / 2)
+    extra, xr = tail_right(x1, V, l["arm"], light_V(c) * 0.5, V * 0.92, l["Lx0"] + V / 2)
     return Glyph(xr + l["lsb"] * 0.4, stems + extra, anchors((x1 + 2 * l["lsb"]) / 2, 510))
 
 
-def lc_sha(c, ratio=0.74):
+def lc_sha(c, share=0.8):
+    """ш: three stems whose counters are a share of m's, which narrow with
+    weight faster than n's do, so ш widens with weight as m does."""
     l = c.lc
     m = dict(V=l["V"], Lx0=l["Lx0"], Lx1=l["Lx1"], Rx0=l["Rx0"], arm=l["arm"])
-    return sha_parts(c, m, 510, ratio)
+    xs = xcuts(c.g("m"), 100)
+    m_counter = ((xs[2] - xs[1]) + (xs[4] - xs[3])) / 2
+    return sha_parts(c, m, 510, share * m_counter / n_counter(c))
 
 
 @glyph("sha-cy", 0x0448)
@@ -872,7 +950,7 @@ def shcha(c):
     l = c.lc
     V = l["V"]
     cons, xr = lc_sha(c)
-    extra, xr2 = tail_right(xr, V, l["arm"], V * 0.5, V * 0.92, xr - V / 2)
+    extra, xr2 = tail_right(xr, V, l["arm"], light_V(c) * 0.5, V * 0.92, xr - V / 2)
     return Glyph(xr2 + l["lsb"] * 0.4, cons + extra, anchors((xr + l["lsb"]) / 2, 510))
 
 
@@ -923,13 +1001,17 @@ def ii(c):
     return Glyph(W, cons, anchors(W / 2, 510))
 
 
+EM_VERTEX = 36  # м: the vertex stands this far above the baseline in every master
+
+
 @glyph("em-cy", 0x043C)
 def em(c):
-    """м: M's construction redrawn at x-height. Stems and the notches where
-    the diagonals leave them follow M; the diagonals and vertex are M's scaled
-    to the lowercase stem, and lighter again in the bold masters, so the V
-    stays open in the condensed bold."""
-    m, l = c.cap, c.lc
+    """м: M's construction redrawn at x-height, M's proportions to H
+    carried over to n. Stems and the notches where the diagonals leave them
+    follow M; the vertex stands a little above the baseline in every master,
+    as Russian м usually does; the diagonals carry M's weight relative to
+    the stem (about 0.72 of it) in every master."""
+    l = c.lc
     V = l["V"]
     M = c.g("M")[0]
     assert len(M) == 16 and all(G.is_on(p) for p in M), "M topology changed"
@@ -937,40 +1019,44 @@ def em(c):
     Y = [p[1] for p in M]
     mL, mR = X[1], X[8]  # M's stem inner edges
     mc = (X[4] + X[5]) / 2
-    fth = V / m["V"] * (1 - 0.22 * c.wt)
     fy = 510 / 720
-    W = (l["Rx1"] + l["lsb"]) * (1.17 + (0.16 * c.wt if c.condensed else 0.0))
+    W = 0.95 * c.w("M") * c.w("n") / c.w("H")
     x0, x3 = l["lsb"], W - l["lsb"]
     L, R = x0 + V, x3 - V
     xc = (x0 + x3) / 2
-    yv = 0.08 * 510 * c.wt if c.condensed else 0.0
+    yv = EM_VERTEX
 
-    def stem_pt(i, side):
-        base, inner = (L, mL) if side < 0 else (R, mR)
-        return base + (X[i] - inner) * fth
+    def draw(fth):
+        def stem_pt(i, side):
+            base, inner = (L, mL) if side < 0 else (R, mR)
+            return base + (X[i] - inner) * fth
 
-    pts = [None] * 16
-    pts[0], pts[1] = (x0, 0), (L, 0)
-    pts[2] = (L, 510 - (720 - Y[2]) * fy)
-    pts[3] = (stem_pt(3, -1), 510 - (720 - Y[3]) * fy)
-    pts[4] = (xc + (X[4] - mc) * fth, yv)
-    pts[5] = (xc + (X[5] - mc) * fth, yv)
-    pts[6] = (stem_pt(6, 1), 510 - (720 - Y[6]) * fy)
-    pts[7] = (R, 510 - (720 - Y[7]) * fy)
-    pts[8], pts[9], pts[10] = (R, 0), (x3, 0), (x3, 510)
-    pts[11] = (stem_pt(11, 1), 510)
-    pts[12] = (xc + (X[12] - mc) * fth, yv + Y[12] * fth)
-    pts[13] = (xc + (X[13] - mc) * fth, yv + Y[13] * fth)
-    pts[14] = (stem_pt(14, -1), 510)
-    pts[15] = (x0, 510)
-    con = [G.P(x, y) for x, y in pts]
+        pts = [None] * 16
+        pts[0], pts[1] = (x0, 0), (L, 0)
+        pts[2] = (L, 510 - (720 - Y[2]) * fy)
+        pts[3] = (stem_pt(3, -1), 510 - (720 - Y[3]) * fy)
+        pts[4] = (xc + (X[4] - mc) * fth, yv)
+        pts[5] = (xc + (X[5] - mc) * fth, yv)
+        pts[6] = (stem_pt(6, 1), 510 - (720 - Y[6]) * fy)
+        pts[7] = (R, 510 - (720 - Y[7]) * fy)
+        pts[8], pts[9], pts[10] = (R, 0), (x3, 0), (x3, 510)
+        pts[11] = (stem_pt(11, 1), 510)
+        pts[12] = (xc + (X[12] - mc) * fth, yv + Y[12] * fth)
+        pts[13] = (xc + (X[13] - mc) * fth, yv + Y[13] * fth)
+        pts[14] = (stem_pt(14, -1), 510)
+        pts[15] = (x0, 510)
+        return pts
+
+    con = [G.P(x, y) for x, y in draw(V / c.cap["V"])]
     return Glyph(W, [con], anchors(W / 2, 510))
 
 
 @glyph("ka-cy", 0x043A)
 def ka(c):
     k = c.g("k")
-    stem = G.move_points([k[0]], lambda x, y: y > 600, dy=510 - 740)
+    # k's ascender ends at 740 in Regular and 720 elsewhere: cut it to the
+    # x-height itself, not by a fixed distance
+    stem = [[[p[0], 510.0 if p[1] > 600 else p[1], p[2], p[3]] for p in k[0]]]
     cons = stem + [k[1]]
     return Glyph(c.w("k"), cons, anchors(centre(cons), 510))
 
@@ -1005,8 +1091,8 @@ def n_counter(c):
 def el(c):
     l = c.lc
     V = l["V"]
-    reach, depth = el_foot(c, V)
-    cons, xr = el_parts(c, 510, V, 0.9 * n_counter(c), l["arm"], reach, depth * 0.8, 0.3 * l["lsb"])
+    reach = el_reach(V, c.light.lc["V"])
+    cons, xr = el_parts(c, 510, V, el_counter(c) * n_counter(c), l["arm"], reach, 0.3 * l["lsb"])
     return Glyph(xr + l["lsb"], cons, anchors(centre(cons), 510))
 
 
@@ -1014,16 +1100,18 @@ def el(c):
 def de(c):
     l = c.lc
     V = l["V"]
-    cons, xr = de_parts(c, 510, V, l["arm"], l["lsb"] * 0.34, 0.86 * n_counter(c), V * 0.9, V * 0.48)
-    return Glyph(xr + l["lsb"] * 0.34, cons, anchors(centre(cons), 510))
+    nc = n_counter(c)
+    sb = l["lsb"] * 0.34
+    cons, xr = de_parts(c, 510, V, l["arm"], sb, DE_COUNTER_LC * nc, DE_OVERHANG_LC * nc)
+    return Glyph(xr + sb, cons, anchors(centre(cons), 510))
 
 
 def soft_lc_metrics(c):
     """Bars and bowl height of the lowercase Ь bowl. The bars thin a little
     as the weight rises and the bowl grows, so the counter stays open."""
     l, lo = c.lc, c.light.lc
-    bar = l["H"] - 0.12 * (l["H"] - lo["H"])
-    top = 0.6 * 510 + 0.7 * (bar - lo["H"])
+    bar = l["H"] - 0.2 * (l["H"] - lo["H"])
+    top = 0.6 * 510 + 1.1 * (bar - lo["H"])
     return bar, top
 
 
@@ -1128,8 +1216,8 @@ def r_leg(c):
 @glyph("ya-cy", 0x044F)
 def ya(c):
     """я: R's bowl and leg mirrored, drawn at x-height proportions: the bowl
-    from P's bowl parameters, the leg leaving the bowl's lower bar where its
-    inner edge meets the stem, as R's does."""
+    from P's bowl parameters, the leg with R's stroke widths, leaving the
+    bowl's lower bar away from the stem."""
     m, l = c.cap, c.lc
     V = l["V"]
     lo = c.light.lc
@@ -1144,11 +1232,22 @@ def ya(c):
     stem = G.rect(S, 0, S + V, 510)
     k, wb, wt = r_leg(c)
     f = V / m["V"]
-    wb, wt = wb * f, wt * f
+    # R's stroke thickness across the leg (its widths are horizontal cuts)
+    cos_r = math.cos(math.atan(k))
+    pb, pt = wb * f * cos_r, wt * f * cos_r
+    # the leg leaves the bowl's lower bar 0.3 of the bowl's width out from
+    # the stem, so the white between leg and stem stays a open wedge rather
+    # than a slit that fills in at text sizes, and its foot reaches just past
+    # the bowl, as R's does
+    bowl_l = G.bounds([bowl])[0]
     yt = Y0 + bar / 2
-    xr_b = S - k * Y0
-    xr_t = S + k * (yt - Y0)
-    legc = G.poly((xr_b - wb, 0), (xr_b, 0), (xr_t, yt), (xr_t - wt, yt))
+    xr_t = S - 0.3 * (S - bowl_l)
+    xl_b = bowl_l - 0.08 * (S - bowl_l)
+    wb, wt = pb, pt
+    for _ in range(6):  # horizontal cuts of a leg at this angle
+        cosa = math.cos(math.atan2((xr_t - wt / 2) - (xl_b + wb / 2), yt))
+        wb, wt = pb / cosa, pt / cosa
+    legc = G.poly((xl_b, 0), (xl_b + wb, 0), (xr_t, yt), (xr_t - wt, yt))
     cons = [bowl, stem, legc]
     cons, W, dx = place(cons, l["olsb"] * 0.35, l["lsb"])
     return Glyph(W, cons, anchors(centre(cons), 510))
@@ -1156,25 +1255,14 @@ def ya(c):
 
 @glyph("ereversed-cy", 0x044D)
 def ereversed(c):
-    l = c.lc
-    cc = c.g("c")
-    w = c.w("c")
-    cons = G.mirror_x_italic(cc, w / 2, c.italic)
-    b = G.bounds(cons)
-    xs = xcuts(cons, 255)
-    bar = G.rect(b[0] + 0.3 * (b[2] - b[0]), 262 - l["arm"] / 2, xs[-2] + 10, 262 + l["arm"] / 2)
+    cons, bar, w = round_e(c, "c", 262, lc_bar(c), True, 0.3)
     return Glyph(w, cons + [bar], anchors(centre(cons), 510))
 
 
 @glyph("e-cy", 0x0454)
 def eukr(c):
-    l = c.lc
-    cc = c.g("c")
-    w = c.w("c")
-    b = G.bounds(cc)
-    xs = xcuts(cc, 255)
-    bar = G.rect(xs[1] - 10, 262 - l["arm"] / 2, b[0] + 0.7 * (b[2] - b[0]), 262 + l["arm"] / 2)
-    return Glyph(w, cc + [bar], anchors(centre(cc), 510))
+    cons, bar, w = round_e(c, "c", 262, lc_bar(c), False, 0.3)
+    return Glyph(w, cons + [bar], anchors(centre(cons), 510))
 
 
 @glyph("yu-cy", 0x044E)
@@ -1183,7 +1271,7 @@ def yu(c, stem_top=510):
     V = l["V"]
     o = c.g("o")
     ob = G.bounds([o[0]])
-    gap = 0.5 * V + 0.1 * n_counter(c)
+    gap = 0.5 * light_V(c) + 0.1 * n_counter(c)
     ox0 = l["Lx1"] + gap
     W = ox0 + YU_RING * (ob[2] - ob[0]) + l["olsb"]
     o = fit_ring(c, o, ox0, W - l["olsb"])
@@ -1194,35 +1282,53 @@ def yu(c, stem_top=510):
     return Glyph(W, cons, anchors(centre(cons), 510))
 
 
+def ef_half(c, name, f, t):
+    """One bowl of ф: p's (right) or q's (left) bowl, from a lighter drawing
+    in the bold masters, narrowed towards the stem by f: the outer contour's
+    bowl points move towards the stem edge, the counter is scaled as a
+    whole so the outer side keeps the source's thickness. In the italic the
+    narrowing happens in the slanted design (see scale_about). Returns the
+    contours and the stem edge they hang on."""
+    src = c.blend(name, t) if c.wt > 0 else c.g(name)
+    st = xcuts([src[0]], -100)  # the descender stem
+    right = name == "p"
+    edge = st[1] if right else st[0]
+    outer, counter = src
+    ob, cb = G.bounds([outer]), G.bounds([counter])
+    side = (ob[2] - cb[2]) if right else (cb[0] - ob[0])
+    sh = G.SLANT * (1 - f) if c.italic else 0.0
+    beyond = (lambda x: x > edge + 0.5) if right else (lambda x: x < edge - 3)
+    outer = [[edge + (q[0] - edge) * f - sh * (q[1] - 255) if beyond(q[0]) else q[0], q[1], q[2], q[3]]
+             for q in outer]
+    ext = edge + ((ob[2] if right else ob[0]) - edge) * f
+    if right:
+        cw = (ext - side) - cb[0]
+        cc = scale_about(c, [counter], cw / (cb[2] - cb[0]), 1, cb[0], (cb[1] + cb[3]) / 2)
+    else:
+        cw = cb[2] - (ext + side)
+        cc = scale_about(c, [counter], cw / (cb[2] - cb[0]), 1, cb[2], (cb[1] + cb[3]) / 2)
+    return [outer] + cc, edge
+
+
 @glyph("ef-cy", 0x0444)
 def ef(c):
-    """ф: p's bowl and its mirror on one stem. The bowls are narrowed as a
-    whole (outer and counter each scaled), and in the bold masters drawn
-    from a lighter p, thinning where they meet the stem as b and d do."""
+    """ф: p's bowl on the right of one stem and, on the left, its mirror in
+    the upright and q's own bowl in the italic (a mirrored italic bowl would
+    lean backwards). The bowls are narrowed as a whole (outer and counter
+    each scaled), and in the bold masters drawn from a lighter p and q,
+    thinning where they meet the stem as b and d do."""
     l = c.lc
     V = l["V"]
     t = c.wt * 0.7
-    p = c.blend("p", t) if c.wt > 0 else c.g("p")
-    ps = xcuts([p[0]], -100)  # the blended p's stem
-    outer, counter = p
-    ob, cb = G.bounds([outer]), G.bounds([counter])
-    side = ob[2] - cb[2]
     f = 0.96 if c.condensed else 0.84
-    span = (ob[2] - ps[1]) * f  # stem's right edge to the bowl's outer extreme
-    xo = ps[1] + span
-    # narrow the bowl part of the outer contour towards the stem, and the
-    # counter as a whole, so its right side keeps p's thickness (in the
-    # italic the narrowing happens in the slanted design, see scale_about)
-    sh = G.SLANT * (1 - f) if c.italic else 0.0
-    outer = [[ps[1] + (q[0] - ps[1]) * f - sh * (q[1] - 255) if q[0] > ps[1] + 0.5 else q[0], q[1], q[2], q[3]]
-             for q in outer]
-    cw = (xo - side) - cb[0]
-    cc = scale_about(c, [counter], cw / (cb[2] - cb[0]), 1, cb[0], (cb[1] + cb[3]) / 2)
-    right = [outer] + cc
-    # align the blended stem's right edge with the full stem's right edge
+    right, edge = ef_half(c, "p", f, t)
     cx = 0.0
-    right = G.shift(right, cx + V / 2 - ps[1])
-    left = G.mirror_x_italic(right, cx, c.italic)
+    right = G.shift(right, cx + V / 2 - edge)
+    if c.italic:
+        left, ledge = ef_half(c, "q", f, t)
+        left = G.shift(left, cx - V / 2 - ledge)
+    else:
+        left = G.mirror_x(right, cx)
     stem = G.rect(cx - V / 2, -205, cx + V / 2, 720)
     cons = left + right + [stem]
     cons, W, dx = place(cons, l["olsb"], l["olsb"])
@@ -1266,8 +1372,8 @@ def tshe(c):
 def lje(c):
     l = c.lc
     V = l["V"]
-    reach, depth = el_foot(c, V)
-    cons, xr = el_parts(c, 510, V, 0.8 * n_counter(c), l["arm"], reach, depth * 0.8, 0.3 * l["lsb"])
+    reach = el_reach(V, c.light.lc["V"])
+    cons, xr = el_parts(c, 510, V, el_counter(c, 0.8) * n_counter(c), l["arm"], reach, 0.3 * l["lsb"])
     bowl = soft_lc(c, xr, 0.84)
     cons = cons + [bowl]
     return Glyph(G.bounds([bowl])[2] + l["olsb"], cons, anchors(centre(cons), 510))
@@ -1333,7 +1439,7 @@ def kadescender(c):
     V = l["V"]
     k = ka(c)
     foot = xcuts([k.contours[1]], 1)
-    extra, xr = tail_right(foot[-1], V, l["arm"], V * 0.42, V * 0.92, foot[-2] + 0.25 * (foot[-1] - foot[-2]))
+    extra, xr = tail_right(foot[-1], V, l["arm"], light_V(c) * 0.42, V * 0.92, foot[-2] + 0.25 * (foot[-1] - foot[-2]))
     return Glyph(max(k.width, xr + l["lsb"] * 0.3), k.contours + extra, k.anchors)
 
 
@@ -1343,7 +1449,7 @@ def endescender(c):
     V = l["V"]
     g = en(c)
     x1 = l["Rx1"]
-    extra, xr = tail_right(x1, V, l["arm"], V * 0.5, V * 0.92, x1 - V / 2)
+    extra, xr = tail_right(x1, V, l["arm"], light_V(c) * 0.5, V * 0.92, x1 - V / 2)
     return Glyph(xr + l["lsb"] * 0.4, g.contours + extra, g.anchors)
 
 
@@ -1406,9 +1512,10 @@ def Yi(c):
 
 def six_de(c):
     """The 6 drawn at x-height with an ascending stroke and a level flag;
-    mirrored, the cursive д (∂)."""
-    s = c.g("six")
-    w = c.w("six")
+    mirrored, the cursive д (∂). The upright 6 is used in the italic too:
+    mirrored and slanted it leans forward, a mirrored italic 6 backwards."""
+    s = c.roman.g("six")
+    w = c.roman.w("six")
     b = G.bounds(s)
     # vertical zones of 6: bowl bottom (out/in), bowl top (in/out), top stroke (in/out)
     cx = (b[0] + b[2]) / 2 + 30
@@ -1498,7 +1605,7 @@ def u_forms(c, name):
         xr_stem = ub[2] + step
         w = c.w("u") + step
     if name in ("tse", "shcha"):
-        extra, xr = tail_right(xr_stem, V, l["arm"], V * 0.5, V * 0.92, xr_stem - V / 2)
+        extra, xr = tail_right(xr_stem, V, l["arm"], light_V(c) * 0.5, V * 0.92, xr_stem - V / 2)
         cons = cons + extra
         w = max(w, xr + l["lsb"] * 0.4)
     return Glyph(w, cons, anchors(centre(cons[:3]), 510))
@@ -1526,7 +1633,10 @@ SRB_UPRIGHT = {"be-cy.loclSRB": "be-cy", "ge-cy.loclSRB": "ge-cy", "de-cy.loclSR
 def srb_italic(c, name):
     l = c.lc
     mac = G.bounds(c.g("macroncomb"))
-    my0, my1 = mac[1], mac[3]
+    # the macron's own weight, its top level with i's dot in every master
+    # (macroncomb itself sits at a different height in each)
+    my1 = 720
+    my0 = my1 - (mac[3] - mac[1])
     if name == "de-cy.loclSRB":
         return Glyph(c.w("g"), components=[("g", 0, 0)])
     if name in ("pe-cy.loclSRB", "te-cy.loclSRB", "ge-cy.loclSRB"):
@@ -1610,14 +1720,14 @@ def italic_override(name, c):
             xr_stem = ub[2] + step
             w = c.w("u") + step
         if name in ("tse-cy", "shcha-cy"):
-            extra, xr = tail_right(xr_stem, V, l["arm"], V * 0.5, V * 0.92, xr_stem - V / 2)
+            extra, xr = tail_right(xr_stem, V, l["arm"], light_V(c) * 0.5, V * 0.92, xr_stem - V / 2)
             cons = cons + extra
             w = max(w, xr + l["lsb"] * 0.4)
         return Glyph(w, cons, anchors(centre(cons), 510))
     if name == "de-cy":
         g = six_de(c)
         w = g.width
-        cons = G.mirror_x(g.contours, w / 2)  # 6 has no vertical extremes to turn back
+        cons = G.mirror_x(g.contours, w / 2)
         return Glyph(w, cons, anchors(centre(cons), 510))
     return None
 
@@ -1758,10 +1868,10 @@ PROBES = {
     "Nje-cy": [("y", 600, 1, "H", 0.85), ("y", 200, 2, "H", 0.65)],
     "Lje-cy": [("y", 600, 1, "H", 0.7), ("y", 200, 2, "H", 0.65)],
     "Yeru-cy": [("y", 200, 1, "H", 0.65)],
-    "el-cy": [("y", 300, 1, "n", 0.85)], "El-cy": [("y", 400, 1, "H", 0.85)],
+    "el-cy": [("y", 300, 1, "n", 0.78)], "El-cy": [("y", 400, 1, "H", 0.78)],
     "de-cy": [("y", 300, 1, "n", 0.8)], "De-cy": [("y", 400, 1, "H", 0.8)],
-    "em-cy": [("y", 380, 1, "n", 0.45), ("y", 180, 2, "n", 0.15)],
-    "ef-cy": [("y", 255, 2, "o", 0.55)], "Ef-cy": [("y", 360, 2, "O", 0.4)],
+    "em-cy": [("y", 380, 1, "n", 0.3), ("y", 180, 2, "n", 0.15)],
+    "ef-cy": [("y", 255, 2, "o", 0.55)], "Ef-cy": [("y", 360, 2, "O", 0.37)],
     "yu-cy": [("y", 255, 1, "o", 0.6)], "Yu-cy": [("y", 360, 1, "O", 0.6)],
     "ya-cy": [("y", 400, 1, "n", 0.6)], "dje-cy": [("y", 300, 1, "n", 0.9)],
     "Dje-cy": [("y", 300, 1, "n", 0.6)],
@@ -1774,6 +1884,11 @@ INHERITED_ITALIC = {
     "schwa-cy": "e turned round; e's own bowl curve",
     "ze-cy": "the junction of the italic 3, whose handles dip below it too",
 }
+
+
+# Letters with parts above the x-height (or cap height) on purpose.
+ASCENDING = {"be-cy", "be-cy.loclSRB", "dje-cy", "tshe-cy", "ef-cy", "zhe-cy.loclBGR", "yu-cy.loclBGR",
+             "geupturn-cy", "Geupturn-cy", "gje-cy.loclSRB"}
 
 
 def check_glyphs(c, built):
@@ -1796,16 +1911,76 @@ def check_glyphs(c, built):
         if not (c.italic and name in INHERITED_ITALIC):
             out += checks.curve_problems(name, final, limit, check_x=not c.italic, slack=24 if c.italic else 2)
         out += checks.counter_problems(name, cons, PROBES.get(name, []), refs)
+        if name not in ("schwa-cy", "Schwa-cy"):  # e turned round: e's one contour draws its eye backwards
+            out += checks.self_intersection_problems(name, final)
+        if c.italic:
+            out += checks.backward_extreme_problems(name, cons, G.SLANT)
+        if name not in ASCENDING:
+            out += checks.stem_top_problems(name, cons, 510 if name[0].islower() else 720)
     # ђ must carry its ascender bar left of the stem
     d = built["dje-cy"].contours
     stem = G.bounds([d[0]])
     if not checks.has_ink(d, stem[0] - 60, 600, stem[0] - 5, 640):
         out.append("dje-cy: no ascender bar left of the stem")
+    # Ґ ґ: the arm runs free between stem and upturn
+    for name, V in (("geupturn-cy", l["V"]), ("Geupturn-cy", m["V"])):
+        cons = built[name].contours
+        free = G.bounds([cons[-1]])[0] - G.bounds([cons[0]])[2]
+        if free < UPTURN_FREE * V - 0.5:
+            out.append(f"{name}: arm runs free for {free:.0f}, need {UPTURN_FREE * V:.0f}")
     yi = built["yi-cy"]
     b = G.bounds(yi.contours)
     if b[0] < -1.5 or b[2] > yi.width + 1.5:
         out.append(f"yi-cy: dieresis {b[0]:.0f}..{b[2]:.0f} leaves the advance 0..{yi.width:.0f}")
     return [f"{c.master}: {p}" for p in out]
+
+
+# Advance growth from the light to the bold master, relative to n's (or
+# H's), may differ by this share: wider and the bold rhythm turns lumpy,
+# narrower and the letter darkens.
+GROWTH_TOLERANCE = 0.08
+# The Latin letters whose growth a construction should follow, where n or H
+# is the wrong model: narrow letters widen faster, three-stem letters
+# slower. "b+l" means the letter should widen by as many units as b and l
+# together (ы is a b-like bowl and an l-like stem).
+GROWTH_REF = {
+    "ge-cy": "r", "gje-cy": "r", "geupturn-cy": "r", "ge-cy.loclSRB": "r", "gje-cy.loclSRB": "r",
+    "gestroke-cy": "r", "Gestroke-cy": "F", "Ge-cy": "F", "Gje-cy": "F", "Geupturn-cy": "F",
+    "yi-cy": "idieresis", "Yi-cy": "Idieresis",
+    "sha-cy": "m", "shcha-cy": "m", "sha-cy.loclBGR": "m", "shcha-cy.loclBGR": "m", "Sha-cy": "M", "Shcha-cy": "M",
+    "yeru-cy": "b+l", "Yeru-cy": "P+I", "yu-cy": "l+o", "yu-cy.loclBGR": "l+o", "Yu-cy": "I+O",
+    "Zhe-cy": "K", "zhe-cy": "k", "zhe-cy.loclBGR": "k", "Kadescender-cy": "K", "kadescender-cy": "k", "ka-cy": "k",
+    "Ef-cy": "O", "ef-cy": "o", "U-cy": "Y", "Ustraightstroke-cy": "Y",
+    "Ereversed-cy": "C", "E-cy": "C", "ereversed-cy": "c", "e-cy": "c",
+    "Lje-cy": "H+P-I", "Nje-cy": "H+P-I", "lje-cy": "n+b-l", "nje-cy": "n+b-l", "hardsign-cy": "b+t-l",
+}
+
+
+# ї Ї: the width is set by the dieresis, which must stay inside the advance.
+GROWTH_EXEMPT = {"yi-cy", "Yi-cy",
+                 "geupturn-cy", "Geupturn-cy"}  # Ґ ґ: lengthened where the arm must run free (with_upturn)
+
+
+def growth_problems(results):
+    """Every constructed letter must widen with weight about as n or H do,
+    in each width and style."""
+    by = {master: (c, built) for master, c, built, _ in results}
+    out = []
+    for light, bold in (("Regular", "Bold"), ("CondensedRegular", "CondensedBold"),
+                        ("Italic", "BoldItalic"), ("CondensedItalic", "CondensedBoldItalic")):
+        (cl, bl), (cb, bb) = by[light], by[bold]
+        for name, g in bl.items():
+            if not g.contours or name in GROWTH_EXEMPT:
+                continue
+            ref = GROWTH_REF.get(name, "n" if name[0].islower() else "H")
+            grow = sum((-1 if sign == "-" else 1) * (cb.w(r) - cl.w(r))
+                       for sign, r in re.findall(r"([+-]?)([A-Za-z]+)", ref))
+            want = (g.width + grow) / g.width
+            got = bb[name].width / g.width
+            if abs(got / want - 1) > GROWTH_TOLERANCE:
+                out.append(f"{light}->{bold}: {name}: advance x{got:.3f} ({g.width:.0f} -> {bb[name].width:.0f}), "
+                           f"{ref} x{want:.3f}")
+    return out
 
 
 def dot_edges(c, built, name):
@@ -1837,13 +2012,14 @@ def main():
     (--force writes anyway, --check only reports)."""
     only = set(a for a in sys.argv[1:] if not a.startswith("-"))
     problems, results = [], []
+    fonts = {m: ufoLib2.Font.open(SOURCES / f"TiloSans-{m}.ufo", lazy=True) for m in UPRIGHT + ITALIC}
     for family in (UPRIGHT, ITALIC):
-        fonts = {m: ufoLib2.Font.open(SOURCES / f"TiloSans-{m}.ufo", lazy=True) for m in family}
         for master in family:
             c, built = build_all(fonts, master)
             add_composites(c, built)
             problems += check_glyphs(c, built)
             results.append((master, c, built, extra_kerning(c, built)))
+    problems += growth_problems(results)
     for p in problems:
         print(p)
     if "--check" in sys.argv or (problems and "--force" not in sys.argv):

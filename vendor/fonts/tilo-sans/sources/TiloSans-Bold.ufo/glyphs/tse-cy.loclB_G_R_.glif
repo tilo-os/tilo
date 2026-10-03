@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="tse-cy.loclBGR" format="2">
-  <advance width="650"/>
-  <anchor x="340" y="0" name="bottom"/>
-  <anchor x="340" y="510" name="top"/>
+  <advance width="615"/>
+  <anchor x="322" y="0" name="bottom"/>
+  <anchor x="322" y="510" name="top"/>
   <outline>
     <contour>
       <point x="225" y="-10" type="curve" smooth="yes"/>
@@ -32,15 +32,15 @@
     </contour>
     <contour>
       <point x="476" y="0" type="line"/>
-      <point x="626" y="0" type="line"/>
-      <point x="626" y="114" type="line"/>
+      <point x="591" y="0" type="line"/>
+      <point x="591" y="114" type="line"/>
       <point x="476" y="114" type="line"/>
     </contour>
     <contour>
-      <point x="488" y="-160" type="line"/>
-      <point x="626" y="-160" type="line"/>
-      <point x="626" y="114" type="line"/>
-      <point x="488" y="114" type="line"/>
+      <point x="453" y="-160" type="line"/>
+      <point x="591" y="-160" type="line"/>
+      <point x="591" y="114" type="line"/>
+      <point x="453" y="114" type="line"/>
     </contour>
   </outline>
 </glyph>

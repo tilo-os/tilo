@@ -1,44 +1,32 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="De-cy" format="2">
-  <advance width="722"/>
+  <advance width="753"/>
   <unicode hex="0414"/>
-  <anchor x="303" y="0" name="bottom"/>
-  <anchor x="469" y="720" name="top"/>
+  <anchor x="318" y="0" name="bottom"/>
+  <anchor x="485" y="720" name="top"/>
   <outline>
     <contour>
-      <point x="43" y="0" type="curve" smooth="yes"/>
-      <point x="96" y="0"/>
-      <point x="178" y="43"/>
-      <point x="203" y="152" type="curve" smooth="yes"/>
-      <point x="334" y="720" type="line"/>
-      <point x="251" y="720" type="line"/>
-      <point x="121" y="155" type="line" smooth="yes"/>
-      <point x="104" y="83"/>
-      <point x="81" y="47"/>
-      <point x="55" y="47" type="curve" smooth="yes"/>
-      <point x="37" y="47"/>
-      <point x="25" y="56"/>
-      <point x="19" y="70" type="curve"/>
-      <point x="6" y="12" type="line"/>
-      <point x="10" y="5"/>
-      <point x="25" y="0"/>
+      <point x="72" y="0" type="line"/>
+      <point x="155" y="0" type="line"/>
+      <point x="321" y="720" type="line"/>
+      <point x="238" y="720" type="line"/>
     </contour>
     <contour>
-      <point x="276" y="648" type="line"/>
-      <point x="701" y="648" type="line"/>
-      <point x="718" y="720" type="line"/>
-      <point x="293" y="720" type="line"/>
+      <point x="263" y="648" type="line"/>
+      <point x="673" y="648" type="line"/>
+      <point x="689" y="720" type="line"/>
+      <point x="280" y="720" type="line"/>
     </contour>
     <contour>
-      <point x="510" y="0" type="line"/>
-      <point x="593" y="0" type="line"/>
-      <point x="760" y="720" type="line"/>
-      <point x="676" y="720" type="line"/>
+      <point x="481" y="0" type="line"/>
+      <point x="565" y="0" type="line"/>
+      <point x="731" y="720" type="line"/>
+      <point x="648" y="720" type="line"/>
     </contour>
     <contour>
       <point x="-27" y="0" type="line"/>
-      <point x="633" y="0" type="line"/>
-      <point x="650" y="72" type="line"/>
+      <point x="664" y="0" type="line"/>
+      <point x="681" y="72" type="line"/>
       <point x="-11" y="72" type="line"/>
     </contour>
     <contour>
@@ -48,10 +36,10 @@
       <point x="-11" y="72" type="line"/>
     </contour>
     <contour>
-      <point x="522" y="-160" type="line"/>
-      <point x="596" y="-160" type="line"/>
-      <point x="650" y="72" type="line"/>
-      <point x="575" y="72" type="line"/>
+      <point x="552" y="-160" type="line"/>
+      <point x="627" y="-160" type="line"/>
+      <point x="681" y="72" type="line"/>
+      <point x="606" y="72" type="line"/>
     </contour>
   </outline>
 </glyph>

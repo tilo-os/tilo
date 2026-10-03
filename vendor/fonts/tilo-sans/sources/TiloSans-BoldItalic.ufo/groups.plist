@@ -995,6 +995,10 @@
       <string>Ygrave</string>
       <string>Ydieresis.ss01</string>
     </array>
+    <key>public.kern2.KO_Ya-cy</key>
+    <array>
+      <string>Ya-cy</string>
+    </array>
     <key>public.kern2.KO_Z</key>
     <array>
       <string>Z</string>
@@ -1231,6 +1235,7 @@
     </array>
     <key>public.kern2.KO_n-cy</key>
     <array>
+      <string>che-cy</string>
       <string>dzhe-cy</string>
       <string>em-cy</string>
       <string>en-cy</string>
@@ -1400,7 +1405,6 @@
     </array>
     <key>public.kern2.KO_u</key>
     <array>
-      <string>che-cy</string>
       <string>ii-cy.loclBGR</string>
       <string>iigrave-cy.loclBGR</string>
       <string>iishort-cy.loclBGR</string>

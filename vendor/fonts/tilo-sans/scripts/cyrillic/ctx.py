@@ -15,6 +15,7 @@ UPRIGHT = ["CondensedRegular", "CondensedBold", "Regular", "Bold"]
 ITALIC = ["CondensedItalic", "CondensedBoldItalic", "Italic", "BoldItalic"]
 LIGHT = {"CondensedRegular": "CondensedRegular", "CondensedBold": "CondensedRegular", "Regular": "Regular", "Bold": "Regular",
          "CondensedItalic": "CondensedItalic", "CondensedBoldItalic": "CondensedItalic", "Italic": "Italic", "BoldItalic": "Italic"}
+ROMAN = {"CondensedItalic": "CondensedRegular", "CondensedBoldItalic": "CondensedBold", "Italic": "Regular", "BoldItalic": "Bold"}
 HEAVY = {"CondensedRegular": "CondensedBold", "CondensedBold": "CondensedBold", "Regular": "Bold", "Bold": "Bold",
          "CondensedItalic": "CondensedBoldItalic", "CondensedBoldItalic": "CondensedBoldItalic", "Italic": "BoldItalic", "BoldItalic": "BoldItalic"}
 
@@ -159,6 +160,12 @@ class Ctx:
     @property
     def heavy(self):
         return self.other(HEAVY[self.master])
+
+    @property
+    def roman(self):
+        """The upright master this italic master was slanted from (itself
+        when upright)."""
+        return self.other(ROMAN.get(self.master, self.master))
 
     @property
     def wt(self):

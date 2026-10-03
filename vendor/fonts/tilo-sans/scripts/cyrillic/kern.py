@@ -21,7 +21,7 @@ CY_GROUPS = {
     "Ereversed-cy": ("KO_O", "KO_three"), "Yu-cy": ("KO_O", None), "Ef-cy": ("KO_O", "KO_O"), "Schwa-cy": ("KO_O", "KO_O"),
     "Obarred-cy": ("KO_O", "KO_O"), "E-cy": ("KO_C", "KO_O"), "U-cy": ("KO_Y", "KO_Y"), "Ushort-cy": ("KO_Y", "KO_Y"),
     "Ustraightstroke-cy": ("KO_Y", "KO_Y"), "Hardsign-cy": ("KO_Softsign-cy", "KO_T"), "Softsign-cy": ("KO_Softsign-cy", None),
-    "Nje-cy": ("KO_Softsign-cy", None), "Che-cy": (None, "KO_U"), "Tshe-cy": (None, "KO_T"), "Dje-cy": (None, "KO_T"),
+    "Nje-cy": ("KO_Softsign-cy", None), "Che-cy": (None, "KO_U"), "Ya-cy": (None, "KO_Ya-cy"), "Tshe-cy": (None, "KO_T"), "Dje-cy": (None, "KO_T"),
     "Io-cy": ("KO_E", None), "Iegrave-cy": ("KO_E", None), "Kje-cy": ("KO_K", None),
     # lowercase
     "be-cy": ("KO_p", "KO_e"), "ve-cy": ("KO_p", "KO_n-cy"), "ge-cy": ("KO_r", "KO_n-cy"), "gje-cy": ("KO_r", "KO_n-cy"),
@@ -33,7 +33,7 @@ CY_GROUPS = {
     "em-cy": ("KO_u", "KO_n-cy"), "en-cy": ("KO_u", "KO_n-cy"), "endescender-cy": ("KO_u", "KO_n-cy"),
     "nje-cy": ("KO_p", "KO_n-cy"), "pe-cy": ("KO_u", "KO_n-cy"), "er-cy": ("KO_p", "KO_n-cy"),
     "te-cy": ("KO_te-cy", "KO_te-cy"), "ef-cy": ("KO_o", "KO_e"), "tse-cy": ("KO_u", "KO_n-cy"),
-    "che-cy": ("KO_u", "KO_u"), "sha-cy": ("KO_u", "KO_n-cy"), "shcha-cy": ("KO_u", "KO_n-cy"),
+    "che-cy": ("KO_u", "KO_n-cy"), "sha-cy": ("KO_u", "KO_n-cy"), "shcha-cy": ("KO_u", "KO_n-cy"),
     "dzhe-cy": ("KO_u", "KO_n-cy"), "hardsign-cy": ("KO_p", "KO_t"), "yeru-cy": ("KO_u", "KO_n-cy"),
     "softsign-cy": ("KO_p", "KO_n-cy"), "ereversed-cy": ("KO_o", "KO_s"), "yu-cy": ("KO_o", "KO_n-cy"),
     "ya-cy": ("KO_u", "KO_e"), "e-cy": ("KO_c", "KO_e"), "dje-cy": ("KO_j", None), "tshe-cy": ("KO_n", None),
@@ -54,8 +54,13 @@ CY_GROUPS = {
 # Ь's right side: its bowl sits low and leaves the top open, so letters
 # with a top bar or open arms (Т У Ч V Y, quotes) tuck in over it nearly as
 # far as over L's arm; everything else sees B's lower bowl.
-OPEN_TOP = ["KO_T", "KO_Y", "KO_V", "KO_W", "KO_U", "KO_quotedbl", "KO_quotedblleft", "KO_quotedblright",
-            "KO_asterisk", "KO_question"]
+# (A trailing * matches every group with that prefix: Instrument splits the
+# quotes over several groups, and ’ and ” must kern alike.)
+OPEN_TOP = ["KO_T", "KO_Y", "KO_V", "KO_W", "KO_U", "KO_quote*", "KO_asterisk", "KO_question"]
+# Я's left side: a round bowl at the top over a leg that runs out at the
+# foot, so only letters overhanging at the top tuck in, about as far as
+# over O; elsewhere the leg keeps it at 0.
+OVER_TOP = ["KO_T", "KO_Y", "KO_V", "KO_W", "KO_quote*"]
 NEW_KERN1 = {
     "KO_te-cy": {"upright": ("KO_r", 1.0), "italic": ("KO_n", 1.0)},
     "KO_de-cy": {"upright": ("KO_u", 1.0), "italic": ("KO_o", 1.0)},
@@ -64,8 +69,11 @@ NEW_KERN1 = {
 }
 NEW_KERN2 = {
     "KO_n-cy": {"upright": ("n", 1.0), "italic": ("n", 1.0)},
-    # Л Д: the stem stands about a stem's width in from the foot
-    "KO_El-cy": {"upright": ("KO_A", 0.25), "italic": ("KO_A", 0.25)},
+    # Л Д: the stem stands about a stem's width in from the foot; after A
+    # the foot tucks under A's diagonal like a little of O's round
+    "KO_El-cy": {"upright": [("KO_O", 0.4, ["KO_A"]), ("KO_A", 0.25, None)],
+                 "italic": [("KO_O", 0.4, ["KO_A"]), ("KO_A", 0.25, None)]},
+    "KO_Ya-cy": {"upright": [("KO_O", 0.73, OVER_TOP)], "italic": [("KO_O", 0.73, OVER_TOP)]},
     "KO_el-cy": {"upright": ("n", 1.0), "italic": ("n", 1.0)},
     "KO_de-cy": {"upright": ("n", 1.0), "italic": ("KO_e", 1.0)},
     "KO_te-cy": {"upright": ("KO_t", 1.0), "italic": ("n", 1.0)},
@@ -118,13 +126,21 @@ def update_kerning(ufo, italic, cy_names, lookalikes, extra=None):
     def value(first, second):
         return kerning.get(first, {}).get(second, 0)
 
+    def matches(group, patterns):
+        name = group[len(K1):]  # K1 and K2 have the same length
+        return any(name.startswith(p[:-1]) if p.endswith("*") else name == p for p in patterns)
+
     def src(k, table, prefix, side, other=None):
+        """The Latin source of a Cyrillic group's values; rules given as a
+        list [(source, factor, groups on the other side or None)] apply the
+        first entry whose groups match (None matches all), else nothing."""
         if k.startswith(prefix) and k[len(prefix):] in table:
             rule = table[k[len(prefix):]][style]
-            if isinstance(rule, list):  # [(source, factor, seconds or None)]
+            if isinstance(rule, list):
                 for s, f, only in rule:
-                    if only is None or (other is not None and other[len(K2):] in only):
+                    if only is None or (other is not None and matches(other, only)):
                         return _key(side, s), f
+                return None, 0.0
             s, f = rule
             return _key(side, s), f
         return k, 1.0
@@ -139,7 +155,9 @@ def update_kerning(ufo, italic, cy_names, lookalikes, extra=None):
             if first not in new1 and second not in new2:
                 continue
             f_src, f_fac = src(first, NEW_KERN1, K1, 1, second)
-            s_src, s_fac = src(second, NEW_KERN2, K2, 2)
+            s_src, s_fac = src(second, NEW_KERN2, K2, 2, first)
+            if f_src is None or s_src is None:
+                continue
             v = value(f_src, s_src) * f_fac * s_fac
             if abs(v) >= 5:
                 kerning.setdefault(first, {})[second] = int(round(v))

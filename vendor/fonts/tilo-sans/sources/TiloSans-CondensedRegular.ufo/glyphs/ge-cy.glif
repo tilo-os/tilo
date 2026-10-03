@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="ge-cy" format="2">
-  <advance width="266"/>
+  <advance width="265"/>
   <unicode hex="0433"/>
   <anchor x="98" y="0" name="bottom"/>
-  <anchor x="153" y="510" name="top"/>
+  <anchor x="152" y="510" name="top"/>
   <outline>
     <contour>
       <point x="64" y="0" type="line"/>

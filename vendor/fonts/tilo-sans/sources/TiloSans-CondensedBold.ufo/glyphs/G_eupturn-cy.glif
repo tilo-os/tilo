@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="Geupturn-cy" format="2">
-  <advance width="390"/>
+  <advance width="444"/>
   <unicode hex="0490"/>
   <anchor x="121" y="0" name="bottom"/>
   <anchor x="204" y="720" name="top"/>
@@ -13,15 +13,15 @@
     </contour>
     <contour>
       <point x="122" y="610" type="line"/>
-      <point x="358" y="610" type="line"/>
-      <point x="358" y="720" type="line"/>
+      <point x="412" y="610" type="line"/>
+      <point x="412" y="720" type="line"/>
       <point x="122" y="720" type="line"/>
     </contour>
     <contour>
-      <point x="222" y="665" type="line"/>
-      <point x="358" y="665" type="line"/>
-      <point x="358" y="870" type="line"/>
-      <point x="222" y="870" type="line"/>
+      <point x="291" y="665" type="line"/>
+      <point x="412" y="665" type="line"/>
+      <point x="412" y="870" type="line"/>
+      <point x="291" y="870" type="line"/>
     </contour>
   </outline>
 </glyph>

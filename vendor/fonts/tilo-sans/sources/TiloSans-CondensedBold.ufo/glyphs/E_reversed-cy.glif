@@ -2,8 +2,8 @@
 <glyph name="Ereversed-cy" format="2">
   <advance width="483"/>
   <unicode hex="042D"/>
-  <anchor x="240" y="0" name="bottom"/>
-  <anchor x="240" y="720" name="top"/>
+  <anchor x="241" y="0" name="bottom"/>
+  <anchor x="241" y="720" name="top"/>
   <outline>
     <contour>
       <point x="234" y="-10" type="curve" smooth="yes"/>
@@ -13,12 +13,12 @@
       <point x="454" y="600"/>
       <point x="375" y="730"/>
       <point x="231" y="730" type="curve" smooth="yes"/>
-      <point x="101" y="730"/>
-      <point x="27" y="624"/>
-      <point x="27" y="437" type="curve"/>
-      <point x="161" y="437" type="line"/>
-      <point x="161" y="562"/>
-      <point x="185" y="618"/>
+      <point x="113" y="730"/>
+      <point x="41" y="643"/>
+      <point x="29" y="486" type="curve"/>
+      <point x="163" y="486" type="line"/>
+      <point x="169" y="577"/>
+      <point x="192" y="618"/>
       <point x="234" y="618" type="curve" smooth="yes"/>
       <point x="290" y="618"/>
       <point x="316" y="551"/>
@@ -26,18 +26,18 @@
       <point x="316" y="175"/>
       <point x="289" y="102"/>
       <point x="234" y="102" type="curve" smooth="yes"/>
-      <point x="187" y="102"/>
-      <point x="162" y="161"/>
-      <point x="162" y="283" type="curve"/>
-      <point x="27" y="283" type="line"/>
-      <point x="27" y="99"/>
-      <point x="104" y="-10"/>
+      <point x="194" y="102"/>
+      <point x="170" y="145"/>
+      <point x="164" y="233" type="curve"/>
+      <point x="29" y="234" type="line"/>
+      <point x="42" y="80"/>
+      <point x="116" y="-10"/>
     </contour>
     <contour>
-      <point x="168" y="305" type="line"/>
-      <point x="326" y="305" type="line"/>
-      <point x="326" y="415" type="line"/>
-      <point x="168" y="415" type="line"/>
+      <point x="184" y="305" type="line"/>
+      <point x="325" y="305" type="line"/>
+      <point x="325" y="415" type="line"/>
+      <point x="184" y="415" type="line"/>
     </contour>
   </outline>
 </glyph>

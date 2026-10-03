@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="kadescender-cy" format="2">
-  <advance width="645"/>
+  <advance width="616"/>
   <unicode hex="049B"/>
   <anchor x="312" y="0" name="bottom"/>
   <anchor x="312" y="510" name="top"/>
@@ -8,8 +8,8 @@
     <contour>
       <point x="60" y="0" type="line"/>
       <point x="210" y="0" type="line"/>
-      <point x="210" y="490" type="line"/>
-      <point x="60" y="490" type="line"/>
+      <point x="210" y="510" type="line"/>
+      <point x="60" y="510" type="line"/>
     </contour>
     <contour>
       <point x="387" y="0" type="line"/>
@@ -22,15 +22,15 @@
     </contour>
     <contour>
       <point x="431" y="0" type="line"/>
-      <point x="627" y="0" type="line"/>
-      <point x="627" y="114" type="line"/>
+      <point x="598" y="0" type="line"/>
+      <point x="598" y="114" type="line"/>
       <point x="431" y="114" type="line"/>
     </contour>
     <contour>
-      <point x="489" y="-160" type="line"/>
-      <point x="627" y="-160" type="line"/>
-      <point x="627" y="114" type="line"/>
-      <point x="489" y="114" type="line"/>
+      <point x="460" y="-160" type="line"/>
+      <point x="598" y="-160" type="line"/>
+      <point x="598" y="114" type="line"/>
+      <point x="460" y="114" type="line"/>
     </contour>
   </outline>
 </glyph>

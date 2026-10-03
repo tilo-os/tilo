@@ -2,8 +2,8 @@
 <glyph name="ereversed-cy" format="2">
   <advance width="418"/>
   <unicode hex="044D"/>
-  <anchor x="208" y="0" name="bottom"/>
-  <anchor x="208" y="510" name="top"/>
+  <anchor x="209" y="0" name="bottom"/>
+  <anchor x="209" y="510" name="top"/>
   <outline>
     <contour>
       <point x="203" y="-10" type="curve" smooth="yes"/>
@@ -13,12 +13,12 @@
       <point x="397" y="428"/>
       <point x="309" y="520"/>
       <point x="198" y="520" type="curve" smooth="yes"/>
-      <point x="96" y="520"/>
-      <point x="18" y="451"/>
-      <point x="18" y="308" type="curve"/>
-      <point x="140" y="308" type="line"/>
-      <point x="140" y="387"/>
-      <point x="163" y="412"/>
+      <point x="110" y="520"/>
+      <point x="41" y="469"/>
+      <point x="23" y="364" type="curve"/>
+      <point x="146" y="364" type="line"/>
+      <point x="154" y="400"/>
+      <point x="172" y="412"/>
       <point x="194" y="412" type="curve" smooth="yes"/>
       <point x="227" y="412"/>
       <point x="257" y="382"/>
@@ -26,18 +26,18 @@
       <point x="257" y="129"/>
       <point x="227" y="98"/>
       <point x="194" y="98" type="curve" smooth="yes"/>
-      <point x="163" y="98"/>
-      <point x="140" y="123"/>
-      <point x="140" y="202" type="curve"/>
-      <point x="18" y="202" type="line"/>
-      <point x="18" y="60"/>
-      <point x="103" y="-10"/>
+      <point x="169" y="98"/>
+      <point x="150" y="114"/>
+      <point x="143" y="160" type="curve"/>
+      <point x="21" y="160" type="line"/>
+      <point x="36" y="46"/>
+      <point x="113" y="-10"/>
     </contour>
     <contour>
-      <point x="132" y="208" type="line"/>
-      <point x="267" y="208" type="line"/>
-      <point x="267" y="316" type="line"/>
-      <point x="132" y="316" type="line"/>
+      <point x="163" y="218" type="line"/>
+      <point x="267" y="218" type="line"/>
+      <point x="267" y="306" type="line"/>
+      <point x="163" y="306" type="line"/>
     </contour>
   </outline>
 </glyph>

@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="sha-cy" format="2">
-  <advance width="653"/>
+  <advance width="648"/>
   <unicode hex="0448"/>
-  <anchor x="326" y="0" name="bottom"/>
-  <anchor x="326" y="510" name="top"/>
+  <anchor x="324" y="0" name="bottom"/>
+  <anchor x="324" y="510" name="top"/>
   <outline>
     <contour>
       <point x="44" y="0" type="line"/>
@@ -12,21 +12,21 @@
       <point x="44" y="510" type="line"/>
     </contour>
     <contour>
-      <point x="257" y="0" type="line"/>
-      <point x="395" y="0" type="line"/>
-      <point x="395" y="510" type="line"/>
-      <point x="257" y="510" type="line"/>
+      <point x="255" y="0" type="line"/>
+      <point x="393" y="0" type="line"/>
+      <point x="393" y="510" type="line"/>
+      <point x="255" y="510" type="line"/>
     </contour>
     <contour>
-      <point x="471" y="0" type="line"/>
-      <point x="609" y="0" type="line"/>
-      <point x="609" y="510" type="line"/>
-      <point x="471" y="510" type="line"/>
+      <point x="466" y="0" type="line"/>
+      <point x="604" y="0" type="line"/>
+      <point x="604" y="510" type="line"/>
+      <point x="466" y="510" type="line"/>
     </contour>
     <contour>
       <point x="113" y="0" type="line"/>
-      <point x="540" y="0" type="line"/>
-      <point x="540" y="108" type="line"/>
+      <point x="535" y="0" type="line"/>
+      <point x="535" y="108" type="line"/>
       <point x="113" y="108" type="line"/>
     </contour>
   </outline>
