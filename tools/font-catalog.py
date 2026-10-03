@@ -45,7 +45,7 @@ def verify(root, scope):
         if actual != entry["sha256"]:
             raise ValueError(f"SHA-256 mismatch: {path}")
     count, total = len(fonts), sum(f["bytes"] for f in fonts)
-    expected = (22, data["fixture_bytes"]) if scope == "fixtures" else (21, data["product_bytes"])
+    expected = (21, data["fixture_bytes"]) if scope == "fixtures" else (20, data["product_bytes"])
     if (count, total) != expected:
         raise ValueError(f"invalid catalog payload: {(count, total)} != {expected}")
     licensed = {entry["file"] for entry in data["license"]}
