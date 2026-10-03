@@ -170,6 +170,16 @@ pub enum Icon {
     Palette,
     /// A side panel on the right, shown or hidden. Lucide `panel-right`.
     PanelRight,
+    /// A rectangle of an area being selected. Lucide `square-dashed`.
+    SquareDashed,
+    /// An ellipse of an area being selected. Lucide `circle-dashed`.
+    CircleDashed,
+    /// A freehand selection. Lucide `lasso`.
+    Lasso,
+    /// Selecting by colour, a magic wand. Lucide `wand-sparkles`.
+    WandSparkles,
+    /// Filling an area with colour. Lucide `paint-bucket`.
+    PaintBucket,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -813,6 +823,66 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
             line_path(15.0, 3.0, 15.0, 21.0),
         ],
+        Icon::SquareDashed => [
+            "M5 3a2 2 0 0 0-2 2",
+            "M19 3a2 2 0 0 1 2 2",
+            "M21 19a2 2 0 0 1-2 2",
+            "M5 21a2 2 0 0 1-2-2",
+            "M9 3h1",
+            "M9 21h1",
+            "M14 3h1",
+            "M14 21h1",
+            "M3 9v1",
+            "M21 9v1",
+            "M3 14v1",
+            "M21 14v1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::CircleDashed => [
+            "M10.1 2.182a10 10 0 0 1 3.8 0",
+            "M13.9 21.818a10 10 0 0 1-3.8 0",
+            "M17.609 3.721a10 10 0 0 1 2.69 2.7",
+            "M2.182 13.9a10 10 0 0 1 0-3.8",
+            "M20.279 17.609a10 10 0 0 1-2.7 2.69",
+            "M21.818 10.1a10 10 0 0 1 0 3.8",
+            "M3.721 6.391a10 10 0 0 1 2.7-2.69",
+            "M6.391 20.279a10 10 0 0 1-2.69-2.7",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Lasso => vec![
+            path_from_d("M7 22a5 5 0 0 1-2-4"),
+            path_from_d("M7 16.93c.96.43 1.96.74 2.99.91"),
+            path_from_d(
+                "M3.34 14A6.8 6.8 0 0 1 2 10c0-4.42 4.48-8 10-8s10 3.58 10 8-4.48 8-10 8a12 12 0 0 1-1.57-.1",
+            ),
+            circle_path(5.0, 16.0, 2.0),
+        ],
+        Icon::WandSparkles => [
+            "m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72",
+            "m14 7 3 3",
+            "M5 6v4",
+            "M19 14v4",
+            "M10 2v2",
+            "M7 8H3",
+            "M21 16h-4",
+            "M11 3H9",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::PaintBucket => [
+            "m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z",
+            "m5 2 5 5",
+            "M2 13h15",
+            "M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
     }
 }
 
@@ -1391,6 +1461,11 @@ mod tests {
                 Icon::Droplet,
                 Icon::Palette,
                 Icon::PanelRight,
+                Icon::SquareDashed,
+                Icon::CircleDashed,
+                Icon::Lasso,
+                Icon::WandSparkles,
+                Icon::PaintBucket,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
