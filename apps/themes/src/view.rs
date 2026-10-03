@@ -497,7 +497,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                         cx,
                         &id,
                         (0.0, 360.0),
-                        |theme| f64::from(theme.palette.0.hue),
+                        |theme| f64::from(theme.palette.0.hue.unwrap_or_default()),
                         Studio::SET_HUE,
                     ),
                 ))
