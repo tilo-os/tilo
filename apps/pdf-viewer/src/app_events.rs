@@ -287,7 +287,7 @@ impl PdfApp {
     ) {
         let input = &mut self.zoom_input;
         let _ = Self::with_local_ctx(scale, modifiers, state, |ctx| {
-            input.handle_event(event, ctx)
+            input.handle_event(event, ctx);
         });
         if let Some(percent) = self.zoom_input.take_changed() {
             self.set_custom_zoom(percent / 100.0);
