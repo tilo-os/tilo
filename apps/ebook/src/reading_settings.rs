@@ -5,16 +5,19 @@
 //! responsible for persisting those effects in the books document.
 
 use automerge::{AutoCommit, ObjId};
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
+use ui::TextRole;
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ControlSize, SegmentedFace, ToggleGroup,
+};
 
 use crate::input_controls::{InputEventCtx, NumberControls, NumberField};
 use crate::model::{ColorScheme, CompositionStyle, FontEntry, ReadMode, ReadTheme, Settings};
-use crate::paint;
-
-const TOP_BAR: f64 = 54.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ReadingSettingsAction {
@@ -45,13 +48,16 @@ struct SchemePill {
 struct Layout {
     pad: f64,
     row_h: f64,
-    pill_h: f64,
-    pill_gap: f64,
-    header_h: f64,
+    segment_h: f64,
+    chip_h: f64,
+    chip_gap: f64,
+    /// Between the popover's groups.
+    gap: f64,
     panel: Rect,
     ix0: f64,
     ix1: f64,
-    font_pills: Vec<(String, String, f64, bool)>,
+    font_pills: Vec<FontPill>,
+    font_widths: Vec<f64>,
     scheme_pills: Vec<SchemePill>,
     scheme_widths: Vec<f64>,
 }
@@ -291,27 +297,35 @@ impl ReadingSettings {
             .collect()
     }
 
-    /// Horizontal panel bounds inside the reader area. The host passes the
-    /// already-resolved left/right edges of any docked rails.
-    pub(crate) fn panel_x_bounds(viewport: Rect, content_x0: f64, content_x1: f64) -> (f64, f64) {
-        let panel_w = 320.0_f64.min(viewport.width() - 24.0);
-        let px1 = content_x1;
-        ((px1 - panel_w).max(content_x0), px1)
+    /// Where the popover sits: under its button, its trailing edge on the
+    /// button's (or as far in as the window allows), a utility panel wide.
+    pub(crate) fn panel_x_bounds(
+        viewport: Rect,
+        anchor: Rect,
+        width: f64,
+        margin: f64,
+    ) -> (f64, f64) {
+        let width = width.min(viewport.width() - 2.0 * margin).max(0.0);
+        let x1 = anchor
+            .x1
+            .min(viewport.x1 - margin)
+            .max(viewport.x0 + margin + width);
+        (x1 - width, x1)
     }
 
     pub(crate) fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         viewport: Rect,
-        content_x0: f64,
-        content_x1: f64,
+        anchor: Rect,
         appearance: &Appearance<'_>,
     ) {
         if !self.open {
             return;
         }
-
-        let layout = Self::layout(ctx.text, viewport, content_x0, content_x1, appearance);
+        let base = ctx.theme;
+        let theme = base.on_ground(ui::chrome::panel_ground(base));
+        let layout = Self::layout(ctx.text, &theme, viewport, anchor, appearance);
         // The page remains an undimmed live preview. The outside-click
         // dismiss target is the viewport *around* the panel, registered as
         // the four bands beside it rather than one rect under it, so its
@@ -328,32 +342,72 @@ impl ReadingSettings {
                 self.push_hit(band, ReadingSettingsAction::Dismiss);
             }
         }
-        self.draw_panel_background(ctx, layout.panel);
-
-        let settings = appearance.settings;
-        let mut y = layout.panel.y0 + layout.pad;
-        y = self.draw_header(ctx, &layout, y);
-        y = self.draw_steppers(ctx, &layout, y, settings);
-        y = self.draw_layout_row(ctx, &layout, y, settings);
-        y = self.draw_composition_row(ctx, &layout, y, settings);
-        y = self.draw_font_row(ctx, &layout, y);
-        self.draw_page_row(ctx, &layout, y);
-    }
-
-    /// Paint the popover's rounded panel background + border and register it
-    /// as a modal "swallow" hit so a click inside the panel (but on no more
-    /// specific control) doesn't fall through to the outside-dismiss hit.
-    fn draw_panel_background(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect) {
-        // A floating Panel: elevation, ground and the derived Panel border.
-        crate::chrome::panel(ctx.scene, ctx.transform, ctx.theme, panel);
+        ui::widget::floating_surface::paint(ctx.scene, ctx.transform, panel, base);
         self.push_hit(panel, ReadingSettingsAction::Swallow);
+
+        let mut panel_ctx = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &theme);
+        let ctx = &mut panel_ctx;
+        let settings = appearance.settings;
+        let mut y = panel.y0 + layout.pad;
+        y = self.draw_steppers(ctx, &layout, y, settings);
+        y = self.draw_segments(
+            ctx,
+            &layout,
+            y,
+            "Layout",
+            &ReadMode::ALL
+                .iter()
+                .map(|mode| {
+                    Choice::new(
+                        mode.label(),
+                        settings.mode == *mode,
+                        ReadingSettingsAction::SetMode(*mode),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        y = self.draw_segments(
+            ctx,
+            &layout,
+            y,
+            "Text",
+            &CompositionStyle::ALL
+                .iter()
+                .map(|style| {
+                    Choice::new(
+                        style.label(),
+                        settings.composition == *style,
+                        ReadingSettingsAction::SetComposition(*style),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        let fonts: Vec<Choice<'_>> = layout
+            .font_pills
+            .iter()
+            .map(|(id, label, _, active)| {
+                Choice::new(label, *active, ReadingSettingsAction::SetFont(id.clone()))
+            })
+            .collect();
+        y = self.draw_chips(ctx, &layout, y, "Typeface", &fonts, &layout.font_widths);
+        let schemes: Vec<Choice<'_>> = layout
+            .scheme_pills
+            .iter()
+            .map(|pill| Choice::new(&pill.label, pill.active, pill.action.clone()))
+            .collect();
+        y = self.draw_chips(ctx, &layout, y, "Page", &schemes, &layout.scheme_widths);
+        self.draw_manage(ctx, &layout, y);
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "row counts of a short popover are far below f64's exact-integer range"
+    )]
     fn layout(
         text: &mut TextRenderer,
+        theme: &Theme,
         viewport: Rect,
-        content_x0: f64,
-        content_x1: f64,
+        anchor: Rect,
         appearance: &Appearance<'_>,
     ) -> Layout {
         let &Appearance {
@@ -362,60 +416,75 @@ impl ReadingSettings {
             default_font_id,
             schemes,
         } = appearance;
-        let pad = 16.0;
-        let row_h = 34.0;
-        let pill_h = row_h - 4.0;
-        let pill_gap = 8.0;
-        let (px0, px1) = Self::panel_x_bounds(viewport, content_x0, content_x1);
+        let spacing = &theme.tokens.spacing;
+        let rhythm = &spacing.rhythm;
+        let pad = f64::from(rhythm.section);
+        let margin = f64::from(spacing.s3);
+        let (px0, px1) = Self::panel_x_bounds(
+            viewport,
+            anchor,
+            f64::from(theme.tokens.metrics.panel_width_utility),
+            margin,
+        );
         let inner_w = px1 - px0 - pad * 2.0;
+        let chip_gap = f64::from(rhythm.related);
 
-        let (font_pills, font_widths) = Self::font_pills(text, fonts, settings, default_font_id);
-        let (scheme_pills, scheme_widths) = Self::scheme_pills(text, schemes, settings);
+        let (font_pills, font_widths) =
+            Self::font_pills(text, theme, fonts, settings, default_font_id);
+        let (scheme_pills, scheme_widths) = Self::scheme_pills(text, theme, schemes, settings);
 
-        let font_rows = wrap_row_count(&font_widths, inner_w, pill_gap);
-        let scheme_rows = wrap_row_count(&scheme_widths, inner_w, pill_gap);
-        let header_h = 30.0;
-        let steppers_h = row_h + 10.0 + row_h;
-        let layout_h = 16.0 + pill_h;
-        let composition_h = 16.0 + pill_h;
-        let type_h =
-            16.0 + font_rows as f64 * pill_h + font_rows.saturating_sub(1) as f64 * pill_gap;
-        let page_h =
-            16.0 + scheme_rows as f64 * pill_h + scheme_rows.saturating_sub(1) as f64 * pill_gap;
+        let label_h = f64::from(
+            text.measure_style("Ag", None, &theme.text(TextRole::Subheading))
+                .1,
+        );
+        let row_h = ControlSize::Small.height(theme).max(label_h);
+        let segment_h = SegmentedFace::height(ControlSize::Small, theme);
+        let chip_h = ChipFace::height(theme);
+        let section = label_h + f64::from(rhythm.related);
+        let gap = f64::from(rhythm.sibling);
+        let font_rows = wrap_row_count(&font_widths, inner_w, chip_gap) as f64;
+        let scheme_rows = wrap_row_count(&scheme_widths, inner_w, chip_gap) as f64;
+        let manage_h = ControlSize::Small.height(theme);
         let panel_h = pad * 2.0
-            + header_h
-            + steppers_h
-            + 22.0
-            + layout_h
-            + 22.0
-            + composition_h
-            + 22.0
-            + type_h
-            + 22.0
-            + page_h;
-        let py0 = viewport.y0 + TOP_BAR + 8.0;
-        let py1 = (py0 + panel_h).min(viewport.y1 - 12.0);
+            + 2.0 * row_h
+            + f64::from(rhythm.related)
+            + gap
+            + 2.0 * (section + segment_h + gap)
+            + section
+            + font_rows * chip_h
+            + (font_rows - 1.0).max(0.0) * chip_gap
+            + gap
+            + section
+            + scheme_rows * chip_h
+            + (scheme_rows - 1.0).max(0.0) * chip_gap
+            + gap
+            + manage_h;
+        let py0 = anchor.y1 + f64::from(spacing.s1);
+        let py1 = (py0 + panel_h).min(viewport.y1 - margin);
 
         Layout {
             pad,
             row_h,
-            pill_h,
-            pill_gap,
-            header_h,
+            segment_h,
+            chip_h,
+            chip_gap,
+            gap,
             panel: Rect::new(px0, py0, px1, py1),
             ix0: px0 + pad,
             ix1: px1 - pad,
             font_pills,
+            font_widths,
             scheme_pills,
             scheme_widths,
         }
     }
 
-    /// The typeface quick-picker pills: one per shown font (falling back to
-    /// every registered font if none are marked `shown`), each labelled with
-    /// its display name and flagged active against the resolved current font.
+    /// The typeface choices: one per shown font (every registered font when
+    /// none is shown), each labelled with its name and flagged against the
+    /// resolved current font. Returns the choices and their chip widths.
     fn font_pills(
         text: &mut TextRenderer,
+        theme: &Theme,
         fonts: &[FontEntry],
         settings: &Settings,
         default_font_id: &str,
@@ -442,10 +511,8 @@ impl ReadingSettings {
         let font_pills: Vec<_> = shown
             .into_iter()
             .map(|font| {
-                let width = f64::from(
-                    text.measure_weighted(&font.name, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0;
+                let width =
+                    ChipFace::intrinsic_width(&font.name, ChipLead::None, false, text, theme);
                 (
                     font.id.clone(),
                     font.name.clone(),
@@ -458,11 +525,12 @@ impl ReadingSettings {
         (font_pills, font_widths)
     }
 
-    /// The colour-scheme quick-picker pills: one per enabled scheme, resolving
-    /// built-ins to the matching [`ReadTheme`] action and custom schemes to a
-    /// direct scheme-id action, flagged active against the current settings.
+    /// The page choices: one per enabled scheme, resolving built-ins to the
+    /// matching [`ReadTheme`] action and custom schemes to a scheme-id
+    /// action, flagged against the current settings.
     fn scheme_pills(
         text: &mut TextRenderer,
+        theme: &Theme,
         schemes: &[ColorScheme],
         settings: &Settings,
     ) -> (Vec<SchemePill>, Vec<f64>) {
@@ -488,36 +556,9 @@ impl ReadingSettings {
             .collect();
         let scheme_widths: Vec<_> = scheme_pills
             .iter()
-            .map(|pill| {
-                f64::from(
-                    text.measure_weighted(&pill.label, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0
-            })
+            .map(|pill| ChipFace::intrinsic_width(&pill.label, ChipLead::None, false, text, theme))
             .collect();
         (scheme_pills, scheme_widths)
-    }
-
-    fn draw_header(&mut self, ctx: &mut PaintCtx<'_>, layout: &Layout, y: f64) -> f64 {
-        let theme = ctx.theme;
-        let (x0, x1) = (layout.ix0, layout.ix1);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "Display",
-            13.5,
-            theme.tokens.colors.text_primary,
-            ctx.transform * Affine::translate((x0, y + 4.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let size = 26.0;
-        let rect = Rect::new(x1 - size, y - 2.0, x1, y - 2.0 + size);
-        if rect.contains(self.cursor) {
-            ctx.fill_round(rect, f64::from(theme.tokens.radii.md), theme.bg_hover);
-        }
-        paint::dots(ctx.scene, ctx.transform, rect, theme.tokens.colors.text_dim);
-        self.push_hit(rect, ReadingSettingsAction::OpenManager);
-        y + layout.header_h
     }
 
     /// The text-size and line-spacing steppers, one labelled row each.
@@ -542,204 +583,132 @@ impl ReadingSettings {
                 NumberField::LineSpacing,
             ),
         ];
+        let control_h = ControlSize::Small.height(theme);
         for (i, (label, value, field)) in rows.into_iter().enumerate() {
             if i > 0 {
-                y += height + 10.0;
+                y += height + f64::from(theme.tokens.spacing.rhythm.related);
             }
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                label,
-                13.0,
-                theme.tokens.colors.text_primary,
-                ctx.transform * Affine::translate((x0, y + (height - 13.0) / 2.0)),
-                None,
-                TextWeight::Medium,
-            );
-            let width = (height * 2.0 + 62.0).min((x1 - x0) * 0.58);
+            let band = Rect::new(x0, y, x1, y + height);
+            ctx.text_role_in_band(label, TextRole::Label, theme.text_primary, x0, band, None);
+            let width = self
+                .numbers
+                .preferred_width(&field, value, ctx.text, theme)
+                .min((x1 - x0) * 0.6);
+            let cy = band.center().y;
             self.numbers.draw(
                 &field,
                 value,
-                Rect::new(x1 - width, y, x1, y + height),
+                Rect::new(x1 - width, cy - control_h / 2.0, x1, cy + control_h / 2.0),
                 ctx.scene,
                 ctx.transform,
                 ctx.text,
                 theme,
             );
         }
-        y + height + 22.0
+        y + height + layout.gap
     }
 
-    fn draw_layout_row(
+    /// A labelled segmented choice spanning the panel's width.
+    fn draw_segments(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         layout: &Layout,
         mut y: f64,
-        settings: &Settings,
-    ) -> f64 {
-        let (x0, x1, height, gap) = (layout.ix0, layout.ix1, layout.pill_h, layout.pill_gap);
-        Self::section_label(ctx, Point::new(x0, y), "LAYOUT");
-        y += 16.0;
-        let mut x = x0;
-        for mode in ReadMode::ALL {
-            let width = Self::pill_width(ctx.text, mode.label(), 12.5);
-            if x + width > x1 && x > x0 {
-                x = x0;
-                y += height + gap;
-            }
-            self.pill(
-                ctx,
-                Point::new(x, y),
-                height,
-                Choice::new(
-                    mode.label(),
-                    settings.mode == mode,
-                    ReadingSettingsAction::SetMode(mode),
-                ),
-            );
-            x += width + gap;
-        }
-        y + height + 22.0
-    }
-
-    fn draw_composition_row(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        layout: &Layout,
-        mut y: f64,
-        settings: &Settings,
-    ) -> f64 {
-        let (x0, height, gap) = (layout.ix0, layout.pill_h, layout.pill_gap);
-        Self::section_label(ctx, Point::new(x0, y), "COMPOSITION");
-        y += 16.0;
-        let mut x = x0;
-        for composition in CompositionStyle::ALL {
-            let width = self.pill(
-                ctx,
-                Point::new(x, y),
-                height,
-                Choice::new(
-                    composition.label(),
-                    settings.composition == composition,
-                    ReadingSettingsAction::SetComposition(composition),
-                ),
-            );
-            x += width + gap;
-        }
-        y + height + 22.0
-    }
-
-    fn draw_font_row(&mut self, ctx: &mut PaintCtx<'_>, layout: &Layout, mut y: f64) -> f64 {
-        let (x0, x1, height, gap) = (layout.ix0, layout.ix1, layout.pill_h, layout.pill_gap);
-        Self::section_label(ctx, Point::new(x0, y), "TYPEFACE");
-        y += 16.0;
-        let mut x = x0;
-        for (id, label, width, active) in &layout.font_pills {
-            if x + width > x1 && x > x0 {
-                x = x0;
-                y += height + gap;
-            }
-            self.pill(
-                ctx,
-                Point::new(x, y),
-                height,
-                Choice::new(label, *active, ReadingSettingsAction::SetFont(id.clone())),
-            );
-            x += width + gap;
-        }
-        y + height + 22.0
-    }
-
-    fn draw_page_row(&mut self, ctx: &mut PaintCtx<'_>, layout: &Layout, mut y: f64) {
-        let (x0, x1, height, gap) = (layout.ix0, layout.ix1, layout.pill_h, layout.pill_gap);
-        Self::section_label(ctx, Point::new(x0, y), "PAGE");
-        y += 16.0;
-        let mut x = x0;
-        for (pill, width) in layout.scheme_pills.iter().zip(&layout.scheme_widths) {
-            if x + width > x1 && x > x0 {
-                x = x0;
-                y += height + gap;
-            }
-            self.pill(
-                ctx,
-                Point::new(x, y),
-                height,
-                Choice::new(&pill.label, pill.active, pill.action.clone()),
-            );
-            x += width + gap;
-        }
-    }
-
-    fn section_label(ctx: &mut PaintCtx<'_>, origin: Point, label: &str) {
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            label,
-            10.0,
-            ctx.theme.tokens.colors.text_dim,
-            ctx.transform * Affine::translate((origin.x, origin.y)),
-            None,
-            TextWeight::Semibold,
-        );
-    }
-
-    fn pill_width(text: &mut TextRenderer, label: &str, size: f32) -> f64 {
-        f64::from(
-            text.measure_weighted(label, size, None, TextWeight::Medium)
-                .0,
-        ) + 24.0
-    }
-
-    /// Paint one choice pill of `height` at `origin` and register its hit.
-    /// Returns its width.
-    fn pill(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        origin: Point,
-        height: f64,
-        choice: Choice<'_>,
+        title: &str,
+        choices: &[Choice<'_>],
     ) -> f64 {
         let theme = ctx.theme;
-        let (x, y) = (origin.x, origin.y);
-        let Choice {
-            label,
-            active,
-            action,
-        } = choice;
-        let width = Self::pill_width(ctx.text, label, 12.5);
-        let rect = Rect::new(x, y, x + width, y + height);
-        let colors = &theme.tokens.colors;
-        // Chip quiet (HIG §9.5): a raised face with its derived edge at rest;
-        // the chosen chip is the accent fill with no edge, inked for contrast.
-        if active {
-            ctx.fill_round(rect, height / 2.0, theme.accent_primary);
-        } else {
-            crate::chrome::quiet_pill(
-                ctx.scene,
-                ctx.transform,
-                theme,
-                rect,
-                height / 2.0,
-                colors.surfaces.raised,
-                rect.contains(self.cursor),
-            );
-        }
-        let (_, label_h) = ctx
-            .text
-            .measure_weighted(label, 12.5, None, TextWeight::Medium);
-        ctx.text.draw_text_weighted(
+        y = Self::section_label(ctx, Point::new(layout.ix0, y), title);
+        let count = choices.len().max(1);
+        let width = (layout.ix1 - layout.ix0) / count as f64;
+        let segments: Vec<Rect> = (0..choices.len())
+            .map(|i| {
+                let x = layout.ix0 + i as f64 * width;
+                Rect::new(x, y, x + width, y + layout.segment_h)
+            })
+            .collect();
+        let labels: Vec<&str> = choices.iter().map(|choice| choice.label).collect();
+        let selected = choices
+            .iter()
+            .position(|choice| choice.active)
+            .unwrap_or(choices.len());
+        let hovered = segments.iter().position(|rect| rect.contains(self.cursor));
+        ToggleGroup::paint(
             ctx.scene,
-            label,
-            12.5,
-            if active {
-                theme.on_surface(theme.accent_primary).ink
-            } else {
-                colors.text_primary
-            },
-            ctx.transform * Affine::translate((x + 12.0, y + (height - f64::from(label_h)) / 2.0)),
-            None,
-            TextWeight::Medium,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &SegmentedFace::new(&segments, &labels, selected)
+                .control_size(ControlSize::Small)
+                .hovered(hovered),
         );
-        self.push_hit(rect, action);
-        width
+        for (choice, rect) in choices.iter().zip(&segments) {
+            self.push_hit(*rect, choice.action.clone());
+        }
+        y + layout.segment_h + layout.gap
+    }
+
+    /// A labelled set of choice chips that wrap to the panel's width.
+    fn draw_chips(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        layout: &Layout,
+        mut y: f64,
+        title: &str,
+        choices: &[Choice<'_>],
+        widths: &[f64],
+    ) -> f64 {
+        let theme = ctx.theme;
+        y = Self::section_label(ctx, Point::new(layout.ix0, y), title);
+        let mut x = layout.ix0;
+        for (choice, width) in choices.iter().zip(widths) {
+            if x + width > layout.ix1 && x > layout.ix0 {
+                x = layout.ix0;
+                y += layout.chip_h + layout.chip_gap;
+            }
+            let rect = Rect::new(x, y, (x + width).min(layout.ix1), y + layout.chip_h);
+            ChipFace::new(rect, choice.label)
+                .selected(choice.active)
+                .hovered(rect.contains(self.cursor))
+                .paint(ctx.scene, ctx.transform, ctx.text, theme);
+            self.push_hit(rect, choice.action.clone());
+            x += width + layout.chip_gap;
+        }
+        y + layout.chip_h + layout.gap
+    }
+
+    /// "Fonts and schemes", which opens their managers in Settings.
+    fn draw_manage(&mut self, ctx: &mut PaintCtx<'_>, layout: &Layout, y: f64) {
+        let theme = ctx.theme;
+        let label = "Fonts and schemes";
+        let size = ControlSize::Small;
+        let width = ButtonFace::new(Rect::ZERO, label)
+            .icon(Icon::Settings)
+            .control_size(size)
+            .intrinsic_width(ctx.text, theme);
+        let rect = Rect::new(layout.ix0, y, layout.ix0 + width, y + size.height(theme));
+        let face = ButtonFace::new(rect, label)
+            .icon(Icon::Settings)
+            .control_size(size)
+            .role(ButtonRole::Plain)
+            .hovered(rect.contains(self.cursor));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+        self.push_hit(face.hit_rect(theme), ReadingSettingsAction::OpenManager);
+    }
+
+    /// A group label inside the popover. Returns the y below it.
+    fn section_label(ctx: &mut PaintCtx<'_>, origin: Point, label: &str) -> f64 {
+        let theme = ctx.theme;
+        ctx.text_role(
+            label,
+            TextRole::Subheading,
+            theme.text_primary,
+            origin,
+            None,
+        );
+        origin.y
+            + ctx.line_box(TextRole::Subheading)
+            + f64::from(theme.tokens.spacing.rhythm.related)
     }
 
     fn push_hit(&mut self, rect: Rect, action: ReadingSettingsAction) {
@@ -788,11 +757,18 @@ mod tests {
     /// The panel clamps between the rails, pill rows wrap greedily keeping empty sections, and the hit stack prefers controls.
     #[test]
     fn reading_settings_panel_layout_and_hit_stack() {
-        // --- phase: panel_clamps_between_resolved_reader_rails ---
+        // --- phase: panel_hangs_from_its_button_inside_the_window ---
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let (x0, x1) = ReadingSettings::panel_x_bounds(viewport, 256.0, 936.0);
+            let button = Rect::new(900.0, 12.0, 936.0, 44.0);
+            let (x0, x1) = ReadingSettings::panel_x_bounds(viewport, button, 320.0, 12.0);
             assert_eq!((x0, x1), (616.0, 936.0));
+            let near_edge = Rect::new(100.0, 12.0, 136.0, 44.0);
+            let (x0, _) = ReadingSettings::panel_x_bounds(viewport, near_edge, 320.0, 12.0);
+            assert_eq!(
+                x0, 12.0,
+                "a button near the leading edge keeps the panel inside"
+            );
         }
 
         // --- phase: pill_rows_wrap_greedily_and_keep_empty_sections_visible ---

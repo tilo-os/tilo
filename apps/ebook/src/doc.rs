@@ -219,7 +219,8 @@ impl BooksDoc {
         let f64_value = |key| maps.iter().find_map(|map| read_number(doc, map, key));
         let str_value = |key| maps.iter().find_map(|map| read_str(doc, map, key));
         if let Some(v) = f64_value("font_scale") {
-            s.font_scale = (v as f32).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
+            s.font_scale =
+                (v as f32).clamp(Settings::READING_SCALE_MIN, Settings::READING_SCALE_MAX);
         }
         if let Some(v) = f64_value("line_spacing") {
             s.line_spacing = (v as f32).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);

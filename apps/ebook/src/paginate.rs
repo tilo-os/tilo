@@ -301,13 +301,13 @@ fn weight(bold: bool) -> TextWeight {
 
 /// Reader font scale from which layout keeps natural glyph metrics inside
 /// the measured page box: no glyph expansion and no hanging punctuation.
-const ACCESSIBLE_FONT_SCALE: f32 = 1.35;
+const ACCESSIBLE_READING_SCALE: f32 = 1.35;
 
 /// Whether punctuation may hang into the margins: book composition at
 /// ordinary sizes. At accessibility sizes a hanging mark is a whole glyph
 /// width outside the measure on a narrow page.
 fn hangs_punctuation(settings: &Settings) -> bool {
-    settings.composition.justified() && settings.font_scale < ACCESSIBLE_FONT_SCALE
+    settings.composition.justified() && settings.font_scale < ACCESSIBLE_READING_SCALE
 }
 
 fn punctuation_protrusion(character: char) -> f32 {
@@ -1011,7 +1011,12 @@ fn compose_block_lines(
     let verse = matches!(composition.style.kind, LayoutKind::Verse { .. });
     let boxes = paragraph_boxes(composition.words, space_width);
     let mut options = ParagraphOptions::new(text_width);
+    // Justification spreads a line's slack over its spaces; below about
+    // twenty ems a line has too few spaces to take it without rivers, so a
+    // narrow measure sets ragged (still hyphenated) whatever the book asks.
+    let wide_measure = text_width >= composition.style.size * text.text_scale() * 20.0;
     options.justify = composition.settings.composition.justified()
+        && wide_measure
         && matches!(
             composition.style.kind,
             LayoutKind::Paragraph | LayoutKind::Quote
@@ -1020,10 +1025,7 @@ fn compose_block_lines(
     // the subtle expansion used for book-like justification. On a narrow
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
-    if !composition.settings.composition.justified()
-        || composition.settings.font_scale >= ACCESSIBLE_FONT_SCALE
-        || verse
-    {
+    if !options.justify || composition.settings.font_scale >= ACCESSIBLE_READING_SCALE || verse {
         options.max_glyph_expansion = 0.0;
     }
     let em = composition.style.size;
@@ -1184,6 +1186,19 @@ pub struct ChapterLayoutRequest<'a> {
     pub font_signature: u64,
 }
 
+/// The marker set before a list item: its number, or a bullet.
+fn list_marker(block: &Block) -> Option<String> {
+    match block {
+        Block::ListItem {
+            ordered: true,
+            index: n,
+            ..
+        } => Some(format!("{n}.")),
+        Block::ListItem { ordered: false, .. } => Some("•".to_string()),
+        _ => None,
+    }
+}
+
 pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>) -> ChapterLayout {
     let text_scale = tr.text_scale();
     let key = LayoutKey::new(
@@ -1195,6 +1210,7 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
         text_scale,
     );
     let body = request.settings.body_size_with(request.font_multiplier);
+    let settings = request.settings;
     let base_mono = matches!(request.base_family, FontChoice::Monospace);
     let mut laid: Vec<LaidBlock> = Vec::with_capacity(request.blocks.len());
     let mut y = 0.0f32;
@@ -1233,11 +1249,11 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
             &WordBuildInput {
                 block,
                 style: &st,
-                settings: request.settings,
+                settings,
                 language: request.language,
                 base_family: request.base_family,
                 base_mono,
-                line_height: st.size * 1.25 * request.settings.line_spacing * text_scale,
+                line_height: st.size * 1.25 * settings.line_spacing * text_scale,
             },
         );
         let line_height = built.line_height;
@@ -1249,7 +1265,7 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
                 words: &built.words,
                 canonical_text: &built.canonical_text,
                 style: &st,
-                settings: request.settings,
+                settings,
                 content_width: request.content_width,
                 base_family: request.base_family,
                 block_top,
@@ -1257,16 +1273,7 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
             },
         );
 
-        let bullet = match block {
-            Block::ListItem {
-                ordered: true,
-                index: n,
-                ..
-            } => Some(format!("{n}.")),
-            Block::ListItem { ordered: false, .. } => Some("•".to_string()),
-            _ => None,
-        };
-
+        let bullet = list_marker(block);
         let height = lines.len() as f32 * line_height;
         laid.push(LaidBlock {
             index,
