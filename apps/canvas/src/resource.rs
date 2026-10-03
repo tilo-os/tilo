@@ -497,6 +497,9 @@ impl Resource for ArtworkResource {
             })
             .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
         ]
+        .into_iter()
+        .chain(area_declarations())
+        .collect()
     }
 
     fn action_schema() -> Option<Value> {
@@ -596,6 +599,30 @@ impl Resource for ArtworkResource {
         );
         entries
     }
+}
+
+/// Selecting areas, using the selection and combining shapes.
+fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
+    vec![
+            ActionDecl::new("select", "Select area", params_of::<crate::selection::Select>(), |args, _now| {
+            let mut select: crate::selection::Select = read_args(args)?;
+            crate::author::resolve(&mut select)?;
+            Ok(CanvasAction::Select(Box::new(select)))
+        })
+        .describe("Select an area to work on: rect, ellipse, lasso points, path d, marks' shapes, or by colour (at: magic wand, colour: everywhere); add, subtract or intersect; grow, feather, invert. use-selection then fills, outlines, masks or clears it; paint and draw with clip: \"selection\" stay inside it. Bucket fill: select at, then use-selection fill. inspect and look show it."),
+        decl::<crate::selection::UseSelection>(
+            "use-selection",
+            "Use selection",
+            "Make the selection a fill or outline mark on a layer, mask the layer to it (mask) or hide it there (clear). Masks are layers of grey marks (<layer>-mask) you can paint and draw on; edit-layer inverts or removes them.",
+            CanvasAction::UseSelection,
+        ),
+        decl::<crate::selection::Combine>(
+            "combine",
+            "Combine shapes",
+            "Combine shapes into one path mark in one step, in place of the bottom one and in its style: union, subtract, intersect or exclude. Outlines and brush strokes count as the area of their ink.",
+            CanvasAction::Combine,
+        ),
+    ]
 }
 
 /// How a view's arguments become the operation it asks for.
