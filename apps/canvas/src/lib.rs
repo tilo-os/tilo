@@ -68,6 +68,7 @@ impl ResourceApp for App {
             .push(Box::new(
                 Pane::new(panels::header::header(cx, &tools), Edge::Bottom).grouping(),
             ))
+            .push(panels::header::context_bar(cx, &tools))
             .push(canvas);
         let sidebar = {
             let tools = tools.clone();

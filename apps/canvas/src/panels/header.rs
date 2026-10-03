@@ -69,6 +69,117 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     )
 }
 
+/// The strip under the header while there is something to do with what is
+/// selected: an area to fill, outline, mask the chosen layer to, clear,
+/// invert or drop; shapes to combine into one. Nothing otherwise.
+pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let selected = cx.value(|art: &Artwork| art.selection.is_some());
+    let tools = tools.clone();
+    cx.switch(&selected, move |cx, selected| {
+        let area = *selected;
+        let tools = tools.clone();
+        cx.switch(&tools.selection.clone(), move |cx, picked| {
+            let combine = picked.len() >= 2;
+            if !area && !combine {
+                return Box::new(Spacer::fixed(0.0)) as Element;
+            }
+            let mut row = Row::new()
+                .no_wrap()
+                .with_padding(10.0, 4.0)
+                .with_gap(2.0)
+                .with_align_items(ui::taffy::AlignItems::Center);
+            if area {
+                row = row.push(area_buttons(cx, &tools));
+            }
+            if combine {
+                row = row.push(combine_buttons(cx, &tools));
+            }
+            Box::new(super::pane::Pane::new(
+                Box::new(row),
+                super::pane::Edge::Bottom,
+            ))
+        })
+    })
+}
+
+/// A text button invoking `action` with what it reads when pressed.
+fn text_button(
+    cx: &ViewCx<ArtworkResource>,
+    id: &str,
+    action: impl ui::tilo_resource::Binds<ArtworkResource, ()>,
+) -> Element {
+    let label = ui::i18n::I18nManager::lookup_plain(id);
+    Box::new(cx.actions().bind(
+        Button::new(id, &label, None).ghost().fit_content(28.0),
+        action,
+    ))
+}
+
+/// Fill, outline, mask, clear, invert, select nothing.
+fn area_buttons(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let using = |what: &'static str| {
+        let loaded = tools.loaded();
+        text_button(
+            cx,
+            &format!("canvas-area-{what}"),
+            ArtworkResource::USE_SELECTION
+                .map(move |()| (what.to_owned(), loaded.layer(), Some(loaded.paint()))),
+        )
+    };
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .with_gap(2.0)
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(Box::new(
+                Text::new(&lookup("canvas-area")).with_role(TextRole::Label),
+            ))
+            .push(using("fill"))
+            .push(using("stroke"))
+            .push(using("mask"))
+            .push(using("clear"))
+            .push(Box::new(
+                cx.button(
+                    &lookup("canvas-area-invert"),
+                    ArtworkResource::SELECT_INVERT.with(true),
+                )
+                .ghost()
+                .fit_content(28.0),
+            ))
+            .push(Box::new(
+                cx.button(
+                    &lookup("canvas-area-none"),
+                    ArtworkResource::SELECT_MODE.with("none".into()),
+                )
+                .ghost()
+                .fit_content(28.0),
+            ))
+            .push(Box::new(Spacer::fixed(12.0))),
+    )
+}
+
+/// Unite, subtract, intersect or exclude the picked shapes.
+fn combine_buttons(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let mut row = Row::new()
+        .no_wrap()
+        .with_gap(2.0)
+        .with_align_items(ui::taffy::AlignItems::Center)
+        .push(Box::new(
+            Text::new(&lookup("canvas-combine")).with_role(TextRole::Label),
+        ));
+    for op in ["union", "subtract", "intersect", "exclude"] {
+        let picked = tools.selection.clone();
+        row = row.push(text_button(
+            cx,
+            &format!("canvas-combine-{op}"),
+            ArtworkResource::COMBINE.map(move |()| (picked.with(Clone::clone), op.to_owned())),
+        ));
+    }
+    Box::new(row)
+}
+
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the
 /// window.
 fn zoom(tools: &Tools) -> Element {

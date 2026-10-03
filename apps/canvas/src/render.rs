@@ -185,6 +185,17 @@ impl Renderer {
                 .as_ref()
                 .is_none_or(|only| only.contains(&layer.id))
         };
+        // A mask asked for by name shows as its greys.
+        for mask in art
+            .layers
+            .iter()
+            .filter(|layer| layer.is_mask() && options.layers.is_some() && shown(layer))
+        {
+            let grey = byte_of(mask.base * 255.0);
+            let base = Color::from_rgba8(grey, grey, grey, 255);
+            scene.fill(Fill::NonZero, transform, base, None, &board);
+            self.draw_plain(art, mask, options, scene, (transform, text));
+        }
         let mut at = 0;
         while let Some(base) = drawn.get(at) {
             // The layers clipped to `base`: those directly above it that clip.
