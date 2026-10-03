@@ -396,6 +396,11 @@ pub struct FrameBuilder {
     text_renderer: TextRenderer,
     theme: Theme,
     watch_configured_theme: bool,
+    /// The active workspace's temperature as last applied, with the
+    /// workspace it belongs to and when it was last looked at. Each
+    /// workspace takes its neutral hue from its wallpaper.
+    workspace_temperature: Option<(String, f32)>,
+    last_temperature_check: Instant,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
     appearance_generation: u64,
@@ -492,6 +497,17 @@ struct FramePresentationInputs {
     theme_store_stamp: Option<std::time::SystemTime>,
 }
 
+/// The theme `shots --theme NAME` asked for; read before
+/// `TILO_SHOTS_THEME`, for callers that cannot set the environment.
+static SHOTS_THEME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Render every frame builder this process creates in the theme `name`
+/// (`dark`, `light`, `high-contrast`). Offscreen capture only; the first
+/// request wins.
+pub fn request_shots_theme(name: String) {
+    let _ = SHOTS_THEME.set(name);
+}
+
 impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
@@ -515,7 +531,10 @@ impl FrameBuilder {
     /// a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
-        let requested_theme = std::env::var("TILO_SHOTS_THEME").ok();
+        let requested_theme = SHOTS_THEME
+            .get()
+            .cloned()
+            .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
         let requested_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
@@ -642,6 +661,8 @@ impl FrameBuilder {
             last_room_epoch: 0,
             theme: presentation.theme,
             watch_configured_theme: false,
+            workspace_temperature: None,
+            last_temperature_check: Instant::now(),
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
             appearance_generation: 0,
@@ -1372,6 +1393,7 @@ impl FrameBuilder {
     /// logical coordinates, the space the widget tree is laid out in.
     fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
+        self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let mut scene = Scene::new();
         self.host.draw(
@@ -1500,6 +1522,7 @@ impl FrameBuilder {
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
+        self.refresh_workspace_temperature();
         self.refresh_magnifier();
         if let Some(frame) = self.paint_content_clip() {
             return frame;
@@ -1951,6 +1974,7 @@ impl FrameBuilder {
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme
             || std::env::var_os("TILO_SHOTS_THEME").is_some()
+            || SHOTS_THEME.get().is_some()
             || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
         {
             return;
@@ -1972,9 +1996,65 @@ impl FrameBuilder {
         }
         self.theme_store_stamp = stamp;
         self.appearance_generation = appearance_generation;
-        self.theme = Theme::configured();
+        self.theme = self.with_workspace_temperature(Theme::configured());
         crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
+        self.rebuild_layout_tree();
+        self.relayout();
+    }
+
+    /// The configured theme as this person, in this room: their presence
+    /// colour is their focus ring, caret and selection (the colour their
+    /// cursor has for collaborators), and the active workspace's temperature
+    /// tints the neutrals.
+    fn with_workspace_temperature(&self, theme: Theme) -> Theme {
+        let (red, green, blue) = ui::presence::user_color(&crate::shell::state::local_user_id());
+        let theme = theme.with_your_colour([red, green, blue]);
+        match &self.workspace_temperature {
+            Some((_, hue)) => theme.with_neutral_hue(*hue),
+            None => theme,
+        }
+    }
+
+    /// Entering a workspace enters its temperature: the neutral material
+    /// takes the active workspace's wallpaper hue
+    /// ([`super::desktop_backdrop::native_workspace_hue`]). Checked when the
+    /// active workspace changes and every few seconds otherwise, so a new
+    /// wallpaper retints the room it was set on. Live sessions only:
+    /// offscreen capture stays on the theme it was asked for.
+    fn refresh_workspace_temperature(&mut self) {
+        const RECHECK: Duration = Duration::from_secs(3);
+        if !self.watch_configured_theme {
+            return;
+        }
+        let active = self
+            .chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id.0.to_string());
+        let Some(active) = active else {
+            return;
+        };
+        let same_room = self
+            .workspace_temperature
+            .as_ref()
+            .is_some_and(|(workspace, _)| *workspace == active);
+        if same_room && self.last_temperature_check.elapsed() < RECHECK {
+            return;
+        }
+        self.last_temperature_check = Instant::now();
+        let hue = super::desktop_backdrop::native_workspace_hue(&active);
+        let unchanged = self
+            .workspace_temperature
+            .as_ref()
+            .is_some_and(|(workspace, known)| *workspace == active && (known - hue).abs() < 0.5);
+        if unchanged {
+            return;
+        }
+        self.workspace_temperature = Some((active, hue));
+        self.theme = self.theme.clone().with_neutral_hue(hue);
         self.rebuild_layout_tree();
         self.relayout();
     }
@@ -1984,7 +2064,7 @@ impl FrameBuilder {
     /// for a specific palette.
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
-        self.theme = Theme::configured();
+        self.theme = self.with_workspace_temperature(Theme::configured());
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
