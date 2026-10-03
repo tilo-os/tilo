@@ -3,6 +3,23 @@
 
 use ui::date::{civil_from_days, days_from_civil};
 
+/// `utc_min` (minutes since the epoch, UTC) on the local clock the person
+/// reads, through `ui::clock` so a capture shows the pinned time.
+pub fn local_minutes(utc_min: i64) -> i64 {
+    let offset = ui::clock::local_now().offset().local_minus_utc();
+    utc_min.saturating_add(i64::from(offset) / 60)
+}
+
+/// Gravatar URL for an address. `d=404` makes the CDN return a 404 (not a
+/// generic silhouette) when the address has no avatar, so the store settles
+/// as failed and the initials stay.
+pub fn gravatar_url(email: &str) -> String {
+    let hash = hex::encode(<md5::Md5 as md5::Digest>::digest(
+        email.trim().to_ascii_lowercase().as_bytes(),
+    ));
+    format!("https://www.gravatar.com/avatar/{hash}?s=96&d=404")
+}
+
 /// Epoch-minutes for a Y/M/D H:M (UTC).
 pub fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
     days_from_civil(y, mo, d)
@@ -89,6 +106,13 @@ mod tests {
                 format_relative(minutes_of(2026, 6, 20, 9, 30), now),
                 "Jun 20"
             );
+        }
+
+        // Phase `gravatar_url_lowercases_and_trims`.
+        {
+            // Canonical Gravatar example hash for "MyEmailAddress@example.com".
+            let u = gravatar_url("  MyEmailAddress@example.com ");
+            assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
         }
 
         // Phase `absolute_format`.

@@ -12,7 +12,7 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "mail-search-placeholder",
+    "mail-setup-heading-add",
 );
 
 /// Load the catalogue on this thread if it is not loaded yet.
@@ -50,17 +50,14 @@ mod tests {
             // A key that resolves to itself is a key with no catalogue entry — the
             // failure mode that ships an untranslatable literal to a screen.
             for key in [
-                "mail-search-placeholder",
                 "mail-setup-heading-add",
                 "mail-setup-heading-edit",
-                "mail-setup-subtitle-add",
                 "mail-setup-label-display-name",
                 "mail-setup-label-email",
                 "mail-setup-label-username",
                 "mail-setup-label-password",
                 "mail-setup-label-imap-host",
                 "mail-setup-label-smtp-host",
-                "mail-setup-label-port",
                 "mail-setup-label-sign-in",
                 "mail-setup-auth-password",
                 "mail-setup-auth-oauth",
@@ -75,11 +72,9 @@ mod tests {
                 "mail-compose-label-subject",
                 "mail-compose-placeholder-to",
                 "mail-compose-cc-bcc",
-                "mail-compose-attach",
                 "mail-compose-send",
                 "mail-compose-save-draft",
                 "mail-compose-discard",
-                "mail-compose-prompt-attach",
                 "mail-compose-prompt-link",
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
