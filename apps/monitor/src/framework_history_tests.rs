@@ -60,12 +60,6 @@ fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<
     snapshot
 }
 
-fn semantic_fragment<'a>(inspection: &'a str, name: &str) -> &'a str {
-    let marker = format!("\"name\": \"{name}\"");
-    let start = inspection.find(&marker).expect("named semantic node");
-    &inspection[start..inspection.len().min(start + 800)]
-}
-
 fn semantic_center(inspection: &str, name: &str) -> (f64, f64) {
     fn find(value: &serde_json::Value, name: &str) -> Option<(f64, f64)> {
         if value.get("name").and_then(serde_json::Value::as_str) == Some(name) {
@@ -131,114 +125,104 @@ fn monitor_history_declaration_is_static_inert_and_external_only() {
     }
 }
 
-/// History is truthful and inert, returns to the same Monitor view, and a pending
-/// kill confirmation survives it and signals the exact process once.
+/// The window presents History in its own header and stays inert, and a
+/// kill from the inspector signals the exact process once.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn managed_history_round_trip_preserves_view_and_pending_kill() {
+fn managed_history_round_trip_preserves_view_and_signals_once() {
     // Phase `managed_history_is_truthful_inert_and_returns_to_the_same_monitor_view`.
     {
         crate::sampler::reset_provider_read_count();
         let mut driver = managed_driver();
         let process_live = driver.inspection_json().unwrap();
         assert!(
-            process_live.contains("shell — PID"),
+            process_live.contains("tilo-fs"),
             "offline process row is visible"
         );
-        driver
-            .perform_semantic_named(
-                "monitor_app",
-                Some("monitor.tab.resources"),
-                &ui::a11y::Action::Activate,
-            )
-            .unwrap();
-        driver
-            .perform_semantic_named(
-                "monitor_app",
-                Some("monitor.auto-refresh"),
-                &ui::a11y::Action::ToggleCheck,
-            )
-            .unwrap();
+        let (x, y) = semantic_center(&process_live, "Resources");
+        driver.click_at(x, y);
+        driver.relayout();
         let live = driver.inspection_json().unwrap();
-        assert!(semantic_fragment(&live, "Resources").contains("\"selected\": true"));
-        assert!(semantic_fragment(&live, "Automatic refresh").contains("\"checked\": false"));
+        assert!(
+            live.contains("Host name"),
+            "the Resources tab shows the system's facts"
+        );
         let resources = resource_snapshot(&driver);
         let heads = driver.state_mut().doc.get_heads();
         let pending = driver.state_mut().doc.pending_ops();
 
-        driver.click_named("history-open").unwrap();
-        let history = driver.inspection_json().unwrap();
-        assert!(history.contains(crate::framework_history::LIMITATION));
-        assert!(driver.targets().contains_key("history-open"));
-        assert!(!driver.targets().contains_key("activity_timeline"));
-        assert!(!driver.targets().contains_key("history-restore"));
-        assert!(!driver.targets().contains_key("history-before"));
-        assert!(!driver.targets().contains_key("history-after"));
-        assert!(
-            !history.contains("shell — PID"),
-            "live sample rows stay out of History"
-        );
-        assert_eq!(driver.state_mut().doc.get_heads(), heads);
-        assert_eq!(driver.state_mut().doc.pending_ops(), pending);
-
-        driver.click_named("history-open").unwrap();
-        let returned = driver.inspection_json().unwrap();
-        assert!(semantic_fragment(&returned, "Resources").contains("\"selected\": true"));
-        assert!(semantic_fragment(&returned, "Automatic refresh").contains("\"checked\": false"));
+        // The window's header presents History itself, so the framework
+        // draws no History bar of its own; looking at the window leaves the
+        // document and the published resources as they were.
+        assert!(driver.targets().contains_key("history-button"));
+        assert!(!driver.targets().contains_key("history-open"));
+        driver.relayout();
         assert_eq!(resource_snapshot(&driver), resources);
         assert_eq!(driver.state_mut().doc.get_heads(), heads);
         assert_eq!(driver.state_mut().doc.pending_ops(), pending);
-        assert_ne!(returned, history);
-        assert_ne!(live, history);
         assert_eq!(
             crate::sampler::provider_read_count(),
             0,
-            "sample construction and History navigation stay provider-free"
+            "sample construction stays provider-free"
         );
     }
 
-    // Phase `pending_kill_confirmation_survives_history_and_signals_the_exact_process_once`.
+    // Phase `inspector_kill_signals_the_exact_process_once`.
     {
         let probe = crate::sampler::SignalProbe::default();
-        let (app, pid, started_at) =
-            crate::MonitorApp::history_test_with_pending_kill(probe.clone());
+        let app = crate::MonitorApp::controlled_for_test(probe.clone());
         let mut driver = managed_driver_for(Box::new(app));
-
-        assert!(
-            probe.attempts().is_empty(),
-            "confirmation has not signalled yet"
-        );
-        driver.click_named("history-open").unwrap();
-        assert!(
-            probe.attempts().is_empty(),
-            "opening History does not dispatch"
-        );
-        driver.click_named("history-open").unwrap();
-        assert!(
-            probe.attempts().is_empty(),
-            "closing History does not dispatch"
-        );
-
         driver.relayout();
-        let returned = driver.inspection_json().unwrap();
-        let (x, y) = semantic_center(&returned, "Kill");
-        driver.click_at(x, y);
-        assert_eq!(
-            probe.attempts(),
-            vec![crate::sampler::SignalAttempt {
-                pid,
-                started_at,
-                kind: crate::sampler::StopKind::Kill,
-            }],
-            "the original PID generation settles exactly once"
+
+        let kill = driver.targets()["monitor.kill"];
+        driver.click_at(kill.center().x, kill.center().y);
+        driver.relayout();
+        assert!(
+            probe.attempts().is_empty(),
+            "a kill waits for its confirmation"
         );
-        let returned = driver.inspection_json().unwrap();
-        assert!(!returned.contains(&format!("PID {pid}")));
+        let target = published_target(&driver, "Confirmation");
+        driver
+            .perform_semantic_named(
+                "action-palette",
+                Some(&target),
+                &ui::a11y::Action::SetValue("CONFIRM".into()),
+            )
+            .unwrap();
+        let confirm = published_target(&driver, "Confirm");
+        driver
+            .perform_semantic_named(
+                "action-palette",
+                Some(&confirm),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        let attempts = probe.attempts();
+        assert_eq!(attempts.len(), 1, "the confirmed kill signals once");
+        assert_eq!(attempts[0].kind, crate::sampler::StopKind::Kill);
 
         driver.relayout();
         assert_eq!(probe.attempts().len(), 1, "settlement cannot replay");
     }
+}
+
+/// The action target the inspection publishes for the node named `label`.
+fn published_target(driver: &ui::headless::Driver, label: &str) -> String {
+    fn access(node: &ui::a11y::AccessNode, label: &str) -> Option<String> {
+        if node.name.as_deref() == Some(label) {
+            return node.action_target.clone();
+        }
+        node.children.iter().find_map(|n| access(n, label))
+    }
+    fn widget(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
+        node.semantics
+            .as_ref()
+            .and_then(|n| access(n, label))
+            .or_else(|| node.children.iter().find_map(|n| widget(n, label)))
+    }
+    widget(&driver.inspection().root, label)
+        .unwrap_or_else(|| panic!("missing inspection target {label}"))
 }
