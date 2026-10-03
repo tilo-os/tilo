@@ -26,7 +26,7 @@ use ui::overlay::{FocusTrap, Modal};
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyle};
+use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace};
 
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use collab_types::role::Role as CapRole;
@@ -4135,9 +4135,7 @@ fn draw_expiry_track(
         transform,
         text_renderer,
         theme,
-        &SegmentedFace::new(&layout.expiry_rects, &labels, selected)
-            .style(SegmentedStyle::Solid)
-            .radius(f64::from(theme.tokens.radii.control)),
+        &SegmentedFace::new(&layout.expiry_rects, &labels, selected),
     );
     if !is_owner {
         scene.pop_layer();
