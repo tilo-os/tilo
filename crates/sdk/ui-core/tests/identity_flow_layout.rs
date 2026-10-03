@@ -168,7 +168,7 @@ fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFl
 fn write_shot(harness: &FrameHarness, name: &str) {
     if let Some(dir) = tilo_ui::env::var_os("TILO_UI_SCREENSHOT_DIR") {
         let path = Path::new(&dir).join(format!("{name}.png"));
-        harness.render_window_png(&path);
+        harness.render_png(&path);
         eprintln!("wrote {}", path.display());
     }
 }

@@ -7,7 +7,7 @@
 //! cargo run -p ui-examples --example ui-lab -- widget_showcase
 //! ```
 //!
-//! The overlay widgets (`ModalDialog`, `PopoverWidget`) and `VideoPlayer` are
+//! The overlay widgets (`ModalDialog`, `Popover`) and `VideoPlayer` are
 //! shown in a static "always-open / no-frame" state — they're real,
 //! they just don't have host-side triggers wired up here. Use the
 //! offscreen `widget_snapshot` example for a PNG that captures every
@@ -23,14 +23,12 @@ use tilo_ui::i18n::I18nManager;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::popover_widget::PopoverSide;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, PopoverWidget,
-    ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
-    TreeView, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, Popover, ProgressBar,
+    Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
 };
 use tilo_ui::{App, State};
 use vello::Scene;
@@ -40,7 +38,7 @@ use vello::peniko::{
 };
 
 /// Minimal stand-in widget for the generic content slots of
-/// `PopoverWidget`, `ModalDialog`, and `ResizableSplit`. Paints a
+/// `Popover`, `ModalDialog`, and `ResizableSplit`. Paints a
 /// raised-surface tile with a centred label so the overlays read as
 /// something rather than empty boxes.
 struct LabelTile {
@@ -217,12 +215,9 @@ pub fn run(_args: &[String]) {
     // roughly where the row appears once the layout settles; the flip
     // resolver still re-resolves the actual body position relative to
     // the viewport.
-    let popover = PopoverWidget::new(
-        Rect::new(60.0, 60.0, 220.0, 90.0),
-        LabelTile::new("Popover content (always open)"),
-        PopoverSide::Below,
-    )
-    .open(true);
+    let popover = Popover::with_content(LabelTile::new("Popover content (always open)"))
+        .anchored(Rect::new(60.0, 60.0, 220.0, 90.0))
+        .open(true);
 
     let modal = ModalDialog::new(
         "Save your changes?",
