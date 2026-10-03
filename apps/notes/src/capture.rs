@@ -622,8 +622,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             }
             let rect = semantic_name_rect(driver, "Launch checklist")
                 .ok_or_else(|| LaunchError::Operation("rename row missing".into()))?;
-            driver.click_at(rect.center().x, rect.center().y);
-            driver.click_at(rect.center().x, rect.center().y);
+            driver.double_click_at(rect.center().x, rect.center().y);
             if scenario == Some("rename_commit") {
                 driver.type_text(" v2");
                 driver.click_at(900.0, 400.0);
