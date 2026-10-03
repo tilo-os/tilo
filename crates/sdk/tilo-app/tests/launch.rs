@@ -147,3 +147,24 @@ fn the_definition_names_what_the_app_opens() {
     assert!(definition.opens_media_type("text/plain; charset=utf-8"));
     assert!(!definition.opens_media_type("application/pdf"));
 }
+
+#[test]
+fn a_launch_naming_a_file_the_app_opens_hands_it_that_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lighthouse.txt");
+    std::fs::write(&path, "keeper").unwrap();
+    let path = path.to_str().unwrap();
+    let mut app = TestApp::<SketchApp>::launched(&[path]).unwrap();
+    app.harness().relayout();
+    assert_eq!(
+        app.record(),
+        &RecordId::derived("sketch", &RecordId::for_file(path))
+    );
+    let notes: Vec<String> = app
+        .state()
+        .notes
+        .values()
+        .map(|note| note.text.clone())
+        .collect();
+    assert_eq!(notes, ["keeper"]);
+}
