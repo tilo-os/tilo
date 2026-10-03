@@ -375,4 +375,10 @@ impl ResourceSurface<Document> for WordProcessorWidget {
     fn attach(&mut self, cx: SurfaceCx<Document>) {
         self.attach_framework(cx.live(), cx.dispatcher());
     }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
+    }
 }

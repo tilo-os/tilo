@@ -285,9 +285,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_within(Some(&ambient), id, arguments)
     }
 
+    /// [`Self::call`] on another published resource than the app's own: a
+    /// child, an item, or a live row a surface shows (`"job:7"`), addressed
+    /// by its id.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call_on(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_at(None, resource, id, arguments)
+    }
+
     fn call_within(
         &mut self,
         ambient: Option<&tilo_actions::ActionContext>,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_at(ambient, <A::Resource as Resource>::KIND, id, arguments)
+    }
+
+    fn call_at(
+        &mut self,
+        ambient: Option<&tilo_actions::ActionContext>,
+        resource: &str,
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
@@ -298,7 +323,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let address = BoundActionAddress {
             instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+            address: tilo_actions::ActionAddress::new(resource, id),
         };
         let harness = self.harness();
         let started = match ambient {

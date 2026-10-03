@@ -138,12 +138,12 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
-        ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,
+        ActionControl, Actions, Dispatcher, Each, Live, LiveRow, ResourceApp, ResourceSelection,
         ResourceSurface, SurfaceCx, ViewCx,
     };
     pub use tilo_resource::{
-        self, ActionCx, Atom, Collection, Delta, Demand, Id, Invoke, Json, Model, Refusal, Replica,
-        Resource, resource,
+        self, ActionCx, ActionDecl, Atom, Collection, Delta, Demand, Id, Invoke, Json, Model,
+        Refusal, Replica, Resource, resource,
     };
 
     pub use ui_core::application::{

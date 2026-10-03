@@ -67,6 +67,24 @@
 //!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Edits bound to where the user is** — the selection, the caret, the
+//!   playhead, the folder shown — are typed builders of the resource's
+//!   action ([`ActionDecl`](tilo_resource::ActionDecl)), published on the
+//!   resource beside its declarations:
+//!   [`ResourceSurface::bound_declarations`] from a surface's view state,
+//!   [`ViewCx::bind_declarations`] from a view's local state, and
+//!   `Resource::bound_declarations` from the resource state itself.
+//! * **Live external rows** — processes, devices, containers, journal
+//!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
+//!   [`ResourceSurface::live_rows`], merged by id into the resource's
+//!   published children. A row carries only view and effect operations.
+//!   Neither rows nor children need to be published whole: a bounded page is
+//!   published and the rest resolve by id (`ResourceSurface::live_row`,
+//!   `Resource::child`).
+//! * **One published tree** — the palette, agents and scripts see the
+//!   resource's publication and nothing beside it that changes the document:
+//!   a document action a content widget publishes through its own
+//!   `PublishesResources` is dropped (a debug build stops at it).
 //! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
 //!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
 //!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
@@ -85,6 +103,7 @@ pub mod history;
 mod live;
 mod preview;
 mod root;
+mod rows;
 mod stage;
 mod surface;
 mod switch;
@@ -104,6 +123,7 @@ pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
 pub use preview::PastVersion;
+pub use rows::LiveRow;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use view::ViewCx;
