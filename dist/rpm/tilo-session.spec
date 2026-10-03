@@ -80,6 +80,10 @@ Requires:       pam
 # therefore invisible to RPM's ELF dependency generator. Existing host apps
 # deliberately keep their original confinement (or lack of it).
 Requires:       bubblewrap
+# A shell environment (`ush`) runs in a network namespace of its own; `pasta`
+# connects it to the host's network, unprivileged. An environment granted
+# hosts refuses to start without it rather than run unfiltered.
+Requires:       passt
 # Sandboxed Tilo applications reach file choosers and other desktop APIs only
 # through the portal frontend and a filtered proxy. Without either helper the
 # compositor starts, but ordinary app workflows are incomplete.

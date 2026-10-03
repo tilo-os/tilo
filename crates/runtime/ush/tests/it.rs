@@ -3,6 +3,8 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[path = "network.rs"]
+pub mod network;
 #[path = "serve_handoff.rs"]
 pub mod serve_handoff;
 #[path = "socket_activation.rs"]

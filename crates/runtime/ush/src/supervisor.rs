@@ -8,9 +8,11 @@
 //! ush
 //!  ├─ resolve the environment record (the default is made on first use)
 //!  ├─ resolve its images to read-only trees                (crate::images)
+//!  ├─ a network namespace of its own, its DNS stub, its
+//!  │  nftables and pasta, from the NetHost grants          (tilo_egress)
 //!  ├─ compile the guest's seccomp filter                   (crate::seccomp)
 //!  ├─ start the broker on a socket in the session dir      (crate::broker)
-//!  ├─ spawn bwrap ─┬─ unshare, stack the images, pivot
+//!  ├─ spawn bwrap ─┬─ (inside the network namespace) unshare, stack, pivot
 //!  │               ├─ install the seccomp filter        ← the boundary
 //!  │               └─ exec tilo-ush guest-init ─┬─ install Landlock
 //!  │                                           └─ exec the shell
@@ -35,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tilo_clock::unix_now;
+use tilo_egress::{Egress, EgressOptions, Netns, spawn_egress};
 use tilo_environment::{Environment, HomePolicy, Target, ToolBuilder, is_record_key};
 
 use crate::audit::AuditLog;
@@ -78,6 +81,36 @@ ush: the shell's sandbox could not be set up, so no shell started;
 ush: bwrap's reason is above. An overlay mount refused with \"Invalid
 ush: argument\" usually means the images sit on a filesystem overlayfs
 ush: cannot stack on (another overlay): `dmesg` shows why.";
+
+/// The first line of every reason a session's sandbox was not built.
+const NOT_STARTED: &str = "ush: the shell's sandbox could not be set up, so no shell started";
+
+/// How this machine wires a guest's egress. The resolvers and `pasta` come
+/// from the machine; three variables exist for the integration tests, which
+/// fake the outside world on loopback:
+///
+/// - `TILO_USH_RESOLVER` — resolvers (`ip:port`, comma-separated) instead of
+///   the machine's `resolv.conf`;
+/// - `TILO_USH_EGRESS_MAP_HOST_LOOPBACK` — an address the guest reaches the
+///   host's loopback at;
+/// - `TILO_USH_EGRESS_REFUSE_NETFILTER=1` — act as if the kernel refused the
+///   packet filter, to prove the session then does not start.
+pub fn egress_options(host_root: &Path) -> EgressOptions {
+    let mut options = EgressOptions::from_host(host_root);
+    if let Some(list) = std::env::var_os("TILO_USH_RESOLVER") {
+        options.upstream = list
+            .to_string_lossy()
+            .split(',')
+            .filter_map(|a| a.trim().parse().ok())
+            .collect();
+    }
+    if let Some(addr) = std::env::var_os("TILO_USH_EGRESS_MAP_HOST_LOOPBACK") {
+        options.map_host_loopback = addr.to_string_lossy().parse().ok();
+    }
+    options.refuse_netfilter =
+        std::env::var_os("TILO_USH_EGRESS_REFUSE_NETFILTER").is_some_and(|v| v == "1");
+    options
+}
 
 /// Where the runtime's own binary is, as the supervisor sees it.
 /// `current_exe` rather than a constant: the guest must run the same build
@@ -277,7 +310,27 @@ impl Session {
             command: self.opts.command.clone(),
             term: self.opts.term.clone(),
             env: Vec::new(),
+            resolver: None,
         })
+    }
+
+    /// The guest's network: a namespace of its own and egress for the
+    /// record's `NetHost` grants. Fails closed — a policy that cannot be
+    /// enforced is an error, never an open network.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the namespace or its egress could not be set up.
+    pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
+        let netns = Netns::create()
+            .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
+        let policy = Policy::new(resolved.environment.grants.0.clone()).egress(Some(unix_now()));
+        if self.opts.verbose {
+            eprintln!("ush: network: {}", describe_policy(&policy));
+        }
+        let egress = spawn_egress(&netns, policy, &egress_options(&self.opts.host_root))
+            .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: {e}"))?;
+        Ok((netns, egress))
     }
 
     /// May a restart request rebuild this session, or is it a one-shot? Only an
@@ -322,6 +375,10 @@ impl Session {
     }
 
     fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<(i32, bool)> {
+        // Before anything else: a guest whose network cannot be confined as
+        // its record says does not start.
+        let (netns, egress) = self.network(resolved)?;
+        let egress = Arc::new(egress);
         let seccomp_blob = crate::seccomp::write_guest_filter(session_dir)?;
         let broker_socket = session_dir.join("broker.sock");
         let broker = Broker::start(
@@ -339,10 +396,12 @@ impl Session {
                 images: resolved.images.clone(),
                 builder: Arc::clone(&self.builder),
                 landlock: "installed by the guest at startup".into(),
+                egress: Some(Arc::clone(&egress)),
             },
         )?;
 
         let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
+        plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
         seed_guest_home(&plan.guest_home)?;
 
@@ -374,7 +433,7 @@ impl Session {
         }
         plan.command = command;
 
-        let mut child = crate::guest::spawn(&plan)?;
+        let mut child = crate::guest::spawn(&plan, Some(&netns))?;
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
@@ -382,7 +441,21 @@ impl Session {
         }
         let restart = broker.restart_requested();
         drop(broker);
+        // The stub and pasta stop before the namespace's holder goes.
+        drop(egress);
+        drop(netns);
         Ok((code, restart))
+    }
+}
+
+/// A policy in words, for `-v`.
+fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
+    match policy {
+        tilo_egress::EgressPolicy::Any => "unrestricted (a * grant)".into(),
+        tilo_egress::EgressPolicy::Hosts(hosts) if hosts.is_empty() => {
+            "none (no host is granted)".into()
+        }
+        p @ tilo_egress::EgressPolicy::Hosts(_) => format!("only {}", p.describe().join(", ")),
     }
 }
 

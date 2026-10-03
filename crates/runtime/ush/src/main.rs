@@ -106,7 +106,8 @@ Inside a guest:
   app update [APP]                  update apps (`store` is an alias)
   system update                     update the Tilo system image
   pkg install PKG…                 pkg remove PKG…    pkg list
-  perm trust-dir DIR               perm list          perm revoke ID
+  perm trust-dir DIR               perm allow-host HOST
+  perm list                        perm revoke ID
   scan PATH
   guard status
   quarantine list | add PATH | restore PATH
@@ -285,7 +286,7 @@ mod guest {
     fn report(resp: Response) -> i32 {
         match resp {
             Response::Ok => 0,
-            Response::NeedsRestart { detail } => {
+            Response::NeedsRestart { detail } | Response::Applied { detail } => {
                 println!("{detail}");
                 0
             }
@@ -593,6 +594,15 @@ explain when the host does not offer them.\n";
                     path: PathBuf::from(dir),
                 })?))
             }
+            Some("allow-host") => {
+                let host = args.get(1).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "perm allow-host needs a host: example.com, *.example.com for a \
+                         domain and everything under it, or * for any host"
+                    )
+                })?;
+                Ok(report(ask(&Request::AllowHost { host: host.clone() })?))
+            }
             Some("revoke") => {
                 let id = args
                     .get(1)
@@ -607,7 +617,8 @@ explain when the host does not offer them.\n";
                     println!(
                         "nothing is granted. Your home directory in here is this \
                          environment's, not yours; `perm trust-dir DIR` is how a real \
-                         directory appears."
+                         directory appears, and `perm allow-host HOST` how a host \
+                         becomes reachable."
                     );
                 }
                 for e in &entries {
@@ -615,7 +626,9 @@ explain when the host does not offer them.\n";
                 }
                 Ok(0)
             }
-            Some(other) => anyhow::bail!("unknown `perm {other}`; try trust-dir, list, revoke"),
+            Some(other) => {
+                anyhow::bail!("unknown `perm {other}`; try trust-dir, allow-host, list, revoke")
+            }
         }
     }
 
@@ -688,6 +701,9 @@ explain when the host does not offer them.\n";
                 );
                 if !status.readable_dirs.is_empty() {
                     println!("readable    : {}", status.readable_dirs.join(", "));
+                }
+                for line in ush::guard::network_report(&status.network) {
+                    println!("{line}");
                 }
                 println!("audit       : {} records", status.audit_records);
                 Ok(0)
