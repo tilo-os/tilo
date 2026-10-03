@@ -1781,6 +1781,7 @@ impl Renderer {
         }
         self.engine.enable_canonical_segment_order();
         self.shaders = shaders::full_shaders(device, &mut self.engine, &self.options)?;
+        #[cfg(not(target_arch = "wasm32"))]
         self.engine
             .build_shaders_if_needed(device, self.options.num_init_threads);
         Ok(())

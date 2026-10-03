@@ -8,7 +8,7 @@ script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 vello_branch=vendor-upstream/vello-0.9
 vello_base=8a3898449ae9608feeafdfa5469fff2a180f08d4
-vello_tip=676b958f7b3b3c31ccf780cdf559c7d45ed76bf7
+vello_tip=851c465d7a9a005c0d3bf1c8fca696369be79776
 
 winit_branch=vendor-upstream/winit-0.30.13
 winit_base=9b9d3bf5398c77c3ec8575c4279f01d2ddcc1d59
