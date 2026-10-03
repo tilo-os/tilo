@@ -302,6 +302,7 @@ enum Command {
         InputCompletion,
     ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
+    Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     Refresh,
@@ -339,6 +340,9 @@ pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
 /// Called once with whether the host took a legacy window's input, see
 /// [`PeerHandle::legacy_input_then`].
 pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
+/// Called once with the session device the node runs beside the host (or
+/// `None`), see [`PeerHandle::node_session_then`].
+pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
@@ -776,6 +780,17 @@ impl PeerHandle {
         done: RoomsCompletion,
     ) -> Result<(), String> {
         self.send(Command::Rooms(request, done))
+    }
+
+    /// Ask the host which device runs the person's apps beside it (a
+    /// node's session), over the current HTTPS session; `done` receives it,
+    /// or `None` from a host that runs none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn node_session_then(&self, done: NodeCompletion) -> Result<(), String> {
+        self.send(Command::Node(done))
     }
 
     /// Drop the connection and reconnect now, also after a failure.
@@ -1577,6 +1592,10 @@ impl Task {
                 Self::request_rooms(request, done, client);
                 true
             }
+            Command::Node(done) => {
+                Self::request_node(done, client);
+                true
+            }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
         }
@@ -1721,6 +1740,23 @@ impl Task {
             }
             #[cfg(feature = "iroh")]
             Some(Link::Iroh(_)) => done(Err("rooms are administered over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    fn request_node(done: NodeCompletion, client: Option<&Link>) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    // A host that answers no `/node` runs nothing beside it.
+                    let info = crate::carrier::node(http.as_ref(), &session).await;
+                    done(Ok(info.ok().and_then(|info| info.session)));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Ok(None)),
             None => done(Err("not connected to the host".into())),
         }
     }

@@ -7,9 +7,14 @@
 //! 1. The system stores the OS or the host package shipped (read-only, so
 //!    the first environment opens offline) are looked in first.
 //! 2. Then the user's store.
-//! 3. Otherwise the image is fetched from the [`Store`]'s registry, checked
-//!    to be the package asked for, admitted by the [`ImageTrust`], and
-//!    materialised into the user's store.
+//! 3. Otherwise the image is fetched from the [`Store`]'s sources in turn
+//!    (an [`ImageShelf`], the registry), checked to be the package asked
+//!    for, admitted by the [`ImageTrust`], and materialised into the user's
+//!    store.
+//!
+//! Every use admits the image again, wherever it was found: trust is a
+//! property of the image's publisher *now*, so an image a device signed
+//! stops opening the moment the user removes that device.
 //!
 //! A materialised image is a plain directory tree with read-only files at
 //! `pkgs/<package-id>/`, which bwrap stacks as an overlay lower directory
@@ -17,11 +22,15 @@
 //! launches them, and two versions of one image id coexist for as long as
 //! environments use them.
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tilo_app_package::trust::{RevocationList, TrustedAttestor, TrustedAttestors};
-use tilo_app_package::{Kind, PackageFetcher, PackageId, PackageMeta, Verification};
+use tilo_app_package::{
+    BlobFetcher, BlobHash, BlobSink, Kind, PackageFetcher, PackageId, PackageMeta, Verification,
+};
+use tilo_user_identity::{CertifiedFleet, DeviceStanding};
 
 use crate::StoreError;
 use crate::catalog::SystemStore;
@@ -36,7 +45,7 @@ pub const SYSTEM_IMAGE_PUBLISHERS_FILE: &str = "image-publishers";
 /// Why an image could not be turned into a tree.
 #[derive(Debug, thiserror::Error)]
 pub enum MaterializeError {
-    #[error("image {0} is not in any store and no registry offers it")]
+    #[error("image {0} is not in any store and no source offers it")]
     NotFound(PackageId),
     #[error("package {id} is a {kind} package, not an environment image")]
     NotAnImage { id: PackageId, kind: Kind },
@@ -47,6 +56,15 @@ pub enum MaterializeError {
         id: PackageId,
         publisher: String,
         reason: String,
+    },
+    #[error(
+        "image {id} is signed by ed25519:{publisher}; whether that is one of your devices \
+         could not be checked: {detail}"
+    )]
+    FleetUnavailable {
+        id: PackageId,
+        publisher: String,
+        detail: String,
     },
     #[error("image {id} has an invalid manifest: {detail}")]
     Invalid { id: PackageId, detail: String },
@@ -75,16 +93,60 @@ pub enum MaterializeError {
 /// rather than installed with a warning, because every environment that
 /// stacks it runs its binaries. Trusted publishers are the ones the
 /// installation shipped ([`SYSTEM_IMAGE_PUBLISHERS_FILE`]) plus whatever the
-/// caller adds: the supervisor adds the user's own device keys, so tool
-/// images the user's devices built and signed are accepted on all of them.
+/// caller adds.
+///
+/// # The user's devices
+///
+/// A store that serves one person's environments also trusts that person's
+/// devices ([`ImageTrust::with_fleet`]): an image signed by a device key the
+/// user's identity certified is admitted, so a tool one of their devices or
+/// their relay built is fetched on the others instead of rebuilt. The rule,
+/// asked of the [`FleetSource`] at every admission rather than remembered:
+///
+/// - the publisher holds a certificate from the user's identity that is
+///   valid now (signed by the identity root, issued, not expired);
+/// - the identity never revoked the publisher's key. A revocation refuses
+///   every image the key signed, including ones signed before it and ones
+///   already materialised on this device, because a lost key can back-date
+///   what it signs. The user's remaining devices rebuild what is refused;
+/// - a relay counts as one of the user's devices exactly when it holds such
+///   a certificate (a home peer is enrolled with one). A relay without one is
+///   anyone: its images need a publisher trusted outright, the CI catalog
+///   key.
+///
+/// Only the fleet's own identity speaks for it, so another person's devices
+/// are never trusted this way, and the fleet is the user's own: it belongs
+/// on the trust of the store serving their environments, not a shared one.
+/// A key trusted outright or vouched for by an attestor does not consult the
+/// fleet.
 ///
 /// Images found in a read-only system store are trusted by being there;
-/// their signature is still checked and a revoked publisher still refused.
+/// their signature is still checked and a revoked publisher (or a device the
+/// fleet revoked) still refused.
 #[derive(Clone, Debug, Default)]
 pub struct ImageTrust {
     publishers: Vec<[u8; 32]>,
     attestors: Vec<TrustedAttestor>,
     revoked: RevocationList,
+    fleet: Option<Arc<dyn FleetSource>>,
+}
+
+/// Where the devices of the user a store serves are read from.
+pub trait FleetSource: Send + Sync + std::fmt::Debug {
+    /// The user's fleet as it stands now. Asked at every admission that
+    /// needs it, so a device removed since is refused at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the fleet cannot be read. An image only the fleet could
+    /// vouch for is then refused.
+    fn fleet(&self) -> Result<CertifiedFleet, String>;
+}
+
+impl FleetSource for CertifiedFleet {
+    fn fleet(&self) -> Result<CertifiedFleet, String> {
+        Ok(self.clone())
+    }
 }
 
 impl ImageTrust {
@@ -119,6 +181,7 @@ impl ImageTrust {
             publishers: Vec::new(),
             attestors: attestors.as_slice().to_vec(),
             revoked,
+            fleet: None,
         };
         if let Some(system) = system {
             trust.publishers =
@@ -133,6 +196,14 @@ impl ImageTrust {
         if !self.publishers.contains(&publisher) {
             self.publishers.push(publisher);
         }
+        self
+    }
+
+    /// Also trust images signed by the devices of the user `fleet` reads,
+    /// as [`ImageTrust`] describes.
+    #[must_use]
+    pub fn with_fleet(mut self, fleet: impl FleetSource + 'static) -> Self {
+        self.fleet = Some(Arc::new(fleet));
         self
     }
 
@@ -193,11 +264,28 @@ impl ImageTrust {
         ) {
             Verification::Trusted { .. } => Ok(String::new()),
             Verification::AttestedBy { attestor, .. } => Ok(attestor),
-            Verification::UntrustedPublisher { .. } if placed => Ok(String::new()),
-            Verification::UntrustedPublisher { .. } => Err(MaterializeError::Untrusted {
-                id,
-                publisher: publisher(),
-            }),
+            Verification::UntrustedPublisher { identity, .. } => {
+                match self.fleet_standing(&identity) {
+                    Some(Ok(DeviceStanding::Certified)) => Ok(String::new()),
+                    Some(Ok(DeviceStanding::Revoked(reason))) => Err(MaterializeError::Revoked {
+                        id,
+                        publisher: publisher(),
+                        reason: format!("the device was removed from your devices ({reason:?})"),
+                    }),
+                    _ if placed => Ok(String::new()),
+                    Some(Err(detail)) => Err(MaterializeError::FleetUnavailable {
+                        id,
+                        publisher: publisher(),
+                        detail,
+                    }),
+                    Some(Ok(DeviceStanding::Uncertified)) | None => {
+                        Err(MaterializeError::Untrusted {
+                            id,
+                            publisher: publisher(),
+                        })
+                    }
+                }
+            }
             Verification::Revoked { reason, .. } => Err(MaterializeError::Revoked {
                 id,
                 publisher: publisher(),
@@ -208,6 +296,18 @@ impl ImageTrust {
                 detail: format!("{other:?}"),
             }),
         }
+    }
+
+    /// Where `publisher` stands with the user's fleet now; `None` without a
+    /// fleet.
+    fn fleet_standing(&self, publisher: &[u8; 32]) -> Option<Result<DeviceStanding, String>> {
+        let source = self.fleet.as_deref()?;
+        let now_ns = tilo_clock::unix_now_ns();
+        Some(
+            source
+                .fleet()
+                .map(|fleet| fleet.standing(publisher, now_ns)),
+        )
     }
 }
 
@@ -239,22 +339,30 @@ fn read_publishers(path: &std::path::Path) -> Result<Vec<[u8; 32]>, StoreError> 
 
 /// The image stores one device reads and writes: the user's store, where
 /// fetched images land, the read-only system stores searched before it,
-/// the trust that admits an image, and the registry missing ones come from.
+/// the trust that admits an image, and the sources missing ones come from.
 #[derive(Clone)]
 pub struct Store {
     user: PackageStore,
     system: Vec<Layout>,
     trust: ImageTrust,
-    fetcher: Option<Arc<dyn PackageFetcher + Send + Sync>>,
+    sources: Vec<Source>,
+}
+
+/// Somewhere missing images are fetched from, and what to call it.
+#[derive(Clone)]
+struct Source {
+    name: String,
+    fetcher: Arc<dyn PackageFetcher + Send + Sync>,
 }
 
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sources: Vec<&str> = self.sources.iter().map(|s| s.name.as_str()).collect();
         f.debug_struct("Store")
             .field("user", &self.user)
             .field("system", &self.system)
             .field("trust", &self.trust)
-            .field("fetcher", &self.fetcher.is_some())
+            .field("sources", &sources)
             .finish()
     }
 }
@@ -266,13 +374,13 @@ impl Store {
             user,
             system: Vec::new(),
             trust: ImageTrust::new(),
-            fetcher: None,
+            sources: Vec::new(),
         }
     }
 
     /// The device's stores as the environment names them: the user's store,
     /// the system store and its payload root, and [`ImageTrust::from_env`].
-    /// Add a registry with [`Store::with_fetcher`].
+    /// Add sources with [`Store::with_shelf`] and [`Store::with_fetcher`].
     ///
     /// # Errors
     ///
@@ -305,11 +413,23 @@ impl Store {
         self
     }
 
-    /// Fetch images no store holds from `fetcher` — normally the registry,
-    /// `app_registry::HttpBlobs`.
+    /// Also fetch images no store holds from `fetcher` — normally the
+    /// registry, `app_registry::HttpBlobs` — after the sources added before.
     #[must_use]
-    pub fn with_fetcher(mut self, fetcher: impl PackageFetcher + Send + Sync + 'static) -> Self {
-        self.fetcher = Some(Arc::new(fetcher));
+    pub fn with_fetcher(self, fetcher: impl PackageFetcher + Send + Sync + 'static) -> Self {
+        self.with_source("registry".into(), Arc::new(fetcher))
+    }
+
+    /// Also fetch images no store holds from `shared`, after the sources
+    /// added before.
+    #[must_use]
+    pub fn with_shelf(self, shared: ImageShelf) -> Self {
+        let name = format!("shelf {}", shared.dir.display());
+        self.with_source(name, Arc::new(shared))
+    }
+
+    fn with_source(mut self, name: String, fetcher: Arc<dyn PackageFetcher + Send + Sync>) -> Self {
+        self.sources.push(Source { name, fetcher });
         self
     }
 
@@ -356,29 +476,47 @@ impl Store {
             self.trust.admit(&meta, placed)?;
             return Ok((meta, layout.payload(id)));
         }
-        let fetcher = self
-            .fetcher
-            .as_deref()
-            .ok_or(MaterializeError::NotFound(id))?;
+        // The first source that has the package serves it; one that cannot
+        // be asked does not hide the ones after it.
+        let mut unreachable = None;
+        for source in &self.sources {
+            match source.fetcher.fetch_package(&id) {
+                Ok(Some(bytes)) => return self.install(id, source, &bytes),
+                Ok(None) => {}
+                Err(error) => {
+                    unreachable.get_or_insert_with(|| MaterializeError::Fetch {
+                        id,
+                        detail: format!("{}: {error}", source.name),
+                    });
+                }
+            }
+        }
+        Err(unreachable.unwrap_or(MaterializeError::NotFound(id)))
+    }
+
+    /// Admit the package `bytes` that `source` served for `id`, and
+    /// materialise it into the user's store.
+    fn install(
+        &self,
+        id: PackageId,
+        source: &Source,
+        bytes: &[u8],
+    ) -> Result<(PackageMeta, PathBuf), MaterializeError> {
         let fetch = |detail: String| MaterializeError::Fetch { id, detail };
-        let bytes = fetcher
-            .fetch_package(&id)
-            .map_err(|error| fetch(error.to_string()))?
-            .ok_or(MaterializeError::NotFound(id))?;
         let refusal = Mutex::new(None);
         let admitted = self.user.install_image(
-            bytes.as_slice(),
+            bytes,
             |meta| {
                 let verdict = if meta.id == id {
                     self.trust.admit(meta, false)
                 } else {
-                    Err(fetch(format!("the registry served package {}", meta.id)))
+                    Err(fetch(format!("{} served package {}", source.name, meta.id)))
                 };
                 match verdict {
                     Ok(attested_by) => Ok(Admission {
                         pinned: false,
                         attested_by,
-                        source: "registry".into(),
+                        source: source.name.clone(),
                     }),
                     Err(error) => {
                         let reason = error.to_string();
@@ -389,7 +527,7 @@ impl Store {
                     }
                 }
             },
-            Some(fetcher),
+            Some(&*source.fetcher),
         );
         let meta = match admitted {
             Ok(meta) => meta,
@@ -404,7 +542,93 @@ impl Store {
     }
 }
 
-/// The read-only root of image `id`: fetched (from the [`Store`]'s registry
+/// Largest package a shelf hands over. A shelved image is whole, payload
+/// included, and is read into memory to be installed.
+const MAX_SHELVED_IMAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// A directory of whole images, `<dir>/<hex id>.tapp`, where the user's
+/// devices leave the images they built for the others to fetch.
+///
+/// Nothing on a shelf is trusted: a [`Store`] checks that a package it
+/// serves is the one asked for and admits it by its [`ImageTrust`], so a
+/// shelf may sit anywhere the user's devices can all read, such as their
+/// synced files.
+#[derive(Clone, Debug)]
+pub struct ImageShelf {
+    dir: PathBuf,
+}
+
+impl ImageShelf {
+    pub fn at(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// Where image `id` sits on the shelf.
+    pub fn path(&self, id: &PackageId) -> PathBuf {
+        self.dir.join(format!("{}.tapp", id.to_hex()))
+    }
+
+    /// Put image `id`, which `store` holds, on the shelf as a whole
+    /// package. An image already there is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotInstalled`] when `store` does not hold the
+    /// image, or an I/O or content-store error.
+    pub fn put(&self, store: &PackageStore, id: PackageId) -> Result<PathBuf, StoreError> {
+        let path = self.path(&id);
+        if path.is_file() {
+            return Ok(path);
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        let staged = tempfile::Builder::new()
+            .prefix(".partial-")
+            .tempfile_in(&self.dir)?;
+        let written = store.export_image(id, std::io::BufWriter::new(staged.as_file()))?;
+        written
+            .into_inner()
+            .map_err(std::io::IntoInnerError::into_error)?
+            .sync_all()?;
+        staged.persist(&path).map_err(|error| error.error)?;
+        Ok(path)
+    }
+}
+
+impl PackageFetcher for ImageShelf {
+    fn fetch_package(&self, id: &PackageId) -> std::io::Result<Option<Vec<u8>>> {
+        let path = self.path(id);
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_SHELVED_IMAGE_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_SHELVED_IMAGE_BYTES {
+            return Err(std::io::Error::other(format!(
+                "{} is larger than an image may be",
+                path.display()
+            )));
+        }
+        Ok(Some(bytes))
+    }
+}
+
+impl BlobFetcher for ImageShelf {
+    fn fetch(&self, hashes: &[BlobHash], _sink: &mut dyn BlobSink) -> std::io::Result<()> {
+        Err(std::io::Error::other(format!(
+            "a shelved image carries its whole payload, yet {} blob(s) are missing from it",
+            hashes.len()
+        )))
+    }
+}
+
+/// The read-only root of image `id`: fetched (from the [`Store`]'s sources
 /// when no store holds it), verified, and materialised.
 ///
 /// The returned directory and everything in it must be treated as
@@ -413,7 +637,7 @@ impl Store {
 /// # Errors
 ///
 /// Returns [`MaterializeError::NotFound`] when no store holds the image and
-/// no registry offers it, [`MaterializeError::NotAnImage`] for a package of
+/// no source offers it, [`MaterializeError::NotAnImage`] for a package of
 /// another kind, a trust error for an image whose publisher is not trusted
 /// or is revoked, or a fetch or store error.
 pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
