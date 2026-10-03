@@ -84,7 +84,20 @@ pub struct Renderer {
     ground: Option<(String, Arc<Heightfield>, ImageData)>,
     painted: HashMap<String, PaintedLayer>,
     reference: Option<(String, Option<ImageData>)>,
+    wet: Option<WetPreview>,
 }
+
+/// The last picture of a stroke still being painted, and what it cost, so
+/// a slow medium is previewed only as often as it can keep up.
+struct WetPreview {
+    layer: String,
+    image: ImageData,
+    at: ui::time::Instant,
+    cost: ui::time::Duration,
+}
+
+/// The least time between two previews of a stroke being painted.
+const WET_INTERVAL: ui::time::Duration = ui::time::Duration::from_millis(16);
 
 /// What a scene shows.
 #[derive(Clone, Debug, Default)]
@@ -100,6 +113,9 @@ pub struct Options {
     pub reference: bool,
     /// Leave the ground out: the layers over transparency.
     pub bare: bool,
+    /// A stroke still being painted: shown on its layer as its medium will
+    /// paint it, without being kept.
+    pub wet: Option<Mark>,
 }
 
 /// The largest reference picture, in bytes.
@@ -164,7 +180,8 @@ impl Renderer {
             if let Some(medium) =
                 media::resolve(art, &layer.medium).filter(|_| !layer.medium.is_empty())
             {
-                self.draw_painted(art, layer, &medium, scene, transform, text);
+                let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
+                self.draw_painted(art, (layer, wet), &medium, scene, transform, text);
             } else {
                 let palette = media::palette_for(art, &layer.id);
                 scene.push_layer(
@@ -197,6 +214,50 @@ impl Renderer {
         if options.grid {
             draw_grid(art, options.view.unwrap_or(board), scene, transform, text);
         }
+    }
+
+    /// The colour of the paint at `at`: the topmost shown layer's there,
+    /// else the ground's. A painted layer answers from its simulation as last
+    /// drawn.
+    pub fn sample(&mut self, art: &Artwork, at: Point) -> Color {
+        for layer in art.layers.iter().rev().filter(|layer| layer.visible) {
+            if let Some(entry) = self.painted.get(&layer.id)
+                && let Some(image) = &entry.image
+                && let Some(colour) = pixel(image, Affine::scale(cell_scale(art)) * at)
+                && colour.components[3] > 0.06
+            {
+                return colour.with_alpha(1.0);
+            }
+            let palette = media::palette_for(art, &layer.id);
+            let hit = art
+                .marks_of(&layer.id)
+                .filter(|mark| mark.hit(at) && art.clip_of(mark).is_none_or(|clip| clip.hit(at)));
+            if let Some(mark) = hit.last() {
+                let style = &mark.style;
+                let named = if mark.shape.closed() || matches!(mark.shape, Shape::Text { .. }) {
+                    style.fill.as_ref().or(style.stroke.as_ref())
+                } else {
+                    style.stroke.as_ref().or(style.fill.as_ref())
+                };
+                let gradient = style
+                    .gradient
+                    .as_ref()
+                    .and_then(|gradient| gradient.stops.first())
+                    .map(|(_, colour)| colour);
+                if let Some(colour) = named.or(gradient).and_then(|named| colour(named, &palette)) {
+                    return colour.with_alpha(1.0);
+                }
+            }
+        }
+        if Texture::parse(&art.ground.texture).is_some_and(|texture| texture != Texture::Smooth)
+            && let Some(colour) = pixel(
+                &self.ground(art).2.clone(),
+                Affine::scale(cell_scale(art)) * at,
+            )
+        {
+            return colour;
+        }
+        colour(&art.ground.colour, &[]).unwrap_or(BLANK_GROUND)
     }
 
     /// The reference picture, decoded once per picture.
@@ -291,7 +352,7 @@ impl Renderer {
     fn draw_painted(
         &mut self,
         art: &Artwork,
-        layer: &Layer,
+        (layer, wet): (&Layer, Option<&Mark>),
         medium: &media::MediumSpec,
         scene: &mut Scene,
         transform: Affine,
@@ -340,6 +401,33 @@ impl Renderer {
             entry.image = Some(image(pixels, canvas.width, canvas.height));
             entry.key = key;
         }
+        let shown = if let Some(wet) = wet {
+            let now = ui::time::now();
+            let due = self.wet.as_ref().is_none_or(|preview| {
+                preview.layer != layer.id
+                    || now.duration_since(preview.at) >= (preview.cost * 2).max(WET_INTERVAL)
+            });
+            if due {
+                let strokes = wet_marks(wet, &palette, scale);
+                let pixels = entry.painter.preview(&marks, &strokes);
+                self.wet = Some(WetPreview {
+                    layer: layer.id.clone(),
+                    image: image(pixels, canvas.width, canvas.height),
+                    at: now,
+                    cost: ui::time::now().duration_since(now),
+                });
+            }
+            self.wet.as_ref().map(|preview| preview.image.clone())
+        } else {
+            if self
+                .wet
+                .as_ref()
+                .is_some_and(|preview| preview.layer == layer.id)
+            {
+                self.wet = None;
+            }
+            entry.image.clone()
+        };
         let blend = match engine.blend() {
             Blend::Normal => BlendMode::default(),
             Blend::Multiply => BlendMode::new(Mix::Multiply, Compose::SrcOver),
@@ -352,11 +440,11 @@ impl Renderer {
             transform,
             &board,
         );
-        if let Some(image) = &entry.image {
+        if let Some(image) = shown {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                &ImageBrush::new(image.clone()),
+                &ImageBrush::new(image),
                 Some(Affine::scale(1.0 / scale)),
                 &board,
             );
@@ -369,6 +457,27 @@ impl Renderer {
         }
         scene.pop_layer();
     }
+}
+
+/// The straight-alpha pixel of `image` at `at` (pixel coordinates).
+fn pixel(image: &ImageData, at: Point) -> Option<Color> {
+    if at.x < 0.0 || at.y < 0.0 {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "non-negative and checked against the image's size below"
+    )]
+    let (column, row) = (at.x.floor() as u32, at.y.floor() as u32);
+    if column >= image.width || row >= image.height {
+        return None;
+    }
+    let start =
+        usize::try_from((u64::from(row) * u64::from(image.width) + u64::from(column)) * 4).ok()?;
+    let rgba = image.data.data().get(start..start.checked_add(4)?)?;
+    let [red, green, blue, alpha] = <[u8; 4]>::try_from(rgba).ok()?;
+    Some(Color::from_rgba8(red, green, blue, alpha))
 }
 
 fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
@@ -758,7 +867,7 @@ fn draw_shadow(
 }
 
 /// The toolkit's text style for a text shape.
-fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
+pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
     let Shape::Text {
         size,
         font,

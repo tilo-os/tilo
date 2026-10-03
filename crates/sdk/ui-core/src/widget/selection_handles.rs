@@ -1,16 +1,24 @@
 //! Selection handles for a vector canvas: the frame around what is
-//! selected, its resize handles at the corners and its rotation handle above,
-//! drawn in the theme's accent and hit-tested at a constant size on screen
-//! whatever the zoom.
+//! selected, its resize handles at the corners and edges and its rotation
+//! handle above, drawn in the theme's accent and hit-tested at a constant
+//! size on screen whatever the zoom.
+//!
+//! The frame may be turned (a rotated shape keeps a frame along its own
+//! sides), and every drag is answered in the frame's own axes.
 //!
 //! The frame owns no document state. A canvas keeps its selection, asks
 //! [`SelectionHandles::handle_at`] what a press landed on, and turns the drag
-//! into its own action with [`SelectionHandles::scale_for`] or
+//! into its own action with [`SelectionHandles::stretch_for`] or
 //! [`SelectionHandles::rotation_for`], so every edit still goes through the
 //! canvas's published vocabulary.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
+)]
+
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke, Vec2};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 
 use crate::theme::Theme;
@@ -20,9 +28,13 @@ use crate::tokens::Metrics;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
     TopLeft,
+    Top,
     TopRight,
+    Right,
     BottomRight,
+    Bottom,
     BottomLeft,
+    Left,
     /// Above the frame: drag around the centre to rotate.
     Rotate,
 }
@@ -34,23 +46,78 @@ impl Handle {
         Self::BottomRight,
         Self::BottomLeft,
     ];
+    pub const EDGES: [Self; 4] = [Self::Top, Self::Right, Self::Bottom, Self::Left];
 
-    /// The corner a resize keeps still: the one opposite this handle.
-    pub fn anchor(self, bounds: Rect) -> Point {
+    /// Where the handle sits on `bounds`, as fractions of its width and
+    /// height from the top-left; the rotation handle sits at the top centre.
+    fn place(self) -> (f64, f64) {
         match self {
-            Self::TopLeft => Point::new(bounds.x1, bounds.y1),
-            Self::TopRight => Point::new(bounds.x0, bounds.y1),
-            Self::BottomRight => Point::new(bounds.x0, bounds.y0),
-            Self::BottomLeft => Point::new(bounds.x1, bounds.y0),
-            Self::Rotate => bounds.center(),
+            Self::TopLeft => (0.0, 0.0),
+            Self::Top | Self::Rotate => (0.5, 0.0),
+            Self::TopRight => (1.0, 0.0),
+            Self::Right => (1.0, 0.5),
+            Self::BottomRight => (1.0, 1.0),
+            Self::Bottom => (0.5, 1.0),
+            Self::BottomLeft => (0.0, 1.0),
+            Self::Left => (0.0, 0.5),
+        }
+    }
+
+    /// The point of `bounds` a resize keeps still: the one opposite this
+    /// handle (the centre for the rotation handle).
+    pub fn anchor(self, bounds: Rect) -> Point {
+        if self == Self::Rotate {
+            return bounds.center();
+        }
+        let (u, v) = self.place();
+        Point::new(
+            bounds.x0 + (1.0 - u) * bounds.width(),
+            bounds.y0 + (1.0 - v) * bounds.height(),
+        )
+    }
+
+    /// Whether dragging the handle changes the width, the height.
+    fn axes(self) -> (bool, bool) {
+        match self {
+            Self::Top | Self::Bottom => (false, true),
+            Self::Left | Self::Right => (true, false),
+            Self::Rotate => (false, false),
+            _ => (true, true),
+        }
+    }
+
+    /// The resize cursor for the handle on a frame turned by `angle`
+    /// radians, the move cursor for the rotation handle.
+    pub fn cursor(self, angle: f64) -> winit::window::CursorIcon {
+        use winit::window::CursorIcon;
+        if self == Self::Rotate {
+            return CursorIcon::Grab;
+        }
+        let (u, v) = self.place();
+        let direction = (v - 0.5).atan2(u - 0.5) + angle;
+        // Eighths of a turn, folded onto the four double-headed cursors.
+        let eighth = (direction / std::f64::consts::FRAC_PI_4)
+            .round()
+            .rem_euclid(4.0);
+        if eighth < 0.5 {
+            CursorIcon::EwResize
+        } else if eighth < 1.5 {
+            CursorIcon::NwseResize
+        } else if eighth < 2.5 {
+            CursorIcon::NsResize
+        } else {
+            CursorIcon::NeswResize
         }
     }
 }
 
-/// The frame around a selection, in content coordinates.
+/// The frame around a selection, in content coordinates: `bounds` turned by
+/// `angle` about its centre.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectionHandles {
     pub bounds: Rect,
+    /// Radians, clockwise on a y-down canvas.
+    pub angle: f64,
     /// The pointer target around each handle, in screen pixels.
     target: f64,
 }
@@ -61,8 +128,20 @@ impl SelectionHandles {
     pub fn new(bounds: Rect, metrics: &Metrics) -> Self {
         Self {
             bounds,
+            angle: 0.0,
             target: f64::from(metrics.min_pointer_target),
         }
+    }
+
+    /// The same frame turned by `angle` radians about its centre.
+    #[must_use]
+    pub fn turned(self, angle: f64) -> Self {
+        Self { angle, ..self }
+    }
+
+    /// Frame space to content space.
+    pub fn orientation(&self) -> Affine {
+        Affine::rotate_about(self.angle, self.bounds.center())
     }
 
     /// How big a handle is drawn on screen; its target is larger.
@@ -76,69 +155,205 @@ impl SelectionHandles {
         self.target
     }
 
-    /// Where `handle` sits in content coordinates at `zoom` (screen pixels
-    /// per content unit).
-    pub fn position(&self, handle: Handle, zoom: f64) -> Point {
+    /// Whether the edge handles show at `zoom`: only when the frame is big
+    /// enough on screen that they do not crowd the corners.
+    fn edges_shown(&self, zoom: f64) -> bool {
+        let least = self.bounds.width().min(self.bounds.height()) * zoom;
+        least >= self.target * 2.5
+    }
+
+    /// The handles that can be grabbed at `zoom`, the rotation handle first.
+    pub fn handles(&self, zoom: f64) -> impl Iterator<Item = Handle> {
+        let edges = self.edges_shown(zoom);
+        std::iter::once(Handle::Rotate)
+            .chain(Handle::CORNERS)
+            .chain(Handle::EDGES.into_iter().filter(move |_| edges))
+    }
+
+    /// Where `handle` sits in frame space at `zoom` (screen pixels per
+    /// content unit).
+    fn local(&self, handle: Handle, zoom: f64) -> Point {
         let b = self.bounds;
-        match handle {
-            Handle::TopLeft => Point::new(b.x0, b.y0),
-            Handle::TopRight => Point::new(b.x1, b.y0),
-            Handle::BottomRight => Point::new(b.x1, b.y1),
-            Handle::BottomLeft => Point::new(b.x0, b.y1),
-            Handle::Rotate => Point::new(b.center().x, b.y0 - self.rotate_reach() / zoom.max(1e-6)),
+        let (u, v) = handle.place();
+        let at = Point::new(b.x0 + u * b.width(), b.y0 + v * b.height());
+        if handle == Handle::Rotate {
+            at - Vec2::new(0.0, self.rotate_reach() / zoom.max(1e-6))
+        } else {
+            at
         }
+    }
+
+    /// Where `handle` sits in content coordinates at `zoom`.
+    pub fn position(&self, handle: Handle, zoom: f64) -> Point {
+        self.orientation() * self.local(handle, zoom)
     }
 
     /// The handle under `point` (content coordinates), if any.
     pub fn handle_at(&self, point: Point, zoom: f64) -> Option<Handle> {
         let reach = self.target / 2.0 / zoom.max(1e-6);
-        std::iter::once(Handle::Rotate)
-            .chain(Handle::CORNERS)
-            .find(|handle| self.position(*handle, zoom).distance(point) <= reach)
+        let mut best: Option<(f64, Handle)> = None;
+        for handle in self.handles(zoom) {
+            let distance = self.position(handle, zoom).distance(point);
+            if distance <= reach && best.is_none_or(|(nearest, _)| distance < nearest) {
+                best = Some((distance, handle));
+            }
+        }
+        best.map(|(_, handle)| handle)
     }
 
-    /// The uniform scale a drag of `handle` from `from` to `to` asks for,
-    /// about the opposite corner, and that corner. Never below a tenth.
-    pub fn scale_for(&self, handle: Handle, from: Point, to: Point) -> (f64, Point) {
-        let anchor = handle.anchor(self.bounds);
-        let before = from.distance(anchor).max(1e-6);
-        ((to.distance(anchor) / before).max(0.1), anchor)
+    /// Whether `point` (content coordinates) is inside the frame.
+    pub fn contains(&self, point: Point) -> bool {
+        self.bounds.contains(self.orientation().inverse() * point)
+    }
+
+    /// The resize a drag of `handle` from `from` to `to` asks for, as an
+    /// affine in content space. The opposite side stays still, or the centre
+    /// with `from_centre`; `keep_aspect` scales both ways alike. A drag past
+    /// the anchor flips; the frame never collapses below half a unit.
+    pub fn stretch_for(
+        &self,
+        handle: Handle,
+        (from, to): (Point, Point),
+        keep_aspect: bool,
+        from_centre: bool,
+    ) -> Affine {
+        if handle == Handle::Rotate {
+            return Affine::IDENTITY;
+        }
+        let into = self.orientation().inverse();
+        let (from, to) = (into * from, into * to);
+        let anchor = if from_centre {
+            self.bounds.center()
+        } else {
+            handle.anchor(self.bounds)
+        };
+        let (along_x, along_y) = handle.axes();
+        let ratio = |to: f64, from: f64, anchor: f64| {
+            let before = from - anchor;
+            if before.abs() < 1e-9 {
+                1.0
+            } else {
+                (to - anchor) / before
+            }
+        };
+        let mut sx = if along_x {
+            ratio(to.x, from.x, anchor.x)
+        } else {
+            1.0
+        };
+        let mut sy = if along_y {
+            ratio(to.y, from.y, anchor.y)
+        } else {
+            1.0
+        };
+        if keep_aspect {
+            let uniform = match (along_x, along_y) {
+                (true, true) => {
+                    // The scale along the diagonal the pointer pulls.
+                    let before = from - anchor;
+                    let after = to - anchor;
+                    after.dot(before) / before.hypot2().max(1e-12)
+                }
+                (true, false) => sx,
+                _ => sy,
+            };
+            sx = uniform;
+            sy = uniform;
+        }
+        let least = |scale: f64, extent: f64| {
+            let floor = 0.5 / extent.max(1e-9);
+            if scale.abs() < floor {
+                floor.copysign(if scale == 0.0 { 1.0 } else { scale })
+            } else {
+                scale
+            }
+        };
+        let sx = least(sx, self.bounds.width());
+        let sy = least(sy, self.bounds.height());
+        let local = Affine::translate(anchor.to_vec2())
+            * Affine::scale_non_uniform(sx, sy)
+            * Affine::translate(-anchor.to_vec2());
+        self.orientation() * local * into
     }
 
     /// The rotation in degrees, clockwise, a drag of the rotation handle from
-    /// `from` to `to` asks for about the centre; with `snap`, in steps of 15.
+    /// `from` to `to` asks for about the centre; with `snap`, the frame's
+    /// resulting angle lands on steps of 15.
     pub fn rotation_for(&self, from: Point, to: Point, snap: bool) -> f64 {
         let centre = self.bounds.center();
         let angle = |point: Point| (point.y - centre.y).atan2(point.x - centre.x);
         let degrees = (angle(to) - angle(from)).to_degrees();
         let degrees = (degrees + 540.0).rem_euclid(360.0) - 180.0;
         if snap {
-            (degrees / 15.0).round() * 15.0
+            let start = self.angle.to_degrees();
+            ((start + degrees) / 15.0).round() * 15.0 - start
         } else {
             degrees
         }
     }
 
+    /// The rotation a drag asks for, as an affine about the frame's centre.
+    pub fn rotation_affine(&self, from: Point, to: Point, snap: bool) -> Affine {
+        let degrees = self.rotation_for(from, to, snap);
+        Affine::rotate_about(degrees.to_radians(), self.bounds.center())
+    }
+
     /// Draw the frame and its handles; `to_screen` maps content to screen.
     pub fn draw(&self, scene: &mut Scene, to_screen: Affine, zoom: f64, theme: &Theme) {
+        self.draw_moved(scene, to_screen, Affine::IDENTITY, zoom, theme);
+    }
+
+    /// Draw the frame as `preview` (content space) carries it during a
+    /// drag: the outline follows the preview, the grips stay upright and
+    /// the same size on screen.
+    pub fn draw_moved(
+        &self,
+        scene: &mut Scene,
+        to_screen: Affine,
+        preview: Affine,
+        zoom: f64,
+        theme: &Theme,
+    ) {
         let zoom = zoom.max(1e-6);
         let accent = theme.accent_primary;
         let surface = theme.tokens.colors.surfaces.base;
-        let line = Stroke::new(1.5 / zoom);
-        scene.stroke(&line, to_screen, accent, None, &self.bounds);
-        let top = Point::new(self.bounds.center().x, self.bounds.y0);
-        let rotate = self.position(Handle::Rotate, zoom);
-        scene.stroke(&line, to_screen, accent, None, &Line::new(top, rotate));
-        let grip = self.grip() / zoom;
-        for handle in Handle::CORNERS {
-            let at = self.position(handle, zoom);
+        let line = Stroke::new(1.5);
+        let place = preview * self.orientation();
+        let screen = |local: Point| to_screen * (place * local);
+        let b = self.bounds;
+        let mut outline = BezPath::new();
+        outline.move_to(screen(Point::new(b.x0, b.y0)));
+        outline.line_to(screen(Point::new(b.x1, b.y0)));
+        outline.line_to(screen(Point::new(b.x1, b.y1)));
+        outline.line_to(screen(Point::new(b.x0, b.y1)));
+        outline.close_path();
+        scene.stroke(&line, Affine::IDENTITY, accent, None, &outline);
+        // The rotation handle stands one target off the frame's top edge on
+        // screen, whatever the preview did to the frame.
+        let top = screen(self.local(Handle::Top, zoom));
+        let centre = screen(b.center());
+        let away = top - centre;
+        let up = if away.hypot() > 1e-9 {
+            away / away.hypot()
+        } else {
+            Vec2::new(0.0, -1.0)
+        };
+        let knob = top + up * self.rotate_reach();
+        scene.stroke(&line, Affine::IDENTITY, accent, None, &Line::new(top, knob));
+        let grip = self.grip();
+        for handle in self
+            .handles(zoom)
+            .filter(|handle| *handle != Handle::Rotate)
+        {
+            let at = screen(self.local(handle, zoom));
             let square = Rect::from_center_size(at, (grip, grip));
-            scene.fill(Fill::NonZero, to_screen, surface, None, &square);
-            scene.stroke(&line, to_screen, accent, None, &square);
+            let turned = Affine::rotate_about(self.angle, at);
+            scene.fill(Fill::NonZero, turned, surface, None, &square);
+            scene.stroke(&line, turned, accent, None, &square);
         }
-        let knob = Circle::new(rotate, grip * 0.6);
-        scene.fill(Fill::NonZero, to_screen, surface, None, &knob);
-        scene.stroke(&line, to_screen, accent, None, &knob);
+        let knob = Circle::new(knob, grip * 0.6);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, surface, None, &knob);
+        scene.stroke(&line, Affine::IDENTITY, accent, None, &knob);
     }
 
     /// The frame moved by `offset`, as during a drag.
@@ -155,8 +370,12 @@ impl SelectionHandles {
 mod tests {
     use super::*;
 
+    fn close(a: Point, b: Point) -> bool {
+        a.distance(b) < 1e-6
+    }
+
     #[test]
-    fn handles_are_hit_at_constant_screen_size_and_turn_drags_into_edits() {
+    fn handles_are_hit_at_constant_screen_size() {
         let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
         let frame = SelectionHandles::new(bounds, &Metrics::BASE);
         assert_eq!(
@@ -182,16 +401,97 @@ mod tests {
             frame.handle_at(Point::new(150.0, 72.0), 1.0),
             Some(Handle::Rotate)
         );
-
-        let (scale, anchor) = frame.scale_for(
-            Handle::BottomRight,
-            Point::new(200.0, 150.0),
-            Point::new(300.0, 200.0),
+        // Edge handles show once the frame is big enough on screen.
+        assert_eq!(frame.handle_at(Point::new(200.0, 125.0), 1.0), None);
+        assert_eq!(
+            frame.handle_at(Point::new(200.0, 125.0), 4.0),
+            Some(Handle::Right)
         );
-        assert_eq!(anchor, Point::new(100.0, 100.0));
-        assert!((scale - 2.0).abs() < 1e-9);
+    }
 
+    #[test]
+    fn a_corner_stretches_freely_or_keeps_its_aspect() {
+        let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0), &Metrics::BASE);
+        let drag = (Point::new(200.0, 150.0), Point::new(300.0, 160.0));
+        let free = frame.stretch_for(Handle::BottomRight, drag, false, false);
+        assert!(close(
+            free * Point::new(100.0, 100.0),
+            Point::new(100.0, 100.0)
+        ));
+        assert!(close(
+            free * Point::new(200.0, 150.0),
+            Point::new(300.0, 160.0)
+        ));
+        let kept = frame.stretch_for(Handle::BottomRight, drag, true, false);
+        let corner = kept * Point::new(200.0, 150.0);
+        assert!(
+            ((corner.x - 100.0) / (corner.y - 100.0) - 2.0).abs() < 1e-9,
+            "{corner:?}"
+        );
+        let centred = frame.stretch_for(Handle::Right, drag, false, true);
+        assert!(close(
+            centred * Point::new(150.0, 125.0),
+            Point::new(150.0, 125.0)
+        ));
+        assert!(close(
+            centred * Point::new(200.0, 150.0),
+            Point::new(300.0, 150.0)
+        ));
+        // An edge stretches only its own axis.
+        let edge = frame.stretch_for(
+            Handle::Bottom,
+            (Point::new(150.0, 150.0), Point::new(170.0, 200.0)),
+            false,
+            false,
+        );
+        assert!(close(
+            edge * Point::new(200.0, 150.0),
+            Point::new(200.0, 200.0)
+        ));
+    }
+
+    #[test]
+    fn a_turned_frame_stretches_along_its_own_sides() {
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let frame = SelectionHandles::new(Rect::new(-50.0, -10.0, 50.0, 10.0), &Metrics::BASE)
+            .turned(quarter);
+        // Turned a quarter, the frame's right edge points down.
+        let right = frame.position(Handle::Right, 1.0);
+        assert!(close(right, Point::new(0.0, 50.0)), "{right:?}");
+        let stretch =
+            frame.stretch_for(Handle::Right, (right, Point::new(5.0, 100.0)), false, false);
+        assert!(close(
+            stretch * Point::new(0.0, 50.0),
+            Point::new(0.0, 100.0)
+        ));
+        assert!(close(
+            stretch * Point::new(0.0, -50.0),
+            Point::new(0.0, -50.0)
+        ));
+        assert!(frame.contains(Point::new(5.0, 40.0)));
+        assert!(!frame.contains(Point::new(40.0, 5.0)));
+    }
+
+    #[test]
+    fn rotation_snaps_the_resulting_angle() {
+        let frame = SelectionHandles::new(Rect::new(100.0, 100.0, 200.0, 150.0), &Metrics::BASE);
         let quarter = frame.rotation_for(Point::new(150.0, 72.0), Point::new(250.0, 125.0), true);
         assert!((quarter - 90.0).abs() < 1e-9, "{quarter}");
+        // A frame turned 5 degrees nudged a little lands back square.
+        let turned = frame.turned(5_f64.to_radians());
+        let step = turned.rotation_for(Point::new(150.0, 72.0), Point::new(151.0, 72.0), true);
+        assert!((step + 5.0).abs() < 1e-9, "{step}");
+    }
+
+    #[test]
+    fn a_stretch_never_collapses_the_frame() {
+        let frame = SelectionHandles::new(Rect::new(0.0, 0.0, 100.0, 100.0), &Metrics::BASE);
+        let flat = frame.stretch_for(
+            Handle::Right,
+            (Point::new(100.0, 50.0), Point::new(0.0, 50.0)),
+            false,
+            false,
+        );
+        assert!(flat.determinant().abs() > 1e-4);
     }
 }

@@ -437,6 +437,7 @@ pub fn look(
                 .is_some_and(|reference| reference.visible)
         }),
         bare: false,
+        wet: None,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
