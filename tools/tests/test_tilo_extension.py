@@ -74,7 +74,7 @@ class Machine:
         (self.root / "usr/lib").mkdir(parents=True)
         (self.root / "usr/lib/os-release").write_text('ID=fedora\nVERSION_ID="44"\n')
         (self.root / "usr/share/tilo").mkdir(parents=True)
-        (self.root / "usr/share/tilo/cosign.pub").write_text("trusted\n")
+        (self.root / "usr/share/tilo/extensions.pub").write_text("trusted\n")
         catalogue = self.layout.catalogue_dir
         catalogue.mkdir(parents=True)
         (catalogue / "media-codecs.json").write_text((CATALOGUE / "media-codecs.json").read_text())
@@ -625,6 +625,13 @@ class Shipped(unittest.TestCase):
             self.assertNotIn(namespaced, settings, f"{namespaced} would hide the merge from the host")
         helper = HELPER.read_text()
         self.assertIn('run(["systemctl", "start", "tilo-extension-activate.service"])', helper)
+
+    def test_manifests_verify_only_against_the_extension_key(self):
+        self.assertEqual(str(ext.Layout().trust_key), "/usr/share/tilo/extensions.pub")
+        shipped = (REPO / "keys/extensions.pub").read_text()
+        self.assertNotEqual(shipped, (REPO / "keys/cosign.pub").read_text())
+        self.assertIn("COPY keys/extensions.pub /usr/share/tilo/extensions.pub", (REPO / "os/Containerfile").read_text())
+        self.assertNotIn("cosign.pub", HELPER.read_text())
 
     def test_sealed_image_still_masks_the_boot_time_merge(self):
         containerfile = (REPO / "os/Containerfile").read_text()

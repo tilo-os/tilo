@@ -4,7 +4,7 @@ Documentation=file:///usr/share/tilo/system-extensions/README.md
 # The sealed image never merges what /var holds by itself: systemd-sysext's
 # own service stays masked (docs/security/boot-chain.md). This unit does it on
 # purpose, at every boot and after every install, refresh or removal: it checks
-# each kept manifest's signature against the image's update key again, checks
+# each kept manifest's signature against the extension-manifest key again, checks
 # every kept artifact against the manifest, rebuilds each part for the booted
 # base from those bytes alone, refuses to merge if anything else is in the
 # sysext search path, and then runs `systemd-sysext refresh`. Nothing written to

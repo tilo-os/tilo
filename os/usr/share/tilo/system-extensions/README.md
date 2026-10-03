@@ -114,12 +114,13 @@ image, because the image decides which bytes are acceptable:
    repositories, checks every package's upstream signature, and publishes a
    manifest that pins every artifact by URL, exact byte length and SHA-256, and
    the exact base it was resolved for. CI signs the manifest bytes with the
-   OS release key (the non-exportable KMS key whose public half is
-   `keys/cosign.pub`), the same key that authorizes image updates; a manifest
-   can only be published where an image signature could be.
+   extension-manifest key: a non-exportable KMS key
+   (`alias/tilo-extension-manifests`) that only `extension-manifests.yml` on
+   main can use, separate from the OS release key. Its public half is
+   `keys/extensions.pub`.
 3. The device fetches the manifest and its detached signature, verifies the
-   signature against `/usr/share/tilo/cosign.pub` (the key this image trusts
-   for its own updates) before parsing anything, and then requires: the
+   signature against `/usr/share/tilo/extensions.pub`, and only that key,
+   before parsing anything, and then requires: the
    expected `type`, `schema` and `id`; exactly this base (OS, release,
    architecture and the base package fingerprint below); part names and
    artifact hosts allowed by the catalogue entry; and a revision no lower than

@@ -20,8 +20,10 @@ The image decides which bytes are acceptable. Its catalogue entry
 (/usr/share/tilo/system-extensions/sysext.d/<id>.json, part of the sealed image)
 names the parts and the hosts artifacts may come from, and where Tilo publishes
 the extension's manifest. The manifest pins every artifact by URL, length and
-SHA-256 and names the exact base it was resolved for; it is signed by the key
-this image trusts for its own updates (/usr/share/tilo/cosign.pub). The
+SHA-256 and names the exact base it was resolved for; it is signed by Tilo's
+extension-manifest key, whose public half the image carries
+(/usr/share/tilo/extensions.pub). No other key, not even the OS update key, can
+sign a manifest this helper accepts. The
 signature is checked over the raw bytes before anything is parsed, and any
 mismatch refuses the whole transaction. Nothing from the manifest is ever run.
 
@@ -544,7 +546,7 @@ class Layout:
 
     @property
     def trust_key(self) -> Path:
-        return self.at("/usr/share/tilo/cosign.pub")
+        return self.at("/usr/share/tilo/extensions.pub")
 
     @property
     def os_release(self) -> Path:
@@ -741,13 +743,13 @@ def fetch_small(url: str, limit: int) -> bytes:
 
 
 def verify_signature(layout: Layout, data: bytes, signature: bytes, workdir: Path) -> None:
-    """Check the manifest bytes against the key this image trusts for updates.
+    """Check the manifest bytes against the image's extension-manifest key.
 
     Module-level so tests can substitute a verifier when tilo-crypto is absent.
     """
     key = layout.trust_key
     if not key.is_file():
-        raise PackError("this image has no update signing key")
+        raise PackError("this image has no extension-manifest key")
     workdir.mkdir(parents=True, exist_ok=True)
     manifest = workdir / "manifest.json"
     sig = workdir / "manifest.json.sig"
