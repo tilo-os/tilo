@@ -40,7 +40,7 @@ it, then `scripts/release.py` writes two sets of binaries:
 | Greek: monotonic, tonos, dialytika, ano teleia, ; | yes | yes |
 | Cyrillic: Russian, Ukrainian, Belarusian, Bulgarian and Serbian/Macedonian (`locl`), Kazakh | **no** (Onest ss02 draws it) | yes |
 | Distinct I and l (`ss13`, `cv01`, `cv02`) and the slashed zero (`zero`) | **no** (features and glyphs removed) | yes |
-| Glyphs / code points | 757 / 521 | 915 / 635 |
+| Glyphs / code points | 757 / 521 | 921 / 635 |
 
 Why:
 
@@ -57,16 +57,61 @@ Why:
   a circumflex are two-pixel marks; ỵ's dot sits right of the descender.
 - **Greek** ships: review approved it against the fallback (Geologica at 0.85
   × the weight). The product owner's sheet is `proofs/final/greek-review/`.
-- **Cyrillic** is held back. Review: the shapes are recognisably Instrument
-  and look better than Onest beside Instrument's Latin, but kerning collides
-  in common words (б and ф kern as rounds under Т Г У: «Тбилиси», «Убрать»;
-  the italic ∂-shaped д under Г Т У: «Где», «Удача»), ї's dieresis is too
-  wide («її»), and bold/condensed-bold в Ф Ю ы have clogged counters.
-  Native readers check `proofs/final/cyrillic-review/` once those are fixed.
-- **Distinct I and l** is held back. Review: the serif I comes diagonally
-  close to the flag of 1 (and to 4, ¿ and lowercase accents) because
-  `il_kern.py`'s floors measure only side-by-side gaps; at 12–14 px `I1`
-  merges. The forms themselves are approved. ĨỈỊ have serif forms too.
+- **Cyrillic** is held back. Review found the shapes recognisably Instrument
+  and better than Onest beside Instrument's Latin, and the earlier collisions
+  (б and ф kerned as rounds under Т Г У in «Тбилиси», «Убрать»; the italic
+  ∂-shaped д in «Где», «Удача»), the crowded dieresis of «її» and the clogged
+  bold в Ф Ю are fixed (`proofs/final/cyrillic/review-fixes.png`). Still open:
+  - the condensed italic Я (worst in Condensed Bold Italic): moving the
+    italic foot right by the slant left leg and stem nearly parallel, 3–32
+    units apart, so «ЯНВАРЬ» reads as «9I». The gap between leg and stem must
+    stay at least the upright master's (or 0.6 of R's), by moving the leg's
+    junction rather than only its foot, with a counter check in
+    `construct.py`;
+  - ї Ї in Bold, Condensed Bold and their italics: the dots are about half
+    the area of і's and ï's and sit higher (bottom at 626 against і's 578 in
+    Bold), so «Україні» looks light-topped. They should reach about 0.85 of
+    і's dot, aligned with it, keeping the narrow span;
+  - the Serbian/Macedonian italic г and ѓ (`locl SRB`): the widened macron
+    overhangs the advance, so in `lang=sr` text «гг» and «ѓг» overlap and
+    «ѓгѓ» in the bold italics is one bar over three stems. It needs insetting
+    like п and т, and `pairs.py` does not check `locl` forms yet (it should
+    run with `lang=sr`, `mk` and `bg`);
+  - ы in Bold and Condensed Bold: the white between bowl and second stem is
+    47 units in Condensed Bold (63 in Bold), so it clogs at 12–13 px;
+  - э in Condensed Bold: the eye above the bar is about 55 × 90 units and
+    fills in before с and е do.
+  Native readers check `proofs/final/cyrillic-review/` (a Bulgarian reader the
+  `locl BGR` forms) once those are fixed.
+- **Distinct I and l** is held back. What held it back before is fixed: the
+  serif I no longer comes diagonally close to the flag of 1, `il_kern.py`
+  measures distances in any direction (see the kerning rules below), and `I1`
+  reads apart at 12–14 px in Regular and Bold. The forms of the serif I and
+  the tailed l were approved earlier; Ĩ Ỉ Ị, Greek Ι Ϊ Ί and Cyrillic І Ї have
+  serif forms too. Still open, from 1x renders at 12–14 px:
+  - `lslash.ss13` (ł under `ss13`/`cv02`): the tail plus the bar is t's
+    silhouette, and the height difference (720 against 659–680) is under a
+    pixel, so «michał» reads «michat» and «łódź» «tódź». ł should stay
+    untailed (its bar already sets it apart from I, l, 1 and |) or be redrawn
+    so the bar cannot read as a crossbar;
+  - Condensed Bold and Condensed Bold Italic: tailed `ll` and `lI` are 66–68
+    units apart, under a pixel at 12 px, so the tail bridges into the next
+    stem («ll» reads as u, «isIllegal» as «isIUegal»). The README's earlier
+    claim that they keep a pixel of white did not hold on a 1x render; they
+    need 90 units or more;
+  - the tailed l against L: the tail reaches 30–78 units past the stem against
+    L's 166–370, so at UI sizes it renders as a one- or two-pixel foot and
+    «lL», «LlL» read as runs of L in Condensed Bold. The tail needs to rise
+    or curve visibly, and `il_sheet.py` should proof l/L;
+  - `II` and `III`: the serifs of neighbouring I's fuse into unbroken bars at
+    12 px in every weight (102 units in Regular, 64 in Condensed Bold), so I's
+    can only be counted by their stems. They need at least 1.5 px at 12 px;
+  - `I4`/`4I`: 38 units in Condensed Bold (42 in its italic), under the
+    documented minimum of 40, touching at the baseline at 12 px also in Bold;
+    the tailed l and ł against 4 are 29 (Condensed Bold) and 45 (Bold).
+  Not fixable here: `rn` against `m` and `cl` against `d` are Instrument's
+  own Latin letters and spacing; in Condensed Bold at 12 px `rn` comes
+  close to `m`.
 
 Final sheets of the merged family are in `proofs/final/`: one folder per area
 (`vietnamese`, `greek`, `cyrillic`, `il`, `latin`), and the review sheets
@@ -121,6 +166,7 @@ vendor/fonts/tilo-sans/
   scripts/inkgeom.py       glyph ink as polygons (shared by the two checks)
   scripts/verify_upstream.py   every upstream glyph unchanged?
   scripts/il_kern.py       kerning of the distinct I and l (ss13), solved from the built fonts
+  scripts/il_sheet.py      the confusable characters (I l 1 | ! i j, O 0 o, rn m, cl d) at 12-14 px at 1x, enlarged
   scripts/release.py       fonts/default/ (shipped: held-back scripts removed) and fonts/full/
   scripts/shaping_tests.py HarfBuzz tests: Vietnamese and Greek NFC = NFD, marks, I/l, locl, default = full
   scripts/review_sheet.py  Greek / Cyrillic beside their fallback, for native readers
@@ -170,6 +216,7 @@ uv run vendor/fonts/tilo-sans/scripts/components.py [--all] [--glyphs Abreveacut
 uv run vendor/fonts/tilo-sans/scripts/pairs.py [--show 40] [--text "đĩa Tĩnh"]
 uv run vendor/fonts/tilo-sans/scripts/verify_upstream.py
 uv run vendor/fonts/tilo-sans/scripts/il_kern.py [--check]   # after build; repeat until --check is clean
+uv run vendor/fonts/tilo-sans/scripts/il_sheet.py [--final]  # confusables at UI sizes -> proofs/work/il-sheet/
 uv run vendor/fonts/tilo-sans/scripts/shaping_tests.py        # after build
 uv run vendor/fonts/tilo-sans/scripts/review_sheet.py --script greek   # or cyrillic -> proofs/final/<script>-review/
 ```
@@ -301,7 +348,7 @@ unambiguous: usernames, user-submitted identifiers, passwords, codes.
 
 | feature | name | glyphs |
 |---|---|---|
-| `ss13` | Distinct I and l | `I` → `I.ss13` (short slab serifs, as thick as `E`'s arms), `l` → `l.ss13` (the `t`'s tail, cut shorter), with every precomposed form: `Iacute.ss13` … `Iogonek.ss13`, `IJ.ss13`, `Idieresis.ss01.ss13`, `lacute.ss13`, `lcaron.ss13`, `lcommaaccent.ss13`, `lslash.ss13`, and the ligatures `f_l.ss13`, `f_f_l.ss13` |
+| `ss13` | Distinct I and l | `I` → `I.ss13` (short slab serifs, as thick as `E`'s arms), `l` → `l.ss13` (the `t`'s tail, cut shorter), with every precomposed form: `Iacute.ss13` … `Iogonek.ss13`, `IJ.ss13`, `Idieresis.ss01.ss13`, `lacute.ss13`, `lcaron.ss13`, `lcommaaccent.ss13`, `lslash.ss13`, and the ligatures `f_l.ss13`, `f_f_l.ss13`; the same capital in Greek and Cyrillic: `Iota.ss13`, `Iotadieresis.ss13`, `Iotadieresis.ss01.ss13`, `Iotatonos.ss13`, `I-cy.ss13`, `Yi-cy.ss13` |
 | `cv01` | Capital I with serifs | the `I` half of `ss13` |
 | `cv02` | Lowercase l with tail | the `l` half of `ss13` |
 | `zero` | (slashed zero) | `zero.zero`, `zero.tf.zero`: the slash stays inside the counter, so it never reads as `Ø` |
@@ -314,20 +361,28 @@ the alternates.
 
 Every new precomposed `I` or `l` needs its `.ss13` composite, a line in `il.fea`
 and a place in the kern groups below, in the same change that adds it; otherwise
-`ss13` silently leaves a plain stem in an identifier. Pending, as those letters
-land: Vietnamese `Ĩ Ỉ Ị` (`Itilde.ss13`, `Ihookabove.ss13`, `Idotbelow.ss13`, plus
-`itilde`/`ihookabove` in the lowercase-i accent kerning below); Cyrillic `І Ї Ӏ`
-and Greek `Ι Ϊ Ί` (decide per script whether the serif form follows; a bare stem
-next to a serif Latin `I` is ambiguous again). `I.ss13` carries `topleft` for
-the Greek tonos, placed as far from the serif as upstream's `I` places it from
-its stem.
+`ss13` silently leaves a plain stem in an identifier (`shaping_tests.py` checks
+every I and l it knows). Greek `Ι Ϊ Ί` and Cyrillic `І Ї` take the serif form:
+a bare stem beside a serif Latin `I` would be ambiguous again. `Ί.ss13` keeps
+the tonos where `Ί` has it and moves the serif I so its top-left serif keeps
+the clearance the plain stem had; `Ї.ss13` keeps the Cyrillic dots, centred.
+The palochka `Ӏ` is not in the font. `I.ss13` carries `topleft` for the Greek
+tonos, placed as far from the serif as upstream's `I` places it from its stem.
+
+The serif proportions are unchanged from the approved drawing (serifs reach
+96 units past the stem in Regular, 82 in Bold): `I1` closed up because of
+spacing, not proportion, and with the distance kept it reads apart at 12 px
+while the serif still reads as a serif at that size; shorter serifs would
+blur `I` against `l` and `|` there instead.
 
 Spacing and kerning. `I.ss13`'s sidebearings come from its serifs; the condensed
 masters are 15 (Regular) and 10 (Bold) units wider per side than first drawn so
 `II` and `AIA` keep Instrument's Z+Z / H+A rhythm. `l.ss13` keeps `l`'s left
 sidebearing and takes the right sidebearing Instrument's `t` keeps after its
 tail. Groups: `public.kern1.KO_I.ss13` / `public.kern2.KO_I.ss13` (with
-`IJ.ss13` on the left side; its right side carries `IJ`'s pairs);
+`IJ.ss13` on the left side; its right side carries `IJ`'s pairs; the Greek and
+Cyrillic serif I's in both, except `Iotatonos.ss13`, whose left side is its
+tonos and copies plain `Ί`'s pairs);
 `public.kern1.KO_l.ss13` for `l.ss13`, its accented forms, `lslash.ss13` and the
 tailed ligatures; `public.kern1.KO_lcaron.ss13` for `lcaron.ss13` alone (it must
 not share `ď`'s values: the caron overhang sets those, and the tail would run
@@ -336,32 +391,56 @@ and `zero.zero` in both `KO_zero` groups (with copies of `zero`'s glyph-level
 pairs), so the alternates keep every upstream pair.
 
 Every pair with one of these groups (or their members) is written by
-`scripts/il_kern.py`, never by hand. It measures ink gaps on the shaped fonts at
-all eight masters, with `ss13` on and off, and solves these rules (the script's
+`scripts/il_kern.py`, never by hand. It measures the shaped fonts at all eight
+masters, with `ss13` on and off: level gaps (scanline against scanline) for the
+white beside a stem, and ink distances in any direction for the floors, so a
+serif tip coming towards the flag of `1`, the arm of `4`, the bowl of `¿` or an
+accent counts as much as one level with it. The kerning that reaches a
+distance is solved exactly, so a pass settles. The rules (the script's
 docstring has the detail):
 
 - the white beside the bare stem (between the serifs, above the tail) is the
   plain `I`/`l` gap plus a little: 14 / 12 units for most partners (`t f v w y r`,
-  figures, operators), two thirds of the extra width next to rounds for the
-  serif I (`O C Q`, `o e`, `0 6 9`; one third for the tailed l, whose tail
-  already fills under a round), half of it next to top and middle shapes
-  (`T V W Y 7`, quotes, dashes, guillemets, `·`). Tightening stops where the tail
-  or a serif would sit closer to the partner than it sits to a straight stem
-  (`l n`, `I H`), so neither the tail nor the serifs collide and no hole opens
-  above the tail or beside the inset stem;
-- floors: the serif I at least 40 units from anything (or the plain `I`'s gap
-  where that is already closer), and always 40 against lowercase accents,
-  apostrophe carons and between accented serif I's (`ÏÏ ÎÏ ÍÌ ĪĪ`, accent to
-  accent); `II` at Instrument's `ZZ`; `IJ tI ťI` at `LZ`; `lI` at the larger of
-  `LZ` and `ZZ`; `ď ľ ť ř` before `I` 45; the tailed l never tighter than
-  Instrument's `t` or plain `l`; Condensed Bold `ll` and `lI` 10 units more so
-  they keep a pixel of white at 12–13 px;
+  figures, operators), a third of the extra width next to rounds (`O C Q Ø`,
+  `o e`, `0 6 9`, and the Greek and Cyrillic rounds: the serifs sit where a
+  round curves away, the tail fills under it), half of it next to top and
+  middle shapes (`T V W Y 7`, quotes, dashes, guillemets, `·`). Tightening stops
+  where the tail or a serif would sit closer to the partner than it sits to a
+  straight stem (`l n`, `I H`), so neither the tail nor the serifs collide and no
+  hole opens above the tail or beside the inset stem;
+- distances never shorter than: 24 for any pair (the collision check's 16 plus
+  room for the instances between masters), even where the plain letter
+  collides; the serif I side by side 40 (or the plain `I`'s distance where that
+  is already shorter), and where its nearest approach is diagonal what `Z`'s
+  bars keep from the same partner (`Ζ` in Greek, `Е` in Cyrillic) or the plain
+  `I`'s, whichever is shorter; 40 always against lowercase accents, apostrophe
+  carons and between accented serif I's (`ÏÏ ÎÏ ÍÌ ĪĪ`, accent to accent); the
+  tailed l never shorter than Instrument's `t` or plain `l`, and 40 from the i
+  accents on both sides (`lï`, `ïl`); next to `1 | ¦ ! ¡` the plain letter's
+  distance up to 104 units (a clear pixel and a quarter at 12 px), so `I1` and
+  `l1` never close up; `ď ľ ť ř` before `I` 45;
+- level gaps: `II` at Instrument's `ZZ`; `IJ tI ťI` at `LZ`; `lI` at the larger of
+  `LZ` and `ZZ`; Condensed Bold `ll` and `lI` 10 units more (66–68 units, which
+  a 1x render shows still bridging at 12–13 px; see what ships, above);
 - `lcaron.ss13` takes the looser of the tailed l's value and plain `ľ`'s value
-  moved by the advance difference: the caron keeps `ľ`'s clearance, the tail
-  keeps `l.ss13`'s;
+  moved by the advance difference, so the tail keeps `l.ss13`'s clearance; its
+  caron keeps 40 from anything (plain `ľ`'s own is negative against `T Y 7` and
+  the i accents);
 - Catalan `l·l` (`locl CAT`): the middle dot stays centred between tailed l's.
 
-The italic masters are measured on their own outlines.
+The italic masters are measured on their own outlines, with the slant taken
+out for the level gaps (as Glyphs shows italic sidebearings) and as drawn for
+the distances. Letters of two scripts are never measured together (HarfBuzz
+shapes them in separate runs, which are not kerned). `pairs.py` checks the
+distinct forms as well, at the masters and the instances between them: no
+pair with `ss13` on may come closer than 16 units unless the plain pair already
+does.
+
+`scripts/il_sheet.py` renders what the forms are for: the confusables
+(`I l 1 | ! i j`, `O 0 o`, `rn m`, `cl d`) and identifier strings at 12, 13 and
+14 px at 1x, enlarged without smoothing, in Regular, Bold and Condensed Bold,
+upright and italic, light and dark, each line off and on; and the tight pairs
+at 96 px. Its sheets are in `proofs/sheets/il-sheet/`.
 
 A new letter that can sit next to a serif I or tailed l (Vietnamese `Ĩ Ỉ Ị`,
 Cyrillic `і`, Greek `ι`, a new accent) needs no hand kerning against them: build,
@@ -516,7 +595,8 @@ Checks; `build.py` runs both (not with `--fast`):
   1030. `--all` prints every gap.
 - `scripts/pairs.py`, on the compiled fonts: every checked letter (the added ones
   and every accented Vietnamese letter) next to the neighbours it meets in text
-  (ASCII, the untoned Vietnamese letters in both cases, quotes, dashes), shaped
+  (ASCII, the untoned Vietnamese letters in both cases, quotes, dashes; a
+  Cyrillic letter also every Cyrillic letter), shaped
   with HarfBuzz so kerning applies, at the masters and the same instances
   between them; fails on inks closer than 16 units. `--text "…"` checks the
   pairs of a string, `--show N` lists the tightest.
@@ -689,16 +769,29 @@ shows all of them.
   - м is M's construction redrawn at x-height with M's proportion to H, M's
     diagonal weight, and the vertex 36 units up in every master;
   - я is R's bowl and leg mirrored, the leg at R's stroke thickness leaving
-    the bowl 0.3 of its width out from the stem; Ю ю and Ф ф narrow O, o and
-    p's bowls as a whole (outer and counter each scaled), and the bold Ф ф
-    bowls are drawn from a lighter O or p so the counters stay open;
-  - Э Є э є are C or c with their terminals shortened along their own
-    curves until both openings beside the bar are at least 0.65 of the bar's
-    thickness; the bar sits inside the counter;
+    the bowl 0.3 of its width out from the stem;
+  - Ю ю and Ф ф narrow O, o and p's bowls as a whole (outer and counter each
+    scaled); in the bold masters the rings and bowls are drawn from a
+    lighter O, o, p or q, so that next to the full stem Ю ю keep 0.85 of O's
+    or o's counter and each half of Ф keeps 0.45–0.49 of O's. Ф is 1.07 of
+    O's width in every master (and grows with weight as O does);
+  - в is B zone-mapped to x-height, with bars and sides a little lighter in
+    the bold masters (the middle bar at most e's crossbar), widened until its
+    upper counter is 0.72 of n's counter (`VE_UPPER`); ы keeps 0.8 of ь's
+    counter;
+  - Э Є э є are C or c whose terminals run as far round as C's and c's,
+    cut back along their own curves only where they would come within 0.4
+    of the bar's thickness of it vertically; the bar sits inside the
+    counter and stops 0.6 of its thickness clear of the terminal tips;
   - Ґ ґ lengthen Г's arm where needed so it runs free for 0.7 of a stem
     between stem and upturn;
   - б is o with a straight stroke rising into f's top curve, run on as a
-    level flag; ї Ї get their own, closer dieresis inside the advance.
+    level flag;
+  - ї Ї get their own dieresis: dots 0.92 (light) to 0.7 (bold) of the
+    Latin dieresis' with a gap of 0.55 of a dot between them, overhanging
+    the advance by at most a quarter of that gap, so ї keeps і's width;
+  - Һ is H wide, with h's arch zone-mapped so its shoulder tops out at 0.6
+    of the cap height (the leg keeps its weight, the arch its thickness).
   И Я Э are mirrored N, R, C, З the 3, Ч ч u's bowl, Ж ж K's and k's arms,
   У the Y arms, Ц Щ Џ Қ Ң tails to −160. Overhangs and gaps that should not
   grow with the stems (tails, strokes, the Ю gap, Л's foot) are measured in
@@ -706,14 +799,19 @@ shows all of them.
   about y = 251), constructed and slanted again. A mirrored italic curve
   would lean backwards, so the italic Э э Я and ∂ mirror the *upright*
   master's C, c, R and 6 and are slanted as a whole, and the italic ф takes
-  its left bowl from q.
+  its left bowl from q. Slanted as a whole, a leg running down to the left
+  lies flatter than upright, so the italic Я я have their foot moved right
+  by the slant over the leg's height and keep the upright angle; the
+  condensed italic Ж spreads its outer arm ends 12–26 units so they keep a
+  diagonal.
 - **Checks**: before writing, `construct.py` checks every glyph it built in
   every master and writes nothing if one fails (`--check` only reports,
   `--force` writes anyway): no curve tighter than Instrument's own (tension
   above 0.81, 0.86 in the condensed masters), no handle outside its
   segment's box (upright; italic: vertically only), counters probed along
   scanlines against the n, H, o or O counter of that master (`PROBES`), ђ
-  has its bar and ї's dieresis stays inside the advance; no contour crosses
+  has its bar, ї Ї keep the gap inside their dieresis and overhang the
+  advance by no more than they may; no contour crosses
   itself (no area wound against the contour's direction; Instrument's own
   overlapping strokes wind the same way and pass); lowercase stems end at
   510 and capital stems at 720; in the italic no curve side leans backwards;
@@ -732,7 +830,9 @@ shows all of them.
   approved them yet: if they are rejected, delete the `BGR` block;
   Serbian and Macedonian (`SRB`, `MKD`) б г ѓ д п т (`*.loclSRB`), which
   differ only in the italic (δ-shaped б, ī and ī with acute, g-shaped д, n̄,
-  m̄). The same file makes і and ј lose their dot under a top mark. Bulgarian
+  m̄; the macrons a little lighter than i's dot, the one over ī at least 2.2
+  stems wide so it is not read as a dot, the ones over n̄ m̄ inset 0.3 of a
+  stem). The upright Serbian б keeps the common form. The same file makes і and ј lose their dot under a top mark. Bulgarian
   з keeps the common form until a Bulgarian reader signs off a variant.
 - **Anchors**: every native letter has `top` and `bottom`, so stress marks
   (а́ е́ и́ …) and the precomposed letters attach through `mark`.
@@ -746,12 +846,32 @@ shows all of them.
   Т Г У, from `n`; ч joins it), `KO_El-cy` (Д Л Љ: 0.4 × A–O after A, else
   0.25 × `KO_A`), `KO_Ya-cy` (Я: 0.73 × O's column after T Y V W and quotes,
   nothing else, since its leg runs out at the foot), `KO_el-cy`/`KO_de-cy` (л љ д, from
-  `n`; the italic ∂ from `e`), `KO_te-cy` (т: r upright, n italic). ї next to
-  ї or і gets a pair that keeps the space between their dots wider than the
-  space inside ї's dieresis.
+  `n`; the italic ∂ from `e`), `KO_te-cy` (т: r upright, n italic).
+  Some sides tuck in like their Latin source in one part and must not in
+  another: б ф and the italic ∂ are round below and rise into an ascender
+  or flag; я Я ж reach out at the foot; Қ қ run a tail out. They get their
+  own groups (`KO_be-cy`, `KO_ef-cy`, `KO_de-cy`, `KO_ya-cy`, `KO_Ya-cy`,
+  `KO_zhe-cy`, `KO_Kadescender-cy`, `KO_kadescender-cy`) whose values come
+  from the Latin source (o, e, x, K, k) but are held off (`FLOOR1`,
+  `FLOOR2` in `kern.py`), in the band of heights where that part sits, so
+  that every Cyrillic letter or punctuation mark beside them keeps a share
+  of the white it keeps there from a Latin reference at Instrument's own
+  kerning: 0.55 of what it keeps from h's ascender beside б ф ∂ (l on their
+  right), 0.8 of what it keeps from x's or X's foot beside я Я ж, all of it
+  beside Қ қ's tail as from K and k; and never less than 28 units. White
+  wider than between two n's needs no holding off. `scripts/cyrillic/ink.py`
+  measures this on the outlines `construct.py` writes, in every master. So
+  Тб is −19 in Regular where Те is −106, and the italic Тд −7.
+  ї next to ї or і gets a pair that keeps the space between their dots 1.5
+  times the space inside ї's dieresis; Ї Ї likewise. What still touches
+  after that (ј under the tails of Ц Щ Д Ң, ї beside ђ ћ, the condensed Тў)
+  is opened by `scripts/kerning.py` with glyph pairs.
 
 The fallback check is `proof.py --set cyrillic --fallback onest` (Onest with
-`ss02`). Native readers have not reviewed these yet.
+`ss02`). Native readers have not reviewed these yet. Left as they are, on
+purpose: the bold м keeps M's own joins (no notch, as Instrument's M has
+none), the italic ф's q bowls meet the stem as q's do, and a lowercase
+letter before a capital (ґТ) is not kerned, as nowhere else in the font.
 
 ## Rebasing on a newer upstream
 
