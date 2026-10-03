@@ -2126,6 +2126,9 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
 # The ESP random seed refresh runs only where /boot is writable; Tilo's is not.
 COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf /usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf
+# ldconfig rebuilds the image's linker cache only when it is missing, not on
+# the first boot of every deployment.
+COPY os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -2987,10 +2990,15 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
-    # The linker cache is current as built. Recording /etc as updated for this
-    # /usr keeps first boot from running ldconfig.service (3.5 s on the login
-    # critical chain of a release VM) to regenerate it.
+    # The linker cache is current as built; ldconfig.service rebuilds it only
+    # if it goes missing (its drop-in). The hardware database lives in /usr
+    # with none in /etc, so systemd-hwdb-update.service has nothing to do on
+    # the first boot of a deployment either.
     && ldconfig \
+    && systemd-hwdb update --usr \
+    && rm -f /etc/udev/hwdb.bin \
+    && test -s /usr/lib/udev/hwdb.bin \
+    && { [ ! -d /etc/udev/hwdb.d ] || [ -z "$(ls -A /etc/udev/hwdb.d)" ]; } \
     && /usr/lib/systemd/systemd-update-done --root=/ \
     && test -s /etc/.updated \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
