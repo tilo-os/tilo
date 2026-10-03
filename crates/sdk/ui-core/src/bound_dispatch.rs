@@ -1685,8 +1685,9 @@ pub(crate) fn execute_resource_operation(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
+        // Named after the edit it carries, when the spec carries several.
         let mut context = tilo_actions::ActionContext::for_resource(
-            &spec.label,
+            spec.history_label(&encoded),
             resource.id.as_str(),
             &resource.kind,
             &resource.label,
