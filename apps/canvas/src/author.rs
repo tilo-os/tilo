@@ -22,7 +22,7 @@ use crate::render::{Options, Renderer};
 use crate::selection::Select;
 
 /// The longest side of the picture colour is found in, in pixels.
-const WAND_SIDE: f64 = 1600.0; // a sampling budget in pixels, not on-screen spacing
+const WAND_SIDE: u32 = 1600; // a sampling budget in pixels, not on-screen spacing
 /// How far a colour may differ when the caller names no tolerance.
 pub const TOLERANCE: f64 = 0.15;
 
@@ -147,7 +147,7 @@ pub fn colour_region(
     art: &Artwork,
     query: &ColourQuery,
 ) -> Result<Region, String> {
-    let scale = (WAND_SIDE / art.width.max(art.height).max(1.0)).min(2.0);
+    let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
     let options = Options {
         layers: query.layers.clone(),
         bare: query.layers.is_some(),
