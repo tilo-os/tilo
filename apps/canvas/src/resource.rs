@@ -178,7 +178,7 @@ pub struct Compare {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
-    /// Pixels per artwork unit, 0.25 to 4 (default 1).
+    /// Pixels per artwork unit, 0.25 to 4 (default 1); painted layers are painted at that detail, not enlarged.
     pub scale: Option<f64>,
 }
 

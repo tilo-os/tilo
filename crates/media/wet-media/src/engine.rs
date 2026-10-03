@@ -111,6 +111,13 @@ impl Settings {
 }
 
 /// The support a layer is painted on, in simulation cells.
+///
+/// A canvas is the whole layer's grid, or a window of it: `origin` is where
+/// its first cell lies in the whole grid at the same scale. Everything an
+/// engine derives from position (the ground's tooth, the mottling of a wash,
+/// the brushwork laying in a region) is taken in whole-grid cells, so a
+/// window simulates the same paint as the whole grid there, and two windows
+/// side by side meet without a seam in their texture.
 #[derive(Clone, Debug)]
 pub struct Canvas {
     pub width: usize,
@@ -118,6 +125,41 @@ pub struct Canvas {
     /// Cells per artwork unit.
     pub scale: f32,
     pub ground: Arc<Heightfield>,
+    /// The whole-grid cell of this grid's first cell.
+    pub origin: (usize, usize),
+}
+
+impl Canvas {
+    /// The whole layer's grid over `ground`.
+    pub fn whole(scale: f32, ground: Arc<Heightfield>) -> Self {
+        Self {
+            width: ground.width,
+            height: ground.height,
+            scale,
+            ground,
+            origin: (0, 0),
+        }
+    }
+
+    /// A window of the whole grid at `origin`, the size of `ground`, which
+    /// must be the window's own ([`Heightfield::window`]).
+    pub fn window(scale: f32, ground: Arc<Heightfield>, origin: (usize, usize)) -> Self {
+        Self {
+            width: ground.width,
+            height: ground.height,
+            scale,
+            ground,
+            origin,
+        }
+    }
+
+    /// The whole-grid position of cell `(x, y)` of this grid.
+    pub(crate) fn absolute(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            x + crate::grid::float(self.origin.0),
+            y + crate::grid::float(self.origin.1),
+        )
+    }
 }
 
 /// A brush stroke, in cell coordinates.
@@ -211,6 +253,97 @@ impl Mark {
                 ..fill.clone()
             }),
         }
+    }
+
+    /// This mark moved by `(dx, dy)` cells: a whole-grid mark as a window
+    /// whose origin is `(-dx, -dy)` receives it.
+    #[must_use]
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        let shift = |contours: &Vec<Vec<(f32, f32)>>| -> Vec<Vec<(f32, f32)>> {
+            contours
+                .iter()
+                .map(|contour| contour.iter().map(|(x, y)| (x + dx, y + dy)).collect())
+                .collect()
+        };
+        match self {
+            Self::Stroke(stroke) => Self::Stroke(Stroke {
+                points: stroke
+                    .points
+                    .iter()
+                    .map(|point| StrokePoint::new(point.x + dx, point.y + dy, point.pressure))
+                    .collect(),
+                clip: shift(&stroke.clip),
+                ..stroke.clone()
+            }),
+            Self::Fill(fill) => Self::Fill(Fill {
+                contours: shift(&fill.contours),
+                field: fill.field.as_ref().map(|field| field.translated(dx, dy)),
+                ..fill.clone()
+            }),
+        }
+    }
+
+    /// The cells the mark can reach: its outline or path, grown by its
+    /// brush and whatever it grows into. `None` for a mark with no points.
+    pub fn reach(&self) -> Option<[f32; 4]> {
+        let (points, grow): (Vec<(f32, f32)>, f32) = match self {
+            Self::Stroke(stroke) => {
+                let length: f32 = stroke
+                    .points
+                    .windows(2)
+                    .map(|pair| match pair {
+                        [a, b] => (b.x - a.x).hypot(b.y - a.y),
+                        _ => 0.0,
+                    })
+                    .sum();
+                // Dabs scatter about the path; twigs fork off it, each
+                // shorter than the limb.
+                let form = match stroke.form {
+                    None => 0.0,
+                    Some(crate::form::Form::Dabs {
+                        scatter,
+                        length: dab,
+                        ..
+                    }) => scatter + dab.max(stroke.size),
+                    Some(crate::form::Form::Branch { .. }) => length,
+                };
+                (
+                    stroke
+                        .points
+                        .iter()
+                        .map(|point| (point.x, point.y))
+                        .collect(),
+                    stroke.size + form,
+                )
+            }
+            Self::Fill(fill) => (
+                fill.contours.iter().flatten().copied().collect(),
+                fill.brush * 2.0,
+            ),
+        };
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for (x, y) in points
+            .into_iter()
+            .filter(|(x, y)| x.is_finite() && y.is_finite())
+        {
+            bounds = [
+                bounds[0].min(x),
+                bounds[1].min(y),
+                bounds[2].max(x),
+                bounds[3].max(y),
+            ];
+        }
+        bounds[0].is_finite().then_some([
+            bounds[0] - grow,
+            bounds[1] - grow,
+            bounds[2] + grow,
+            bounds[3] + grow,
+        ])
     }
 
     pub fn params(&self) -> &BTreeMap<String, f32> {

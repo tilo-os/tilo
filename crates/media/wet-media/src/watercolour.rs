@@ -250,7 +250,7 @@ impl LayerSim for WaterLayer {
         let area = coverage.area;
         let (span, rows) = (area.width(), area.height());
         let width = self.width();
-        let outline = wash_edge(&coverage, size, roughness, seed);
+        let outline = wash_edge(&coverage, size, roughness, seed, &self.canvas);
 
         let mut local_water = extract(&self.water, width, area);
         let mut local_granulating = extract(&self.granulating, width, area);
@@ -262,7 +262,7 @@ impl LayerSim for WaterLayer {
             .enumerate()
             .map(|(index, mask)| {
                 let (x, y) = area.position(index);
-                let (x, y) = (float(x), float(y));
+                let (x, y) = self.canvas.absolute(float(x), float(y));
                 // Pigment pools unevenly: broad puddles and finer mottling.
                 let bloom = fbm(x / (grain * 2.0), y / (grain * 2.0), seed ^ 0xb100, 2);
                 let pool = fbm(x / (grain * 6.0), y / (grain * 6.0), seed ^ 0x9001, 2);
@@ -379,7 +379,13 @@ impl WaterLayer {
 
 /// A wash's irregular, soft edge: the footprint blurred and cut at a
 /// threshold that wanders with noise.
-fn wash_edge(coverage: &Coverage, size: f32, roughness: f32, seed: u64) -> Vec<f32> {
+fn wash_edge(
+    coverage: &Coverage,
+    size: f32,
+    roughness: f32,
+    seed: u64,
+    canvas: &Canvas,
+) -> Vec<f32> {
     let area = coverage.area;
     let soften = cell(1.0 + roughness * size * 0.05, 32).max(1);
     let soft = box_blur(&coverage.values, area.width(), area.height(), soften);
@@ -389,7 +395,7 @@ fn wash_edge(coverage: &Coverage, size: f32, roughness: f32, seed: u64) -> Vec<f
         .enumerate()
         .map(|(index, value)| {
             let (x, y) = area.position(index);
-            let (x, y) = (float(x), float(y));
+            let (x, y) = canvas.absolute(float(x), float(y));
             let threshold = 0.5 + (fbm(x / grain, y / grain, seed, 3) - 0.5) * wander;
             smoothstep(threshold - 0.12, threshold + 0.12, *value)
         })

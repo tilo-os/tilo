@@ -185,7 +185,8 @@ struct Bristle {
 
 /// What one bristle dab laid and picked up.
 struct Dab {
-    spent: f32,
+    /// The share of a full deposit the bristle gives up here.
+    laying: f32,
     picked: Rgb,
     picked_weight: f32,
     area: Area,
@@ -351,7 +352,7 @@ impl OilLayer {
     }
 
     /// The bristles of a fresh brushload.
-    fn bristles(settings: &Settings, pass: &Pass<'_>) -> Vec<Bristle> {
+    fn bristles(settings: &Settings, pass: &Pass<'_>, scale: f32) -> Vec<Bristle> {
         // A thin brush has fewer bristles than its preset says: a line two
         // cells wide cannot hold twenty streaks.
         let count = cell(settings.get("bristles").min(pass.size * 0.9), 65).max(3);
@@ -370,7 +371,9 @@ impl OilLayer {
                 let offset = (along * 2.0 - 1.0 + jitter / float(count)).clamp(-1.0, 1.0);
                 let uneven = hash01(pass.seed, 13, key(index));
                 // How far, in cells, a full bristle travels before it is dry.
-                let reach = pass.size * (10.0 + 30.0 * (1.0 - streak * uneven)) + 80.0;
+                // However finely the canvas is simulated, a brushload lasts as
+                // far over the artwork.
+                let reach = pass.size * (10.0 + 30.0 * (1.0 - streak * uneven)) + 80.0 * scale;
                 let shade = 1.0
                     + ((hash01(pass.seed, 19, key(index)) - 0.5) * 0.05 + (clump(0.0) - 0.5) * 0.2)
                         * (0.5 + streak);
@@ -412,7 +415,7 @@ impl OilLayer {
         if pass.samples.is_empty() || pass.size <= 0.0 {
             return;
         }
-        let mut bristles = Self::bristles(settings, pass);
+        let mut bristles = Self::bristles(settings, pass, self.canvas.scale);
         let blend = settings.get("blend");
         let tip = (pass.size / float(bristles.len().max(1)) * 1.3).max(0.9);
         // The paint a full deposit under a bristle's cone-shaped tip lays.
@@ -423,6 +426,9 @@ impl OilLayer {
         let streak_length = (pass.size * 2.0).max(5.0);
         let patch_size = (pass.size * 1.5).max(6.0);
         let lanes = float(bristles.len()) * 0.35;
+        // Wet paint beneath is taken up by the distance dragged over the
+        // artwork, not by how many cells that is.
+        let pickup = 0.04 / self.canvas.scale.max(0.05);
         // A short dab keeps most of its bristles however ragged the brush.
         let room = total * 0.3;
         let mut touched = Area::EMPTY;
@@ -456,12 +462,8 @@ impl OilLayer {
                 * taper(sample.distance, total, pass.size);
             // The hand rides up and bears down over a few brush widths, so
             // the whole brush catches in patches as well as in streaks.
-            let patch = fbm(
-                sample.x / patch_size,
-                sample.y / patch_size,
-                pass.seed ^ 0x2e61,
-                2,
-            );
+            let (px, py) = self.canvas.absolute(sample.x, sample.y);
+            let patch = fbm(px / patch_size, py / patch_size, pass.seed ^ 0x2e61, 2);
             let pile = pass.heap
                 * (0.4 * (1.0 - smoothstep(0.0, pass.size * 0.6, sample.distance))
                     + 0.9 * (1.0 - smoothstep(0.0, pass.size * 0.5, total - sample.distance)));
@@ -501,11 +503,11 @@ impl OilLayer {
                     let share = (dab.picked_weight / footprint).min(1.0);
                     bristle.colour = bristle
                         .colour
-                        .lerp(dab.picked, (blend * share * travelled * 0.04).min(0.5));
+                        .lerp(dab.picked, (blend * share * travelled * pickup).min(0.5));
                 }
                 // A bristle spends paint by the distance it drags, at the
-                // rate it actually lays it: over dry ground it lays less.
-                let laying = (dab.spent / footprint).min(1.0);
+                // rate it lays it: pressed lightly or running dry, it lays less.
+                let laying = dab.laying.min(1.0);
                 bristle.load = (bristle.load - travelled * laying * bristle.spend).max(0.0);
                 touched = touched.union(dab.area);
             }
@@ -530,11 +532,27 @@ impl OilLayer {
             y1: cell(centre.1, height).saturating_add(reach).min(height),
         };
         let mut dab = Dab {
-            spent: 0.0,
+            laying: 0.0,
             picked: bristle.colour,
             picked_weight: 0.0,
             area,
         };
+        // How much of its load the bristle gives up here, as a share of a
+        // full deposit: what it would lay over bare ground of average
+        // tooth. It follows the brush alone, not the paint beneath, so a
+        // window of the painting spends the brush exactly as the whole
+        // canvas does, wherever its strokes enter it.
+        {
+            let grip = press + 0.11;
+            let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip);
+            let thinned = pass.glaze.map_or(0.0, |glaze| glaze.amount);
+            let catch =
+                (catch + (1.0 - catch) * thinned) * (1.0 - thinned * 0.4 * (1.0 - touch.contact));
+            dab.laying = catch * bristle.load.min(1.0) * pass.opacity.clamp(0.0, 1.0);
+        }
+        if area.x0 >= area.x1 || area.y0 >= area.y1 {
+            return dab;
+        }
         for y in area.y0..area.y1 {
             for x in area.x0..area.x1 {
                 let reach_here =
@@ -619,7 +637,6 @@ impl OilLayer {
                 if let Some(value) = self.wet.get_mut(index) {
                     *value = value.max(smoothstep(0.0, 0.3, deposit));
                 }
-                dab.spent += deposit;
             }
         }
         dab
@@ -693,7 +710,8 @@ impl OilLayer {
                     continue;
                 }
                 let tooth = self.canvas.ground.at(x, y);
-                let wander = fbm(float(x) / grain, float(y) / grain, seed ^ 0x5c4b, 3);
+                let (ax, ay) = self.canvas.absolute(float(x), float(y));
+                let wander = fbm(ax / grain, ay / grain, seed ^ 0x5c4b, 3);
                 // A thin coat is scrubbed on unevenly, so where it misses the
                 // weave it misses in patches, not thread by thread.
                 let catch = smoothstep(0.5 - load, 0.75 - load, tooth * 0.5 + wander * 0.5);
@@ -756,7 +774,25 @@ impl OilLayer {
                 .collect()
         });
         self.scrub((settings, glaze), region, &coverage, seed);
-        let mut pieces = Self::pieces(region, coverage.area, settings.get("load"), seed);
+        // The brushwork is laid out over the whole region, wherever this
+        // grid's window of it lies, so every window paints the same pieces.
+        let feather = settings.get("feather") * region.brush.max(2.0);
+        let Some(extent) = extent(&region.contours, region.brush.max(2.0) + feather) else {
+            return;
+        };
+        let mut pieces = Self::pieces(region, extent, settings.get("load"), seed);
+        let (width, height) = (float(self.canvas.width), float(self.canvas.height));
+        // Pieces wholly off this grid leave nothing on it.
+        pieces.retain(|piece| {
+            let reach = piece.size + 2.0;
+            let [first, ..] = piece.points;
+            let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.x, first.y);
+            for point in &piece.points {
+                (x0, y0) = (x0.min(point.x), y0.min(point.y));
+                (x1, y1) = (x1.max(point.x), y1.max(point.y));
+            }
+            x1 > -reach && y1 > -reach && x0 < width + reach && y0 < height + reach
+        });
         // A painter works a passage back and forth rather than row by row,
         // so later strokes cross earlier ones anywhere in it.
         pieces.sort_by(|a, b| hash01(a.seed, 47, 0).total_cmp(&hash01(b.seed, 47, 0)));
@@ -878,7 +914,8 @@ impl OilLayer {
                     return value;
                 }
                 let (x, y) = area.position(local);
-                let along = fbm(float(x) / wander, float(y) / wander, seed ^ 0x3e11, 3);
+                let (ax, ay) = self.canvas.absolute(float(x), float(y));
+                let along = fbm(ax / wander, ay / wander, seed ^ 0x3e11, 3);
                 let grit = self.canvas.ground.at(x, y);
                 let threshold =
                     (0.5 + (along - 0.5) * 1.1 + (grit - 0.5) * 0.5 * edge).clamp(0.1, 0.85);
@@ -890,13 +927,11 @@ impl OilLayer {
     /// The strokes laying in `area`: overlapping lengths roughly along
     /// `region.angle`, each a different length, width, lean, curve and
     /// brushload, landing and lifting rather than starting at full width.
-    fn pieces(region: &Fill, area: Area, load: f32, seed: u64) -> Vec<Piece> {
+    fn pieces(region: &Fill, extent: [f32; 4], load: f32, seed: u64) -> Vec<Piece> {
         let brush = region.brush.max(2.0);
-        let (cx, cy) = (
-            float(area.x0.saturating_add(area.x1)) * 0.5,
-            float(area.y0.saturating_add(area.y1)) * 0.5,
-        );
-        let radius = float(area.width()).hypot(float(area.height())) * 0.5 + brush;
+        let [x0, y0, x1, y1] = extent;
+        let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        let radius = (x1 - x0).hypot(y1 - y0) * 0.5 + brush;
         let spacing = brush * 0.45;
         let rows = cell(radius * 2.0 / spacing, 4096).saturating_add(1);
         let mut pieces = Vec::new();
@@ -1194,8 +1229,9 @@ impl OilLayer {
         // The hairs of a blender drag in lanes, so even a softened passage
         // keeps a grain along the stroke: some lanes carry the paint
         // through, others barely move it.
-        let across = px * -dy + py * dx;
-        let along = px * dx + py * dy;
+        let (ax, ay) = self.canvas.absolute(px, py);
+        let across = ax * -dy + ay * dx;
+        let along = ax * dx + ay * dy;
         let lane = 0.35
             + 0.65
                 * smoothstep(
@@ -1365,8 +1401,14 @@ impl LayerSim for OilLayer {
                     let right = surface(x.saturating_add(1), y, here);
                     let down = surface(x, y.saturating_add(1), here);
                     let thick = read(&self.thickness, width, x, y, 0.0);
-                    let (lit, sheen) =
-                        light(((right - left) * 0.5, (down - up) * 0.5), relief, thick);
+                    // Slopes per artwork unit, so a ridge catches the light
+                    // alike however finely the layer is simulated.
+                    let per_unit = self.canvas.scale * 0.5;
+                    let (lit, sheen) = light(
+                        ((right - left) * per_unit, (down - up) * per_unit),
+                        relief,
+                        thick,
+                    );
                     let colour = Rgb::new(
                         read(self.channel(0), width, x, y, 0.0),
                         read(self.channel(1), width, x, y, 0.0),
@@ -1388,4 +1430,27 @@ impl LayerSim for OilLayer {
     fn clone_box(&self) -> Box<dyn LayerSim> {
         Box::new(self.clone())
     }
+}
+
+/// The cells a region's outline spans grown by `margin`, as
+/// [`Area::around`] would give it on a grid large enough to hold it: the
+/// same on every window of the grid, up to the window's origin.
+fn extent(contours: &[Vec<(f32, f32)>], margin: f32) -> Option<[f32; 4]> {
+    let mut min = (f32::INFINITY, f32::INFINITY);
+    let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &(x, y) in contours.iter().flatten() {
+        if x.is_finite() && y.is_finite() {
+            min = (min.0.min(x), min.1.min(y));
+            max = (max.0.max(x), max.1.max(y));
+        }
+    }
+    let margin = margin.max(1.0);
+    min.0.is_finite().then(|| {
+        [
+            (min.0 - margin).floor(),
+            (min.1 - margin).floor(),
+            (max.0 + margin).ceil() + 1.0,
+            (max.1 + margin).ceil() + 1.0,
+        ]
+    })
 }

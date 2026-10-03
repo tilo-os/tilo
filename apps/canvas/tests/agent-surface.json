@@ -1866,13 +1866,13 @@
         "name": "scale",
         "ty": "number",
         "required": false,
-        "description": "Pixels per artwork unit, 0.25 to 4 (default 1).",
+        "description": "Pixels per artwork unit, 0.25 to 4 (default 1); painted layers are painted at that detail, not enlarged.",
         "schema": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Pixels per artwork unit, 0.25 to 4 (default 1)."
+          "description": "Pixels per artwork unit, 0.25 to 4 (default 1); painted layers are painted at that detail, not enlarged."
         },
         "nullable": true
       }

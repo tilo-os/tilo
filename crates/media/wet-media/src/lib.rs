@@ -57,7 +57,7 @@ pub use engine::{
 pub use field::{ColourField, FieldKind};
 pub use form::Form;
 pub use ground::{Heightfield, Texture};
-pub use painter::{LayerPainter, Painted};
+pub use painter::{LayerPainter, Painted, windowed};
 
 #[cfg(test)]
 mod tests;

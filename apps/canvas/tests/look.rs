@@ -5,6 +5,9 @@
     clippy::needless_pass_by_value,
     clippy::too_many_lines,
     clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
@@ -214,6 +217,114 @@ fn text_stands_on_its_baseline() {
         assert!(
             cap > size * 0.6 && cap < size * 0.8,
             "size {size}: capitals {cap} tall"
+        );
+    }
+}
+
+/// How much neighbouring pixels differ across a picture: how much fine
+/// detail it holds.
+fn detail_in(rgba: &[u8], width: usize) -> f64 {
+    let grey = |index: usize| -> f64 {
+        let pixel = &rgba[index * 4..index * 4 + 3];
+        f64::from(pixel[0]) * 0.3 + f64::from(pixel[1]) * 0.59 + f64::from(pixel[2]) * 0.11
+    };
+    let count = rgba.len() / 4;
+    let mut sum = 0.0;
+    for index in 0..count {
+        if index % width + 1 < width {
+            sum += (grey(index + 1) - grey(index)).abs();
+        }
+        if index + width < count {
+            sum += (grey(index + width) - grey(index)).abs();
+        }
+    }
+    sum / count as f64
+}
+
+/// A close look at painted layers simulates the part shown finer than the
+/// whole layer, from the marks, rather than enlarging the coarser picture:
+/// the brushwork and the tooth of the ground hold detail at every pixel, the
+/// same on every run.
+#[test]
+fn a_close_look_simulates_the_paint_finer_rather_than_enlarging_it() {
+    let art = landscape().state().unwrap();
+    let mut text = ui::TextRenderer::new();
+    let region = ui::vello::kurbo::Rect::new(380.0, 560.0, 540.0, 680.0);
+    let options = canvas::render::Options::default();
+    let pixels = |renderer: &mut Renderer, text: &mut ui::TextRenderer, close: bool| {
+        let options = canvas::render::Options {
+            detail: Some(canvas::detail::Detail {
+                visible: region,
+                pixels_per_unit: if close { 4.0 } else { 1.0 },
+                wait: true,
+            }),
+            ..options.clone()
+        };
+        view_ops::render(renderer, text, &art, (region, 4.0), &options, false).unwrap()
+    };
+    let sharp = pixels(&mut Renderer::default(), &mut text, true);
+    let again = pixels(&mut Renderer::default(), &mut text, true);
+    assert_eq!(
+        sharp.bytes, again.bytes,
+        "the finer simulation is deterministic"
+    );
+    let soft = pixels(&mut Renderer::default(), &mut text, false);
+    std::fs::write(out("close-sharp.png"), &sharp.bytes).unwrap();
+    std::fs::write(out("close-soft.png"), &soft.bytes).unwrap();
+    let decode = |bytes: &[u8]| {
+        image::load_from_memory(bytes)
+            .unwrap()
+            .to_rgba8()
+            .into_raw()
+    };
+    let (sharp, soft) = (decode(&sharp.bytes), decode(&soft.bytes));
+    let (sharp, soft) = (detail_in(&sharp, 640), detail_in(&soft, 640));
+    assert!(
+        sharp > soft * 1.5,
+        "the finer simulation holds more detail: {sharp:.2} against {soft:.2} enlarged"
+    );
+}
+
+/// The finer tiles of a painted layer meet without a seam: the step
+/// between the columns either side of a tile's edge is no larger than
+/// between any two neighbouring columns.
+#[test]
+fn finer_tiles_meet_without_a_seam() {
+    let art = landscape().state().unwrap();
+    let mut text = ui::TextRenderer::new();
+    // Eight pixels a unit: tiles of 256 cells are 32 units wide, so their
+    // edges fall at 256 and 512 pixels into this region.
+    let region = ui::vello::kurbo::Rect::new(384.0, 560.0, 480.0, 632.0);
+    let picture = view_ops::render(
+        &mut Renderer::default(),
+        &mut text,
+        &art,
+        (region, 8.0),
+        &canvas::render::Options::default(),
+        false,
+    )
+    .unwrap();
+    std::fs::write(out("tiles.png"), &picture.bytes).unwrap();
+    let rgba = image::load_from_memory(&picture.bytes).unwrap().to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let step = |column: u32| -> f64 {
+        (0..height)
+            .map(|row| {
+                let a = rgba.get_pixel(column - 1, row);
+                let b = rgba.get_pixel(column, row);
+                (0..3)
+                    .map(|channel| f64::from(a[channel].abs_diff(b[channel])))
+                    .sum::<f64>()
+            })
+            .sum::<f64>()
+            / f64::from(height)
+    };
+    let typical = (1..width).map(step).sum::<f64>() / f64::from(width - 1);
+    for edge in [256, 512] {
+        assert!(
+            step(edge) < typical * 2.5 + 1.0,
+            "a seam at column {edge}: {:.2} against {typical:.2} between neighbours",
+            step(edge)
         );
     }
 }
