@@ -2139,7 +2139,7 @@ impl ui::undo::UndoPoints for DeviceMeshPane {
         crate::panes::preference_commit_context(
             pending,
             "devices-sync",
-            "Devices & Sync",
+            "Devices & sync",
             "Change device mesh settings",
         )
     }

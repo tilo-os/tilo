@@ -296,7 +296,7 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
         action_id: Some("dnd"),
         key: panes::notifications::DND_KEY,
         presentation: PortablePresentation::BoolFlip {
-            noun: "Do Not Disturb",
+            noun: "Do not disturb",
             default: dnd_default,
         },
         available: None,
