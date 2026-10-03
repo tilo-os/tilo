@@ -327,6 +327,14 @@ pub enum RemoteAction {
     SetFavorite { id: ConnectionId, favorite: bool },
     /// Delete a saved connection from the store.
     DeleteConnection { id: ConnectionId },
+    /// Remember the outcome of a session: when it was opened (`at`, Unix
+    /// seconds, read once by the device that opened it) and whether the
+    /// machine answered. Both are absolute values, so replay is exact.
+    RecordSession {
+        id: ConnectionId,
+        at: i64,
+        presence: Presence,
+    },
 }
 
 impl Action for RemoteAction {
@@ -349,7 +357,7 @@ impl Action for RemoteAction {
                 let existing = RemoteDoc::list(doc).into_iter().find(|c| &c.id == id);
                 let (favorite, presence, last_used) = match existing {
                     Some(e) => (e.favorite, e.presence, e.last_used),
-                    None => (false, Presence::Unknown, "Never".to_string()),
+                    None => (false, Presence::Unknown, None),
                 };
                 let conn = Connection {
                     id: *id,
@@ -374,6 +382,9 @@ impl Action for RemoteAction {
             }
             RemoteAction::DeleteConnection { id } => {
                 RemoteDoc::remove(doc, *id);
+            }
+            RemoteAction::RecordSession { id, at, presence } => {
+                RemoteDoc::record_session(doc, *id, *at, *presence);
             }
         }
         Ok(())
@@ -439,6 +450,11 @@ pub fn delete_action(id: ConnectionId) -> RemoteAction {
     RemoteAction::DeleteConnection { id }
 }
 
+/// Build the "record this session's outcome" action.
+pub fn record_session_action(id: ConnectionId, at: i64, presence: Presence) -> RemoteAction {
+    RemoteAction::RecordSession { id, at, presence }
+}
+
 /// Build the "rename this connection" action from a new name.
 pub fn rename_action(id: ConnectionId, name: &str) -> RemoteAction {
     RemoteAction::RenameConnection {
@@ -502,9 +518,9 @@ pub(crate) fn connection_resources(connections: &[crate::model::Connection]) -> 
                 immediate_spec(
                     "favorite",
                     if c.favorite {
-                        "Remove from favourites"
+                        "Unpin connection"
                     } else {
-                        "Add to favourites"
+                        "Pin connection"
                     },
                     &set_favorite_action(id, !c.favorite),
                 )
@@ -614,8 +630,8 @@ mod tests {
         palette: [
             "Rename connection",
             "Open connection settings",
-            "Add to favourites",
-            "Remove from favourites",
+            "Pin connection",
+            "Unpin connection",
             "Delete connection",
         ],
         replay: [
@@ -655,7 +671,7 @@ mod tests {
             user: "admin".into(),
             kind: ConnectionKind::Ssh,
             auth: AuthMethod::PublicKey,
-            last_used: "2h ago".into(),
+            last_used: Some(1_782_800_000),
             presence: Presence::Online,
             group: "lab".into(),
             favorite: false,
@@ -675,8 +691,8 @@ mod tests {
             assert_eq!(back[0].name, "Build Box");
             assert_eq!(back[0].host, "10.0.0.9");
             assert_eq!(
-                back[0].last_used, "Never",
-                "a fresh connection seeds last-used"
+                back[0].last_used, None,
+                "a fresh connection has never been used"
             );
         }
 
@@ -687,7 +703,7 @@ mod tests {
             let mut c = sample(id, "Box");
             c.favorite = true;
             c.presence = Presence::Online;
-            c.last_used = "5m ago".into();
+            c.last_used = Some(1_782_812_000);
             RemoteDoc::upsert(&mut doc, &c);
 
             // The form edits only the editable fields; favourite/presence/last_used
@@ -702,7 +718,11 @@ mod tests {
             assert_eq!(back.host, "10.0.0.10");
             assert!(back.favorite, "edit preserved the favourite flag");
             assert_eq!(back.presence, Presence::Online, "edit preserved presence");
-            assert_eq!(back.last_used, "5m ago", "edit preserved last-used");
+            assert_eq!(
+                back.last_used,
+                Some(1_782_812_000),
+                "edit preserved last-used"
+            );
         }
 
         eprintln!("phase rename_action_changes_only_the_name");
@@ -791,7 +811,7 @@ mod tests {
                 .iter()
                 .find(|a| a.id == "favorite")
                 .unwrap();
-            assert_eq!(spec.label, "Remove from favourites");
+            assert_eq!(spec.label, "Unpin connection");
             assert_eq!(
                 ui::testing::action_contract::spec_encoding(spec, None),
                 encode(&set_favorite_action(id, false)),

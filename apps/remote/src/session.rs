@@ -180,7 +180,7 @@ mod tests {
             } else {
                 crate::model::AuthMethod::Password
             },
-            last_used: "Never".into(),
+            last_used: None,
             presence: Presence::Unknown,
             group: String::new(),
             favorite: false,
