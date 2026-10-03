@@ -1768,6 +1768,24 @@ impl Renderer {
         !self.options.use_cpu && self.defer_bump_readback
     }
 
+    /// Sum every tile's segments in a fixed order, so repeated renders of one
+    /// scene are bit-identical regardless of GPU scheduling. Same as
+    /// `VELLO_CANONICAL_SEGMENT_ORDER=1`; recompiles the shader set.
+    ///
+    /// # Errors
+    /// Returns an error if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self, device: &Device) -> Result<()> {
+        if self.engine.canonical_segment_order_enabled() {
+            return Ok(());
+        }
+        self.engine.enable_canonical_segment_order();
+        self.shaders = shaders::full_shaders(device, &mut self.engine, &self.options)?;
+        self.engine
+            .build_shaders_if_needed(device, self.options.num_init_threads);
+        Ok(())
+    }
+
     /// Override deferred synchronous bump readback for a differential oracle.
     #[doc(hidden)]
     pub fn set_defer_bump_readback_enabled(&mut self, enabled: bool) {
