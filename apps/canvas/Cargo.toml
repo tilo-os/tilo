@@ -29,8 +29,9 @@ serde_json.workspace = true
 blake3.workspace = true
 # Ids minted where a layer is authored.
 uuid.workspace = true
-# Looks and exports are PNGs.
+# Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
 png = "0.18"
+image = { workspace = true, features = ["jpeg"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
