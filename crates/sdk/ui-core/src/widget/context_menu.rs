@@ -10,7 +10,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -380,9 +380,7 @@ impl ContextMenu {
             if let Some(label) = item.label() {
                 let (w, h) = text.measure_style(label, None, &style);
                 let check_width = if has_leading_gutter {
-                    f64::from(
-                        theme.tokens.typography.size(TextRole::Caption) + theme.tokens.spacing.s2,
-                    )
+                    f64::from(theme.tokens.metrics.icon_sm + theme.tokens.spacing.s2)
                 } else {
                     0.0
                 };
@@ -692,7 +690,14 @@ fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
 const ROW_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 const MENU_WIDTH: f64 = 220.0;
-const PADDING: f64 = 6.0;
+/// The panel's vertical inset around its rows: the `s2` menu inset
+/// (`floating_surface::menu_inset`), so the armed row runs concentric with
+/// the panel at the top and bottom too.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const PADDING: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 /// Distance from the panel's edge to a row's content, on both sides.
 fn label_inset(theme: &Theme) -> f64 {
@@ -858,39 +863,29 @@ impl Widget for ContextMenu {
                     // (2026-09-16 user report); see
                     // `tests/menu_highlight_render.rs`.
                     let armed = *enabled && self.hovered == Some(idx);
-                    if armed {
-                        // Concentric with the panel it is inset in.
-                        let inset = theme.tokens.spacing.s1;
-                        let hl = Rect::new(
-                            self.rect.x0 + f64::from(inset),
-                            y,
-                            self.rect.x1 - f64::from(inset),
-                            y + row_height,
-                        );
-                        let hl_shape = RoundedRect::from_rect(
-                            hl,
-                            f64::from(
-                                theme
-                                    .tokens
-                                    .radii
-                                    .concentric(theme.tokens.radii.panel, inset),
-                            ),
-                        );
-                        scene.fill(
-                            vello::peniko::Fill::NonZero,
+                    // Concentric with the panel it is inset in, as in every
+                    // menu.
+                    let armed_ink = armed.then(|| {
+                        let inset = crate::widget::floating_surface::menu_inset(theme);
+                        crate::widget::floating_surface::paint_armed_row(
+                            scene,
                             transform,
-                            theme.tokens.colors.intent.inverted,
-                            None,
-                            &hl_shape,
-                        );
-                    }
+                            Rect::new(
+                                self.rect.x0 + inset,
+                                y,
+                                self.rect.x1 - inset,
+                                y + row_height,
+                            ),
+                            theme,
+                        )
+                    });
                     let colors = &theme.tokens.colors;
                     let ink = if !*enabled {
                         colors
                             .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
                             .ink_dim
-                    } else if armed {
-                        colors.intent.on_inverted
+                    } else if let Some(ink) = armed_ink {
+                        ink
                     } else if *destructive {
                         colors.ink_on_any(
                             &[ground],
@@ -901,7 +896,7 @@ impl Widget for ContextMenu {
                         colors.text_primary
                     };
                     let label_x = if has_leading_gutter {
-                        let icon_size = f64::from(theme.tokens.typography.size(TextRole::Caption));
+                        let icon_size = f64::from(theme.tokens.metrics.icon_sm);
                         if let Some(icon) =
                             (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check))
                         {
@@ -914,7 +909,7 @@ impl Widget for ContextMenu {
                                 ),
                                 icon,
                                 ink,
-                                1.8,
+                                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                             );
                         }
                         label_x + icon_size + f64::from(theme.tokens.spacing.s2)
