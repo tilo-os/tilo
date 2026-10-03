@@ -25,6 +25,16 @@ TILO_DISK_SCRATCH=/srv/scratch/devdisk-x86 TILO_DISK_MIRRORS='/srv/<drop-in>/p/*
 scripts/vm-acceptance/run.py --disk ~/vm-images/tilo-dev-<sha>.qcow2 --commit origin/main
 ```
 
+Each disk costs its full ~15 GiB, so once a build finishes, `build-disk.sh` deletes the older
+disks it built in the same directory, keeping the newest three (`TILO_DISK_KEEP=N`, or `all`
+to keep every one). A disk a registered VM uses as its image or backing file, any other
+qcow2's backing file, or one a process holds open is never deleted, nor is a disk without
+`build-disk.sh`'s provenance record. To prune without building:
+
+```bash
+scripts/vm-acceptance/prune_disks.py --dry-run ~/vm-images   # then without --dry-run
+```
+
 `--vm NAME` runs against an existing VM instead (`--keep` leaves it running), `--only
 window,A03` narrows the run to areas or check ids (plus the checks they depend on), `--gl`
 creates the VM with virgl. The report lands in `target/vm-acceptance/<stamp>-<sha>/`
