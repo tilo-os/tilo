@@ -205,7 +205,7 @@ files-conflict-line = Conflict { $conflict }: { $count } { $count ->
     [one] version
    *[other] versions
 }, { $state }
-files-conflict-resolve-hint = Resolve from the context menu: Keep Current or Use Other
+files-conflict-resolve-hint = Resolve from the context menu: keep current or use other
 files-conflict-unsupported-hint = Keep both and merge are unavailable until their signed workflows are supported
 files-history-title = Version history — { $name }
 files-history-summary = { $versions } { $versions ->
@@ -371,7 +371,7 @@ files-a11y-dialog-close = { $summary }. Press Escape to close
 files-a11y-activity = Files activity
 files-a11y-current-folder = Current folder: { $path }
 files-a11y-places = Places
-files-a11y-favourite = Favourite
+files-a11y-favourite = Favorite
 files-a11y-system-location = System location
 files-a11y-place-description = { $section }, { $path }
 files-a11y-breadcrumbs = Breadcrumbs

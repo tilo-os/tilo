@@ -221,7 +221,7 @@ fn bookmark_declarations() -> Vec<ActionDecl<FileExplorer>> {
             vec![ActionParam::required(
                 "paths",
                 ParamType::Array,
-                "Favourite folder paths, in order",
+                "Favorite folder paths, in order",
             )],
             |args, _| {
                 let paths = args
