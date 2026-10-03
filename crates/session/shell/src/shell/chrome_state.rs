@@ -1189,6 +1189,31 @@ impl ChromeState {
         self.identity_source.local_user_for_room(room)
     }
 
+    /// Hand the workspaces made before this session had an identity to the
+    /// identity first-login setup just provisioned. Until then the session
+    /// acted as the OS `account` name; the new key-derived principal is no
+    /// member of a workspace that name owns, so every app opened there would
+    /// be refused its collaboration route. Boot does the same for a session
+    /// that starts with an identity already in place.
+    pub fn adopt_provisioned_identity(&mut self, account: &str) -> usize {
+        if matches!(self.identity_source, IdentitySource::SessionRegistry) {
+            self.local_user_id = crate::shell::state::local_user_id();
+        }
+        let rebound = self
+            .tree_mut()
+            .rebind_account_owned_workspaces(account, |room| {
+                self.identity_source.local_user_for_room(room)
+            })
+            .len();
+        if rebound > 0 {
+            tracing::info!(
+                "capabilities: {rebound} workspace(s) created before first-login setup now belong to its identity"
+            );
+            self.bump();
+        }
+        rebound
+    }
+
     /// Person principal selected for the active workspace, or the session
     /// fallback when no workspace is active.
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
@@ -3605,5 +3630,46 @@ mod active_tab_tests {
         assert_eq!(state.local_user_id, "renderer");
         assert_eq!(state.local_user_for_room(&room), "renderer");
         assert_eq!(state.active_local_user(), "renderer");
+    }
+}
+
+#[cfg(test)]
+mod provisioned_identity_tests {
+    use super::*;
+    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
+
+    #[test]
+    fn first_login_setup_hands_account_owned_workspaces_to_the_new_identity() {
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(5), "Home");
+        workspace.set_owner("quickuser".to_string());
+        let room = workspace.room;
+        tree.desktop.workspaces.push(workspace);
+        let chrome = ChromeState::new(tree);
+        let person = "ab".repeat(32);
+        chrome.borrow_mut().act_as(person.clone());
+
+        assert_eq!(
+            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
+            1
+        );
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .expect("workspace");
+        assert_eq!(workspace.owner.as_deref(), Some(person.as_str()));
+        assert_eq!(workspace.role_of_at(&person, 0), Some(CapRole::Owner));
+        assert_eq!(workspace.role_of_at(&"quickuser".to_string(), 0), None);
+        drop(tree);
+        drop(state);
+        assert_eq!(
+            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
+            0
+        );
     }
 }
