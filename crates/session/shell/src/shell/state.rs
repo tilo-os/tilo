@@ -517,10 +517,35 @@ pub fn local_user_id() -> UserId {
 
 /// The colour the person at this machine wears: their stored choice
 /// (`identity.colour`, roaming with their other personal settings), or the
-/// hue their identity derives until they choose one.
+/// hue their stable identity derives until they choose one — never the
+/// session's handle, so every machine they use and every collaborator who
+/// sees them agrees. Presence frames carry it to collaborators many times a
+/// second, so this reads it again at most once a second;
+/// [`read_local_presence_hue`] reads it now.
 pub fn local_presence_hue() -> ui::tokens::PresenceHue {
-    ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
-        .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&local_user_id()))
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(1);
+    if let Ok(known) = LOCAL_PRESENCE_HUE.lock()
+        && let Some((at, hue)) = *known
+        && at.elapsed() < FRESH
+    {
+        return hue;
+    }
+    read_local_presence_hue()
+}
+
+static LOCAL_PRESENCE_HUE: std::sync::Mutex<Option<(std::time::Instant, ui::tokens::PresenceHue)>> =
+    std::sync::Mutex::new(None);
+
+/// [`local_presence_hue`] read from the settings document and identity
+/// now, for a caller that knows the settings just changed.
+pub fn read_local_presence_hue() -> ui::tokens::PresenceHue {
+    let hue =
+        ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
+            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&local_user_id()));
+    if let Ok(mut known) = LOCAL_PRESENCE_HUE.lock() {
+        *known = Some((std::time::Instant::now(), hue));
+    }
+    hue
 }
 
 /// Identity acting in a specific durable room.

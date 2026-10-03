@@ -45,6 +45,17 @@ leading button, the column's actions at its trailing end, and one hairline
 under the content columns. An app never draws a band of its own above a
 column.
 
+**History is the window's, at the trailing edge of the header row.** Where
+the app has History, the host gives the shell its History control: one Plain
+icon button with `Icon::History`, named and tooltipped "History" with its
+shortcut (`HostShortcut::History`), in the window's top-trailing corner after
+the column's actions and the inspector toggle. While History shows it reads
+as on (the selection lift) and closes History; the History pane or bar shows
+the mode itself. It is the same door as the shortcut, the palette and agents.
+An app never adds a History button, text or glyph, of its own. Where the
+host's chrome presents History (the Tilo shell, a native menu bar) the row
+shows none.
+
 ### 1a. Genuine sidebar / menu  (pure navigation)
 
 Chrome that lists destinations. Examples: a calendar's list of *calendars*; an
@@ -508,10 +519,12 @@ floating Panel over the picture; text drawn straight onto media sits on
 `colors.media.letterbox` in every theme. No stepped bands, no theme surface
 behind a frame.
 
-**The History bar is the window's, unless the app owns the button.** It sits
-on the content region with one hairline under it and shows the History
-button only. An app that places `ui::widget::history_button()` in its own
-toolbar gets the same action and no separate bar.
+**The History bar is the window's, only where the app has no header row.**
+An app with a `NavShell` header row gets the History control in that row
+(§1) and no bar. Any other app gets a bar on the content region with one
+hairline under it, holding the same one History glyph at its trailing edge,
+on while History shows. A framework History that is open keeps its bar,
+with the control on, because the live app beside it is inert.
 
 **Captures are the live window, exactly.** `--shots` writes the frame on
 `surfaces.content` after it has settled (`FrameHarness::settle_for_capture`:
@@ -679,9 +692,12 @@ Chrome reads `colors.surfaces.*`. It does **not** reach into
 about contrast* that every material keeps, at every temperature.
 
 The neutral material is defined in OKLCH and shares one hue
-(`colors.neutral_hue`, chroma at most 0.010), so a theme or a workspace can
+(`colors.palette.hue`, chroma at most 0.010), so a theme or a workspace can
 shift its temperature without moving contrast (`Theme::with_neutral_hue`;
-each workspace takes the hue of its wallpaper, `ui::workspace_hue`).
+each workspace takes the hue of its wallpaper, `ui::workspace_hue`). A
+palette without a hue (`Palette::hue == None`, the light preset) is pure
+grey until the window's workspace gives it one; nothing falls back to a
+default hue.
 
 | Surface | Dark L | Light L | Use |
 |---|---|---|---|
@@ -871,9 +887,14 @@ inactive one secondary ink.
 **Your colour** is the local person's presence colour — one of the twelve
 presence hues (`PresenceHue`), the colour their cursor has for
 collaborators. It is identity, not theme: stored as `identity.colour` or
-derived from the identity, applied with `Theme::with_your_colour(hue)` (the
-shell from the person's identity, a standalone app from the hue nearest the
-host accent). The theme sets only its lightness and chroma.
+derived from the stable identity, never read by `Theme::configured`. The
+host that shows a window applies it with the workspace's temperature
+(`ui::WindowAppearance`, `Theme::in_window`): the shell resolves both and
+sends each app window its own over the shell-ui channel
+(`FloatingSurfaceHostMessage::Appearance`, applied by
+`App::set_window_appearance`); a standalone app starts from the stored
+choice, or the hue nearest the host accent, and stays neutral. The theme
+sets only its lightness and chroma.
 
 **Emphasis** is the one theme role that may colour controls: under
 `Emphasis::Tinted { hue }` the `intent.inverted` fill (primary actions, on
@@ -922,7 +943,7 @@ edge kept at full strength, so rest and disabled never look the same.
 |---|---|---|
 | Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
 | Button `Primary` | `intent.inverted` (hover `inverted_hover`) | none; label `intent.on_inverted` |
-| Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toolbar toggle that is on is `intent.selection` |
+| Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toggle that is on (`Button::toggled(true)`, a toolbar toggle) is `intent.selection` |
 | Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
 | Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
@@ -1022,8 +1043,8 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   `sidebar_width + content_min_width` (720) without an overview — fits; the
   overview and detail stand side by side while `overview_width +
   detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
-  inspector toggle) are Plain icon buttons of `min_pointer_target` in the
-  `s3` inset.
+  inspector toggle, the window's History control) are Plain icon buttons of
+  `min_pointer_target` in the `s3` inset.
 - **One text-scale rule (`Theme::responsive_scale`).** The shell grows its
   text-sized widths and breakpoints by `ui_scale × text_scale.max(1.0)`
   (`Metrics::text_growth`): at 200 % text the panes stop fitting side by side

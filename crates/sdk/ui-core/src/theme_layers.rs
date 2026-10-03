@@ -10,9 +10,8 @@
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
-use crate::theme::Theme;
+use crate::theme::{Theme, WindowAppearance};
 use crate::theme_document::{Preset, ThemeDensity, ThemeDocument};
-use crate::tokens::PresenceHue;
 
 /// JSON id of the distribution-defaults layer. The same layer is also read
 /// from [`DISTRIBUTION_DEFAULTS_KEY`].
@@ -321,14 +320,15 @@ pub struct ThemeLayerStack {
     /// The theme the person chose for the current mode. `None` means they
     /// have not chosen one, or chose one this build does not admit.
     pub user_theme: Option<ThemeDocument>,
-    /// The active workspace's temperature (OKLCH hue): the person's override
-    /// for that workspace ([`workspace_temperature_override`]) or the hue of
-    /// its wallpaper ([`crate::theme::workspace_hue`]). Set by the host that
-    /// knows which workspace is active; it never adds chroma.
-    pub workspace_hue: Option<f32>,
-    /// The person's own colour. Identity, not theme: it rides the stack
-    /// only so every layer above paints it.
-    pub your_colour: Option<PresenceHue>,
+    /// Where and for whom the window is shown: the temperature of its
+    /// workspace (the person's override for it,
+    /// [`workspace_temperature_override`], or the hue of its wallpaper,
+    /// [`crate::theme::workspace_hue`]) and the person's own colour. Set by
+    /// the host that shows the window — the shell, for its chrome and over
+    /// the shell-ui channel for every app window. A settings document never
+    /// supplies it: the temperature belongs to a workspace and the colour to
+    /// an identity, not to the theme.
+    pub window: WindowAppearance,
     pub accessibility: AccessibilityLayer,
 }
 
@@ -355,8 +355,7 @@ impl ThemeLayerStack {
             user_theme: document
                 .as_ref()
                 .and_then(|value| user_document(value, moment)),
-            workspace_hue: None,
-            your_colour: document.as_ref().and_then(PresenceHue::chosen_in),
+            window: WindowAppearance::default(),
             accessibility: accessibility_layer(document.as_ref(), appearance),
         }
     }
@@ -532,15 +531,15 @@ fn merge_pins(
 /// 1. built-in defaults ([`Preset::Dark`])
 /// 2. distribution defaults, when [`DistributionDefaults::validate`] accepts them
 /// 3. the user's theme, except the roles the distribution pins
-/// 4. the workspace temperature ([`ThemeLayerStack::workspace_hue`]), which
-///    moves the neutral hue only and shows nothing on a palette with chroma 0
+/// 4. the window ([`ThemeLayerStack::window`]): its workspace's temperature,
+///    which moves the neutral hue only and shows nothing on a palette with
+///    chroma 0, and the person's colour
 /// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it:
 ///    the high-contrast palette of the theme's polarity (high contrast or
 ///    forced colours), clamped text and UI scale, reduced motion, reduced
 ///    transparency, thick caret, the Hyperlegible face. A rejected payload
 ///    leaves the theme unchanged by this layer
 ///
-/// The person's own colour is painted through whatever results.
 #[must_use]
 pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     let distribution = stack
@@ -554,12 +553,7 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         (None, None) => Preset::Dark.document(),
     };
     let mut theme = Theme::from_document(&document).unwrap_or_else(Theme::dark);
-    if let Some(hue) = stack.workspace_hue {
-        theme = theme.with_neutral_hue(hue);
-    }
-    if let Some(you) = stack.your_colour {
-        theme = theme.with_your_colour(you);
-    }
+    theme = theme.in_window(&stack.window);
 
     // A rejected accessibility payload — bad schema, or a non-finite scale —
     // does not change contrast, caret, type size, or motion.
@@ -625,6 +619,7 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::PresenceHue;
     use crate::tokens::contrast::audit;
 
     fn light_stack() -> ThemeLayerStack {
@@ -717,12 +712,16 @@ mod tests {
 
     #[test]
     fn the_workspace_temperature_tints_a_chromatic_palette_until_accessibility() {
-        let warm = resolve_theme_layers(&ThemeLayerStack {
+        let in_warm_room = WindowAppearance {
             workspace_hue: Some(40.0),
+            your_colour: None,
+        };
+        let warm = resolve_theme_layers(&ThemeLayerStack {
+            window: in_warm_room,
             ..light_stack()
         });
         assert_eq!(warm.name, Theme::light().name);
-        assert!((warm.document.palette.hue - 40.0).abs() < f32::EPSILON);
+        assert_eq!(warm.document.palette.hue, Some(40.0));
         assert_ne!(
             warm.tokens.colors.surfaces.content,
             Theme::light().tokens.colors.surfaces.content
@@ -730,7 +729,7 @@ mod tests {
         assert!(audit(&warm.tokens.colors).is_empty());
 
         let neutral = resolve_theme_layers(&ThemeLayerStack {
-            workspace_hue: Some(40.0),
+            window: in_warm_room,
             ..ThemeLayerStack::default()
         });
         assert_eq!(
@@ -740,7 +739,7 @@ mod tests {
         );
 
         let forced = resolve_theme_layers(&ThemeLayerStack {
-            workspace_hue: Some(40.0),
+            window: in_warm_room,
             accessibility: AccessibilityLayer {
                 high_contrast: true,
                 ..AccessibilityLayer::default()
@@ -759,9 +758,12 @@ mod tests {
     }
 
     #[test]
-    fn the_person_s_colour_rides_every_layer() {
+    fn the_person_s_colour_rides_every_layer_and_is_not_read_from_settings() {
         let mine = resolve_theme_layers(&ThemeLayerStack {
-            your_colour: Some(PresenceHue::Violet),
+            window: WindowAppearance {
+                workspace_hue: None,
+                your_colour: Some(PresenceHue::Violet),
+            },
             accessibility: AccessibilityLayer {
                 high_contrast: true,
                 ..AccessibilityLayer::default()
@@ -773,8 +775,10 @@ mod tests {
             mine.border_focus,
             mine.tokens.colors.presence.hue(PresenceHue::Violet)
         );
+        // The identity's colour reaches a window through its host, never
+        // through the settings document's theme.
         let json = Theme::resolved_from_settings(r#"{"identity":{"colour":"amber"}}"#);
-        assert_eq!(json.tokens.colors.you, PresenceHue::Amber);
+        assert_eq!(json.tokens.colors.you, Theme::light().tokens.colors.you);
     }
 
     #[test]
