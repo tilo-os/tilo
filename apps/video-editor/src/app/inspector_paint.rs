@@ -543,23 +543,6 @@ impl VideoEditorApp {
         };
         let shown = elide_at(&sub, (x1 - name_x) as f32, &sub_style, tr);
         text(scene, tr, tf, &shown, &sub_style, sub_col, name_x, y);
-        y += line_height(tr, &sub_style) + S3;
-        if header.properties {
-            let fps = self.project.fps;
-            let values = [
-                timecode(clip.start, fps),
-                timecode(clip.duration(), fps),
-                timecode(clip.in_point, fps),
-                timecode(clip.out_point, fps),
-            ];
-            let rows = inspector_property_rows(&values);
-            let face = ui::widget::PropertyListFace::new(&rows);
-            let h = face.height(tr, theme, x1 - x0);
-            face.paint(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                Rect::new(x0, y, x1, y + h),
-            );
-        }
         scene.pop_layer();
         // Where the fixed part ends and the scrolling part begins.
         ui::surface::separator(
@@ -619,6 +602,14 @@ impl VideoEditorApp {
         let is_video = media.as_ref().is_none_or(|m| m.kind.is_visual());
 
         let l = self.inspector_layout(r);
+        // The clip's facts — where it sits and what it sources — as the
+        // toolkit's property list, at the head of the body.
+        if let Some(rect) = l.properties {
+            let values = Self::inspector_property_values(&clip, self.project.fps);
+            let rows = inspector_property_rows(&values);
+            ui::widget::PropertyListFace::new(&rows)
+                .paint(&mut PaintCtx::new(scene, tf, tr, theme), rect);
+        }
         // Every slider row: a label, a right-aligned readout measured like all
         // the others, and the shared slider face carrying hover / drag state.
         // The label line sits clear above the knob's reach.

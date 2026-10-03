@@ -7,6 +7,9 @@ use super::*;
 #[derive(Default)]
 pub(super) struct InspectorLayout {
     pub(super) valid: bool,
+    /// The selected clip's facts (position, duration, source in and out),
+    /// at the head of the body.
+    pub(super) properties: Option<Rect>,
     pub(super) opacity: Option<Rect>,
     pub(super) volume: Option<Rect>,
     pub(super) brightness: Option<Rect>,
@@ -273,10 +276,10 @@ impl VideoEditorApp {
     }
 
     /// One segmented row across `x0..x1`, `h` tall at `y`, in the panel's
-    /// logical pixels: each segment as wide as its label needs and the room
-    /// left over shared equally, so "Dissolve" or "1080p" is never elided
+    /// logical pixels: each segment its label's width plus an equal share of
+    /// the room the labels leave, so "Dissolve" or "1080p" is never elided
     /// beside a two-letter neighbour. Equal segments when the labels cannot
-    /// be measured yet, or would not all fit whole.
+    /// be measured, or would not all fit.
     pub(super) fn segment_rects(
         &self,
         labels: &[String],
@@ -288,23 +291,21 @@ impl VideoEditorApp {
         let n = labels.len().max(1) as f64;
         let avail = (x1 - x0).max(0.0);
         let scale = self.inspector_ui_scale();
-        let needed: Option<Vec<f64>> = self.with_dialog_layout(|_, tr, theme| {
+        // Each label at the weight a chosen segment is set in, so choosing
+        // one never makes it elide.
+        let labelled: Option<Vec<f64>> = self.with_dialog_layout(|_, tr, theme| {
+            let style = theme.text(TextRole::Label).strong();
             labels
                 .iter()
-                .map(|label| {
-                    ui::widget::SegmentedFace::intrinsic_width(
-                        &[label.as_str()],
-                        ControlSize::Small,
-                        tr,
-                        theme,
-                    ) / scale
-                })
+                .map(|label| text_width(tr, label, &style) / scale)
                 .collect()
         });
-        let widths: Vec<f64> = match needed {
-            Some(needed) if needed.iter().sum::<f64>() <= avail => {
-                let spare = (avail - needed.iter().sum::<f64>()) / n;
-                needed.iter().map(|w| w + spare).collect()
+        let widths: Vec<f64> = match labelled {
+            Some(labelled) if labelled.iter().sum::<f64>() < avail => {
+                // The room the labels leave, shared equally: every segment
+                // gets the same padding around its own label.
+                let spare = (avail - labelled.iter().sum::<f64>()) / n;
+                labelled.iter().map(|w| w + spare).collect()
             }
             _ => vec![avail / n; labels.len()],
         };
@@ -378,7 +379,18 @@ impl VideoEditorApp {
         // clips + is wheel-scrollable) so the effects stack can grow without
         // clipping the actions.
         let top = body_origin - self.inspector_scroll / scale;
-        let mut y = top;
+        let mut y = top + S3;
+        // The clip's facts first, as tall as the property list draws them.
+        let facts_h = self
+            .with_dialog_layout(|_, tr, theme| {
+                let values = Self::inspector_property_values(clip, self.project.fps);
+                let rows = inspector_property_rows(&values);
+                ui::widget::PropertyListFace::new(&rows).height(tr, theme, (x1 - x0) * scale)
+                    / scale
+            })
+            .unwrap_or(128.0);
+        l.properties = Some(Rect::new(x0, y, x1, y + facts_h));
+        y += facts_h + S2;
         let row = 40.0; // the label line at y, the 8px track under it with room for the knob
         let track_at = |y: f64| Rect::new(x0, y + 25.0, x1, y + 33.0);
         // An animatable row indents its label past a key control at the head.
@@ -772,6 +784,10 @@ impl InspectorLayout {
     /// Project a logical inspector layout into physical pixels.  The layout
     /// owns every interactive rectangle, so doing this once keeps painting,
     /// hit testing, the scrollbar's extent and AT focus rings identical.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one mapping per laid-out field, listed together so a new field cannot be left unscaled"
+    )]
     pub(super) fn scale_from(&mut self, ox: f64, oy: f64, scale: f64) {
         if (scale - 1.0).abs() < f64::EPSILON {
             return;
@@ -785,6 +801,7 @@ impl InspectorLayout {
             )
         };
         let one = |r: &mut Option<Rect>| *r = r.map(map);
+        one(&mut self.properties);
         one(&mut self.opacity);
         one(&mut self.volume);
         one(&mut self.brightness);

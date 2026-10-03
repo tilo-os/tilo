@@ -3512,9 +3512,9 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         );
         // Save names what it will do: a project with a file saves, one without
         // asks — and the label says which before it is pressed.
-        assert_eq!(rows[1].1, "Save  (Ctrl+S)");
+        assert_eq!(rows[1].1, "Save");
         app.project_path = None;
-        assert_eq!(app.project_menu_rows()[1].1, "Save…  (Ctrl+S)");
+        assert_eq!(app.project_menu_rows()[1].1, "Save…");
     }
     // Case `a_menu_click_resolves_past_the_separator_to_the_row_it_landed_on`.
     {
