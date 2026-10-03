@@ -83,6 +83,8 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
 grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
 grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
 grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
+grep -Fq 'switch-root milestones:' "$work/gaps.err"
+grep -Fq 'first-boot update check: ldconfig condition' "$work/gaps.err"
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
   TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
   >/dev/null 2>"$work/initrd-gaps.err" || true
