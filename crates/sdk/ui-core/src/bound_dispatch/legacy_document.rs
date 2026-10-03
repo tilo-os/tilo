@@ -832,7 +832,7 @@ fn execute_owned(
                     ));
                 }
                 let mut context = tilo_actions::ActionContext::for_resource(
-                    &spec.label,
+                    spec.history_label(&encoded),
                     resource.id.as_str(),
                     &resource.kind,
                     &resource.label,
