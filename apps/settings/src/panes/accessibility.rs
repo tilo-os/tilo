@@ -39,7 +39,7 @@ use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair, SystemPrefs,
 };
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{El, card, choice_row, rows, setting_row_described, value_row};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -178,7 +178,6 @@ impl AccessibilityPane {
             self.build_pointer_card(),
             self.build_typing_card(),
             self.build_advanced_card(),
-            Self::build_explainer_card(),
         ])
     }
 
@@ -271,7 +270,6 @@ impl AccessibilityPane {
                     &t("a11y-mouse-keys-desc"),
                     Self::toggle("a11y.mouse_keys", MOUSE_KEYS_KEY, "mouse-keys"),
                 ),
-                caption(&t("a11y-mouse-keys-caption")),
                 setting_row_described(
                     &t("a11y-large-cursor"),
                     &t("a11y-large-cursor-desc"),
@@ -494,13 +492,6 @@ impl AccessibilityPane {
                     ])
                     .collect(),
             ),
-        )
-    }
-
-    fn build_explainer_card() -> Box<dyn Widget> {
-        card(
-            &t("a11y-shared-title"),
-            rows(vec![caption(&t("a11y-shared-caption"))]),
         )
     }
 

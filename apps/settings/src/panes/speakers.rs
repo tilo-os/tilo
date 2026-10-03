@@ -27,7 +27,7 @@ use ui::doc::read_bool;
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::actions::{LocalOperationStatus, SPEAKER_OPERATION_TYPE, SpeakerOperation};
@@ -82,7 +82,7 @@ const fn role_slug(role: SpeakerRoleSpec) -> &'static str {
 }
 
 fn trim_summary(trim: &SpeakerTrimInfo) -> String {
-    format!("{:.1} ms · {:+.1} dB", trim.delay_ms, trim.gain_db)
+    format!("{:.1} ms, {:+.1} dB", trim.delay_ms, trim.gain_db)
 }
 
 /// Metres sound travels per millisecond at room temperature.
@@ -92,7 +92,7 @@ fn one_decimal(value: f64) -> String {
     format!("{value:.1}")
 }
 
-/// "Arrives after 48.2 ms at your seat · its output takes 41.0 ms · about
+/// "Arrives after 48.2 ms at your seat, its output takes 41.0 ms, about
 /// 2.4 m away".
 fn measured_text(
     delay_ms: f64,
@@ -115,7 +115,7 @@ fn measured_text(
             &[("metres", one_decimal(acoustic * SOUND_METRES_PER_MS).into())],
         ));
     }
-    parts.join(" · ")
+    parts.join(", ")
 }
 
 fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
@@ -761,7 +761,7 @@ impl SpeakersPane {
             };
             row = row.push(Box::new(
                 Button::new(id, label, Some(key))
-                    .primary()
+                    .role(ui::widget::ButtonRole::Primary)
                     .with_enabled(enabled),
             ));
         }
@@ -837,7 +837,8 @@ impl SpeakersPane {
                         Some(&keep),
                     )))
                     .push(Box::new(
-                        Button::new(&delete, &t("speakers-delete"), Some(&delete)).danger(),
+                        Button::new(&delete, &t("speakers-delete"), Some(&delete))
+                            .role(ui::widget::ButtonRole::Destructive),
                     ));
             } else {
                 actions = actions.push(Box::new(Button::new(
@@ -889,7 +890,8 @@ impl SpeakersPane {
             ui::widget::Row::new()
                 .push(Box::new(ui::widget::Spacer::new()))
                 .push(Box::new(
-                    Button::new("speakers.begin", &t("speakers-begin"), Some(BEGIN_KEY)).primary(),
+                    Button::new("speakers.begin", &t("speakers-begin"), Some(BEGIN_KEY))
+                        .role(ui::widget::ButtonRole::Primary),
                 )),
         ));
         sections.push(card(&t("speakers-overview-title"), rows(body)));
@@ -976,7 +978,7 @@ impl SpeakersPane {
                     .push(Box::new(ui::widget::Spacer::new()))
                     .push(Box::new(
                         Button::new("speakers.skip", &t("speakers-next-speaker"), Some(SKIP_KEY))
-                            .primary(),
+                            .role(ui::widget::ButtonRole::Primary),
                     )),
             ));
         } else {
@@ -1082,7 +1084,6 @@ impl SpeakersPane {
                 &role.map_or_else(|| "—".to_string(), role_text),
             ));
         }
-        body.push(caption(&t("speakers-name-join-note")));
         body.extend(self.message_rows());
         body.push(Self::nav_buttons(
             true,
@@ -1212,7 +1213,7 @@ impl SpeakersPane {
                     )))
                     .push(Box::new(
                         Button::new("speakers.apply", &t("speakers-apply"), Some(APPLY_KEY))
-                            .primary(),
+                            .role(ui::widget::ButtonRole::Primary),
                     ));
             }
             Some(CalibrationPhaseInfo::Applied) => {
@@ -1244,7 +1245,7 @@ impl SpeakersPane {
                         }),
                         Some(CALIBRATE_KEY),
                     )
-                    .primary()
+                    .role(ui::widget::ButtonRole::Primary)
                     .with_enabled(problem.is_none()),
                 ));
             }
@@ -1428,10 +1429,13 @@ struct RoomCanvas {
     rect: Rect,
     cursor: Point,
     dragging: Option<usize>,
+    /// Radius of a speaker marker (the `s3` step), from the live theme.
+    dot_radius: f64,
 }
 
-const CANVAS_HEIGHT: f32 = 260.0; // floor-plan height, not a spacing token
-const DOT_RADIUS: f64 = 11.0; // speaker marker size on the floor plan
+/// The floor plan's width over its height: a room is close to square, but
+/// the plan sits in a wide pane, so it is drawn wider than tall.
+const CANVAS_ASPECT: f32 = 2.0;
 
 impl RoomCanvas {
     fn new(points: ui::LocalState<Vec<(i32, i32)>>, labels: Vec<String>) -> Self {
@@ -1441,6 +1445,7 @@ impl RoomCanvas {
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             dragging: None,
+            dot_radius: f64::from(ui::tokens::Spacing::BASE.s3),
         }
     }
 
@@ -1449,7 +1454,7 @@ impl RoomCanvas {
         let half = (self.rect.width() / 2.0)
             .min(self.rect.height() / 2.0)
             .max(1.0);
-        f64::from(ROOM_EXTENT_MM) / (half - DOT_RADIUS).max(1.0)
+        f64::from(ROOM_EXTENT_MM) / (half - self.dot_radius).max(1.0)
     }
 
     fn origin(&self) -> Point {
@@ -1488,16 +1493,18 @@ impl Widget for RoomCanvas {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.dot_radius = f64::from(theme.tokens.spacing.s3);
         let node = ui::widget::TaffyTreeExt::leaf_node(
             taffy,
             taffy::Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(CANVAS_HEIGHT),
+                    height: taffy::Dimension::auto(),
                 },
+                aspect_ratio: Some(CANVAS_ASPECT),
                 ..Default::default()
             },
         );
@@ -1524,36 +1531,26 @@ impl Widget for RoomCanvas {
         _presence: &ui::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.overlay_subtle,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
+        let unit = f64::from(theme.tokens.spacing.s1);
+        let radius = f64::from(theme.tokens.radii.control);
+        let well = colors.surfaces.raised;
+        ui::surface::card(scene, transform, self.rect, radius, well);
+        let rule = ui::surface::edge_on(well);
         let origin = self.origin();
         for ring in [1_000, 2_000, 3_000, 4_000] {
             let ring_radius = f64::from(ring) / self.scale();
             scene.stroke(
-                &Stroke::new(1.0),
+                &Stroke::new(unit / 4.0),
                 transform,
-                colors.overlay_border_subtle,
+                rule,
                 None,
                 &Circle::new(origin, ring_radius),
             );
         }
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(unit / 4.0),
             transform,
-            colors.overlay_border_subtle,
+            rule,
             None,
             &Line::new(
                 Point::new(origin.x, self.rect.y0),
@@ -1565,44 +1562,44 @@ impl Widget for RoomCanvas {
             transform,
             colors.text_dim,
             None,
-            &Circle::new(origin, 5.0),
+            &Circle::new(origin, unit),
         );
-        text_renderer.draw_text(
-            scene,
+        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+        ctx.text_role(
             &t("speakers-room-you"),
-            theme.tokens.typography.scale.xs,
+            ui::TextRole::Caption,
             colors.text_dim,
-            transform.pre_translate((origin.x + 8.0, origin.y + 4.0).into()),
+            Point::new(origin.x + 2.0 * unit, origin.y + unit),
             None,
         );
         let points = self.points.with(Clone::clone);
         for (index, point) in points.iter().enumerate() {
             let center = self.to_screen(*point);
-            let fill = colors.categorical(index);
+            let fill = colors.presence.series(index);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 fill,
                 None,
-                &Circle::new(center, DOT_RADIUS),
+                &Circle::new(center, self.dot_radius),
             );
             if self.dragging == Some(index) {
                 scene.stroke(
-                    &Stroke::new(2.0),
+                    &Stroke::new(unit / 2.0),
                     transform,
-                    colors.border_focus,
+                    colors.intent.you,
                     None,
-                    &Circle::new(center, DOT_RADIUS + 3.0),
+                    &Circle::new(center, self.dot_radius + unit),
                 );
             }
             if let Some(label) = self.labels.get(index) {
-                text_renderer.draw_text(
-                    scene,
+                let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+                ctx.text_role(
                     label,
-                    theme.tokens.typography.scale.xs,
+                    ui::TextRole::Caption,
                     colors.text_primary,
-                    transform.pre_translate((center.x + DOT_RADIUS + 4.0, center.y - 7.0).into()),
-                    Some(140.0),
+                    Point::new(center.x + self.dot_radius + unit, center.y - 2.0 * unit),
+                    Some((self.rect.width() / 3.0) as f32),
                 );
             }
         }
@@ -1633,7 +1630,7 @@ impl Widget for RoomCanvas {
                     .iter()
                     .enumerate()
                     .map(|(index, point)| (index, self.to_screen(*point).distance(self.cursor)))
-                    .filter(|(_, distance)| *distance <= DOT_RADIUS * 1.6)
+                    .filter(|(_, distance)| *distance <= self.dot_radius * 1.6)
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(index, _)| index);
                 *ctx.handled |= self.dragging.is_some();
@@ -1900,7 +1897,7 @@ mod tests {
         assert!(microphone_switch(pane, "shelf").with(|on| *on));
         phone.set(true);
         settle(pane, doc);
-        pane.listening_state.set("phone · Microphone".into());
+        pane.listening_state.set("phone (Microphone)".into());
         settle(pane, doc);
         microphone_switch(pane, "shelf").set(false);
         settle(pane, doc);

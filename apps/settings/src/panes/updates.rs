@@ -106,12 +106,10 @@ fn helper_diagnostic(bytes: &[u8]) -> String {
 }
 
 fn operation_button(control_id: &str, label: &str, action_id: &str) -> Button {
-    Button::new(control_id, label, None)
-        .content_sized()
-        .on_action(
-            crate::actions::updates_unit_binding(action_id)
-                .unwrap_or_else(|| panic!("Updates action {action_id} must be published")),
-        )
+    Button::new(control_id, label, None).on_action(
+        crate::actions::updates_unit_binding(action_id)
+            .unwrap_or_else(|| panic!("Updates action {action_id} must be published")),
+    )
 }
 
 fn schedule_shown(id: &str) -> String {
@@ -1463,7 +1461,7 @@ impl UpdatesPane {
 
     /// The "How updates work" captions, in order.
     pub fn help_lines(&self) -> Vec<String> {
-        vec![t("upd-help-1"), t("upd-help-2")]
+        vec![t("upd-help-2")]
     }
 
     pub fn status(&self) -> &UpdateStatus {
@@ -1497,10 +1495,7 @@ impl UpdatesPane {
             // journal is a switch that failed silently.
             all.insert(
                 0,
-                card(
-                    &t("upd-notice-title"),
-                    rows(vec![Box::new(Text::new(msg).with_size(13.0))]),
-                ),
+                card(&t("upd-notice-title"), rows(vec![Box::new(Text::new(msg))])),
             );
         }
         crate::widgets::cards(all)
@@ -1513,12 +1508,14 @@ impl UpdatesPane {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
+                    .push(Box::new(Text::new(&t_args(
+                        "upd-ready",
+                        &[("version", staged.as_str().into())],
+                    ))))
                     .push(Box::new(
-                        Text::new(&t_args("upd-ready", &[("version", staged.as_str().into())]))
-                            .with_size(13.0),
-                    ))
-                    .push(Box::new(
-                        Text::new(&t("upd-restart-apply")).with_size(11.0).dimmed(),
+                        Text::new(&t("upd-restart-apply"))
+                            .with_role(ui::TextRole::Caption)
+                            .dimmed(),
                     ))
                     .push(Box::new(
                         Row::new()
@@ -1530,7 +1527,7 @@ impl UpdatesPane {
                             .push(Box::new(Spacer::new())),
                     )),
             ),
-            None => Box::new(Text::new(&t("upd-up-to-date")).with_size(13.0)),
+            None => Box::new(Text::new(&t("upd-up-to-date"))),
         };
         card(&t("upd-software"), action)
     }
@@ -1784,8 +1781,8 @@ impl UpdatesPane {
                 let mut entries = Vec::new();
                 for item in history.iter().take(8) {
                     let versions = match (&item.from_version, &item.to_version) {
-                        (Some(from), Some(to)) => format!("{from} → {to} · {}", item.state),
-                        (_, Some(to)) => format!("{to} · {}", item.state),
+                        (Some(from), Some(to)) => format!("{from} → {to}, {}", item.state),
+                        (_, Some(to)) => format!("{to}, {}", item.state),
                         _ => item.state.clone(),
                     };
                     entries.push(value_row(&item.device, &versions));
@@ -1825,14 +1822,14 @@ impl UpdatesPane {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(no_previous).with_size(13.0)))
+                    .push(Box::new(Text::new(no_previous)))
                     .push(caption(no_previous_caption)),
             ),
             (Some(_), false, [_, previous, intro, button_label, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(previous).with_size(13.0)))
+                    .push(Box::new(Text::new(previous)))
                     .push(caption(intro))
                     .push(Box::new(
                         Row::new()
@@ -1849,7 +1846,7 @@ impl UpdatesPane {
                 let mut col = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(prompt).with_size(13.0)));
+                    .push(Box::new(Text::new(prompt)));
                 for c in caveats {
                     col = col.push(caption(c));
                 }

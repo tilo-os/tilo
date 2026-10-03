@@ -367,7 +367,7 @@ fn continuity_key(capability: Capability) -> String {
 }
 
 fn origin_summary(origin: &Origin) -> String {
-    format!("{} · revision {}", origin.device_label, origin.counter)
+    format!("{} (revision {})", origin.device_label, origin.counter)
 }
 
 fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
@@ -510,7 +510,7 @@ fn last_seen_label(last_seen_ms: u64) -> String {
 }
 
 fn peer_health_badge(health: &str) -> String {
-    if health.starts_with("Online") && health.contains("Syncing") {
+    if health.starts_with("Online") && health.contains("syncing") {
         t("mesh-badge-syncing")
     } else if health.starts_with("Online") {
         t("mesh-badge-online")
@@ -902,10 +902,7 @@ impl DeviceMeshPane {
         let sync_auto = t("mesh-sync-auto");
         let files = t("mesh-files");
         let download_opened = t("mesh-download-opened");
-        let mut continuation_rows = vec![
-            value_row(&activity, &sync_auto),
-            caption(&t("mesh-activity-caption")),
-        ];
+        let mut continuation_rows = vec![value_row(&activity, &sync_auto)];
         if self.config.workspaces.is_empty() {
             continuation_rows.push(value_row(&files, &download_opened));
         } else {
@@ -1046,7 +1043,6 @@ impl DeviceMeshPane {
                 &pair_label,
                 Some(APPROVE_ENROLLMENT_KEY),
             )
-            .content_sized()
             .with_enabled(!pairing),
         );
         let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
@@ -1073,7 +1069,6 @@ impl DeviceMeshPane {
                 &personal_label,
                 Some(APPROVE_PERSONAL_DEVICE_KEY),
             )
-            .content_sized()
             .with_enabled(!pairing),
         );
         let mut personal_rows = vec![caption(&t("mesh-personal-caption"))];
@@ -1106,7 +1101,6 @@ impl DeviceMeshPane {
                 if armed {
                     Box::new(
                         Button::new(&revoke_key, &t("mesh-revoke-access"), Some(&revoke_key))
-                            .content_sized()
                             .with_enabled(!device.current && !device.revoked),
                     )
                 } else if device.current || device.revoked || device.can_host {
@@ -1119,10 +1113,11 @@ impl DeviceMeshPane {
                         },
                     )
                 } else {
-                    Box::new(
-                        Button::new(&revoke_key, &t("mesh-decommission"), Some(&revoke_key))
-                            .content_sized(),
-                    )
+                    Box::new(Button::new(
+                        &revoke_key,
+                        &t("mesh-decommission"),
+                        Some(&revoke_key),
+                    ))
                 },
             ));
             if armed {
@@ -1147,10 +1142,11 @@ impl DeviceMeshPane {
                 enrolled_device_rows.push(setting_row_described(
                     &ends,
                     &ends_desc,
-                    Box::new(
-                        Button::new(&cancel_key, &t("mesh-cancel"), Some(&cancel_key))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new(
+                        &cancel_key,
+                        &t("mesh-cancel"),
+                        Some(&cancel_key),
+                    )),
                 ));
             }
         }
@@ -1249,21 +1245,17 @@ impl DeviceMeshPane {
             let cap_label = capability.label();
             privacy_rows.push(setting_row_described(&cap_label, &status, Box::new(toggle)));
         }
-        privacy_rows.push(caption(&t("mesh-privacy-stay")));
         if let Some(status) = &self.continuity_status {
             privacy_rows.push(caption(status));
         }
 
         let current_target_label = t("mesh-current-target");
         let source_label = t("mesh-source");
-        let mut provenance_rows = vec![
+        let provenance_rows = vec![
             value_row(&current_target_label, target_name),
             caption(&target_detail),
             value_row(&source_label, &source_detail),
         ];
-        if current_target.is_none() {
-            provenance_rows.push(caption(&t("mesh-no-active-until")));
-        }
 
         let audit_rows = if self.continuity.audit.is_empty() {
             vec![caption(&t("mesh-audit-empty"))]
@@ -1277,7 +1269,6 @@ impl DeviceMeshPane {
                     let change = t("mesh-audit-change");
                     value_row(&change, &entry.summary())
                 })
-                .chain(std::iter::once(caption(&t("mesh-audit-caption"))))
                 .collect()
         };
         let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
@@ -1297,7 +1288,6 @@ impl DeviceMeshPane {
         if let Some(status) = &self.roaming_provenance_status {
             roaming_rows.push(caption(status));
         }
-        roaming_rows.push(caption(&t("mesh-roaming-caption")));
         let mut home_server_rows = vec![caption(&t("mesh-home-caption"))];
         if self.registered_home_peers > 0 {
             let paired = t("mesh-paired-homes");
@@ -1336,21 +1326,23 @@ impl DeviceMeshPane {
             let name = TextInput::new(Vec::new())
                 .with_id(&rename_key)
                 .with_on_change_path(&rename_key)
-                .with_placeholder(&peer.label)
-                .with_font_size(13.0);
-            let rename = Box::new(
-                Button::new(&rename_action, &t("mesh-rename"), Some(&rename_action))
-                    .content_sized(),
-            );
+                .with_placeholder(&peer.label);
+            let rename = Box::new(Button::new(
+                &rename_action,
+                &t("mesh-rename"),
+                Some(&rename_action),
+            ));
             let armed = self.remove_armed.contains(device);
             let remove_label = if armed {
                 t("mesh-revoke-remove")
             } else {
                 t("mesh-remove-server")
             };
-            let remove = Box::new(
-                Button::new(&remove_action, &remove_label, Some(&remove_action)).content_sized(),
-            );
+            let remove = Box::new(Button::new(
+                &remove_action,
+                &remove_label,
+                Some(&remove_action),
+            ));
             let health = self
                 .home_peer_health
                 .get(device)
@@ -1392,10 +1384,11 @@ impl DeviceMeshPane {
                 peer_rows.push(setting_row_described(
                     &files_stay,
                     &files_stay_desc,
-                    Box::new(
-                        Button::new(&cancel_action, &t("mesh-cancel"), Some(&cancel_action))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new(
+                        &cancel_action,
+                        &t("mesh-cancel"),
+                        Some(&cancel_action),
+                    )),
                 ));
             }
             sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
@@ -1694,7 +1687,7 @@ impl DeviceMeshPane {
             }
             Err(error) => {
                 self.home_peer_health
-                    .insert(peer.device_node_id.clone(), format!("Offline · {error}"));
+                    .insert(peer.device_node_id.clone(), format!("Offline, {error}"));
             }
         }
         self.structure_dirty = true;
@@ -1855,9 +1848,9 @@ impl DeviceMeshPane {
                             if removed {
                                 "Removed".into()
                             } else if ready {
-                                "Online · Files ready".into()
+                                "Online, files ready".into()
                             } else {
-                                "Online · Syncing files".into()
+                                "Online, syncing files".into()
                             },
                         );
                         let now_ms = ui::time::wall()
@@ -1873,7 +1866,7 @@ impl DeviceMeshPane {
                 } else {
                     let detail = command_error(&output.stderr, "not reachable");
                     let label = self.home_peer_last_seen.get(&device).map_or_else(
-                        || format!("Offline · {detail}"),
+                        || format!("Offline, {detail}"),
                         |last_seen| last_seen_label(*last_seen),
                     );
                     self.home_peer_health.insert(device, label);
@@ -1884,7 +1877,7 @@ impl DeviceMeshPane {
                 self.management_child = None;
                 if let Some(device) = self.management_device.take() {
                     self.home_peer_health
-                        .insert(device, format!("Offline · {error}"));
+                        .insert(device, format!("Offline, {error}"));
                 }
                 self.structure_dirty = true;
             }
@@ -2219,11 +2212,11 @@ mod tests {
                 vec![
                     (
                         "tilo.appearance.theme".into(),
-                        "Resolved to Laptop · revision 8; differs from Desktop".into()
+                        "Resolved to Laptop (revision 8); differs from Desktop".into()
                     ),
                     (
-                        "Wi-Fi · Home".into(),
-                        "Sealed WPA2 profile. From Laptop · revision 9".into()
+                        "Wi-Fi: Home".into(),
+                        "Sealed WPA2 profile. From Laptop (revision 9)".into()
                     )
                 ]
             );
@@ -2491,9 +2484,9 @@ mod tests {
     fn device_health_and_workspace_status_reflect_fresh_facts() {
         // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
         {
-            assert_eq!(peer_health_badge("Online · Files ready"), "Online");
-            assert_eq!(peer_health_badge("Online · Syncing files"), "Syncing");
-            assert_eq!(peer_health_badge("Offline · Last seen 4 h ago"), "Offline");
+            assert_eq!(peer_health_badge("Online, files ready"), "Online");
+            assert_eq!(peer_health_badge("Online, syncing files"), "Syncing");
+            assert_eq!(peer_health_badge("Offline, last seen 4 h ago"), "Offline");
             assert_eq!(peer_health_badge("Checking…"), "Checking");
         }
 

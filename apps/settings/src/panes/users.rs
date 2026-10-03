@@ -362,21 +362,18 @@ impl UsersPane {
             .with_kind(TextInputKind::Name)
             .with_id(FULL_NAME_KEY)
             .with_on_change_path(FULL_NAME_KEY)
-            .with_placeholder(&t("settings-users-placeholder-full-name"))
-            .with_font_size(13.0);
+            .with_placeholder(&t("settings-users-placeholder-full-name"));
         let user = TextInput::new(Vec::new())
             .with_kind(TextInputKind::Username)
             .with_id(USERNAME_KEY)
             .with_on_change_path(USERNAME_KEY)
-            .with_placeholder(&t("settings-users-placeholder-username"))
-            .with_font_size(13.0);
+            .with_placeholder(&t("settings-users-placeholder-username"));
         let password = TextInput::local()
             .with_kind(TextInputKind::Password)
             .with_id("users.form.password")
             .with_external_buffer(self.password_buffer.clone())
             .with_secret(true)
-            .with_placeholder(&t("settings-users-placeholder-password"))
-            .with_font_size(13.0);
+            .with_placeholder(&t("settings-users-placeholder-password"));
         let buttons = Row::new()
             .push(Box::new(Button::new(
                 "settings.users.save",
@@ -466,7 +463,7 @@ impl UsersPane {
                 .with_intrinsic_height()
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Text::new(&user.full_name).with_size(13.0)))
+                        .push(Box::new(Text::new(&user.full_name)))
                         .push(Box::new(Spacer::new()))
                         .push(semantic_status_pill(
                             &role,
@@ -486,7 +483,7 @@ impl UsersPane {
                             ("you", you.as_str().into()),
                         ],
                     ))
-                    .with_size(11.0)
+                    .with_role(ui::TextRole::Caption)
                     .dimmed(),
                 ))
                 .push(Box::new(actions)),
@@ -510,7 +507,7 @@ impl UsersPane {
             t("settings-users-identity-available")
         };
         let mut top = Row::new()
-            .push(Box::new(Text::new(name).with_size(13.0)))
+            .push(Box::new(Text::new(name)))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(
                 &status,
@@ -564,7 +561,7 @@ impl UsersPane {
                             ("protection", protection.into()),
                         ],
                     ))
-                    .with_size(11.0)
+                    .with_role(ui::TextRole::Caption)
                     .dimmed(),
                 )),
         )
