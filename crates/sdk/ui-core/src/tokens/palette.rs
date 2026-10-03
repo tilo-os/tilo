@@ -18,10 +18,6 @@ pub const NEUTRAL_MAX_CHROMA: f32 = 0.010;
 /// Ceiling on status chroma: danger, warning and success are muted.
 pub const STATUS_MAX_CHROMA: f32 = 0.13;
 
-/// Temperature of a tinted palette when nothing chose one: a cool blue-grey.
-/// A workspace's wallpaper replaces it while that workspace is shown.
-pub const DEFAULT_NEUTRAL_HUE: f32 = 255.0;
-
 /// Status hues, in OKLCH degrees: danger, warning, success, info. A theme
 /// moves their lightness and chroma, never their meaning.
 pub const STATUS_HUES: [f32; 4] = [25.0, 75.0, 150.0, 245.0];
@@ -106,10 +102,15 @@ pub struct Palette {
     /// content surfaces are asked to force their colours.
     #[serde(default)]
     pub high_contrast: bool,
-    /// The OKLCH hue every neutral shares, in degrees.
-    pub hue: f32,
-    /// The neutrals' chroma, `0` (pure grey) to [`NEUTRAL_MAX_CHROMA`]. At
-    /// `0` a workspace's temperature has nothing to tint.
+    /// The OKLCH hue every neutral shares, in degrees. `None` until
+    /// something gives the material a temperature: a palette without a hue
+    /// renders pure grey whatever its chroma, and the workspace it is shown
+    /// in supplies one (`Theme::with_neutral_hue`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<f32>,
+    /// The neutrals' chroma, `0` (pure grey) to [`NEUTRAL_MAX_CHROMA`]: how
+    /// much temperature the material takes once it has a hue. At `0` a
+    /// workspace's temperature has nothing to tint.
     pub chroma: f32,
     pub surfaces: SurfaceLadder,
     pub ink: InkLadder,
@@ -168,7 +169,7 @@ impl Palette {
         Self {
             dark: true,
             high_contrast: false,
-            hue: DEFAULT_NEUTRAL_HUE,
+            hue: None,
             chroma: 0.0,
             surfaces: DARK_LADDER,
             ink: DARK_INK,
@@ -180,7 +181,7 @@ impl Palette {
     #[must_use]
     pub const fn dark_cool() -> Self {
         Self {
-            hue: 255.0,
+            hue: Some(255.0),
             chroma: 0.008,
             ..Self::dark()
         }
@@ -190,7 +191,7 @@ impl Palette {
     #[must_use]
     pub const fn dark_graphite() -> Self {
         Self {
-            hue: 60.0,
+            hue: Some(60.0),
             chroma: 0.006,
             ..Self::dark()
         }
@@ -202,7 +203,7 @@ impl Palette {
     #[must_use]
     pub const fn dark_soft() -> Self {
         Self {
-            hue: 270.0,
+            hue: Some(270.0),
             chroma: 0.003,
             surfaces: SurfaceLadder {
                 base: 0.19,
@@ -221,14 +222,15 @@ impl Palette {
         }
     }
 
-    /// The light ladder. It carries chroma, so it takes each workspace's
-    /// temperature.
+    /// The light ladder. It has no hue of its own: pure grey until the
+    /// workspace it is shown in gives it a temperature, which its chroma
+    /// then carries.
     #[must_use]
     pub const fn light() -> Self {
         Self {
             dark: false,
             high_contrast: false,
-            hue: DEFAULT_NEUTRAL_HUE,
+            hue: None,
             chroma: NEUTRAL_MAX_CHROMA,
             surfaces: SurfaceLadder {
                 base: 0.90,
@@ -253,7 +255,7 @@ impl Palette {
         Self {
             dark: true,
             high_contrast: true,
-            hue: DEFAULT_NEUTRAL_HUE,
+            hue: None,
             chroma: 0.0,
             surfaces: SurfaceLadder {
                 base: 0.0,
@@ -283,7 +285,7 @@ impl Palette {
         Self {
             dark: false,
             high_contrast: true,
-            hue: DEFAULT_NEUTRAL_HUE,
+            hue: None,
             chroma: 0.0,
             surfaces: SurfaceLadder {
                 base: 1.0,
@@ -314,6 +316,19 @@ impl Palette {
             Self::high_contrast_dark()
         } else {
             Self::high_contrast_light()
+        }
+    }
+
+    /// The hue and chroma the neutrals are painted at: the palette's own
+    /// when it has a hue, pure grey (chroma 0) until it has one.
+    #[must_use]
+    pub fn temperature(&self) -> (f32, f32) {
+        match self.hue {
+            Some(hue) if hue.is_finite() => (
+                hue.rem_euclid(360.0),
+                self.chroma.clamp(0.0, NEUTRAL_MAX_CHROMA),
+            ),
+            _ => (0.0, 0.0),
         }
     }
 
@@ -379,7 +394,7 @@ impl Palette {
     /// A static message naming the first field out of range.
     pub fn validate(&self) -> Result<(), &'static str> {
         let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
-        if !self.hue.is_finite() {
+        if self.hue.is_some_and(|hue| !hue.is_finite()) {
             return Err("invalid palette hue");
         }
         if !self.chroma.is_finite() || !(0.0..=NEUTRAL_MAX_CHROMA).contains(&self.chroma) {
@@ -488,6 +503,17 @@ mod tests {
             "dark is neutral"
         );
         assert!((Palette::light().chroma - 0.010).abs() < f32::EPSILON);
+        assert_eq!(Palette::light().hue, None, "light has no hue of its own");
+        assert_eq!(
+            Palette::light().temperature(),
+            (0.0, 0.0),
+            "without a hue the light ladder is pure grey"
+        );
+        let warm = Palette {
+            hue: Some(400.0),
+            ..Palette::light()
+        };
+        assert_eq!(warm.temperature(), (40.0, 0.010));
         let soft = Palette::dark_soft().surfaces;
         assert_eq!(
             [
