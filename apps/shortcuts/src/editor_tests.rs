@@ -181,3 +181,60 @@ fn the_picker_groups_the_catalogue_by_app_then_kind() {
     assert_eq!(create.params, ["title: text", "pinned: boolean"]);
     assert_eq!(app_label("so.tilo.speed-test"), "Speed Test");
 }
+
+#[test]
+fn steps_are_numbered_in_reading_order_and_bindings_name_them_so() {
+    let branch = step(json!({
+        "id": "branch", "step": "if", "cond": {"truthy": {"input": "who"}},
+        "then": [{"id": "create", "step": "invoke", "app_id": "so.tilo.notes",
+                  "resource": {"fixed": "notes.folder:inbox"}, "action": "create"}]
+    }));
+    let steps = vec![list(), branch];
+    assert_eq!(step_number(&steps, "list"), Some(1));
+    assert_eq!(step_number(&steps, "branch"), Some(2));
+    assert_eq!(
+        step_number(&steps, "create"),
+        Some(3),
+        "a step inside a branch follows the step that holds it"
+    );
+    assert_eq!(step_number(&steps, "missing"), None);
+
+    let said = |binding: Binding| describe(&binding, &steps);
+    assert_eq!(said(Binding::Input("who".into())), "input who");
+    assert_eq!(said(Binding::step("list", "")), "result of step 1");
+    assert_eq!(said(Binding::step("list", "/titles")), "titles from step 1");
+    assert_eq!(
+        said(Binding::step("list", "/titles/0")),
+        "item 1 of titles from step 1"
+    );
+    assert_eq!(
+        said(Binding::Template("{{step.list/titles}}".into())),
+        "titles from step 1",
+        "a template that is only a placeholder reads as the value itself"
+    );
+    assert_eq!(
+        said(Binding::Template("Re: {{input.who}} ({{var.n}})".into())),
+        "text “Re: [input who] ([variable n])”"
+    );
+}
+
+#[test]
+fn a_step_is_titled_by_what_it_does_and_placed_by_where_it_acts() {
+    let catalog = crate::samples::catalog();
+    let steps = vec![list()];
+    let listing = &steps[0];
+    assert_eq!(title(listing, &catalog, &steps), "List notes");
+    assert_eq!(
+        context(listing, &catalog).as_deref(),
+        Some("Inbox in Notes")
+    );
+    let unknown = step(
+        json!({"id": "x", "step": "invoke", "app_id": "so.tilo.gone",
+                              "resource": {"fixed": "gone"}, "action": "vanish"}),
+    );
+    assert_eq!(title(&unknown, &catalog, &steps), "vanish");
+    assert_eq!(
+        context(&unknown, &catalog).as_deref(),
+        Some("Gone no longer offers this action")
+    );
+}
