@@ -72,10 +72,7 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     // gutter preference never shrinks a pointer target.
     tokens.spacing = crate::tokens::Spacing::BASE
         .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
-    tokens
-        .typography
-        .sans_family
-        .clone_from(&document.type_.face);
+    tokens.typography.set_face(&document.type_.face);
     let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
     tokens.typography.scale = tokens.typography.scale.scaled(size);
     let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
@@ -440,6 +437,7 @@ impl Theme {
             forced_colors: admitted && file.forced_colors,
             thick_caret: admitted && file.thick_caret,
             reduce_transparency: admitted && file.reduce_transparency,
+            hyperlegible: admitted && file.hyperlegible,
             text_scale: 1.0,
             ui_scale: 1.0,
             reduce_motion: reduce_motion_override,

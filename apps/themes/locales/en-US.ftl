@@ -38,6 +38,7 @@ themes-radius = Window corners
 themes-density = Spacing
 themes-type = Type
 themes-face = Typeface
+themes-face-help = Default, Hyperlegible, or the name of an installed font family.
 themes-size = Text size
 themes-motion-material = Motion and material
 themes-motion = Motion
