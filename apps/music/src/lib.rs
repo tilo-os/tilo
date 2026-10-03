@@ -52,12 +52,12 @@
 
 pub mod actions;
 pub mod app;
-pub mod art;
 pub mod audio;
 pub mod backend;
 pub mod doc;
 mod files;
 pub mod icon;
+pub mod live_search;
 pub mod local_file;
 pub mod lyrics;
 pub mod model;
@@ -159,19 +159,18 @@ pub(crate) fn app_for_launch_source(
 /// normally need live input (an opened overlay sidebar, an open context menu)
 /// is pre-snapped here.
 ///
-/// Recognised scenarios (combine with `TILO_MUSIC_VIEW` to pick the screen):
-/// `sidebar`/`collapsed` — nav sidebar open/collapsed; `context` — track
-/// context menu open; `new-playlist` — inline create-playlist prompt open;
-/// `empty` — a genuinely empty library's Home state; `search-focus` — search
-/// pill focused, empty query; `skeleton` — Home in its loading state;
-/// `nowplaying` — a bundled track playing; `queue` — the Queue view with
-/// sample tracks trailing it; `lyrics` — synced-lyrics view; `downloading`,
-/// `offline-cached`, and `offline-error` — active, successful, and retryable
-/// device-local download states; `search-tabs`/`search-songs`/`search-artists` —
-/// search results filtered to that tab; `artist-page`/`album-page` — the
-/// detail page for a bundled item; `error` — a failed live detail request with
-/// its honest recovery state; `membership-open` — a playlist-membership Ctrl+K
-/// result after its safe canonical Open action is activated.
+/// Recognised scenarios: `sidebar`/`collapsed` — nav sidebar open/collapsed;
+/// `context` — track context menu open; `new-playlist` — the create-playlist
+/// prompt open; `empty` — a genuinely empty library's Home state; `skeleton`
+/// — Home in its loading state; `nowplaying` — a bundled track playing;
+/// `queue` — the Queue view with sample tracks trailing it; `lyrics` —
+/// synced-lyrics view; `downloading`, `offline-cached`, and `offline-error` —
+/// active, successful, and retryable device-local download states;
+/// `artist-page`/`album-page`/`playlist-page` — the detail page for a bundled
+/// item; `error` — a failed live detail request with its honest recovery
+/// state; `membership-open` — a playlist-membership search result after its
+/// safe canonical Open action is activated; `songs`, `albums`, `artists`,
+/// `playlists`, `liked` and `browse` — that destination.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new_for_shot();
     // Hermetic: a headless shot never spawns a worker or fetches covers, so the
@@ -189,7 +188,6 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "collapsed" => app.snap_sidebar(false),
         "context" => app.snap_track_menu(),
         "new-playlist" => app.snap_new_playlist_prompt(),
-        "search-focus" => app.snap_search_focus(),
         "skeleton" => app.snap_skeleton(),
         "nowplaying" => app.snap_nowplaying(),
         "queue" => app.snap_queue(),
@@ -197,13 +195,17 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "downloading" => app.snap_downloading(),
         "offline-cached" => app.snap_offline_cached(),
         "offline-error" => app.snap_offline_error(),
-        "search-tabs" => app.snap_search_results(app::SearchTab::All),
-        "search-songs" => app.snap_search_results(app::SearchTab::Songs),
-        "search-artists" => app.snap_search_results(app::SearchTab::Artists),
         "artist-page" => app.snap_artist_page(),
         "album-page" => app.snap_album_page(),
         "error" => app.snap_error_page(),
         "membership-open" => app.snap_membership_open(),
+        "playlist-page" => app.snap_view(View::Playlist("pl_focus".into())),
+        "songs" => app.snap_view(View::Songs),
+        "albums" => app.snap_view(View::Albums),
+        "artists" => app.snap_view(View::Artists),
+        "playlists" => app.snap_view(View::Playlists),
+        "liked" => app.snap_view(View::Liked),
+        "browse" => app.snap_view(View::Browse),
         _ => {}
     }
     Box::new(app)

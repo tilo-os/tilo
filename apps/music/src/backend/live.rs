@@ -296,10 +296,7 @@ fn track_home_item(it: TrackItem) -> HomeItem {
 
 fn album_home_item(a: AlbumItem) -> HomeItem {
     let artist = artists_name(&a.artists, a.by_va);
-    let subtitle = match a.year {
-        Some(y) => format!("{artist} \u{00b7} {y}"),
-        None => artist.clone(),
-    };
+    let subtitle = artist.clone();
     HomeItem {
         id: a.id,
         title: a.name,
@@ -705,8 +702,7 @@ impl MusicBackend for RustyPipeBackend {
             },
             |c| c.name.clone(),
         );
-        let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
-        let subtitle = format!("{owner} \u{00b7} {count} songs");
+        let subtitle = owner;
         let description = bounded_text(
             pl.description
                 .as_ref()
