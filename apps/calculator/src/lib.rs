@@ -6,8 +6,8 @@
 //! per-window expression, selection, angle unit, and camera state stay local.
 //! The panels are custom Vello-drawn widgets.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! [`CalculatorShell`] is the app: the binary runs it, `--shots` captures its
+//! scenarios, and [`definition`] is what other hosts mount.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app, not the desktop. The tax of proving every layout sum cannot
@@ -40,7 +40,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod component;
 pub mod doc;
 pub mod draw;
 pub mod engine;
@@ -53,28 +52,10 @@ pub mod resource;
 pub mod zoom;
 
 pub use app::CalculatorApp;
-pub use component::definition;
-
-use ui::widget::Widget;
-
-/// Build the live app's root widget tree in Calculator mode.
-/// Any persisted state is adopted from the CRDT on the first sync.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(CalculatorApp::new())
-}
-
-/// Build a seeded root for the headless `--shots` renderer and demos. This is
-/// the path that seeds sample content; the live [`app_root`] does not.
-pub fn app_root_offline() -> Box<dyn Widget> {
-    Box::new(CalculatorApp::seeded())
-}
-
 pub use resource::{Calculator, CalculatorShell};
 
-pub mod framework_history;
-
-#[cfg(test)]
-mod component_tests;
-
-#[cfg(test)]
-mod framework_history_tests;
+/// The calculator's application definition, which the browser desktop and
+/// other hosts mount.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<CalculatorShell>()
+}

@@ -78,28 +78,6 @@ impl MathField {
         }
     }
 
-    /// Immutable presentation viewport: it never follows an editing caret.
-    pub(crate) fn detached(linear: &str) -> Self {
-        Self {
-            follows_caret: false,
-            ..Self::new(linear)
-        }
-    }
-
-    pub(crate) fn scroll_offset(&self) -> (f64, f64) {
-        (self.scroll.x, self.scroll.y)
-    }
-
-    /// Actual measured content bounds and the clipping rectangle used by draw.
-    #[cfg(test)]
-    pub(crate) fn viewport_geometry(&self) -> (Rect, Rect) {
-        let layout = self.layout.as_ref().expect("laid out field");
-        (
-            self.rect,
-            Rect::from_origin_size(self.content_origin(), (layout.width, layout.height)),
-        )
-    }
-
     #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.base_size = size;
