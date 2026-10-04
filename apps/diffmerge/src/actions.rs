@@ -116,7 +116,7 @@ pub(crate) fn view_operations() -> Vec<ActionSpec> {
 #[effect(operation = "diffmerge.effects")]
 pub enum DiffmergeEffect {
     /// Open files
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     OpenFiles {
         #[param("left file path (omit both paths to choose the files)")]
         left: Option<String>,

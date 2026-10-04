@@ -84,6 +84,7 @@ pub enum TubeEffect {
         video: String,
     },
     /// Download video.
+    #[effect(device_only)]
     Download {
         #[param("The video's id")]
         video: String,
@@ -110,24 +111,25 @@ pub enum TubeEffect {
     ///
     /// Pairs a Grayjay device, which then reads and writes your
     /// subscriptions, history and settings.
-    #[effect(destructive)]
+    #[effect(destructive, device_only)]
     PairDevice {
         #[param(secret, "Grayjay pairing invite; redacted from logs and history")]
         invite: String,
     },
     /// Sync approved devices now.
+    #[effect(device_only)]
     SyncDevices,
     /// Approve device.
     ///
     /// Lets a device that asked to pair read and write your subscriptions,
     /// history and settings.
-    #[effect(destructive)]
+    #[effect(destructive, device_only)]
     ApproveDevice {
         #[param("The device's id")]
         device: String,
     },
     /// Revoke device access.
-    #[effect(destructive)]
+    #[effect(destructive, device_only)]
     RevokeDevice {
         #[param("The device's id")]
         device: String,

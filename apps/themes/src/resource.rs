@@ -85,7 +85,7 @@ pub enum ThemesEffect {
         name: Option<String>,
     },
     /// Apply as system theme
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     ApplyTheme {
         #[param("Id of the theme to apply; the selected one when left out")]
         theme: Option<String>,

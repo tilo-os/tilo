@@ -130,7 +130,7 @@ pub enum MapsEffect {
         query: String,
     },
     /// Use my location.
-    #[effect(job, permission = "read")]
+    #[effect(job, device_only, permission = "read")]
     Locate,
     /// Show traffic.
     #[effect(permission = "read")]
@@ -160,13 +160,13 @@ pub enum MapsEffect {
         poi: String,
     },
     /// Delete offline area.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, device_only, permission = "read")]
     DeleteOfflineArea {
         #[param("The offline area's id")]
         area: String,
     },
     /// Clear offline areas.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, device_only, permission = "read")]
     ClearOfflineAreas,
 }
 

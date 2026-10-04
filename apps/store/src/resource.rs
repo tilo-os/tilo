@@ -172,7 +172,7 @@ pub fn report_note_dispatcher(
 /// talking to a registry about a report. A package job runs on the Store's
 /// worker and answers when it finished.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "store.effect")]
+#[effect(operation = "store.effect", device_only)]
 pub enum StoreEffect {
     /// Refresh catalog.
     #[effect(job)]

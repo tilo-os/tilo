@@ -144,7 +144,7 @@ struct Pane {
 /// for every caller: the buttons, the palette, scripts and agents. Creating
 /// or revealing the key needs an owner and a confirmation.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.publisher.key")]
+#[effect(operation = "so.tilo.publisher.key", device_only)]
 pub enum KeyEffect {
     /// Create publisher key.
     #[effect(privileged, permission = "admin")]

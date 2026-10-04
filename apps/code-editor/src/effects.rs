@@ -34,13 +34,13 @@ pub enum CodeEditorEffect {
         results: bool,
     },
     /// Open a file from disk.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     OpenFile {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<String>,
     },
     /// Open project folder.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     OpenFolder {
         #[param("Absolute path of the folder; omit to choose one")]
         path: Option<String>,
@@ -48,7 +48,7 @@ pub enum CodeEditorEffect {
     /// New file.
     NewBuffer,
     /// Save file.
-    #[effect(job, cancellable, destructive)]
+    #[effect(job, cancellable, destructive, device_only)]
     Save {
         #[param("The file record's id; omit for the active file")]
         file: Option<String>,
@@ -56,11 +56,13 @@ pub enum CodeEditorEffect {
         path: Option<String>,
     },
     /// Save as.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     SaveAs,
     /// Save all files.
+    #[effect(device_only)]
     SaveAll,
     /// Revert file to saved.
+    #[effect(device_only)]
     RevertFile,
     /// Close active tab.
     #[effect(permission = "read")]
