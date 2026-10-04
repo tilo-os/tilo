@@ -877,29 +877,28 @@ fn surface(
     let st = state.clone();
     let page_controls = controls.clone();
     let timer_validation_error = validation_error.clone();
-    let nav = ToggleGroup::new(
+    // Bound to the open section, so a section opened from anywhere else (a
+    // shortcut, an agent, a staged scenario) shows selected here too.
+    let nav = ToggleGroup::from_state(
         vec![
-            Segment::new("World"),
-            Segment::new("Alarms"),
-            Segment::new("Timers"),
-            Segment::new("Stopwatch"),
+            (WORLD, Segment::new("World")),
+            (ALARMS, Segment::new("Alarms")),
+            (TIMERS, Segment::new("Timers")),
+            (STOPWATCH, Segment::new("Stopwatch")),
         ],
-        mode.get(),
+        mode,
     )
     .with_flexible_width()
     .with_style(ui::widget::toggle_group::SegmentedStyle::Pill)
     .with_id("clocks.mode")
     .on_view("clocks.mode.select", move |i| select.set(i));
-    let nav = Row::new()
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(
-            Container::new()
-                .with_background()
-                .with_padding(8.0)
-                .with_max_width(760.0)
-                .with_child(Box::new(nav)),
-        ))
-        .push(Box::new(Spacer::new()));
+    // The pill bar takes the width it is given, so its frame spans the
+    // page, centred, up to a readable width.
+    let nav = Container::new()
+        .with_background()
+        .with_padding(8.0)
+        .with_centered_max_width(760.0)
+        .with_child(Box::new(nav));
     let page = ModelView::from_state(mode, move |i| match *i {
         WORLD => world_screen(&st, &page_controls),
         ALARMS => alarms_screen(&st, &page_controls),
@@ -946,17 +945,19 @@ fn surface(
                 .fill_parent_height()
                 .with_child(Box::new(page)),
         ));
+    // The page spans the window, its content centred up to a readable
+    // width; what is inside wraps to it rather than widening it.
     Box::new(
-        Row::new()
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
+        Container::new()
+            .with_no_padding()
+            .filling()
+            .with_child(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_max_width(1120.0)
+                    .with_centered_max_width(1120.0)
                     .filling()
                     .with_child(Box::new(content)),
-            ))
-            .push(Box::new(Spacer::new())),
+            )),
     )
 }
 
