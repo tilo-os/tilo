@@ -272,6 +272,10 @@ fn on_this_device(caller: &Caller) -> Caller {
 }
 
 impl ActionHost for RuntimeActionHost {
+    fn retire_execution(&self, caller: &Caller) {
+        self.broker.state().retire_execution(caller);
+    }
+
     fn query(
         &self,
         caller: &Caller,

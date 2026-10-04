@@ -5,7 +5,7 @@
 //! execution UUIDs and these public values alone grant no authority.
 use super::{BrokerActor, CrdtRoute, PublishedAction, PublishedSurface};
 use std::sync::{Arc, Mutex};
-use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_actions::remote::{Caller, CallerPrincipal, ExecutionLease};
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tokio::sync::broadcast;
 
@@ -19,11 +19,13 @@ pub enum ExecutionStatus {
     Cancelled,
     CancellationRequested,
     OutcomeUnknown,
+    Ended,
 }
 
 /// One broker-authored observation, without action arguments or result content.
 #[derive(Clone, Debug)]
 pub struct ExecutionActivity {
+    lifetime: ExecutionLease,
     /// Broker lifetime; a reconnect must not join two sequence namespaces.
     pub epoch: uuid::Uuid,
     /// Strict emission order within `epoch`; lag is reported by the receiver.
@@ -39,16 +41,30 @@ pub struct ExecutionActivity {
     pub status: ExecutionStatus,
 }
 
+impl ExecutionActivity {
+    /// Whether its transport run still exists; buffered observations cannot revive it.
+    #[must_use]
+    pub fn execution_is_live(&self) -> bool {
+        self.lifetime.is_live()
+    }
+}
+
 /// Only trusted action-host admission constructs this input, not action context.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct ExecutionScope {
+    lifetime: ExecutionLease,
     execution: uuid::Uuid,
     invocation: InvocationId,
 }
 impl ExecutionScope {
     pub(super) fn for_call(caller: &Caller, invocation: InvocationId) -> Option<Self> {
         matches!(caller.principal(), CallerPrincipal::Person(_)).then_some(())?;
+        let lifetime = caller.execution_lease()?;
+        if !lifetime.is_live() {
+            return None;
+        }
         Some(Self {
+            lifetime,
             execution: caller.execution_id()?,
             invocation,
         })
@@ -93,6 +109,11 @@ impl ActivityTarget {
             route: surface.route.clone(),
             address: ActionAddress::new(action.resource.clone(), action.action.clone()),
         })
+    }
+    pub(super) fn belongs_to(&self, caller: &Caller) -> bool {
+        caller.execution_id() == Some(self.scope.execution)
+            && matches!(caller.principal(), CallerPrincipal::Person(principal) if principal == &self.principal)
+            && caller.room() == Some(self.route.cluster_id.as_str())
     }
 }
 
@@ -149,6 +170,9 @@ impl ActivityBus {
         let Some(target) = target else {
             return;
         };
+        if status != ExecutionStatus::Ended && !target.scope.lifetime.is_live() {
+            return;
+        }
         let Ok(mut bus) = self.0.lock() else {
             return;
         };
@@ -173,6 +197,7 @@ impl ActivityBus {
             return;
         };
         let _ = sender.send(Arc::new(ExecutionActivity {
+            lifetime: target.scope.lifetime.clone(),
             epoch: bus.epoch,
             sequence,
             source_time_ms,
