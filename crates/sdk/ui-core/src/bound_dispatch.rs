@@ -2223,6 +2223,30 @@ fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     })
 }
 
+/// The frame of `doc` while a callback of a bound component mutates it (a
+/// sync, an event) or one of its operations runs.
+fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
+    if let Some(handle) = operation_frame(doc) {
+        return Some(handle);
+    }
+    ACTIVE.with_borrow(|active| {
+        let (_, _, witness, handle) = active.as_ref()?;
+        if !std::ptr::eq(*witness, doc) {
+            return None;
+        }
+        let handle = handle.as_ref()?;
+        let owned = handle.borrow();
+        let binding = &owned.as_ref()?.mutation.as_ref()?.binding;
+        if binding.closing.get()
+            || !binding.lifetime.is_active()
+            || binding.registry_owner.upgrade().is_none()
+        {
+            return None;
+        }
+        Some(handle.clone())
+    })
+}
+
 /// Check a direct affordance against the same live permission-filtered spec
 /// as named actions. Only a genuinely unbound call keeps legacy compatibility;
 /// an active record with missing/mismatched/revoked custody always refuses.
@@ -2307,7 +2331,7 @@ fn note_compensating_action(
 /// Narrow shared producer hook. Called only when a typed action is about to
 /// execute; returning None preserves the legacy `ActionHost` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
-    let handle = operation_frame(doc)?;
+    let handle = mutation_frame(doc)?;
     let mut owned = handle.borrow_mut();
     let frame = owned.as_mut()?;
     let before = frame.commit_physical(doc);
@@ -2335,7 +2359,10 @@ pub(crate) fn report_typed_action(
     if before == after {
         return;
     }
-    let Some(handle) = operation_frame(doc) else {
+    // Content from outside applied while a callback mutates the document (a
+    // surface recording a process's output as it syncs) stays out of the
+    // callback's step as it stays out of an operation's.
+    let Some(handle) = mutation_frame(doc) else {
         return;
     };
     let mut owned = handle.borrow_mut();
