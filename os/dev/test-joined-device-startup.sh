@@ -177,6 +177,12 @@ diff -u "$out/identity-before-notes.txt" "$out/identity-after-notes.txt" >&2 \
   && cp -f "$TILO_RUN/joined-notes.png" "$out/" 2>/dev/null || true
 "$vm" ssh "grep -q '\"schema_version\": 1' $(printf '%q' "$record")" \
   || die "launching an app rewrote the joined identity record to reference a secret"
+# Close that Notes again: the next one opens from the empty workspace's
+# launcher, as a person starting a note does.
+notes_pid="$(awk 'NF == 2 && $1 ~ /^:/ && $2 ~ /^[0-9]+$/ { pid = $2 } END { print pid }' "$out/notes-open.txt")"
+[[ "$notes_pid" =~ ^[0-9]+$ ]] || die "opening Notes named no process: $(cat "$out/notes-open.txt")"
+"$vm" ssh "kill $notes_pid; for _ in \$(seq 1 50); do kill -0 $notes_pid 2>/dev/null || exit 0; sleep 0.1; done; exit 1" \
+  || die "the Notes the launch check opened did not close"
 # A note written on the joined device is durable, and Notes says so: the
 # keyboard types it, and the save state reads "Saved", never "Not saved".
 joined_sentence='Written on the joined device.'
