@@ -37,8 +37,6 @@
 "apps/imager/src/main.rs" = 1
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
-"apps/pdf-viewer/src/lib.rs" = 2
-"apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
@@ -59,7 +57,6 @@
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
 "apps/osk/src/framework_history.rs" = 1
-"apps/pdf-viewer/src/main.rs" = 1
 "apps/photos/src/framework_history.rs" = 2
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1

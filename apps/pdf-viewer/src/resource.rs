@@ -7,15 +7,19 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, Fixture, LaunchInput, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
+use ui::record::RecordId;
 use ui::tilo_actions::{ActionSpec, EncodedAction};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{PDF_VIEWER_ACTION_TYPE, PdfViewerAction, register};
 use crate::app::PdfApp;
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{Annotation, Comment, Signature};
+use crate::scenarios::SampleDocument;
 
 /// Collaborative markup projected from the annotation-set record.
 #[derive(Clone, Debug, Default)]
@@ -24,6 +28,17 @@ pub struct PdfMarkup {
     pub annotations: Vec<Annotation>,
     pub comments: Vec<Comment>,
     pub signatures: Vec<Signature>,
+    /// The PDF bytes the markup is made against, once a document opened.
+    pub source: Option<PinnedSource>,
+}
+
+/// The PDF bytes a record's markup is made against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedSource {
+    pub hash: String,
+    pub len: u64,
+    /// The file name it was opened under; empty when it was not named.
+    pub name: String,
 }
 
 /// The PDF markup resource.
@@ -50,6 +65,11 @@ impl Resource for PdfViewer {
             annotations: PdfDoc::list_annotations(doc),
             comments: PdfDoc::list_comments(doc),
             signatures: PdfDoc::list_signatures(doc),
+            source: PdfDoc::source(doc).map(|(hash, len, _)| PinnedSource {
+                hash,
+                len,
+                name: PdfDoc::source_name(doc).unwrap_or_default(),
+            }),
         })
     }
 
@@ -81,7 +101,8 @@ impl Resource for PdfViewer {
     }
 }
 
-/// Framework app: the PDF widget is the surface over [`PdfViewer`].
+/// The PDF reader: one record per document holds its markup, and the
+/// reader is the surface over it.
 pub struct PdfViewerShell;
 
 impl ResourceApp for PdfViewerShell {
@@ -89,22 +110,81 @@ impl ResourceApp for PdfViewerShell {
     const ID: &'static str = "so.tilo.pdf-viewer";
     const TITLE: &'static str = "PDF Viewer";
     const ICON: Option<&'static str> = Some("pdf-viewer");
+    const OPENS: &'static [&'static str] = &["application/pdf"];
+    /// The PDF to open (`pdf-viewer paper.pdf`).
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<PdfViewer>) -> Element {
+        let content = cx.content().unwrap_or_else(crate::app::default_content);
+        let app = if cx.mode() == RunMode::Past {
+            // A past version shows its markup's record, never a document:
+            // History builds a view for every version it previews.
+            PdfApp::past()
+        } else if let Some(path) = cx.launch_arguments().first() {
+            PdfApp::open_with_content(path, content)
+        } else if cx.fixture::<SampleDocument>().is_some() {
+            PdfApp::sample_with_content(content)
+        } else {
+            PdfApp::empty_with_content(content)
+        };
+        cx.surface(app)
+    }
+
+    fn label(state: &PdfMarkup) -> String {
+        match &state.source {
+            Some(source) if !source.name.is_empty() => source.name.clone(),
+            _ if state.pages.is_empty() => "PDF Viewer".into(),
+            _ => format!("{} pages", state.pages.len()),
+        }
+    }
+
+    /// A document's markup is a record of its own, derived from the file's
+    /// durable identity, so renaming or moving the file finds the same
+    /// annotations, a copy starts clean, and another app's record of the
+    /// same file is left alone.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input.argument().map(|path| {
+            RecordId::derived(
+                MARKUP_ROLE,
+                &RecordId::identify_file(std::path::absolute(path).unwrap_or_else(|_| path.into())),
+            )
+        })
+    }
+
+    /// A handed file is kept in the content store and pinned as the record's
+    /// source, so the record reopens it wherever the bytes are.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<PdfViewer>> {
+        let (Some(file), Some(content)) = (input.file(), input.content()) else {
+            return Vec::new();
+        };
+        let Ok(hash) = content.put(file.bytes()) else {
+            return Vec::new();
+        };
+        let len = u64::try_from(file.bytes().len()).unwrap_or(u64::MAX);
+        Invoke::apply(&crate::actions::pin_source_action(&hash, len, file.name()))
+            .into_iter()
+            .collect()
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenarios::SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
-    fn view(cx: &mut ViewCx<PdfViewer>) -> Element {
-        cx.surface(PdfApp::new())
+    fn fixture(fixture: &mut Fixture<PdfViewer>) {
+        crate::scenarios::fixture(fixture);
     }
 
-    fn label(state: &PdfMarkup) -> String {
-        if state.pages.is_empty() {
-            "PDF Viewer".into()
-        } else {
-            format!("{} pages", state.pages.len())
-        }
+    fn scenario(name: Option<&str>) -> Vec<Invoke<PdfViewer>> {
+        crate::scenarios::scenario(name)
     }
 }
+
+/// The role of a document's markup record beside the document's own.
+const MARKUP_ROLE: &str = "annotations";
 
 impl ResourceSurface<PdfViewer> for PdfApp {
     fn present(&mut self, state: &Rc<PdfMarkup>) {
@@ -113,6 +193,10 @@ impl ResourceSurface<PdfViewer> for PdfApp {
 
     fn attach(&mut self, cx: SurfaceCx<PdfViewer>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        PdfApp::stage(self, scenario);
     }
 }
 
@@ -183,27 +267,6 @@ impl ActionSink {
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
     }
-}
-
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<PdfViewerShell>()
-}
-
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" | "--sample" => {
-                return true;
-            }
-            file if !file.starts_with('-') => return true,
-            _ => {}
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -284,8 +347,8 @@ mod tests {
             .expect("find");
         assert_eq!(find.kind, OperationKind::View);
 
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         assert!(
             !app.is_hosted(),

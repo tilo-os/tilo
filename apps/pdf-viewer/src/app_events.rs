@@ -123,7 +123,7 @@ impl PdfApp {
             // A pending open owns the document slot; starting a second picker
             // would only create a competing request.  Consume the press while
             // the chrome is visibly disabled.
-            if self.pending_open.is_none() {
+            if !self.opening() {
                 return Some(ToolbarHit::Open);
             }
             return Some(ToolbarHit::Tool(self.tool));
@@ -357,7 +357,7 @@ impl PdfApp {
         }
         // Empty state: the only affordance is the centred "Open a PDF…" button.
         if !self.has_document {
-            if self.pending_open.is_none() && self.empty_open_button_rect().contains(p) {
+            if !self.opening() && self.empty_open_button_rect().contains(p) {
                 self.request_open_via_portal();
             }
             return true;
@@ -1414,8 +1414,8 @@ mod event_tests {
     use winit::event::{Modifiers, TouchPhase};
 
     fn sample_app() -> (PdfApp, ui::State) {
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = crate::scenarios::sample_state();
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
@@ -2185,8 +2185,8 @@ mod event_tests {
 
         // On a narrow (overlay) window, clicking the canvas scrim beside an
         // open panel dismisses the panels.
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = crate::scenarios::sample_state();
         app.sync(&mut st.doc, &st.root);
         // Narrow window -> overlay mode; panels auto-close on the transition.
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
