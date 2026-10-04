@@ -162,9 +162,7 @@ impl HexModel {
     /// that differ from `saved` are exactly the changed ones (an undo
     /// clears its byte's mark).
     pub fn show_bytes(&mut self, bytes: Vec<u8>, saved: &[u8]) {
-        if bytes == self.bytes {
-            return;
-        }
+        let unchanged = bytes == self.bytes;
         if bytes.len() == saved.len() {
             self.dirty = bytes
                 .iter()
@@ -172,7 +170,7 @@ impl HexModel {
                 .enumerate()
                 .filter_map(|(index, (now, was))| (now != was).then_some(index))
                 .collect();
-        } else {
+        } else if !unchanged {
             let prefix = self
                 .bytes
                 .iter()
@@ -199,6 +197,11 @@ impl HexModel {
                 })
                 .chain(prefix..new_end)
                 .collect();
+        }
+        // The saved baseline can change independently of the current bytes.
+        // Refresh its marks without interrupting an in-progress edit.
+        if unchanged {
+            return;
         }
         self.bytes = bytes;
         self.pending_nibble = None;
@@ -802,6 +805,37 @@ mod tests {
         m.load(vec![1, 2, 3]);
         assert_eq!(m.dirty_count(), 0);
         assert_eq!(m.cursor(), 0);
+    }
+
+    #[test]
+    fn unchanged_bytes_refresh_saved_marks_without_interrupting_the_edit() {
+        let mut m = HexModel::new(vec![0x10, 0x20, 0x30, 0x40]);
+        m.move_to(1, false);
+        m.move_to(2, true);
+        assert!(m.input_hex_digit(0xF));
+        let current = m.bytes().to_vec();
+        let selection = m.selection();
+        let edits = m.edits.clone();
+
+        m.show_bytes(current.clone(), &[0x00, 0x20, 0xF0, 0x40]);
+        assert_eq!(m.dirty_count(), 1);
+        assert!(m.is_dirty(0));
+        assert!(!m.is_dirty(2));
+        assert_eq!(m.cursor(), 2);
+        assert_eq!(m.selection(), selection);
+        assert_eq!(m.pending_nibble(), Some(0xF));
+        assert_eq!(m.edits, edits);
+
+        m.show_bytes(current.clone(), &current);
+        assert_eq!(m.dirty_count(), 0);
+        assert_eq!(m.cursor(), 2);
+        assert_eq!(m.selection(), selection);
+        assert_eq!(m.pending_nibble(), Some(0xF));
+        assert_eq!(m.edits, edits);
+        assert!(m.input_hex_digit(0x7));
+        assert_eq!(m.bytes()[2], 0xF7);
+        assert_eq!(m.cursor(), 3);
+        assert_eq!(m.take_edits().len(), 2);
     }
 
     #[test]

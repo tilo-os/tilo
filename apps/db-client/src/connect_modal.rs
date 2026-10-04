@@ -310,6 +310,18 @@ pub(crate) mod tests {
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
 
+    fn command_key(harness: &mut FrameHarness, key: &str) {
+        use ui::winit::event::{Modifiers, WindowEvent};
+        use ui::winit::keyboard::ModifiersState;
+        let modifier = match harness.platform_conventions().platform() {
+            ui::platform::Platform::MacOs => ModifiersState::SUPER,
+            _ => ModifiersState::CONTROL,
+        };
+        harness.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(modifier)));
+        harness.key(key);
+        harness.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::default()));
+    }
+
     /// Tab until the field named `label` has the keyboard.
     pub(crate) fn focus_field(harness: &mut FrameHarness, label: &str) {
         for _ in 0..12 {
@@ -354,10 +366,10 @@ pub(crate) mod tests {
         harness.relayout();
         focus_field(&mut harness, "Connection name");
         harness.type_text("Production");
-        harness.key("Ctrl+a");
+        command_key(&mut harness, "a");
         harness.type_text("P");
         assert_eq!(fields.profile().name, "P");
-        harness.key("Ctrl+a");
+        command_key(&mut harness, "a");
         harness.commit_text("接続");
         assert_eq!(fields.profile().name, "接続");
         focus_field(&mut harness, "Password");
@@ -380,21 +392,21 @@ pub(crate) mod tests {
             widget.children().into_iter().any(password_is_protected)
         }
         assert!(password_is_protected(
-            harness.root_mut::<ModalDialog<ConnectForm>>()
+            harness.root::<ModalDialog<ConnectForm>>()
         ));
 
         assert!(!harness.inspection_json().unwrap().contains("correct horse"));
-        harness.key("Ctrl+a");
-        harness.key("Ctrl+x");
+        command_key(&mut harness, "a");
+        command_key(&mut harness, "x");
         assert_eq!(
             fields.profile().password,
             "correct horse",
             "a secret refuses clipboard cut"
         );
-        harness.key("Ctrl+c");
+        command_key(&mut harness, "c");
         focus_field(&mut harness, "Connection name");
-        harness.key("Ctrl+a");
-        harness.key("Ctrl+v");
+        command_key(&mut harness, "a");
+        command_key(&mut harness, "v");
         assert!(
             !fields.profile().name.contains("correct horse"),
             "the secret cannot be copied into a public field"

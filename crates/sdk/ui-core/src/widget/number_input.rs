@@ -155,6 +155,8 @@ pub struct NumberInput {
     /// it asks for focus it sets *our* node id. We stash the request here
     /// and redirect it onto the field inside `set_focus(true)`.
     field_focus_pending: bool,
+    /// IME preedit is display-only, so it is not visible in `field.value()`.
+    composing: bool,
     minus_hover: bool,
     plus_hover: bool,
     /// One-shot record of the last *committed user change*, drained by
@@ -204,6 +206,7 @@ impl NumberInput {
             last_cursor: Point::ZERO,
             is_focused: false,
             field_focus_pending: false,
+            composing: false,
             minus_hover: false,
             plus_hover: false,
             changed: None,
@@ -559,9 +562,11 @@ impl Widget for NumberInput {
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
-        // Don't clobber the field while the user is mid-edit; the model is
-        // adopted as soon as editing ends.
-        if self.field.is_focused() {
+        // Focus alone is not an unfinished edit: committed keyboard steps
+        // must still follow undo and peer changes. Preserve actual drafts,
+        // including numerically equal but noncanonical text and IME preedit.
+        if self.field.is_focused() && (self.composing || self.field.value() != self.format_value())
+        {
             return;
         }
         if let Some(binding) = &mut self.binding
@@ -569,8 +574,16 @@ impl Widget for NumberInput {
         {
             let clamped = v.clamp(self.min, self.max);
             if (clamped - self.value).abs() > f64::EPSILON {
+                let selection = self.field.selection_anchor_focus_public();
                 self.value = clamped;
                 self.sync_field();
+                if let Some((anchor, focus)) = selection {
+                    let text = self.field.value();
+                    let anchor =
+                        crate::text_selection::grapheme_boundary_at_or_before(text, anchor);
+                    let focus = crate::text_selection::grapheme_boundary_at_or_before(text, focus);
+                    self.field.set_selection(anchor, focus);
+                }
             }
         }
     }
@@ -718,6 +731,16 @@ impl Widget for NumberInput {
             return;
         }
 
+        match event {
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                self.composing = self.field.is_focused() && !text.is_empty();
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Disabled) => {
+                self.composing = false;
+            }
+            _ => {}
+        }
+
         // Forward to the embedded field first (click-to-focus, typing, IME).
         // The field isn't in the parent's node_map, so a focus request it
         // makes sets *our* node id — redirect it onto the field in set_focus.
@@ -750,6 +773,7 @@ impl Widget for NumberInput {
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
+                        self.composing = false;
                     }
                     self.step_by(-self.step);
                     self.flush_crdt(ctx.state, ctx.path);
@@ -759,6 +783,7 @@ impl Widget for NumberInput {
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
+                        self.composing = false;
                     }
                     self.step_by(self.step);
                     self.flush_crdt(ctx.state, ctx.path);
@@ -770,6 +795,7 @@ impl Widget for NumberInput {
                     self.commit_local();
                     self.flush_crdt(ctx.state, ctx.path);
                     self.field.set_focus(false);
+                    self.composing = false;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -855,6 +881,7 @@ impl Widget for NumberInput {
             }
         } else {
             self.is_focused = false;
+            self.composing = false;
             if self.field.is_focused() {
                 // Blur commits the typed value; the CRDT write is deferred to
                 // the next `sync` (we have no `state` handle here).
@@ -1487,6 +1514,244 @@ mod tests {
             Widget::sync(&mut first, &mut document, &automerge::ROOT);
             assert_eq!(first.value(), 30.0);
         }
+    }
+
+    #[test]
+    fn focused_committed_values_follow_models_without_losing_selection() {
+        let value = crate::LocalState::new(7.0);
+        let number = NumberInput::from_state(&value).with_id("peer-number");
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            number,
+            (300, 100),
+            Theme::dark(),
+        );
+        harness
+            .perform_named("peer-number", &crate::a11y::Action::Focus)
+            .unwrap();
+        harness.key("ArrowUp");
+        assert_eq!(value.get(), 8.0);
+        harness.key("End");
+        harness.set_modifiers(&["shift".into()]);
+        harness.key("Home");
+        harness.set_modifiers(&[]);
+        assert_eq!(
+            harness
+                .root::<NumberInput>()
+                .field
+                .selection_anchor_focus_public(),
+            Some((1, 0))
+        );
+        for incoming in [7.0, 3.0] {
+            value.set(incoming);
+            harness.relayout();
+            let number = harness.root::<NumberInput>();
+            assert_eq!(number.value(), incoming);
+            assert_eq!(number.field.value(), number.format_value());
+            assert!(number.is_focused());
+            assert_eq!(number.field.selection_anchor_focus_public(), Some((1, 0)));
+            assert_eq!(
+                harness.focused_access_node().unwrap().value,
+                Some(number.format_value())
+            );
+        }
+        harness.key("ArrowUp");
+        assert_eq!(
+            value.get(),
+            4.0,
+            "the next real step starts from the peer value"
+        );
+    }
+
+    #[test]
+    fn focused_drafts_and_ime_preedit_defer_model_refresh() {
+        for draft in ["30", "3.0"] {
+            let value = crate::LocalState::new(3.0);
+            let number = NumberInput::from_state(&value).with_id("draft-number");
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                number,
+                (300, 100),
+                Theme::dark(),
+            );
+            harness
+                .perform_named("draft-number", &crate::a11y::Action::Focus)
+                .unwrap();
+            harness.key("End");
+            harness.type_text(&draft[1..]);
+            harness.set_modifiers(&["shift".into()]);
+            harness.key("Home");
+            harness.set_modifiers(&[]);
+            let selected = harness
+                .root::<NumberInput>()
+                .field
+                .selection_anchor_focus_public();
+            value.set(4.0);
+            harness.relayout();
+            let number = harness.root::<NumberInput>();
+            assert_eq!(number.field.value(), draft);
+            assert_eq!(number.value(), 3.0);
+            assert!(number.is_focused());
+            assert_eq!(number.field.selection_anchor_focus_public(), selected);
+            assert_eq!(
+                value.get(),
+                4.0,
+                "an unfinished draft does not write the model"
+            );
+            if draft == "30" {
+                harness.key("Enter");
+                assert_eq!(value.get(), 30.0, "Enter commits the actual typed draft");
+            }
+        }
+        let value = crate::LocalState::new(3.0);
+        let number = NumberInput::from_state(&value).with_id("ime-number");
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            number,
+            (300, 100),
+            Theme::dark(),
+        );
+        harness
+            .perform_named("ime-number", &crate::a11y::Action::Focus)
+            .unwrap();
+        harness.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "9".into(),
+            Some((1, 1)),
+        )));
+        value.set(4.0);
+        harness.relayout();
+        assert_eq!(harness.root::<NumberInput>().value(), 3.0);
+        assert!(harness.root::<NumberInput>().is_focused());
+        harness.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            String::new(),
+            None,
+        )));
+        assert_eq!(
+            harness.root::<NumberInput>().value(),
+            4.0,
+            "canceling preedit adopts the deferred revision"
+        );
+    }
+
+    #[test]
+    fn pointer_stepper_ends_preedit_before_refocused_model_refresh() {
+        // Expose the retained NumberInput for read-only lifecycle assertions;
+        // all editing and focus changes still use real host input routes.
+        struct Probe(NumberInput);
+        impl crate::widget::Decorator for Probe {
+            type Inner = NumberInput;
+            fn inner(&self) -> &NumberInput {
+                &self.0
+            }
+            fn inner_mut(&mut self) -> &mut NumberInput {
+                &mut self.0
+            }
+            fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+                Some(self)
+            }
+        }
+        let value = crate::LocalState::new(3.0);
+        let number = NumberInput::from_state(&value).with_id("composing-number");
+        let root = crate::widget::Column::new()
+            .push(Box::new(Probe(number)))
+            .push(Box::new(crate::widget::Button::new(
+                "other-focus",
+                "Other",
+                None,
+            )));
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            root,
+            (400, 200),
+            Theme::dark(),
+        );
+        harness
+            .perform_named("composing-number", &crate::a11y::Action::Focus)
+            .unwrap();
+        harness.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "9".into(),
+            Some((1, 1)),
+        )));
+        let plus = harness
+            .with_widget_mut::<Probe, _>(|probe| {
+                assert!(probe.0.composing);
+                probe.0.plus_rect.center()
+            })
+            .unwrap();
+        harness.click_at(plus.x, plus.y);
+        assert_eq!(
+            value.get(),
+            4.0,
+            "the real pointer stepper commits its step"
+        );
+        harness
+            .with_widget_mut::<Probe, _>(|probe| {
+                assert!(
+                    !probe.0.composing,
+                    "embedded blur ends preedit before another control is focused"
+                );
+            })
+            .unwrap();
+        // A stepper keeps the composite host owner focused while blurring
+        // its text field. Round-trip through another real control so focus
+        // actually re-enters the field instead of requesting the same owner.
+        harness
+            .perform_named("other-focus", &crate::a11y::Action::Focus)
+            .unwrap();
+        assert_eq!(
+            harness.focused_access_node().unwrap().name.as_deref(),
+            Some("Other")
+        );
+        harness
+            .perform_named("composing-number", &crate::a11y::Action::Focus)
+            .unwrap();
+        harness
+            .with_widget_mut::<Probe, _>(|probe| assert!(probe.0.is_editing()))
+            .unwrap();
+        value.set(5.0);
+        harness.relayout();
+        harness
+            .with_widget_mut::<Probe, _>(|probe| assert_eq!(probe.0.value(), 5.0))
+            .unwrap();
+        assert_eq!(
+            harness.focused_access_node().unwrap().value.as_deref(),
+            Some("5")
+        );
+    }
+
+    #[test]
+    fn focused_formatted_values_refresh_silently_at_display_precision() {
+        let value = crate::LocalState::new(3.141);
+        let mut number = NumberInput::from_state(&value)
+            .with_precision(2)
+            .with_suffix("°");
+        let mut doc = AutoCommit::new();
+        number.set_focus(true);
+        number.field.select_all();
+        value.set(3.142);
+        number.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            number.value(),
+            3.142,
+            "canonical comparison uses formatted text, not parsed equality"
+        );
+        assert_eq!(number.field.value(), "3.14 °");
+        assert_eq!(
+            number.field.selection_range_public(),
+            Some((0, "3.14 °".len()))
+        );
+        assert_eq!(
+            number.take_changed(),
+            None,
+            "model refresh emits no user intent"
+        );
+        value.set(12.0);
+        number.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(number.field.value(), "12.00 °");
+        let (anchor, focus) = number.field.selection_anchor_focus_public().unwrap();
+        assert!(number.field.value().is_char_boundary(anchor));
+        assert!(number.field.value().is_char_boundary(focus));
+        assert_eq!(number.take_changed(), None);
     }
 
     #[test]

@@ -963,6 +963,9 @@ impl Widget for StoreApp {
         let node = parent_node(
             taffy,
             Style {
+                // Pages use a zero-basis, growing vertical scroller. Its
+                // parent must distribute the available height down a column.
+                flex_direction: taffy::FlexDirection::Column,
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),

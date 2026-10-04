@@ -578,6 +578,17 @@ impl ui::widget::Decorator for QuerySplit {
             *ctx.handled = true;
             return;
         }
+        // The divider is a mapped sibling of the two panes, so their
+        // ResizableSplit cannot deliver keyboard input to it. Route through
+        // its own node before the panes and consume only its handled keys.
+        if let Some(&node) = nodes.get(1) {
+            self.divider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
+                self.drain();
+                return;
+            }
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button,
@@ -746,15 +757,15 @@ mod tests {
         driver.drag_at((from.x, from.y), (from.x, from.y + 240.0));
         let manual = divider(&driver);
         assert!((manual.center().y - automatic.center().y - 240.0).abs() < 1.0);
-        let requested = driver.root_mut::<QuerySplit>().requested.unwrap();
+        let requested = driver.root::<QuerySplit>().requested.unwrap();
         driver.resize((800, 300)).unwrap();
         assert!(divider(&driver).center().y < manual.center().y);
         driver.resize((1200, 800)).unwrap();
-        assert_eq!(driver.root_mut::<QuerySplit>().requested, Some(requested));
+        assert_eq!(driver.root::<QuerySplit>().requested, Some(requested));
         assert!((divider(&driver).center().y - manual.center().y).abs() < 1.0);
         driver.click_named("db.query-divider").unwrap();
         driver.key("Home");
-        assert_eq!(driver.root_mut::<QuerySplit>().requested, None);
+        assert_eq!(driver.root::<QuerySplit>().requested, None);
         assert!((divider(&driver).center().y - automatic.center().y).abs() < 1.0);
     }
     #[test]
@@ -762,18 +773,39 @@ mod tests {
         let mut driver = mounted((1000, 700));
         let automatic = divider(&driver).center().y;
         driver.click_named("db.query-divider").unwrap();
+        assert_eq!(
+            driver.focused_access_node().unwrap().name.as_deref(),
+            Some("Query editor height")
+        );
         driver.key("ArrowDown");
         assert!((divider(&driver).center().y - automatic - 24.0).abs() < 1.0);
+        driver.key("ArrowUp");
+        assert!((divider(&driver).center().y - automatic).abs() < 1.0);
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        assert!((divider(&driver).center().y - automatic - 24.0).abs() < 1.0);
         driver.key("Enter");
-        assert!(driver.root_mut::<QuerySplit>().menu.is_open());
+        assert!(driver.root::<QuerySplit>().menu.is_open());
         driver.resize((700, 500)).unwrap();
-        let viewport = driver.root_mut::<QuerySplit>().get_rect();
-        for name in [
-            "db.increase-query-height",
-            "db.decrease-query-height",
-            "db.reset-query-height",
+        assert!(driver.root::<QuerySplit>().menu.is_open());
+        let viewport = driver.root::<QuerySplit>().get_rect();
+        // These are synthetic menu children, not separately mounted widgets.
+        // Check the same row geometry through its actual native AT export.
+        let nodes = driver.a11y_nodes();
+        for label in [
+            "Increase query height",
+            "Decrease query height",
+            "Reset automatic query height",
         ] {
-            let r = driver.targets()[name];
+            let r = nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == ui::accesskit::Role::MenuItem && node.label() == Some(label)
+                })
+                .and_then(|(_, node)| node.bounds())
+                .unwrap_or_else(|| panic!("no exported menu row bounds for {label:?}"));
+            assert!(r.x1 > r.x0 && r.y1 > r.y0);
             assert!(r.x0 >= viewport.x0 && r.x1 <= viewport.x1);
             assert!(r.y0 >= viewport.y0 && r.y1 <= viewport.y1);
         }
@@ -784,7 +816,7 @@ mod tests {
                 &ui::a11y::Action::Activate,
             )
             .unwrap();
-        assert!(!driver.root_mut::<QuerySplit>().menu.is_open());
-        assert_eq!(driver.root_mut::<QuerySplit>().requested, None);
+        assert!(!driver.root::<QuerySplit>().menu.is_open());
+        assert_eq!(driver.root::<QuerySplit>().requested, None);
     }
 }

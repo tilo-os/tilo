@@ -807,6 +807,14 @@ impl HexView {
 }
 
 impl Widget for HexView {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::HEX_EDITOR_VIEW_TYPE]
     }
@@ -1931,7 +1939,7 @@ mod tests {
     fn pointer_drives_the_grid_the_strips_and_the_inspector_toggle() {
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        let mut view = HexView::empty();
+        let mut view = HexView::new(crate::sample::png_image(), "sample.png");
         view.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         view.stage_scenario(None);
         paint_frame(&mut view, &mut tr, &theme);

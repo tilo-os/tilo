@@ -217,6 +217,18 @@ fn retention_keyboard_and_assistive_changes_use_the_same_undoable_action() {
     );
     app.merge_peer(&mut peer).unwrap();
     app.settle();
+    assert_eq!(
+        app.state().policy.daily,
+        3,
+        "the peer policy reached the resource"
+    );
+    assert_eq!(
+        app.harness()
+            .focused_access_node()
+            .and_then(|node| node.name),
+        Some("Daily".to_owned()),
+        "peer refresh preserves the focused retention control"
+    );
     let shown = app
         .harness()
         .a11y_nodes()
