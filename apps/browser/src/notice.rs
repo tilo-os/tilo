@@ -18,6 +18,12 @@ pub(crate) struct Notice {
 }
 
 impl Notice {
+    /// Something the person should know where nothing is wrong (a private
+    /// window, paused history): primary ink, no hue.
+    pub fn neutral(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Neutral, title)
+    }
+
     pub fn info(title: impl Into<String>) -> Self {
         Self::new(BannerKind::Info, title)
     }
@@ -55,16 +61,12 @@ impl Notice {
         if let Some(message) = &self.message {
             banner = banner.with_message(message.clone());
         }
-        if !inset && self.id.is_none() {
+        if let Some(id) = self.id {
+            banner = banner.with_id(id);
+        }
+        if !inset {
             return Box::new(banner);
         }
-        let mut frame = Container::new();
-        if !inset {
-            frame = frame.with_no_padding();
-        }
-        if let Some(id) = self.id {
-            frame = frame.with_id(id);
-        }
-        Box::new(frame.with_child(Box::new(banner)))
+        Box::new(Container::new().with_child(Box::new(banner)))
     }
 }

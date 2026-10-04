@@ -1578,6 +1578,31 @@ impl NavShell {
         acted
     }
 
+    /// Carry the filter field's query to the list it filters: the
+    /// sidebar's, or the overview's when there is no sidebar. A
+    /// `NavList` narrows only its filterable sections.
+    fn apply_filter_field(&mut self) {
+        let Self {
+            filter,
+            sidebar,
+            overview,
+            ..
+        } = self;
+        let Some(field) = filter
+            .as_deref_mut()
+            .and_then(crate::widget::capability::capability_mut::<crate::widget::SearchField>)
+        else {
+            return;
+        };
+        let target = match sidebar.as_deref_mut() {
+            Some(sidebar) => Some(sidebar),
+            None => overview.as_deref_mut(),
+        };
+        if let Some(target) = target {
+            crate::widget::sync_filter(field, target);
+        }
+    }
+
     /// The person chose a destination in the sidebar or a row of the
     /// overview: a narrow window moves on to what they chose.
     fn follow_navigation(&mut self) {
@@ -2066,6 +2091,7 @@ impl Widget for NavShell {
             self.show(pane);
         }
         self.take_requests();
+        self.apply_filter_field();
         self.follow_navigation();
         self.for_each_owned_mut(|child| child.sync(state, path));
     }
@@ -2224,6 +2250,7 @@ impl Widget for NavShell {
         }
         self.route_event_to_children(event, ctx);
         self.take_requests();
+        self.apply_filter_field();
         self.follow_navigation();
     }
 

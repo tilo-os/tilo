@@ -401,8 +401,9 @@ impl BookSearchProvider {
                 annotation.chapter + 1
             ))
             .with_icon(match annotation.kind {
-                AnnoKind::Bookmark => Icon::Star,
-                _ => Icon::List,
+                AnnoKind::Bookmark => Icon::Bookmark,
+                AnnoKind::Highlight => Icon::Highlighter,
+                AnnoKind::Note => Icon::MessageSquare,
             });
             let kind = if comment {
                 format!("{} comment", annotation.kind.label())

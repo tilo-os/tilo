@@ -191,6 +191,9 @@ impl DbClientApp {
         let shell = NavShell::new()
             .with_id("db-client")
             .sidebar(Box::new(Navigator::new(&link)))
+            .with_filter(Box::new(
+                ui::widget::SearchField::filter().with_placeholder("Filter tables"),
+            ))
             .content(Box::new(Workspace::new(&link)))
             .content_header("", actions);
         let mut app = Self {
@@ -414,6 +417,7 @@ impl DbClientApp {
                     id: profile.id,
                     name: profile.name.clone(),
                     engine: profile.engine,
+                    address: profile.address(),
                     removable: !profile.is_sample,
                 })
                 .collect(),

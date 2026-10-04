@@ -8,6 +8,8 @@
 //! - the value in tabular figures (`Title`, or `Display` for the one hero
 //!   number of a screen) with an optional unit (`Caption`), elided to the
 //!   tile's width,
+//! - an optional note: a neutral qualifier read with the value ("of 2 TB",
+//!   "estimated"), in `Caption`,
 //! - an optional change line: a [`Trend`] arrow and its text,
 //! - an optional live [`Sparkline`](crate::widget::Sparkline) footer.
 //!
@@ -112,6 +114,7 @@ pub struct StatTileFace<'a> {
     label: &'a str,
     value: &'a str,
     unit: Option<&'a str>,
+    note: Option<&'a str>,
     change: Option<(&'a str, Trend)>,
     tone: Option<Tone>,
     hero: bool,
@@ -128,6 +131,7 @@ impl<'a> StatTileFace<'a> {
             label,
             value,
             unit: None,
+            note: None,
             change: None,
             tone: None,
             hero: false,
@@ -142,6 +146,14 @@ impl<'a> StatTileFace<'a> {
     #[must_use]
     pub fn unit(mut self, unit: &'a str) -> Self {
         self.unit = Some(unit);
+        self
+    }
+
+    /// A neutral qualifier read with the value ("of 2 TB", "estimated"),
+    /// on its own line under it. It says nothing good or bad.
+    #[must_use]
+    pub fn note(mut self, note: &'a str) -> Self {
+        self.note = Some(note);
         self
     }
 
@@ -212,6 +224,9 @@ impl<'a> StatTileFace<'a> {
         let mut h = TileMetrics::line(text, &m.label)
             + m.tight
             + TileMetrics::line(text, self.value_style(m));
+        if self.note.is_some() {
+            h += TileMetrics::line(text, &m.unit);
+        }
         if self.change.is_some() {
             h += m.tight + TileMetrics::line(text, &m.change);
         }
@@ -317,6 +332,16 @@ impl<'a> StatTileFace<'a> {
         }
         y += value_line;
 
+        if let Some(note) = self.note {
+            let note = ctx.text.elide_to_width_style(
+                note,
+                crate::num::f32_of_f64(width.max(1.0)),
+                &m.unit,
+            );
+            ctx.text(&note, &m.unit, theme.text_dim, Point::new(x, y), None);
+            y += TileMetrics::line(ctx.text, &m.unit);
+        }
+
         if let Some((change, trend)) = self.change {
             y += m.tight;
             let line = TileMetrics::line(ctx.text, &m.change);
@@ -367,11 +392,35 @@ impl<'a> StatTileFace<'a> {
         }
     }
 
+    /// The tile's node for assistive technology, at `rect`: its label as
+    /// the name and its value, unit, note and change as one spoken value.
+    pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let role = if self.pressable {
+            Role::Button
+        } else {
+            Role::Group
+        };
+        AccessNode::new(role)
+            .with_name(self.label.to_owned())
+            .with_value(self.spoken_value())
+            .with_bounds(rect)
+            .with_state(
+                AccessState::new()
+                    .focusable(self.pressable)
+                    .focused(self.interaction.focused)
+                    .selected(self.selected),
+            )
+    }
+
     fn spoken_value(&self) -> String {
         let mut value = match self.unit {
             Some(unit) => format!("{} {unit}", self.value),
             None => self.value.to_owned(),
         };
+        if let Some(note) = self.note {
+            value.push_str(&format!(" {note}"));
+        }
         if let Some((change, trend)) = self.change {
             value.push_str(&format!(", {} {change}", trend.spoken()));
         }
@@ -384,6 +433,7 @@ pub struct StatTile {
     label: String,
     value: String,
     unit: Option<String>,
+    note: Option<String>,
     change: Option<(String, Trend)>,
     tone: Option<Tone>,
     hero: bool,
@@ -393,6 +443,8 @@ pub struct StatTile {
     metrics: Option<TileMetrics>,
     rect: Rect,
     dirty: bool,
+    /// A line came or went: the tile's height changes.
+    layout_dirty: bool,
 }
 
 impl StatTile {
@@ -401,6 +453,7 @@ impl StatTile {
             label: label.into(),
             value: value.into(),
             unit: None,
+            note: None,
             change: None,
             tone: None,
             hero: false,
@@ -410,6 +463,57 @@ impl StatTile {
             metrics: None,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
+        }
+    }
+
+    /// See [`StatTileFace::note`].
+    #[must_use]
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    /// Replace the value (a refreshed reading).
+    pub fn set_value(&mut self, value: impl Into<String>) {
+        let value = value.into();
+        if value != self.value {
+            self.value = value;
+            self.dirty = true;
+        }
+    }
+
+    /// Replace or clear the unit.
+    pub fn set_unit(&mut self, unit: Option<String>) {
+        if unit != self.unit {
+            self.unit = unit;
+            self.dirty = true;
+        }
+    }
+
+    /// Replace or clear the note.
+    pub fn set_note(&mut self, note: Option<String>) {
+        if note != self.note {
+            self.layout_dirty |= note.is_some() != self.note.is_some();
+            self.note = note;
+            self.dirty = true;
+        }
+    }
+
+    /// Replace or clear the change line.
+    pub fn set_change(&mut self, change: Option<(String, Trend)>) {
+        if change != self.change {
+            self.layout_dirty |= change.is_some() != self.change.is_some();
+            self.change = change;
+            self.dirty = true;
+        }
+    }
+
+    /// Replace or clear the tone.
+    pub fn set_tone(&mut self, tone: Option<Tone>) {
+        if tone != self.tone {
+            self.tone = tone;
+            self.dirty = true;
         }
     }
 
@@ -482,6 +586,9 @@ impl StatTile {
             StatTileFace::new(&self.label, &self.value).interaction(self.activation.state);
         if let Some(unit) = &self.unit {
             face = face.unit(unit);
+        }
+        if let Some(note) = &self.note {
+            face = face.note(note);
         }
         if let Some((text, trend)) = &self.change {
             face = face.change(text, *trend);
@@ -567,6 +674,7 @@ impl Widget for StatTile {
             self.dirty = true;
         }
         self.rect = rect;
+        self.layout_dirty = false;
     }
 
     fn draw(
@@ -632,7 +740,15 @@ impl Widget for StatTile {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {
@@ -648,24 +764,9 @@ impl Widget for StatTile {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let face = self.face();
-        let role = if self.activation.is_bound() {
-            Role::Button
-        } else {
-            Role::Group
-        };
-        Some(
-            AccessNode::new(role)
-                .with_name(self.label.clone())
-                .with_value(face.spoken_value())
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.activation.is_bound())
-                        .focused(self.activation.state.focused)
-                        .selected(self.selected),
-                ),
-        )
+        let mut node = self.face().accessibility(self.rect);
+        node.bounds = None;
+        Some(node)
     }
 }
 
@@ -681,6 +782,8 @@ pub struct StatGroup {
     column_gap: f64,
     row_gap: f64,
     rect: Rect,
+    /// The tiles were replaced: the host rebuilds the layout.
+    structure_dirty: bool,
 }
 
 impl StatGroup {
@@ -692,7 +795,22 @@ impl StatGroup {
             column_gap: 0.0,
             row_gap: 0.0,
             rect: Rect::ZERO,
+            structure_dirty: false,
         }
+    }
+
+    /// The tile at `index`, to update its reading in place.
+    pub fn tile_mut(&mut self, index: usize) -> Option<&mut StatTile> {
+        self.tiles
+            .get_mut(index)
+            .and_then(|tile| tile.as_any_mut())
+            .and_then(|tile| tile.downcast_mut::<StatTile>())
+    }
+
+    /// Replace the tiles (a different set of readings).
+    pub fn set_tiles(&mut self, tiles: Vec<Element>) {
+        self.tiles = tiles;
+        self.structure_dirty = true;
     }
 
     /// How many columns the group uses at `width`: the largest count of
@@ -832,6 +950,14 @@ impl Widget for StatGroup {
         }
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        for tile in &mut self.tiles {
+            dirty |= tile.take_structure_dirty();
+        }
+        dirty
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -948,5 +1074,34 @@ mod tests {
             &automerge::ROOT
         ));
         assert_eq!(hits.get(), 1);
+    }
+
+    #[test]
+    fn a_note_is_read_with_the_value_and_tiles_update_in_place() {
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        let plain = StatTileFace::new("Used", "1.2").unit("TB");
+        let noted = plain.note("of 2 TB");
+        assert!(noted.height(&mut text, &theme) > plain.height(&mut text, &theme));
+        let node = noted.accessibility(Rect::new(0.0, 0.0, 200.0, 80.0));
+        assert_eq!(node.name.as_deref(), Some("Used"));
+        assert_eq!(node.value.as_deref(), Some("1.2 TB of 2 TB"));
+        assert!(node.bounds.is_some());
+
+        let mut group = StatGroup::new(vec![
+            Box::new(StatTile::new("Download", "0")),
+            Box::new(StatTile::new("Upload", "0")),
+        ]);
+        group.tile_mut(1).expect("a stat tile").set_value("48");
+        assert_eq!(
+            Widget::accessibility(group.tile_mut(1).unwrap())
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("48")
+        );
+        group.set_tiles(vec![Box::new(StatTile::new("Ping", "12").unit("ms"))]);
+        assert!(group.take_structure_dirty());
+        assert!(group.tile_mut(1).is_none());
     }
 }

@@ -256,6 +256,16 @@ impl Screen {
         }
     }
 
+    /// The screen's icon in the sidebar.
+    fn icon(self) -> Icon {
+        match self {
+            Self::World => Icon::Globe,
+            Self::Alarms => Icon::AlarmClock,
+            Self::Timers => Icon::Hourglass,
+            Self::Stopwatch => Icon::Timer,
+        }
+    }
+
     fn from_id(id: &str) -> Self {
         Self::ALL
             .into_iter()
@@ -631,7 +641,8 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     let list_state = state.clone();
     let list = ModelView::from_state(state, move |s| {
         if s.alarms.is_empty() {
-            return Box::new(EmptyState::new("No alarms set").with_icon(Icon::Bell)) as Element;
+            return Box::new(EmptyState::new("No alarms set").with_icon(Icon::AlarmClock))
+                as Element;
         }
         let cards: Vec<Element> = s
             .alarms
@@ -1124,13 +1135,15 @@ pub(crate) struct Notice {
     pub(crate) timer: Option<Uuid>,
 }
 
-/// The notice, in the flow above the open screen. Its close control dismisses
+/// The notice, in the flow above the open screen. Its close control ends
 /// it; a finished timer is restarted from its card below.
-fn notice_banner(notice: &Notice) -> Element {
+fn notice_banner(notice: &Notice, state: &ui::LocalState<Option<Notice>>) -> Element {
+    let state = state.clone();
     Box::new(
         Banner::warning(notice.title.clone())
             .with_message(notice.body.clone())
-            .dismissible(),
+            .with_id("clocks.notice")
+            .on_dismiss(move || state.set(None)),
     )
 }
 
@@ -1189,6 +1202,7 @@ fn header_action(
 /// The window: the screens in the sidebar, the open one beside it.
 fn surface(
     selection: &ui::LocalState<Option<String>>,
+    notice_state: &ui::LocalState<Option<Notice>>,
     state: &ui::LocalState<ClockState>,
     validation_error: &ui::LocalState<Option<String>>,
     dialog: &ui::LocalState<Option<Dialog>>,
@@ -1199,13 +1213,14 @@ fn surface(
         "screens",
         Screen::ALL
             .into_iter()
-            .map(|screen| NavItem::new(screen.id(), screen.title()))
+            .map(|screen| NavItem::new(screen.id(), screen.title()).icon(screen.icon()))
             .collect(),
     )])
     .with_id("clocks.screens")
     .with_accessible_name("Clocks")
     .bind_selection(selection);
     let pages_state = state.clone();
+    let notice_state = notice_state.clone();
     // The banner sits above the open screen while a notice is showing, so the
     // screen is built again when either changes; the scroll area stays.
     let pages = ModelView::from_state(view, move |(selected, notice)| {
@@ -1216,7 +1231,9 @@ fn surface(
             .with_intrinsic_height()
             .with_horizontal_padding(Spacing::BASE.s3, Spacing::BASE.s3);
         if let Some(notice) = notice {
-            column = column.push(notice_banner(notice)).with_gap(group_gap());
+            column = column
+                .push(notice_banner(notice, &notice_state))
+                .with_gap(group_gap());
         }
         let screen = screen_of(selected.as_deref());
         Box::new(column.push(page(screen, &pages_state)))
@@ -1454,6 +1471,7 @@ impl ClocksApp {
         Self {
             inner: surface(
                 &selection,
+                &notice,
                 &state,
                 &validation_error,
                 &dialog,

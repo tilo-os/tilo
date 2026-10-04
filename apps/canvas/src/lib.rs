@@ -151,7 +151,8 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
     let controls = [
         Box::new(button(
             visibility,
-            Icon::Eye,
+            // The glyph says what the layer is: shown, or hidden.
+            if row.visible { Icon::Eye } else { Icon::EyeOff },
             ArtworkResource::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible)),
         )) as Element,
         Box::new(button(
