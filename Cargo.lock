@@ -17751,7 +17751,6 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-files",
- "tilo-paths",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
