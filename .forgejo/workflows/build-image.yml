@@ -1681,8 +1681,11 @@ jobs:
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # A small graph: its intermediate steps are what the image build
-          # reuses.
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          # reuses. Main writes it from a seeded builder too, as it does the
+          # toolchain: the seed's bound drops these layers first (they are
+          # built early), and without a fresh cache every build compiled
+          # bootc again (~95 s).
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release

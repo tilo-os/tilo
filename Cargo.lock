@@ -16624,6 +16624,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-sibling-unlock"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "futures",
+ "hex",
+ "iroh",
+ "iroh-base",
+ "libc",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-seal",
+ "tilo-unlock-protocol",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-spellcheck"
 version = "0.1.0"
 dependencies = [
