@@ -87,6 +87,37 @@ impl ListRow {
         self
     }
 
+    /// The row stands for several values, the first its own and the rest
+    /// parts of it (a layer and its mask): it is selected while `state`
+    /// holds any of them, and choosing the row stores the first unless a
+    /// part of it is already chosen.
+    #[must_use]
+    pub fn choosing_any<T: Clone + PartialEq + Send + Sync + 'static>(
+        mut self,
+        state: &crate::LocalState<T>,
+        values: Vec<T>,
+    ) -> Self {
+        let Some(first) = values.first().cloned() else {
+            return self;
+        };
+        let read = state.clone();
+        let write = state.clone();
+        let mine = values.clone();
+        self.choice = Some(Choice {
+            is_chosen: Box::new(move || read.with(|current| mine.contains(current))),
+            choose: Box::new(move || {
+                if write.with(|current| !values.contains(current)) {
+                    write.set(first.clone());
+                }
+            }),
+        });
+        self.selected = self
+            .choice
+            .as_ref()
+            .is_some_and(|choice| (choice.is_chosen)());
+        self
+    }
+
     /// The row sits on a raised panel (a sidebar, a card): its lift is
     /// taken from that ground, where the window's would not show.
     #[must_use]
