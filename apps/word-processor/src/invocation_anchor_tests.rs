@@ -227,7 +227,7 @@ fn invocation_anchor_applied_refuses_foreign_cross_block_overflow_and_payload() 
         },
         RichTextAction::ReplaceSelection {
             region: RegionKind::Body,
-            start_block: block.clone(),
+            start_block: block,
             start: 0,
             end_block: "other".into(),
             end: 1,
