@@ -1554,7 +1554,6 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-files",
- "tilo-paths",
  "tilo-test-env",
  "tilo-wet-media",
  "tracing",

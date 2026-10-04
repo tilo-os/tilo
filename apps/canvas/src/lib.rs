@@ -61,7 +61,11 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
         locales::install();
-        let tools = tools::Tools::default();
+        let recents = cx.settings::<document::RecentArtworks>();
+        let tools = tools::Tools {
+            recents: recents.state(),
+            ..tools::Tools::default()
+        };
         let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
         let canvas: Element = Box::new(preview::VersionPreview::new(canvas, tools.preview.clone()));
         let dock = LocalState::new(Dock::Layers);
@@ -116,6 +120,7 @@ impl ResourceApp for App {
         Box::new(panels::files::FileDesk::new(
             Box::new(layers),
             tools,
+            recents,
             cx.live().clone(),
             cx.dispatcher(),
         ))
