@@ -1,3 +1,7 @@
+#![allow(
+    clippy::doc_markdown,
+    reason = "the shared conformance support is included verbatim from the toolkit"
+)]
 include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 use crate::{
     doc::PhotosDoc,

@@ -123,6 +123,38 @@ impl MapViewport {
         .clamped()
     }
 
+    /// The camera that shows every one of `points` (latitude, longitude)
+    /// inside a `width × height` viewport, `margin` pixels clear of its
+    /// edges, as close as that allows. One point is shown at a city's
+    /// scale; none leaves the default camera.
+    #[must_use]
+    pub fn fitting(points: &[(f64, f64)], width: f64, height: f64, margin: f64) -> Self {
+        let Some(&(first_lat, first_lon)) = points.first() else {
+            return Self::default();
+        };
+        let (mut south, mut north, mut west, mut east) =
+            (first_lat, first_lat, first_lon, first_lon);
+        for &(latitude, longitude) in points {
+            south = south.min(latitude);
+            north = north.max(latitude);
+            west = west.min(longitude);
+            east = east.max(longitude);
+        }
+        let room_x = (width - 2.0 * margin).max(1.0);
+        let room_y = (height - 2.0 * margin).max(1.0);
+        // Pixels per degree that fit both spans; a single place opens at a
+        // regional scale rather than the deepest zoom.
+        let fit = (room_x / (east - west).max(f64::EPSILON))
+            .min(room_y / (north - south).max(f64::EPSILON));
+        let zoom = (fit * 360.0 / 256.0).log2().min(6.0);
+        Self {
+            latitude: f64::midpoint(south, north),
+            longitude: f64::midpoint(west, east),
+            zoom,
+        }
+        .clamped()
+    }
+
     /// Project one location into local viewport pixels. `None` means invalid
     /// geometry, never a hidden fallback coordinate.
     #[must_use]
