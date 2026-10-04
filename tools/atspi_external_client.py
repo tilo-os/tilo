@@ -556,6 +556,41 @@ def check_typed(address: str, state: Path, expected: str) -> None:
         state.unlink(missing_ok=True)
 
 
+def property_text(reply: str) -> str | None:
+    """The string in a gdbus `Properties.Get` reply such as `(<'Level 2'>,)`."""
+    match = re.match(r"\(<\s*'(.*)'\s*>,\)\s*$", reply.strip(), re.S)
+    if not match:
+        return None
+    return match.group(1).replace("\\'", "'").replace("\\\\", "\\")
+
+
+def check_described(address: str, state: Path, name: str, expected: str) -> None:
+    """The document opened by `prepare_typing` has a node named NAME whose
+    accessible description is EXPECTED: how a screen reader learns structure
+    the text alone does not carry, such as how deep a block is nested."""
+    bus_name, pid_text = state.read_text().split()
+    pid = int(pid_text)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + TYPING_TIMEOUT_SECONDS
+    seen: set[str] = set()
+    try:
+        while time.monotonic() < deadline:
+            try:
+                for path in client.named(client.tree(TYPING_TREE_NODE_LIMIT), name):
+                    description = property_text(client.property(path, "Description"))
+                    if description == expected:
+                        print(f"{name!r} reads {expected!r}")
+                        return
+                    seen.add(repr(description))
+            except GateError:
+                pass
+            time.sleep(POLL_SECONDS * 4)
+        raise GateError(f"no node named {name!r} reads {expected!r}; saw {sorted(seen)}")
+    finally:
+        close_app(pid)
+        state.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -575,6 +610,13 @@ def main() -> int:
     typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
+    described = sub.add_parser(
+        "described",
+        help="check the document `type-into` opened has a node NAME described as DESCRIPTION",
+    )
+    described.add_argument("name")
+    described.add_argument("description")
+    described.add_argument("--state", type=Path, required=True)
     card = sub.add_parser(
         "card", help="activate a launchpad card on the empty workspace; require that it opens its app",
     )
@@ -596,6 +638,9 @@ def main() -> int:
             return 0
         if args.command == "typed":
             check_typed(address, args.state, args.text)
+            return 0
+        if args.command == "described":
+            check_described(address, args.state, args.name, args.description)
             return 0
         if args.command == "card":
             _bus_name, pid = open_from_launchpad_card(address, args.card_name, args.app_name)
