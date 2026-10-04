@@ -81,16 +81,16 @@ pub fn draw_icon(
     match sky {
         Sky::Clear | Sky::MainlyClear => {
             if is_day {
-                draw_sun(scene, transform, Point::new(cx, cy), s * 0.30, &p);
+                draw_sun(scene, transform, Point::new(cx, cy), s * 0.21, &p);
             } else {
-                draw_moon(scene, transform, Point::new(cx, cy), s * 0.32, &p);
+                draw_moon(scene, transform, Point::new(cx, cy), s * 0.30, &p);
             }
         }
         Sky::PartlyCloudy => {
             // Sun/moon peeking behind a cloud.
             let orb = Point::new(cx - s * 0.16, cy - s * 0.18);
             if is_day {
-                draw_sun(scene, transform, orb, s * 0.20, &p);
+                draw_sun(scene, transform, orb, s * 0.17, &p);
             } else {
                 draw_moon(scene, transform, orb, s * 0.20, &p);
             }

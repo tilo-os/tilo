@@ -81,8 +81,6 @@ pub const SCENARIOS: &[&str] = &[
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
-    /// Whether the forecast's header holds the History button.
-    history_in_header: bool,
     /// Whether the shell was built with a place in the forecast column.
     shows_forecast: bool,
 
@@ -110,22 +108,16 @@ pub struct WeatherApp {
 }
 
 impl WeatherApp {
-    /// An empty, offline root for the History tests. The shared History
-    /// conformance driver opens History through the window's own History
-    /// bar, so this root leaves the History button out of its header and
-    /// lets the window draw that bar.
+    /// An empty, offline root for the History tests.
     #[cfg(test)]
     pub(crate) fn history_test_root() -> Self {
-        let mut app = Self::assemble(
+        Self::assemble(
             Rc::new(RefCell::new(Core::new(
                 crate::model::WeatherModel::default(),
                 crate::units::Units::METRIC,
             ))),
             false,
-        );
-        app.history_in_header = false;
-        app.nav = Self::build_nav(&app.core, false);
-        app
+        )
     }
     fn dispatch_durable_action(&mut self, doc: &mut AutoCommit, action: &WeatherAction) {
         let dispatched = action.clone();
@@ -249,9 +241,9 @@ impl WeatherApp {
     /// The window: the city list as the overview and the forecast as the
     /// content, both rendering from the one shared [`Core`], each with its
     /// header in the shell's header row.
-    /// The forecast's header offers Refresh only while it shows a place, and
-    /// History when `history` (the window then draws no History bar).
-    fn build_nav(core: &Rc<RefCell<Core>>, history: bool) -> NavShell {
+    /// The forecast's header offers Refresh only while it shows a place; the
+    /// shell puts History at the header row's trailing edge.
+    fn build_nav(core: &Rc<RefCell<Core>>) -> NavShell {
         let add: Element = Box::new(
             Button::icon_only("weather.add-place", Icon::Plus, "Add place").on_view({
                 let core = Rc::clone(core);
@@ -268,9 +260,6 @@ impl WeatherApp {
                     },
                 ),
             ));
-        }
-        if history {
-            actions.push(Box::new(ui::widget::history_button()));
         }
         let title = Self::content_title(&core.borrow());
         NavShell::new()
@@ -299,7 +288,7 @@ impl WeatherApp {
     fn sync_title(&mut self) {
         let shows = Self::shows_forecast(&self.core.borrow());
         if shows != self.shows_forecast {
-            self.nav = Self::build_nav(&self.core, self.history_in_header);
+            self.nav = Self::build_nav(&self.core);
             self.shows_forecast = shows;
             self.structure_dirty = true;
         }
@@ -308,12 +297,11 @@ impl WeatherApp {
     }
 
     fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
-        let nav = Self::build_nav(&core, true);
+        let nav = Self::build_nav(&core);
         let shows_forecast = Self::shows_forecast(&core.borrow());
         Self {
             core,
             nav,
-            history_in_header: true,
             shows_forecast,
             structure_dirty: false,
             live,
