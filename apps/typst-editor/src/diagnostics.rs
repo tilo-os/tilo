@@ -34,11 +34,6 @@ impl Default for DiagnosticsPanel {
 }
 
 impl DiagnosticsPanel {
-    #[cfg(test)]
-    pub(crate) fn history_test_row_top(&self, row: usize) -> f64 {
-        self.list_rect().y0 + row as f64 * ROW_H - self.scroll_y
-    }
-
     pub fn new() -> Self {
         Self::default()
     }
@@ -87,10 +82,6 @@ impl DiagnosticsPanel {
     fn max_scroll(&self) -> f64 {
         let content = self.diags.len() as f64 * ROW_H;
         (content - self.list_rect().height()).max(0.0)
-    }
-
-    pub(crate) fn scroll_y(&self) -> f64 {
-        self.scroll_y
     }
 
     pub fn scroll_by(&mut self, dy: f64) {

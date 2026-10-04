@@ -17665,9 +17665,9 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
- "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-files",
  "tilo-paths",
@@ -17679,6 +17679,7 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "typst-render",
+ "uuid",
  "workspace-hack",
 ]
 
