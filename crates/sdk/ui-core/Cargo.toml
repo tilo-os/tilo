@@ -410,7 +410,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
-usvg = { version = "0.47", default-features = false }
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
 private-fs = { version = "0.1.0", path = "../../system/private-fs" }
 rustls.workspace = true
 # Hyphenation patterns for every language. The browser toolkit core keeps

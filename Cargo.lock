@@ -16014,6 +16014,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "usvg",
  "workspace-hack",
 ]
 
@@ -16710,7 +16711,6 @@ dependencies = [
  "unicode-properties",
  "unicode-script",
  "url",
- "usvg",
  "uuid",
  "wgpu",
  "wgpu-hal",

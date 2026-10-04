@@ -569,10 +569,16 @@ pub trait WebViewEngine: Send + Sync {
     /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
 
-    /// The zero-copy path, if a GPU frame is pending. Default: none — SHM
-    /// and test engines deliver pixels through [`frames`](Self::frames).
+    /// The zero-copy path, if a GPU frame is pending. Default: the wrapped
+    /// engine's, else none — SHM and test engines deliver pixels through
+    /// [`frames`](Self::frames).
     #[cfg(unix)]
     fn take_dmabuf(&self) -> Option<DmabufFrame> {
+        self.wrapped().and_then(|inner| inner.take_dmabuf())
+    }
+
+    /// The engine this one wraps, for what only a backend can answer.
+    fn wrapped(&self) -> Option<&SharedEngine> {
         None
     }
 
