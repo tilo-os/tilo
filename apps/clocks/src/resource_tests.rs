@@ -348,6 +348,18 @@ fn every_scenario_stages_its_scene_through_actions_and_view_state() {
     );
     let mut world = TestApp::<ClocksShell>::capture(Some("world-narrow")).unwrap();
     assert!(world.harness().a11y_node_named("World clocks").is_some());
+    assert_eq!(
+        world.state().world_clocks.len(),
+        3,
+        "world shows its cities"
+    );
+    let shown = world.harness().inspection_json().unwrap();
+    assert!(
+        shown.contains("17:00 · Tue 30 Jun"),
+        "the cities read the capture's pinned moment, not the device clock: {shown}"
+    );
+    let alarms = TestApp::<ClocksShell>::capture(Some("alarms")).unwrap();
+    assert_eq!(alarms.state().alarms.len(), 2, "alarms shows its alarms");
     assert_eq!(ClocksShell::shot_viewport(Some("world-narrow")), (520, 820));
     assert_eq!(ClocksShell::shot_viewport(Some("world")), (1280, 800));
 }
