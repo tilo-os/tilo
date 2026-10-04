@@ -72,6 +72,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
     "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
