@@ -1710,7 +1710,14 @@ impl App {
         if let Some(participant) = &participant {
             self.join_participant(participant);
         }
-        let _invoker = crate::invocation_scope::InvokerScope::enter(invoker);
+        self.actions.acting_for.insert(
+            invocation,
+            ActingInvoker {
+                invoker: invoker.clone(),
+                context: attributed.clone(),
+            },
+        );
+        let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
         let authorization = self.authorize_published_invocation(
             &crate::invocation_scope::PublishedInvocationRequest {
                 wire_id: id,
@@ -1742,6 +1749,13 @@ impl App {
             ),
             Err(error) => (Err(error), None),
         };
+        drop(invoker_scope);
+        if !matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted)) {
+            // What the effect submitted is applied for its invoker before
+            // its caller learns it finished.
+            self.dispatch_control_invocations();
+            self.actions.acting_for.remove(&invocation);
+        }
         let update = match result {
             Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
                 tilo_actions::InvocationUpdate::Succeeded { invocation, output }
@@ -3077,11 +3091,19 @@ impl App {
         }
         dispatched =
             dispatched.saturating_add(self.dispatch_legacy_control_invocations(registered.legacy));
-        while let Some(intent) = registered
+        while let Some((intent, on_behalf_of)) = registered
             .outer
             .pop_front()
-            .or_else(|| crate::widget::controls::take_control_invocation(self.root_widget.as_mut()))
+            .map(|intent| (intent, None))
+            .or_else(|| {
+                crate::widget::controls::take_attributed_control_invocation(
+                    self.root_widget.as_mut(),
+                )
+            })
         {
+            // An edit an effect submitted is applied for the effect's
+            // invoker, in its context, as long as the effect runs.
+            let acting = on_behalf_of.and_then(|id| self.actions.acting_for.get(&id).cloned());
             let (key, generation) = self.ensure_local_resource_cache();
             let local_resources = self
                 .actions
@@ -3105,6 +3127,22 @@ impl App {
                 );
                 continue;
             };
+            if acting.is_some()
+                && !matches!(
+                    resolved.confirmation_for_json(&intent.arguments),
+                    tilo_actions::ConfirmationPolicy::None
+                )
+            {
+                // Nobody here asked for it: the person at the device is
+                // never prompted to confirm another invoker's edit.
+                tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, "an effect's edit that needs confirmation is refused");
+                crate::widget::controls::on_control_invocation_result(
+                    self.root_widget.as_mut(),
+                    &intent.address,
+                    &Err(tilo_actions::DoorError::ConfirmationRequired),
+                );
+                continue;
+            }
             if !matches!(
                 resolved.confirmation_for_json(&intent.arguments),
                 tilo_actions::ConfirmationPolicy::None
@@ -3130,12 +3168,20 @@ impl App {
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(intent.arguments.clone())
             );
-            let actor = self.collaboration.local_author.0.clone();
+            let actor = acting.as_ref().map_or_else(
+                || self.collaboration.local_author.0.clone(),
+                |acting| acting.invoker.actor.clone(),
+            );
+            let _invoker = acting
+                .as_ref()
+                .map(|acting| crate::invocation_scope::InvokerScope::enter(acting.invoker.clone()));
             // An outer control was produced outside every component and
             // legacy owner: it acts on the outer document it was captured
             // with, even when an owner declares the same address.
             let result = self.invoke_unbound_resource_action(
-                &ResourceInvocation::new(&intent.address, &actor).argument(Some(&json)),
+                &ResourceInvocation::new(&intent.address, &actor)
+                    .argument(Some(&json))
+                    .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
                 None,
             );
             crate::widget::controls::on_control_invocation_result(
@@ -3267,6 +3313,11 @@ impl App {
                     },
                 };
             }
+            if update.is_terminal() {
+                // What the effect's completion submitted is applied for its
+                // invoker before its caller learns it finished.
+                self.dispatch_control_invocations();
+            }
             if update.is_terminal() && !self.queue_documents_before_terminal() {
                 // Keep admitted lifecycle state; do not poll the completed
                 // operation again or fabricate a no-effect refusal.
@@ -3276,6 +3327,7 @@ impl App {
             if update.is_terminal() {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
+                self.actions.acting_for.remove(&invocation);
             }
             self.collaboration
                 .manager
@@ -3285,6 +3337,11 @@ impl App {
                 });
             changed = true;
         }
+        // An invocation that ended however it ended runs for nobody.
+        let directed = &self.actions.directed_invocations;
+        self.actions
+            .acting_for
+            .retain(|invocation, _| directed.contains_key(invocation));
         let local_invocations = self
             .actions
             .local_invocations

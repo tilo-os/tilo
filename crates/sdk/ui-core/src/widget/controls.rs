@@ -16,6 +16,13 @@ use super::{
     semantic_action_bindings,
 };
 
+/// A control intent and the effect invocation it continues, when an
+/// effect's handler or completion queued it.
+pub type AttributedControlInvocation = (
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+);
+
 /// A widget that owns action-bound controls.
 pub trait ActionControls: Widget {
     /// Bind retained producers before their first callback. Private holders
@@ -35,6 +42,14 @@ pub trait ActionControls: Widget {
         self.children_mut()
             .into_iter()
             .find_map(take_control_invocation)
+    }
+
+    /// [`Self::take_control_invocation`], with the effect invocation the
+    /// intent continues when an effect's handler or completion queued it:
+    /// the host applies it for that invocation's invoker.
+    fn take_attributed_control_invocation(&mut self) -> Option<AttributedControlInvocation> {
+        self.take_control_invocation()
+            .map(|invocation| (invocation, None))
     }
 
     /// Report the admission result of one queued local control invocation.
@@ -128,6 +143,20 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
         .children_mut()
         .into_iter()
         .find_map(take_control_invocation)
+}
+
+/// [`take_control_invocation`], with the effect invocation the intent
+/// continues ([`ActionControls::take_attributed_control_invocation`]).
+pub fn take_attributed_control_invocation(
+    widget: &mut dyn Widget,
+) -> Option<AttributedControlInvocation> {
+    if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
+        return controls.take_attributed_control_invocation();
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .find_map(take_attributed_control_invocation)
 }
 
 /// Report a control invocation's admission result through `widget`'s subtree.
