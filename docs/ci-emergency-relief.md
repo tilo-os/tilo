@@ -287,8 +287,7 @@ Inspect a specific coalescer Job's logs before taking action. Do not print the
 token Secret. The infrastructure policy and runbook live in
 `apps/forgejo/ci_queue_coalesce.py`, `apps/forgejo/ci-queue-coalescer.yaml` and
 `apps/forgejo/ci-queue-coalescer.md`; broker configuration lives in
-`apps/sandbox-broker/deployment.yaml`. The inspected infrastructure checkout was
-`C:/Users/user/infra-ci-emergency`.
+`apps/sandbox-broker/deployment.yaml`.
 
 ## Stop or roll back narrowly
 

@@ -313,8 +313,18 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         });
 
         let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
-        let widget = crate::TerminalWidget::spawn_hosted(services)
+        let mut widget = crate::TerminalWidget::spawn_hosted(services)
             .expect("the discovered ush connection must use the supervisor protocol");
+        // The session opens at the first sync, once the record says where.
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(
+            automerge::ROOT,
+            crate::target::TARGET_KEY,
+            crate::target::SessionTarget::default_environment().encode(),
+        )
+        .unwrap();
+        ui::widget::Widget::sync(&mut widget, &mut doc, &automerge::ROOT);
+        assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
     }
@@ -349,12 +359,25 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         use std::os::unix::net::UnixStream;
         let (client, server) = UnixStream::pair().unwrap();
         drop(server);
-        let result =
-            crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) });
-        assert!(matches!(
-            result,
-            Err(crate::HostedTerminalError::ServiceFailed(_))
-        ));
+        let mut widget =
+            crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) })
+                .unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(
+            automerge::ROOT,
+            crate::target::TARGET_KEY,
+            crate::target::SessionTarget::default_environment().encode(),
+        )
+        .unwrap();
+        ui::widget::Widget::sync(&mut widget, &mut doc, &automerge::ROOT);
+        assert!(
+            matches!(
+                widget.session_state(),
+                crate::sessions::OpenState::Failed(_)
+            ),
+            "a supervisor that fails leaves the tab failed, never on a local shell"
+        );
+        assert!(widget.is_disconnected());
     }
 }
 
@@ -3902,7 +3925,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
     }
 }
 
-/// The user's default shell exactly as the best-effort route resolves it, but
+/// The user's default shell exactly as the Host target off Tilo resolves it, but
 /// started in a controlled environment: a scratch `HOME`, a minimal env and no
 /// system or user startup files. Host startup scripts may read the terminal's
 /// stdin (distrobox's `profile.d` hook runs `host-spawn` when no display
@@ -4963,47 +4986,72 @@ fn locate_fish() -> Option<std::path::PathBuf> {
 /// Confinement routing and the hosted-terminal ush requirement.
 #[test]
 fn confinement_routes_are_mandatory_for_hosted_terminals() {
-    // Case `confine_route_service_is_mandatory_and_cannot_be_downgraded`.
+    // Case `confine_route_service_is_mandatory_for_every_target`.
     {
         // The security invariant, at the decision point: when the supervisor
-        // service is available it is chosen unconditionally, so no combination
-        // of the inputs an app could influence (a present runtime, a host that
-        // *could* self-host) can force best-effort. On Tilo the service is what
-        // the launcher provides, so this is "best-effort can't be forced on Tilo".
+        // service is available it is chosen unconditionally, for the device's
+        // own shell too, so no combination of the inputs an app could
+        // influence (a present runtime, a host that *could* self-host) reaches
+        // a local process. The supervisor alone decides who gets the host.
         use crate::inner::{ConfineRoute, decide_route};
+        use crate::target::SessionTarget;
         use std::path::PathBuf;
         let bin = PathBuf::from("/usr/libexec/tilo-ush");
-        assert_eq!(decide_route(true, false, None), ConfineRoute::Service);
-        assert_eq!(decide_route(true, true, None), ConfineRoute::Service);
-        assert_eq!(
-            decide_route(true, false, Some(bin.clone())),
-            ConfineRoute::Service
-        );
-        assert_eq!(decide_route(true, true, Some(bin)), ConfineRoute::Service);
+        for target in [SessionTarget::default_environment(), SessionTarget::Host] {
+            assert_eq!(
+                decide_route(&target, true, false, None),
+                ConfineRoute::Service
+            );
+            assert_eq!(
+                decide_route(&target, true, true, None),
+                ConfineRoute::Service
+            );
+            assert_eq!(
+                decide_route(&target, true, true, Some(bin.clone())),
+                ConfineRoute::Service
+            );
+        }
     }
 
-    // Case `confine_route_best_effort_off_tilo_and_never_a_doomed_spawn`.
+    // Case `confine_route_host_is_chosen_never_a_fallback`.
     {
-        // No service. Best-effort is chosen exactly when confinement genuinely
-        // isn't available: no runtime, OR a runtime that could only fail because
-        // this host can't build a namespace. The latter is the fix for the wall
-        // of ush errors — we don't launch the runtime where it can't succeed.
+        // No service. The device's own shell starts directly only when the
+        // target names it; an environment that cannot run here is unavailable,
+        // never quietly `$SHELL` instead.
         use crate::inner::{ConfineRoute, decide_route};
+        use crate::target::{Location, SessionTarget};
         use std::path::PathBuf;
         let bin = PathBuf::from("/usr/libexec/tilo-ush");
-        // Can't self-host → best-effort even though the runtime is installed.
+        let env = SessionTarget::default_environment();
+        assert!(matches!(
+            decide_route(&env, false, false, Some(bin.clone())),
+            ConfineRoute::Unavailable(_)
+        ));
+        assert!(matches!(
+            decide_route(&env, false, true, None),
+            ConfineRoute::Unavailable(_)
+        ));
         assert_eq!(
-            decide_route(false, false, Some(bin.clone())),
-            ConfineRoute::BestEffort
+            decide_route(&env, false, true, Some(bin.clone())),
+            ConfineRoute::SelfHosted(bin.clone())
         );
-        // No runtime at all → best-effort (the plain-distro case).
-        assert_eq!(decide_route(false, false, None), ConfineRoute::BestEffort);
-        assert_eq!(decide_route(false, true, None), ConfineRoute::BestEffort);
-        // Could self-host AND runtime present → confine ourselves (dev tree).
         assert_eq!(
-            decide_route(false, true, Some(bin.clone())),
-            ConfineRoute::SelfHosted(bin)
+            decide_route(&SessionTarget::Host, false, true, Some(bin.clone())),
+            ConfineRoute::Host
         );
+        // Relays and legacy VMs are not this device's supervisor's to serve.
+        for elsewhere in [
+            SessionTarget::Environment {
+                record: None,
+                location: Location::Relay { id: "home".into() },
+            },
+            SessionTarget::Legacy { vm: "linux".into() },
+        ] {
+            assert!(matches!(
+                decide_route(&elsewhere, true, true, Some(bin.clone())),
+                ConfineRoute::Unavailable(_)
+            ));
+        }
     }
 
     // Case `hosted_terminal_requires_ush_before_construction`.

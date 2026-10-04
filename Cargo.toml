@@ -237,6 +237,9 @@ members = [
 
     # Runtime
     "crates/runtime/cli",
+    "crates/runtime/legacy-agent",
+    "crates/runtime/legacy-agent-protocol",
+    "crates/runtime/legacy-vm",
     "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
     "crates/runtime/runtime-connected",
@@ -289,6 +292,7 @@ members = [
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/libvirt-domain",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
