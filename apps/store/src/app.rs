@@ -4,7 +4,8 @@
 //! in [`view`] from the toolkit's content widgets:
 //!
 //! ```text
-//! catalogue         6 apps from 2 sources            [search] [remotes] [trust] [refresh]
+//! header row                         [search] [remotes] [trust] [refresh] [History]
+//! catalogue         6 apps from 2 sources
 //!                   Updates (1)        ┌ card ┐
 //!                   On this device (2) ┌ card ┐ ┌ card ┐
 //!                   Discover (3)       ┌ card ┐ ┌ card ┐ ┌ card ┐
@@ -907,7 +908,15 @@ impl Widget for StoreApp {
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
-        root.set_content_header(title, Vec::new());
+        // The catalogue's actions share the header row with History; a page
+        // opened from it carries its own title and actions in its body.
+        let catalogue = !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
+        let actions = if catalogue {
+            Self::catalogue_actions()
+        } else {
+            Vec::new()
+        };
+        root.set_content_header(title, actions);
         root.set_content(page);
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);

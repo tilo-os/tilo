@@ -2,7 +2,7 @@
 //! and trust and moderation.
 //!
 //! Every page is one column. A page is a scrolling canvas holding one
-//! centred, bounded column, so every part of it (the toolbar, the sections,
+//! centred, bounded column, so every part of it (the summary, the sections,
 //! the cards) shares one inset and the scroll bar sits at the window edge
 //! instead of over the content. Pages that read (details, remotes, trust)
 //! keep a narrower measure but start at the same leading edge as the
@@ -180,10 +180,9 @@ impl StoreApp {
         )
     }
 
-    /// The top of the catalogue: what it holds on the leading edge, and the
-    /// window's actions on the trailing edge. Every action is an icon, so
-    /// the row never outgrows a narrow window.
-    fn catalogue_toolbar(&self, shown: usize) -> Element {
+    /// The catalogue's actions, for the window's header row beside History.
+    /// Every action is an icon, so the row never outgrows a narrow window.
+    pub(super) fn catalogue_actions() -> Vec<Element> {
         let mut remotes = Button::icon_only("store.remotes", Icon::Globe, "Flatpak remotes");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowRemotes) {
             remotes = remotes.on_action(binding);
@@ -196,12 +195,22 @@ impl StoreApp {
         if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
             refresh = refresh.on_action(binding);
         }
-        // One row: what the catalogue holds takes the leading space, every
-        // action is a trailing icon (a row nested here would claim the whole
-        // width and push the summary onto its own line).
+        vec![
+            Box::new(ui::search::search_button(
+                ui::search::SearchRequest::this_app(),
+            )),
+            Box::new(remotes),
+            Box::new(trust),
+            Box::new(refresh),
+        ]
+    }
+
+    /// The top of the catalogue: what it holds, and a way back from filters.
+    fn catalogue_summary(&self, shown: usize) -> Element {
         let mut row = Row::new()
             .no_wrap()
             .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
@@ -221,14 +230,7 @@ impl StoreApp {
             }
             row = row.push(Box::new(clear));
         }
-        Box::new(
-            row.push(Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )))
-            .push(Box::new(remotes))
-            .push(Box::new(trust))
-            .push(Box::new(refresh)),
-        )
+        Box::new(row)
     }
 
     /// Idle browsing groups apps by the decision they invite (update, already
@@ -302,12 +304,12 @@ impl StoreApp {
         })
     }
 
-    /// The catalogue: the toolbar, then the apps in the groups a person
+    /// The catalogue: what it holds, then the apps in the groups a person
     /// decides between (an update, something already here, something new), or
     /// one relevance-ranked list while a search is active.
     pub(super) fn build_list(&self, theme: &Theme) -> Element {
         let visible = self.visible_items();
-        let mut children = vec![self.catalogue_toolbar(visible.len())];
+        let mut children = vec![self.catalogue_summary(visible.len())];
         if !self.items.is_empty()
             && let Some(notice) = self.operation_notice()
         {
