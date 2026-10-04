@@ -5640,6 +5640,31 @@ impl CapnpBrokerState {
         rx
     }
 
+    /// Ask one local subscriber of every record channel in `cluster_id` for
+    /// its document snapshot, on behalf of no local connection: how another
+    /// device that just came back catches up on what it missed. Returns how
+    /// many channels were asked.
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        let channels: Vec<String> = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .keys()
+                    .filter(|key| {
+                        let route = CrdtRoute::from_channel_key(key);
+                        route.cluster_id == cluster_id && !route.record_id.is_empty()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        channels
+            .iter()
+            .filter(|channel| self.request_document_snapshot(channel, u64::MAX))
+            .count()
+    }
+
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
@@ -8660,7 +8685,7 @@ fn handle_signed_op_send_for_artifact(
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
                 mls_vault.clone_from(&ch.mls_vault);
-                ch.record_history(&envelope);
+                ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -10647,7 +10672,7 @@ pub mod tests {
 
         fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
 
-        fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+        fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
     }
 
     #[cfg(test)]
@@ -12624,6 +12649,42 @@ pub mod tests {
             [Sent::Signed { cluster_id, record_id, .. }]
                 if *cluster_id == route.cluster_id && record_id == "watch-history"
         ));
+    }
+
+    /// A device that came back is caught up by the local apps holding the
+    /// person room's records: each record channel of that room, and only of
+    /// that room, is asked for its snapshot.
+    #[test]
+    fn room_snapshot_requests_reach_only_that_rooms_record_channels() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        let person_room = collab_types::person_room(&[29; 32]).to_string();
+        let history = CrdtRoute::record("so.tilo.tube", person_room.as_str(), "watch-history");
+        let words = CrdtRoute::record("so.tilo.dict", person_room.as_str(), "learned");
+        let unscoped = CrdtRoute::cluster(person_room.as_str());
+        let shared = CrdtRoute::record("so.tilo.tube", "room-1", "watch-history");
+        let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
+            .into_iter()
+            .zip(2_u64..)
+            .map(|(route, peer)| {
+                state.ensure_channel(&route.channel_key());
+                state.subscribe_context(&route.channel_key(), peer)
+            })
+            .collect();
+
+        assert_eq!(fanout.request_room_snapshots(&person_room), 2);
+        let asked: Vec<bool> = receivers
+            .iter_mut()
+            .map(|rx| matches!(rx.try_recv(), Ok(ContextEnvelope::SnapshotRequested)))
+            .collect();
+        assert_eq!(asked, [true, true, false, false]);
     }
 
     #[test]
