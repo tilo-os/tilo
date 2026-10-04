@@ -12082,6 +12082,7 @@ dependencies = [
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
@@ -13241,6 +13242,7 @@ dependencies = [
  "neighbour-wire",
  "notify",
  "os-actions",
+ "p256 0.14.0",
  "package-store",
  "parking_lot",
  "percent-encoding",
@@ -13323,6 +13325,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-tts",
  "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -15743,8 +15746,10 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-relay-protocol",
+ "tilo-seal",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tracing",
  "wire-frame",
