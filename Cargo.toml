@@ -801,7 +801,11 @@ opt-level = 3
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, so a process can contain a helper that fails: the compositor
+# restarts its collaboration broker rather than end the session. Every other
+# panic still aborts the process: tilo-rt installs a hook that aborts outside
+# `tilo_rt::panic_boundary::isolate` (see that module).
+panic = "unwind"
 strip = "symbols"
 overflow-checks = false
 debug = "line-tables-only"
@@ -816,6 +820,7 @@ incremental = false
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
+panic = "abort"
 debug = false
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
