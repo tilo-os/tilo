@@ -13,7 +13,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, ModelPath, Widget};
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
 
 use crate::model::Artwork;
 use crate::render::{Options, Renderer};
@@ -26,6 +26,9 @@ pub struct Thumb {
     art: Rc<Artwork>,
     layer: Option<String>,
     renderer: Rc<RefCell<Renderer>>,
+    /// The chosen layer, and this picture's: ringed while they agree, so a
+    /// layer with a mask shows which of the two is being painted.
+    target: Option<(LocalState<String>, String)>,
 }
 
 impl Thumb {
@@ -43,7 +46,15 @@ impl Thumb {
             art: Rc::new(Artwork::default()),
             layer,
             renderer,
+            target: None,
         }
+    }
+
+    /// Ring the picture while `chosen` holds `id`.
+    #[must_use]
+    pub fn ringed_while(mut self, chosen: &LocalState<String>, id: &str) -> Self {
+        self.target = Some((chosen.clone(), id.to_owned()));
+        self
     }
 }
 
@@ -118,13 +129,33 @@ impl Widget for Thumb {
             .borrow_mut()
             .draw(&self.art, scene, to_thumb, text_renderer, &options);
         scene.pop_layer();
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &frame,
-        );
+        let ringed = self
+            .target
+            .as_ref()
+            .is_some_and(|(chosen, id)| chosen.with(|chosen| chosen == id));
+        if ringed {
+            // Outside the picture, so none of it is hidden by the ring.
+            // Two of the chrome's rules: heavy enough to say "this one".
+            let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+            scene.stroke(
+                &Stroke::new(ring),
+                transform,
+                theme.accent_primary,
+                None,
+                &frame
+                    .rect()
+                    .inflate(ring / 2.0, ring / 2.0)
+                    .to_rounded_rect(radius + ring / 2.0),
+            );
+        } else {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &frame,
+            );
+        }
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
