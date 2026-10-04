@@ -109,19 +109,6 @@ pub struct SettingsApp {
     /// same generation instead of rebuilding an index on every frame.
     /// Where the account stores, credential vault and mutation journal live.
     account_root: crate::accounts::AccountRoot,
-    /// Secret-free snapshot for resource enumeration. Refreshes at account
-    /// mutation boundaries, never during the per-frame resource query.
-    account_resources: Vec<accounts::Account>,
-    account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
-    account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
-    local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    local_operation: Option<tilo_actions::InvocationId>,
-    local_operation_token: Option<String>,
-    local_pane_command: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    account_probe: Option<(
-        tilo_actions::InvocationId,
-        std::sync::mpsc::Receiver<Result<String, String>>,
-    )>,
     rect: vello::kurbo::Rect,
     /// The reusable app-shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its collapse/overlay state survives a
@@ -150,6 +137,10 @@ pub struct SettingsApp {
     speakers: panes::speakers::SpeakersArea,
     agent_models: panes::agent_models::AgentModelsArea,
     device_mesh: panes::device_mesh::DeviceMeshArea,
+    audio: panes::audio::AudioArea,
+    accounts: panes::accounts::AccountsArea,
+    displays: panes::display::DisplayArea,
+    network: panes::network::NetworkArea,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -195,6 +186,10 @@ impl SettingsApp {
             speakers: panes::speakers::SpeakersArea::new(&cx),
             agent_models: panes::agent_models::AgentModelsArea::new(&cx),
             device_mesh: panes::device_mesh::DeviceMeshArea::new(&cx),
+            audio: panes::audio::AudioArea::new(&cx),
+            accounts: panes::accounts::AccountsArea::new(&cx),
+            displays: panes::display::DisplayArea::new(&cx),
+            network: panes::network::NetworkArea::new(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -204,15 +199,7 @@ impl SettingsApp {
             sidebar_selection: ui::LocalState::new(None),
             pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
-            account_resources: account_root.store().all().to_vec(),
             account_root,
-            account_commands: ui::LocalState::new(None),
-            account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
-            local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            local_operation: None,
-            local_operation_token: None,
-            local_pane_command: ui::LocalState::new(None),
-            account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
             shell_text_scale: 1.0,
@@ -253,22 +240,6 @@ impl SettingsApp {
 
     pub fn selected(&self) -> Category {
         self.selected
-    }
-
-    pub(crate) fn account_resource_inventory(&self) -> &[accounts::Account] {
-        &self.account_resources
-    }
-
-    fn refresh_account_resources(&mut self) {
-        self.account_resources = self.account_root.store().all().to_vec();
-    }
-
-    #[doc(hidden)]
-    pub fn set_account_tester_for_test(
-        &mut self,
-        tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
-    ) {
-        self.account_tester = tester;
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
@@ -448,7 +419,6 @@ impl SettingsApp {
         // A screenshot never opens the person's accounts.
         if let Some(root) = cx.scene().and_then(|scene| scene.account_root.clone()) {
             self.account_root = crate::accounts::AccountRoot::at(root);
-            self.refresh_account_resources();
         }
         self.notifications = panes::notifications::NotificationsArea::new(&cx);
         self.default_apps = panes::personal_apps::DefaultAppsArea::new(&cx);
@@ -463,6 +433,10 @@ impl SettingsApp {
         self.speakers = panes::speakers::SpeakersArea::new(&cx);
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
+        self.audio = panes::audio::AudioArea::new(&cx);
+        self.accounts = panes::accounts::AccountsArea::new(&cx);
+        self.displays = panes::display::DisplayArea::new(&cx);
+        self.network = panes::network::NetworkArea::new(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
@@ -537,6 +511,22 @@ impl SettingsApp {
         &self.device_mesh
     }
 
+    pub(crate) fn audio(&self) -> &panes::audio::AudioArea {
+        &self.audio
+    }
+
+    pub(crate) fn accounts(&self) -> &panes::accounts::AccountsArea {
+        &self.accounts
+    }
+
+    pub(crate) fn displays(&self) -> &panes::display::DisplayArea {
+        &self.displays
+    }
+
+    pub(crate) fn network(&self) -> &panes::network::NetworkArea {
+        &self.network
+    }
+
     /// What the panes reach of the host.
     pub(crate) fn host(&self) -> &crate::host::PaneCx {
         &self.cx
@@ -561,56 +551,26 @@ impl SettingsApp {
     }
 
     /// Dispatch to the per-category pane body.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive match constructs every category's pane"
-    )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
-            // A capture never waits for NetworkManager or PipeWire; it shows
-            // sample networks and a sample audio graph.
-            Category::Network if !self.cx.reaches_devices() => Box::new(
-                crate::scenarios::network_pane()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
-            Category::Network => Box::new(
-                panes::network::NetworkPane::new()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
+            Category::Network => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                self.network.model(),
+            ))),
             Category::Bluetooth => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.bluetooth.model(),
             ))),
             Category::DeviceMesh => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.device_mesh.model(),
             ))),
-            Category::Sound if !self.cx.reaches_devices() => Box::new(
-                crate::scenarios::audio_pane()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
-            Category::Sound => Box::new(
-                panes::audio::AudioPane::new()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
+            Category::Sound => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                self.audio.model(),
+            ))),
             Category::Speakers => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.speakers.model(),
             ))),
-            Category::Displays if !self.cx.reaches_devices() => Box::new(
-                panes::display::DisplayPane::with_dispatcher(
-                    crate::dispatcher::dispatcher_or_real(None),
-                    0.62,
-                )
-                .with_command_state(&self.local_pane_command)
-                .with_operation_status(&self.local_operation_status),
-            ),
-            Category::Displays => Box::new(
-                panes::display::DisplayPane::new()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
+            Category::Displays => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                self.displays.model(),
+            ))),
             Category::MouseKeyboard => Box::new(panes::mouse_keyboard::MouseKeyboardPane::new(
                 self.cx.clone(),
                 &self.input,
@@ -648,24 +608,9 @@ impl SettingsApp {
             Category::Storage => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.storage.model(),
             ))),
-            Category::ExternalAccounts => {
-                let mut pane = match self.cx.scene() {
-                    // A screenshot shows the bundled sample accounts.
-                    Some(_) => panes::accounts::AccountsPane::from_dir_in(
-                        self.account_root.clone(),
-                        crate::accounts::sample_directory(),
-                        false,
-                    ),
-                    None => panes::accounts::AccountsPane::in_root(self.account_root.clone()),
-                };
-                if let Some(kind) = self.cx.scene().and_then(|scene| scene.account_form) {
-                    pane = pane.with_open_form_for_shot(kind);
-                }
-                Box::new(
-                    pane.with_command_state(&self.account_commands)
-                        .with_account_tester(std::sync::Arc::clone(&self.account_tester)),
-                )
-            }
+            Category::ExternalAccounts => Box::new(panes::model::ModelPane::new(
+                std::rc::Rc::clone(self.accounts.model()),
+            )),
             Category::AgentModels => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.agent_models.model(),
             ))),
@@ -743,443 +688,9 @@ impl SettingsApp {
             shell.set_content(content);
         }
     }
-
-    /// Route a canonical device-local operation through process-local typed
-    /// state. The pane remains the sole owner of the privileged command, its
-    /// availability checks, progress UI, and final notice. The collaborative
-    /// document is intentionally absent from this transport.
-    #[allow(
-        clippy::match_same_arms,
-        clippy::too_many_lines,
-        reason = "the closed device-local protocols stay together for auditable validation; identical no-op validation arms document explicitly supported variants"
-    )]
-    fn start_local_device_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Err("device-local settings commands must be effect operations".into());
-        }
-        if self.local_operation.is_some() {
-            return Err("another device-local Settings operation is still running".into());
-        }
-        let accepted: Result<(), String> = match type_id {
-            crate::actions::NETWORK_OPERATION_TYPE => {
-                let operation: crate::actions::NetworkOperation =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.select(Category::Network);
-                if matches!(
-                    operation,
-                    crate::actions::NetworkOperation::SetWiredEnabled { .. }
-                ) {
-                    let wired = os_actions::get_wired()?;
-                    if wired.device.is_none() {
-                        return Err("wired networking is unavailable on this device".into());
-                    }
-                }
-                self.local_pane_command
-                    .set(Some(crate::actions::LocalPaneCommand::Network(operation)));
-                Ok(())
-            }
-            crate::actions::AUDIO_OPERATION_TYPE => {
-                let operation: crate::actions::AudioOperation =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                let graph = media::audio::enumerate();
-                self.select(Category::Sound);
-                let validated: Result<(), String> = match operation.clone() {
-                    crate::actions::AudioOperation::SetOutputVolume { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("output volume must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetOutputMuted { .. } => Ok(()),
-                    crate::actions::AudioOperation::SetInputVolume { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("input volume must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetBalance { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("output balance must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetMono { .. }
-                    | crate::actions::AudioOperation::SetEchoCancellation { .. }
-                    | crate::actions::AudioOperation::SetSystemSounds { .. } => Ok(()),
-                    crate::actions::AudioOperation::SetSystemSoundVolume { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("system sound volume must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetSoundTheme { theme } => {
-                        if media::event_sound::installed_themes()
-                            .iter()
-                            .any(|installed| installed.id == theme)
-                        {
-                            Ok(())
-                        } else {
-                            Err("that sound theme is not installed".into())
-                        }
-                    }
-                    crate::actions::AudioOperation::SetEventSound { event, .. } => {
-                        settings_store::system_sounds::SystemSoundEvent::from_key(&event)
-                            .map(|_| ())
-                            .ok_or_else(|| "unknown system sound event".to_string())
-                    }
-                    crate::actions::AudioOperation::SetDeviceProfile {
-                        device_id,
-                        profile_index,
-                    } => {
-                        let hardware = graph
-                            .hardware
-                            .iter()
-                            .find(|device| device.id == device_id)
-                            .ok_or_else(|| "audio hardware is no longer available".to_string())?;
-                        let profile = hardware
-                            .profiles
-                            .iter()
-                            .find(|profile| profile.index == profile_index && profile.available)
-                            .ok_or_else(|| "audio profile is no longer available".to_string())?;
-                        let _ = profile;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::RouteStream {
-                        stream_id,
-                        playback,
-                        device_id,
-                    } => {
-                        let stream_exists = if playback {
-                            graph
-                                .playback_streams
-                                .iter()
-                                .any(|stream| stream.id == stream_id)
-                        } else {
-                            graph
-                                .record_streams
-                                .iter()
-                                .any(|stream| stream.id == stream_id)
-                        };
-                        if !stream_exists {
-                            return Err("audio stream is no longer available".into());
-                        }
-                        let devices = if playback {
-                            &graph.sinks
-                        } else {
-                            &graph.sources
-                        };
-                        match device_id {
-                            None => {}
-                            Some(id) => devices
-                                .iter()
-                                .find(|device| device.id == id)
-                                .ok_or_else(|| "audio route is no longer available".to_string())
-                                .map(|_| ())?,
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetStreamVolume { stream_id, value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("stream volume must be between 0 and 1".into());
-                        }
-                        let exists = graph
-                            .playback_streams
-                            .iter()
-                            .chain(&graph.record_streams)
-                            .any(|stream| stream.id == stream_id);
-                        if !exists {
-                            return Err("audio stream is no longer available".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetStreamMuted { stream_id, muted } => {
-                        let exists = graph
-                            .playback_streams
-                            .iter()
-                            .chain(&graph.record_streams)
-                            .any(|stream| stream.id == stream_id);
-                        if !exists {
-                            return Err("audio stream is no longer available".into());
-                        }
-                        let _ = muted;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::ToggleDiagnostics
-                    | crate::actions::AudioOperation::TestChannel { .. }
-                    | crate::actions::AudioOperation::ToggleMicrophoneMeter => Ok(()),
-                    crate::actions::AudioOperation::SelectOutput { device_id } => {
-                        graph.sink_by_id(device_id).ok_or_else(|| {
-                            "audio output device is no longer available".to_string()
-                        })?;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SelectInput { device_id } => {
-                        graph
-                            .sources
-                            .iter()
-                            .find(|device| device.id == device_id)
-                            .ok_or_else(|| {
-                                "audio input device is no longer available".to_string()
-                            })?;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::RoutePlayback {
-                        stream_id,
-                        device_id,
-                    } => {
-                        if !graph
-                            .playback_streams
-                            .iter()
-                            .any(|stream| stream.id == stream_id)
-                        {
-                            return Err("playback stream is no longer available".into());
-                        }
-                        graph.sink_by_id(device_id).ok_or_else(|| {
-                            "audio output device is no longer available".to_string()
-                        })?;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::RouteRecording {
-                        stream_id,
-                        device_id,
-                    } => {
-                        if !graph
-                            .record_streams
-                            .iter()
-                            .any(|stream| stream.id == stream_id)
-                        {
-                            return Err("recording stream is no longer available".into());
-                        }
-                        graph
-                            .sources
-                            .iter()
-                            .find(|device| device.id == device_id)
-                            .ok_or_else(|| {
-                                "audio input device is no longer available".to_string()
-                            })?;
-                        Ok(())
-                    }
-                };
-                validated?;
-                self.local_pane_command
-                    .set(Some(crate::actions::LocalPaneCommand::Audio(operation)));
-                Ok(())
-            }
-            crate::actions::DISPLAY_OPERATION_TYPE => {
-                let operation: crate::actions::DisplayOperation =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.select(Category::Displays);
-                let snapshot = settings_store::hardware::DisplayHardwareSnapshot::load();
-                let output = |connector: &str| {
-                    snapshot
-                        .as_ref()
-                        .ok_or_else(|| "live display capabilities are unavailable".to_string())?
-                        .outputs
-                        .iter()
-                        .find(|output| output.descriptor.connector == connector)
-                        .ok_or_else(|| "display output is no longer available".to_string())
-                };
-                let validated: Result<(), String> = match operation.clone() {
-                    crate::actions::DisplayOperation::SetBrightness { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("display brightness must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetAutoBrightness { .. }
-                    | crate::actions::DisplayOperation::SetNightLight { .. }
-                    | crate::actions::DisplayOperation::SetNightLightSchedule { .. } => Ok(()),
-                    crate::actions::DisplayOperation::SetNightLightTemperature { label } => {
-                        if !["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
-                            .contains(&label.as_str())
-                        {
-                            return Err("unsupported Night Light warmth".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetScale { label } => {
-                        if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
-                            return Err("unsupported display scale".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetOutputBrightness { connector, value } => {
-                        let _ = output(&connector)?;
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("monitor brightness must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetEnabled { connector, .. }
-                    | crate::actions::DisplayOperation::SetPrimary { connector, .. } => {
-                        let _ = output(&connector)?;
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetOutputScale { connector, label } => {
-                        let _ = output(&connector)?;
-                        if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
-                            return Err("unsupported output scale".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetPosition { connector, label } => {
-                        let _ = output(&connector)?;
-                        if label.len() > 160 {
-                            return Err("display position label is too long".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetMirror { connector, label } => {
-                        let _ = output(&connector)?;
-                        if label.len() > 160 {
-                            return Err("display mirror label is too long".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetModeLabel { connector, label } => {
-                        let output = output(&connector)?;
-                        if !output
-                            .descriptor
-                            .modes
-                            .iter()
-                            .any(|mode| mode.label() == label)
-                        {
-                            return Err("display mode is no longer supported by that output".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetTransformLabel { connector, label } => {
-                        let _ = output(&connector)?;
-                        if ![
-                            "Landscape",
-                            "Portrait right",
-                            "Upside down",
-                            "Portrait left",
-                        ]
-                        .contains(&label.as_str())
-                        {
-                            return Err("unsupported display orientation".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetColorProfileLabel { connector, label } => {
-                        let output = output(&connector)?;
-                        let valid = label == "System default"
-                            || output
-                                .color_profile_labels
-                                .iter()
-                                .any(|(id, name)| label == format!("{name} · {id}"));
-                        if !valid {
-                            return Err(
-                                "colour profile is no longer available for that output".into()
-                            );
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetMode { connector, mode } => {
-                        let output = output(&connector)?;
-                        if !output.descriptor.modes.contains(&mode) {
-                            return Err("display mode is no longer supported by that output".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetTransform { connector, .. } => {
-                        let _ = output(&connector)?;
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetHdr { connector, enabled } => {
-                        let output = output(&connector)?;
-                        if !output.descriptor.hdr {
-                            return Err("HDR is not available for that output".into());
-                        }
-                        let _ = enabled;
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetSdrBrightness { connector, value } => {
-                        let output = output(&connector)?;
-                        if !output.descriptor.hdr {
-                            return Err("HDR is not available for that output".into());
-                        }
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("SDR brightness must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetVrr { connector, enabled } => {
-                        let output = output(&connector)?;
-                        if !output.descriptor.vrr {
-                            return Err(
-                                "variable refresh rate is not available for that output".into()
-                            );
-                        }
-                        let _ = enabled;
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::SetColorProfile { connector, profile } => {
-                        let output = output(&connector)?;
-                        if let Some(profile) = &profile
-                            && !output.descriptor.color_profiles.contains(profile)
-                        {
-                            return Err(
-                                "colour profile is no longer available for that output".into()
-                            );
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::MoveOutput { connector, x, y } => {
-                        let _ = output(&connector)?;
-                        let bound = crate::actions::MAX_DISPLAY_COORDINATE;
-                        if !(-bound..=bound).contains(&x) || !(-bound..=bound).contains(&y) {
-                            return Err("display position is outside the desktop".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::DisplayOperation::ForgetDisplayTool { ref executable } => {
-                        if settings_store::display_tools::TrustedDisplayTools::load()
-                            .tools
-                            .iter()
-                            .any(|tool| tool.executable == *executable)
-                        {
-                            Ok(())
-                        } else {
-                            Err("that display tool is not trusted".into())
-                        }
-                    }
-                    crate::actions::DisplayOperation::Identify
-                    | crate::actions::DisplayOperation::Apply
-                    | crate::actions::DisplayOperation::Confirm
-                    | crate::actions::DisplayOperation::Revert => Ok(()),
-                };
-                validated?;
-                self.local_pane_command
-                    .set(Some(crate::actions::LocalPaneCommand::Display(operation)));
-                Ok(())
-            }
-            _ => return Ok(None),
-        };
-        accepted?;
-        let token = crate::actions::local_operation_token(type_id, payload)?;
-        self.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Running {
-                token: token.clone(),
-            });
-        self.local_operation_token = Some(token);
-        // The process-local command has only been admitted. The selected pane
-        // reports the actual terminal result through `poll_resource_operation`.
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
 }
 
 impl Widget for SettingsApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
     fn native_input_snapshot(
         &self,
         state: &AppModel,
@@ -1262,16 +773,6 @@ impl Widget for SettingsApp {
             "original_pending_ops": state.pending_ops(),
         }))
     }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            crate::actions::OPEN_PANE_OPERATION_TYPE,
-            crate::actions::ACCOUNT_OPERATION_TYPE,
-            crate::actions::NETWORK_OPERATION_TYPE,
-            crate::actions::AUDIO_OPERATION_TYPE,
-            crate::actions::DISPLAY_OPERATION_TYPE,
-        ]
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Background work an effect started finishes whether or not its pane
         // is open.
@@ -1280,10 +781,13 @@ impl Widget for SettingsApp {
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
+        self.accounts.poll();
+        self.displays.poll();
+        self.network.poll();
         // Sidebar selection and search are local presentation state. They do
         // not create CRDT click flags, draft text, collaboration traffic or
-        // undo entries. The canonical resource `settings.section:<slug>/open`
-        // still reaches the same `select` method through its View operation.
+        // undo entries. A pane's row offers the same `select` to search and
+        // agents through its open effect.
         if let Some(category) = self.sidebar_selection.with(|request| *request) {
             self.sidebar_selection.set(None);
             self.select(category);
@@ -1457,9 +961,6 @@ impl Widget for SettingsApp {
             .shell
             .as_mut()
             .is_some_and(ui::Widget::take_structure_dirty);
-        if child && self.selected == Category::ExternalAccounts {
-            self.refresh_account_resources();
-        }
         own || child
     }
 
@@ -1477,394 +978,6 @@ impl Widget for SettingsApp {
         self.shell
             .as_ref()
             .is_some_and(ui::Widget::layout_needs_measure)
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = self.admit_resource_operation_with_document(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.local_operation == Some(invocation) {
-            // These contracts explicitly advertise `cancellable: false`.
-            // Once the pane has admitted a system command it may be touching
-            // firmware, boot configuration, or durable input preferences, so
-            // a cancellation request cannot honestly stop or cancel history.
-            let _ = cancellation_requested;
-            let terminal = self.local_operation_status.get();
-            match terminal {
-                crate::actions::LocalOperationStatus::Succeeded { token, message }
-                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
-                {
-                    self.local_operation = None;
-                    self.local_operation_token = None;
-                    self.local_operation_status
-                        .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    });
-                }
-                crate::actions::LocalOperationStatus::Failed { token, message }
-                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
-                {
-                    self.local_operation = None;
-                    self.local_operation_token = None;
-                    self.local_operation_status
-                        .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "device_local_operation_failed".into(),
-                            message,
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
-                _ => return None,
-            }
-        }
-        if self
-            .account_probe
-            .as_ref()
-            .is_some_and(|(id, _)| *id == invocation)
-        {
-            if cancellation_requested {
-                self.account_probe = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("connection check cancelled".into()),
-                });
-            }
-            let result = self
-                .account_probe
-                .as_ref()
-                .and_then(|(_, receiver)| receiver.try_recv().ok());
-            if let Some(result) = result {
-                self.account_probe = None;
-                return Some(match result {
-                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(message) => tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "account_connection_failed".into(),
-                            message,
-                            details: None,
-                            retryable: true,
-                        },
-                    },
-                });
-            }
-            return None;
-        }
-        self.shell.as_mut().and_then(|shell| {
-            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
-        })
-    }
-}
-
-impl ui::resources::PublishesResources for SettingsApp {
-    /// The sections of this device's hardware and services, with the local
-    /// operations their controls use, and the account inventory.
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::live_device_resources(doc, self.account_resource_inventory())
-    }
-    /// Resolve one of them by id when an invocation names it.
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.publish_resource(doc, id)
-    }
-}
-
-impl SettingsApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "local account and presentation operation routing stays auditable in one dispatch point"
-    )]
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Result<bool, String> {
-        if type_id == crate::actions::ACCOUNT_OPERATION_TYPE {
-            let operation: crate::actions::AccountOperation =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            self.select(Category::ExternalAccounts);
-            return match (kind, operation) {
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Add { kind },
-                ) => {
-                    let kind = crate::accounts::AccountKind::from_slug(&kind)
-                        .ok_or_else(|| "unknown account kind".to_string())?;
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Add(kind)));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Edit { id },
-                ) => {
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Edit(id)));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Reauthenticate { id },
-                ) => {
-                    self.account_commands.set(Some(
-                        crate::panes::accounts::AccountViewCommand::Reauthenticate(id),
-                    ));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitForm,
-                ) => {
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Submit));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelForm,
-                ) => {
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Cancel));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitReauthentication,
-                ) => {
-                    self.account_commands.set(Some(
-                        crate::panes::accounts::AccountViewCommand::SubmitReauthentication,
-                    ));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelReauthentication,
-                ) => {
-                    self.account_commands.set(Some(
-                        crate::panes::accounts::AccountViewCommand::CancelReauthentication,
-                    ));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Open { id },
-                ) => {
-                    // Accounts have no separate read-only detail surface. Open
-                    // the exact account's settings form instead of discarding
-                    // the canonical id and landing on a generic list.
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Edit(id)));
-                    Ok(true)
-                }
-                _ => Err("operation kind does not match account operation".into()),
-            };
-        }
-        if kind != tilo_actions::OperationKind::View
-            || type_id != crate::actions::OPEN_PANE_OPERATION_TYPE
-        {
-            return Ok(false);
-        }
-        let slug: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let category = Category::ALL
-            .iter()
-            .copied()
-            .find(|category| category.slug() == slug)
-            .ok_or_else(|| "Settings pane is no longer available".to_string())?;
-        self.select(category);
-        Ok(true)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "central router keeps validation beside dispatch"
-    )]
-    fn admit_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if matches!(
-            type_id,
-            crate::actions::NETWORK_OPERATION_TYPE
-                | crate::actions::AUDIO_OPERATION_TYPE
-                | crate::actions::DISPLAY_OPERATION_TYPE
-        ) && kind == tilo_actions::OperationKind::Effect
-        {
-            let start = self.start_local_device_operation(kind, type_id, payload, doc, path)?;
-            if matches!(start, Some(ui::widget::ResourceOperationStart::Accepted)) {
-                self.local_operation = Some(invocation);
-            }
-            return Ok(start);
-        }
-        if type_id != crate::actions::ACCOUNT_OPERATION_TYPE {
-            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
-            if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
-                return Ok(Some(started));
-            }
-            return self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                });
-        }
-        let operation: crate::actions::AccountOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        self.select(Category::ExternalAccounts);
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                operation @ (crate::actions::AccountOperation::Add { .. }
-                | crate::actions::AccountOperation::Open { .. }
-                | crate::actions::AccountOperation::Edit { .. }
-                | crate::actions::AccountOperation::Reauthenticate { .. }
-                | crate::actions::AccountOperation::CancelForm
-                | crate::actions::AccountOperation::CancelReauthentication),
-            ) => {
-                self.answer_resource_operation(
-                    kind,
-                    type_id,
-                    &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
-                    doc,
-                    path,
-                )?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                operation @ (crate::actions::AccountOperation::SubmitForm
-                | crate::actions::AccountOperation::SubmitReauthentication),
-            ) => {
-                self.answer_resource_operation(
-                    kind,
-                    type_id,
-                    &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
-                    doc,
-                    path,
-                )?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::Remove { id },
-            ) => {
-                let stored = self
-                    .account_root
-                    .store()
-                    .get(&accounts::AccountId::from(id.clone()))
-                    .cloned()
-                    .ok_or_else(|| "account no longer exists".to_string())?;
-                let account_kind =
-                    crate::accounts::AccountKind::from_type_id(stored.type_id.as_str())
-                        .ok_or_else(|| "unsupported account type".to_string())?;
-                crate::panes::accounts::AccountsPane::remove_account(
-                    &self.account_root,
-                    &self.account_root.custodian(),
-                    account_kind,
-                    &id,
-                )?;
-                self.refresh_account_resources();
-                self.refresh_shell_children();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::Test { id },
-            ) => {
-                if self.account_probe.is_some() {
-                    return Err("an account connection check is already running".into());
-                }
-                let account_id = accounts::AccountId::from(id);
-                let account = self
-                    .account_root
-                    .store()
-                    .get(&account_id)
-                    .cloned()
-                    .ok_or_else(|| "account no longer exists".to_string())?;
-                let secret = self.account_root.vault().get(&account_id).ok_or_else(|| {
-                    "this account has no saved credential; sign in again first".to_string()
-                })?;
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                if crate::accounts::AccountKind::from_type_id(account.type_id.as_str())
-                    .is_some_and(crate::accounts::AccountKind::is_cloud_storage)
-                {
-                    // A cloud grant is verified by asking the provider for a
-                    // fresh access token, which custody also hands off.
-                    let custodian = self.account_root.custodian();
-                    std::thread::spawn(move || {
-                        let _ = sender.send(
-                            custodian
-                                .publish(&account_id, true)
-                                .map(|()| "The provider accepted the saved sign-in".to_string())
-                                .map_err(|error| error.to_string()),
-                        );
-                    });
-                } else {
-                    let tester = std::sync::Arc::clone(&self.account_tester);
-                    std::thread::spawn(move || {
-                        let _ = sender.send(tester.test(&account, &secret));
-                    });
-                }
-                self.account_probe = Some((invocation, receiver));
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            _ => return Err("operation kind does not match account operation".into()),
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
     }
 }
 
@@ -1934,147 +1047,6 @@ mod tests {
         // Re-selecting the same category is a no-op (no spurious rebuild).
         app.select(Category::Users);
         assert!(!app.take_structure_dirty());
-    }
-
-    /// Hardware, network, input and Bluetooth effects are local lifecycles.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn hardware_and_input_effects_stay_off_the_collaborative_document() {
-        // Case `hardware_effect_admission_never_mutates_the_collaborative_document`.
-        {
-            use std::collections::BTreeSet;
-
-            let config = crate::prefs::test_env::ConfigGuard::new();
-            let mut app = config.app();
-            let mut doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT;
-            let cases = vec![
-                (
-                    crate::actions::NETWORK_OPERATION_TYPE,
-                    serde_json::to_vec(&crate::actions::NetworkOperation::Refresh).unwrap(),
-                ),
-                (
-                    crate::actions::AUDIO_OPERATION_TYPE,
-                    serde_json::to_vec(&crate::actions::AudioOperation::SetOutputVolume {
-                        value: 0.5,
-                    })
-                    .unwrap(),
-                ),
-                (
-                    crate::actions::DISPLAY_OPERATION_TYPE,
-                    serde_json::to_vec(&crate::actions::DisplayOperation::SetBrightness {
-                        value: 0.5,
-                    })
-                    .unwrap(),
-                ),
-            ];
-            let mut covered = BTreeSet::new();
-            for (type_id, payload) in cases {
-                let heads = doc.get_heads();
-                assert!(matches!(
-                    app.start_local_device_operation(
-                        tilo_actions::OperationKind::Effect,
-                        type_id,
-                        &payload,
-                        &mut doc,
-                        &root,
-                    )
-                    .expect("bounded local command is admitted"),
-                    Some(ui::widget::ResourceOperationStart::Accepted)
-                ));
-                assert_eq!(doc.get_heads(), heads, "{type_id} touched Automerge");
-                covered.insert(type_id);
-                app.local_pane_command.set(None);
-                app.local_operation_status
-                    .set(crate::actions::LocalOperationStatus::Idle);
-                app.local_operation_token = None;
-            }
-
-            let heads = doc.get_heads();
-            assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::ACCOUNT_OPERATION_TYPE,
-                        &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap()
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .expect("account form command is admitted"),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
-            covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
-
-            assert_eq!(
-                covered,
-                crate::actions::DEVICE_LOCAL_OPERATION_TYPES
-                    .iter()
-                    .copied()
-                    .collect(),
-                "the unchanged-heads matrix must cover the complete closed set"
-            );
-        }
-
-        // Case `network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action`.
-        {
-            let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config.app();
-            let mut doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT;
-            let heads = doc.get_heads();
-            let operation = crate::actions::NetworkOperation::Refresh;
-            let payload = serde_json::to_vec(&operation).expect("network operation serializes");
-            let invocation = tilo_actions::InvocationId::new();
-            let start = app
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::NETWORK_OPERATION_TYPE,
-                        &payload,
-                    ),
-                    &mut doc,
-                    &root,
-                )
-                .expect("refresh admission is local and bounded");
-            assert!(matches!(
-                start,
-                Some(ui::widget::ResourceOperationStart::Accepted)
-            ));
-            assert_eq!(app.selected(), Category::Network);
-            assert_eq!(
-                doc.get_heads(),
-                heads,
-                "local effects must not touch Automerge"
-            );
-            assert_eq!(
-                app.local_pane_command.get(),
-                Some(crate::actions::LocalPaneCommand::Network(operation.clone()))
-            );
-            assert!(
-                app.poll_resource_operation(invocation, false, &doc, &root)
-                    .is_none()
-            );
-
-            app.local_operation_status
-                .set(crate::actions::LocalOperationStatus::Succeeded {
-                    token: crate::actions::local_operation_token_for(
-                        crate::actions::NETWORK_OPERATION_TYPE,
-                        &operation,
-                    ),
-                    message: "refreshed".into(),
-                });
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &root),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ));
-        }
     }
 
     #[derive(Debug)]

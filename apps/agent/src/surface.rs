@@ -282,6 +282,18 @@ pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
     CONTRACTS.iter().find(|c| c.namespace == namespace)
 }
 
+/// The namespace of the app a resource belongs to: the app whose resource
+/// kind `kind` is — a framework app publishes its document under its kind —
+/// else the one its id starts with ([`app_of`]).
+pub fn namespace_of<'a>(kind: Option<&str>, resource_id: &'a str) -> &'a str {
+    kind.and_then(|kind| {
+        CONTRACTS
+            .iter()
+            .find(|contract| contract.kind.kind() == kind)
+    })
+    .map_or_else(|| app_of(resource_id), |contract| contract.namespace)
+}
+
 /// The contract for an announced app id.
 pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
     CONTRACTS
@@ -1128,6 +1140,15 @@ mod tests {
         {
             assert_eq!(app_of("word-processor.document"), "word-processor");
             assert_eq!(app_of("files.entry:/var/workspace/plan.md"), "files");
+            // A framework app publishes its document under its resource kind,
+            // which names the app where the id does not.
+            let writer =
+                ui::framework::resource_kind::<word_processor::framework::WordProcessorApp>();
+            assert_eq!(
+                namespace_of(Some(writer.kind()), writer.kind()),
+                "word-processor"
+            );
+            assert_eq!(namespace_of(None, "files.entry:/plan.md"), "files");
         }
 
         // Case `duplicate_addresses_from_two_live_publishers_remain_distinct`.

@@ -96,6 +96,8 @@ impl Resource for Document {
                 permission: decl.permission,
                 destructive: decl.destructive,
                 result: decl.result,
+                tags: decl.tags,
+                content: decl.content,
                 build: decl.build,
             })
             .collect();
@@ -201,7 +203,7 @@ impl ResourceApp for WordProcessorApp {
         // is not offered beside it. Open, save, and save-as are Effects on
         // this door.
         let mut specs = crate::actions::view_operations();
-        specs.extend(crate::actions::file_operation_specs(None));
+        specs.extend(crate::actions::file_operation_specs());
         specs
     }
 
@@ -303,10 +305,9 @@ impl ResourceSurface<Document> for WordProcessorWidget {
         self.stage_scenario(scenario);
     }
 
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
+    /// Edits bound to the caret and selection of whoever invokes them.
+    fn bound_declarations(&self) -> Vec<ActionDecl<Document>> {
+        self.bound_edits()
     }
 }
 

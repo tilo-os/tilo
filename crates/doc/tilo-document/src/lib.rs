@@ -731,6 +731,20 @@ impl Resource for RichText {
                 },
             )
             .describe("Insert a paragraph after a block."),
+            ActionDecl::new(
+                "append-paragraph",
+                "Add paragraph",
+                vec![ActionParam::required_owned(
+                    "text",
+                    ParamType::Text,
+                    "The paragraph's text",
+                )],
+                |args, _| {
+                    let text = args.text("text").ok_or("missing text")?.to_owned();
+                    Ok(RichTextAction::AppendParagraph { text })
+                },
+            )
+            .describe("Add a paragraph at the end of the document, with no caret to place."),
         ]
     }
 

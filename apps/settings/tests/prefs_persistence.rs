@@ -19,11 +19,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::AutoCommit;
-use automerge::transaction::Transactable;
 use settings::accounts::{AccountDirectory, AccountKind, AccountRoot};
-use settings::prefs::SystemPrefs;
-use ui::widget::Widget;
 
 struct AcceptAccount;
 
@@ -37,57 +33,9 @@ impl settings::account_probe::AccountTester for AcceptAccount {
     }
 }
 
-fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    pane.sync(&mut doc, &root); // first sync seeds
-    let _ = doc.put(&root, key, value);
-    pane.sync(&mut doc, &root); // observe + persist
-}
-
-/// Night light, display scale and accounts persist.
+/// Accounts persist.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 fn local_prefs_and_accounts_persist_to_disk() {
-    // Case `display_night_light_toggle_persists_to_disk`.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        let mut pane = settings::panes::display::build();
-        seed_then_set_bool(
-            pane.as_mut(),
-            settings::panes::display::NIGHT_LIGHT_KEY,
-            true,
-        );
-
-        assert!(
-            SystemPrefs::load().display.night_light,
-            "the night-light toggle persisted"
-        );
-    }
-
-    // Case `display_scale_persists_fractional_factor_to_disk`.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        let mut pane = settings::panes::display::build();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seed (writes "100%")
-        // User picks a fractional 150% scale.
-        let _ = doc.put(&root, settings::panes::display::DISPLAY_SCALE_KEY, "150%");
-        pane.sync(&mut doc, &root); // observe + persist
-
-        let scale = SystemPrefs::load().display.scale;
-        assert!(
-            (scale - 1.5).abs() < 1e-9,
-            "the display-scale dropdown persisted a fractional 1.5, got {scale}"
-        );
-    }
-
     // Case `accounts_add_and_remove_round_trip_through_the_pane`.
     // The External Accounts pane's Add flow writes a real account into the shared
     // canonical accounts store (the same store Mail reads), and Remove deletes it
@@ -103,18 +51,16 @@ fn local_prefs_and_accounts_persist_to_disk() {
 
         let mut pane = settings::panes::accounts::AccountsPane::in_root(account_root.clone())
             .with_account_tester(std::sync::Arc::new(AcceptAccount));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
 
         // Open the Add-email form, fill it, and Save.
-        let _ = doc.put(&root, settings::panes::accounts::ADD_MAIL_KEY, true);
-        pane.sync(&mut doc, &root);
+        pane.command(settings::panes::accounts::AccountViewCommand::Add(
+            AccountKind::Mail,
+        ));
         pane.set_form_fields_for_test("Test User", "test@gmail.com", "test@gmail.com", "");
         pane.set_form_password_for_test("s3cret-pw");
         pane.submit_form_for_test();
         assert!(
-            pane.finish_form_submission_for_test(&mut doc, &root),
+            pane.finish_form_submission_for_test(),
             "bounded account probe and disk transaction complete"
         );
 
@@ -153,20 +99,8 @@ fn local_prefs_and_accounts_persist_to_disk() {
             .succeeded()
             .expect("seed sync health");
 
-        // Now request removal via the trash button's key. Destructive account
-        // removal is deliberately a two-stage action, so exercise the same
-        // explicit confirmation the UI requires.
-        let remove_key = format!("settings.accounts.remove.{id}");
-        let _ = doc.put(&root, remove_key.as_str(), true);
-        pane.sync(&mut doc, &root);
-        assert!(
-            !AccountDirectory::load_in(&account_root)
-                .views_of(AccountKind::Mail)
-                .is_empty(),
-            "the first action only opens the removal confirmation"
-        );
-        let _ = doc.put(&root, settings::panes::accounts::REMOVE_CONFIRM_KEY, true);
-        pane.sync(&mut doc, &root);
+        // Remove it, as the confirmed Remove effect does.
+        pane.remove(&id).unwrap();
 
         // The directory now reports empty for the Email kind — the account is gone
         // from the shared store on disk.

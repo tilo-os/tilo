@@ -9,8 +9,8 @@
 //!
 //! The browser spawns the agent through the host's remote actions; the agent
 //! opens the browser's record and edits it through the app's own action;
-//! the browser receives the durable change in host order and sees the
-//! agent's cursor; the agent sees the browser's cursor; pause, resume and
+//! the browser receives the durable change in host order and sees the agent
+//! on the record; the agent sees the browser's cursor; pause, resume and
 //! stop hold, release and end the agent.
 
 #![allow(
@@ -50,7 +50,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_agent_participant::{
-    AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, HostedApp, ParticipantConfig,
+    AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
     Seed, SupervisorHost,
 };
 use tilo_browser_peer::{DocumentRoute, Host, LiveState, PeerEvent, PeerHandle, certify};
@@ -246,7 +246,7 @@ async fn receive_until(
     agent: &mut AgentParticipant,
     events: &tilo_browser_peer::PeerEvents,
     route: &DocumentRoute,
-    page: &mut HostedApp,
+    page: &mut Replica,
     author: [u8; 32],
     text: &str,
 ) {
@@ -274,7 +274,7 @@ async fn receive_until(
     }
 }
 
-fn body(app: &HostedApp) -> String {
+fn body(app: &Replica) -> String {
     app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap()
 }
@@ -309,7 +309,6 @@ async fn seal_live(peer: &PeerHandle, frame: Vec<u8>) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
-    common::isolate_device();
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -391,7 +390,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join(workspace()).unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = HostedApp::open(&catalogue, SCRATCHPAD, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(&catalogue, SCRATCHPAD, ROOM, "ada", false, Seed::New).unwrap();
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: ROOM.into(),
@@ -463,8 +462,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
-    // 5. The browser's live session over WebTransport sees the agent's
-    // cursor: presence of kind agent, focused on the record.
+    // 5. The browser's live session over WebTransport sees the agent:
+    // presence of kind agent, focused on the record.
     let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
     browser
         .live_grant_then(
@@ -493,7 +492,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let presence = loop {
         assert!(
             Instant::now() < deadline,
-            "the agent's cursor never reached the browser"
+            "the agent's presence never reached the browser"
         );
         agent.pump();
         let Some(subscribed) = track.as_mut() else {
@@ -697,7 +696,6 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     drop(live);
     agent.close();
-    page.close();
     browser.close();
     host.relay.shutdown().await;
 }

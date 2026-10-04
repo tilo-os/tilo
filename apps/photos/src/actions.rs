@@ -3305,17 +3305,23 @@ fn create_album_spec() -> ActionDecl<crate::resource::Photos> {
         "create-album",
         "Create album",
         vec![
-            ActionParam::required(
+            ActionParam::required("name", ParamType::Text, "visible album name"),
+            ActionParam::optional(
                 "id",
                 ParamType::Text,
-                "stable album id, for example photos.album:holiday",
+                "stable album id, for example photos.album:holiday; a new one when absent",
             ),
-            ActionParam::required("name", ParamType::Text, "visible album name"),
             photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         |args, _| {
+            // A new album's id is minted once, here, when the caller names
+            // none, so the action replays with the same id everywhere.
+            let id = args.text("id").map_or_else(
+                || format!("photos.album:{}", uuid::Uuid::new_v4().simple()),
+                |id| id.trim().to_owned(),
+            );
             Ok(PhotosAction::SaveAlbum {
-                id: args.text("id").unwrap_or_default().trim().to_owned(),
+                id,
                 name: args.text("name").unwrap_or_default().trim().to_owned(),
                 photo_ids: membership_ids(args),
                 create: true,

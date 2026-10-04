@@ -467,14 +467,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// and run the frame that shows it.
     ///
     /// # Errors
-    /// Returns why the record cannot be opened.
+    /// Returns why the record cannot be opened: the window keeps the one it
+    /// shows.
     pub fn open_here(&mut self, arguments: &[&str]) -> Result<(), String> {
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
-        self.harness()
+        let outcome = self
+            .harness()
             .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.open_here(&arguments))
             .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
         self.harness().relayout();
-        Ok(())
+        outcome
+            .get()
+            .unwrap_or_else(|| Err("the host did not take the request".into()))
     }
 
     /// The record the app shows.

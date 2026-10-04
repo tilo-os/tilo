@@ -3,9 +3,3 @@
 
 [ratchets.raw_operation_handler]
 "apps/word-processor/src/widget.rs" = 3
-
-[ratchets.surface_document_actions]
-"apps/word-processor/src/framework.rs" = 1
-
-[ratchets.widget_owned_document]
-"apps/word-processor/src/actions.rs" = 1

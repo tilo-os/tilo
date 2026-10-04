@@ -243,9 +243,14 @@ impl<R: Resource> SurfaceCx<R> {
     /// the app's own Open. The window's view is rebuilt for that record on
     /// the next frame. Refused in a past version and a capture.
     ///
+    /// The outcome answers once the host opened it, or why it could not.
+    ///
     /// # Errors
-    /// Returns why the record cannot be opened.
-    pub fn open_here(&self, arguments: &[String]) -> Result<(), String> {
+    /// Returns that the window cannot open another record.
+    pub fn open_here(
+        &self,
+        arguments: &[String],
+    ) -> Result<ui_core::application::ReplacementOutcome, String> {
         self.run.open_here(arguments)
     }
 

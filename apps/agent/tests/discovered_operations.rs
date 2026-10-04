@@ -103,7 +103,7 @@ fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
 fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Resource> {
     let b = blocks(doc);
     let caret = b.last().map(|block| block.id.clone()).unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: caret.clone(),
             caret_offset: 0,
