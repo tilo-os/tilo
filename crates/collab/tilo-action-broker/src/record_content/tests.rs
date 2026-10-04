@@ -184,3 +184,27 @@ fn pieces_nobody_asked_for_are_dropped() {
     assert!(arrivals.try_recv().is_err());
     assert_eq!(b.shelf.read(&ContentScope::of(&route()), &hash), None);
 }
+
+/// A person record's content follows the record into the person's room,
+/// whichever room the window that stored it shows: a record of the window's
+/// room does not reach it.
+#[test]
+fn a_person_record_s_content_lives_in_the_person_s_room() {
+    let (a, b, _) = pair(true);
+    let person = CrdtRoute::record("so.tilo.tube", "person-room", "history");
+    let window = CrdtRoute::record("so.tilo.tube", "room-1", "");
+    let poster = picture(PIECE_BYTES + 3);
+    let hash = content_hash(&poster);
+    a.offer(&person, &hash, &poster).unwrap();
+
+    let mut in_window = b.subscribe(&window);
+    b.want(&window, &hash);
+    assert!(
+        in_window.try_recv().is_err(),
+        "the window's room keeps none of it"
+    );
+
+    let mut in_person = b.subscribe(&person);
+    b.want(&person, &hash);
+    assert_eq!(in_person.try_recv().unwrap().bytes, poster);
+}

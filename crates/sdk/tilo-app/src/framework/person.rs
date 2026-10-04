@@ -173,6 +173,15 @@ impl<P: Resource> PersonRecord<P> {
         self.shared.record.syncs()
     }
 
+    /// Where the content this record references — a picture its state
+    /// names by hash — is stored and read. It lives with the record, on the
+    /// person's devices, never in the room of the window showing it; `None`
+    /// on a device that knows no person, whose records keep no content.
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.shared.record.content()
+    }
+
     /// The record underneath, for a test or host that carries it between
     /// devices itself.
     #[must_use]
