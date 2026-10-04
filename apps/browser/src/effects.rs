@@ -42,6 +42,17 @@ pub enum BrowserEffect {
         #[param("Absolute URL or search terms")]
         url: String,
     },
+    /// Open in new tab
+    ///
+    /// Another Browser, at the address, in a desktop tab right after this
+    /// one; this window keeps its page.
+    #[effect(row, returns)]
+    OpenTab {
+        #[param("Absolute URL or search terms")]
+        url: String,
+        #[param("Open behind this tab instead of in front of it")]
+        background: Option<bool>,
+    },
     /// Open page
     ///
     /// Opens a page of the history or a bookmark in this window.
@@ -182,6 +193,10 @@ impl BrowserEffect {
             Self::Reload => BrowserOperation::Reload,
             Self::Stop => BrowserOperation::Stop,
             Self::Navigate { url } | Self::Open { url } => BrowserOperation::Navigate { url },
+            Self::OpenTab { url, background } => BrowserOperation::OpenInNewTab {
+                url,
+                background: background.unwrap_or(false),
+            },
             Self::ShowPage => BrowserOperation::ShowPage,
             Self::ShowHistory => BrowserOperation::ShowLibrary {
                 section: LibrarySection::History,
