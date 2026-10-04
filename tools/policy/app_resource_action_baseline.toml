@@ -56,7 +56,6 @@
 "apps/pdf-viewer/src/app.rs" = 3
 "apps/photos/src/app.rs" = 3
 "apps/settings/src/settings_app.rs" = 3
-"apps/sheets/src/app.rs" = 3
 "apps/slides/src/app.rs" = 3
 "apps/terminal/src/main_body.rs" = 2
 "apps/video-editor/src/app.rs" = 3

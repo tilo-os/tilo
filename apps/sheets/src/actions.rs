@@ -42,8 +42,9 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource,
+    ExecutionLocus, Resource,
 };
+use ui::tilo_resource::{self, Effect};
 
 use crate::doc::SheetsDoc;
 use crate::doc::{ChartKind, ChartSnapshot, CommentReply, CommentThread};
@@ -55,57 +56,105 @@ use crate::settings::DocSettings;
 
 /// Registry `type_id` for every Sheets action.
 pub const SHEETS_ACTION_TYPE: &str = "sheets.action";
-pub const SHEETS_OPERATION_TYPE: &str = "sheets.operation";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SheetsOperation {
+/// What Sheets does that changes no workbook: reading spreadsheet files into
+/// new sheets and writing the workbook out as one, and moving around the grid
+/// (views). An import reaches the workbook as one [`SheetsAction::ImportSheets`].
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "sheets.effect")]
+pub enum SheetsEffect {
+    /// Import CSV
+    ///
+    /// Adds a CSV file as a new sheet.
+    #[effect(job, cancellable, device_only)]
     ImportCsv {
+        #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
+    /// Import Excel workbook
+    ///
+    /// Adds every sheet of an `.xlsx` workbook.
+    #[effect(job, cancellable, device_only)]
     ImportXlsx {
+        #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
+    /// Adds every sheet of an `.ods` spreadsheet.
+    #[effect(
+        job,
+        cancellable,
+        device_only,
+        label = "Import OpenDocument spreadsheet"
+    )]
     ImportOds {
+        #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
+    /// Export CSV
+    ///
+    /// Saves what the active sheet shows as a CSV file.
+    #[effect(job, cancellable, destructive, device_only)]
     ExportCsv {
+        #[param("Where to write it; omit to choose")]
         path: Option<String>,
     },
+    /// Export Excel workbook
+    ///
+    /// Saves every sheet as an `.xlsx` workbook.
+    #[effect(job, cancellable, destructive, device_only)]
     ExportXlsx {
+        #[param("Where to write it; omit to choose")]
         path: Option<String>,
     },
+    /// Saves every sheet as an `.ods` spreadsheet.
+    #[effect(
+        job,
+        cancellable,
+        destructive,
+        device_only,
+        label = "Export OpenDocument spreadsheet"
+    )]
     ExportOds {
+        #[param("Where to write it; omit to choose")]
         path: Option<String>,
     },
-    OpenCommandPalette,
+    /// Open command palette
+    #[effect(view)]
+    Commands,
+    /// Go to cell…
+    #[effect(view)]
     GoToCell {
+        #[param("Cell reference, e.g. B12")]
         reference: String,
     },
+    /// Toggle formula view
+    ///
+    /// Shows the formulas in the grid instead of what they calculate, or back.
+    #[effect(view)]
     ToggleFormulaView,
-    RevealSheet {
-        sheet_id: String,
-    },
-    RevealCell {
-        sheet_id: String,
+    /// Open
+    ///
+    /// Shows the sheet with the cell selected.
+    #[effect(view, row)]
+    Open {
+        #[param("The sheet's id")]
+        sheet: String,
+        #[param("Zero-based column")]
         col: u32,
+        #[param("Zero-based row")]
         row: u32,
     },
 }
 
-pub fn operation_kind(operation: &SheetsOperation) -> OperationKind {
-    match operation {
-        SheetsOperation::ImportCsv { .. }
-        | SheetsOperation::ImportXlsx { .. }
-        | SheetsOperation::ImportOds { .. }
-        | SheetsOperation::ExportCsv { .. }
-        | SheetsOperation::ExportXlsx { .. }
-        | SheetsOperation::ExportOds { .. } => OperationKind::Effect,
-        SheetsOperation::OpenCommandPalette
-        | SheetsOperation::GoToCell { .. }
-        | SheetsOperation::ToggleFormulaView
-        | SheetsOperation::RevealSheet { .. }
-        | SheetsOperation::RevealCell { .. } => OperationKind::View,
+/// What opening a sheet, a cell, a chart or a comment shows: its sheet with
+/// that cell selected (the sheet's first cell for the sheet itself).
+pub fn open_spec(sheet_id: &str, col: u32, row: u32) -> ActionSpec {
+    SheetsEffect::Open {
+        sheet: sheet_id.to_owned(),
+        col,
+        row,
     }
+    .bound()
 }
 
 pub fn sheet_resource_id(sheet_id: &str) -> String {
@@ -130,34 +179,6 @@ pub fn open_sheet_address(sheet_id: &str) -> ActionAddress {
 
 pub fn open_cell_address(sheet_id: &str, col: u32, row: u32) -> ActionAddress {
     ActionAddress::new(cell_resource_id(sheet_id, col, row), "open")
-}
-
-/// # Errors
-///
-/// Returns the JSON decoding error when `payload` is not a Sheets operation.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOperation>, String> {
-    if type_id != SHEETS_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    clippy::expect_used,
-    reason = "operation values are immediately serialized and every enum variant is serializable"
-)]
-fn operation(id: &str, label: &str, kind: OperationKind, value: SheetsOperation) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, SHEETS_OPERATION_TYPE, &value)
-        .expect("SheetsOperation is always serializable");
-    match value {
-        SheetsOperation::ExportCsv { .. }
-        | SheetsOperation::ExportXlsx { .. }
-        | SheetsOperation::ExportOds { .. } => spec.destructive(),
-        _ => spec,
-    }
 }
 
 /// The fixed default currency used when an action reads stored cell formats out
@@ -2038,14 +2059,7 @@ fn sheet_document_resource(
     // but are deliberately absent from the headless action surface.
     let stable = sheet.id.clone();
     let mut resource = Resource::new(sheet_resource_id(&stable), "sheets.sheet", label)
-        .with_action(operation(
-            "open",
-            "Open sheet",
-            OperationKind::View,
-            SheetsOperation::RevealSheet {
-                sheet_id: stable.clone(),
-            },
-        ));
+        .with_action(open_spec(&stable, 0, 0));
 
     // Rename — a prompted action carrying the new name.
     resource = resource.with_action(ActionSpec::prompted(
@@ -2123,16 +2137,7 @@ fn sheet_document_resource(
             "sheets.chart",
             chart.title.clone(),
         )
-        .with_action(operation(
-            "open",
-            "Open chart range",
-            OperationKind::View,
-            SheetsOperation::RevealCell {
-                sheet_id: stable.clone(),
-                col: chart.start.0,
-                row: chart.start.1,
-            },
-        ))
+        .with_action(open_spec(&stable, chart.start.0, chart.start.1))
         .with_action(ActionSpec::prompted(
             "edit",
             "Edit chart",
@@ -2187,16 +2192,7 @@ fn sheet_document_resource(
             "sheets.comment",
             format!("{}{}", column_label(thread.start.0), thread.start.1 + 1),
         )
-        .with_action(operation(
-            "open",
-            "Open comment anchor",
-            OperationKind::View,
-            SheetsOperation::RevealCell {
-                sheet_id: stable.clone(),
-                col: thread.start.0,
-                row: thread.start.1,
-            },
-        ))
+        .with_action(open_spec(&stable, thread.start.0, thread.start.1))
         .with_action(
             ActionSpec::prompted(
                 "edit",
@@ -2288,16 +2284,7 @@ pub(crate) fn open_cell_resource(sheet_id: &str, col: u32, row: u32) -> Resource
         "sheets.cell",
         reference,
     )
-    .with_action(operation(
-        "open",
-        "Open cell",
-        OperationKind::View,
-        SheetsOperation::RevealCell {
-            sheet_id: sheet_id.to_string(),
-            col,
-            row,
-        },
-    ))
+    .with_action(open_spec(sheet_id, col, row))
 }
 
 /// The 1-based column letters for `col`, used in action labels/status lines.
@@ -2461,8 +2448,6 @@ mod tests {
         let published = &resources_for(&doc)[0];
         assert_eq!(published.kind, "sheets.workbook");
         assert!(published.actions.iter().any(|a| a.id == "new-sheet"));
-        assert!(published.actions.iter().any(|a| a.id == "import-csv"));
-        assert!(published.actions.iter().any(|a| a.id == "go-to-cell"));
         assert_eq!(published.children.len(), 2);
         assert!(published.children.iter().all(|c| c.kind == "sheets.sheet"));
         assert!(
@@ -2856,10 +2841,9 @@ mod tests {
         // Case `imported_workbook_has_an_exact_replay_cell_boundary`.
         imported_workbook_has_an_exact_replay_cell_boundary();
 
-        // Case `interchange_operations_are_typed_background_jobs`.
+        // Case `interchange_effects_are_typed_background_jobs`.
         {
-            let doc = seeded();
-            let resources = resources_for(&doc);
+            let specs = SheetsEffect::specs();
             for id in [
                 "import-csv",
                 "import-xlsx",
@@ -2868,16 +2852,12 @@ mod tests {
                 "export-xlsx",
                 "export-ods",
             ] {
-                let action = resources[0]
-                    .actions
-                    .iter()
-                    .find(|action| action.id == id)
-                    .unwrap();
+                let action = specs.iter().find(|action| action.id == id).unwrap();
                 assert_eq!(action.params()[0].name.as_ref(), "path");
                 assert_eq!(
                     action.contract.execution,
                     ExecutionMode::Background { cancellable: true },
-                    "{id} must stay cancellable so a stuck job cannot hold the one interchange slot"
+                    "{id} is a job its caller may cancel"
                 );
                 assert_eq!(action.contract.result, ResultSpec::Job);
                 assert!(action.contract.validate_declaration().is_empty());
