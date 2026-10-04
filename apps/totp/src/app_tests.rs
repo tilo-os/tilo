@@ -219,7 +219,10 @@ fn accessibility_names_accounts_and_the_sheet_owns_the_window() {
         assert!(named("Dialog", "Add account"));
         assert!(named("TextInput", "Issuer"));
         assert!(named("TextInput", "Account name"));
-        assert!(named("TextInput", "Secret key"));
+        assert!(
+            named("PasswordInput", "Secret key"),
+            "a key field is announced as protected"
+        );
         assert!(named("Button", "Cancel"));
         assert!(named("Button", "Advanced options"));
         let tree = app.accessibility().expect("the root stays described");
@@ -664,9 +667,10 @@ fn every_capture_scenario_stages_its_state() {
             }
             _ => assert_eq!(framed.list.len(), 5, "{scenario}"),
         }
+        let audit = Framed::harness(&framed).accessibility_audit();
         assert!(
-            Framed::harness(&framed).accessibility_audit().is_clean(),
-            "{scenario}: the screen is accessible"
+            audit.is_clean(),
+            "{scenario}: the screen is accessible: {audit:?}"
         );
     }
 }

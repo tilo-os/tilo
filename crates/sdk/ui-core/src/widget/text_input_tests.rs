@@ -1842,6 +1842,21 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         );
     }
 
+    // Case `password_and_key_kinds_never_leak_to_a11y_even_unmasked`.
+    for kind in [TextInputKind::Password, TextInputKind::Secret] {
+        let mut ti = TextInput::new(Vec::new()).with_kind(kind);
+        ti.text = "JBSWY3DPEHPK3PXP".to_string();
+        let node = Widget::accessibility(&ti).unwrap();
+        assert_eq!(node.value, None, "{kind:?}: a key is not exported");
+        assert!(node.state.protected, "{kind:?}: a key field is protected");
+        assert_eq!(node.text_selection, None, "{kind:?}: no selection offsets");
+        assert_eq!(
+            Widget::ime_purpose(&ti),
+            Some(winit::window::ImePurpose::Password),
+            "{kind:?}: no input-method suggestions learn the key"
+        );
+    }
+
     // Case `secret_reveal_toggle_shows_glyphs_but_never_leaks_to_a11y`.
     {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);

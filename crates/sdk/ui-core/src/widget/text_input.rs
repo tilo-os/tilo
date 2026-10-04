@@ -1243,7 +1243,7 @@ impl TextInput {
         if self.text == s {
             return;
         }
-        if self.secret {
+        if self.holds_secret() {
             self.text.zeroize();
             self.last_notified_text.zeroize();
         }
@@ -2046,7 +2046,7 @@ impl TextInput {
             self.single_layout.take(),
             browser_emoji,
         );
-        if self.secret {
+        if self.holds_secret() {
             layout.discard_prepared_inputs();
         }
         tr.note_browser_rich_layout(&layout);
@@ -2883,6 +2883,14 @@ impl TextInput {
         self.secret
     }
 
+    /// Whether the field holds a secret: a masked field, or one whose kind is
+    /// a password or key even while it shows its text in the clear. Such a
+    /// value never reaches the accessibility tree, a review, presence, the
+    /// primary selection or an input method's suggestions.
+    fn holds_secret(&self) -> bool {
+        self.secret || matches!(self.kind.text_kind(), TextKind::Secret)
+    }
+
     /// Only meaningful together with `with_secret`. Secret fields start
     /// hidden; a single-line one also offers its own show/hide control.
     #[must_use]
@@ -3056,10 +3064,10 @@ impl TextInput {
             self.hl_line_starts.clear();
             return;
         };
-        if !self.secret && self.hl_text.as_deref() == Some(self.text.as_str()) {
+        if !self.holds_secret() && self.hl_text.as_deref() == Some(self.text.as_str()) {
             return;
         }
-        self.hl_text = (!self.secret).then(|| Arc::from(self.text.as_str()));
+        self.hl_text = (!self.holds_secret()).then(|| Arc::from(self.text.as_str()));
         self.hl_spans.clear();
         self.hl_line_starts.clear();
         let mut carry = 0u64;
@@ -3868,8 +3876,7 @@ impl TextInput {
     }
 
     fn field_allows_spelling(&self) -> bool {
-        !self.secret
-            && !matches!(self.kind, TextInputKind::Password | TextInputKind::Secret)
+        !self.holds_secret()
             && self.spellcheck.unwrap_or_else(|| {
                 self.kind.checks_spelling()
                     && !self.mono
@@ -4672,7 +4679,7 @@ impl<'a> FieldFace<'a> {
 
 impl Drop for TextInput {
     fn drop(&mut self) {
-        if self.secret {
+        if self.holds_secret() {
             self.text.zeroize();
             self.last_notified_text.zeroize();
             self.preedit.zeroize();
@@ -5292,7 +5299,7 @@ impl Widget for TextInput {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(if self.secret {
+        Some(if self.holds_secret() {
             winit::window::ImePurpose::Password
         } else {
             winit::window::ImePurpose::Normal
@@ -5301,9 +5308,10 @@ impl Widget for TextInput {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A secret (password) input never leaks its value into the a11y tree —
-        // it reports `protected` and a `None` value instead.
-        let value = (!self.secret).then(|| self.text.clone());
+        // A secret (password or key) input never leaks its value into the a11y
+        // tree — it reports `protected` and a `None` value instead.
+        let secret = self.holds_secret();
+        let value = (!secret).then(|| self.text.clone());
         let role = if self.multiline {
             Role::MultilineTextInput
         } else {
@@ -5315,7 +5323,7 @@ impl Widget for TextInput {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
                 disabled: self.effectively_disabled(),
-                protected: self.secret,
+                protected: secret,
                 multiline: self.multiline,
                 invalid: self.invalid,
                 ..Default::default()
@@ -5326,7 +5334,7 @@ impl Widget for TextInput {
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
-        if !self.secret {
+        if !secret {
             node = node.with_text_selection(
                 self.selection_anchor.unwrap_or(self.cursor_pos),
                 self.cursor_pos,
@@ -5461,7 +5469,7 @@ impl Widget for TextInput {
 
     fn text_review(&self) -> Option<(usize, String)> {
         // A secret field never surfaces its contents.
-        if !self.is_focused || self.secret {
+        if !self.is_focused || self.holds_secret() {
             return None;
         }
         Some((self.cursor_pos, self.text.clone()))
@@ -5631,7 +5639,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
     /// The caret, or the selection when one is extended, while focused. A
     /// secret field publishes nothing.
     fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        if !self.is_focused || self.secret {
+        if !self.is_focused || self.holds_secret() {
             return None;
         }
         let key = self.presence_key()?;
@@ -5805,7 +5813,7 @@ impl TextInput {
                         browser_emoji,
                     )
                 };
-                if self.secret {
+                if self.holds_secret() {
                     layout.discard_prepared_inputs();
                 }
                 text_renderer.note_browser_rich_layout(&layout);
@@ -6260,7 +6268,9 @@ impl TextInput {
     }
 
     fn primary_selection_text(&self) -> Option<&str> {
-        (!self.secret).then(|| self.selected_str()).flatten()
+        (!self.holds_secret())
+            .then(|| self.selected_str())
+            .flatten()
     }
 
     fn handle_middle_click(

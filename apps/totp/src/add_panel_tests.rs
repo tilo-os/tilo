@@ -314,13 +314,21 @@ fn opening_starts_clean_and_mounts_a_modal_dialog() {
     }
 
     // Case `toggling_advanced_asks_the_window_to_lay_the_sheet_out_again`.
+    // The form asks; a dialog no window hosts yet lays itself out on paint,
+    // so the question is put to the form the dialog carries.
     {
         let mut panel = opened();
-        assert!(panel.take_structure_dirty(), "a new sheet is a new layout");
-        assert!(!panel.take_structure_dirty());
+        let form_dirty = |panel: &mut AddAccountPanel| {
+            panel
+                .dialog
+                .as_mut()
+                .is_some_and(|dialog| Widget::take_structure_dirty(dialog.content_mut()))
+        };
+        assert!(form_dirty(&mut panel), "a new sheet is a new layout");
+        assert!(!form_dirty(&mut panel));
         ask(&mut panel, Msg::ToggleAdvanced);
         assert!(panel.sheet.borrow().advanced_open);
-        assert!(panel.take_structure_dirty(), "a section opened");
+        assert!(form_dirty(&mut panel), "a section opened");
     }
 
     // Case `picking_an_image_leaves_the_sheet_open_for_the_app_to_answer`.
