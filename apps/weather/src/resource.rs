@@ -122,6 +122,15 @@ impl ResourceApp for WeatherShell {
     fn view(cx: &mut ViewCx<Weather>) -> Element {
         cx.surface(WeatherApp::live())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::app::SCENARIOS
+    }
+
+    /// The pushed forecast is a narrow window's screen.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.starts_with("detail").then_some((560, 820))
+    }
 }
 
 impl ResourceSurface<Weather> for WeatherApp {
@@ -131,6 +140,12 @@ impl ResourceSurface<Weather> for WeatherApp {
 
     fn attach(&mut self, cx: SurfaceCx<Weather>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    /// A capture shows the bundled sample places offline, then the
+    /// scenario's view state.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_capture(scenario);
     }
 }
 

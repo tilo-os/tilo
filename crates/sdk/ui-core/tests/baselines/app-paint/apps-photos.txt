@@ -1,15 +1,5 @@
 # The app-paint ratchet for apps-photos: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/photos/src/app.rs desktop_ground 14
-apps/photos/src/app.rs glyph_icon 5
-apps/photos/src/app.rs legacy_alias 4
-apps/photos/src/app.rs literal_alpha 6
-apps/photos/src/app.rs literal_radius 31
-apps/photos/src/app.rs ramp_slot 37
-apps/photos/src/app.rs raw_paint 90
-apps/photos/src/main.rs transparent_shot 1
-apps/photos/src/presentation.rs desktop_ground 1
-apps/photos/src/presentation.rs glyph_icon 4
-apps/photos/src/presentation.rs legacy_alias 1
-apps/photos/src/presentation.rs raw_paint 4
+apps/photos/src/app.rs glyph_icon 1
+apps/photos/src/app.rs raw_paint 10
