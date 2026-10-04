@@ -1026,7 +1026,7 @@ every attempt.
   `actionsV1` checks.
 
 Every app takes an edit through a published operation (Writer's
-`append-paragraph`, Photos' `create-album`, Chat's `new-channel`, …), except
+`add-paragraph`, Photos' `create-album`, Chat's `new-channel`, …), except
 three whose state stays off the shared record by design: hex-editor (edits a
 local file), passwords and totp (secrets in the device's store; adding a
 TOTP account is the device's own).
