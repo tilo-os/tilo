@@ -213,8 +213,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(#krate::effect::Answers::Nothing)
         };
-        let destructive = options.destructive;
-        let privileged = options.privileged;
+        let risk = match (options.destructive, options.privileged) {
+            (true, true) => {
+                return Err(syn::Error::new(
+                    variant.span(),
+                    "an effect is `destructive` or `privileged`, not both",
+                ));
+            }
+            (true, false) => quote!(Destructive),
+            (false, true) => quote!(Privileged),
+            (false, false) if options.view => quote!(None),
+            (false, false) => quote!(Low),
+        };
         let idempotent = options.idempotent;
         let row = options.row;
         let kind = if options.view {
@@ -231,8 +241,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,
-                destructive: #destructive,
-                privileged: #privileged,
+                risk: #krate::__private::RiskLevel::#risk,
                 idempotent: #idempotent,
                 permission: #krate::__private::PermissionRequirement::#permission,
             }
