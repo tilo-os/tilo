@@ -32,6 +32,8 @@ mod markdown_marks_roundtrip;
 mod markdown_phase3_roundtrip;
 #[path = "offscreen_smoke.rs"]
 mod offscreen_smoke;
+#[path = "outline_commands.rs"]
+mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
 #[path = "page_file_io.rs"]
