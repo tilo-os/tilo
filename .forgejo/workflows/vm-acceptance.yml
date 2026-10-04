@@ -1,16 +1,18 @@
 name: Dev / VM acceptance
 
 # The VM acceptance suite (scripts/vm-acceptance, README "Run it in CI") on a
-# KVM runner instead of a developer's laptop: a dev disk of the commit under
-# test, a libvirt session VM created by tilo-vm, a headful slot on two outputs,
-# every check, and the report as artifacts and job summary.
+# KVM runner instead of a developer's laptop: a dev disk, a libvirt session VM
+# created by tilo-vm, a headful slot on two outputs, the ref under test's
+# components swapped in, every check, and the report as artifact and summary.
 #
-# The disk comes from what CI already published for that commit: its dev disk
-# (tilo-vm-disk/<tag>) when a lane published one, else its dev image
-# (tilo-vm:<tag>-x86_64, which Build / OS dev pushes for every main commit)
-# installed here exactly as Release / Dev VM disk installs it. A commit without
-# either (a pull request, or main still building) is tested on the newest main
-# commit before it that has one; the summary names that commit.
+# The base disk comes from what CI already published: the dev disk
+# (tilo-vm-disk/<tag>) or, more often, the dev image (tilo-vm:<tag>-x86_64,
+# which Build / OS dev pushes per main commit) of the newest main commit at or
+# before the ref, installed here exactly as Release / Dev VM disk installs it.
+# The ref's own code reaches the VM through `tilo-vm swap --builder host`,
+# built here in the CI builder (the dev image's Fedora, with the CI sccache):
+# by default the shell plus the apps the ref changed against the base. P01
+# states the result as "base <commit> + <components> swapped from <ref>".
 #
 # Runners: runner-disk-100g, the Kata runners whose KVM the dev disk and legacy
 # guest boots already use. They have no GPU, so `gl: auto` runs without virgl
@@ -19,9 +21,13 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch, tag or commit to test; the disk is that commit's, or the newest main commit before it with a published dev image."
+        description: "Branch, tag or commit under test: its components are swapped onto the dev disk of the newest main commit at or before it with a published dev image."
         required: false
         default: "main"
+      swap:
+        description: "What to build from the ref and swap in: default (shell plus the apps the ref changed against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
+        required: false
+        default: "default"
       only:
         description: "Comma-separated check ids or areas (run.py --only); empty runs every check."
         required: false
@@ -47,17 +53,30 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
   acceptance:
+    needs: builder
     runs-on: runner-disk-100g
     timeout-minutes: 180
+    # The CI builder: the dev image's Fedora with the workspace's build
+    # dependencies and the runner's sccache, so swapped components link
+    # against the libraries the VM has.
+    container:
+      image: ${{ needs.builder.outputs.image }}
     env:
       ARCH: x86_64
       WORK: /var/tmp/vm-acceptance
       RUN_USER: acceptance
+      # A base disk further behind the ref than this is called out in the summary.
+      BEHIND_WARN: "20"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # The image lookup walks main's history; run.py names the commit.
+          # The image lookup walks main's history; the ref under test gets its
+          # own worktree from this clone.
           fetch-depth: 0
           persist-credentials: false
 
@@ -73,16 +92,14 @@ jobs:
       - name: Install libvirt, QEMU and disk tooling
         run: |
           set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          sudo -n apt-get -o Acquire::Retries=3 update
           # libvirt's QEMU driver without the system daemon: tilo-vm uses the
           # per-user session (qemu:///session), started on demand.
-          sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-            libvirt-clients libvirt-daemon libvirt-daemon-driver-qemu passt \
-            qemu-system-x86 qemu-system-modules-spice qemu-utils ovmf ipxe-qemu \
-            openssh-client rsync python3-pil binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
-            podman jq skopeo slirp4netns socat sudo systemd uidmap util-linux
-          command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart >/dev/null
+          dnf --setopt=retries=3 install -y \
+            libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
+            ipxe-roms-qemu openssh-clients rsync python3-pillow binutils btrfs-progs dosfstools \
+            e2fsprogs fuse-overlayfs podman jq skopeo slirp4netns socat sudo systemd \
+            shadow-utils util-linux
+          command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart sudo >/dev/null
           python3 -c 'import PIL'  # the checks read pixels from shots
 
       # registry.tilo.so answers this network's anonymous reads with 401.
@@ -93,11 +110,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Plan the commit, its disk and the checks
+      - name: Plan the ref, its base disk, the swaps and the checks
         id: plan
         env:
           EVENT: ${{ github.event_name }}
           INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_SWAP: ${{ github.event.inputs.swap }}
           INPUT_ONLY: ${{ github.event.inputs.only }}
           INPUT_OUTPUTS: ${{ github.event.inputs.outputs }}
           INPUT_GL: ${{ github.event.inputs.gl }}
@@ -107,8 +125,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT" in
-            pull_request) target=$(git merge-base "$PR_BASE" "$PR_HEAD") ;;
-            schedule) target=$(git rev-parse origin/main) ;;
+            pull_request) ref=$PR_HEAD target=$PR_HEAD ;;
+            schedule) ref=main target=$(git rev-parse origin/main) ;;
             *)
               ref=${INPUT_REF:-main}
               target=$(git rev-parse --verify -q "origin/$ref^{commit}" || git rev-parse --verify "$ref^{commit}") ;;
@@ -137,6 +155,25 @@ jobs:
           }
           behind=$(git rev-list --count "$commit..$target")
 
+          # What the base lacks of the ref, built from the ref and swapped in.
+          swap=${INPUT_SWAP:-default}
+          case $swap in
+            none) swap="" ;;
+            default)
+              swap=""
+              if ! git diff --quiet "$commit" "$target"; then
+                swap=shell
+                for app in $(git diff --name-only "$commit" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
+                  git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && swap+=",app:$app"
+                done
+              fi ;;
+            all)
+              swap=$(git show "$target:os/components.toml" | python3 -c '
+          import sys, tomllib
+          print(",".join(c["name"] for c in tomllib.loads(sys.stdin.read())["component"]
+                         if c.get("kind") == "userspace"))') ;;
+          esac
+
           only=${INPUT_ONLY:-}
           if [[ $EVENT == pull_request ]]; then
             mapfile -t changed < <(git diff --name-only "$PR_BASE...$PR_HEAD" -- scripts/vm-acceptance)
@@ -151,23 +188,27 @@ jobs:
           esac
 
           {
+            echo "ref=$ref"
             echo "target=$target"
             echo "commit=$commit"
             echo "behind=$behind"
             echo "disk-url=$disk_url"
             echo "image=$image"
+            echo "swap=$swap"
             echo "only=$only"
             echo "outputs=${INPUT_OUTPUTS:-1920x1080@1,1280x800@1.25}"
             echo "gl=$gl"
           } >> "$GITHUB_OUTPUT"
-          source=${disk_url:-$image}
-          echo "::notice::testing ${target:0:12} on the dev disk of ${commit:0:12} ($behind commits before it) from $source; checks: ${only:-all}; gl=$gl"
+          echo "::notice::testing $ref (${target:0:12}) on the dev disk of ${commit:0:12} ($behind commits behind) from ${disk_url:-$image}; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl"
+          if (( behind > BEHIND_WARN )); then
+            echo "::warning::the base disk is $behind commits behind ${target:0:12}: only the swapped components ($swap) are the ref's code"
+          fi
 
       - name: Build tilo-vm
         run: |
           set -euo pipefail
           cargo build --locked -p tilo-vm
-          sudo -n install -m 0755 target/debug/tilo-vm /usr/local/bin/tilo-vm
+          install -m 0755 target/debug/tilo-vm /usr/local/bin/tilo-vm
 
       # Kata's job container has a static /dev; its guest kernel provides FUSE
       # and loop nodes once devtmpfs is mounted (as in Release / Dev VM disk).
@@ -193,7 +234,7 @@ jobs:
 
       # The same install Release / Dev VM disk runs: build-image.sh with
       # TILO_SKIP_BUILD=1 writes the dev image to a bootable disk in one pass.
-      - name: Install the commit's dev image to a disk
+      - name: Install the base dev image to a disk
         if: steps.plan.outputs.image != ''
         timeout-minutes: 60
         env:
@@ -217,7 +258,7 @@ jobs:
           echo "DISK=$disk" >> "$GITHUB_ENV"
           echo "OCI_DIGEST=${IMAGE#*@}" >> "$GITHUB_ENV"
 
-      - name: Download the commit's published dev disk
+      - name: Download the base's published dev disk
         if: steps.plan.outputs.disk-url != ''
         env:
           COMMIT: ${{ steps.plan.outputs.commit }}
@@ -248,24 +289,35 @@ jobs:
             > "$DISK.provenance.json"
           cat "$DISK.provenance.json"
 
+      - name: Check out the ref under test
+        if: steps.plan.outputs.swap != ''
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+        run: git worktree add --detach "$WORK/src" "$TARGET"
+
       # tilo-vm runs VMs in the user's libvirt session, as on a laptop. Root
-      # cannot hand passt its socket there, so the run gets its own user.
+      # cannot hand passt its socket there, so the run gets its own user, who
+      # also builds the swapped components with the builder's toolchain.
       - name: Prepare the libvirt session user
         run: |
           set -euo pipefail
-          sudo -n useradd --create-home --shell /bin/bash "$RUN_USER"
+          useradd --create-home --shell /bin/bash "$RUN_USER"
           uid=$(id -u "$RUN_USER")
-          sudo -n install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "/run/user/$uid"
-          sudo -n chmod 0666 /dev/kvm
-          sudo -n chown -R "$RUN_USER:" "$WORK"
-          sudo -n install -d -o "$RUN_USER" -g "$RUN_USER" "$WORK/report"
+          install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "/run/user/$uid"
+          chmod 0666 /dev/kvm
+          install -d -o "$RUN_USER" -g "$RUN_USER" "$WORK/report"
+          chown -R "$RUN_USER:" "$WORK"
           # tilo-vm writes a receipt per command into the worktree it runs from.
-          sudo -n install -d -o "$RUN_USER" -g "$RUN_USER" target/dev-runs
+          install -d -o "$RUN_USER" -g "$RUN_USER" target/dev-runs
+          # The toolchain is the builder's, installed for root; the cargo cache
+          # and the runner's compiler cache settings carry over.
+          chown -R "$RUN_USER:" "$CARGO_HOME"
+          keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|ACTIONS_[A-Z0-9_]*\|AWS_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' | paste -sd, -)
           {
             echo "RUN_UID=$uid"
-            echo "RUN_ENV=XDG_RUNTIME_DIR=/run/user/$uid"
+            echo "RUN_KEEP=$keep"
           } >> "$GITHUB_ENV"
-          as_user() { sudo -n -u "$RUN_USER" -H env "XDG_RUNTIME_DIR=/run/user/$uid" "$@"; }
+          as_user() { sudo -n -u "$RUN_USER" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
           as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
           as_user tilo-vm doctor || true
 
@@ -274,6 +326,8 @@ jobs:
         timeout-minutes: 150
         env:
           COMMIT: ${{ steps.plan.outputs.commit }}
+          REF: ${{ steps.plan.outputs.ref }}
+          SWAP: ${{ steps.plan.outputs.swap }}
           ONLY: ${{ steps.plan.outputs.only }}
           OUTPUTS: ${{ steps.plan.outputs.outputs }}
           GL: ${{ steps.plan.outputs.gl }}
@@ -281,26 +335,34 @@ jobs:
           set -euo pipefail
           args=(--disk "$DISK" --commit "$COMMIT" --outputs "$OUTPUTS" --out "$WORK/report"
                 --tilo-vm /usr/local/bin/tilo-vm)
+          [[ -z $SWAP ]] || args+=(--swap "$SWAP" --swap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $ONLY ]] || args+=(--only "$ONLY")
           [[ $GL != on ]] || args+=(--gl)
           # The checkout is root's; git reads it for the run's commit names.
-          sudo -n -u "$RUN_USER" -H env "$RUN_ENV" \
+          sudo -n -u "$RUN_USER" -H --preserve-env="$RUN_KEEP" env \
+            "XDG_RUNTIME_DIR=/run/user/$RUN_UID" "PATH=$PATH" \
             GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
             python3 scripts/vm-acceptance/run.py "${args[@]}"
 
       - name: Write the report to the job summary
         if: always()
         env:
+          REF: ${{ steps.plan.outputs.ref }}
           TARGET: ${{ steps.plan.outputs.target }}
           COMMIT: ${{ steps.plan.outputs.commit }}
           BEHIND: ${{ steps.plan.outputs.behind }}
+          SWAP: ${{ steps.plan.outputs.swap }}
         run: |
           set -euo pipefail
           report="$WORK/report/report.md"
           [[ -f $report ]] || { echo '::warning::the run wrote no report'; exit 0; }
           {
-            if [[ $COMMIT != "$TARGET" ]]; then
-              echo "> Tested ${TARGET:0:12} on the dev disk of ${COMMIT:0:12}, $BEHIND commits before it (the newest with a published dev image)."
+            if (( ${BEHIND:-0} > BEHIND_WARN )); then
+              echo "> [!WARNING]"
+              echo "> **The base disk is $BEHIND commits behind $REF (${TARGET:0:12})**: it is main ${COMMIT:0:12}, the newest with a published dev image. Only the swapped components (${SWAP:-none}) are $REF's code; everything else is the base's."
+              echo
+            elif [[ $COMMIT != "$TARGET" ]]; then
+              echo "> Tested $REF (${TARGET:0:12}) on the dev disk of main ${COMMIT:0:12}, $BEHIND commits behind, with ${SWAP:-nothing} swapped in from $REF."
               echo
             fi
             cat "$report"
@@ -311,6 +373,6 @@ jobs:
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
-          name: vm-acceptance-${{ steps.plan.outputs.commit }}
+          name: vm-acceptance-${{ steps.plan.outputs.target }}
           path: /var/tmp/vm-acceptance/report
           if-no-files-found: warn

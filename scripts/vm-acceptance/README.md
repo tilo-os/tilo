@@ -51,8 +51,8 @@ a run needs no laptop memory:
 
 ```bash
 fgj workflow run vm-acceptance.yml -r main                       # every check on main
-fgj workflow run vm-acceptance.yml -r main -f ref=<sha> -f only=window,A03 \
-  -f outputs=1920x1080@1,1280x800@1.25 -f gl=off
+fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=B06,A13 \
+  -f swap=default -f outputs=1920x1080@1,1280x800@1.25 -f gl=off
 ```
 
 It also runs nightly on main, and on pull requests that change this directory: with only
@@ -60,16 +60,26 @@ the checks of the changed check modules (and of the modules importing from them)
 `provenance` when only this README or unit tests changed, and every check when anything
 else changed (`ci_select.py`).
 
-The disk is what CI published for the commit: its dev disk (`tilo-vm-disk/main-<sha7>-ci`)
-when a lane published one, else its dev image (`tilo-vm:main-<sha7>-ci-x86_64`, pushed by
-Build / OS dev for every main commit), installed with `os/dev/build-image.sh` exactly as
-Release / Dev VM disk installs it. A commit without either (a pull request, or main while
-its image still builds) is tested on the newest main commit before it that has one; the
-summary names it, and P01 checks against it. The workflow writes the provenance record
-itself, so P01 means the same as on a laptop.
+The base disk is what CI published for the newest main commit at or before `ref`: its
+dev disk (`tilo-vm-disk/main-<sha7>-ci`) when a lane published one, else its dev image
+(`tilo-vm:main-<sha7>-ci-x86_64`, pushed by Build / OS dev for main commits), installed
+with `os/dev/build-image.sh` exactly as Release / Dev VM disk installs it. The workflow
+writes the provenance record itself.
+
+`ref`'s own code reaches the VM the way it does on a laptop: after the slot is up, run.py
+`--swap` runs `tilo-vm swap <component> --builder host` from a worktree of `ref`
+(`--swap-from`), session components and apps into the run's slot, VM-wide ones into `vm`.
+`swap=default` is `shell` plus every `app:<dir>` whose `apps/<dir>` differs between the
+base and `ref` (nothing when they are the same commit), `all` every userspace component in
+`os/components.toml`, `none` nothing, or a list. The job runs in the CI builder image (the
+dev image's Fedora, with the runner's sccache), so swapped binaries link against the
+libraries the VM has. P01 then reads `base <commit> + <components> swapped from <ref>` and
+fails unless every requested swap is the layer its slot runs; the report's header lists
+the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
+summary: everything not swapped is the base's code.
 
 The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
-libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks) from the runner's packages, and runs `run.py` as an
+libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
 unprivileged user (root cannot hand passt its socket in a session). The runners have no
 GPU, so `gl=auto` creates the VM without virgl and the report records the software
 renderer; frame-timing checks gated to real display hardware report that. The report
