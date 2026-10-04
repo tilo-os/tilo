@@ -2948,7 +2948,11 @@ impl Widget for CanvasSurface {
         }
         let view: ViewOp = serde_json::from_slice(request.payload)
             .map_err(|error| format!("not a canvas view: {error}"))?;
-        let output = self.answer(&view, doc)?;
+        // An answer shows every picture: it waits for those still decoding.
+        self.tools.renderer.borrow_mut().pictures.patient = true;
+        let output = self.answer(&view, doc);
+        self.tools.renderer.borrow_mut().pictures.patient = false;
+        let output = output?;
         Ok(Some(ResourceOperationStart::Completed(output)))
     }
 
@@ -3008,9 +3012,11 @@ impl Widget for CanvasSurface {
 
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up. A picture being chosen is
-        // waited for.
-        self.wet().is_some() || self.tools.picking.borrow().is_some()
+        // drawing until it has caught up. A picture being chosen, or
+        // decoded, is waited for.
+        self.wet().is_some()
+            || self.tools.picking.borrow().is_some()
+            || self.tools.renderer.borrow().pictures.decoding()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {
