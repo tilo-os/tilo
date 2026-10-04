@@ -1,0 +1,316 @@
+name: Dev / VM acceptance
+
+# The VM acceptance suite (scripts/vm-acceptance, README "Run it in CI") on a
+# KVM runner instead of a developer's laptop: a dev disk of the commit under
+# test, a libvirt session VM created by tilo-vm, a headful slot on two outputs,
+# every check, and the report as artifacts and job summary.
+#
+# The disk comes from what CI already published for that commit: its dev disk
+# (tilo-vm-disk/<tag>) when a lane published one, else its dev image
+# (tilo-vm:<tag>-x86_64, which Build / OS dev pushes for every main commit)
+# installed here exactly as Release / Dev VM disk installs it. A commit without
+# either (a pull request, or main still building) is tested on the newest main
+# commit before it that has one; the summary names that commit.
+#
+# Runners: runner-disk-100g, the Kata runners whose KVM the dev disk and legacy
+# guest boots already use. They have no GPU, so `gl: auto` runs without virgl
+# and the report records the software renderer.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to test; the disk is that commit's, or the newest main commit before it with a published dev image."
+        required: false
+        default: "main"
+      only:
+        description: "Comma-separated check ids or areas (run.py --only); empty runs every check."
+        required: false
+        default: ""
+      outputs:
+        description: "The slot's outputs (run.py --outputs)."
+        required: false
+        default: "1920x1080@1,1280x800@1.25"
+      gl:
+        description: "virgl: auto (when the runner has a render node), on, or off."
+        required: false
+        default: "auto"
+  schedule:
+    - cron: "23 2 * * *"
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/vm-acceptance/**"
+      - ".forgejo/workflows/vm-acceptance.yml"
+
+concurrency:
+  group: vm-acceptance-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  acceptance:
+    runs-on: runner-disk-100g
+    timeout-minutes: 180
+    env:
+      ARCH: x86_64
+      WORK: /var/tmp/vm-acceptance
+      RUN_USER: acceptance
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The image lookup walks main's history; run.py names the commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a native x86-64 runner with KVM
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh "$ARCH"
+          python3 os/dev/probe-kvm.py "$ARCH" || {
+            echo '::error::this runner cannot create a KVM VM; the acceptance suite never runs under TCG'
+            exit 1
+          }
+
+      - name: Install libvirt, QEMU and disk tooling
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -n apt-get -o Acquire::Retries=3 update
+          # libvirt's QEMU driver without the system daemon: tilo-vm uses the
+          # per-user session (qemu:///session), started on demand.
+          sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+            libvirt-clients libvirt-daemon libvirt-daemon-driver-qemu passt \
+            qemu-system-x86 qemu-system-modules-spice qemu-utils ovmf ipxe-qemu \
+            openssh-client rsync python3-pil binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
+            podman jq skopeo slirp4netns socat sudo systemd uidmap util-linux
+          command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart >/dev/null
+          python3 -c 'import PIL'  # the checks read pixels from shots
+
+      # registry.tilo.so answers this network's anonymous reads with 401.
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Plan the commit, its disk and the checks
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_ONLY: ${{ github.event.inputs.only }}
+          INPUT_OUTPUTS: ${{ github.event.inputs.outputs }}
+          INPUT_GL: ${{ github.event.inputs.gl }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) target=$(git merge-base "$PR_BASE" "$PR_HEAD") ;;
+            schedule) target=$(git rev-parse origin/main) ;;
+            *)
+              ref=${INPUT_REF:-main}
+              target=$(git rev-parse --verify -q "origin/$ref^{commit}" || git rev-parse --verify "$ref^{commit}") ;;
+          esac
+
+          registry=registry.tilo.so/tilo/tilo-vm
+          packages=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk
+          commit="" disk_url="" image=""
+          for c in $(git rev-list --first-parent -n 300 origin/main); do
+            git merge-base --is-ancestor "$c" "$target" || continue
+            tag="main-${c:0:7}-ci"
+            if curl -fsS -H "Authorization: Bearer $REGISTRY_TOKEN" -o "$RUNNER_TEMP/disk.json" \
+                 "$packages/$tag/tilo-vm-disk-$ARCH.json" 2>/dev/null; then
+              commit=$c disk_url="$packages/$tag/tilo-vm-disk-$ARCH.json"
+              break
+            fi
+            digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://$registry:$tag-$ARCH" 2>/dev/null || true)
+            if [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              commit=$c image="registry.tilo.so/tilo/tilo-vm@$digest"
+              break
+            fi
+          done
+          [[ -n $commit ]] || {
+            echo "::error::no main commit at or before ${target:0:12} (last 300) has a published dev disk or dev image"
+            exit 1
+          }
+          behind=$(git rev-list --count "$commit..$target")
+
+          only=${INPUT_ONLY:-}
+          if [[ $EVENT == pull_request ]]; then
+            mapfile -t changed < <(git diff --name-only "$PR_BASE...$PR_HEAD" -- scripts/vm-acceptance)
+            only=$(python3 scripts/vm-acceptance/ci_select.py "${changed[@]}")
+          fi
+
+          gl=${INPUT_GL:-auto}
+          case $gl in
+            auto) compgen -G '/dev/dri/renderD*' >/dev/null && gl=on || gl=off ;;
+            on|off) ;;
+            *) echo '::error::gl must be auto, on or off'; exit 1 ;;
+          esac
+
+          {
+            echo "target=$target"
+            echo "commit=$commit"
+            echo "behind=$behind"
+            echo "disk-url=$disk_url"
+            echo "image=$image"
+            echo "only=$only"
+            echo "outputs=${INPUT_OUTPUTS:-1920x1080@1,1280x800@1.25}"
+            echo "gl=$gl"
+          } >> "$GITHUB_OUTPUT"
+          source=${disk_url:-$image}
+          echo "::notice::testing ${target:0:12} on the dev disk of ${commit:0:12} ($behind commits before it) from $source; checks: ${only:-all}; gl=$gl"
+
+      - name: Build tilo-vm
+        run: |
+          set -euo pipefail
+          cargo build --locked -p tilo-vm
+          sudo -n install -m 0755 target/debug/tilo-vm /usr/local/bin/tilo-vm
+
+      # Kata's job container has a static /dev; its guest kernel provides FUSE
+      # and loop nodes once devtmpfs is mounted (as in Release / Dev VM disk).
+      - name: Expose guest FUSE and loop devices
+        if: steps.plan.outputs.image != ''
+        run: |
+          set -euo pipefail
+          sudo -n modprobe fuse 2>/dev/null || true
+          sudo -n modprobe loop 2>/dev/null || true
+          if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
+            sudo -n mount -t devtmpfs devtmpfs /dev
+            sudo -n mkdir -p /dev/pts /dev/shm
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/fuse && test -c /dev/loop-control
+          sudo -n chmod 0666 /dev/fuse
+          sudo -n losetup --find >/dev/null
+
+      - name: Use native Podman overlay storage
+        if: steps.plan.outputs.image != ''
+        run: ./os/dev/ci-native-podman-store.sh
+
+      # The same install Release / Dev VM disk runs: build-image.sh with
+      # TILO_SKIP_BUILD=1 writes the dev image to a bootable disk in one pass.
+      - name: Install the commit's dev image to a disk
+        if: steps.plan.outputs.image != ''
+        timeout-minutes: 60
+        env:
+          IMAGE: ${{ steps.plan.outputs.image }}
+          COMMIT: ${{ steps.plan.outputs.commit }}
+          TILO_IMAGE: localhost/tilo-vm:ci
+          TILO_SKIP_BUILD: "1"
+          TILO_DISTROBOX: ""
+          TILO_OUTPUT: /var/tmp/vm-acceptance/install
+          TILO_RUN: /var/tmp/vm-acceptance/install-run
+          TILO_DISK_SIZE: 64G
+        run: |
+          set -euo pipefail
+          export TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${COMMIT:0:7}-ci"
+          mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          podman pull "$IMAGE"
+          podman tag "$IMAGE" "$TILO_IMAGE"
+          ./os/dev/build-image.sh
+          disk="$WORK/tilo-dev-${COMMIT:0:9}.qcow2"
+          sudo -n mv "$TILO_OUTPUT/qcow2/disk.qcow2" "$disk"
+          echo "DISK=$disk" >> "$GITHUB_ENV"
+          echo "OCI_DIGEST=${IMAGE#*@}" >> "$GITHUB_ENV"
+
+      - name: Download the commit's published dev disk
+        if: steps.plan.outputs.disk-url != ''
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          read -r url sha256 < <(jq -er '.disks[] | select(.format == "qcow2") | "\(.url) \(.sha256)"' "$RUNNER_TEMP/disk.json")
+          disk="$WORK/tilo-dev-${COMMIT:0:9}.qcow2"
+          mkdir -p "$WORK"
+          curl -fsS --retry 3 -H "Authorization: Bearer $REGISTRY_TOKEN" -o "$disk" "$url"
+          echo "$sha256  $disk" | sha256sum -c -
+          echo "DISK=$disk" >> "$GITHUB_ENV"
+          echo "OCI_DIGEST=$(jq -r .imageDigest "$RUNNER_TEMP/disk.json")" >> "$GITHUB_ENV"
+
+      # run.py ties the booted image to a commit through this record, as
+      # build-disk.sh writes it for a laptop's disk.
+      - name: Record the disk's provenance
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+          SOURCE: ${{ steps.plan.outputs.disk-url || steps.plan.outputs.image }}
+        run: |
+          set -euo pipefail
+          jq -n --arg commit "$COMMIT" --arg subject "$(git log -1 --format=%s "$COMMIT")" \
+            --arg time "$(git log -1 --format=%cI "$COMMIT")" --arg digest "$OCI_DIGEST" \
+            --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "$SOURCE" \
+            '{commit:$commit, subject:$subject, commit_time:$time, oci_digest:$digest,
+              built_at:$built, built_by:".forgejo/workflows/vm-acceptance.yml", source:$source}' \
+            > "$DISK.provenance.json"
+          cat "$DISK.provenance.json"
+
+      # tilo-vm runs VMs in the user's libvirt session, as on a laptop. Root
+      # cannot hand passt its socket there, so the run gets its own user.
+      - name: Prepare the libvirt session user
+        run: |
+          set -euo pipefail
+          sudo -n useradd --create-home --shell /bin/bash "$RUN_USER"
+          uid=$(id -u "$RUN_USER")
+          sudo -n install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "/run/user/$uid"
+          sudo -n chmod 0666 /dev/kvm
+          sudo -n chown -R "$RUN_USER:" "$WORK"
+          sudo -n install -d -o "$RUN_USER" -g "$RUN_USER" "$WORK/report"
+          # tilo-vm writes a receipt per command into the worktree it runs from.
+          sudo -n install -d -o "$RUN_USER" -g "$RUN_USER" target/dev-runs
+          {
+            echo "RUN_UID=$uid"
+            echo "RUN_ENV=XDG_RUNTIME_DIR=/run/user/$uid"
+          } >> "$GITHUB_ENV"
+          as_user() { sudo -n -u "$RUN_USER" -H env "XDG_RUNTIME_DIR=/run/user/$uid" "$@"; }
+          as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
+          as_user tilo-vm doctor || true
+
+      - name: Run the acceptance suite
+        id: run
+        timeout-minutes: 150
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+          ONLY: ${{ steps.plan.outputs.only }}
+          OUTPUTS: ${{ steps.plan.outputs.outputs }}
+          GL: ${{ steps.plan.outputs.gl }}
+        run: |
+          set -euo pipefail
+          args=(--disk "$DISK" --commit "$COMMIT" --outputs "$OUTPUTS" --out "$WORK/report"
+                --tilo-vm /usr/local/bin/tilo-vm)
+          [[ -z $ONLY ]] || args+=(--only "$ONLY")
+          [[ $GL != on ]] || args+=(--gl)
+          # The checkout is root's; git reads it for the run's commit names.
+          sudo -n -u "$RUN_USER" -H env "$RUN_ENV" \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
+            python3 scripts/vm-acceptance/run.py "${args[@]}"
+
+      - name: Write the report to the job summary
+        if: always()
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+          COMMIT: ${{ steps.plan.outputs.commit }}
+          BEHIND: ${{ steps.plan.outputs.behind }}
+        run: |
+          set -euo pipefail
+          report="$WORK/report/report.md"
+          [[ -f $report ]] || { echo '::warning::the run wrote no report'; exit 0; }
+          {
+            if [[ $COMMIT != "$TARGET" ]]; then
+              echo "> Tested ${TARGET:0:12} on the dev disk of ${COMMIT:0:12}, $BEHIND commits before it (the newest with a published dev image)."
+              echo
+            fi
+            cat "$report"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -r '"score: \([.results[] | select(.status == "pass")] | length)/\(.results | length) checks pass (\(.overall))"' \
+            "$WORK/report/report.json"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: vm-acceptance-${{ steps.plan.outputs.commit }}
+          path: /var/tmp/vm-acceptance/report
+          if-no-files-found: warn
