@@ -636,10 +636,7 @@ readers = ["crates/doc/format-host/tests/integration.rs"]
 [[cargo]]
 package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
-readers = [
-  "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
-  "apps/notes/src/shots.rs", "apps/notes/tests/support/component.rs",
-]
+readers = ["apps/notes/src/app.rs", "apps/notes/tests/support/component.rs"]
 
 [[cargo]]
 package = "ebook"

@@ -283,15 +283,7 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
     );
     assert_eq!(host.library_calls("list").len(), 1, "the library is read");
     let audit = app.harness().native_app_audit();
-    // The History button belongs to the window: this harness hosts no
-    // History, so its action cannot resolve here. Everything else must.
-    assert!(
-        audit
-            .issues
-            .iter()
-            .all(|issue| issue.control == "history-button"),
-        "{audit:#?}"
-    );
+    assert!(audit.issues.is_empty(), "{audit:#?}");
 }
 
 #[test]

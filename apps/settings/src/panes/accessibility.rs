@@ -45,6 +45,7 @@ use crate::widgets::{El, card, choice_row, rows, setting_row_described, value_ro
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
 pub const REDUCE_MOTION_KEY: &str = "a11y.reduce_motion";
 pub const TEXT_SIZE_KEY: &str = "a11y.text_size";
+pub const DISTINCT_LETTERS_KEY: &str = "a11y.distinct_letters";
 // Pointer.
 pub const LARGE_CURSOR_KEY: &str = "a11y.large_cursor";
 pub const CURSOR_SIZE_KEY: &str = "a11y.cursor_size";
@@ -195,6 +196,15 @@ impl AccessibilityPane {
                     &t("a11y-reduce-motion"),
                     &t("a11y-reduce-motion-desc"),
                     Self::toggle("a11y.reduce_motion", REDUCE_MOTION_KEY, "reduce-motion"),
+                ),
+                setting_row_described(
+                    &t("a11y-distinct-letters"),
+                    &t("a11y-distinct-letters-desc"),
+                    Self::toggle(
+                        "a11y.distinct_letters",
+                        DISTINCT_LETTERS_KEY,
+                        "distinct-letters",
+                    ),
                 ),
                 choice_row(
                     &t("a11y-colour-filter"),
@@ -511,6 +521,10 @@ impl AccessibilityPane {
         for (key, value) in [
             (HIGH_CONTRAST_KEY, self.appearance.high_contrast),
             (REDUCE_MOTION_KEY, self.appearance.reduce_motion),
+            (
+                DISTINCT_LETTERS_KEY,
+                self.appearance.distinct_letters_effective(),
+            ),
             (LARGE_CURSOR_KEY, self.access.large_cursor),
             (STICKY_KEYS_KEY, self.access.sticky_keys),
             (SLOW_KEYS_KEY, self.access.slow_keys),
@@ -600,6 +614,12 @@ impl AccessibilityPane {
             && b != self.appearance.reduce_motion
         {
             self.appearance.reduce_motion = b;
+            changed = true;
+        }
+        if let Some(b) = read_bool(state, root, DISTINCT_LETTERS_KEY)
+            && b != self.appearance.distinct_letters_effective()
+        {
+            self.appearance.choose_distinct_letters(b);
             changed = true;
         }
         if let Some(label) = read_str_or_text(state, root, TEXT_SIZE_KEY)

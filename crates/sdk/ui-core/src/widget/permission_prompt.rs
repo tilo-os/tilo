@@ -382,110 +382,116 @@ impl Widget for PermissionPrompt {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // `surfaces.overlay` is a darker tint than `raised` so the prompt
-        // reads as a layer above the strip's content, not another tile.
-        let radius = f64::from(theme.tokens.radii.control);
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
-        // inset stroke, never a declared `border_standard`.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(self.rect, radius),
-        );
-
-        // Placeholder pulled from the accent ramp until the portal layer
-        // surfaces real icons via the app's desktop-file metadata.
-        let icon_x = self.rect.x0 + PADDING_X;
-        let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
-        let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
-        let icon_shape = RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.intent.inverted,
-            None,
-            &icon_shape,
-        );
-
-        // Button geometry first: the label block ends `spacing.s3` before the
-        // leftmost button and is elided to that width, so the two never
-        // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
-        // draw without a preceding `apply_layout` hit-testing correctly.
-        self.apply_layout_helper();
-        let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-        let label_max_w =
-            (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
-        let app_id_style = theme.text(TextRole::Caption);
-        let cap_style = theme.text(TextRole::Body);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "bounded screen-space width; f32 precision is sufficient for text layout"
-        )]
-        let label_max_w = label_max_w as f32;
-        let app_id = text_renderer.elide_to_width_style(&self.app_id, label_max_w, &app_id_style);
-        let capability =
-            text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style);
-        // Centre the two-line block on its measured line boxes, not on the
-        // font sizes, so both lines sit where the band says they are.
-        let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
-        let (_, cap_h) = text_renderer.measure_style(&capability, None, &cap_style);
-        let label_y = centered_text_top(
-            self.rect.y0,
-            PROMPT_HEIGHT,
-            f64::from(app_id_h) + 4.0 + f64::from(cap_h),
-        );
-        text_renderer.draw_style(
-            scene,
-            &app_id,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate(Vec2::new(label_x, label_y)),
-            None,
-            &app_id_style,
-        );
-        text_renderer.draw_style(
-            scene,
-            &capability,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
-            None,
-            &cap_style,
-        );
-
-        let buttons = [
-            (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
-            (self.session_rect, PromptChoice::Session, false),
-            (self.always_rect, PromptChoice::Always, false),
-            (self.deny_rect, PromptChoice::Deny, false),
-        ];
-        for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
-            let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
-            let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
-            let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
-            draw_button(
-                scene,
+        // A permission prompt is a security surface: the app id and the
+        // capability are read letter by letter.
+        text_renderer.security_surface(|text_renderer| {
+            // `surfaces.overlay` is a darker tint than `raised` so the prompt
+            // reads as a layer above the strip's content, not another tile.
+            let radius = f64::from(theme.tokens.radii.control);
+            let shape = RoundedRect::from_rect(self.rect, radius);
+            scene.fill(
+                Fill::NonZero,
                 transform,
-                text_renderer,
-                theme,
-                *rect,
-                &button_label(*choice),
-                ButtonVisualState {
-                    hover: is_hover,
-                    disabled: is_disabled,
-                    primary: *is_primary,
-                    focused: is_focused,
-                },
+                theme.tokens.colors.surfaces.overlay,
+                None,
+                &shape,
             );
-        }
+            // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
+            // inset stroke, never a declared `border_standard`.
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::chrome::panel_border(theme),
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
+
+            // Placeholder pulled from the accent ramp until the portal layer
+            // surfaces real icons via the app's desktop-file metadata.
+            let icon_x = self.rect.x0 + PADDING_X;
+            let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
+            let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
+            let icon_shape =
+                RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.intent.inverted,
+                None,
+                &icon_shape,
+            );
+
+            // Button geometry first: the label block ends `spacing.s3` before the
+            // leftmost button and is elided to that width, so the two never
+            // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
+            // draw without a preceding `apply_layout` hit-testing correctly.
+            self.apply_layout_helper();
+            let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
+            let label_max_w =
+                (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
+            let app_id_style = theme.text(TextRole::Caption);
+            let cap_style = theme.text(TextRole::Body);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+            )]
+            let label_max_w = label_max_w as f32;
+            let app_id =
+                text_renderer.elide_to_width_style(&self.app_id, label_max_w, &app_id_style);
+            let capability =
+                text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style);
+            // Centre the two-line block on its measured line boxes, not on the
+            // font sizes, so both lines sit where the band says they are.
+            let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
+            let (_, cap_h) = text_renderer.measure_style(&capability, None, &cap_style);
+            let label_y = centered_text_top(
+                self.rect.y0,
+                PROMPT_HEIGHT,
+                f64::from(app_id_h) + 4.0 + f64::from(cap_h),
+            );
+            text_renderer.draw_style(
+                scene,
+                &app_id,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate(Vec2::new(label_x, label_y)),
+                None,
+                &app_id_style,
+            );
+            text_renderer.draw_style(
+                scene,
+                &capability,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
+                None,
+                &cap_style,
+            );
+
+            let buttons = [
+                (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
+                (self.session_rect, PromptChoice::Session, false),
+                (self.always_rect, PromptChoice::Always, false),
+                (self.deny_rect, PromptChoice::Deny, false),
+            ];
+            for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
+                let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
+                let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
+                let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
+                draw_button(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &button_label(*choice),
+                    ButtonVisualState {
+                        hover: is_hover,
+                        disabled: is_disabled,
+                        primary: *is_primary,
+                        focused: is_focused,
+                    },
+                );
+            }
+        });
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

@@ -660,13 +660,13 @@ impl RichTextLine {
                 } else {
                     syntax
                 };
-                attributes.spans.push(
-                    RichSpan::new(slice)
-                        .bold(segment.bold || segment.mention.is_some())
-                        .italic(segment.italic)
-                        .color(color)
-                        .background(mention_band),
-                );
+                let mut span = RichSpan::new(slice)
+                    .bold(segment.bold || segment.mention.is_some())
+                    .italic(segment.italic)
+                    .color(color)
+                    .background(mention_band);
+                span.kind = mark_kind(&segment);
+                attributes.spans.push(span);
             }
             if segment.underline {
                 attributes.underlines.push(range);
@@ -781,10 +781,11 @@ impl RichTextLine {
         let spans = marks::segments_for(text.len(), &self.marks)
             .into_iter()
             .filter_map(|segment| {
-                let source = text.get(segment.range)?;
+                let source = text.get(segment.range.clone())?;
                 let mut span = crate::richtext::RichSpan::new(source)
                     .bold(segment.bold || segment.mention.is_some())
                     .italic(segment.italic);
+                span.kind = mark_kind(&segment);
                 if let Some(id) = segment.mention.as_deref() {
                     let (ink, band) = self.mention_rgb(id);
                     span.color = ink;
@@ -1547,6 +1548,22 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
         }
     }
     None
+}
+
+/// What a marked stretch is: a mention names a person
+/// ([`TextKind::Identifier`](crate::text_render::TextKind::Identifier)) and
+/// an external link is a [`TextKind::Url`](crate::text_render::TextKind::Url),
+/// whatever its label says. Everything else is found in the prose.
+fn mark_kind(segment: &MarkSegment) -> Option<crate::text_render::TextKind> {
+    if segment.code {
+        None
+    } else if segment.mention.is_some() {
+        Some(crate::text_render::TextKind::Identifier)
+    } else if segment.external_link {
+        Some(crate::text_render::TextKind::Url)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
