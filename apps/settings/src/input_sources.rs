@@ -173,7 +173,7 @@ fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Cata
     });
     for entry in &mut entries {
         if counts.get(&entry.label).copied().unwrap_or(0) > 1 {
-            entry.label = format!("{} · {}", entry.label, entry.id);
+            entry.label = format!("{} ({})", entry.label, entry.id);
         }
     }
     Ok(entries)

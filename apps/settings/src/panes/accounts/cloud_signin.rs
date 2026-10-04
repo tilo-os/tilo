@@ -18,7 +18,7 @@ use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OA
 use ui::widget::{Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
-use crate::widgets::{El, caption, card, rows, setting_row};
+use crate::widgets::{El, caption, card, field_row, rows};
 
 /// Opens a URL in the person's browser.
 pub trait BrowserOpener: Send + Sync {
@@ -198,6 +198,14 @@ impl SignInFlow {
 
     pub fn awaiting_code(&self) -> bool {
         matches!(self.stage, Stage::Code { .. } | Stage::PastedCode { .. })
+    }
+
+    /// Fill the name and server fields, as a capture of a form being
+    /// completed shows them.
+    #[cfg(not(feature = "thin"))]
+    pub(crate) fn prefill(&self, name: &str, server: &str) {
+        self.name.set(name.into());
+        self.server.set(server.into());
     }
 
     #[doc(hidden)]
@@ -631,26 +639,24 @@ impl SignInFlow {
             fields.push(caption(reason));
         } else if !waiting {
             match &self.stage {
-                Stage::PastedCode { .. } => fields.push(setting_row(
+                Stage::PastedCode { .. } => fields.push(field_row(
                     "Code",
                     Box::new(
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Code from the provider")
-                            .with_placeholder("Paste the code")
-                            .with_font_size(13.0),
+                            .with_placeholder("Paste the code"),
                     ),
                 )),
-                Stage::Code { .. } => fields.push(setting_row(
+                Stage::Code { .. } => fields.push(field_row(
                     "Verification code",
                     Box::new(
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Verification code")
-                            .with_placeholder("123456")
-                            .with_font_size(13.0),
+                            .with_placeholder("123456"),
                     ),
                 )),
                 _ => self.form_fields(&mut fields),
@@ -701,28 +707,26 @@ impl SignInFlow {
     }
 
     fn form_fields(&self, fields: &mut Vec<El>) {
-        fields.push(setting_row(
+        fields.push(field_row(
             "Display name",
             Box::new(
                 TextInput::from_state(&self.name)
                     .with_kind(TextInputKind::Name)
                     .with_id("accounts.signin.name")
                     .with_accessible_name("Display name")
-                    .with_placeholder(self.kind.label())
-                    .with_font_size(13.0),
+                    .with_placeholder(self.kind.label()),
             ),
         ));
         match self.kind {
             AccountKind::Nextcloud => {
-                fields.push(setting_row(
+                fields.push(field_row(
                     "Server",
                     Box::new(
                         TextInput::from_state(&self.server)
                             .with_kind(TextInputKind::Url)
                             .with_id("accounts.signin.server")
                             .with_accessible_name("Server URL")
-                            .with_placeholder("https://cloud.example.com")
-                            .with_font_size(13.0),
+                            .with_placeholder("https://cloud.example.com"),
                     ),
                 ));
                 fields.push(caption(
@@ -732,18 +736,17 @@ impl SignInFlow {
                 ));
             }
             AccountKind::ICloudDrive => {
-                fields.push(setting_row(
+                fields.push(field_row(
                     "Apple ID",
                     Box::new(
                         TextInput::from_state(&self.apple_id)
                             .with_kind(TextInputKind::Email)
                             .with_id("accounts.signin.apple-id")
                             .with_accessible_name("Apple ID")
-                            .with_placeholder("you@icloud.com")
-                            .with_font_size(13.0),
+                            .with_placeholder("you@icloud.com"),
                     ),
                 ));
-                fields.push(setting_row(
+                fields.push(field_row(
                     "Password",
                     Box::new(
                         TextInput::from_state(&self.password)
@@ -751,8 +754,7 @@ impl SignInFlow {
                             .with_id("accounts.signin.password")
                             .with_accessible_name("Apple ID password")
                             .with_secret(true)
-                            .with_placeholder("Password")
-                            .with_font_size(13.0),
+                            .with_placeholder("Password"),
                     ),
                 ));
             }
