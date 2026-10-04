@@ -127,6 +127,7 @@ fn standalone_launch_spec() -> LaunchSpec {
             "dropmove",
             "empty",
             "error",
+            "favorites-drag",
             "grid",
             "loading",
             "menu",
@@ -719,6 +720,8 @@ fn apply_post_layout_scenario(
         // toggle). The shell must have laid out once to know it is a drawer;
         // the capture then lays out again with it open.
         Some("places") => widget.debug_open_places_drawer(),
+        // A favourite mid-reorder: the row lifts and the drop line shows.
+        Some("favorites-drag") => widget.debug_stage_favorite_drag(),
         Some("undo-trash") => {
             widget.debug_open_view_menu();
         }
