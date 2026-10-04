@@ -165,6 +165,21 @@ pub(crate) fn live_extras(app: &MailApp) -> Vec<PublishedResource> {
     extras
 }
 
+/// Mail's preferences, which follow the person across their devices and are
+/// never seen by collaborators: the format a new message is written in and
+/// the accounts whose folders the sidebar keeps folded.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MailPreferences {
+    #[serde(default)]
+    pub compose_format: crate::model::ComposeFormat,
+    #[serde(default)]
+    pub collapsed_accounts: Vec<String>,
+}
+
+impl ui::storage::SettingsSchema for MailPreferences {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+}
+
 /// Framework app: the mail widget is the surface over [`Mail`].
 pub struct MailShell;
 
@@ -264,6 +279,10 @@ impl ResourceSurface<Mail> for MailApp {
     /// as applied.
     fn attach(&mut self, cx: SurfaceCx<Mail>) {
         self.attach_framework(cx.dispatcher());
+        // A screenshot shows its fixture as it is, whatever the profile holds.
+        if cx.mode().is_live() {
+            self.follow_preferences(cx.settings::<MailPreferences>());
+        }
         let outbox = self.server_outbox();
         let projection = cx.drain(
             |state: &MailboxState| {
@@ -621,6 +640,40 @@ mod tests {
             let body = control(&mut app, "body");
             app.harness().click_at(body.x0 + 20.0, body.y0 + 16.0);
             app
+        }
+
+        /// The format a person writes in follows them: switching it is
+        /// stored in their Mail preferences, and a window opened later (on
+        /// this device or another) starts its compositions in it.
+        #[test]
+        fn the_compose_format_follows_the_person() {
+            use super::super::MailPreferences;
+            use crate::model::ComposeFormat;
+
+            let mut app = composing();
+            let format = control(&mut app, "format");
+            app.harness().click_at(format.center().x, format.center().y);
+            assert_eq!(
+                app.settings::<MailPreferences>().get().compose_format,
+                ComposeFormat::Text
+            );
+
+            let mut later = TestApp::<MailShell>::new().unwrap();
+            later
+                .settings::<MailPreferences>()
+                .set(&MailPreferences {
+                    compose_format: ComposeFormat::Text,
+                    ..MailPreferences::default()
+                })
+                .unwrap();
+            later.harness().relayout();
+            later.call("compose", serde_json::json!({})).unwrap();
+            let shown = later.harness().inspection_json().unwrap();
+            assert!(shown.contains("mail.compose:body"), "the composer is open");
+            assert!(
+                !shown.contains("mail.compose:bold"),
+                "a plain-text composition has no formatting: {shown}"
+            );
         }
 
         #[test]
