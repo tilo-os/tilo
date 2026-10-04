@@ -1084,6 +1084,19 @@ pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Opt
     surface_of::<A, S>(harness.widget_mut::<ResourceRoot<A::Resource>>()?)
 }
 
+/// The custom surface of type `S` that `A`'s view hosts, when `widget` is
+/// `A`'s root as a host mounted it: a tab of `A` in a shell, found in the
+/// host's own widget map.
+pub fn surface_in_root<A: ResourceApp, S: 'static>(
+    widget: &mut dyn ui_core::widget::Widget,
+) -> Option<&mut S> {
+    surface_of::<A, S>(
+        widget
+            .as_any_mut()?
+            .downcast_mut::<ResourceRoot<A::Resource>>()?,
+    )
+}
+
 fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
     root.content_mut()
         .as_any_mut()
