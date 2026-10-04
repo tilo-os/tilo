@@ -498,7 +498,15 @@ impl OpenTypeTag {
 /// | `Numeric` | tabular lining figures (`tnum`, `lnum`) |
 /// | `Secret` | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
 /// | `Identifier` | distinct I and l |
+/// | `Url` | slashed or dotted zero, distinct I and l |
 /// | `Code` | none; set in the mono face |
+///
+/// Identifiers inside `Prose` (links, email addresses, mentions, room
+/// aliases) are found by [`crate::text_detect`] and set as `Url` or
+/// `Identifier` on their own. A [`TextStyle`] marked
+/// [`TextStyle::on_security_surface`], and all text while the person's
+/// "Always distinguish similar letters" setting is on, gets the distinct
+/// forms whatever its kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextKind {
     /// Running text. Numbers stay proportional.
@@ -512,9 +520,13 @@ pub enum TextKind {
     /// licence keys.
     Secret,
     /// Names that must not be mistaken for another: usernames, handles,
-    /// email addresses, invite codes, room names shown for verification,
-    /// other people's file names, URLs in security-relevant places.
+    /// email addresses, invite codes, room names, other people's file
+    /// names.
     Identifier,
+    /// Web and other links. An identifier that also sets the zero apart:
+    /// a look-alike domain (`paypa1.com`, `g00gle.com`) is a phishing
+    /// vector.
+    Url,
     /// Source code and terminal text, in the mono face.
     Code,
 }
@@ -689,6 +701,11 @@ pub struct TextStyle {
     /// What the text is; resolved to OpenType features against each face it
     /// is set in.
     pub kind: TextKind,
+    /// Set every look-alike (I, l, 1 and 0, O) apart whatever the kind: text
+    /// on a security surface ([`Self::on_security_surface`]). The renderer
+    /// also sets it on all text while the person's "Always distinguish
+    /// similar letters" setting is on.
+    pub distinguish: bool,
 }
 
 /// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in.
@@ -733,6 +750,7 @@ impl TextStyle {
             fragmentation: Fragmentation::default(),
             scaling: TextScaling::Renderer,
             kind: TextKind::Prose,
+            distinguish: false,
         }
     }
 
@@ -792,6 +810,17 @@ impl TextStyle {
         if kind == TextKind::Code {
             self.family = FontChoice::Monospace;
         }
+        self
+    }
+
+    /// Text on a security surface — a permission prompt, a link preview, an
+    /// invite or join confirmation, identity verification — where every
+    /// look-alike letter and figure is set apart, prose included. Toolkit
+    /// surfaces of these kinds mark themselves; a custom-painted one marks
+    /// its styles here.
+    #[must_use]
+    pub fn on_security_surface(mut self) -> Self {
+        self.distinguish = true;
         self
     }
 
@@ -1013,6 +1042,7 @@ impl TextStyle {
         self.hanging_punctuation.hash(&mut h);
         self.fragmentation.hash(&mut h);
         self.kind.hash(&mut h);
+        self.distinguish.hash(&mut h);
         h.finish()
     }
 }
@@ -1651,6 +1681,11 @@ pub struct TextRenderer {
     generation: u64,
     /// Identity of widget-owned layouts, unique across renderers and font epochs.
     layout_epoch: Arc<()>,
+    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
+    /// Mirrored into the shaping thread's state whenever the renderer
+    /// measures, paints or hands out its layout epoch, so layouts shaped
+    /// outside it ([`crate::richtext::RichTextLayout`]) follow it too.
+    distinct_letters: bool,
     hits: u64,
     misses: u64,
     /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
@@ -1765,6 +1800,7 @@ impl TextRenderer {
             measure_cache: HashMap::with_capacity(256),
             generation: 0,
             layout_epoch: Arc::new(()),
+            distinct_letters: false,
             hits: 0,
             misses: 0,
             shape_cache: HashMap::with_capacity(256),
@@ -1856,6 +1892,48 @@ impl TextRenderer {
         self.bump_generation();
     }
 
+    /// Follow a theme's type: its UI face ([`Self::set_ui_face`]) and its
+    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
+    pub fn apply_typography(&mut self, typography: &crate::tokens::Typography) {
+        self.set_ui_face(&typography.sans_family);
+        self.set_distinct_letters(typography.distinct_letters);
+    }
+
+    /// Turn the "Always distinguish similar letters" setting on or off: with
+    /// it on, every look-alike (I, l, 1 and 0, O) is set apart in all text,
+    /// whatever its kind, where the face has the forms. The theme's
+    /// resolved [`crate::tokens::Typography::distinct_letters`].
+    pub fn set_distinct_letters(&mut self, on: bool) {
+        self.sync_distinct_letters();
+        if self.distinct_letters != on {
+            self.distinct_letters = on;
+            self.sync_distinct_letters();
+            self.bump_generation();
+        }
+    }
+
+    /// Whether every look-alike letter is set apart in text drawn now: the
+    /// setting is on, or a security surface is being drawn.
+    pub fn distinguishes_letters(&self) -> bool {
+        crate::font_catalog::matched::distinguish_everywhere()
+    }
+
+    /// Lay out or paint a security surface — a permission prompt, a link
+    /// preview, an invite or join confirmation, identity verification —
+    /// with every look-alike letter and figure set apart in all its text,
+    /// prose included, whatever the setting.
+    pub fn security_surface<R>(&mut self, draw: impl FnOnce(&mut Self) -> R) -> R {
+        struct Leave;
+        impl Drop for Leave {
+            fn drop(&mut self) {
+                crate::font_catalog::matched::security_surface(false);
+            }
+        }
+        crate::font_catalog::matched::security_surface(true);
+        let _leave = Leave;
+        draw(self)
+    }
+
     /// The effective accessibility text scale used for both measurement and
     /// drawing. Custom-drawn app chrome uses this to make its surrounding
     /// geometry grow with the shared renderer rather than letting enlarged
@@ -1868,10 +1946,14 @@ impl TextRenderer {
     /// ([`TextScaling::Renderer`]) is grown by the accessibility text scale;
     /// resolved theme roles and document content are already final.
     fn scaled_style(&self, style: &TextStyle) -> TextStyle {
-        if style.scaling != TextScaling::Renderer || (self.text_scale - 1.0).abs() <= f32::EPSILON {
-            return style.clone();
-        }
+        self.sync_distinct_letters();
         let mut scaled = style.clone();
+        // The setting, or a security surface being drawn: part of the style
+        // so measuring and painting key their caches on it.
+        scaled.distinguish |= crate::font_catalog::matched::distinguish_everywhere();
+        if style.scaling != TextScaling::Renderer || (self.text_scale - 1.0).abs() <= f32::EPSILON {
+            return scaled;
+        }
         scaled.size *= self.text_scale;
         scaled.letter_spacing *= self.text_scale;
         scaled
@@ -1895,7 +1977,13 @@ impl TextRenderer {
     }
 
     pub(crate) fn layout_epoch(&self) -> &Arc<()> {
+        self.sync_distinct_letters();
         &self.layout_epoch
+    }
+
+    /// Put this renderer's setting on the thread that is shaping with it.
+    fn sync_distinct_letters(&self) {
+        crate::font_catalog::matched::set_distinguish_everywhere(self.distinct_letters);
     }
 
     /// Call this when the font set or active locale changes; cosmic-text
@@ -2477,6 +2565,7 @@ impl TextRenderer {
             browser_emoji_runs(&shaping_text, &attrs, emoji),
             metrics,
             style.kind,
+            style.distinguish || crate::font_catalog::matched::distinguish_everywhere(),
         );
         crate::font_catalog::matched::set_spans(
             &mut buffer,
