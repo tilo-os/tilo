@@ -345,7 +345,7 @@ the run fails if any frame came from its session.
 ```bash
 # The demo rig needs debug-assertions on for TILO_TEST_CONTROL, and
 # refuses to record a binary older than the sources under test.
-cargo build --profile demo -p shell --bin shell --bin tilo-control
+cargo build --profile demo -p shell -p tilo-control --bin shell --bin tilo-control
 cargo build -p launcher --bin tilo-launcher
 cargo build -p agent --bin tilo-agent                # beat 9
 cargo build -p app-cli --bins --examples      # beat 5's registry

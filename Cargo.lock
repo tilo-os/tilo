@@ -13275,6 +13275,7 @@ dependencies = [
  "tilo-cli-kit",
  "tilo-clock",
  "tilo-content",
+ "tilo-control",
  "tilo-copy-lint",
  "tilo-cpu-raster",
  "tilo-delivery-protocol",
@@ -15226,6 +15227,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-control"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-copy-lint"
 version = "0.1.0"
 dependencies = [
@@ -16454,6 +16464,7 @@ dependencies = [
  "package-store",
  "postcard",
  "rand_core 0.10.0",
+ "runtime-collab",
  "runtime-fs",
  "runtime-identity",
  "serde",
@@ -16798,6 +16809,23 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-unlock-protocol"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "p256 0.14.0",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tilo-seal",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

@@ -91,7 +91,7 @@ mod durable_local_matrix {
     impl Rig {
         async fn new(env: &Environment) -> Self {
             let fanout = Arc::new(FanoutState::new());
-            let (state, _) = CapnpBrokerState::new(
+            let (state, bridge_rx) = CapnpBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -107,7 +107,7 @@ mod durable_local_matrix {
             state
                 .invocation_host()
                 .expect("actual broker journal available after normal stop/open");
-            let directories = super::signed_worker::empty_directories();
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
@@ -1001,4 +1001,82 @@ mod durable_local_matrix {
             })
             .await;
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let descriptor = directory_state("original-r1")
+                    .borrow()
+                    .row()
+                    .descriptor
+                    .unwrap();
+                rig.worker
+                    .handle
+                    .publish_actions(&env.route.app_id, &[descriptor])
+                    .await
+                    .unwrap();
+                let admitted = rig
+                    .state
+                    .host_workers
+                    .lock()
+                    .unwrap()
+                    .get(&903)
+                    .unwrap()
+                    .clone();
+                let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
+                let origin =
+                    crate::collab_broker_capnp::published_invocation::InvocationCaller::Local {
+                        route: env.route.clone(),
+                        admitted: Box::new(admitted),
+                    };
+                let invocation = tilo_actions::InvocationId::new();
+                let request = tilo_actions::remote::InvokeRequest {
+                    invocation,
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: "903".into(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                };
+                assert!(matches!(
+                    rig.state
+                        .action_invoke_with_origin(&caller, None, None, Some(&origin), &request,)
+                        .poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Ok(_))
+                ));
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                let request = ui::invocation_scope::PublishedInvocationRequest {
+                    wire_id: delivered.id,
+                    invocation,
+                    address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+                    argument: delivered.argument,
+                    actor: delivered.actor,
+                    participant: Some(tilo_actions::ParticipantId::for_execution(
+                        caller.execution_id().unwrap(),
+                    )),
+                };
+                let lease = (rig.authorize)(&request).unwrap();
+                lease.check().unwrap();
+                caller.retire_execution();
+                assert!(
+                    lease.check().is_err(),
+                    "retained checked effects cannot outlive their execution"
+                );
+                assert!(
+                    (rig.authorize)(&request).is_err(),
+                    "same delivered request cannot remint custody"
+                );
+                rig.stop().await;
+            })
+            .await;
+    }
+
+    include!("admitted_local_host_tests.rs");
+    include!("certified_launch_tests.rs");
 }

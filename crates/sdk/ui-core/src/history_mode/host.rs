@@ -26,6 +26,7 @@ use winit::event::WindowEvent;
 #[derive(Clone, Copy)]
 enum Command {
     Live,
+    Earlier,
     Activity,
     Before,
     After,
@@ -206,11 +207,11 @@ impl HistoryHost {
             .find(|source| source.scope() == scope.key)
             .ok_or(HistoryRegistrationError::InvalidScopes)?;
 
+        // History projects when it opens; a launch only learns the frontier.
         let controller = match source {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
-                HistoryController::new(resource.clone(), &source.document(doc)?)
-                    .map_err(|_| HistoryRegistrationError::ForeignSource)?,
+                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?),
             ),
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::CheckedFiles { .. } => None,
@@ -1055,8 +1056,11 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates);
         let target_changed = self.reconcile_file_target();
         let mut changed = target_changed || std::mem::take(&mut self.toolbar_dirty);
+        let started = crate::time::now();
+        let mut opening = false;
         if self.open_requested.replace(false) {
             self.open = !self.open;
+            opening = self.open;
             self.returning_live = !self.open;
             if !self.open {
                 self.close_files_presentation();
@@ -1135,6 +1139,13 @@ impl HistoryHost {
                         controller.back_to_live();
                     }
                 }
+                Command::Earlier => {
+                    if let Ok(document) = self.source().document(doc)
+                        && let Some(controller) = &mut self.controller
+                    {
+                        let _ = controller.show_earlier(&document);
+                    }
+                }
                 Command::PreviousPage | Command::NextPage => {
                     self.canvas_mut()
                         .navigate(if matches!(command, Command::NextPage) {
@@ -1169,9 +1180,11 @@ impl HistoryHost {
                         match self.source() {
                             HistorySourceRegistration::HostDocument { resource, .. }
                             | HistorySourceRegistration::OwnedDocument { resource, .. } => {
-                                if let Ok(document) = self.source().document(doc) {
-                                    self.controller =
-                                        HistoryController::new(resource.clone(), &document).ok();
+                                if let Ok(heads) = self.source().committed_heads(doc) {
+                                    self.controller = Some(HistoryController::unprojected(
+                                        resource.clone(),
+                                        heads,
+                                    ));
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
@@ -1232,6 +1245,18 @@ impl HistoryHost {
                 changed = true;
             }
             self.timeline.set_entries(controller.entries().to_vec());
+            if opening {
+                // One line per opening, for gates and logs that keep History
+                // fast on long histories.
+                crate::diag!(
+                    "HISTORY-OPEN listed={} earlier={} ms={}",
+                    controller.entries().len(),
+                    controller.has_earlier(),
+                    crate::time::now()
+                        .saturating_duration_since(started)
+                        .as_millis()
+                );
+            }
             if let Some(entry) = requested
                 && self.selected == [entry]
                 && let Some(index) = self
@@ -1436,6 +1461,18 @@ impl HistoryHost {
             }
             for failure in &self.pending_control_capture_failures {
                 toolbar = toolbar.push(Box::new(Text::new(failure)));
+            }
+            if self.open
+                && self
+                    .controller
+                    .as_ref()
+                    .is_some_and(HistoryController::has_earlier)
+            {
+                toolbar = toolbar.push(Box::new(self.command_button(
+                    "history-earlier",
+                    "history-mode-earlier",
+                    Command::Earlier,
+                )));
             }
         } else {
             let mut header = Row::new().push(Box::new(Text::new(title)));

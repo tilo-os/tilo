@@ -1264,10 +1264,10 @@ impl App {
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
-        self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(
-            registration,
-            &self.state.doc,
-        )?));
+        let host = tilo_startup_metrics::span("history-install", || {
+            crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
+        })?;
+        self.history = Some(Box::new(host));
         if let Some(history) = &mut self.history {
             history.set_control_domain(&self.control_domain);
         }

@@ -143,7 +143,11 @@ impl<'a> DurableContext<'a> {
     }
     pub(super) fn origin(self) -> InvocationCaller {
         match self {
-            Self::Peer(c, _) => InvocationCaller::Certified(Box::new(c.clone())),
+            Self::Peer(c, _) => InvocationCaller::Certified {
+                caller: Box::new(c.clone()),
+                // This path has only the original signed device restriction.
+                foreign_restriction: false,
+            },
             Self::Local { caller, .. } => caller.origin(),
         }
     }

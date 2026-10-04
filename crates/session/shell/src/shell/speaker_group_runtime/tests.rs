@@ -89,6 +89,7 @@ impl Device {
                 },
                 online: self.online,
                 last_seen_unix_ms: self.counter,
+                wake_routes: Vec::new(),
                 stamp: FabricStamp {
                     counter: self.counter,
                     device: owner,

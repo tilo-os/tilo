@@ -231,7 +231,11 @@ impl BrowserEffect {
             Self::RevealDownload { id } => BrowserOperation::RevealDownload { id },
             Self::ReadPage => page(PageRequest::Outline),
             Self::ClickPage { element } => page(PageRequest::Click { element }),
-            Self::FillPage { element, text } => page(PageRequest::Fill { element, text }),
+            Self::FillPage { element, text } => page(PageRequest::Fill {
+                element,
+                text,
+                secret: false,
+            }),
             Self::SelectPage { element, values } => page(PageRequest::Select { element, values }),
             Self::PressPage { key, element } => page(PageRequest::Press {
                 element: element.filter(|element| !element.is_empty()),
@@ -240,7 +244,10 @@ impl BrowserEffect {
                     modifiers: KeyModifiers::default(),
                 }),
             }),
-            Self::SubmitPage { element } => page(PageRequest::Submit { element }),
+            Self::SubmitPage { element } => page(PageRequest::Submit {
+                element,
+                cross_origin: false,
+            }),
         }
     }
 }

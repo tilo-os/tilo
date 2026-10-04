@@ -108,6 +108,11 @@ impl SessionActionPolicy {
         *self.inhibitors.borrow_mut() = inhibitors;
     }
 
+    /// The session's inhibitor registry, shared with every holder.
+    pub fn inhibitors(&self) -> tilo_power_mgmt::InhibitRegistry {
+        self.inhibitors.borrow().clone()
+    }
+
     pub fn set_user_switching(&self, supported: bool) {
         self.user_switching.set(supported);
     }

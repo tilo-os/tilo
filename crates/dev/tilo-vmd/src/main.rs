@@ -74,6 +74,12 @@ enum Command {
         #[arg(long, value_parser = parse_extent, requires = "extent")]
         touch_extent: Option<(u32, u32)>,
     },
+    /// Hold a logind sleep lock until the keep-awake lease in --lease ends
+    /// (run by tilo-vmd itself as tilo-vm-awake.service).
+    AwakeHold {
+        #[arg(long)]
+        lease: PathBuf,
+    },
     /// Install distribution packages into the VM's /usr with its package
     /// manager (a transient overlay on bootc images); output streams.
     InstallPackages {
@@ -204,6 +210,16 @@ fn display_apply(outputs: &[tilo_vm_protocol::OutputSpec], timeout: u64) -> Exit
     }
 }
 
+fn awake_hold(lease: &std::path::Path) -> ExitCode {
+    match tilo_vmd::awake::hold(lease) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tilo-vmd: could not hold the machine awake: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Rpc {
@@ -300,6 +316,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::AwakeHold { lease } => awake_hold(&lease),
         Command::DisplayApply { outputs, timeout } => display_apply(&outputs, timeout),
         Command::InstallPackages { timeout, packages } => install_packages(&packages, timeout),
     }

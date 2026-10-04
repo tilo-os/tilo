@@ -137,6 +137,67 @@ fn render_spec() -> tilo_actions::ActionSpec {
     spec
 }
 
+/// The operation type of the framework's `read` view.
+pub(crate) const READ_TYPE: &str = "tilo.resource.read";
+
+/// `read`: what a [readable](Resource::READABLE) resource holds, as typed
+/// data. With no `item` it answers the resource itself; with an `item` id, the
+/// nested resource of that id. It is a view: it changes nothing, needs only
+/// read permission and is checked like every other action.
+fn read_spec() -> tilo_actions::ActionSpec {
+    let mut spec = tilo_actions::ActionSpec::typed_operation(
+        "read",
+        "Read the content",
+        "Read the content",
+        tilo_actions::OperationKind::View,
+        READ_TYPE,
+        vec![
+            tilo_actions::ActionParam::optional(
+                "item",
+                tilo_actions::ParamType::Text,
+                "A nested resource's id, as the first read lists it (default: the whole resource)",
+            )
+            .nullable(),
+        ],
+        |args| {
+            tilo_actions::EncodedAction::encode_operation(
+                READ_TYPE,
+                &serde_json::json!({ "item": args.text("item") }),
+            )
+            .unwrap_or_else(|_| tilo_actions::EncodedAction {
+                type_id: READ_TYPE.into(),
+                payload: Vec::new(),
+            })
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description(
+        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content.",
+    );
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec.reads_document()
+}
+
+/// Answer a `read` request against `R`'s committed document.
+fn read<R: Resource>(
+    state: &R::State,
+    doc: &AutoCommit,
+    payload: &[u8],
+) -> Result<tilo_actions::ActionOutput, String> {
+    let args: serde_json::Value = if payload.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(payload).map_err(|error| error.to_string())?
+    };
+    let item = args.get("item").and_then(serde_json::Value::as_str);
+    Ok(tilo_actions::ActionOutput {
+        value: Some(R::read_content(state, doc, item)?),
+        resources: Vec::new(),
+    })
+}
+
 /// The revision a picture shows: the document's heads.
 #[allow(dead_code, reason = "called only by render, which is native-only")]
 fn revision(doc: &mut AutoCommit) -> String {
@@ -362,6 +423,14 @@ impl<R: Resource> ResourceRoot<R> {
                 .any(|existing| existing.id == "render")
         {
             resource = resource.with_action(render_spec());
+        }
+        if R::READABLE
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "read")
+        {
+            resource = resource.with_action(read_spec());
         }
         for spec in super::history::specs() {
             if !resource
@@ -871,6 +940,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         // Opening another app is routed by the host to the workspace
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
+        if R::READABLE {
+            handlers.insert(READ_TYPE.to_owned());
+        }
         handlers.extend(self.effects.operations().into_iter().map(str::to_owned));
         for spec in R::local_operations()
             .into_iter()
@@ -910,6 +982,15 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == RENDER_TYPE
         {
             let output = self.render(request.payload, doc)?;
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                output,
+            )));
+        }
+        if R::READABLE
+            && let Some(request) = op.unscoped()
+            && request.type_id == READ_TYPE
+        {
+            let output = read::<R>(&self.live.get(), doc, request.payload)?;
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
             )));
