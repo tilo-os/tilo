@@ -3,7 +3,7 @@
 //! fetched catalogue rows, running jobs — published beneath the resource for
 //! the palette, agents and scripts.
 
-use tilo_actions::{ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionSpec, OperationKind, Resource, ResourcePresentation};
 
 /// One live external entity a surface publishes beneath its resource, with
 /// the view and effect operations it offers (inspect a process, stop a
@@ -44,6 +44,16 @@ impl LiveRow {
         if admits(&operation, self.id()) {
             self.resource.actions.push(operation);
         }
+        self
+    }
+
+    /// How the row reads in a list: a detail line and a badge for what
+    /// only this device knows (a process's state, whether this device holds
+    /// an account's secret). A document child of the same id keeps its own
+    /// presentation when it has one.
+    #[must_use]
+    pub fn presentation(mut self, presentation: ResourcePresentation) -> Self {
+        self.resource.presentation = Some(presentation);
         self
     }
 
@@ -107,8 +117,9 @@ pub(crate) fn resolved_outside_document(mut resource: Resource) -> Resource {
 }
 
 /// Merge `rows` by id into `children`: a row naming an existing child adds
-/// the operations and rows that child lacks; any other row is appended. The
-/// first publisher of an id keeps its label and kind.
+/// the operations and rows that child lacks, and its presentation when the
+/// child has none; any other row is appended. The first publisher of an id
+/// keeps its label and kind.
 pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item = Resource>) {
     for row in rows {
         match children.iter_mut().find(|child| child.id == row.id) {
@@ -121,6 +132,9 @@ pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item =
 /// Add to `existing` the operations and rows of `row`, which names it, that
 /// it lacks.
 pub(crate) fn join(existing: &mut Resource, row: Resource) {
+    if existing.presentation.is_none() {
+        existing.presentation = row.presentation;
+    }
     for action in row.actions {
         if !existing.actions.iter().any(|known| known.id == action.id) {
             existing.actions.push(action);
