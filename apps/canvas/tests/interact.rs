@@ -713,3 +713,60 @@ fn screenshots_of_gestures_in_progress() {
     desk.button(ElementState::Released);
     desk.shot("wet-oil-painted");
 }
+
+/// A mask rides in its layer's row: its picture beside the layer's, each
+/// choosing what the brush paints, and the strip over the canvas saying
+/// while it is the mask.
+#[test]
+fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
+    let mut desk = Desk::open();
+    let layer = desk.art().top_layer().unwrap().id.clone();
+    desk.app
+        .invoke(canvas::ArtworkResource::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
+        .expect("a mask is added");
+    let mask = desk.art().mask_of(&layer).unwrap().id.clone();
+    let targets = desk.app.harness().targets();
+    assert!(
+        !targets.contains_key(&format!("canvas-layer-name-{mask}")),
+        "the mask has no row of its own"
+    );
+    // The layer the next brush stroke lands on.
+    let stroke = |desk: &mut Desk| {
+        let before: Vec<String> = desk
+            .art()
+            .marks
+            .iter()
+            .map(|mark| mark.id.clone())
+            .collect();
+        desk.key("b");
+        desk.drag((100.0, 450.0), (300.0, 470.0));
+        let art = desk.art();
+        let new = art.marks.iter().find(|mark| !before.contains(&mark.id));
+        new.expect("a stroke is laid").layer.clone()
+    };
+    // A mask just added is what is painted next.
+    assert_eq!(stroke(&mut desk), mask);
+    assert!(
+        desk.app
+            .harness()
+            .targets()
+            .contains_key("canvas-paint-layer"),
+        "the strip offers the way back to the layer"
+    );
+    desk.shot("mask-painting");
+    desk.app
+        .harness()
+        .click_named(&format!("canvas-paint-{layer}"))
+        .expect("the layer's picture");
+    assert_eq!(stroke(&mut desk), layer);
+    desk.app
+        .harness()
+        .click_named(&format!("canvas-paint-{mask}"))
+        .expect("the mask's picture");
+    assert_eq!(stroke(&mut desk), mask);
+    desk.app
+        .harness()
+        .click_named("canvas-paint-layer")
+        .expect("back to the layer from the strip");
+    assert_eq!(stroke(&mut desk), layer);
+}
