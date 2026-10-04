@@ -267,6 +267,24 @@ fn sample(name: &str, pattern: &pixels::Rgba) -> Option<Sample> {
     })
 }
 
+fn not_here_yet() -> LibraryPhoto {
+    placeholder("not-here-yet.png", "0".repeat(64))
+}
+
+fn unreadable() -> LibraryPhoto {
+    placeholder("unreadable-image.png", tilo_content::hash_bytes(UNREADABLE))
+}
+
+/// The photograph `scenario` shows open in its window.
+pub(crate) fn opened(scenario: &str) -> Option<String> {
+    match scenario {
+        "empty" => None,
+        "loading" => Some(not_here_yet().id),
+        "error" => Some(unreadable().id),
+        _ => harbour().map(|sample| sample.photo.id.clone()),
+    }
+}
+
 /// A photograph whose bytes have not arrived here (`loading`) or are not an
 /// image (`error`): what a collaborator's import looks like before or
 /// without its content.
@@ -286,12 +304,12 @@ pub fn scenario(scenario: Option<&str>) -> Vec<PhotosAction> {
         "empty" => return Vec::new(),
         "loading" => {
             return vec![PhotosAction::ImportPhoto {
-                photo: placeholder("not-here-yet.png", "0".repeat(64)),
+                photo: not_here_yet(),
             }];
         }
         "error" => {
             return vec![PhotosAction::ImportPhoto {
-                photo: placeholder("unreadable-image.png", tilo_content::hash_bytes(UNREADABLE)),
+                photo: unreadable(),
             }];
         }
         _ => {}
@@ -311,6 +329,7 @@ pub fn scenario(scenario: Option<&str>) -> Vec<PhotosAction> {
         // truthful edit, not a deliberately zoomed inspection state that can
         // be mistaken for a broken initial fit on a narrow viewport.
         "cropping" => actions.push(PhotosAction::set(
+            &harbour.photo.id,
             &crate::model::Edits::default().cropped_from_view(Rect01 {
                 x: 0.12,
                 y: 0.08,
@@ -322,6 +341,7 @@ pub fn scenario(scenario: Option<&str>) -> Vec<PhotosAction> {
         // crop is stored against the *original*, so it keeps naming the same
         // region of the photograph however the view is later turned.
         "edited" => actions.push(PhotosAction::set(
+            &harbour.photo.id,
             &crate::model::Edits::default()
                 .cropped_from_view(Rect01 {
                     x: 0.06,

@@ -17,14 +17,13 @@ use ui::widget::Element;
 use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, register};
 use crate::app::PhotosApp;
 use crate::doc::PhotosDoc;
-use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
+use crate::model::{LibraryPhoto, OpenImage, PhotoLibrary};
 
-/// Shared photograph library plus the open image (if any).
+/// The shared photograph library: every photograph, how it is filed and
+/// the edits it is shown with.
 #[derive(Clone, Debug, Default)]
 pub struct PhotosState {
     pub library: PhotoLibrary,
-    pub open: Option<OpenImage>,
-    pub edits: Edits,
 }
 
 /// The photos library resource.
@@ -45,8 +44,6 @@ impl Resource for Photos {
     fn read(doc: &Doc) -> Result<PhotosState, ModelError> {
         Ok(PhotosState {
             library: PhotosDoc::library(doc),
-            open: PhotosDoc::image(doc),
-            edits: PhotosDoc::edits(doc),
         })
     }
 
@@ -55,12 +52,7 @@ impl Resource for Photos {
     }
 
     fn children(state: &PhotosState) -> Vec<tilo_actions::Resource> {
-        let mut children = Vec::new();
-        if let Some(image) = &state.open {
-            children.push(crate::actions::open_image_resource(image, &state.edits));
-        }
-        children.extend(crate::actions::library_children(&state.library));
-        children
+        crate::actions::library_children(&state.library)
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -103,12 +95,8 @@ impl ResourceApp for PhotosShell {
     fn view(cx: &mut ViewCx<Photos>) -> Element {
         let content = cx.content().unwrap_or_else(ContentStore::for_app);
         let app = if cx.mode().is_live() {
-            PhotosApp::new_persistent(content).launched_on(
-                cx.launch_arguments()
-                    .first()
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_dir()),
-            )
+            PhotosApp::new_persistent(content)
+                .launched_on(cx.launch_arguments().first().map(PathBuf::from))
         } else {
             PhotosApp::with_content(content)
         };
@@ -116,7 +104,7 @@ impl ResourceApp for PhotosShell {
     }
 
     /// A photograph handed to the launch is kept in the content store and
-    /// imported into the library; a folder is imported by the window
+    /// imported into the library; the window shows it, and imports a folder
     /// ([`PhotosApp::launched_on`]).
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Photos>> {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
@@ -144,13 +132,6 @@ impl ResourceApp for PhotosShell {
         })
         .into_iter()
         .collect()
-    }
-
-    fn label(state: &PhotosState) -> String {
-        match &state.open {
-            Some(image) if !image.name.is_empty() => image.name.clone(),
-            _ => "Photos".into(),
-        }
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -268,13 +249,23 @@ mod tests {
                 "empty" => assert!(state.library.photos.is_empty()),
                 "loading" | "error" | "opened" | "cropping" | "edited" => {
                     assert_eq!(state.library.photos.len(), 1, "{name}");
-                    assert!(state.open.is_some(), "{name} opens its photograph");
                 }
                 _ => assert!(state.library.photos.len() > 1, "{name} shows a library"),
             }
-            if matches!(name, "cropping" | "edited") {
-                assert!(!state.edits.is_identity(), "{name} shows an edit");
-            }
+            let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
+            assert_eq!(
+                opened,
+                crate::sample::opened(name),
+                "{name} opens its photograph"
+            );
+            let shown_edits = opened
+                .and_then(|id| state.library.photo(&id).map(|photo| photo.edits))
+                .unwrap_or_default();
+            assert_eq!(
+                !shown_edits.is_identity(),
+                matches!(name, "cropping" | "edited"),
+                "{name} shows an edit exactly when it stages one"
+            );
             let (in_library, has_image) = surface(&mut app, |photos| {
                 (photos.shows_library(), photos.has_image())
             });
@@ -302,10 +293,9 @@ mod tests {
             state.library.photos[0].image.content.as_deref(),
             Some(hash.as_str())
         );
-        assert_eq!(
-            state.open.map(|open| open.name).as_deref(),
-            Some("lake.png")
-        );
+        assert_eq!(state.library.photos[0].image.name, "lake.png");
+        let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
+        assert_eq!(opened.as_deref(), Some(state.library.photos[0].id.as_str()));
         assert!(surface(&mut app, |photos| photos.has_image()));
     }
 }

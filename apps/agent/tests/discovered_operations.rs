@@ -117,7 +117,15 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
     )
 }
 
-/// The open photograph as Photos publishes it in its library's tree: the
+/// How far the library's one photograph is turned.
+fn photo_rotation(doc: &AutoCommit) -> u8 {
+    photos::doc::PhotosDoc::library(doc)
+        .photos
+        .first()
+        .map_or(0, |photo| photo.edits.rotate_quarters)
+}
+
+/// The photograph as Photos publishes it in its library's tree: the
 /// one resource this scenario edits, so the catalogue the agent plans
 /// against stays small.
 fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
@@ -598,11 +606,11 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         assert!(
             acted,
             "the agent never completed the result-carrying plan; answered={done}, rotation={}, blocks={shown:?}",
-            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters
+            photo_rotation(&photo_replica)
         );
         assert!(done, "the consuming action never landed; blocks: {shown:?}");
         assert_eq!(
-            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
+            photo_rotation(&photo_replica),
             1,
             "the discovered operation never reached the second application's document"
         );
@@ -658,7 +666,7 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
 }
 
 /// Connect the photo-editor peer to `sock` under the same room, announce it,
-/// and seed its replica with one open image — a second application's
+/// and seed its replica with one photograph — a second application's
 /// document the agent was never told about.
 fn connect_photo_editor(
     sock: &std::path::Path,
@@ -679,14 +687,17 @@ fn connect_photo_editor(
     .unwrap();
     let mut photo_replica = AutoCommit::new();
     photo_replica.set_actor(automerge::ActorId::from("photos-peer".as_bytes()));
-    photos::doc::PhotosDoc::seed(&mut photo_replica);
     let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
         .expect("the source photograph encodes");
     let original = content.put(&png).expect("the source photograph is stored");
-    photos::doc::PhotosDoc::set_image(
-        &mut photo_replica,
-        Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original)),
+    let photo = photos::model::LibraryPhoto::from_image(
+        photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original),
     );
+    tilo_actions::Action::apply(
+        &photos::actions::PhotosAction::ImportPhoto { photo },
+        &mut photo_replica,
+    )
+    .expect("the photograph is imported");
     photo_replica.commit();
     (photo_peer, photo_replica)
 }
