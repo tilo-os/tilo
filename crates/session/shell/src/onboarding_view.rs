@@ -67,9 +67,6 @@ const DENSE_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
 /// The two choice screens get a lower cap than the recovery and completion
 /// stages; they still shrink to their contents.
 const INTRO_PANEL_HEIGHT: f32 = 520.0;
-/// Below the intro's cards, which have no action row under them: the same
-/// visible inset the action row keeps from the panel edge.
-const CHOICE_FOOTER_BOTTOM_INSET: f32 = 17.0;
 /// Completion is a hand-off surface, not a compact alert. Give its title,
 /// confirmation, next-step explanation, and backup guidance a stable canvas
 /// on ordinary laptop displays; the inner viewport still scrolls when large
@@ -1719,7 +1716,7 @@ impl OnboardingView {
         let count = f32::from(u8::try_from(cards.len()).unwrap_or(u8::MAX));
         let stack = count * ChoiceCard::height_for(theme) + (count - 1.0).max(0.0) * spacing.s3;
         Some(if self.flow.screen() == Screen::Intro {
-            stack + CHOICE_FOOTER_BOTTOM_INSET
+            stack + spacing.s4
         } else {
             stack + spacing.s2 + FOOTER_HEIGHT
         })
@@ -1742,7 +1739,9 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_gap(0.0)
                     .push(Box::new(stack))
-                    .push(Box::new(Spacer::fixed(CHOICE_FOOTER_BOTTOM_INSET))),
+                    // The intro's cards have no action row below them; keep
+                    // the action row's visible inset from the panel edge.
+                    .push(Box::new(Spacer::fixed(spacing.s4))),
             );
         }
         Box::new(

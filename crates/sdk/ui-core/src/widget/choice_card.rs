@@ -26,15 +26,45 @@ use crate::theme::Theme;
 use super::button::ButtonInteract;
 use super::{ActionRowFace, AppModel, Button, ModelPath, TaffyTreeExt, Widget};
 
-/// Inset between the card edge and its icon tile, text and chevron.
-const PAD: f64 = 16.0;
-const ICON_TILE: f64 = 40.0;
-const ICON_GLYPH: f64 = 22.0;
-const TEXT_GAP: f64 = 2.0;
-const CHEVRON: f64 = 18.0;
-/// The card at 1x: the 40 px tile with 16 px of room above and below reads
-/// as one calm row rather than a cramped list item.
-const MIN_HEIGHT: f64 = 72.0;
+/// The card's geometry, all from theme tokens.
+#[derive(Clone, Copy)]
+struct Geometry {
+    /// Inset between the card edge and its icon tile, text and chevron.
+    pad: f64,
+    icon_tile: f64,
+    icon_glyph: f64,
+    text_gap: f64,
+    chevron: f64,
+}
+
+impl Geometry {
+    fn of(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        Self {
+            pad: f64::from(spacing.s4),
+            icon_tile: f64::from(metrics.icon_lg + spacing.s4),
+            icon_glyph: f64::from(metrics.icon_md),
+            text_gap: f64::from(spacing.s1) / 2.0,
+            chevron: f64::from(metrics.icon_md),
+        }
+    }
+
+    /// The card at 1x: the tile with a full inset above and below reads as
+    /// one calm row rather than a cramped list item.
+    fn min_height(self) -> f64 {
+        self.icon_tile + 2.0 * self.pad
+    }
+
+    /// Where the title and description start, and how wide they may run.
+    fn text_span(self, rect: Rect) -> (f64, f64) {
+        let x = rect.x0 + self.pad + self.icon_tile + self.pad;
+        (
+            x,
+            (rect.x1 - self.pad - self.chevron - self.pad - x).max(0.0),
+        )
+    }
+}
 
 fn title_size(theme: &Theme) -> f32 {
     theme.tokens.typography.scale.lg
@@ -47,10 +77,13 @@ fn description_size(theme: &Theme) -> f32 {
 /// The authored minimum, or both text lines plus padding once larger type
 /// needs more.
 fn card_height(theme: &Theme) -> f64 {
+    let geometry = Geometry::of(theme);
     let text = f64::from(TextStyle::new(title_size(theme)).line_height_px())
-        + TEXT_GAP
+        + geometry.text_gap
         + f64::from(TextStyle::new(description_size(theme)).line_height_px());
-    (text + 2.0 * PAD).ceil().max(MIN_HEIGHT)
+    (text + 2.0 * geometry.pad)
+        .ceil()
+        .max(geometry.min_height())
 }
 
 #[derive(Clone, Debug)]
@@ -158,12 +191,13 @@ impl<'a> ChoiceCardFace<'a> {
         } else {
             theme.tokens.colors.text_dim
         };
+        let geometry = Geometry::of(theme);
         let center_y = self.rect.center().y;
         let icon_tile = Rect::new(
-            self.rect.x0 + PAD,
-            center_y - ICON_TILE / 2.0,
-            self.rect.x0 + PAD + ICON_TILE,
-            center_y + ICON_TILE / 2.0,
+            self.rect.x0 + geometry.pad,
+            center_y - geometry.icon_tile / 2.0,
+            self.rect.x0 + geometry.pad + geometry.icon_tile,
+            center_y + geometry.icon_tile / 2.0,
         );
         let tile_fill = if on_accent {
             crate::tokens::Colors::hairline_on(theme.accent_primary, 46)
@@ -180,7 +214,10 @@ impl<'a> ChoiceCardFace<'a> {
         draw_icon(
             scene,
             transform,
-            Rect::from_center_size(icon_tile.center(), (ICON_GLYPH, ICON_GLYPH)),
+            Rect::from_center_size(
+                icon_tile.center(),
+                (geometry.icon_glyph, geometry.icon_glyph),
+            ),
             self.icon,
             if on_accent {
                 foreground
@@ -192,8 +229,8 @@ impl<'a> ChoiceCardFace<'a> {
 
         let title_size = renderer_type_size(text_renderer, title_size(theme));
         let description_size = renderer_type_size(text_renderer, description_size(theme));
-        let text_x = icon_tile.x1 + PAD;
-        let text_width = px((self.rect.x1 - PAD - CHEVRON - PAD - text_x).max(0.0));
+        let (text_x, text_width) = geometry.text_span(self.rect);
+        let text_width = px(text_width);
         let title = text_renderer.elide_to_width_weighted(
             self.title.as_ref(),
             title_size,
@@ -205,7 +242,7 @@ impl<'a> ChoiceCardFace<'a> {
         let (_, title_height) =
             text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
         let (_, description_height) = text_renderer.measure(&description, description_size, None);
-        let block = f64::from(title_height) + TEXT_GAP + f64::from(description_height);
+        let block = f64::from(title_height) + geometry.text_gap + f64::from(description_height);
         let top = center_y - block / 2.0;
         text_renderer.draw_text_weighted(
             scene,
@@ -221,15 +258,21 @@ impl<'a> ChoiceCardFace<'a> {
             &description,
             description_size,
             secondary,
-            transform.pre_translate(Vec2::new(text_x, top + f64::from(title_height) + TEXT_GAP)),
+            transform.pre_translate(Vec2::new(
+                text_x,
+                top + f64::from(title_height) + geometry.text_gap,
+            )),
             None,
         );
         draw_icon(
             scene,
             transform,
             Rect::from_center_size(
-                Point::new(self.rect.x1 - PAD - CHEVRON / 2.0, center_y),
-                (CHEVRON, CHEVRON),
+                Point::new(
+                    self.rect.x1 - geometry.pad - geometry.chevron / 2.0,
+                    center_y,
+                ),
+                (geometry.chevron, geometry.chevron),
             ),
             Icon::ChevronRight,
             secondary,
@@ -454,7 +497,7 @@ mod tests {
             face.paint(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
             assert!(!scene.encoding().draw_tags.is_empty());
 
-            let available = px(rect.x1 - PAD - CHEVRON - PAD - (rect.x0 + PAD + ICON_TILE + PAD));
+            let available = px(Geometry::of(&theme).text_span(rect).1);
             let title = renderer.elide_to_width_weighted(
                 face.title.as_ref(),
                 renderer_type_size(&renderer, title_size(&theme)),
@@ -518,13 +561,14 @@ mod tests {
     #[test]
     fn choice_card_grows_with_larger_type() {
         let theme = Theme::dark();
-        assert!((card_height(&theme) - MIN_HEIGHT).abs() < f64::EPSILON);
+        let minimum = Geometry::of(&theme).min_height();
+        assert!((card_height(&theme) - minimum).abs() < f64::EPSILON);
         let mut large = Theme::dark();
         large.tokens.typography.scale = crate::tokens::TypeScale {
             lg: 32.0,
             base: 28.0,
             ..large.tokens.typography.scale
         };
-        assert!(card_height(&large) > MIN_HEIGHT);
+        assert!(card_height(&large) > minimum);
     }
 }
