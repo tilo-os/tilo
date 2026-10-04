@@ -127,6 +127,24 @@ pub trait RuntimeServices: Sized {
     /// Returns an error when the action broker is unavailable.
     fn action_host(&self) -> io::Result<Self::ActionHost>;
 
+    /// Construct one transport run for this exact configured audience. Hosts
+    /// with original certified custody override this; client labels never enter.
+    ///
+    /// # Errors
+    /// Rejects unavailable admission, an invalid audience or a missing action host.
+    fn mcp_session_factory(&self, room: &str) -> io::Result<mcp::SessionFactory<Self::ActionHost>> {
+        let room = self.mcp_room(Some(room))?;
+        let host = self.action_host()?;
+        let actor = self.actor().to_owned();
+        Ok(std::sync::Arc::new(move || {
+            Ok(mcp::McpServer::new(
+                host.clone(),
+                room.clone(),
+                actor.clone(),
+            ))
+        }))
+    }
+
     /// How this host joins rooms other hosts govern; `None` for a host
     /// that joins through its own surfaces.
     fn joiner(&self) -> Option<Joiner> {

@@ -88,12 +88,12 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        // This prerequisite supports only already-published peer actions. Other
-        // doors need their own explicit provenance preservation before exposure.
+        // Numeric peer and application/retained-launch aliases preserve original
+        // custody to the actual numeric dispatch. Other doors remain separate.
         if query
             .provider
             .as_ref()
-            .is_some_and(|provider| provider.parse::<u64>().is_err())
+            .is_some_and(|provider| !certified_provider(provider))
         {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
@@ -111,9 +111,9 @@ impl ActionHost for CertifiedLocalActionHost {
                     })
                 })
                 .map(|mut page| {
-                    page.rows.retain(|row| row.provider.parse::<u64>().is_ok());
+                    page.rows.retain(|row| certified_provider(&row.provider));
                     page.providers
-                        .retain(|provider| provider.provider.parse::<u64>().is_ok());
+                        .retain(|provider| certified_provider(&provider.provider));
                     page
                 });
             complete.complete(result);
@@ -129,7 +129,7 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        if request.target.provider.parse::<u64>().is_err() {
+        if !certified_provider(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         self.state.action_invoke_with_origin(
@@ -157,4 +157,11 @@ impl ActionHost for CertifiedLocalActionHost {
         self.check(caller)?;
         self.state.action_cancel(&self.effective, id)
     }
+}
+
+// Only existing provider forms with preserved original SDK-delivery custody.
+fn certified_provider(provider: &str) -> bool {
+    provider.parse::<u64>().is_ok()
+        || tilo_actions::remote::application_provider(provider).is_some()
+        || super::launchable::is_launchable_provider(provider)
 }
