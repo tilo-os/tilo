@@ -31,12 +31,14 @@ blake3.workspace = true
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
 png = "0.18"
-# Reference pictures to work from are PNGs or JPEGs.
-image = { workspace = true, features = ["png", "jpeg"] }
+# Pictures are PNGs, JPEGs or WebPs; exports are any of the three.
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 # SVG import; without its font stack, text is read by hand.
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
 base64.workspace = true
+# A picture the chooser could not add is reported in the log.
+tracing.workspace = true
 # Selections and shapes are combined (union, subtract, intersect, exclude)
 # exactly, as polygons.
 i_overlay = { version = "9.0", default-features = false }
