@@ -5,13 +5,12 @@
 
 use std::rc::Rc;
 
-use ui::LocalState;
 use ui::prelude::*;
 use ui::widget::Toggle;
 
 use super::heading;
 use super::inspector::{grow, labelled, section, tight};
-use crate::model::{Adjust, Artwork, Mark, Shape};
+use crate::model::{Adjust, Artwork, Shape};
 use crate::resource::ArtworkResource;
 use crate::tools::{Live, Tools};
 
@@ -198,6 +197,19 @@ impl Target {
         }
     }
 
+    /// The target's adjustments as `art` has them: its first mark's, or
+    /// its layer's.
+    fn adjust_in(&self, art: &Artwork) -> Adjust {
+        let adjust = match self {
+            Self::Marks(ids) => ids
+                .first()
+                .and_then(|id| art.mark(id))
+                .and_then(|mark| mark.style.adjust.clone()),
+            Self::Layer(id) => art.layer(id).and_then(|layer| layer.adjust.clone()),
+        };
+        adjust.unwrap_or_default()
+    }
+
     /// The target's adjustments in `art`, with `change` made, as the
     /// canvas shows them while a control is dragged.
     fn preview(&self, art: &mut Artwork, change: &dyn Fn(&mut Adjust)) {
@@ -221,25 +233,22 @@ impl Target {
     }
 }
 
-/// The picture's part of the inspector: `mark` is the first of `ids`.
-pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &Tools) -> Element {
-    let adjust = mark.style.adjust.clone().unwrap_or_default();
+/// The picture's part of the inspector, for the marks `ids` (a picture
+/// first). Its controls follow the artwork in place rather than being
+/// built again at each edit, so a drag begun as an edit lands is kept.
+pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
+    tools.live.borrow_mut().clear();
     section(vec![
         heading("canvas-picture"),
-        framing(cx, ids, mark, tools),
-        straighten(cx, ids, mark, tools),
-        adjustments(cx, &Target::Marks(ids.to_vec()), &adjust, tools),
+        framing(cx, ids, tools),
+        straighten(cx, ids, tools),
+        adjustments(cx, &Target::Marks(ids.to_vec()), tools),
     ])
 }
 
 /// Colour and tone of `target`: light, colour and effects, and starting
 /// over.
-pub fn adjustments(
-    cx: &ViewCx<ArtworkResource>,
-    target: &Target,
-    adjust: &Adjust,
-    tools: &Tools,
-) -> Element {
+pub fn adjustments(cx: &ViewCx<ArtworkResource>, target: &Target, tools: &Tools) -> Element {
     let reset = cx
         .button("canvas-adjust-reset", target.invoke(Adjust::default()))
         .ghost();
@@ -260,21 +269,21 @@ pub fn adjustments(
             Text::new(group).with_role(TextRole::Caption).dimmed(),
         ));
         for step in steps {
-            parts.push(slider(cx, target, adjust, step, tools));
+            parts.push(slider(cx, target, step, tools));
         }
         if group == "canvas-adjust-colour" {
             parts.push(flag(
                 cx,
                 target,
                 "canvas-adjust-grayscale",
-                adjust.grayscale,
+                |a| a.grayscale,
                 |a, on| a.grayscale = Some(on),
             ));
             parts.push(flag(
                 cx,
                 target,
                 "canvas-adjust-invert",
-                adjust.invert,
+                |a| a.invert,
                 |a, on| a.invert = Some(on),
             ));
         }
@@ -283,7 +292,8 @@ pub fn adjustments(
 }
 
 /// Crop on the canvas, fit the artwork to the picture, flip it.
-fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &Tools) -> Element {
+fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
+    let first = ids.first().cloned().unwrap_or_default();
     let crop = {
         let crop = tools.crop.clone();
         cx.switch(&tools.crop, move |_, cropping| {
@@ -303,7 +313,7 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &To
     let fit = cx
         .button(
             "canvas-fit-artwork",
-            ArtworkResource::FIT_ARTWORK.with(mark.id.clone()),
+            ArtworkResource::FIT_ARTWORK.with(first),
         )
         .tooltip(ui::i18n::I18nManager::lookup_plain(
             "canvas-fit-artwork-hint",
@@ -336,23 +346,28 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &To
     ])
 }
 
-/// The picture's turn inside its frame, -45° to 45°.
-fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &Tools) -> Element {
+/// The picture's turn inside its frame, -45° to 45°: dragged (a tenth as
+/// fast with Shift held) or typed to a tenth of a degree.
+fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
     const ID: &str = "canvas-straighten";
-    let angle = match &mark.shape {
-        Shape::Image { straighten, .. } => straighten.unwrap_or(0.0),
+    let first = ids.first().cloned().unwrap_or_default();
+    let angle_in = move |art: &Artwork| match art.mark(&first).map(|mark| &mark.shape) {
+        Some(Shape::Image { straighten, .. }) => straighten.unwrap_or(0.0),
         _ => 0.0,
     };
     let to_value = |travel: f64| {
         let value = -45.0 + travel.clamp(0.0, 1.0) * 90.0;
         (value * 10.0).round() / 10.0
     };
-    let travel = ((angle + 45.0) / 90.0).clamp(0.0, 1.0);
-    let state = LocalState::new(travel);
+    let travel_in = {
+        let angle_in = angle_in.clone();
+        move |art: &Artwork| ((angle_in(art) + 45.0) / 90.0).clamp(0.0, 1.0)
+    };
+    let state = cx.value(travel_in.clone());
     let turned = ids.to_vec();
     tools.live.borrow_mut().push(Live {
         state: state.clone(),
-        committed: travel,
+        committed: cx.value(travel_in),
         apply: Rc::new(move |art: &mut Artwork, travel| {
             for mark in art
                 .marks
@@ -366,13 +381,10 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: 
             }
         }),
     });
-    // Typed to a tenth of a degree; the slider moves a tenth as fast with
-    // Shift held.
-    let degrees = LocalState::new(angle);
     let typed = cx.actions().bind(
-        NumberInput::from_state(&degrees)
+        NumberInput::from_state(&cx.value(angle_in))
             .with_range(-45.0, 45.0)
-            .with_size(96.0, 32.0)
+            .with_size(128.0, 32.0)
             .with_step(0.1)
             .with_precision(1)
             .with_id("canvas-straighten-degrees")
@@ -398,21 +410,22 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: 
     ])
 }
 
-/// A slider for one adjustment of `target`.
+/// A slider for one adjustment of `target`, following the artwork.
 fn slider(
     cx: &ViewCx<ArtworkResource>,
     target: &Target,
-    adjust: &Adjust,
     step: &'static Step,
     tools: &Tools,
 ) -> Element {
-    let value = (step.read)(adjust).unwrap_or(0.0);
-    let travel = step.travel(value);
-    let state = LocalState::new(travel);
+    let travel_in = {
+        let target = target.clone();
+        move |art: &Artwork| step.travel((step.read)(&target.adjust_in(art)).unwrap_or(0.0))
+    };
+    let state = cx.value(travel_in.clone());
     let previewed = target.clone();
     tools.live.borrow_mut().push(Live {
         state: state.clone(),
-        committed: travel,
+        committed: cx.value(travel_in),
         apply: Rc::new(move |art: &mut Artwork, travel| {
             previewed.preview(art, &|adjust| (step.write)(adjust, step.at(travel)));
         }),
@@ -442,15 +455,19 @@ fn slider(
     ])
 }
 
-/// A switch for an adjustment of `target` that is on or off.
+/// A switch for an adjustment of `target` that is on or off, following
+/// the artwork.
 fn flag(
     cx: &ViewCx<ArtworkResource>,
     target: &Target,
     id: &str,
-    on: Option<bool>,
+    read: fn(&Adjust) -> Option<bool>,
     write: fn(&mut Adjust, bool),
 ) -> Element {
-    let state = LocalState::new(on == Some(true));
+    let state = {
+        let target = target.clone();
+        cx.value(move |art: &Artwork| read(&target.adjust_in(art)) == Some(true))
+    };
     let toggle = target.bind(
         cx,
         Toggle::from_state(&state)
