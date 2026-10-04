@@ -33,7 +33,7 @@ use crate::model::Workbench;
 
 /// What the door does, published on the drafts for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "shortcuts.door")]
+#[effect(operation = "shortcuts.door", device_only)]
 pub enum DoorEffect {
     /// Reload shortcuts.
     #[effect(job)]

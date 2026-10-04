@@ -22,7 +22,7 @@ pub const SETUP_ROW_ID: &str = "imager.setup";
 /// Guided setup's effects. Each answers with the setup's path-free status
 /// ([`SetupProjection`]) as it stands afterwards.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.setup")]
+#[effect(operation = "imager.setup", device_only)]
 pub enum SetupEffect {
     /// Read setup status.
     #[effect(returns, permission = "read")]

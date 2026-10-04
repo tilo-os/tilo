@@ -2354,7 +2354,7 @@ impl App {
             .contract
             .tags
             .iter()
-            .any(|tag| tag == "tilo.local-device-only")
+            .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
             && actor != self.collaboration.local_author.0
         {
             return Err(tilo_actions::DoorError::Unavailable {
