@@ -7,6 +7,7 @@ use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
+use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
@@ -183,6 +184,41 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     fn search_entries(&self) -> Vec<SearchEntry> {
         Vec::new()
     }
+}
+
+/// Run `forward`, a pass of a surface over the document, keeping every change
+/// it makes outside its dispatcher out of the document
+/// ([`refuse_raw_writes`]).
+fn only_through_actions(
+    state: &mut AppModel,
+    path: &ModelPath,
+    pass: &str,
+    forward: impl FnOnce(&mut AppModel, &ModelPath),
+) {
+    let before = ui_core::doc::document(state, path).0.pending_ops();
+    forward(state, path);
+    refuse_raw_writes(ui_core::doc::document(state, path).0, before, pass);
+}
+
+/// A surface changes its resource only through its dispatcher: every action
+/// it applies is committed as one change, attributed and undoable. Anything
+/// else it wrote into the document during `pass` is left uncommitted; it is
+/// rolled back here, so no surface edits the document outside an action. A
+/// debug build stops at it.
+fn refuse_raw_writes(doc: &mut AutoCommit, before: usize, pass: &str) {
+    if before != 0 || doc.pending_ops() == 0 {
+        return;
+    }
+    let dropped = doc.rollback();
+    tracing::error!(
+        pass,
+        dropped,
+        "a surface wrote the document outside an action; the write was rolled back"
+    );
+    debug_assert_eq!(
+        dropped, 0,
+        "a surface wrote the document outside an action during `{pass}`"
+    );
 }
 
 /// What a hosted surface adds to its resource's publication, as the root
@@ -605,7 +641,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
             self.surface.stage(scenario.as_deref());
         }
         self.jobs.poll(&mut self.surface);
-        self.surface.sync(state, path);
+        let surface = &mut self.surface;
+        only_through_actions(state, path, "sync", |state, path| surface.sync(state, path));
         if self.effects.is_some() {
             let now = self.surface.effects();
             if *self.statuses.borrow() != now {
@@ -627,7 +664,44 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         {
             return Ok(Some(started));
         }
-        self.surface.start_operation(op, doc, path)
+        let before = doc.pending_ops();
+        let started = self.surface.start_operation(op, doc, path);
+        refuse_raw_writes(doc, before, "start_operation");
+        started
+    }
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let surface = &mut self.surface;
+        let mut changed = false;
+        only_through_actions(state, path, "update", |state, path| {
+            changed = surface.update(state, path);
+        });
+        changed
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui_core::winit::event::WindowEvent,
+        ctx: &mut ui_core::widget::EventCtx<'_>,
+    ) {
+        let before = ctx.state.pending_ops();
+        self.surface.handle_event(event, ctx);
+        refuse_raw_writes(ctx.state, before, "handle_event");
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui_core::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        let surface = &mut self.surface;
+        let mut performed = false;
+        only_through_actions(state, path, "perform_semantic_action", |state, path| {
+            performed = surface.perform_semantic_action(target, action, state, path);
+        });
+        performed
     }
 
     fn poll_resource_operation(
@@ -757,5 +831,31 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
         ui_core::resources::document_action_result(&self.surface, doc, address, changes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::automerge::ROOT;
+    use ui_core::automerge::transaction::Transactable;
+
+    #[test]
+    fn what_a_surface_applied_through_actions_stays() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "applied").unwrap();
+        // The executor commits every action it applies.
+        doc.commit();
+        let heads = doc.get_heads();
+        refuse_raw_writes(&mut doc, 0, "sync");
+        assert_eq!(doc.get_heads(), heads);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside an action")]
+    fn a_surface_writing_around_its_dispatcher_is_stopped() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "raw").unwrap();
+        refuse_raw_writes(&mut doc, 0, "sync");
     }
 }
