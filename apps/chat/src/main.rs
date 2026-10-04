@@ -70,6 +70,7 @@ pub fn main() {
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
+                "sidebar-narrow",
                 "history",
                 "compact",
                 "starter",
@@ -78,6 +79,10 @@ pub fn main() {
                 "collaboration",
                 "context",
                 "msgmenu",
+                "inbox",
+                "emoji",
+                "edit-history",
+                "no-access",
                 "attach",
                 "attach-loading",
                 "attach-error",
@@ -106,10 +111,19 @@ fn render_shot_to_png(
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut frame = ShotFrame::new(viewport, theme);
+    if let Some(permission) = chat::ChatApp::shot_permission(scenario) {
+        frame.permission = permission;
+    }
     frame.sync(&mut app);
     app.prewarm_images();
     frame.layout(&mut app)?;
-    app.debug_stage_floating_call_for_shot(scenario);
+    app.stage_after_layout_for_shot(scenario);
+    // A menu opens where the pointer is on its row, which is only known
+    // once a frame has placed the rows.
+    if app.stages_after_draw(scenario) {
+        let _ = frame.draw(&mut app);
+        app.stage_after_draw_for_shot(scenario);
+    }
     let mut scene = frame.draw(&mut app);
     frame.draw_floating_surfaces(&mut app, &mut scene);
     // The offscreen renderer publishes the PNG atomically, so a killed
