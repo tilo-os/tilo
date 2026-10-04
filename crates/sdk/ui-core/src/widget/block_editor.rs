@@ -606,6 +606,10 @@ pub struct BlockEditor {
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
     pending_external_link_opens: Vec<String>,
+    /// Images pasted into the editor, for its host to store and place after
+    /// the caret: the editor holds text, and an image becomes a block once
+    /// the host keeps its bytes with the document.
+    pasted_images: Vec<crate::clipboard::ClipboardImage>,
     /// Painted copy controls for fenced-code runs. Each tuple retains the
     /// inclusive block range so pointer and accessibility activation copy the
     /// exact source, including newlines, without touching document state.
@@ -747,6 +751,7 @@ impl BlockEditor {
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
+            pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
             copied_code_start: None,
             copied_code_feedback: None,
@@ -3048,6 +3053,9 @@ impl BlockEditor {
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
             return true;
         }
+        if command == "paste" && self.paste_image() {
+            return true;
+        }
         // An unavailable clipboard must never turn Paste into Delete.
         let replacement = if command == "paste" {
             let Some(value) = clipboard_paste() else {
@@ -3567,6 +3575,73 @@ impl BlockEditor {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.pending_external_link_opens.pop()
+    }
+
+    /// The images pasted since the last call, oldest first, for the host to
+    /// store with the document and insert after the focused block.
+    pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
+        std::mem::take(&mut self.pasted_images)
+    }
+
+    /// Paste the clipboard's image, when it holds one and the caret is in
+    /// prose (code and tables take text). A selection is replaced, as a text
+    /// paste replaces it.
+    fn paste_image(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let in_prose = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                !matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                )
+            });
+        if !in_prose {
+            return false;
+        }
+        let Some(image) = crate::clipboard_paste_image() else {
+            return false;
+        };
+        if self.document_selection.is_some() {
+            self.replace_document_selection("");
+        }
+        self.pasted_images.push(image);
+        self.dirty = true;
+        true
+    }
+
+    /// Ctrl+V (Cmd+V) with an image on the clipboard.
+    fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::Key;
+
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = ctx.modifiers.state();
+        let command = mods.control_key() || mods.super_key();
+        if !self.is_focused
+            || !command
+            || mods.alt_key()
+            || !key.eq_ignore_ascii_case("v")
+            || !self.paste_image()
+        {
+            return false;
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn copy_code_run(&mut self, start: usize, end: usize) -> bool {
@@ -9859,6 +9934,10 @@ mod retained_layout_tests;
 #[path = "block_editor_outline_tests.rs"]
 mod outline_tests;
 
+#[cfg(test)]
+#[path = "block_editor_image_paste_tests.rs"]
+mod image_paste_tests;
+
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
     /// Keyboard commands operate on one authored fence, across its source rows.
@@ -10907,6 +10986,10 @@ impl BlockEditor {
         }
 
         if self.handle_find_event(event, ctx) {
+            return;
+        }
+
+        if self.try_paste_image_key(event, ctx) {
             return;
         }
 

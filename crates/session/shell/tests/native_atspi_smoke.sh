@@ -5,9 +5,9 @@
 set -euo pipefail
 
 mode=${1:-}
-usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock}"
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|copy-image|desktop|established|lock}"
 case "$mode" in
-  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|desktop|established|lock) ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|copy-image|desktop|established|lock) ;;
   clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
   *) echo "$usage" >&2; exit 2 ;;
@@ -382,6 +382,18 @@ case "$mode" in
       echo "the clipboard holds '$copied', not the copied '$2'" >&2
       exit 1
     }
+    ;;
+  copy-image)
+    # Another app copies a screenshot: a small PNG offered as image/png only,
+    # the way a screenshot tool puts one on the clipboard.
+    python3 -c '
+import struct, sys, zlib
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\x00" + b"\xc8\x28\x28" * 16 for _ in range(12))
+sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 12, 8, 2, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+' | WAYLAND_DISPLAY=$clipboard_socket wl-copy --type image/png >/dev/null 2>&1
     ;;
   clipboard-keeps)
     # Give a copy that should not have happened time to land first.

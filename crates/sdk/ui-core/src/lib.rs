@@ -447,10 +447,10 @@ pub use text_render::{
 };
 pub use text_selection::{
     Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,
-    clipboard_copy_primary, clipboard_paste, clipboard_paste_primary, extend_span_drag,
-    grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
-    next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
-    try_clipboard_copy, word_boundaries, word_boundaries_chars,
+    clipboard_copy_primary, clipboard_paste, clipboard_paste_image, clipboard_paste_primary,
+    extend_span_drag, grapheme_boundary_at_or_before, line_boundaries, next_char_boundary,
+    next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
+    prev_word_boundary_chars, try_clipboard_copy, word_boundaries, word_boundaries_chars,
 };
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
