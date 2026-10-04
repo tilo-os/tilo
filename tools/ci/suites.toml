@@ -508,6 +508,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "greeter"
+# The greeter offers exactly the sessions the image ships.
+inputs = ["os/usr/share/wayland-sessions/*.desktop"]
+readers = ["crates/session/greeter/src/greeter_app.rs"]
+
+[[cargo]]
 package = "launcher"
 inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
 readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
