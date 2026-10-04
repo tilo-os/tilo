@@ -46,7 +46,12 @@ fn member(root: &Path) -> MemberRun {
     let area = MemberArea::of(root, &[3; 32]);
     std::fs::create_dir_all(area.runtime()).unwrap();
     MemberRun {
-        env: crate::environment_guest::member_env(&area, &[]),
+        // The tool service accepts its backend's environment; these tests do
+        // not need the Linux guest launcher to supply that input.
+        env: vec![
+            ("HOME".into(), area.root().join("home").into_os_string()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ],
         area,
         uid: None,
         cgroup: None,
@@ -66,7 +71,9 @@ fn walk(path: &Path, files: &mut Vec<PathBuf>) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_supervisor_gets_a_relay_signed_tool_over_its_socket() {
-    let root = tempfile::tempdir().unwrap();
+    // macOS's default temporary directory leaves too little room for the
+    // member subdirectories within a Unix socket address.
+    let root = tempfile::tempdir_in("/tmp").unwrap();
     let member = member(root.path());
     let service = ToolBuildService::new(
         ed25519_dalek::SigningKey::from_bytes(&SEED),
@@ -174,9 +181,11 @@ fn a_build_runs_as_the_member_in_their_quota_without_the_key() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn the_supervisor_learns_the_relays_public_key_and_never_its_secret() {
     let root = tempfile::tempdir().unwrap();
-    let member = member(root.path());
+    let mut member = member(root.path());
+    member.env = crate::environment_guest::member_env(&member.area, &[]);
     let launcher = crate::environment_guest::UshGuestLauncher::new(
         crate::environment_guest::UshLauncherConfig::at(root.path().to_path_buf()),
     );

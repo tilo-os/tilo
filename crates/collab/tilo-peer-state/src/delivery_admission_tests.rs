@@ -219,6 +219,7 @@ fn delivery_admission_metadata_and_unsupported_families_have_no_operation_receip
         since: vec![],
         room: receiver.room().into(),
         invite_id: None,
+        nonce: 0,
     };
     let before = receiver.durable().unwrap();
     assert_eq!(

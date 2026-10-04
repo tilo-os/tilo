@@ -51,7 +51,7 @@ env:
 
 jobs:
   validate:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
@@ -219,38 +219,46 @@ jobs:
             fi
             echo "::endgroup::"
           done <<<"$TILO_LANE_TARGETS"
-      # Forgejo's native artifact service implements the v3 protocol. Upstream
-      # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      # The v4 artifact pins are Forgejo's builds (tag forgejo/v4): upstream's
+      # v4 accepts only GitHub-hosted servers. A copy on GitHub pins upstream's.
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: arch-${{ matrix.arch }}
           path: dist/ci-output/arch-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: nix-${{ matrix.arch }}
           path: dist/ci-output/nix-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: ubuntu-24.04-${{ matrix.arch }}
           path: dist/ci-output/ubuntu-24.04-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: debian-13-${{ matrix.arch }}
           path: dist/ci-output/debian-13-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: fedora-44-${{ matrix.arch }}
           path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
           if-no-files-found: error
+
+  # The amd64 Fedora RPMs this run built, installed on stock Fedora in a KVM
+  # VM and logged into through a display manager, with apps opened.
+  host-session-e2e:
+    needs: package
+    uses: ./.forgejo/workflows/host-session-e2e.yml
+    with:
+      rpm-artifact: fedora-44-amd64
 
   publish-os-payload:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -258,7 +266,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 120
     steps:
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
@@ -351,7 +359,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
       - name: Require this exact commit to be checked on main
@@ -365,9 +372,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Flatten per-target artifact directories

@@ -7,7 +7,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use legacy_agent_protocol::client::{self, LaunchIo};
-use legacy_agent_protocol::vsock::VsockStream;
+use legacy_agent_protocol::link::AgentLink;
 use legacy_agent_protocol::waypipe::PORT_ENV;
 use legacy_agent_protocol::{
     AGENT_PORT, Display, GuestMessage, GuestOs, HostMessage, Launch, Stdio as LaunchStdio,
@@ -20,7 +20,7 @@ use legacy_vm::supervisor::Supervisor;
 use legacy_vm::{confine, image, virtiofs};
 
 const USAGE: &str = "\
-usage: tilo-legacy [--guest linux] [--image QCOW2] <command>
+usage: tilo-legacy [--guest linux] [--image QCOW2] [--idle-suspend SECONDS] <command>
 
   launch <app> [--cwd DIR] [--share-cwd] [ARG…]
                          run an installed app; its windows open in the current strip
@@ -42,6 +42,8 @@ usage: tilo-legacy [--guest linux] [--image QCOW2] <command>
 struct Options {
     guest: GuestOs,
     image: Option<PathBuf>,
+    /// How long the VM may sit with nothing running before it is saved to disk.
+    idle_suspend: Option<Duration>,
 }
 
 fn main() -> ExitCode {
@@ -49,6 +51,7 @@ fn main() -> ExitCode {
     let mut options = Options {
         guest: GuestOs::Linux,
         image: None,
+        idle_suspend: None,
     };
     while let [flag, value, ..] = args.as_slice() {
         match flag.as_str() {
@@ -59,6 +62,12 @@ fn main() -> ExitCode {
                 options.guest = guest;
             }
             "--image" => options.image = Some(PathBuf::from(value)),
+            "--idle-suspend" => {
+                let Ok(seconds) = value.parse::<u64>() else {
+                    return fail(&format!("--idle-suspend takes seconds, not {value:?}"));
+                };
+                options.idle_suspend = Some(Duration::from_secs(seconds.max(1)));
+            }
             _ => break,
         }
         args.drain(..2);
@@ -111,15 +120,23 @@ fn fail(message: &str) -> ExitCode {
 }
 
 fn config(options: &Options, paths: Paths) -> VmConfig {
-    VmConfig::new(
+    let mut config = VmConfig::new(
         options.guest,
         options.image.clone().unwrap_or_default(),
         paths,
-    )
+    );
+    if let Some(idle) = options.idle_suspend {
+        config.idle_suspend = idle;
+    }
+    config
 }
 
 /// Ask the supervisor to wake the VM, starting one when none runs.
-fn ensure(options: &Options, paths: &Paths, extra: Vec<PathBuf>) -> Result<(u32, u32), String> {
+fn ensure(
+    options: &Options,
+    paths: &Paths,
+    extra: Vec<PathBuf>,
+) -> Result<(AgentLink, u32), String> {
     let request = ControlRequest::Ensure { extra };
     let socket = paths.supervisor_socket();
     let mut reply = control::ask(&socket, &request).map_err(|e| e.to_string())?;
@@ -129,7 +146,7 @@ fn ensure(options: &Options, paths: &Paths, extra: Vec<PathBuf>) -> Result<(u32,
             .map_err(|e| e.to_string())?;
     }
     match reply {
-        Some(ControlReply::Ready { cid, waypipe_port }) => Ok((cid, waypipe_port)),
+        Some(ControlReply::Ready { link, waypipe_port }) => Ok((link, waypipe_port)),
         Some(ControlReply::Error(message)) => Err(message),
         Some(other) => Err(format!("unexpected supervisor reply {other:?}")),
         None => Err(format!(
@@ -148,6 +165,11 @@ fn spawn_supervisor(options: &Options, paths: &Paths) -> Result<(), String> {
     command.args(["--guest", options.guest.as_str()]);
     if let Some(image) = &options.image {
         command.arg("--image").arg(image);
+    }
+    if let Some(idle) = options.idle_suspend {
+        command
+            .arg("--idle-suspend")
+            .arg(idle.as_secs().to_string());
     }
     command
         .arg("serve")
@@ -241,7 +263,7 @@ fn run_in_guest(
         (Some(cwd), true) => vec![cwd.clone()],
         _ => Vec::new(),
     };
-    let (cid, port) = ensure(options, paths, extra)?;
+    let (link, port) = ensure(options, paths, extra)?;
     let mut env = vec![(PORT_ENV.to_string(), port.to_string())];
     for name in ["LANG", "LC_ALL", "TERM", "COLORTERM"] {
         if let Ok(value) = std::env::var(name) {
@@ -259,7 +281,9 @@ fn run_in_guest(
             Display::None
         },
     };
-    let stream = VsockStream::connect(cid, AGENT_PORT).map_err(|e| format!("guest agent: {e}"))?;
+    let stream = link
+        .connect(AGENT_PORT)
+        .map_err(|e| format!("guest agent: {e}"))?;
     // A windowed app started from search has no terminal to read from.
     let stdin: Option<Box<dyn std::io::Read + Send>> =
         if !windowed || std::io::stdin().is_terminal() {
@@ -290,8 +314,8 @@ fn agent_request(
     paths: &Paths,
     message: &HostMessage,
 ) -> Result<GuestMessage, String> {
-    let (cid, _) = ensure(options, paths, Vec::new())?;
-    let mut stream = VsockStream::connect(cid, AGENT_PORT).map_err(|e| e.to_string())?;
+    let (link, _) = ensure(options, paths, Vec::new())?;
+    let mut stream = link.connect(AGENT_PORT).map_err(|e| e.to_string())?;
     client::request(&mut stream, message).map_err(|e| e.to_string())
 }
 
@@ -452,6 +476,7 @@ fn status(options: &Options, paths: &Paths) -> Result<ExitCode, String> {
         .map_err(|e| e.to_string())?;
     if let Some(ControlReply::Status(report)) = reply {
         println!("phase:   {}", report.phase);
+        println!("vsock:   {}", report.transport);
         if let Some(running) = report.running {
             println!("running: {running}");
         }
@@ -475,6 +500,11 @@ fn status(options: &Options, paths: &Paths) -> Result<ExitCode, String> {
         _ => "off",
     };
     println!("phase:   {phase}");
+    println!(
+        "vsock:   {}",
+        legacy_vm::transport::VsockBackend::detect()
+            .map_or("none", legacy_vm::transport::VsockBackend::as_str)
+    );
     Ok(ExitCode::SUCCESS)
 }
 

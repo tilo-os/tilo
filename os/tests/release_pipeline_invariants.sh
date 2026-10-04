@@ -383,7 +383,8 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
-  && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
+  && grep -Fq 'cancel-in-progress: false' "$apps" \
+  && ! grep -Eq '^  pull_request(_target)?:' "$apps" \
   && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
@@ -399,7 +400,7 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: [plan, authorize-publish]' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
-  && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
+  && grep -Fq 'actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}' "$apps" \
   && grep -Fq 'bundle_url="$package_public_api/tilo-app-collections/' "$apps" \

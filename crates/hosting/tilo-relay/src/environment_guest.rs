@@ -409,6 +409,7 @@ pub fn open_ush_session(
     let serve = ush::supervisor::ServeRequest::OpenSession {
         target: tilo_environment::Target::Environment {
             record: Some(record_key.to_owned()),
+            location: tilo_environment::Location::ThisDevice,
         },
         cols: request.size.cols,
         rows: request.size.rows,
@@ -417,6 +418,7 @@ pub fn open_ush_session(
         // The member is a person at a terminal; an environment target is
         // never the host's shell, which no relay session reaches.
         requested_by: ush::host::RequestedBy::Person,
+        relay_session: None,
     };
     let mut line = serde_json::to_vec(&serve)
         .map_err(|error| LaunchError::Failed(format!("encode the request: {error}")))?;
@@ -437,7 +439,8 @@ pub fn open_ush_session(
             return Err(LaunchError::Failed(format!("supervisor denied: {reason}")));
         }
         other @ (ush::supervisor::ServeResponse::Environments { .. }
-        | ush::supervisor::ServeResponse::Allowed) => {
+        | ush::supervisor::ServeResponse::Allowed
+        | ush::supervisor::ServeResponse::Relays { .. }) => {
             return Err(LaunchError::Failed(format!(
                 "supervisor answered {other:?} to a session request"
             )));
@@ -961,6 +964,49 @@ mod tests {
         unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
     }
 
+    #[test]
+    fn a_host_allow_acknowledgement_cannot_start_a_guest() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("ush.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let supervisor = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufRead::read_line(
+                &mut std::io::BufReader::new(stream.try_clone().unwrap()),
+                &mut line,
+            )
+            .unwrap();
+            let (master, _slave) = openpty();
+            let reply = serde_json::to_vec(&ush::supervisor::ServeResponse::Allowed).unwrap();
+            // Even a descriptor cannot turn an allow acknowledgement into
+            // the Session response that the request requires.
+            runtime_portal::fd_transport::send_with_fd(
+                stream.as_raw_fd(),
+                &reply,
+                master.as_raw_fd(),
+            )
+            .unwrap();
+        });
+        let request = GuestRequest {
+            session: [1; 16],
+            record: EnvironmentRecordRef {
+                workspace_id: 1,
+                record_id: "env".into(),
+            },
+            spec: spec(&[]),
+            size: PtySize { cols: 80, rows: 24 },
+            term: "xterm".into(),
+        };
+        let result = open_ush_session(&socket, "relay-key", &request);
+        supervisor.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(LaunchError::Failed(message))
+                if message == "supervisor answered Allowed to a session request"
+        ));
+    }
+
     /// A fake supervisor: answers one request with a pty master over
     /// `SCM_RIGHTS`, as `tilo-ush serve` does, and keeps the slave.
     #[tokio::test]
@@ -987,13 +1033,15 @@ mod tests {
             assert_eq!(
                 target,
                 tilo_environment::Target::Environment {
-                    record: Some("relay-key".into())
+                    record: Some("relay-key".into()),
+                    location: tilo_environment::Location::ThisDevice,
                 }
             );
             let (master, slave) = openpty();
             let mut reply = serde_json::to_vec(&ush::supervisor::ServeResponse::Session {
                 session: "s".into(),
                 environment: "relay-key".into(),
+                relay_session: None,
             })
             .unwrap();
             reply.push(b'\n');

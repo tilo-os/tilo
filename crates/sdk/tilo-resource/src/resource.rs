@@ -246,6 +246,21 @@ pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
 
+/// The edits of a resource whose document holds nothing. An app whose data
+/// lives entirely outside any document — credentials in this device's
+/// encrypted vault, a device's hardware — publishes that data as live rows
+/// and effects, and its resource is only the door they are published on.
+/// No value exists, so nothing is ever applied, undone or synced.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub enum NoAction {}
+
+impl tilo_actions::Action for NoAction {
+    // No value exists to apply.
+    fn apply(&self, _doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        Ok(())
+    }
+}
+
 /// A search index entry. `anchor` addresses what a hit opens (an item id);
 /// `action`, when set, is the published action a hit invokes, so choosing it
 /// goes through the same door, permissions and history as the palette.
