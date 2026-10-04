@@ -55,10 +55,9 @@ impl LiveRow {
         self
     }
 
-    /// How the row reads in a list: a detail line and a badge for what
-    /// only this device knows (a process's state, whether this device holds
-    /// an account's secret). A document child of the same id keeps its own
-    /// presentation when it has one.
+    /// How the entity stands right now (a process's CPU use, what a timer
+    /// has left), shown beside its label. A row merged into a document child
+    /// that has no presentation of its own lends it this one.
     #[must_use]
     pub fn presentation(mut self, presentation: ResourcePresentation) -> Self {
         self.resource.presentation = Some(presentation);
@@ -145,8 +144,8 @@ pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item =
     }
 }
 
-/// Add to `existing` the operations and rows of `row`, which names it, that
-/// it lacks.
+/// Add to `existing` the presentation, operations and rows of `row`, which
+/// names it, that it lacks.
 pub(crate) fn join(existing: &mut Resource, row: Resource) {
     if existing.presentation.is_none() {
         existing.presentation = row.presentation;
