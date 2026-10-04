@@ -3897,6 +3897,24 @@ impl App {
         }
     }
 
+    /// Open the palette an app asked for ([`crate::host_palette`]): searching
+    /// for its query, or on one of its actions. Whether one was opened.
+    pub(crate) fn open_requested_palette(&mut self) -> bool {
+        match crate::host_palette::take() {
+            Some(crate::host_palette::PaletteRequest::Search(query)) => {
+                self.open_action_palette();
+                if let Some(palette) = self.actions.action_palette.as_mut() {
+                    palette.set_query(&query);
+                }
+                true
+            }
+            Some(crate::host_palette::PaletteRequest::Action(address)) => {
+                self.open_action_palette_at(&address)
+            }
+            None => false,
+        }
+    }
+
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
         let activated =
