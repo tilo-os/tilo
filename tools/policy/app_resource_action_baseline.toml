@@ -33,7 +33,6 @@
 "apps/db-client/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
 "apps/disk-usage/src/resource.rs" = 1
-"apps/disks/src/resource.rs" = 2
 "apps/ebook/src/resource.rs" = 2
 "apps/feeds/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
@@ -89,7 +88,6 @@
 "apps/db-client/src/main.rs" = 2
 "apps/diffmerge/src/lib.rs" = 2
 "apps/diffmerge/src/main.rs" = 2
-"apps/disks/src/main.rs" = 1
 "apps/ebook/src/main.rs" = 1
 "apps/feeds/src/lib.rs" = 2
 "apps/feeds/src/main.rs" = 2

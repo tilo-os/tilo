@@ -1,123 +1,57 @@
 //! Automerge document layer for the Disks app.
 //!
-//! All UI state lives in the CRDT so selection / active-tab / pending
-//! confirmations are undoable and replicate to collaborators for free.
-//! The probed topology is serialised as a JSON string scalar (it is
-//! machine-derived, not collaboratively edited character-by-character,
-//! so a plain scalar is the right granularity).
+//! The drives on this machine, their partitions and what is mounted are live
+//! device state the app probes; none of it is in the document. What the
+//! person authors is: the names they give their drives, keyed by the drive's
+//! serial number so a USB stick keeps its name on every device it is plugged
+//! into.
 //!
 //! ```text
 //! root
-//! ├── "topology"      (Str)   # serde_json of model::Topology
-//! ├── "selected"      (Int)   # index into topology.drives
-//! ├── "selected_part" (Int)   # index into the drive's partitions, -1 = whole disk
-//! ├── "tab"           (Str)   # overview | smart | partitions
-//! ├── "pending"       (Str)   # "" or "<action>:<drive>:<part>" awaiting confirm
-//! └── "status"        (Str)   # last action / status-line message
+//! └── "names"  (Map)   # drive serial -> name (Str)
 //! ```
 
+use std::collections::BTreeMap;
+
 use ui::automerge::transaction::Transactable;
-use ui::automerge::{AutoCommit, ROOT, ReadDoc, Value};
+use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::read_str;
 
-use crate::model::Topology;
+const NAMES: &str = "names";
 
 pub struct DisksDoc;
 
 impl DisksDoc {
-    /// True when the document has never been seeded.
-    pub fn is_empty(doc: &AutoCommit) -> bool {
-        !matches!(doc.get(&ROOT, "topology"), Ok(Some((Value::Scalar(_), _))))
+    /// Every named drive: serial number to name.
+    pub fn names(doc: &AutoCommit) -> BTreeMap<String, String> {
+        let Ok(Some((Value::Object(ObjType::Map), names))) = doc.get(&ROOT, NAMES) else {
+            return BTreeMap::new();
+        };
+        doc.keys(&names)
+            .filter_map(|serial| {
+                let name = read_str(doc, &names, serial.as_str())?;
+                Some((serial, name))
+            })
+            .collect()
     }
 
-    /// Seed the document with an initial topology + default UI state.
-    /// Idempotent: only writes fields that are missing.
-    pub fn seed(doc: &mut AutoCommit, topo: &Topology) {
-        Self::write_topology(doc, topo);
-        if read_str(doc, &ROOT, "tab").is_none() {
-            let _ = doc.put(&ROOT, "tab", "overview");
+    /// Name the drive with `serial`, or forget its name (`None`).
+    ///
+    /// # Errors
+    /// Returns the document's refusal of the write.
+    pub fn set_name(
+        doc: &mut AutoCommit,
+        serial: &str,
+        name: Option<&str>,
+    ) -> Result<(), ui::automerge::AutomergeError> {
+        let names = match doc.get(&ROOT, NAMES)? {
+            Some((Value::Object(ObjType::Map), names)) => names,
+            _ => doc.put_object(&ROOT, NAMES, ObjType::Map)?,
+        };
+        match name {
+            Some(name) => doc.put(&names, serial, name),
+            None => doc.delete(&names, serial),
         }
-        if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
-            let _ = doc.put(&ROOT, "selected", 0i64);
-        }
-        if !matches!(
-            doc.get(&ROOT, "selected_part"),
-            Ok(Some((Value::Scalar(_), _)))
-        ) {
-            let _ = doc.put(&ROOT, "selected_part", -1i64);
-        }
-        if read_str(doc, &ROOT, "pending").is_none() {
-            let _ = doc.put(&ROOT, "pending", "");
-        }
-        if read_str(doc, &ROOT, "status").is_none() {
-            let _ = doc.put(&ROOT, "status", "");
-        }
-    }
-
-    pub fn write_topology(doc: &mut AutoCommit, topo: &Topology) {
-        let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
-        Self::write_topology_json(doc, &json);
-    }
-
-    pub fn write_topology_json(doc: &mut AutoCommit, json: &str) {
-        let _ = doc.put(&ROOT, "topology", json);
-    }
-
-    /// Read the raw topology JSON, if present.
-    pub fn topology_json(doc: &AutoCommit) -> Option<String> {
-        read_str(doc, &ROOT, "topology")
-    }
-
-    pub fn selected(doc: &AutoCommit) -> usize {
-        match doc.get(&ROOT, "selected") {
-            Ok(Some((Value::Scalar(v), _))) => v.as_i64().unwrap_or(0).max(0) as usize,
-            _ => 0,
-        }
-    }
-
-    pub fn set_selected(doc: &mut AutoCommit, idx: usize) {
-        let _ = doc.put(&ROOT, "selected", idx as i64);
-    }
-
-    /// Selected partition within the current drive, or `None` for the whole
-    /// disk (`selected_part` scalar of `-1`).
-    pub fn selected_part(doc: &AutoCommit) -> Option<usize> {
-        match doc.get(&ROOT, "selected_part") {
-            Ok(Some((Value::Scalar(v), _))) => {
-                let n = v.as_i64().unwrap_or(-1);
-                if n < 0 { None } else { Some(n as usize) }
-            }
-            _ => None,
-        }
-    }
-
-    pub fn set_selected_part(doc: &mut AutoCommit, part: Option<usize>) {
-        let v = part.map_or(-1, |p| p as i64);
-        let _ = doc.put(&ROOT, "selected_part", v);
-    }
-
-    pub fn tab(doc: &AutoCommit) -> String {
-        read_str(doc, &ROOT, "tab").unwrap_or_else(|| "overview".into())
-    }
-
-    pub fn set_tab(doc: &mut AutoCommit, tab: &str) {
-        let _ = doc.put(&ROOT, "tab", tab);
-    }
-
-    pub fn pending(doc: &AutoCommit) -> String {
-        read_str(doc, &ROOT, "pending").unwrap_or_default()
-    }
-
-    pub fn set_pending(doc: &mut AutoCommit, p: &str) {
-        let _ = doc.put(&ROOT, "pending", p);
-    }
-
-    pub fn status(doc: &AutoCommit) -> String {
-        read_str(doc, &ROOT, "status").unwrap_or_default()
-    }
-
-    pub fn set_status(doc: &mut AutoCommit, s: &str) {
-        let _ = doc.put(&ROOT, "status", s);
     }
 }
 
@@ -125,43 +59,16 @@ impl DisksDoc {
 mod tests {
     use super::*;
 
-    /// The disks document seeds the topology once, round-trips it, and persists UI fields without re-seeding clobbering them.
     #[test]
-    fn disks_doc_seeds_once_and_persists_ui_state() {
-        // --- phase: seed_then_read_round_trips ---
-        {
-            let mut doc = AutoCommit::new();
-            assert!(DisksDoc::is_empty(&doc));
-            let topo = Topology::sample();
-            DisksDoc::seed(&mut doc, &topo);
-            assert!(!DisksDoc::is_empty(&doc));
-            assert_eq!(DisksDoc::selected(&doc), 0);
-            assert_eq!(DisksDoc::tab(&doc), "overview");
-            let json = DisksDoc::topology_json(&doc).unwrap();
-            let back: Topology = serde_json::from_str(&json).unwrap();
-            assert_eq!(back.drives.len(), 4);
-        }
-
-        // --- phase: ui_mutations_persist ---
-        {
-            let mut doc = AutoCommit::new();
-            DisksDoc::seed(&mut doc, &Topology::sample());
-            DisksDoc::set_selected(&mut doc, 2);
-            DisksDoc::set_tab(&mut doc, "smart");
-            DisksDoc::set_pending(&mut doc, "format:sdb");
-            assert_eq!(DisksDoc::selected(&doc), 2);
-            assert_eq!(DisksDoc::tab(&doc), "smart");
-            assert_eq!(DisksDoc::pending(&doc), "format:sdb");
-        }
-
-        // --- phase: seed_is_idempotent_for_ui_fields ---
-        {
-            let mut doc = AutoCommit::new();
-            DisksDoc::seed(&mut doc, &Topology::sample());
-            DisksDoc::set_selected(&mut doc, 3);
-            // Re-seeding must not clobber an existing selection.
-            DisksDoc::seed(&mut doc, &Topology::sample());
-            assert_eq!(DisksDoc::selected(&doc), 3);
-        }
+    fn drive_names_round_trip_and_clear() {
+        let mut doc = AutoCommit::new();
+        assert!(DisksDoc::names(&doc).is_empty());
+        DisksDoc::set_name(&mut doc, "S4EWNX0R", Some("Work SSD")).unwrap();
+        DisksDoc::set_name(&mut doc, "USB-1", Some("Backups")).unwrap();
+        let names = DisksDoc::names(&doc);
+        assert_eq!(names.get("S4EWNX0R").map(String::as_str), Some("Work SSD"));
+        assert_eq!(names.len(), 2);
+        DisksDoc::set_name(&mut doc, "USB-1", None).unwrap();
+        assert_eq!(DisksDoc::names(&doc).len(), 1);
     }
 }

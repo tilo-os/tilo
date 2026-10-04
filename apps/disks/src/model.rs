@@ -1,9 +1,8 @@
 //! Pure data model for the Disks app.
 //!
-//! Everything here is plain data + serde so the whole topology can be
-//! round-tripped through a single Automerge `Text` blob. Rendering, probing,
-//! and CRDT plumbing live in sibling modules — this file knows nothing about
-//! vello, taffy or `lsblk`.
+//! Everything here is plain data + serde, parsed from the probe's JSON.
+//! Rendering and probing live in sibling modules — this file knows nothing
+//! about vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
 
@@ -293,8 +292,8 @@ impl Topology {
         self.drives.iter().map(Drive::used_total).sum()
     }
 
-    /// A curated, fully-populated sample used for `--shots` and as the
-    /// instant-on seed before a live probe lands: an `NVMe` with
+    /// A curated, fully-populated sample machine for screenshots and tests:
+    /// an `NVMe` with
     /// EFI + root + home + swap, a SATA SSD, a spinning HDD that needs
     /// attention, and a USB stick.
     pub fn sample() -> Self {
