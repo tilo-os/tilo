@@ -196,6 +196,14 @@ pub enum Icon {
     CircleAlert,
     /// Sign in with a fingerprint reader. Lucide `fingerprint`.
     Fingerprint,
+    /// A battery taking charge. Lucide `battery-charging`.
+    BatteryCharging,
+    /// Sleep / suspend. Lucide `moon`.
+    Moon,
+    /// Text size. Lucide `a-large-small`.
+    ALargeSmall,
+    /// Accessibility options. Lucide `accessibility`.
+    Accessibility,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -965,6 +973,41 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         .into_iter()
         .map(path_from_d)
         .collect(),
+        Icon::BatteryCharging => [
+            "m11 7-3 5h4l-3 5",
+            "M14.856 6H16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.935",
+            "M22 14v-4",
+            "M5.14 18H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2.936",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Moon => vec![path_from_d(
+            "M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401",
+        )],
+        Icon::ALargeSmall => [
+            "m15 16 2.536-7.328a1.02 1.02 1 0 1 1.928 0L22 16",
+            "M15.697 14h5.606",
+            "m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16",
+            "M3.304 13h6.392",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Accessibility => {
+            let mut paths = vec![circle_path(16.0, 4.0, 1.0)];
+            paths.extend(
+                [
+                    "m18 19 1-7-6 1",
+                    "m5 8 3-3 5.5 3-2.36 3.5",
+                    "M4.24 14.5a5 5 0 0 0 6.88 6",
+                    "M13.76 17.5a5 5 0 0 0-6.88-6",
+                ]
+                .into_iter()
+                .map(path_from_d),
+            );
+            paths
+        }
     }
 }
 
@@ -1556,6 +1599,10 @@ mod tests {
                 Icon::SquaresExclude,
                 Icon::CircleAlert,
                 Icon::Fingerprint,
+                Icon::BatteryCharging,
+                Icon::Moon,
+                Icon::ALargeSmall,
+                Icon::Accessibility,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

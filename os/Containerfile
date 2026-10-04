@@ -1437,9 +1437,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # PAM stack unlocks Secret Service at password login, so an existing Tilo
 # identity is available before the compositor probes it.
 #
-# `polkit` is required so the greeter's Reboot / Shut down buttons can drive
-# logind: `systemctl reboot` / `poweroff` issue the
-# `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
+# `polkit` is required so the greeter's power menu can drive
+# logind: `systemctl suspend` / `reboot` / `poweroff` issue the
+# `org.freedesktop.login1.{suspend,reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
 # It also ships `polkit-agent-helper-1` (and its activation socket), which the
 # compositor's authentication agent drives to run PAM for administrator

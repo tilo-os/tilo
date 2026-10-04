@@ -28,6 +28,11 @@ pub fn t(key: &str) -> String {
     CATALOG.t(key)
 }
 
+/// Resolve a sign-in screen string with named values.
+pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
+}
+
 /// Every key the greeter shows, in every shipped language.
 #[cfg(test)]
 pub(crate) const KEYS: &[&str] = &[
@@ -57,6 +62,13 @@ pub(crate) const KEYS: &[&str] = &[
     "greeter-error-session",
     "greeter-error-service",
     "greeter-error-no-session",
+    "greeter-error-passcode-again",
+    "greeter-suspend",
+    "greeter-power",
+    "greeter-larger-text",
+    "greeter-high-contrast",
+    "greeter-screen-reader",
+    "greeter-accounts",
 ];
 
 #[cfg(test)]

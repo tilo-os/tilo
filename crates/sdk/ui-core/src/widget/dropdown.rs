@@ -138,6 +138,9 @@ pub struct Dropdown {
     /// A menu button's icon: the control is that icon, and a choice is a
     /// command it reports rather than a value it shows.
     menu: Option<crate::icons::Icon>,
+    /// What the last painted frame showed, so an unchanged control reports
+    /// no damage.
+    drawn: Option<u64>,
 }
 
 impl Dropdown {
@@ -171,7 +174,32 @@ impl Dropdown {
             viewport: None,
             enabled: true,
             menu: None,
+            drawn: None,
         }
+    }
+
+    /// Everything the control's paint depends on.
+    fn visual_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (
+            &self.selected,
+            &self.options,
+            &self.placeholder,
+            self.open,
+            self.highlight,
+            &self.filter,
+            self.scroll.to_bits(),
+            self.is_focused,
+            self.is_hovered,
+            self.effectively_enabled(),
+        )
+            .hash(&mut hasher);
+        [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        crate::i18n::I18nManager::revision().hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Create a dropdown bound to typed process-local selected state.
@@ -747,6 +775,14 @@ impl Dropdown {
 
 impl Widget for Dropdown {
     crate::provides!(dyn crate::widget::controls::ActionControls);
+
+    fn needs_redraw(&self) -> bool {
+        self.drawn != Some(self.visual_signature())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = Some(self.visual_signature());
+    }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding

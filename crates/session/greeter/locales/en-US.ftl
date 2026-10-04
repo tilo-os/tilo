@@ -30,3 +30,12 @@ greeter-error-unavailable = Your passcode couldn't be checked. Try again.
 greeter-error-session = Your desktop couldn't start. Try again, or restart the computer.
 greeter-error-service = The sign-in service isn't responding. Restart the computer to try again.
 greeter-error-no-session = No desktop is installed to sign in to.
+greeter-error-passcode-again = Incorrect passcode, { $count } times in a row. Try again.
+
+# The status corner and the screen's own controls.
+greeter-suspend = Suspend
+greeter-power = Power
+greeter-larger-text = Larger text
+greeter-high-contrast = High contrast
+greeter-screen-reader = Screen reader
+greeter-accounts = Accounts on this computer
