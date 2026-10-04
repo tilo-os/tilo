@@ -26,9 +26,7 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 vello.workspace = true
 taffy.workspace = true
-automerge.workspace = true
 winit.workspace = true
-tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 [features]
@@ -38,7 +36,7 @@ thin = ["dep:runtime-dylib"]
 workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

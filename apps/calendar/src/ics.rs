@@ -194,6 +194,7 @@ pub fn invitation_request(event: &Event) -> String {
         events: vec![event.clone()],
         tasks: Vec::new(),
         projects: Vec::new(),
+        ..Model::default()
     };
     export(&model).replacen(
         "CALSCALE:GREGORIAN\r\n",
@@ -729,6 +730,7 @@ pub fn sample_ics(today: NaiveDate) -> String {
             project: None,
             parent: None,
         }],
+        ..Model::default()
     };
     export(&model)
 }
@@ -801,6 +803,7 @@ mod tests {
                     calendar_id: None,
                     project: None,
                 }],
+                ..Model::default()
             };
             let calendar = export(&model);
             assert!(calendar.contains("DTSTART;VALUE=DATE:20260615"));
@@ -919,6 +922,7 @@ mod tests {
                 events: first,
                 tasks: Vec::new(),
                 projects: Vec::new(),
+                ..Model::default()
             });
             assert!(exported.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261027T090000"));
             let (round_tripped, _) = parse(&exported);
@@ -1067,6 +1071,7 @@ mod tests {
                 events: vec![event],
                 tasks: Vec::new(),
                 projects: Vec::new(),
+                ..Model::default()
             });
             assert!(
                 ics.split("\r\n").all(|line| line.len() <= 75),

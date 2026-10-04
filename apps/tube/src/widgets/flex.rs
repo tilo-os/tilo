@@ -368,8 +368,13 @@ impl Flex {
         let fallback = action.accessible_label();
         self.bus = Some(bus.clone());
         self.action = Some(action);
-        self.accessible_name = Some(fallback.to_string());
-        self.tooltip = Some(fallback.to_string());
+        // A name the control was already given (its visible label) stays.
+        if self.accessible_name.is_none() {
+            self.accessible_name = Some(fallback.to_string());
+        }
+        if self.tooltip.is_none() {
+            self.tooltip = Some(fallback.to_string());
+        }
         self
     }
 

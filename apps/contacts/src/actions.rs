@@ -12,8 +12,8 @@
 //! replay path.
 //!
 //! This is the **mutation** side of Contacts. The **navigation** side is a
-//! typed view operation addressed by [`SearchProvider`](crate::search_provider)
-//! results; opening a search row is agent-capable without mutating the document.
+//! typed view operation addressed by the resource's search entries; opening a
+//! search row is agent-capable without mutating the document.
 //!
 //! The resource tree mirrors the data model: the book owns its contacts, and
 //! each contact exports the [`ActionSpec`]s Ctrl+K offers (rename, add-to-group,
@@ -32,7 +32,6 @@
 //! explicitly refused, so callers can distinguish rejection from success and
 //! a bad replay never changes the document.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use uuid::Uuid;
@@ -61,14 +60,14 @@ pub fn contact_resource_id(id: ContactId) -> String {
 
 /// The eagerly published command palette page is deliberately small. The
 /// address book itself can be arbitrarily large; every omitted contact is
-/// still reachable through [`ResourceProvider::resource`] and the complete
+/// still reachable by id through [`resolve_child`] and the complete
 /// search index, rather than making each frame allocate every action for the
 /// whole book.
 pub const MAX_CONTEXT_CONTACT_RESOURCES: usize = 64;
 
 /// Group membership is durable data, but a book can accumulate far more group
 /// names than a palette page can responsibly materialise.  Keep the eagerly
-/// published page small; [`resolve_resource`] and the search provider still
+/// published page small; [`resolve_child`] and the search provider still
 /// resolve every canonical group on demand.
 pub const MAX_CONTEXT_GROUP_RESOURCES: usize = 32;
 
@@ -146,18 +145,6 @@ pub enum ContactsOperation {
     ImportConflictAsNew {
         token: String,
     },
-}
-
-fn find_resource(resource: Resource, id: &str) -> Option<Resource> {
-    if resource.id.as_str() == id {
-        return Some(resource);
-    }
-    for child in resource.children {
-        if let Some(found) = find_resource(child, id) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -733,49 +720,6 @@ pub enum ContactsAction {
     },
 }
 
-/// Durable, browseable history metadata for an address-book mutation.
-pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
-    let mut context =
-        tilo_actions::ActionContext::for_action("so.tilo.contacts", "Contacts", action);
-    let (label, id, name) = match action {
-        ContactsAction::CreateContact(contact) => {
-            let name = format!("{} {}", contact.first, contact.last)
-                .trim()
-                .to_string();
-            ("Create contact", contact.id.as_str(), name)
-        }
-        ContactsAction::PatchContact { id, .. } => {
-            ("Update contact", id.as_str(), "Contact".into())
-        }
-        ContactsAction::DeleteContact { id } => ("Delete contact", id.as_str(), "Contact".into()),
-        ContactsAction::SetFavorite { id, favorite } => (
-            if *favorite {
-                "Favorite contact"
-            } else {
-                "Unfavorite contact"
-            },
-            id.as_str(),
-            "Contact".into(),
-        ),
-        ContactsAction::MergeContacts { survivor_id, .. } => (
-            "Merge duplicate contacts",
-            survivor_id.as_str(),
-            "Contact".into(),
-        ),
-    };
-    context.action_label = label.to_string();
-    context.resource = Some(tilo_actions::ActionResource {
-        id: format!("contacts.contact:{id}"),
-        kind: "contacts.contact".to_string(),
-        label: if name.is_empty() {
-            "Contact".to_string()
-        } else {
-            name
-        },
-    });
-    context
-}
-
 impl Action for ContactsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
@@ -821,7 +765,7 @@ impl Action for ContactsAction {
 
 /// Apply a reviewed merge without ever partially mutating the survivor.  The
 /// complete patch and both active identities are checked before the first
-/// durable write.  `ActionHost` records this as one action, so its standard
+/// durable write.  The host records this as one action, so its standard
 /// undo restores both the source and the survivor's reviewed fields.
 fn apply_merge(
     doc: &mut Doc,
@@ -1379,43 +1323,6 @@ pub fn merge_contacts_action<S: std::hash::BuildHasher>(
 // Resource tree
 // ===========================================================================
 
-/// The presentation context the app hands [`provide_resources`]: a snapshot of
-/// the contacts currently in the book. Everything here is derived from state
-/// the document already holds; nothing is fabricated.
-#[derive(Debug, Clone)]
-pub struct ContactsResourceCtx {
-    pub contacts: Vec<Contact>,
-    /// Canonical group spelling already selected by the retained app index.
-    pub groups: Vec<String>,
-    /// The authoritative book count, kept separate from the bounded snapshot
-    /// so book-level action contracts stay honest.
-    pub contact_count: usize,
-    pub import_busy: bool,
-    pub export_busy: bool,
-    pub import_conflicts: Vec<ImportConflictResource>,
-    /// Bounded derived review opportunities.  This is local presentation
-    /// state over collaborative contacts, never another mutable duplicate
-    /// index in the document.
-    pub duplicates: Vec<DuplicateResource>,
-}
-
-/// A bounded, pending external collision. Kept separately from contact data:
-/// an untrusted file must never enter the collaborative document before an
-/// explicit resolution.
-#[derive(Debug, Clone)]
-pub struct ImportConflictResource {
-    pub token: String,
-    pub incoming_name: String,
-    pub existing_name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct DuplicateResource {
-    pub candidate: DuplicateCandidate,
-    pub survivor: Contact,
-    pub source: Contact,
-}
-
 /// One deterministic display spelling for every logical group in the shared
 /// book.  The key is the same NFC/case-folded identity used by filtering and
 /// resource addressing; choosing the lexical spelling makes separate peers
@@ -1507,10 +1414,9 @@ fn patch_spec(contact: &Contact) -> ActionSpec {
     )
 }
 
-/// Resource and action catalogue for one stable contact identity. Kept
-/// independent of the open-resource page so a search result can resolve a
-/// contact that is not among the current 64 palette rows.
-pub fn contact_resource(contact: &Contact, export_busy: bool) -> Resource {
+/// Resource and action catalogue for one stable contact identity, the same
+/// whether it is on the published page or resolved by id.
+pub fn contact_resource(contact: &Contact) -> Resource {
     let id = contact.id.to_string();
     let mut child = Resource::new(
         contact_resource_id(contact.id),
@@ -1581,16 +1487,12 @@ pub fn contact_resource(contact: &Contact, export_busy: bool) -> Resource {
     // contact resource rather than only to the book-level export-all action.
     // The app opens the same version/portal workflow as the row context menu;
     // no unmediated filesystem path is ever accepted.
-    let export = export_contact_operation(contact.id);
-    if let Some(mut spec) = contact_operation(
+    if let Some(spec) = contact_operation(
         "export-contact",
         "Export contact",
         OperationKind::Effect,
-        &export,
+        &export_contact_operation(contact.id),
     ) {
-        if export_busy {
-            spec = spec.unavailable("already_running", "A contact export is already in progress");
-        }
         child = child.with_action(spec);
     }
 
@@ -1603,9 +1505,8 @@ pub fn contact_resource(contact: &Contact, export_busy: bool) -> Resource {
 }
 
 /// The minimal exact resource a retained search provider needs to invoke the
-/// canonical view action. Rich edit actions are deliberately materialised by
-/// `ContactsApp` from the authoritative CRDT projection, not copied into the
-/// search index.
+/// canonical view action. Rich edit actions are published from the
+/// resource's state, not copied into the search index.
 pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
     let mut resource = Resource::new(contact_resource_id(id), "contacts.contact", label);
     if let Some(open) = contact_operation(
@@ -1649,129 +1550,86 @@ pub fn favorites_resource() -> Resource {
     resource
 }
 
-/// A derived, agent-addressable duplicate-review resource.  It deliberately
-/// offers review first and a typed confirmed merge second: opening it cannot
-/// change shared data, while the merge envelope records every selected scalar
-/// field and is subject to the destructive-action confirmation contract.
-pub fn duplicate_resource(duplicate: &DuplicateResource) -> Resource {
-    let candidate = &duplicate.candidate;
-    let mut resource = Resource::new(
-        duplicate_resource_id(candidate.survivor_id, candidate.source_id),
-        "contacts.duplicate",
-        format!(
-            "Possible duplicate: {} and {}",
-            duplicate.survivor.display_name(),
-            duplicate.source.display_name()
-        ),
-    );
-    let operation = ContactsOperation::OpenDuplicateReview {
-        survivor_id: candidate.survivor_id.to_string(),
-        source_id: candidate.source_id.to_string(),
-    };
-    if let Some(open) = contact_operation(
-        "open-review",
-        "Review possible duplicate",
-        OperationKind::View,
-        &operation,
-    ) {
-        resource = resource.with_action(open);
-    }
-    let survivor = duplicate.survivor.clone();
-    let source = duplicate.source.clone();
-    let merge = ActionSpec::typed(
+/// The reviewed merge of `source` into `survivor`, offered on their
+/// duplicate resource: the caller names the scalar fields to take from the
+/// second contact; repeated fields are always unioned.
+fn merge_declaration(
+    survivor: &Contact,
+    source: &Contact,
+) -> ui::tilo_resource::ActionDecl<crate::resource::Contacts> {
+    let survivor = survivor.clone();
+    let source = source.clone();
+    ui::tilo_resource::ActionDecl::new(
         "merge",
         "Merge contacts",
-        "Field choices to take from the second contact",
-        ExecutionLocus::ClientLocal,
         vec![ActionParam::required(
             "take_from_source",
             ParamType::Array,
             "Array of MergeField names: First, Last, Organization, Title, Website, Birthday, Notes",
         )],
-        move |args| {
-            let Some(value) = args.to_json().remove("take_from_source") else {
-                return invalid_arguments("take_from_source is required");
-            };
-            let fields = match serde_json::from_value::<Vec<MergeField>>(value) {
-                Ok(fields) => fields,
-                Err(error) => return invalid_arguments(format!("invalid merge choices: {error}")),
-            };
+        move |args, _| {
+            let value = args
+                .to_json()
+                .remove("take_from_source")
+                .ok_or_else(|| "take_from_source is required".to_string())?;
+            let fields = serde_json::from_value::<Vec<MergeField>>(value)
+                .map_err(|error| format!("invalid merge choices: {error}"))?;
             let choices = fields.into_iter().collect::<HashSet<_>>();
-            encode(&merge_contacts_action(&survivor, &source, &choices))
+            Ok(merge_contacts_action(&survivor, &source, &choices))
         },
     )
+    .describe("Merge the second contact into the first, taking the named fields from the second")
     .destructive()
-    .reversible();
-    resource.with_action(merge)
 }
 
-/// Build the contextual resource page the palette renders. Discovery stays
-/// bounded even for a very large shared book; direct resource lookup and the
-/// search provider retain complete reachability.
-fn overlay_transfer_availability(root: &mut Resource, ctx: &ContactsResourceCtx) {
-    if ctx.import_busy
-        && let Some(index) = root
-            .actions
-            .iter()
-            .position(|action| action.id == "import-vcard")
-    {
-        let spec = root.actions.remove(index);
-        root.actions.insert(
-            index,
-            spec.unavailable("already_running", "A contact import is already in progress"),
-        );
-    }
-    if let Some(index) = root
-        .actions
-        .iter()
-        .position(|action| action.id == "export-all-vcard")
-    {
-        let spec = root.actions.remove(index);
-        let spec = if ctx.contact_count == 0 {
-            spec.unavailable("book_empty", "There are no contacts to export")
-        } else if ctx.export_busy {
-            spec.unavailable("already_running", "A contact export is already in progress")
-        } else {
-            spec
-        };
-        root.actions.insert(index, spec);
-    }
-}
-
-/// The published address book for this page. Duplicate reviews stay children
-/// beside the document rows.
-pub fn provide_resources(ctx: &ContactsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    // The address book is the document once the `contacts` map exists, including
-    // an empty book. Import conflicts and duplicate reviews stay live extras.
-    // A caller that has not written the map yet still publishes its context.
-    let has_book = automerge::ReadDoc::get(doc, &automerge::ROOT, "contacts")
-        .ok()
-        .flatten()
-        .is_some();
-    let state = if has_book {
-        <crate::resource::Contacts as ui::tilo_resource::Resource>::read(doc).unwrap_or(
-            crate::resource::ContactsState {
-                contacts: Vec::new(),
-            },
-        )
-    } else {
-        crate::resource::ContactsState {
-            contacts: ctx.contacts.clone(),
-        }
-    };
-    let mut root = ui::tilo_resource::publish::<crate::resource::Contacts>(
-        "contacts.book",
-        "Contacts",
-        &state,
+/// A derived, agent-addressable duplicate-review resource.  It offers review
+/// first and a confirmed merge second: opening it cannot change shared data,
+/// while the merge records every selected scalar field and is subject to the
+/// destructive-action confirmation contract.
+pub fn duplicate_resource(
+    candidate: &DuplicateCandidate,
+    survivor: &Contact,
+    source: &Contact,
+) -> Resource {
+    let mut resource = Resource::new(
+        duplicate_resource_id(candidate.survivor_id, candidate.source_id),
+        "contacts.duplicate",
+        format!(
+            "Possible duplicate: {} and {}",
+            survivor.display_name(),
+            source.display_name()
+        ),
     );
-    overlay_transfer_availability(&mut root, ctx);
-    root.children.extend(live_presentation_extras(ctx));
-    vec![root]
+    if let Some(open) = contact_operation(
+        "open-review",
+        "Review possible duplicate",
+        OperationKind::View,
+        &open_duplicate_review_operation(candidate),
+    ) {
+        resource = resource.with_action(open);
+    }
+    resource.with_action(ui::tilo_resource::declaration_spec(&merge_declaration(
+        survivor, source,
+    )))
 }
 
-/// Document-derived children for [`tilo_resource::publish`]: favorites, groups,
-/// and contacts. Import conflicts and duplicate reviews stay live extras —
-/// they are not shared CRDT rows.
+/// The duplicate resource of the contacts `survivor_id` and `source_id`, while
+/// they are still a likely duplicate.
+fn duplicate_of(
+    contacts: &[Contact],
+    survivor_id: ContactId,
+    source_id: ContactId,
+) -> Option<Resource> {
+    let survivor = contacts.iter().find(|contact| contact.id == survivor_id)?;
+    let source = contacts.iter().find(|contact| contact.id == source_id)?;
+    let candidate = duplicate_candidate(survivor, source)?;
+    (candidate.survivor_id == survivor_id && candidate.source_id == source_id)
+        .then(|| duplicate_resource(&candidate, survivor, source))
+}
+
+/// The published page of the book's children: favorites, and a bounded
+/// number of groups, contacts and duplicate reviews. Everything beyond the
+/// page resolves by id through [`resolve_child`].
 pub(crate) fn publish_children(contacts: &[Contact]) -> Vec<Resource> {
     let mut children = vec![favorites_resource()];
     for group in ordered_groups(contacts)
@@ -1781,186 +1639,92 @@ pub(crate) fn publish_children(contacts: &[Contact]) -> Vec<Resource> {
         children.push(group_resource(&group));
     }
     for contact in contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
-        children.push(contact_resource(contact, false));
+        children.push(contact_resource(contact));
+    }
+    for candidate in duplicate_candidates(contacts, MAX_CONTEXT_DUPLICATE_RESOURCES) {
+        if let Some(duplicate) = duplicate_of(contacts, candidate.survivor_id, candidate.source_id)
+        {
+            children.push(duplicate);
+        }
     }
     children
 }
 
-/// Hosted-only extras that are not document state: in-flight import conflicts
-/// and pending duplicate-merge reviews.
-pub(crate) fn live_presentation_extras(ctx: &ContactsResourceCtx) -> Vec<Resource> {
-    let mut extras = Vec::new();
-    for conflict in &ctx.import_conflicts {
-        let mut child = Resource::new(
-            format!("contacts.import-conflict:{}", conflict.token),
-            "contacts.import-conflict",
-            format!("Import review: {}", conflict.incoming_name),
-        );
-        let keep = ContactsOperation::KeepImportConflict {
-            token: conflict.token.clone(),
-        };
-        let import_as_new = ContactsOperation::ImportConflictAsNew {
-            token: conflict.token.clone(),
-        };
-        if let Some(spec) = contact_operation(
-            "keep-existing",
-            "Keep existing contact",
-            OperationKind::Effect,
-            &keep,
-        ) {
-            child = child.with_action(spec);
-        }
-        if let Some(spec) = contact_operation(
-            "import-as-new",
-            "Import as new contact",
-            OperationKind::Effect,
-            &import_as_new,
-        ) {
-            child = child.with_action(spec);
-        }
-        extras.push(child);
-    }
-    for duplicate in ctx.duplicates.iter().take(MAX_CONTEXT_DUPLICATE_RESOURCES) {
-        extras.push(duplicate_resource(duplicate));
-    }
-    extras
-}
-
-/// Resolve one resource from the complete current book without materialising
-/// the contextual action page. A missing id intentionally stays missing: the
-/// broker then refuses a stale search result before it can reach an operation
-/// handler.
-pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
-    if id == "contacts.book" {
-        let mut root = provide_resources(ctx, &automerge::AutoCommit::new())
-            .into_iter()
-            .next()?;
-        root.children.clear();
-        return Some(root);
-    }
+/// Resolve one child of the book from the complete current state, without
+/// materialising the published page. A missing id stays missing: the broker
+/// then refuses a stale search result before it can reach a handler.
+pub(crate) fn resolve_child(contacts: &[Contact], id: &str) -> Option<Resource> {
     if id == FAVORITES_RESOURCE_ID {
         return Some(favorites_resource());
     }
     if let Some(rest) = id.strip_prefix("contacts.duplicate:") {
         let (survivor, source) = rest.split_once(':')?;
-        let survivor_id = survivor.parse::<ContactId>().ok()?;
-        let source_id = source.parse::<ContactId>().ok()?;
-        return ctx
-            .duplicates
-            .iter()
-            .find(|duplicate| {
-                duplicate.candidate.survivor_id == survivor_id
-                    && duplicate.candidate.source_id == source_id
-            })
-            .map(duplicate_resource);
+        return duplicate_of(contacts, survivor.parse().ok()?, source.parse().ok()?);
     }
-    if let Some(raw_name) = id.strip_prefix("contacts.group:") {
-        if let Some(name) = ctx
-            .groups
-            .iter()
-            .find(|name| normalize_text(name) == raw_name)
-        {
-            return Some(group_resource(name));
-        }
-        // Standalone action tests and integration adapters can supply a
-        // complete transient context. The real `ResourceProvider` prepares
-        // the addressed group above, so it never takes this compatibility
-        // fallback over a large book.
-        return ordered_groups(&ctx.contacts)
+    if let Some(key) = id.strip_prefix("contacts.group:") {
+        return ordered_groups(contacts)
             .into_iter()
-            .find(|name| normalize_text(name) == raw_name)
+            .find(|name| normalize_text(name) == key)
             .map(|name| group_resource(&name));
     }
-    if let Some(token) = id.strip_prefix("contacts.import-conflict:")
-        && let Some(conflict) = ctx
-            .import_conflicts
-            .iter()
-            .find(|conflict| conflict.token == token)
-    {
-        let mut root = Resource::new(
-            id,
-            "contacts.import-conflict",
-            format!("Import review: {}", conflict.incoming_name),
-        );
-        let keep = ContactsOperation::KeepImportConflict {
-            token: conflict.token.clone(),
-        };
-        let import_as_new = ContactsOperation::ImportConflictAsNew {
-            token: conflict.token.clone(),
-        };
-        if let Some(spec) = contact_operation(
-            "keep-existing",
-            "Keep existing contact",
-            OperationKind::Effect,
-            &keep,
-        ) {
-            root = root.with_action(spec);
-        }
-        if let Some(spec) = contact_operation(
-            "import-as-new",
-            "Import as new contact",
-            OperationKind::Effect,
-            &import_as_new,
-        ) {
-            root = root.with_action(spec);
-        }
-        return Some(root);
-    }
-    let raw_id = id.strip_prefix("contacts.contact:")?;
-    let contact_id = raw_id.parse::<ContactId>().ok()?;
-    ctx.contacts
+    let contact_id = id
+        .strip_prefix("contacts.contact:")?
+        .parse::<ContactId>()
+        .ok()?;
+    contacts
         .iter()
         .find(|contact| contact.id == contact_id)
-        .map(|contact| contact_resource(contact, ctx.export_busy))
+        .map(contact_resource)
 }
 
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::ContactsApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.contacts_resource_ctx(), doc)
-    }
+/// The id of the pending review of one imported card whose UID collides with
+/// an existing contact.
+pub fn import_conflict_resource_id(token: &str) -> String {
+    format!("contacts.import-conflict:{token}")
+}
 
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == "contacts.book" {
-            // The published address book. The directory page does not walk
-            // every contact; those resolve by id.
-            let mut root = provide_resources(&self.contacts_resource_ctx(), doc)
-                .into_iter()
-                .next()?;
-            root.children.clear();
-            return Some(root);
-        }
-        if let Some(mut found) = provide_resources(&self.contacts_resource_ctx(), doc)
-            .into_iter()
-            .find_map(|root| find_resource(root, id))
-        {
-            if self.export_is_busy()
-                && let Some(action) = found
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.id == "export-contact")
-            {
-                *action = action
-                    .clone()
-                    .unavailable("already_running", "A contact export is already in progress");
-            }
-            return Some(found);
-        }
-        // A contact or group outside the eager page stays addressable from
-        // this device's store.
-        self.exact_contacts_resource_ctx(id)
-            .and_then(|ctx| resolve_resource(&ctx, id))
+/// A pending import review, published while it waits for a decision. It is
+/// not document state: an untrusted card never enters the shared book before
+/// the person chooses to keep the existing contact or import it as new.
+pub(crate) fn import_conflict_row(token: &str, incoming_name: &str) -> ui::framework::LiveRow {
+    let mut row = ui::framework::LiveRow::new(
+        import_conflict_resource_id(token),
+        "contacts.import-conflict",
+        format!("Import review: {incoming_name}"),
+    );
+    let keep = ContactsOperation::KeepImportConflict {
+        token: token.to_owned(),
+    };
+    let import_as_new = ContactsOperation::ImportConflictAsNew {
+        token: token.to_owned(),
+    };
+    if let Some(spec) = contact_operation(
+        "keep-existing",
+        "Keep existing contact",
+        OperationKind::Effect,
+        &keep,
+    ) {
+        row = row.operation(spec);
     }
+    if let Some(spec) = contact_operation(
+        "import-as-new",
+        "Import as new contact",
+        OperationKind::Effect,
+        &import_as_new,
+    ) {
+        row = row.operation(spec);
+    }
+    row
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ContactsApp;
-    use automerge::ROOT;
+    use crate::resource::{Contacts, sample_book};
+    use automerge::AutoCommit;
     use tilo_actions::{ActionInput, LocalTransport};
     use tilo_automerge::ApplyIncoming;
-    use ui::widget::Widget;
+    use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -1977,13 +1741,15 @@ mod tests {
         }
     }
 
-    /// The sample address book synced into a fresh document, plus the app that
-    /// owns it — the real widget, driven through its real `sync`.
-    fn seeded() -> (ContactsApp, AutoCommit) {
-        let mut app = ContactsApp::sample();
+    /// The sample address book created in a fresh document through its
+    /// actions.
+    fn seeded_doc() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        (app, doc)
+        for contact in sample_book() {
+            create_contact_action(&contact).apply(&mut doc).unwrap();
+        }
+        doc.commit();
+        doc
     }
 
     fn first_contact(doc: &AutoCommit) -> Contact {
@@ -1993,18 +1759,13 @@ mod tests {
             .expect("the sample book is non-empty")
     }
 
-    /// The sample address book as a document, built by the app's real `sync`.
-    fn seeded_doc() -> AutoCommit {
-        seeded().1
-    }
-
-    /// The resources a Contacts app holding `doc` publishes: a fresh app
-    /// adopts the document's book on its first `sync`, as on session restore.
+    /// The book `doc` holds as the framework publishes it.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
-        let mut app = ContactsApp::sample();
-        let mut adopted = doc.clone();
-        app.sync(&mut adopted, &ROOT);
-        ui::resources::resources(&app, doc)
+        vec![ui::tilo_resource::publish::<Contacts>(
+            Contacts::KIND,
+            Contacts::LABEL,
+            &Contacts::read(doc).unwrap(),
+        )]
     }
 
     /// The stored contact a `contacts.contact` resource addresses.
@@ -2068,9 +1829,8 @@ mod tests {
         // and a `contacts.contact` child per record exporting rename / add-to-group
         // / favourite / export / delete. Drives the real resource hook.
         {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            assert_eq!(resources.len(), 1, "one book root");
+            let doc = seeded_doc();
+            let resources = resources_for(&doc);
             let book = &resources[0];
             assert_eq!(book.kind, "contacts.book");
             let book_actions: Vec<&str> = book.actions.iter().map(|a| a.id.as_str()).collect();
@@ -2118,21 +1878,9 @@ mod tests {
                     ..Contact::default()
                 })
                 .collect::<Vec<_>>();
-            let ctx = ContactsResourceCtx {
-                contacts: contacts.clone(),
-                groups: Vec::new(),
-                contact_count: contacts.len(),
-                import_busy: false,
-                export_busy: false,
-                import_conflicts: Vec::new(),
-                duplicates: Vec::new(),
-            };
-
-            let page = provide_resources(&ctx, &AutoCommit::new());
+            let page = publish_children(&contacts);
             assert_eq!(
-                page[0]
-                    .children
-                    .iter()
+                page.iter()
                     .filter(|resource| resource.kind == "contacts.contact")
                     .count(),
                 MAX_CONTEXT_CONTACT_RESOURCES,
@@ -2141,14 +1889,14 @@ mod tests {
 
             let target = contacts.last().expect("fixture is populated");
             let address = open_contact_address(target.id);
-            let direct = resolve_resource(&ctx, &address.resource)
+            let direct = resolve_child(&contacts, &address.resource)
                 .expect("contacts outside the contextual page resolve lazily");
             assert!(
                 tilo_actions::door::resolve(&[direct], &address).is_some(),
                 "the lazy resource exposes its canonical open action"
             );
             assert!(
-                resolve_resource(&ctx, &contact_resource_id(Uuid::new_v4())).is_none(),
+                resolve_child(&contacts, &contact_resource_id(Uuid::new_v4())).is_none(),
                 "a stale contact id is refused rather than resurrected"
             );
         }
@@ -2163,22 +1911,8 @@ mod tests {
                     ..Contact::default()
                 })
                 .collect::<Vec<_>>();
-            let ctx = ContactsResourceCtx {
-                groups: ordered_groups(&contacts)
-                    .into_iter()
-                    .take(MAX_CONTEXT_GROUP_RESOURCES)
-                    .collect(),
-                contact_count: contacts.len(),
-                contacts,
-                import_busy: false,
-                export_busy: false,
-                import_conflicts: Vec::new(),
-                duplicates: Vec::new(),
-            };
-
-            let page = provide_resources(&ctx, &AutoCommit::new());
-            let group_count = page[0]
-                .children
+            let page = publish_children(&contacts);
+            let group_count = page
                 .iter()
                 .filter(|resource| resource.kind == "contacts.group")
                 .count();
@@ -2186,7 +1920,7 @@ mod tests {
 
             let name = format!("Group {:03}", MAX_CONTEXT_GROUP_RESOURCES + 1);
             let address = open_group_address(&name);
-            let resource = resolve_resource(&ctx, &address.resource)
+            let resource = resolve_child(&contacts, &address.resource)
                 .expect("a group outside the palette page resolves lazily");
             assert!(
                 tilo_actions::door::resolve(&[resource], &address).is_some(),
@@ -2198,34 +1932,29 @@ mod tests {
         // Search addresses the exact view action in the live resource tree; it
         // does not mint a parallel navigation namespace.
         {
-            let (app, doc) = seeded();
-
-            // The mutation side is live.
-            assert!(
-                !ui::resources::resources(&app, &doc).is_empty(),
-                "resources are exported"
-            );
-
-            // The search side finds the contact and names its exported action.
-            let providers = ui::search::capability::search_providers(&app);
-            assert_eq!(providers.len(), 1, "one contacts search provider");
-            let hits = providers[0].search("hopper");
-            let hit = hits
+            let doc = seeded_doc();
+            let entries = Contacts::search(&Contacts::read(&doc).unwrap());
+            let hit = entries
                 .iter()
-                .find(|r| r.title == "Grace Hopper")
-                .expect("the provider surfaces the real matching contact");
+                .find(|entry| entry.title == "Grace Hopper")
+                .expect("search surfaces the real contact");
+            assert!(hit.text.contains("US Navy"), "{:?}", hit.text);
             let id = ContactsDoc::list_contacts(&doc)
                 .into_iter()
                 .find(|contact| contact.display_name() == hit.title)
                 .expect("the result names a stored contact")
                 .id;
-            let address = hit.action_address().expect("search hit is canonical");
+            let address = hit.action.clone().expect("search hit is canonical");
             assert_eq!(address, open_contact_address(id));
             assert!(
-                tilo_actions::door::resolve(&ui::resources::resources(&app, &doc), &address)
-                    .is_some(),
+                tilo_actions::door::resolve(&resources_for(&doc), &address).is_some(),
                 "the address is exported to the palette, accessibility and agents"
             );
+            let group = entries
+                .iter()
+                .find(|entry| entry.title == "Group: Work")
+                .expect("groups are found too");
+            assert_eq!(group.action, Some(open_group_address("Work")));
         }
 
         // --- phase: export_contact_is_a_typed_sensitive_operation ---
@@ -2234,8 +1963,7 @@ mod tests {
         // payload and the action is confirmation-labelled because it can
         // disclose contact data outside the address book.
         {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = resources_for(&seeded_doc());
             let (contact, export_spec) = ui::testing::action_contract::find_spec(
                 &resources,
                 "contacts.contact",
@@ -2271,9 +1999,8 @@ mod tests {
     fn duplicate_merge_is_reviewed_reversible_and_replayable() {
         // --- phase: reviewed_merge_is_destructive_reversible_and_undo_restores_both_contacts ---
         {
-            let mut app = ContactsApp::sample();
             let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
+            state.doc = seeded_doc();
             let mut contacts = ContactsDoc::list_contacts(&state.doc);
             contacts.sort_by_key(|contact| contact.id);
             let survivor = contacts.remove(0);
@@ -2293,13 +2020,9 @@ mod tests {
                 .into_iter()
                 .find(|contact| contact.id == source.id)
                 .unwrap();
-            let duplicate = DuplicateResource {
-                candidate: duplicate_candidate(&survivor, &source)
-                    .expect("matching names are reviewable"),
-                survivor: survivor.clone(),
-                source: source.clone(),
-            };
-            let resource = duplicate_resource(&duplicate);
+            let candidate =
+                duplicate_candidate(&survivor, &source).expect("matching names are reviewable");
+            let resource = duplicate_resource(&candidate, &survivor, &source);
             let spec = resource
                 .actions
                 .iter()
@@ -2310,10 +2033,7 @@ mod tests {
                 spec.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm
             );
-            assert!(
-                spec.contract.reversible,
-                "merge truthfully advertises ActionHost undo"
-            );
+            assert!(spec.contract.reversible, "merge truthfully advertises undo");
 
             let action = merge_contacts_action(&survivor, &source, &HashSet::new());
             let encoded = encode(&action);
@@ -2352,7 +2072,7 @@ mod tests {
 
         // --- phase: duplicate_detector_is_normalized_bounded_and_merge_replays_on_a_peer ---
         {
-            let (_app, mut seed) = seeded();
+            let mut seed = seeded_doc();
             let mut contacts = ContactsDoc::list_contacts(&seed);
             contacts.sort_by_key(|contact| contact.id);
             let survivor = contacts.remove(0);
@@ -2396,7 +2116,7 @@ mod tests {
     fn patches_converge_across_replicas_and_refuse_stale_rows() {
         // --- phase: concurrent_independent_field_and_group_patches_converge ---
         {
-            let (_app, mut a) = seeded();
+            let mut a = seeded_doc();
             a.commit();
             let mut b = AutoCommit::load(&a.save()).unwrap();
             let base = first_contact(&a);
@@ -2426,7 +2146,7 @@ mod tests {
 
         // --- phase: duplicate_rows_keep_separate_ids_across_edit_remove_and_reordered_replay ---
         {
-            let (_app, mut seed) = seeded();
+            let mut seed = seeded_doc();
             let mut contact = first_contact(&seed);
             let first = Labeled::new("mobile", "+1 555 0100");
             let second = Labeled::new("work", "+1 555 0100");
@@ -2478,7 +2198,7 @@ mod tests {
 
         // --- phase: late_stale_row_refusal_is_observationally_atomic ---
         {
-            let (_app, mut doc) = seeded();
+            let mut doc = seeded_doc();
             let base = first_contact(&doc);
             let added_phone = Labeled::new("mobile", "+1 555 0188");
             let action = ContactsAction::PatchContact {
@@ -2511,7 +2231,7 @@ mod tests {
 
         // --- phase: delete_tombstone_wins_over_a_cross_envelope_stale_patch ---
         {
-            let (_app, mut a) = seeded();
+            let mut a = seeded_doc();
             a.commit();
             let mut b = AutoCommit::load(&a.save()).unwrap();
             let base = first_contact(&a);
@@ -2541,7 +2261,7 @@ mod tests {
 
         // --- phase: independent_patches_are_value_convergent_when_replayed_in_either_order ---
         {
-            let (_app, mut seed) = seeded();
+            let mut seed = seeded_doc();
             let bytes = seed.save();
             let mut first_then_second = AutoCommit::load(&bytes).unwrap();
             let mut second_then_first = AutoCommit::load(&bytes).unwrap();
@@ -2575,8 +2295,8 @@ mod tests {
         // Dispatching the "New contact" prompted action creates a contact in the
         // document with the committed name split into first/last.
         {
-            let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let mut doc = seeded_doc();
+            let resources = resources_for(&doc);
             let spec = resources[0]
                 .actions
                 .iter()
@@ -2600,9 +2320,9 @@ mod tests {
 
         // --- phase: typed_field_patch_action_covers_the_complete_contact_form ---
         {
-            let (_app, mut doc) = seeded();
+            let mut doc = seeded_doc();
             let contact = first_contact(&doc);
-            let resource = contact_resource(&contact, false);
+            let resource = contact_resource(&contact);
             let spec = resource
                 .actions
                 .iter()
@@ -2648,21 +2368,8 @@ mod tests {
         // --- phase: imported_uid_review_actions_are_addressable_and_guard_new_contact_creation ---
         {
             let token = Uuid::new_v4().to_string();
-            let ctx = ContactsResourceCtx {
-                contacts: Vec::new(),
-                groups: Vec::new(),
-                contact_count: 0,
-                import_busy: false,
-                export_busy: false,
-                import_conflicts: vec![ImportConflictResource {
-                    token: token.clone(),
-                    incoming_name: "Incoming Ada".into(),
-                    existing_name: "Existing Ada".into(),
-                }],
-                duplicates: Vec::new(),
-            };
-            let resource_id = format!("contacts.import-conflict:{token}");
-            let review = resolve_resource(&ctx, &resource_id).expect("pending review resolves");
+            let review = import_conflict_row(&token, "Incoming Ada").into_resource();
+            assert_eq!(review.id.as_str(), import_conflict_resource_id(&token));
             assert!(
                 review
                     .actions

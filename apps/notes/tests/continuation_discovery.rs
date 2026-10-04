@@ -8,13 +8,13 @@ use tilo_actions::{ActionAddress, ActionInput, EncodedAction, Resource};
 use ui::record::RecordCheckout;
 use uuid::Uuid;
 
-fn snapshot(f: &LegacyFixture, checkout: &RecordCheckout) -> Vec<u8> {
+fn snapshot(f: &NotebookFixture, checkout: &RecordCheckout) -> Vec<u8> {
     f.records
         .read(&checkout.id, |doc| doc.clone().save())
         .unwrap()
 }
 
-fn address(f: &LegacyFixture, duplicate: bool) -> ActionAddress {
+fn address(f: &NotebookFixture, duplicate: bool) -> ActionAddress {
     if duplicate {
         ActionAddress::new(actions::page_resource_id(f.root), "duplicate")
     } else {
@@ -23,8 +23,8 @@ fn address(f: &LegacyFixture, duplicate: bool) -> ActionAddress {
 }
 
 fn discovery(duplicate: bool) {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut live = driver(&f, 11, &checkout);
     let before = snapshot(&f, &checkout);
     let target = address(&f, duplicate);
@@ -95,8 +95,8 @@ fn encode_retained(resources: &[Resource], target: &ActionAddress, json: bool) -
 }
 
 fn retained_declaration(duplicate: bool, json: bool) {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut live = driver(&f, 11, &checkout);
     let before = snapshot(&f, &checkout);
     let target = address(&f, duplicate);
@@ -145,11 +145,10 @@ fn notes_continuation_daily_retained_json_door_mints_fresh_ids() {
 
 #[test]
 fn notes_continuation_component_discovery_and_model_pass_are_read_only() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut live = driver(&f, 11, &checkout);
     let before = snapshot(&f, &checkout);
-    let source = f.source_bytes();
     let history = revision(&f, &checkout);
     let declared = tilo_actions::door::survey(&live.resources());
     assert!(declared.iter().any(|row| row.address == address(&f, true)));
@@ -160,11 +159,10 @@ fn notes_continuation_component_discovery_and_model_pass_are_read_only() {
         assert_eq!(snapshot(&f, &checkout), before);
         assert_eq!(revision(&f, &checkout), history);
     }
-    assert_eq!(f.source_bytes(), source);
     close_driver(&mut live);
 }
 
-fn page_ids(f: &LegacyFixture, checkout: &RecordCheckout) -> BTreeSet<Uuid> {
+fn page_ids(f: &NotebookFixture, checkout: &RecordCheckout) -> BTreeSet<Uuid> {
     f.records
         .read(&checkout.id, |doc| {
             NotesDoc::list_pages(doc)
@@ -177,8 +175,8 @@ fn page_ids(f: &LegacyFixture, checkout: &RecordCheckout) -> BTreeSet<Uuid> {
 
 #[test]
 fn notes_continuation_real_duplicate_activations_create_distinct_owned_subtrees() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut live = driver(&f, 11, &checkout);
     let before = page_ids(&f, &checkout);
     invoke(
@@ -217,8 +215,8 @@ fn notes_continuation_real_duplicate_activations_create_distinct_owned_subtrees(
 
 #[test]
 fn notes_continuation_real_daily_activation_creates_once_then_opens_existing_note() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut live = driver(&f, 11, &checkout);
     let before = page_ids(&f, &checkout);
     invoke(&mut live, 11, "notes.notebook", "daily-note", None);
@@ -237,12 +235,14 @@ fn notes_continuation_real_daily_activation_creates_once_then_opens_existing_not
 
 #[test]
 fn notes_continuation_dynamic_declarations_identify_actual_resolution_domains() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut live = driver(&f, 11, &checkout);
     let resources = live.resources();
     for row in tilo_actions::door::survey(&resources) {
-        if !row.address.resource.starts_with("notes.") {
+        // The notebook's own door (its declarations, `apply`, history) is the
+        // framework's; Notes captures the domains of the children it builds.
+        if !row.address.resource.starts_with("notes.") || row.address.resource == "notes.notebook" {
             continue;
         }
         let spec = tilo_actions::door::resolve(&resources, &row.address).unwrap();
@@ -262,8 +262,8 @@ fn notes_continuation_dynamic_declarations_identify_actual_resolution_domains() 
 
 #[test]
 fn notes_continuation_actual_notes_and_search_cover_lazy_invocation_domains() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
     let app = notes::NotesApp::from_document(&doc, &f.author).unwrap();
     assert!(

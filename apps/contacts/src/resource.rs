@@ -1,34 +1,35 @@
 //! Contacts as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path for the address book.
+//! published tree for the address book.
 //!
-//! Document mutations (new contact, per-contact patch / favourite / delete)
-//! live on this resource via [`Resource::declarations`] / [`Resource::children`].
-//! Import and export are Effects with no document delta
-//! ([`Resource::local_operations`]). In-flight import conflicts and pending
-//! duplicate merges stay hosted live extras — never a second hand-built
-//! `contacts.book` root beside [`tilo_resource::publish`].
+//! Document mutations (new contact, per-contact patch / favourite / delete,
+//! the reviewed merge of a likely duplicate) live on this resource via
+//! [`Resource::declarations`] / [`Resource::children`]; a book larger than the
+//! published page resolves the rest by id ([`Resource::child`]). Import and
+//! export are Effects with no document delta ([`Resource::local_operations`]).
+//! Imported cards waiting for review are live rows of the surface: they are
+//! not in the document until the person decides.
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use std::rc::Rc;
+
+use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
+    ActionParam, ActionSpec, OperationKind, PROMPTED_PARAM, ParamType,
     Resource as PublishedResource,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
+use uuid::Uuid;
 
 use crate::actions::{
     CONTACTS_ACTION_TYPE, ContactsAction, book_effect_specs, contact_resource_id,
-    create_contact_action, live_presentation_extras, publish_children, register, split_name,
+    create_contact_action, open_contact_address, open_group_address, ordered_groups,
+    publish_children, register, resolve_child, split_name,
 };
 use crate::app::ContactsApp;
 use crate::doc::ContactsDoc;
-use crate::model::Contact;
+use crate::model::{Birthday, Contact, Labeled, sample_contacts};
 
-/// Stable id for the published address-book root.
-pub const BOOK_RESOURCE_ID: &str = "contacts.book";
-
-/// Address-book projection for search and the published tree.
+/// The address book's state: every contact, in document order.
 #[derive(Clone, Debug, Default)]
 pub struct ContactsState {
     pub contacts: Vec<Contact>,
@@ -82,6 +83,10 @@ impl Resource for Contacts {
         publish_children(&state.contacts)
     }
 
+    fn child(state: &ContactsState, id: &str) -> Option<PublishedResource> {
+        resolve_child(&state.contacts, id)
+    }
+
     fn local_operations() -> Vec<ActionSpec> {
         book_effect_specs()
             .into_iter()
@@ -89,29 +94,97 @@ impl Resource for Contacts {
             .collect()
     }
 
+    /// Every contact is found by anything it holds — name, organisation,
+    /// numbers, addresses, notes, groups — and opens; every group reveals
+    /// its members.
     fn search(state: &ContactsState) -> Vec<SearchEntry> {
-        state
-            .contacts
-            .iter()
-            .map(|contact| SearchEntry {
-                anchor: Some(contact_resource_id(contact.id)),
-                title: contact.display_name(),
-                text: contact
-                    .emails
-                    .first()
-                    .map(|email| email.value.clone())
-                    .unwrap_or_default(),
-                action: None,
-            })
-            .collect()
+        let contacts = state.contacts.iter().map(|contact| {
+            SearchEntry::new(contact.display_name(), searchable_text(contact))
+                .anchored(contact_resource_id(contact.id))
+                .invoking(open_contact_address(contact.id))
+        });
+        let groups = ordered_groups(&state.contacts).into_iter().map(|group| {
+            SearchEntry::new(format!("Group: {group}"), "Filter contacts in this group")
+                .invoking(open_group_address(&group))
+        });
+        contacts.chain(groups).collect()
     }
 }
 
-/// Hosted-only extras that are not document state: in-flight import conflicts
-/// and pending duplicate-merge reviews. The book door stays on
-/// [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &ContactsApp) -> Vec<PublishedResource> {
-    live_presentation_extras(&app.contacts_resource_ctx())
+/// What a person may look a contact up by, one field per line so a query
+/// never matches across two of them.
+fn searchable_text(contact: &Contact) -> String {
+    let mut fields = vec![
+        contact.first.clone(),
+        contact.last.clone(),
+        contact.org.clone(),
+        contact.title.clone(),
+        contact.website.clone(),
+        contact.notes.clone(),
+    ];
+    if let Some(birthday) = contact.birthday {
+        fields.extend([birthday.iso(), birthday.pretty()]);
+    }
+    for row in contact.phones.iter().chain(&contact.emails) {
+        fields.extend([row.label.clone(), row.value.clone()]);
+    }
+    fields.extend(
+        contact
+            .addresses
+            .iter()
+            .map(crate::model::Address::one_line),
+    );
+    fields.extend(contact.groups.iter().map(|group| group.value.clone()));
+    fields.retain(|field| !field.trim().is_empty());
+    fields.join("\n")
+}
+
+/// The sample address book a capture shows, with stable ids so every run
+/// draws the same scene.
+pub(crate) fn sample_book() -> Vec<Contact> {
+    let mut next = 0_u128;
+    let mut id = || {
+        next += 1;
+        Uuid::from_u128(next)
+    };
+    sample_contacts()
+        .into_iter()
+        .map(|mut contact| {
+            contact.id = id();
+            for row in contact.phones.iter_mut().chain(contact.emails.iter_mut()) {
+                row.id = id();
+            }
+            for address in &mut contact.addresses {
+                address.id = id();
+            }
+            for group in &mut contact.groups {
+                group.id = id();
+            }
+            contact
+        })
+        .collect()
+}
+
+/// The two sample contacts the duplicate review compares: every scalar field
+/// differs, so the review shows its longest field chooser.
+fn review_pair(book: &mut [Contact]) {
+    let [survivor, source, ..] = book else {
+        return;
+    };
+    source.first = "Augusta".into();
+    source.last = "King".into();
+    source.org = "Alternative organization".into();
+    source.title = "Different role".into();
+    source.website = "https://other.example.test".into();
+    source.notes = "A deliberately longer alternate note for the review layout.".into();
+    source.birthday = Some(Birthday::MonthDay { month: 12, day: 10 });
+    source.emails = vec![Labeled::new("home", "ada@example.test")];
+    survivor.org = "Primary organization".into();
+    survivor.title = "Primary role".into();
+    survivor.website = "https://primary.example.test".into();
+    survivor.notes = "A deliberately longer primary note for the review layout.".into();
+    survivor.birthday = Some(Birthday::MonthDay { month: 1, day: 1 });
+    survivor.emails = vec![Labeled::new("home", "ada@example.test")];
 }
 
 /// Framework app: the contacts widget is the surface over [`Contacts`].
@@ -122,160 +195,180 @@ impl ResourceApp for ContactsShell {
     const ID: &'static str = "so.tilo.contacts";
     const TITLE: &'static str = "Contacts";
     const ICON: Option<&'static str> = Some("contacts");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
 
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         cx.surface(ContactsApp::new())
     }
+
+    /// `new`, `edit`, `editfocus` and `edit-lower` show the contact form;
+    /// `export`, `unsaved`, `confirm`, `import-conflict` and
+    /// `duplicate-review` its dialogs; `groups` and `context` its menus;
+    /// `duplicates` a discovered likely duplicate; `search` a filtered list;
+    /// `empty` a fresh install; `loading` an import in progress; `error` the
+    /// feedback of a failed import; `detail` the narrow single-pane layout on
+    /// the pushed detail of a contact.
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "new",
+            "edit",
+            "editfocus",
+            "edit-lower",
+            "export",
+            "unsaved",
+            "groups",
+            "context",
+            "confirm",
+            "import-conflict",
+            "duplicate-review",
+            "duplicates",
+            "empty",
+            "search",
+            "loading",
+            "error",
+            "detail",
+        ]
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("detail") => (390, 844),
+            _ => (1280, 800),
+        }
+    }
+
+    /// The sample book, so a capture shows the address book doing real
+    /// work; `empty` shows a fresh install, which has none.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Contacts>> {
+        let mut book = match name {
+            Some("empty") => return Vec::new(),
+            _ => sample_book(),
+        };
+        match name {
+            Some("duplicate-review") => review_pair(&mut book),
+            Some("duplicates") => {
+                if let Some(first) = book.first() {
+                    let mut copy = first.clone();
+                    copy.id = Uuid::from_u128(u128::from(u32::MAX));
+                    copy.notes =
+                        "A second import with the same identity; review before merging.".into();
+                    book.push(copy);
+                }
+            }
+            _ => {}
+        }
+        book.iter()
+            .filter_map(|contact| Invoke::apply(&create_contact_action(contact)).ok())
+            .collect()
+    }
 }
 
 impl ResourceSurface<Contacts> for ContactsApp {
-    fn present(&mut self, state: &std::rc::Rc<ContactsState>) {
-        // Adopt the shared book projection only — never wipe a local address
-        // book that has not been published yet.
-        self.adopt_resource_state(state);
+    fn present(&mut self, state: &Rc<ContactsState>) {
+        self.present_book(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_dispatcher(cx.dispatcher());
     }
 
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Contacts>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Contacts>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.import_conflict_rows()
     }
 
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ContactsAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), ui::tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.import_conflict_rows()
+            .into_iter()
+            .find(|row| row.id() == id)
     }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &ContactsState) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Contacts>(
-        BOOK_RESOURCE_ID,
-        "Contacts",
-        state,
-    )]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_actions::Action;
-    use ui::widget::Widget;
+    use crate::actions::{
+        FAVORITES_RESOURCE_ID, MAX_CONTEXT_CONTACT_RESOURCES, duplicate_resource_id,
+        group_resource_id,
+    };
+    use ui::framework::testing::TestApp;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn resource_publish_owns_book_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
-        let mut contact = Contact::new();
-        contact.first = "Ada".into();
-        contact.last = "Lovelace".into();
-        contact.groups = vec![crate::model::GroupEntry::new("Scientists")];
-        create_contact_action(&contact).apply(&mut doc).unwrap();
-        doc.commit();
+    fn has_control(app: &mut TestApp<ContactsShell>, label: &str) -> bool {
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some(label))
+    }
 
-        let state = Contacts::read(&doc).expect("seeded contacts state");
-        let published =
-            ui::tilo_resource::publish::<Contacts>(BOOK_RESOURCE_ID, "Contacts", &state);
-        assert_eq!(published.kind, "contacts.book");
-        for id in ["new-contact", "import-vcard", "export-all-vcard"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
-            );
-        }
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == crate::actions::FAVORITES_RESOURCE_ID),
-            "favorites child stays on the published door"
-        );
-        assert!(
-            published.children.iter().any(|child| {
-                child.kind == "contacts.group"
-                    && child.actions.iter().any(|action| action.id == "open")
-            }),
-            "group children keep their open View"
-        );
-        let contact_child = published
+    fn find<'a>(resource: &'a PublishedResource, id: &str) -> Option<&'a PublishedResource> {
+        resource
             .children
             .iter()
-            .find(|child| child.kind == "contacts.contact")
-            .expect("contact child on the published door");
+            .find(|child| child.id.as_str() == id)
+    }
+
+    /// A new window starts on an empty book; captures stage the sample book
+    /// through actions and their view state through `stage`.
+    #[test]
+    fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
+        let live = TestApp::<ContactsShell>::new().unwrap();
+        assert!(live.state().contacts.is_empty(), "nothing is fabricated");
+
+        let empty = TestApp::<ContactsShell>::capture(Some("empty")).unwrap();
+        assert!(empty.state().contacts.is_empty());
+
+        let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
+        assert_eq!(edit.state().contacts.len(), sample_book().len());
+        assert!(
+            has_control(&mut edit, "Save changes"),
+            "the edit form is open"
+        );
+
+        let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
+        assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
+        let surface = duplicates.agent_surface().to_string();
+        assert!(
+            surface.contains("contacts.duplicate:"),
+            "the staged duplicate is published for review"
+        );
+
+        let mut detail = TestApp::<ContactsShell>::capture(Some("detail")).unwrap();
+        assert_eq!(detail.harness().inspection().viewport, [390, 844]);
+    }
+
+    /// The book publishes its actions, favorites, groups, contacts and
+    /// likely duplicates through the one published tree; children beyond
+    /// the page resolve by id, and a stale id resolves nothing.
+    #[test]
+    fn the_published_tree_pages_children_and_resolves_the_rest() {
+        let mut contacts = sample_book();
+        let mut copy = contacts[0].clone();
+        copy.id = Uuid::from_u128(u128::MAX);
+        contacts.push(copy.clone());
+        for n in 0..MAX_CONTEXT_CONTACT_RESOURCES {
+            let mut extra = Contact::new();
+            extra.id = Uuid::from_u128(1_000 + n as u128);
+            extra.first = format!("Extra {n}");
+            contacts.push(extra);
+        }
+        let mut late = Contact::new();
+        late.id = Uuid::from_u128(9_999);
+        late.first = "Late".into();
+        late.groups = vec![crate::model::GroupEntry::new("Late group")];
+        contacts.push(late.clone());
+        let state = ContactsState { contacts };
+
+        let book = ui::tilo_resource::publish::<Contacts>(Contacts::KIND, "Contacts", &state);
+        for id in ["new-contact", "import-vcard", "export-all-vcard"] {
+            assert!(
+                book.actions.iter().any(|action| action.id == id),
+                "{id} is on the book"
+            );
+        }
+        assert!(find(&book, FAVORITES_RESOURCE_ID).is_some());
+        let ada = find(&book, &contact_resource_id(state.contacts[0].id)).unwrap();
         for id in [
             "open",
             "edit",
@@ -285,59 +378,112 @@ mod tests {
             "delete",
             "update-fields",
         ] {
-            assert!(
-                contact_child.actions.iter().any(|action| action.id == id),
-                "{id} must be on the published contact child"
-            );
+            assert!(ada.actions.iter().any(|action| action.id == id), "{id}");
         }
-
-        let mut app = ContactsApp::sample();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "contacts.book");
-        assert!(
-            standalone[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "new-contact"),
-            "standalone book keeps New contact"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, "contacts.book").is_none());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "contacts.book"),
-            "hosted must not republish contacts.book beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "contacts.book");
-        assert!(
-            door[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "new-contact")
-        );
-
-        // Empty present must not wipe a local address book that has not been published.
-        let mut local = ContactsApp::sample();
-        let mut local_doc = AutoCommit::new();
-        local.sync(&mut local_doc, &ui::automerge::ROOT);
-        let before = local.contacts_resource_ctx().contact_count;
-        assert!(before > 0, "sample book starts with contacts after sync");
-        local.adopt_resource_state(&ContactsState::default());
+        let duplicate_id = duplicate_resource_id(state.contacts[0].id, copy.id);
+        let duplicate = find(&book, &duplicate_id).expect("the duplicate is on the page");
+        let merge = duplicate
+            .actions
+            .iter()
+            .find(|action| action.id == "merge")
+            .expect("the duplicate offers its merge");
+        assert_eq!(merge.kind, OperationKind::Document);
         assert_eq!(
-            local.contacts_resource_ctx().contact_count,
-            before,
-            "adopting an empty projection must not clear unpublished contacts"
+            merge.contract.risk,
+            ui::tilo_actions::RiskLevel::Destructive
         );
+        assert!(
+            duplicate
+                .actions
+                .iter()
+                .any(|action| action.id == "open-review")
+        );
+
+        let late_id = contact_resource_id(late.id);
+        assert!(find(&book, &late_id).is_none(), "the page is bounded");
+        let resolved = Contacts::child(&state, &late_id).expect("a late contact resolves");
+        assert_eq!(resolved.kind, "contacts.contact");
+        let group = Contacts::child(&state, &group_resource_id("late group"))
+            .expect("a group resolves by its canonical key");
+        assert_eq!(group.kind, "contacts.group");
+        assert!(Contacts::child(&state, &duplicate_id).is_some());
+        assert!(
+            Contacts::child(&state, &contact_resource_id(Uuid::from_u128(4))).is_none(),
+            "a stale id never redirects to another contact"
+        );
+    }
+
+    /// The merge a duplicate publishes builds the reviewed merge: the source
+    /// is gone, the survivor takes the chosen fields, and one undo restores
+    /// both.
+    #[test]
+    fn a_published_merge_merges_and_one_undo_restores_both() {
+        let mut app = TestApp::<ContactsShell>::new().unwrap();
+        let mut survivor = Contact::new();
+        survivor.id = Uuid::from_u128(1);
+        survivor.first = "Ada".into();
+        survivor.last = "Lovelace".into();
+        survivor.emails = vec![Labeled::new("home", "ada@example.test")];
+        let mut source = survivor.clone();
+        source.id = Uuid::from_u128(2);
+        source.org = "Analytical Engines".into();
+        for contact in [&survivor, &source] {
+            app.invoke(Invoke::apply(&create_contact_action(contact)).unwrap())
+                .unwrap();
+        }
+        let state = app.state();
+        let duplicate = Contacts::child(&state, &duplicate_resource_id(survivor.id, source.id))
+            .expect("a likely duplicate");
+        let merge = duplicate
+            .actions
+            .iter()
+            .find(|action| action.id == "merge")
+            .unwrap();
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "take_from_source".into(),
+            serde_json::json!(["Organization"]),
+        );
+        let encoded = merge.build_json(&args).unwrap();
+        let action: ContactsAction = serde_json::from_slice(&encoded.payload).unwrap();
+        app.invoke_confirmed(Invoke::apply(&action).unwrap())
+            .unwrap();
+
+        let merged = app.state().contacts;
+        assert_eq!(merged.len(), 1, "the source is merged away");
+        assert_eq!(merged[0].id, survivor.id);
+        assert_eq!(merged[0].org, "Analytical Engines");
+        assert!(app.undo(), "the merge is one undo step");
+        assert_eq!(app.state().contacts.len(), 2);
+    }
+
+    /// The window's own controls edit the book through its door: a star
+    /// toggled in the detail pane is the book's action, and one undo takes
+    /// it back.
+    #[test]
+    fn the_window_edits_the_book_through_its_door() {
+        let mut app = TestApp::<ContactsShell>::capture(None).unwrap();
+        let id = sample_book()[1].id;
+        let favorite = |app: &TestApp<ContactsShell>| {
+            app.state()
+                .contacts
+                .iter()
+                .find(|contact| contact.id == id)
+                .unwrap()
+                .favorite
+        };
+        let before = favorite(&app);
+        for target in [
+            format!("contacts.select:{id}"),
+            format!("contacts.detail.favorite:{id}"),
+        ] {
+            app.harness()
+                .perform_semantic_named("contacts", Some(&target), &ui::a11y::Action::Activate)
+                .unwrap();
+        }
+        app.settle();
+        assert_ne!(favorite(&app), before, "the star reached the document");
+        assert!(app.undo());
+        assert_eq!(favorite(&app), before);
     }
 }

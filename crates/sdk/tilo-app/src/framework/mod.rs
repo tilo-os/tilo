@@ -81,15 +81,24 @@
 //!   keystroke is a splice action.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//!   A surface whose window should reopen as it was left (the open note,
+//!   the caret) also provides
+//!   [`ApplicationViewState`](ui_core::application_view::ApplicationViewState):
+//!   the root saves and restores it with the window.
 //! * **Launching on something** — a path or URL on the command line, a file
 //!   a host hands over — asks the app which record that is
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
 //!   it, a minted one) and which of the resource's actions the launch takes
 //!   there ([`ResourceApp::launch`], through the same door as every
 //!   control), or which of its effects, for a launch that shows something
-//!   (a link to one item) rather than editing ([`Invoke::effect`](tilo_resource::Invoke::effect)). [`ResourceApp::OPENS`] names the media types it is handed and
-//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
-//!   binary runs instead of a window (`--emit-photos DIR`) is a
+//!   (a link to one item) rather than editing
+//!   ([`Invoke::effect`](tilo_resource::Invoke::effect)); the view reads the
+//!   same launch ([`ViewCx::launch`]) to show what those actions made.
+//!   [`ResourceApp::OPENS`] names the media types it is handed and
+//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
+//!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
+//!   which the actions name by hash, so the record never carries the file.
+//!   A command the binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
 //!   its [`ResourceApp::catalog`], loaded in every host that mounts it.
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
@@ -126,6 +135,15 @@
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
 //!   secret stays on the device.
+//! * **The person's own data** — what they watched, the words they taught
+//!   the keyboard, where they stopped reading: data that grows, has history
+//!   and is undone, but belongs to the person rather than the room — is a
+//!   resource kept in the person's own room ([`ViewCx::person`],
+//!   [`SurfaceCx::person`]). The [`PersonRecord`] is one record per kind on
+//!   all of the person's devices, edited with the resource's actions,
+//!   attributed, in its history and undone per step, and synced to the
+//!   person's devices only — never to a collaborator, whatever room the app
+//!   is open in. A preference is still a setting.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
 //!   an enum, one variant per effect. A view answers it with
@@ -139,7 +157,10 @@
 //!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
 //!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
 //!   finishes on the UI thread, changing the document with ordinary actions
-//!   and answering its caller. Effects never run in History mode. A variant
+//!   and answering its caller. Importing and exporting is such a job: the
+//!   host's file chooser opens through [`EffectCx::choose_file`] and
+//!   [`EffectCx::save_file`], the same on every host, a browser page
+//!   included. Effects never run in History mode. A variant
 //!   that only changes what its caller sees (open, reveal, show) is
 //!   `#[effect(view)]`, published as a View operation and answered by the
 //!   same handler.
@@ -153,6 +174,10 @@
 //!   is `#[effect(row)]`, so the resource does not also offer it with an id
 //!   to type. No view or surface answers a raw `Widget::start_operation`
 //!   for it.
+//! * **Jobs nobody invoked** — a route fetched when the destination
+//!   changes, a feed refreshed when it opens — start through the view's or
+//!   surface's [`Jobs`] ([`ViewCx::jobs`], [`SurfaceCx::jobs`]), under a key
+//!   the latest request takes over, and finish like an effect's.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
@@ -174,7 +199,9 @@
 //! * **Live external rows** — processes, devices, containers, journal
 //!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
 //!   [`ResourceSurface::live_rows`], merged by id into the resource's
-//!   published children. A row carries only view and effect operations.
+//!   published children. A row carries only view and effect operations
+//!   (an effect bound to the row with `LiveRow::effect`) and may say how
+//!   its entity stands right now (`LiveRow::presentation`).
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).
@@ -197,8 +224,10 @@
 //!   and collaborators shown where they are. The resource is staged with
 //!   actions ([`ResourceApp::scenario`]), and view state where it lives,
 //!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
-//!   state, `ResourceSurface::stage` for a custom surface's. The capture
-//!   then waits until no surface reports unfinished visual work (an async
+//!   state, `ResourceSurface::stage` for a custom surface's. What a person
+//!   does in the scene (typing, a drag held over its target) is
+//!   [`ResourceApp::scenario_input`], driven through the window's own event
+//!   path. The capture then waits until no surface reports unfinished visual work (an async
 //!   page render, a decode). [`stage`] runs a scenario on any harness, and
 //!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
@@ -217,6 +246,7 @@ mod kinds;
 mod launch;
 mod live;
 mod participant;
+mod person;
 mod preview;
 mod root;
 mod rows;
@@ -241,12 +271,13 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress, Projection,
+    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Jobs, Progress, Projection,
 };
 pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
 pub use live::Live;
 pub use participant::Participant;
+pub use person::PersonRecord;
 pub use preview::PastVersion;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};

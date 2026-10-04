@@ -66,7 +66,27 @@ struct VariableRecord {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ActiveKeyValueRecord {
     section: String,
+    /// Where the row is listed in its section.
+    #[serde(default)]
+    position: usize,
     value: KeyValue,
+}
+
+/// A saved request's param, header or form row, and where it is listed.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RowRecord {
+    position: usize,
+    value: KeyValue,
+}
+
+fn row_records(rows: &[KeyValue]) -> Vec<RowRecord> {
+    rows.iter()
+        .enumerate()
+        .map(|(position, value)| RowRecord {
+            position,
+            value: value.clone(),
+        })
+        .collect()
 }
 
 impl ApiDoc {
@@ -141,6 +161,7 @@ impl ApiDoc {
         variable_id: &str,
         key: &str,
         value: &str,
+        secret: bool,
     ) {
         if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, env_id)
             || Self::is_tombstoned(
@@ -159,7 +180,9 @@ impl ApiDoc {
         Self::put_string_if_changed(doc, &map, "environment_id", env_id);
         Self::put_string_if_changed(doc, &map, "id", variable_id);
         Self::put_string_if_changed(doc, &map, "key", key);
-        Self::put_string_if_changed(doc, &map, "value", value);
+        // A secret variable's value stays in the device's secret store.
+        Self::put_string_if_changed(doc, &map, "value", if secret { "" } else { value });
+        Self::put_bool_if_changed(doc, &map, "secret", secret);
         Self::put_bool_if_changed(doc, &map, "enabled", true);
     }
 
@@ -259,20 +282,46 @@ impl ApiDoc {
         }
     }
 
-    /// Get-or-create the live `Text` object backing the active request's
-    /// URL — returned so the URL bar's `TextInput` can bind to it.
+    /// Get-or-create the `Text` object of the active request's URL.
     pub fn url_text(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
         Self::text_obj(doc, root, "url")
     }
 
-    /// Get-or-create the live `Text` object backing the body editor.
+    /// Get-or-create the `Text` object of the active request's body.
     pub fn body_text(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
         Self::text_obj(doc, root, "body")
+    }
+
+    /// The active request's URL text, if the document has one: what the URL
+    /// bar shows and edits.
+    pub fn url_text_id(doc: &AutoCommit) -> Option<ObjId> {
+        Self::existing_text(doc, "url")
+    }
+
+    /// The active request's body text, if the document has one.
+    pub fn body_text_id(doc: &AutoCommit) -> Option<ObjId> {
+        Self::existing_text(doc, "body")
+    }
+
+    fn existing_text(doc: &AutoCommit, key: &str) -> Option<ObjId> {
+        match doc.get(&automerge::ROOT, key) {
+            Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Change the active request with `edit`, writing only the fields it
+    /// changed.
+    pub fn update_request(doc: &mut AutoCommit, root: &ObjId, edit: impl FnOnce(&mut Request)) {
+        let mut request = Self::request(doc, root).unwrap_or_else(|| Request::new("New request"));
+        edit(&mut request);
+        Self::set_request(doc, root, &request);
     }
 
     /// Persist collections as keyed records. A deleted UUID is never revived by
     /// a stale whole-workspace flush; creating a genuinely new collection uses
     /// a fresh UUID.
+    #[cfg(test)]
     pub fn set_collections(doc: &mut AutoCommit, root: &ObjId, collections: &[Collection]) {
         let before = Self::collections(doc, root);
         let live: std::collections::HashSet<_> = collections
@@ -367,6 +416,7 @@ impl ApiDoc {
         records
     }
 
+    #[cfg(test)]
     pub fn set_environments(doc: &mut AutoCommit, root: &ObjId, envs: &[Environment]) {
         let before = Self::environments(doc, root);
         let live: std::collections::HashSet<_> = envs
@@ -390,6 +440,7 @@ impl ApiDoc {
                     &variable.id,
                     &variable.key,
                     &variable.value,
+                    variable.secret,
                 );
             }
             if let Some(previous) = previous {
@@ -453,6 +504,9 @@ impl ApiDoc {
                 let enabled = doc.get(&map, "enabled").ok().flatten().is_none_or(|(value, _)| {
                     matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
                 });
+                let secret = doc.get(&map, "secret").ok().flatten().is_some_and(|(value, _)| {
+                    matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
+                });
                 let row = VariableRecord {
                     environment_id,
                     variable: KeyValue {
@@ -460,6 +514,7 @@ impl ApiDoc {
                         key,
                         value,
                         enabled,
+                        secret,
                     },
                 };
                 if let Some(old) = variables.iter_mut().find(|old| {
@@ -515,7 +570,7 @@ impl ApiDoc {
         Self::put_json_if_changed(doc, &map, "id", &req.id);
         Self::put_json_if_changed(doc, &map, "name", &req.name);
         Self::put_json_if_changed(doc, &map, "method", &req.method);
-        Self::put_json_if_changed(doc, &map, "auth", &req.auth);
+        Self::put_json_if_changed(doc, &map, "auth", &req.auth.without_secret());
         Self::put_json_if_changed(doc, &map, "body_mode", &req.body_mode);
         Self::sync_active_key_values(doc, root, &before, req);
     }
@@ -806,7 +861,7 @@ impl ApiDoc {
             Self::put_json_if_changed(doc, &map, "collection_id", &record.collection_id);
             Self::put_json_if_changed(doc, &map, "name", &record.request.name);
             Self::put_json_if_changed(doc, &map, "method", &record.request.method);
-            Self::put_json_if_changed(doc, &map, "auth", &record.request.auth);
+            Self::put_json_if_changed(doc, &map, "auth", &record.request.auth.without_secret());
             Self::put_json_if_changed(doc, &map, "body_mode", &record.request.body_mode);
             Self::set_text(doc, &map, "url", &record.request.url);
             Self::set_text(doc, &map, "body", &record.request.body_text);
@@ -889,12 +944,18 @@ impl ApiDoc {
             ("form", &before.form, &after.form),
         ] {
             let tombstones = format!("{section}_tombstones");
-            if let Some((records, removed)) =
-                Self::ensure_record_store(doc, map, section, &tombstones, old, |row: &KeyValue| {
-                    row.id.clone()
-                })
-            {
-                Self::sync_record_store(doc, &records, &removed, old, new, |row| row.id.clone());
+            let (old, new) = (row_records(old), row_records(new));
+            if let Some((records, removed)) = Self::ensure_record_store(
+                doc,
+                map,
+                section,
+                &tombstones,
+                &old,
+                |row: &RowRecord| row.value.id.clone(),
+            ) {
+                Self::sync_record_store(doc, &records, &removed, &old, &new, |row| {
+                    row.value.id.clone()
+                });
             }
         }
     }
@@ -906,9 +967,10 @@ impl ApiDoc {
             ("form", &mut request.form),
         ] {
             let tombstones = format!("{section}_tombstones");
-            let rows = Self::read_record_store(doc, map, section, &tombstones);
+            let mut rows: Vec<RowRecord> = Self::read_record_store(doc, map, section, &tombstones);
             if !rows.is_empty() || !Self::record_roots(doc, map, section).is_empty() {
-                *target = rows;
+                rows.sort_by_key(|row| row.position);
+                *target = rows.into_iter().map(|row| row.value).collect();
             }
         }
     }
@@ -934,8 +996,10 @@ impl ApiDoc {
                 rows.iter()
                     .filter(|row| !row.is_blank())
                     .cloned()
-                    .map(move |value| ActiveKeyValueRecord {
+                    .enumerate()
+                    .map(move |(position, value)| ActiveKeyValueRecord {
                         section: section.to_string(),
+                        position,
                         value,
                     })
             })
@@ -959,9 +1023,12 @@ impl ApiDoc {
     }
 
     fn active_key_values(values: &[ActiveKeyValueRecord], section: &str) -> Vec<KeyValue> {
-        values
+        let mut rows: Vec<_> = values
             .iter()
             .filter(|record| record.section == section)
+            .collect();
+        rows.sort_by_key(|record| record.position);
+        rows.into_iter()
             .map(|record| record.value.clone())
             .collect()
     }
@@ -1057,11 +1124,6 @@ impl ApiDoc {
         for (index, id) in desired.iter().enumerate() {
             let _ = doc.insert(list, index, id);
         }
-    }
-
-    /// Whether the document has been seeded with any workspace content yet.
-    pub fn is_empty(doc: &AutoCommit, root: &ObjId) -> bool {
-        Self::collections(doc, root).is_empty() && Self::request(doc, root).is_none()
     }
 }
 
@@ -1167,6 +1229,7 @@ mod tests {
             &variable_id,
             "base_url",
             "https://api.example.test",
+            false,
         );
         ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
         let heads_before = d.get_heads();
@@ -1178,6 +1241,7 @@ mod tests {
             &variable_id,
             "base_url",
             "https://api.example.test",
+            false,
         );
         ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
 
@@ -1675,6 +1739,7 @@ mod tests {
             &first,
             "region",
             "eu",
+            false,
         );
         ApiDoc::set_variable(
             &mut right,
@@ -1683,6 +1748,7 @@ mod tests {
             &second,
             "token",
             "abc",
+            false,
         );
         left.merge_incoming(&mut right).unwrap();
         let vars = &ApiDoc::environments(&left, &root)[0].variables;
@@ -1711,6 +1777,7 @@ mod tests {
             &first,
             "region",
             "stale",
+            false,
         );
         left.merge_incoming(&mut stale).unwrap();
         assert!(

@@ -78,7 +78,8 @@ use layout::Regions;
 )]
 use paint::*;
 use scenario::ShotLifecycle;
-pub use scenario::{EMPTY_CAPTURE, IMPORT_CAPTURE, NARROW_CAPTURE, ShotScenario};
+pub(crate) use scenario::composed_project;
+pub use scenario::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use selection::Selection;
 
 const TRANSPORT_CONTROL_CY: f64 = 20.0;
@@ -960,10 +961,18 @@ enum ScrollPane {
     Bin,
 }
 
-/// The configuration and initial selection policy of this editor instance.
+/// What this editor instance is built for, and its initial selection policy.
 #[derive(Default)]
 struct SeedState {
-    demo: bool,
+    /// Built for a screenshot or a past version rather than a window someone
+    /// uses: it makes no sound, decodes none of the demo project's stand-in
+    /// media and runs no wall clock, so the frame it draws is the same on
+    /// every run.
+    hermetic: bool,
+    /// Built for a screenshot, which renders once: an imported clip's
+    /// decoded picture is waited for rather than painted over with the
+    /// representative fill.
+    capture: bool,
     selection_initialised: bool,
 }
 
@@ -1457,12 +1466,7 @@ impl VideoEditorApp {
             shot_lifecycle: ShotLifecycle::default(),
             seed: SeedState::default(),
             playback: PlaybackState::default(),
-            presentation: PresentationState {
-                // Dev aid: `TILO_VE_EXPORT=1` opens straight into the export
-                // dialog so its layout can be screenshotted headlessly.
-                export_open: std::env::var_os("TILO_VE_EXPORT").is_some(),
-                ..PresentationState::default()
-            },
+            presentation: PresentationState::default(),
             navigation: NavigationState::default(),
             media_pipeline: MediaPipelineState {
                 #[cfg(any(feature = "gst", feature = "decode"))]
@@ -1579,47 +1583,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The hermetic `--shots`/demo build: seeds the bundled sample project on
-    /// the first sync. This is the sole source of sample media/clips — the
-    /// live app never fabricates a project.
-    pub fn new_demo() -> Self {
-        let mut app = Self::new();
-        app.seed.demo = true;
-        // A single-frame demo/`--shots` render can't wait on a background
-        // waveform compute, so warm them synchronously for a deterministic shot.
-        app.render_pipeline.warm_waveforms_sync = true;
-        app
-    }
-
-    /// Construct the editor pre-arranged for a deterministic `--shots`
-    /// capture scenario (see [`ShotScenario`]). The scenario is applied once
-    /// during the first `sync`, after the sample project loads.
-    pub fn new_for_shot(scenario: ShotScenario) -> Self {
-        let mut app = Self::new_demo();
-        app.shot_scenario = scenario;
-        app
-    }
-
-    /// Build a blank live app that imports `paths` on its first `sync` (as
-    /// real clips, probed for real metadata). Used by `--shots`/tests to seed a
-    /// real imported clip deterministically without opening the portal — the
-    /// same code path a portal pick drives.
-    pub fn new_import(paths: Vec<PathBuf>) -> Self {
-        let mut app = Self::new();
-        app.pending_imports = paths;
-        app
-    }
-
-    /// Like [`Self::new_import`] but also drops the first imported clip onto the
-    /// timeline (creating a track if needed) and parks the playhead inside it,
-    /// so the preview has real content to decode/composite for a `--shots`
-    /// capture or a `--import` preload.
-    pub fn new_import_placed(paths: Vec<PathBuf>) -> Self {
-        let mut app = Self::new_import(paths);
-        app.media_pipeline.auto_place_imports = true;
-        app
-    }
-
     /// Whether the canvas is currently showing real decoded footage rather
     /// than the representative fill. The `--shots` decode path pumps `sync`
     /// until this is true, so an asynchronously-prerolled frame is captured
@@ -1645,6 +1608,31 @@ impl VideoEditorApp {
         {
             false
         }
+    }
+
+    /// Whether a decoded picture of the clip under the playhead may still
+    /// reach the canvas: the preview has not drawn yet, or its frame source
+    /// is still asking the decoder for that clip. A clip the source has
+    /// written off as undecodable, a clip with no decodable bytes, and a
+    /// preview with no compositor never will, so a capture stops waiting for
+    /// them and shows what the editor shows instead.
+    #[cfg(feature = "decode")]
+    fn preview_awaits_frame(&self) -> bool {
+        if self.has_preview_frame() {
+            return false;
+        }
+        let Some(clip) = self.project.top_video_clip_at(self.playhead) else {
+            return false;
+        };
+        if !self.render_pipeline.compositor_tried {
+            return true;
+        }
+        if self.compositor.is_none() {
+            return false;
+        }
+        self.frame_source
+            .as_ref()
+            .is_none_or(|source| source.may_serve(clip.media))
     }
 
     /// The selected clip's source aspect and the project frame's, which is
@@ -2408,9 +2396,9 @@ impl VideoEditorApp {
         const RESYNC: f64 = 0.35;
         if !self.media_pipeline.monitor_tried {
             self.media_pipeline.monitor_tried = true;
-            // The demo/shots build must make no sound and open no pipeline:
-            // a capture has to stay hermetic.
-            if !self.seed.demo {
+            // A capture or a past version must make no sound and open no
+            // pipeline: it has to stay hermetic.
+            if !self.seed.hermetic {
                 self.monitor = Some(crate::audio::AudioMonitor::new(
                     &self.project,
                     crate::audio::open_output(),
@@ -2475,7 +2463,7 @@ impl VideoEditorApp {
         // Same gate the monitor uses (`pump_monitor`) and for the same reason:
         // a capture is hermetic, so it neither makes a sound nor watches a
         // clock.
-        if !self.seed.demo {
+        if !self.seed.hermetic {
             self.mix_meters.decay(dt);
         }
         self.mix = self.mix_meters.snapshot();
@@ -5425,15 +5413,15 @@ impl VideoEditorApp {
     /// build carries no decoder; the decode build seeks + decodes the frame.
     #[cfg(feature = "decode")]
     fn pump_preview_decode(&mut self) {
-        // The bundled demo/shots project references placeholder sample-media,
-        // not real bytes, so decoding it would spin a real GStreamer pipeline
-        // for no usable frame and make a headless render depend on the gst
-        // runtime. Keep the demo preview on its deterministic representative
-        // composite. `decode` stays compiled in: the live app and the
-        // `--import` real-decode capture (which loads genuine files) still
-        // decode. This is the runtime half of "features compile the code in;
-        // the runtime mode decides live vs sample".
-        if self.seed.demo {
+        // The demo project a capture shows references placeholder
+        // sample-media, not real bytes, so decoding it would spin a real
+        // GStreamer pipeline for no usable frame and make a headless render
+        // depend on the gst runtime. Keep its preview on the deterministic
+        // representative composite. `decode` stays compiled in: the live app
+        // and a capture launched on a real file still decode. This is the
+        // runtime half of "features compile the code in; the run mode
+        // decides live vs sample".
+        if self.seed.hermetic {
             return;
         }
         self.preview_decoder.update(&self.project, self.playhead);
@@ -5491,7 +5479,7 @@ impl VideoEditorApp {
                     // stalls the UI thread is worse than a frame of lag.
                     Some(crate::gpu::MediaFrameSource::new(
                         &self.project,
-                        if self.media_pipeline.auto_place_imports {
+                        if self.seed.capture {
                             crate::gpu::Fetch::Exact
                         } else {
                             crate::gpu::Fetch::Responsive
@@ -6157,14 +6145,6 @@ impl Widget for VideoEditorApp {
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
-        if !self.shot_lifecycle.seeded {
-            // The live app opens on a blank project; only the hermetic demo
-            // build seeds the bundled sample project into a fresh document.
-            if self.seed.demo && VideoDoc::is_empty(state) {
-                VideoDoc::seed_sample(state);
-            }
-            self.shot_lifecycle.seeded = true;
-        }
         if let Some((invocation, operation)) = self.resource_pending_operation.take() {
             use crate::actions::VideoEditorOperation;
             match &operation {
@@ -6328,22 +6308,15 @@ impl Widget for VideoEditorApp {
     fn has_pending_visual_work(&self) -> bool {
         let importing = self.import_rx.is_some() || !self.pending_imports.is_empty();
         #[cfg(feature = "decode")]
-        let prerolling = self.media_pipeline.auto_place_imports
-            && !self.project.clips.is_empty()
-            && !self.has_preview_frame();
+        let prerolling = self.media_pipeline.auto_place_imports && self.preview_awaits_frame();
         #[cfg(not(feature = "decode"))]
         let prerolling = false;
         importing || prerolling
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing until the demo/shared project is loaded so a
-        // freshly-spawned, input-free instance still seeds + paints. The live
-        // app opens blank, so once seeded it must not idle-sync forever. Also
-        // keep syncing while an import is pending so its outcome is drained.
-        !self.shot_lifecycle.seeded
-            || (self.seed.demo && self.project.clips.is_empty())
-            || self.import_rx.is_some()
+        // Keep syncing while an import is pending so its outcome is drained.
+        self.import_rx.is_some()
             || !self.pending_imports.is_empty()
             // A project chooser is a round-trip in flight exactly like an
             // import; without this the chosen file would sit undrained until
@@ -9415,8 +9388,23 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
         }
     }
 
+    /// A launch naming files imports them, the way a file chooser's pick
+    /// does, and places the first on the timeline. A screenshot or a past
+    /// version of anything else is hermetic.
     fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::VideoProject>) {
         self.actions.attach(cx.dispatcher());
+        let mode = cx.mode();
+        self.seed.capture = mode == ui::framework::RunMode::Capture;
+        let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();
+        if launched.is_empty() {
+            self.seed.hermetic = !mode.is_live();
+            self.thumbnails.set_decoding(!self.seed.hermetic);
+            // A still render cannot wait on a background waveform compute.
+            self.render_pipeline.warm_waveforms_sync = self.seed.capture;
+        } else {
+            self.pending_imports = launched;
+            self.media_pipeline.auto_place_imports = true;
+        }
     }
 
     /// A `--shots` capture: the scenario's project is loaded; arrange the

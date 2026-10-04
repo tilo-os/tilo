@@ -19,7 +19,7 @@ use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource
 use ui::widget::Element;
 
 use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx};
-use crate::app::{EMPTY_CAPTURE, IMPORT_CAPTURE, ShotScenario};
+use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::doc::VideoDoc;
 use crate::model::{Marker, Project};
 
@@ -162,31 +162,56 @@ impl ResourceApp for VideoEditor {
     const ID: &'static str = "so.tilo.video-editor";
     const TITLE: &'static str = "Video Editor";
     const ICON: Option<&'static str> = Some("video-editor");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    /// A media file the editor is launched on (`video-editor CLIP`) is
+    /// imported into the project and placed on the timeline, as a pick from
+    /// the import chooser is (see the surface's `attach`).
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<VideoProject>) -> Element {
         cx.surface(crate::VideoEditorApp::new())
     }
 
     fn scenarios() -> &'static [&'static str] {
-        ShotScenario::ALL_NAMES
+        static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+            ShotScenario::ALL_NAMES
+                .iter()
+                .copied()
+                .chain([EMPTY_CAPTURE, NARROW_CAPTURE])
+                .collect()
+        });
+        SCENARIOS.as_slice()
     }
 
-    /// Every capture but the blank one opens the bundled demo project,
-    /// through the same typed action a script would use; the editor stages
-    /// the rest (see `VideoEditorApp::stage_capture`).
-    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoProject>> {
-        if name.is_some_and(|name| name == EMPTY_CAPTURE || name.starts_with(IMPORT_CAPTURE)) {
-            return Vec::new();
+    /// The narrow capture is below the bin's collapse breakpoint, so it
+    /// shows the overlay-flap layout.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario == Some(NARROW_CAPTURE) {
+            (720, 820)
+        } else {
+            (1280, 800)
         }
-        Invoke::apply(&crate::actions::load_project_action(
-            &crate::doc::sample_project(),
-        ))
-        .map_or_else(
+    }
+
+    /// The demo project's sources resolve to the stand-ins bundled with the
+    /// crate, so a capture reads local bytes without a workspace mount.
+    fn fixture(_fixture: &mut ui::framework::Fixture<VideoProject>) {
+        let bundled = crate::media::bundled_sample_media();
+        crate::media::serve_sample_media(bundled.exists().then_some(bundled));
+    }
+
+    /// Every capture but the blank one opens a project through the same
+    /// typed action a script would use: the bundled demo project, or the
+    /// composed one; the editor stages the rest (see
+    /// `VideoEditorApp::stage_capture`).
+    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoProject>> {
+        let project = match name {
+            Some(EMPTY_CAPTURE) => return Vec::new(),
+            Some("composed") => crate::app::composed_project(),
+            _ => crate::doc::sample_project(),
+        };
+        Invoke::apply(&crate::actions::load_project_action(&project)).map_or_else(
             |error| {
-                tracing::warn!(%error, "the demo project does not encode");
+                tracing::warn!(%error, "the scenario's project does not encode");
                 Vec::new()
             },
             |invoke| vec![invoke],

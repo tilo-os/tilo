@@ -17,16 +17,9 @@ fn install_catalog() {
     locales::install();
 }
 
-use std::sync::mpsc::Sender;
-
 use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
-use ui::tilo_actions::{
-    ActionContract, ActionOutput, ActionSpec, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
-    OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
-};
-use ui::widget::resource_actions::OPERATION_TYPE;
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -147,61 +140,26 @@ struct Pane {
     notice: Option<Notice>,
 }
 
-const OPERATIONS: [(&str, &str); 5] = [
-    ("create-key", "Create publisher key"),
-    ("copy-proof", "Copy namespace proof"),
-    ("copy-secret", "Copy key for CI"),
-    ("apply", "Apply for namespaces"),
-    ("check-status", "Check application status"),
-];
-
-/// Every operation on the key is an action, so the palette, scripts and
-/// agents reach the same door as the buttons. Those that create or reveal
-/// the key need an owner and a confirmation.
-#[expect(
-    clippy::expect_used,
-    reason = "each operation's payload is a fixed, serializable JSON object"
-)]
-fn key_resource() -> tilo_actions::Resource {
-    let mut resource = tilo_actions::Resource::new(
-        "so.tilo.publisher.key:root",
-        "so.tilo.publisher.key",
-        "Publisher key",
-    );
-    for (id, label) in OPERATIONS {
-        let mut action = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::Effect,
-            OPERATION_TYPE,
-            &ui::serde_json::json!({ "op": id }),
-        )
-        .expect("the operation payload is serializable");
-        let guarded = matches!(id, "create-key" | "copy-secret");
-        action.contract = ActionContract {
-            discovery: DiscoveryScope::Launchable,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            permission: if guarded {
-                PermissionRequirement::Admin
-            } else {
-                PermissionRequirement::Write
-            },
-            risk: if guarded {
-                RiskLevel::Privileged
-            } else {
-                RiskLevel::Low
-            },
-            confirmation: if guarded {
-                ConfirmationPolicy::Confirm
-            } else {
-                ConfirmationPolicy::None
-            },
-            ..ActionContract::default()
-        };
-        resource.actions.push(action);
-    }
-    resource
+/// What the publisher does with the key on this machine and the registry,
+/// for every caller: the buttons, the palette, scripts and agents. Creating
+/// or revealing the key needs an owner and a confirmation.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.publisher.key")]
+pub enum KeyEffect {
+    /// Create publisher key.
+    #[effect(privileged, permission = "admin")]
+    CreateKey,
+    /// Copy namespace proof.
+    CopyProof,
+    /// Copy key for CI.
+    #[effect(privileged, permission = "admin")]
+    CopySecret,
+    /// Apply for namespaces.
+    #[effect(job)]
+    ApplyForNamespaces,
+    /// Check application status.
+    #[effect(job)]
+    CheckStatus,
 }
 
 fn claims(profile: &Publisher) -> Result<Vec<NamespaceClaim>, String> {
@@ -246,47 +204,88 @@ fn check_status(registry: &str) -> Result<Option<String>, String> {
     Ok(status.as_ref().map(registry_client::status_summary))
 }
 
-/// Run a local operation now, on the UI thread: the clipboard lives there.
-fn local(op: &str) -> Result<Notice, String> {
-    match op {
-        "create-key" => {
+/// Create or copy the key now, on the UI thread: the clipboard lives there.
+fn local(effect: &KeyEffect) -> Result<Notice, String> {
+    match effect {
+        KeyEffect::CreateKey => {
             let path = key::default_path().ok_or("no configuration directory")?;
             let key = key::create(&path).map_err(|error| format!("{error:#}"))?;
             Ok(Notice::info("publisher-key-created", key::public_hex(&key)))
         }
-        "copy-proof" => {
+        KeyEffect::CopyProof => {
             let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
             let proof = proof_token(&key::public_hex(&key));
             ui::text_selection::clipboard_copy(&proof);
             Ok(Notice::info("publisher-proof-copied", proof))
         }
-        "copy-secret" => {
+        KeyEffect::CopySecret => {
             let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
             ui::text_selection::clipboard_copy(&hex::encode(key.to_bytes()));
             Ok(Notice::info("publisher-secret-copied", String::new()))
         }
-        other => Err(format!("unknown operation {other:?}")),
+        KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus => {
+            Err(format!("`{}` runs as a job", effect.id()))
+        }
     }
 }
 
-fn finish(sender: &Sender<Result<ActionOutput, String>>, result: &Result<Notice, String>) {
-    let _ = sender.send(
-        result
-            .as_ref()
-            .map(|_| ActionOutput::default())
-            .map_err(Clone::clone),
-    );
+/// Ask the registry, off the UI thread.
+fn remote(effect: &KeyEffect, profile: &Publisher) -> Result<Notice, String> {
+    if *effect == KeyEffect::ApplyForNamespaces {
+        return apply(profile).map(|status| Notice::info("publisher-status", status));
+    }
+    check_status(&profile.registry).map(|status| match status {
+        Some(status) => Notice::info("publisher-status", status),
+        None => Notice::info("publisher-no-application", String::new()),
+    })
 }
 
-#[derive(Clone)]
-struct Bindings {
-    create: tilo_actions::ActionBinding<()>,
-    copy_proof: tilo_actions::ActionBinding<()>,
-    copy_secret: tilo_actions::ActionBinding<()>,
-    check_status: tilo_actions::ActionBinding<()>,
+/// The effects the key on this machine and the work in flight rule out now.
+fn unavailable(pane: &Pane) -> Vec<EffectStatus> {
+    let mut status = Vec::new();
+    if matches!(pane.key, KeyState::Present { .. }) {
+        status.push(EffectStatus::unavailable(
+            KeyEffect::CREATE_KEY,
+            "key-exists",
+            "This machine already has a publisher key",
+        ));
+    } else {
+        for effect in [
+            KeyEffect::COPY_PROOF,
+            KeyEffect::COPY_SECRET,
+            KeyEffect::APPLY_FOR_NAMESPACES,
+            KeyEffect::CHECK_STATUS,
+        ] {
+            status.push(EffectStatus::unavailable(
+                effect,
+                "no-key",
+                "Create a publisher key first",
+            ));
+        }
+        if !matches!(pane.key, KeyState::Missing) {
+            status.push(EffectStatus::unavailable(
+                KeyEffect::CREATE_KEY,
+                "key-unreadable",
+                "The key file on this machine cannot be read",
+            ));
+        }
+    }
+    if pane.busy && matches!(pane.key, KeyState::Present { .. }) {
+        for effect in [KeyEffect::APPLY_FOR_NAMESPACES, KeyEffect::CHECK_STATUS] {
+            status.push(EffectStatus::unavailable(
+                effect,
+                "busy",
+                "The registry has not answered yet",
+            ));
+        }
+    }
+    status
 }
 
-fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
+fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
+    let button = |id: &str, label: &str, effect: &KeyEffect| {
+        actions.bind_effect_invocation(Button::new(id, label, None), effect)
+    };
     let mut column = Column::new().with_no_padding().push(Box::new(
         Text::new("publisher-key-heading").with_role(TextRole::Heading),
     ));
@@ -294,10 +293,11 @@ fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
         KeyState::Missing => {
             column = column
                 .push(Box::new(Text::new("publisher-no-key")))
-                .push(Box::new(
-                    Button::new("create-key", "publisher-create-key", None)
-                        .on_action(bindings.create.clone()),
-                ));
+                .push(Box::new(button(
+                    "create-key",
+                    "publisher-create-key",
+                    &KeyEffect::CreateKey,
+                )));
         }
         KeyState::Present { public } => {
             column = column
@@ -316,12 +316,17 @@ fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
                         .with_id("proof-line"),
                 ))
                 .push(Box::new(ui::row![
-                    Button::new("copy-proof", "publisher-copy-proof", None)
-                        .on_action(bindings.copy_proof.clone()),
-                    Button::new("copy-secret", "publisher-copy-secret", None)
-                        .on_action(bindings.copy_secret.clone()),
-                    Button::new("check-status", "publisher-check-status", None)
-                        .on_action(bindings.check_status.clone()),
+                    button("copy-proof", "publisher-copy-proof", &KeyEffect::CopyProof),
+                    button(
+                        "copy-secret",
+                        "publisher-copy-secret",
+                        &KeyEffect::CopySecret
+                    ),
+                    button(
+                        "check-status",
+                        "publisher-check-status",
+                        &KeyEffect::CheckStatus
+                    ),
                 ]));
         }
         KeyState::Unreadable(reason) => {
@@ -347,6 +352,10 @@ fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
     Box::new(column)
 }
 
+/// The public half of the key a capture shows: a capture never reads the
+/// key on the machine it runs on.
+const CAPTURE_PUBLIC_KEY: &str = "5f0c3a9e1d2b4c6f8a7e9d0b1c2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a";
+
 /// The app: the key on this machine, and an application for namespaces.
 pub struct App;
 
@@ -355,10 +364,29 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
-    #[expect(
-        clippy::expect_used,
-        reason = "the bindings name the operations key_resource just declared"
-    )]
+    fn scenarios() -> &'static [&'static str] {
+        &["key"]
+    }
+
+    fn fixture(fixture: &mut Fixture<Publisher>) {
+        if fixture.scenario() == Some("key") {
+            fixture.provide(KeyState::Present {
+                public: CAPTURE_PUBLIC_KEY.to_owned(),
+            });
+        }
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
+        match name {
+            Some("key") => vec![
+                Publisher::SET_DOMAIN.with("example.com".into()),
+                Publisher::SET_FORGE_ACCOUNT.with("github:ada".into()),
+                Publisher::SET_CONTACT.with("ada@example.com".into()),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
         crate::install_catalog();
         let registry = cx
@@ -379,82 +407,74 @@ impl ResourceApp for App {
             .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
             .with_id("contact-input")
             .with_placeholder("publisher-contact-placeholder");
-
-        let resource = key_resource();
-        let bind = |id: &str| {
-            tilo_actions::ActionBinding::unit_for(&resource, id)
-                .expect("the button matches the exported action")
-        };
-        let bindings = Bindings {
-            create: bind("create-key"),
-            copy_proof: bind("copy-proof"),
-            copy_secret: bind("copy-secret"),
-            check_status: bind("check-status"),
-        };
-        let apply_button = Button::new("apply", "publisher-apply", None).on_action(bind("apply"));
-
-        let task = LatestTask::new(Pane {
-            key: KeyState::load(),
-            busy: false,
-            notice: None,
-        });
-        let pane = task.state();
-        let key = ModelView::from_state_by(&pane, Clone::clone, move |pane| {
-            key_section(pane, &bindings)
-        });
-
-        let root = Box::new(ui::column![
-            key,
+        let form = ui::column![
             Text::new("publisher-namespace-heading").with_role(TextRole::Heading),
             Text::new("publisher-namespace-help"),
             labeled_field("publisher-domain-label", domain),
             labeled_field("publisher-forge-label", forge),
             labeled_field("publisher-contact-label", contact),
             labeled_field("publisher-registry-label", registry),
-            apply_button,
-        ]);
-        let live = cx.live().clone();
-        ui::widget::resource_actions::background(root, resource, move |payload| {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let op = ui::serde_json::from_slice::<ui::serde_json::Value>(payload)
-                .ok()
-                .and_then(|value| value.get("op")?.as_str().map(str::to_owned))
-                .unwrap_or_default();
-            if op == "apply" || op == "check-status" {
-                let profile = live.with(Clone::clone);
-                let current = pane.get();
-                let completion = task.begin(Pane {
+        ];
+        // The key is this machine's, not the version's: a past version shows
+        // the application it held and nothing that acts on the key.
+        let key = match cx.mode() {
+            RunMode::Past => return Box::new(form),
+            RunMode::Live => KeyState::load(),
+            RunMode::Capture => cx
+                .fixture::<KeyState>()
+                .map_or(KeyState::Missing, |key| (*key).clone()),
+        };
+        let pane = cx.local(Pane {
+            key,
+            busy: false,
+            notice: None,
+        });
+        let handler = pane.clone();
+        cx.effects(move |effect: KeyEffect, cx| {
+            if matches!(
+                effect,
+                KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus
+            ) {
+                let profile = cx.live().with(Clone::clone);
+                handler.set(Pane {
                     busy: true,
                     notice: None,
-                    ..current
+                    ..handler.get()
                 });
-                std::thread::spawn(move || {
-                    let result = if op == "apply" {
-                        apply(&profile).map(|status| Notice::info("publisher-status", status))
-                    } else {
-                        check_status(&profile.registry).map(|status| match status {
-                            Some(status) => Notice::info("publisher-status", status),
-                            None => Notice::info("publisher-no-application", String::new()),
-                        })
-                    };
-                    finish(&sender, &result);
-                    let _ = completion.complete(Pane {
-                        key: KeyState::load(),
-                        busy: false,
-                        notice: Some(result.unwrap_or_else(Notice::error)),
-                    });
-                });
-            } else {
-                let result = local(&op);
-                finish(&sender, &result);
-                pane.set(Pane {
-                    key: KeyState::load(),
-                    busy: false,
-                    notice: Some(result.unwrap_or_else(Notice::error)),
-                });
+                let pane = handler.clone();
+                return Ok(cx.thread(
+                    move |_| remote(&effect, &profile),
+                    move |(), result: Result<Notice, String>, _| {
+                        pane.set(Pane {
+                            key: KeyState::load(),
+                            busy: false,
+                            notice: Some(result.clone().unwrap_or_else(Notice::error)),
+                        });
+                        result.map(|_| Effected::done())
+                    },
+                ));
             }
-            Ok(receiver)
+            let result = local(&effect);
+            handler.set(Pane {
+                key: KeyState::load(),
+                busy: false,
+                notice: Some(result.clone().unwrap_or_else(Notice::error)),
+            });
+            result.map(|_| Effected::done())
         })
+        .status({
+            let pane = pane.clone();
+            move || unavailable(&pane.get())
+        });
+
+        let actions = cx.actions();
+        let apply_button = actions.bind_effect_invocation(
+            Button::new("apply", "publisher-apply", None),
+            &KeyEffect::ApplyForNamespaces,
+        );
+        let key =
+            ModelView::from_state_by(&pane, Clone::clone, move |pane| key_section(pane, &actions));
+        Box::new(ui::column![key, form, apply_button])
     }
 }
 

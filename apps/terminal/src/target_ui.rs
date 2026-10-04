@@ -164,51 +164,32 @@ impl TerminalWidget {
         }
     }
 
-    fn read_recorded_target(state: &AutoCommit) -> Option<SessionTarget> {
-        let parent = match state.get(&automerge::ROOT, "terminal_panel") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => automerge::ROOT,
-        };
-        match state.get(&parent, crate::target::TARGET_KEY) {
-            Ok(Some((Value::Scalar(value), _))) => value.as_str().and_then(SessionTarget::decode),
-            _ => None,
-        }
-    }
-
-    fn record_target(&mut self, state: &mut AutoCommit, target: &SessionTarget) {
-        self.apply_session_action(
-            state,
-            &crate::resource::TerminalAction::SetTarget {
-                target: target.encode(),
-            },
-        );
+    fn record_target(&mut self, target: &SessionTarget) {
+        self.recorded_target = Some(target.clone());
+        self.submit(crate::resource::TerminalAction::SetTarget {
+            target: target.encode(),
+        });
     }
 
     /// Open the tab's session if it has none yet: on the record's target or,
     /// for a new tab, the default — recorded, so reopening returns to it.
-    fn ensure_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn ensure_session(&mut self) {
         if self.sessions.state != OpenState::Unopened {
-            self.poll_allow(state, root);
+            self.poll_allow();
             return;
         }
-        let target = if let Some(target) = Self::read_recorded_target(state) {
+        let target = if let Some(target) = self.recorded_target.clone() {
             target
         } else {
             let target = self.sessions.default_target();
-            self.record_target(state, &target);
+            self.record_target(&target);
             target
         };
-        self.open_session(state, root, &target, Requester::Person);
+        self.open_session(&target, Requester::Person);
     }
 
     /// Put a session on `target` behind this tab, replacing any it has.
-    fn open_session(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        target: &SessionTarget,
-        requested_by: Requester,
-    ) {
+    fn open_session(&mut self, target: &SessionTarget, requested_by: Requester) {
         self.sessions.target = Some(target.clone());
         match self.sessions.open(target, requested_by) {
             Ok(backend) => {
@@ -216,7 +197,6 @@ impl TerminalWidget {
                 self.resize_pty_to_grid();
                 self.sessions.state = OpenState::Open;
                 self.sessions.remember(target);
-                self.reset_stale_local_session(state, root);
             }
             Err(OpenError::NeedsAllow(_))
                 if requested_by == Requester::Person && self.sessions.request_allow() =>
@@ -230,18 +210,18 @@ impl TerminalWidget {
                 self.sessions.state = OpenState::Failed(reason);
             }
         }
-        request_terminal_wake(&self.waker, &self.wake_pending);
+        request_terminal_wake(&self.waker);
     }
 
     /// The person answered the shell's prompt for the device's own shell.
-    fn poll_allow(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn poll_allow(&mut self) {
         if self.sessions.state != OpenState::AwaitingAllow {
             return;
         }
         match self.sessions.take_allow_answer() {
             Some(true) => {
                 if let Some(target) = self.sessions.target.clone() {
-                    self.open_session(state, root, &target, Requester::Person);
+                    self.open_session(&target, Requester::Person);
                 }
             }
             Some(false) => {
@@ -260,8 +240,6 @@ impl TerminalWidget {
     /// Refuses the device's own shell for anyone but the person.
     pub(crate) fn switch_target(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         target: &SessionTarget,
         requested_by: Requester,
     ) -> Result<(), String> {
@@ -271,8 +249,8 @@ impl TerminalWidget {
         if !self.sessions.is_live() {
             return Err("this terminal does not open sessions".into());
         }
-        self.record_target(state, target);
-        self.open_session(state, root, target, requested_by);
+        self.record_target(target);
+        self.open_session(target, requested_by);
         match &self.sessions.state {
             OpenState::Failed(reason) => Err(reason.clone()),
             _ => Ok(()),
@@ -462,18 +440,13 @@ impl TerminalWidget {
 
     /// Act on picker row `index`; `false` when the open menu is not the
     /// picker.
-    fn activate_target_menu_item(
-        &mut self,
-        index: usize,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> bool {
+    fn activate_target_menu_item(&mut self, index: usize) -> bool {
         let Some(rows) = self.target_menu_rows.take() else {
             return false;
         };
         match rows.get(index).cloned().flatten() {
             Some(TargetMenuRow::Open(target)) => {
-                let _ = self.switch_target(state, root, &target, Requester::Person);
+                let _ = self.switch_target(&target, Requester::Person);
             }
             Some(TargetMenuRow::Manage) => self.open_environments_panel(),
             None => {}
@@ -658,7 +631,7 @@ impl TerminalWidget {
                     RowAction::Open => {
                         self.close_environments_panel();
                         let target = SessionTarget::environment(key);
-                        let _ = self.switch_target(ctx.state, ctx.path, &target, Requester::Person);
+                        let _ = self.switch_target(&target, Requester::Person);
                     }
                     RowAction::Rename => self.start_rename(key),
                     RowAction::Grant => self.pick_folder_to_grant(key),
@@ -954,16 +927,11 @@ impl TerminalWidget {
     // --- agent and palette operations
 
     /// `terminal.target`: move this session to another target.
-    fn answer_target_operation(
-        &mut self,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<(), String> {
+    fn answer_target_operation(&mut self, payload: &[u8]) -> Result<(), String> {
         let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let target = parse_target_argument(&raw)
             .ok_or_else(|| format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host"))?;
-        self.switch_target(doc, path, &target, Requester::current())
+        self.switch_target(&target, Requester::current())
     }
 
     /// `terminal.environment`: create or rename an environment.

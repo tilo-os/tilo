@@ -2493,7 +2493,7 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
         assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
-        assert!(library.contains("#[resource(kind = \"generated.greeting\""));
+        assert!(library.contains("#[resource(kind = \"local.dev.reading.list.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
         assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
         assert!(library.contains("with_id(\"name-input\")"));
@@ -3497,7 +3497,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             assert!(readme.contains("tilo-app keys new\n"));
             assert!(readme.contains("tilo-app apply --domain example.com\n"));
             assert!(readme.contains("tilo-app publish\n"));
-            assert!(readme.contains("\"resource\":\"generated.greeting\""));
+            assert!(readme.contains("\"resource\":\"so.tilo.notes.greeting\""));
             assert!(readme.contains("`#[derive(Model)]` resource"));
             assert!(readme.contains("tilo-app test\n"));
             assert!(readme.contains("tilo-app dev\n"));
@@ -4155,7 +4155,11 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let identity = pack::load_identity(&identity_path).expect("load identity");
         let output = temp.path().join("reading-list.tapp");
         let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
-        assert_eq!(kinds, ["generated.greeting"], "the starter's resource");
+        assert_eq!(
+            kinds,
+            ["local.dev.reading.list.greeting"],
+            "the starter's resource, under the app's id"
+        );
         let manifest = || {
             tilo_app_package::Manifest::from_toml_str(
                 &std::fs::read_to_string(&spec.manifest_path).expect("manifest"),
@@ -4174,7 +4178,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert_eq!(tapp.meta.id.to_string(), packed.id);
         assert_eq!(
             tapp.meta.manifest.resources.kinds,
-            ["generated.greeting"],
+            ["local.dev.reading.list.greeting"],
             "the signed manifest declares the app's resource kinds"
         );
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());

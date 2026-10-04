@@ -511,7 +511,7 @@ mod locus_tests {
         let calls = Rc::new(Cell::new(0));
         let mut column = Column::new();
         for id in ["first", "second"] {
-            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit", false);
+            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit");
             resource.id = tilo_actions::ResourceId::new(id);
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             let counter = calls.clone();
@@ -589,7 +589,7 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_multiple_affordances_for_one_action() {
-        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let root = resource_actions::immediate(
             Box::new(
@@ -618,7 +618,7 @@ mod locus_tests {
     fn semantic_locus_refuses_control_id_reuse_across_distinct_resources() {
         let mut root = Column::new();
         for kind in ["one", "two"] {
-            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit", false);
+            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit");
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             root = root.push(resource_actions::immediate(
                 Box::new(Column::new().with_id(kind).push(Box::new(
@@ -695,7 +695,7 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
-        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let frame = FrameHarness::new(
             State::new(),

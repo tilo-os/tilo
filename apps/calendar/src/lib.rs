@@ -40,6 +40,7 @@ mod agenda;
 pub mod app;
 pub mod caldav;
 pub mod date;
+pub mod display;
 pub mod doc;
 mod draw_util;
 mod event_popovers;
@@ -48,14 +49,15 @@ mod input_context;
 mod metrics;
 mod mini_month;
 pub mod model;
+mod outbox;
 pub mod resource;
-pub mod search_provider;
 mod sidebar;
 pub mod store;
 mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;
 mod topbar;
+mod tree;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
@@ -65,16 +67,7 @@ pub use model::{
 };
 pub use resource::{Calendar, CalendarShell};
 
-use ui::widget::Widget;
-
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<CalendarShell>()
-}
-
-/// Build a fully-populated app for the hermetic `--shots` / test path. This
-/// is the ONLY place sample events, tasks and calendar accounts come from —
-/// the live app never fabricates content.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(CalendarApp::new_demo())
 }

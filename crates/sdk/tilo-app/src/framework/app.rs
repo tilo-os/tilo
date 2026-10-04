@@ -36,7 +36,7 @@ use super::effect::Effects;
 use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
-use super::scenario::{Fixture, Run};
+use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
@@ -109,7 +109,9 @@ pub trait ResourceApp: 'static {
     /// participant's permissions, attributed, undoable and in history. A
     /// launch that shows something rather than changing the resource (a
     /// link to one item, a file to look at before acting on it) invokes one
-    /// of the app's effects ([`Invoke::effect`]) through the same door.
+    /// of the app's effects ([`Invoke::effect`]) through the same door. A
+    /// capture launched on nothing takes none: its [scenario](Self::scenario)
+    /// stages the record.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
         let _ = (input, created);
         Vec::new()
@@ -157,6 +159,23 @@ pub trait ResourceApp: 'static {
     fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {
         let _ = name;
         Vec::new()
+    }
+
+    /// What a person does in the scene that the scenario's actions and
+    /// staged view state cannot show: text typed into an editor, a drag
+    /// held over its drop target, a menu opened with a right click. Driven
+    /// on `input` through the window's own event path after the actions
+    /// and staging, so the frame shows the app's real answer to that input.
+    /// Must be deterministic, like the rest of the scenario.
+    ///
+    /// # Errors
+    /// Returns why the input could not be given (its target is missing).
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui_core::headless::FrameHarness,
+    ) -> Result<(), String> {
+        let _ = (name, input);
+        Ok(())
     }
 
     /// What a brand-new record starts with that depends on who creates it or
@@ -273,6 +292,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
     storage: AppStorage,
+    person: Option<ui_core::record::person::PersonRecords>,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only, me, run) = match editing {
@@ -292,7 +312,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let storage = super::settings::ViewStorage::new(storage);
+    let person = person.map(|records| super::person::PersonState::new(records, A::ID, A::TITLE));
+    let storage = super::settings::ViewStorage::new(storage, person);
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
@@ -389,11 +410,15 @@ fn create<A: ResourceApp>(
     }
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
+    let capture = context.capture().is_some();
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()),
+    };
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
     }
-    .launched_on(&arguments);
+    let run = run.launched(Launched { arguments, file });
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -408,12 +433,17 @@ fn create<A: ResourceApp>(
             run,
         },
         context.storage(),
+        context.person_records().cloned(),
     );
-    if let Some(file) = &file {
-        file.report_opened(<A::Resource as Resource>::KIND);
-    }
-    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
-        root.dispatcher().invoke(invoke);
+    // A capture launched on nothing is staged by its scenario alone: what a
+    // launch on nothing takes reads from this device (a library, the last
+    // folder), which a screenshot must not depend on. A capture launched on
+    // a file takes that file, as the command line does.
+    let launch = root.launch();
+    if !capture || !launch.is_empty() {
+        for invoke in A::launch(&launch, created) {
+            root.dispatcher().invoke(invoke);
+        }
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
@@ -536,7 +566,8 @@ fn prepare_app<A: ResourceApp>(
 }
 
 /// Hand a prepared component what its launch named: the arguments, and the
-/// file the first one names when the app opens its type.
+/// file the first one names when the app opens its type and it is a path
+/// rather than a URL.
 ///
 /// # Errors
 /// A file of a type the app opens that cannot be read.
@@ -546,7 +577,12 @@ pub(crate) fn hand_launch(
     arguments: &[String],
     prepared: &mut PreparedComponentInputs,
 ) -> Result<(), LaunchError> {
-    if let Some(path) = arguments.first().map(std::path::Path::new)
+    // A URL (`https://…`, `file://…`) is an argument for the app to resolve,
+    // not a path on this device.
+    if let Some(path) = arguments
+        .first()
+        .filter(|argument| !argument.contains("://"))
+        .map(std::path::Path::new)
         && let Some(file) = launched_file(definition, path)?
     {
         prepared.context.provide_open_file(file);
@@ -618,6 +654,7 @@ fn prepare_named(
             .map_err(operation)?;
         let root = profile.path().join("state");
         let settings = profile.path().join("settings.json");
+        let content = profile_content(profile.path());
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
             "capture-device".into(),
@@ -628,6 +665,7 @@ fn prepare_named(
             Rc::new(CaptureProfile(profile)),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
+        prepared.context.provide_content(content);
         // An audit and a headless drive certify and drive the app someone
         // uses; only a screenshot is built from fixtures.
         if args.shots.is_some() || args.responsive_matrix.is_some() {
@@ -645,7 +683,10 @@ fn prepare_named(
             role_permissions(&author.0, Role::Owner),
         )?;
         return prepare_on(&mut host, definition, DATA_DIR_INSTANCE, named, inputs).map(
-            |prepared| {
+            |mut prepared| {
+                prepared
+                    .context
+                    .provide_content(super::testing::data_dir_content(directory.as_ref()));
                 super::testing::with_settings_file(
                     prepared,
                     super::testing::data_dir_settings(directory.as_ref()),
@@ -655,7 +696,18 @@ fn prepare_named(
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    prepare_on(native.host_mut(), definition, instance, named, inputs)
+    let mut prepared = prepare_on(native.host_mut(), definition, instance, named, inputs)?;
+    prepared
+        .context
+        .provide_content(tilo_content::ContentStore::for_app());
+    Ok(prepared)
+}
+
+/// The content store of a profile the launch keeps in `directory`: the
+/// bytes its records name live with them, and go with them.
+#[cfg(tilo_native_runner)]
+pub(crate) fn profile_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    tilo_content::ContentStore::in_dir(directory.join("content"))
 }
 
 /// Take the launch's actions ([`ResourceApp::launch`]) as the live host's

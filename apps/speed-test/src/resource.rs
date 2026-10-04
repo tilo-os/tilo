@@ -1,63 +1,91 @@
-//! Speed Test as a [`tilo_resource::Resource`]: host jobs are Effects; there
-//! is no collaborative document vocabulary.
+//! Speed Test's resource: the measurements taken, which follow their owner
+//! to every device. A run in flight is the surface's own; starting and
+//! stopping one are effects, and a finished run is recorded as an action.
 
-use serde::{Deserialize, Serialize};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource};
+use ui::framework::{ResourceApp, ViewCx};
+use ui::prelude::*;
 use ui::widget::Element;
 
-use crate::app::{SpeedOperation, SpeedTestApp, action};
+use crate::app::SpeedTestApp;
 
-/// No collaborative document mutations — results stay on this device.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum EmptyDocAction {}
+/// How many measurements are kept; the oldest go first.
+pub const KEPT: usize = 20;
 
-impl Action for EmptyDocAction {
-    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        Ok(())
+/// Every measurement taken, oldest first.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct SpeedTest {
+    pub results: Collection<Measurement>,
+}
+
+/// One finished run.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Measurement {
+    /// When it was recorded, in milliseconds since the Unix epoch.
+    pub at_ms: i64,
+    /// Round trip to the server, in milliseconds.
+    pub ping: f64,
+    /// Variation of the round trip, in milliseconds.
+    pub jitter: f64,
+    /// Download speed, in megabits per second.
+    pub download: f64,
+    /// Upload speed, in megabits per second.
+    pub upload: f64,
+    /// The server that answered.
+    pub server: String,
+}
+
+#[resource(kind = "so.tilo.speed-test", label = "Internet speed test")]
+impl SpeedTest {
+    /// Record a finished measurement.
+    #[action(external)]
+    pub fn record(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Round trip in milliseconds")] ping: f64,
+        #[param("Round-trip variation in milliseconds")] jitter: f64,
+        #[param("Download speed in megabits per second")] download: f64,
+        #[param("Upload speed in megabits per second")] upload: f64,
+        #[param("The server that answered")] server: String,
+    ) {
+        let measurement = Measurement {
+            at_ms: cx.now_ms(),
+            ping,
+            jitter,
+            download,
+            upload,
+            server,
+        };
+        self.results.push(cx.id(), measurement);
+        let excess = self.results.len().saturating_sub(KEPT);
+        let oldest: Vec<_> = self.results.ids().take(excess).cloned().collect();
+        for id in oldest {
+            self.results.remove(&id);
+        }
+    }
+
+    /// Forget every measurement.
+    #[action(destructive)]
+    pub fn clear(&mut self) {
+        self.results = Collection::new();
     }
 }
 
-/// Ephemeral run state lives on the surface; the shared document is empty.
-#[derive(Clone, Debug, Default)]
-pub struct SpeedTestState;
-
-/// The internet speed-test resource.
-pub struct SpeedTest;
-
-impl Resource for SpeedTest {
-    const KIND: &'static str = "speed-test";
-    const LABEL: &'static str = "Internet speed test";
-    const ACTION_TYPE: &'static str = "speed_test.action";
-
-    type State = SpeedTestState;
-    type Action = EmptyDocAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<EmptyDocAction>(Self::ACTION_TYPE);
+impl SpeedTest {
+    /// The measurements, newest first.
+    pub fn newest_first(&self) -> impl Iterator<Item = &Measurement> {
+        self.results.values().rev()
     }
+}
 
-    fn read(_doc: &Doc) -> Result<SpeedTestState, ModelError> {
-        Ok(SpeedTestState)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        // Stop is live: it only exists while a measurement is running, so it
-        // stays on the hosted extra instead of the always-on door.
-        [
-            ("start", "Run speed test", SpeedOperation::Start),
-            (
-                "change-region",
-                "Change test region",
-                SpeedOperation::ChangeRegion,
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(id, label, op)| action(id, label, &op))
-        .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-        .collect()
-    }
+/// What anyone can do with a run: the button, the palette, an agent.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.speed-test.run")]
+pub enum SpeedEffect {
+    /// Run speed test.
+    #[effect(job, cancellable)]
+    Start,
+    /// Stop speed test.
+    Stop,
 }
 
 /// Framework app.
@@ -68,8 +96,13 @@ impl ResourceApp for SpeedTestShell {
     const ID: &'static str = "so.tilo.speed-test";
     const TITLE: &'static str = "Speed Test";
     const ICON: Option<&'static str> = Some("speed-test");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1180, 760)
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("complete-narrow") => (480, 820),
+            Some("complete-short") => (960, 560),
+            _ => (1180, 760),
+        }
     }
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
@@ -85,139 +118,56 @@ impl ResourceApp for SpeedTestShell {
             "complete-short",
         ]
     }
-}
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher. Results stay on this device.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<SpeedTest>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<SpeedTest>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted || self.framework.is_some()
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-impl ResourceSurface<SpeedTest> for SpeedTestApp {
-    /// Results stay on this device. An empty projection must not clear them.
-    fn present(&mut self, _state: &std::rc::Rc<SpeedTestState>) {}
-
-    fn attach(&mut self, cx: SurfaceCx<SpeedTest>) {
-        self.actions.attach(cx.dispatcher());
-        self.mark_framework_hosted();
+    fn scenario(name: Option<&str>) -> Vec<Invoke<SpeedTest>> {
+        let record = |ping: f64, jitter: f64, download: f64, upload: f64| {
+            SpeedTest::RECORD.with((
+                ping,
+                jitter,
+                download,
+                upload,
+                "Cloudflare · LHR".to_owned(),
+            ))
+        };
+        match name {
+            Some("idle" | "running") => Vec::new(),
+            // Oldest first: the last is the run the dial shows.
+            _ => vec![
+                record(14.1, 2.2, 584.6, 109.3),
+                record(12.4, 1.8, 618.2, 112.9),
+                record(11.8, 1.6, 642.7, 118.4),
+            ],
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::resources::PublishesResources;
+    use ui::prelude::Replica;
 
     #[test]
-    fn publish_owns_start_and_hosted_keeps_stop_only_while_running() {
-        let published = ui::tilo_resource::publish::<SpeedTest>(
-            "speed-test",
-            "Internet speed test",
-            &SpeedTestState,
-        );
-        let ids: Vec<&str> = published
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        assert!(ids.contains(&"start"), "start rides publish: {ids:?}");
+    fn measurements_are_kept_newest_last_and_bounded() {
+        let mut replica = Replica::<SpeedTest>::new();
+        for run in 0..KEPT + 3 {
+            #[expect(clippy::cast_precision_loss, reason = "a small run count")]
+            let download = run as f64;
+            replica
+                .apply(SpeedTest::RECORD.with((10.0, 1.0, download, 50.0, "Cloudflare".into())))
+                .expect("record");
+        }
+        let state = replica.state().expect("state");
+        assert_eq!(state.results.len(), KEPT);
+        let newest = state.newest_first().next().expect("a measurement");
+        #[expect(clippy::cast_precision_loss, reason = "a small run count")]
+        let last = (KEPT + 2) as f64;
+        assert!((newest.download - last).abs() < f64::EPSILON);
         assert!(
-            ids.contains(&"change-region"),
-            "change-region rides publish: {ids:?}"
-        );
-        assert!(!ids.contains(&"stop"), "stop stays live: {ids:?}");
-
-        let mut idle = SpeedTestApp::new();
-        assert!(!idle.is_framework_hosted());
-        let standalone = idle.resources(&ui::automerge::AutoCommit::new());
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, SpeedTest::KIND);
-
-        idle.mark_hosted_for_test();
-        assert!(
-            idle.resources(&ui::automerge::AutoCommit::new()).is_empty(),
-            "idle hosted adds no second speed-test root"
+            state.results.values().all(|result| result.download >= 3.0),
+            "the oldest runs went first"
         );
 
-        let mut running = SpeedTestApp::demo("running");
-        running.mark_hosted_for_test();
-        let extras = running.resources(&ui::automerge::AutoCommit::new());
-        assert_eq!(extras.len(), 1);
-        assert_ne!(extras[0].kind, SpeedTest::KIND);
-        assert_eq!(extras[0].id.as_str(), "speed-test.run");
-        assert!(
-            extras[0]
-                .actions
-                .iter()
-                .any(|action| action.id.as_str() == "stop")
-        );
-    }
-
-    #[test]
-    fn attach_hosted_surface_does_not_republish_the_speed_test_root() {
-        let mut idle = SpeedTestApp::new();
-        assert!(!idle.is_framework_hosted());
-        assert!(!idle.sink_is_hosted());
-        let doc = ui::automerge::AutoCommit::new();
-        let standalone = idle.resources(&doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, SpeedTest::KIND);
-
-        idle.mark_hosted_for_test();
-        assert!(idle.is_framework_hosted());
-        assert!(idle.sink_is_hosted());
-        assert!(
-            idle.resources(&doc).is_empty(),
-            "hosted attach must not republish the speed-test root"
-        );
-
-        let mut running = SpeedTestApp::demo("running");
-        running.mark_hosted_for_test();
-        let extras = running.resources(&doc);
-        assert_eq!(extras.len(), 1);
-        assert_ne!(extras[0].kind, SpeedTest::KIND);
-        assert!(
-            extras[0]
-                .actions
-                .iter()
-                .any(|action| action.id.as_str() == "stop"),
-            "an in-flight run stays on the widget"
-        );
-    }
-
-    #[test]
-    fn present_empty_does_not_wipe_a_completed_result() {
-        let mut app = SpeedTestApp::demo("complete");
-        assert!(app.has_result());
-        ResourceSurface::<SpeedTest>::present(&mut app, &std::rc::Rc::new(SpeedTestState));
-        assert!(
-            app.has_result(),
-            "empty present must not wipe a local result"
-        );
+        replica.apply(SpeedTest::CLEAR.invoke()).expect("clear");
+        assert!(replica.state().expect("state").results.is_empty());
     }
 }

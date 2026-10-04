@@ -817,10 +817,6 @@ impl TimelineInteraction {
         self.viewport.layout(area, initial_hour);
     }
 
-    pub fn pin_hour(&mut self, hour: f64) {
-        self.viewport.pin_hour(hour);
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.viewport.wants_pointer_capture()
     }

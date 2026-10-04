@@ -9,7 +9,7 @@ use ui::{
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId};
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -19,7 +19,6 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_content::ContentStore;
-use ui::app::UserEvent;
 use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
@@ -37,7 +36,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
 use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use crate::graphics::{
@@ -272,29 +270,12 @@ fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>,
 
 /// Wake an idle app after either fresh PTY bytes *or a lifecycle transition*.
 /// The latter is crucial: EOF has no bytes to queue, but it still changes
-/// visible text, accessibility, and action availability. Coalescing is shared
-/// with the reader's normal output wake path.
-fn request_terminal_wake(
-    waker: &Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
-    wake_pending: &AtomicBool,
-) {
-    if !wake_pending.swap(true, Ordering::AcqRel) {
-        let sent = waker
-            .lock()
-            .ok()
-            .and_then(|guard| {
-                guard.as_ref().map(|proxy| {
-                    proxy
-                        .send_event(UserEvent::External("terminal-lifecycle".to_string()))
-                        .is_ok()
-                })
-            })
-            .unwrap_or(false);
-        if !sent {
-            // Embedded/startup callers have no proxy yet. They poll through
-            // `needs_animation_frame`; do not strand a future real wake.
-            wake_pending.store(false, Ordering::Release);
-        }
+/// visible text, accessibility, and action availability. The wake handle
+/// coalesces wakes the host has not delivered yet; a host that gave the
+/// terminal none pumps it itself (`needs_animation_frame`).
+fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
+    if let Ok(waker) = waker.lock() {
+        waker.wake();
     }
 }
 
@@ -355,10 +336,10 @@ pub struct Attr {
     pub strike: bool,
     pub is_wide_cont: bool,
     /// OSC 8 hyperlink id. `0` means "no link"; any other value indexes the
-    /// widget's link registry (`TerminalWidget::links`, mirrored from the
-    /// CRDT `terminal_links` map) to resolve the target URL for rendering
-    /// (underline + link tint) and click-to-open. Packed alongside the cell
-    /// so it rides the same CRDT + render-mirror path as every other attr.
+    /// widget's link registry (`TerminalWidget::links`, the screen's links)
+    /// to resolve the target URL for rendering (underline + link tint) and
+    /// click-to-open. Packed alongside the cell so it rides the same
+    /// session record and render mirror as every other attr.
     pub link_id: u16,
 }
 
@@ -484,7 +465,7 @@ impl Default for TermModes {
 /// A terminal emulator packaged as a reusable `ui` widget.
 ///
 /// It owns a PTY running a shell (or an arbitrary command), a vte parser, and
-/// a CRDT-backed cell grid, and implements the toolkit's `Widget` trait so it
+/// a cell grid its session record shares, and implements the toolkit's `Widget` trait so it
 /// drops into any layout the same way any other widget does.
 ///
 /// # Embedding
@@ -559,20 +540,26 @@ pub struct TerminalWidget {
     /// 0.0 and updated before the first frame is drawn.
     font_size: f32,
 
-    grid_id: Option<ObjId>,
-    /// Alternate-screen buffer (its own CRDT list). Full-screen apps
-    /// (`vim`, `less`, `htop`) switch to it via `CSI ? 1049 h` so their
-    /// redraw never pollutes the scrollback, then restore the main buffer
-    /// on exit. Created lazily alongside the main grid in `init_crdt`.
-    alt_grid_id: Option<ObjId>,
-    cursor_id: Option<ObjId>,
-    line_ids: Vec<ObjId>,
-    alt_line_ids: Vec<ObjId>,
-    last_sync_heads: Vec<automerge::ChangeHash>,
-    /// Set when the active buffer flips (main ↔ alt) so `sync` re-reads the
-    /// grid even if the CRDT heads did not change (leaving the alt screen
-    /// only restores the cursor, which is not a doc edit).
-    force_resync: bool,
+    /// What the terminal shows. A widget running a process keeps the
+    /// emulator's screen here; one without (a past version, a collaborator's
+    /// view, a screenshot before its output) shows the session record's,
+    /// presented to it.
+    screen: crate::screen::Screen,
+    /// The lines `grid`/`grid_attrs` were last built from, so a rebuild
+    /// converts only lines that changed.
+    mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
+    /// Whether this widget's own emulator draws `screen`: set by the first
+    /// output it parses. Until then the screen is the record's.
+    emulating: bool,
+    /// The screen the session record holds, as this widget last wrote it;
+    /// `None` while the record's is unknown (a new process, a refused
+    /// write), so the next write replaces it whole.
+    synced: Option<crate::screen::Screen>,
+    /// Session changes waiting for the next sync, where the record is at
+    /// hand: they apply in order, before the output parsed since.
+    pending_actions: Vec<crate::resource::TerminalAction>,
+    /// Where the session record says this session runs.
+    recorded_target: Option<crate::target::SessionTarget>,
 
     current_attr: Attr,
     pending_wrap: bool,
@@ -600,8 +587,8 @@ pub struct TerminalWidget {
     /// Shared toolkit interaction model for the terminal history bar.
     scrollbar: Scrollbar,
 
-    /// Local find-in-scrollback state. It is intentionally not mirrored into
-    /// the CRDT or resource tree: a find term and its matching output can be
+    /// Local find-in-scrollback state. It is intentionally not recorded in
+    /// the session or published: a find term and its matching output can be
     /// sensitive, while the shared terminal transcript already has its own
     /// carefully bounded collaboration contract.
     conventions: ui::PlatformConventions,
@@ -703,38 +690,11 @@ pub struct TerminalWidget {
     /// cleared screen (`clear`, `CSI 2J`) once the shell has run.
     ever_nonblank: bool,
 
-    /// Number of oldest scrollback lines dropped from the front of the main
-    /// buffer since the last `sync` mirrored the grid. `sync` uses it to keep
-    /// the render mirror (`grid`/`grid_attrs`) index-aligned with the CRDT
-    /// line list without re-reading every retained line each frame.
-    trimmed_front: usize,
-    /// True once `grid`/`grid_attrs` have been fully populated from the CRDT.
-    /// While false (first frame, or after a buffer swap) `sync` does a full
-    /// re-read; afterwards it only re-reads the lines the emulator actually
-    /// touches (the live screen + freshly appended rows), which is what keeps
-    /// heavy output from re-scanning the whole scrollback every frame.
-    mirror_valid: bool,
-    /// Set by `feed` when the emulator itself mutated the grid. `sync` reads
-    /// it to decide between the cheap incremental re-read (our own writes only
-    /// touch the live screen + appended tail) and a full re-read (a remote
-    /// collaborator may have edited anywhere, so nothing can be assumed).
-    pending_local_edit: bool,
-    /// CRDT line count captured at the previous `sync`. The incremental
-    /// re-read starts from that frame's screen top (`synced_len - height`),
-    /// because the rows that scrolled off during a burst of output were the
-    /// live screen *at the time they were written* — re-reading only the
-    /// current screen would miss them.
-    synced_len: usize,
-
-    /// Window title set by OSC 0 / OSC 2. Mirrored from the CRDT
-    /// (`terminal_title`) each `sync` so a collaborator sees the same title;
-    /// surfaced through `AppWidget::app_title`. Defaults to "Terminal".
+    /// Window title set by OSC 0 / OSC 2, recorded in the session so a
+    /// collaborator sees the same title; surfaced through `AppWidget::app_title`. Defaults to "Terminal".
     title: String,
-    /// CRDT map id for `terminal_links`: `string(link_id)` → URL. Populated by
-    /// OSC 8 during `feed`; read back into `links` on `sync`.
-    links_id: Option<ObjId>,
     /// Local fast-lookup mirror of the OSC 8 hyperlink registry (id → URL),
-    /// rebuilt from the CRDT `terminal_links` map on `sync`. Used to render
+    /// rebuilt from the screen's links whenever it changes. Used to render
     /// link tint/underline and to resolve a click into a URL to open.
     links: HashMap<u16, String>,
     /// Monotonic OSC 8 link-id allocator (host side). `0` is reserved for
@@ -744,14 +704,11 @@ pub struct TerminalWidget {
     /// every printed cell adopts it so a multi-cell link shares one id.
     /// Survives across `feed` calls so a link spanning PTY reads stays whole.
     current_link_id: u16,
-    /// Content-addressed graphics descriptors. Bytes live in `content`; only
-    /// immutable hashes and cell placement ride Automerge.
-    images_id: Option<ObjId>,
     /// Where graphics bytes are stored and read back (verified) by hash.
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
-    /// Decoded images are deliberately local GPU-side state. The CRDT contains
-    /// only immutable content addresses; each peer validates and decodes bytes
+    /// Decoded images are deliberately local GPU-side state. The session record
+    /// holds only immutable content addresses; each peer validates and decodes bytes
     /// on demand when a placement comes into view.
     image_cache: HashMap<String, ui::widget::Image>,
     graphics_scanner: GraphicsScanner,
@@ -763,36 +720,17 @@ pub struct TerminalWidget {
     /// Set by [`ResourceSurface::attach`]. The framework root already publishes
     /// the session door; this widget then returns only the live transcript.
     framework_hosted: bool,
-    /// Dispatcher stored by [`ResourceSurface::attach`]. Document-level session
-    /// actions submit through it while this widget is hosted.
-    framework_dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
-    /// Standalone session actions submit through this host.
-    session_actions: ui::ActionHost,
-    /// Identifies the local PTY whose presentation is mirrored into this
-    /// record. A terminal tab is durable, but its process is not: after a
-    /// logout the next login spawns a new shell. Without an incarnation
-    /// marker that new shell inherited the previous process' persisted grid
-    /// and appended a second prompt to it, making a fresh session look as if
-    /// several terminals had been restored. Headless/replica widgets leave
-    /// this `None` because they intentionally render an existing transcript.
-    local_session_id: Option<String>,
-    /// The record scope arrives before the first sync. We reset stale
-    /// process-owned presentation exactly once at that boundary, never on a
-    /// collaborator's ordinary document update.
-    local_session_bound: bool,
+    /// The session record's dispatcher: the framework's when it hosts this
+    /// widget, a parent's when the terminal is nested in its resource. Without
+    /// one the terminal is its process's alone, and nothing is recorded.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
 
-    /// Wakes the `ui::App` event loop when the PTY reader has new output, so a
-    /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
-    /// ~60 Hz. The binary arms it via `App::run_with_setup` (see
-    /// [`waker_handle`](Self::waker_handle)); it stays `None` when the terminal
-    /// is embedded in a host that pumps it. Embedded hosts call `sync`/`update`
-    /// independently of painting, so they can remain visually idle until the
-    /// channel actually contains output.
-    waker: Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
-    /// Coalesces reader wakes: set when a wake is in flight, cleared when the
-    /// App delivers the resulting `External` event (`on_external_event`), so a
-    /// burst of PTY reads sends at most one wake per processed frame.
-    wake_pending: Arc<AtomicBool>,
+    /// Wakes the host when the PTY reader has new output, so an idle terminal
+    /// waits for its process instead of polling. Captured from the scope the
+    /// widget is built in, and replaced by the framework's when it is attached
+    /// ([`SurfaceCx::waker`](ui::framework::SurfaceCx::waker)). Shared with the
+    /// reader threads, which outlive a replacement.
+    waker: Arc<Mutex<ui::WakeHandle>>,
     /// Buttons currently held while an application has mouse tracking active.
     /// Bits 0/1/2 are left/middle/right. This is local input state, never
     /// replicated with the shared terminal screen.
@@ -855,13 +793,12 @@ impl TerminalWidget {
             forced_cell: false,
             theme_font_size: 0.0,
             font_size: 0.0,
-            grid_id: None,
-            alt_grid_id: None,
-            cursor_id: None,
-            line_ids: Vec::new(),
-            alt_line_ids: Vec::new(),
-            last_sync_heads: Vec::new(),
-            force_resync: false,
+            screen: crate::screen::Screen::default(),
+            mirrored: Vec::new(),
+            emulating: false,
+            synced: None,
+            pending_actions: Vec::new(),
+            recorded_target: None,
             current_attr: Attr::default(),
             pending_wrap: false,
             alt_active: false,
@@ -908,28 +845,18 @@ impl TerminalWidget {
             chrome_scrollbar_w: 8.0,
             mono_choice: None,
             ever_nonblank: false,
-            trimmed_front: 0,
-            mirror_valid: false,
-            pending_local_edit: false,
-            synced_len: 0,
             title: "Terminal".to_string(),
-            links_id: None,
             links: HashMap::new(),
             next_link_id: 0,
             current_link_id: 0,
-            images_id: None,
             image_placements: Vec::new(),
             image_cache: HashMap::new(),
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
             framework_hosted: false,
-            framework_dispatch: None,
-            session_actions: ui::ActionHost::new(),
-            local_session_id: None,
-            local_session_bound: false,
-            waker: Arc::new(Mutex::new(None)),
-            wake_pending: Arc::new(AtomicBool::new(false)),
+            dispatch: None,
+            waker: Arc::new(Mutex::new(ui::WakeHandle::new())),
             mouse_buttons: 0,
             focused: false,
             sessions: crate::sessions::Sessions::none(),
@@ -940,68 +867,36 @@ impl TerminalWidget {
         }
     }
 
-    fn reset_stale_local_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(session_id) = self.local_session_id.as_deref() else {
-            return;
-        };
-        if self.local_session_bound {
-            return;
-        }
-        self.local_session_bound = true;
-
-        let stored_session = state
-            .get(root, "terminal_local_session")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(value) => value.as_str().map(ToOwned::to_owned),
-                Value::Object(_) => None,
-            });
-        if stored_session.as_deref() == Some(session_id) {
-            return;
-        }
-
-        // These objects describe one live PTY, not the durable identity of
-        // the tab. Delete the old objects atomically before `init_crdt`
-        // creates blank replacements for the new process. Notes/editor data
-        // and the tab itself are separate records and remain untouched.
-        let action = crate::resource::TerminalAction::BindLocalSession {
-            session_id: session_id.to_string(),
-        };
-        self.apply_session_action(state, &action);
-
-        self.grid_id = None;
-        self.alt_grid_id = None;
-        self.cursor_id = None;
-        self.links_id = None;
-        self.images_id = None;
-        self.line_ids.clear();
-        self.alt_line_ids.clear();
-        self.grid.clear();
-        self.grid_attrs.clear();
-        self.links.clear();
-        self.image_placements.clear();
+    /// A new process takes this terminal. Its screen starts blank, and the
+    /// session record drops the previous process's screen, title and pane
+    /// before this one's output reaches it: a tab is durable, its process is
+    /// not, and a shell started after a logout must not inherit the grid of
+    /// the one before it.
+    fn begin_local_session(&mut self) {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        self.pane_id = uuid::Uuid::new_v4().to_string();
+        self.submit(crate::resource::TerminalAction::BindLocalSession { session_id });
+        self.submit(crate::resource::TerminalAction::ClaimPane {
+            pane_id: self.pane_id.clone(),
+        });
+        self.synced = None;
+        self.emulating = true;
+        self.screen = crate::screen::Screen::default();
         self.cursor_x = 0;
         self.cursor_y = 0;
-        self.alt_active = false;
         self.saved_cursor = None;
-        self.mirror_valid = false;
-        self.force_resync = true;
-        self.pending_local_edit = true;
-        self.synced_len = 0;
-        self.trimmed_front = 0;
         self.ever_nonblank = false;
         self.title = "Terminal".to_string();
-        self.pane_id = uuid::Uuid::new_v4().to_string();
+        self.ensure_lines();
+        self.show_screen();
     }
 
-    /// Handle used to arm the event-loop waker. A binary running the terminal
-    /// under `ui::App` calls this before moving the widget into the App, then
-    /// stores the `EventLoopProxy` inside `App::run_with_setup`'s closure. Once
-    /// armed, the PTY reader thread wakes the loop on new output and the
-    /// terminal stops polling at ~60 Hz while idle.
-    pub fn waker_handle(&self) -> Arc<Mutex<Option<EventLoopProxy<UserEvent>>>> {
-        self.waker.clone()
+    /// Wake the host through `waker` from now on: the PTY reader and the
+    /// process monitor use it for every later output and lifecycle change.
+    pub(crate) fn wake_through(&self, waker: ui::WakeHandle) {
+        if let Ok(mut current) = self.waker.lock() {
+            *current = waker;
+        }
     }
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
@@ -1055,33 +950,11 @@ impl TerminalWidget {
         &self.title
     }
 
-    /// Stable resource identity for this shared pane. `init_crdt` adopts the
-    /// same pane id on every replica, so this address survives a collaborator
+    /// Stable resource identity for this shared pane. Every replica reads the
+    /// same pane id from the session record, so this address survives a collaborator
     /// joining or a retained-widget rebuild without conflating two terminals.
     fn terminal_resource_id(&self) -> String {
         format!("terminal:{}", self.pane_id)
-    }
-
-    /// Read the shared pane identity deterministically even when two peers
-    /// initialise an otherwise-empty document at the same time. Automerge
-    /// preserves concurrent scalar writes rather than silently overwriting
-    /// either one, so `get()` alone is not a sufficient identity rule: it can
-    /// expose a different conflict winner to different callers. Choosing the
-    /// lexicographically first valid UUID makes the resource/presence address
-    /// converge without inventing a destructive conflict-resolution write.
-    fn shared_pane_id(state: &AutoCommit, root: &ObjId) -> Option<String> {
-        let mut candidates = state
-            .get_all(root, "terminal_pane_id")
-            .ok()?
-            .into_iter()
-            .filter_map(|(value, _)| match value {
-                Value::Scalar(value) => value.as_str().map(str::to_owned),
-                Value::Object(_) => None,
-            })
-            .filter(|value| uuid::Uuid::parse_str(value).is_ok())
-            .collect::<Vec<_>>();
-        candidates.sort_unstable();
-        candidates.into_iter().next()
     }
 
     fn terminal_transcript_target(&self) -> String {
@@ -1200,13 +1073,7 @@ impl TerminalWidget {
     }
 
     fn session_resource(&self) -> Resource {
-        self.session_resource_with(None)
-    }
-
-    /// Title and pane come from the document once it stores them. Paste and
-    /// the context menu, which have no document, keep the widget session.
-    fn session_resource_with(&self, doc: Option<&AutoCommit>) -> Resource {
-        let (title, pane_id) = self.published_session(doc);
+        let (title, pane_id) = (self.title.clone(), self.pane_id.clone());
         let disconnected = self.is_disconnected();
         let unavailable_reason =
             "The terminal process has ended or its PTY failed; input cannot be sent.";
@@ -1224,6 +1091,7 @@ impl TerminalWidget {
             title,
             pane_id,
             target: self.sessions.target.clone(),
+            ..crate::resource::SessionState::default()
         };
         let mut terminal =
             ui::tilo_resource::publish::<crate::resource::Terminal>(&resource_id, &label, &state);
@@ -1240,28 +1108,6 @@ impl TerminalWidget {
         }
         terminal.children.push(self.transcript_resource());
         terminal
-    }
-
-    fn published_session(&self, doc: Option<&AutoCommit>) -> (String, String) {
-        let widget = (self.title.clone(), self.pane_id.clone());
-        let Some(doc) = doc else {
-            return widget;
-        };
-        let recorded = automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_title")
-            .ok()
-            .flatten()
-            .is_some()
-            || automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_pane_id")
-                .ok()
-                .flatten()
-                .is_some();
-        if !recorded {
-            return widget;
-        }
-        match <crate::resource::Terminal as ui::tilo_resource::Resource>::read(doc) {
-            Ok(state) => (state.title, state.pane_id),
-            Err(_) => widget,
-        }
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -1611,7 +1457,7 @@ impl TerminalWidget {
     pub fn force_selection(&mut self, sel: Option<Selection>) {
         self.selection = sel;
     }
-    /// Replace `grid` from a test. Bypasses the PTY + CRDT path so
+    /// Replace `grid` from a test. Bypasses the PTY and the emulator so
     /// selected-text tests can assert against a known buffer.
     #[cfg(test)]
     pub fn force_grid(&mut self, grid: Vec<String>) {
@@ -1848,14 +1694,11 @@ impl TerminalWidget {
         self.wheel_remainder_px = 0.0;
     }
 
-    /// Drain queued PTY bytes and replay them through the vte parser into the
-    /// CRDT grid. Shared by both `Widget::update` (for hosts that pump it, e.g.
-    /// the compositor's tile host) and `Widget::sync` (for the plain `ui::App`
-    /// loop, which never calls `update`). Returns whether any bytes were
-    /// processed this call.
-    fn pump(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
-        self.init_crdt(state, root);
-
+    /// Drain queued PTY bytes and replay them through the vte parser onto the
+    /// screen. Shared by both `Widget::update` (for hosts that pump it, e.g.
+    /// the compositor's tile host) and `Widget::sync`. Returns whether any
+    /// bytes were processed this call.
+    fn pump(&mut self) -> bool {
         // Drain every queued read and coalesce them into one buffer, then feed
         // the parser once. The reader thread hands over one `Vec` per ~8 KB
         // `read`, and a burst (`cat` of a big file, a full-screen redraw)
@@ -1886,12 +1729,12 @@ impl TerminalWidget {
         }
         let activity = !batch.is_empty();
         if activity {
-            self.feed(state, root, &batch);
+            self.feed(&batch);
             // `feed` normally latches this itself, but keep the PTY boundary
-            // authoritative: even if CRDT initialisation or a future parser
-            // early-return prevents visible cells from being mirrored in this
-            // frame, bytes were received from a live session and the loading
-            // watermark must never be painted over them.
+            // authoritative: even if a future parser early-return prevents
+            // visible cells from being mirrored in this frame, bytes were
+            // received from a live session and the loading watermark must
+            // never be painted over them.
             self.ever_nonblank = true;
             // Fresh output snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
@@ -1899,23 +1742,30 @@ impl TerminalWidget {
         activity
     }
 
+    /// The screen this terminal shows. Test accessor.
+    #[cfg(test)]
+    pub(crate) fn screen(&self) -> &crate::screen::Screen {
+        &self.screen
+    }
+
     #[cfg(test)]
     pub(crate) fn has_received_pty_output(&self) -> bool {
         self.ever_nonblank
     }
 
-    /// Run `bytes` through the vte parser + performer, mutating the active
-    /// CRDT buffer. This is the single production entry point for terminal
-    /// input processing — the PTY pump feeds real shell output through it,
-    /// and tests / headless screenshot scenarios feed canned VT sequences
-    /// through the very same path.
-    ///
-    /// A no-op if `grid_id`, `alt_grid_id`, `cursor_id` or `links_id` are
-    /// still unset after `init_crdt` (called first here) — normally an
-    /// internal invariant it always establishes, but if the underlying doc
-    /// rejected a `put_object` there is nothing to feed into.
-    pub fn feed(&mut self, state: &mut AutoCommit, root: &ObjId, bytes: &[u8]) {
-        self.init_crdt(state, root);
+    /// Run `bytes` through the vte parser + performer, mutating the screen.
+    /// This is the single production entry point for terminal output
+    /// processing — the PTY pump feeds real shell output through it, and
+    /// tests and screenshot scenarios feed canned VT sequences through the
+    /// very same path. From here on the terminal shows its own emulator's
+    /// screen; the session record follows it at the next sync.
+    pub fn feed(&mut self, bytes: &[u8]) {
+        // Output with no process attached (a scenario, a test) starts the
+        // screen's own session, as an attached process does.
+        if !self.emulating {
+            self.begin_local_session();
+        }
+        self.ensure_lines();
 
         // Any PTY bytes mean the session is live, even when the first batch is
         // entirely cursor movement, colour setup, or a prompt whose visible
@@ -1930,42 +1780,14 @@ impl TerminalWidget {
         self.cursor_x = self.cursor_x.min(self.width.saturating_sub(1));
         self.cursor_y = self.cursor_y.min(self.height.saturating_sub(1));
 
-        let was_alt = self.alt_active;
         let mut title_out: Option<String> = None;
         // Reply bytes for any capability query in this batch (DA1/DA2, DSR,
         // XTVERSION, DECRQM). Written back to the PTY after the parse — the
         // vte performer only reads, so it stages answers here.
         let mut responses: Vec<u8> = Vec::new();
-        // `init_crdt` just above always establishes these ids; if it somehow
-        // bailed out early (a `put_object` failure on the underlying doc),
-        // there is nothing to feed into.
-        let (
-            Some(main_grid_id),
-            Some(alt_grid_id),
-            Some(cursor_id),
-            Some(links_id),
-            Some(images_id),
-        ) = (
-            self.grid_id.clone(),
-            self.alt_grid_id.clone(),
-            self.cursor_id.clone(),
-            self.links_id.clone(),
-            self.images_id.clone(),
-        )
-        else {
-            return;
-        };
         let mut performer = TerminalPerformer {
-            state,
-            main_grid_id,
-            alt_grid_id,
-            cursor_id,
-            links_id,
-            images_id,
+            screen: &mut self.screen,
             content: &self.content,
-            main_line_ids: &mut self.line_ids,
-            alt_line_ids: &mut self.alt_line_ids,
-            alt_active: &mut self.alt_active,
             width: self.width,
             height: self.height,
             cursor_x: self.cursor_x,
@@ -1976,7 +1798,6 @@ impl TerminalWidget {
             saved_cursor: &mut self.saved_cursor,
             scroll_top: self.scroll_top,
             scroll_bottom: self.scroll_bottom,
-            trimmed_front: &mut self.trimmed_front,
             next_link_id: &mut self.next_link_id,
             current_link_id: self.current_link_id,
             title_out: &mut title_out,
@@ -1992,9 +1813,7 @@ impl TerminalWidget {
                 StreamEvent::Kitty(payload) => performer.kitty_graphics(&payload),
             }
         }
-        // Write the cursor into the CRDT exactly once per feed rather than on
-        // every printed cell — the per-cell `put` was pure churn (the cursor
-        // is read back only by `sync`/`init_crdt`).
+        // Record the cursor once per feed rather than on every printed cell.
         performer.flush_cursor();
         self.cursor_x = performer.cursor_x;
         self.cursor_y = performer.cursor_y;
@@ -2015,24 +1834,15 @@ impl TerminalWidget {
             self.write_input(&responses);
         }
 
-        // Persist an OSC 0/2 title change into the CRDT so a collaborator sees
-        // it, and reflect it locally for `app_title`.
+        // Record an OSC 0/2 title change so a collaborator sees it, and
+        // reflect it locally for `app_title`.
         if let Some(t) = title_out
             && t != self.title
         {
-            let action = crate::resource::TerminalAction::SetTitle { title: t.clone() };
-            self.apply_session_action(state, &action);
+            self.submit(crate::resource::TerminalAction::SetTitle { title: t.clone() });
             self.title = t;
         }
-
-        // We just mutated the grid: let `sync` take the cheap incremental
-        // re-read path (only the live screen + appended tail changed).
-        self.pending_local_edit = true;
-
-        // A buffer flip must force `sync` to re-read even if heads match.
-        if self.alt_active != was_alt {
-            self.force_resync = true;
-        }
+        self.show_screen();
     }
 
     /// Place the terminal at an explicit `rect` and reflow the grid + PTY to
@@ -2107,7 +1917,7 @@ impl TerminalWidget {
     }
 
     /// Assign `rect` and, if the cell grid dimensions changed, reflow the
-    /// CRDT-backed grid and resize the PTY so the shell sees the new size.
+    /// grid and resize the PTY so the shell sees the new size.
     fn set_geometry(&mut self, rect: Rect) {
         self.rect = rect;
         // The grid lives in the content rect (below the header, inside the
@@ -2119,21 +1929,20 @@ impl TerminalWidget {
         let new_width = (grid_rect.width() / self.char_w.max(1.0)).floor() as usize;
         let new_height = (grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
 
-        // Cap the CRDT-backed grid at a sensible terminal size. The init pass
-        // splices `self.height * self.width` characters into a fresh automerge
-        // doc; each char is its own column op, and automerge's column-data
-        // insert is O(doc_size), so a full-screen embed (186 × 219 ≈ 40 700
-        // chars) freezes the process for tens of seconds while the doc
-        // compacts. The visible region can be larger than the CRDT grid —
-        // overflow rows render empty until the grid is made sparse/lazy.
+        // Cap the grid at a sensible terminal size: every cell of the screen
+        // is recorded in the session's document, one text op per character,
+        // and a full-screen embed (186 × 219 ≈ 40 700 chars) made that record
+        // freeze the process while the document compacted. The visible region
+        // can be larger than the grid — overflow rows render empty.
         let new_width = new_width.min(200);
         let new_height = new_height.min(80);
         if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height)
         {
-            let history_offset = self.line_ids.len().saturating_sub(self.height);
+            let lines = self.screen.main.len();
+            let history_offset = lines.saturating_sub(self.height);
             let absolute_y = history_offset + self.cursor_y;
 
-            let new_history_offset = self.line_ids.len().saturating_sub(new_height);
+            let new_history_offset = lines.saturating_sub(new_height);
             let new_cursor_y = absolute_y
                 .saturating_sub(new_history_offset)
                 .min(new_height.saturating_sub(1));
@@ -2161,200 +1970,17 @@ impl TerminalWidget {
         }
     }
 
-    pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Session actions cover the document root and a code-editor terminal
-        // panel. Any other embedding still keeps its grid on that object.
-        let actions_cover = root == &automerge::ROOT
-            || matches!(
-                state.get(&automerge::ROOT, "terminal_panel"),
-                Ok(Some((_, id))) if &id == root
-            );
-        if actions_cover {
-            self.apply_session_action(state, &crate::resource::TerminalAction::EnsureStructure);
-        }
-        if self.grid_id.is_none() {
-            self.grid_id =
-                adopt_or_create(state, root, "terminal_grid", ObjType::List, actions_cover);
-            if self.grid_id.is_none() {
-                return;
-            }
-        }
-        let Some(grid_id) = self.grid_id.clone() else {
-            return;
-        };
-        Self::ensure_lines(state, &grid_id, false, self.height, &mut self.line_ids);
-
-        if self.alt_grid_id.is_none() {
-            self.alt_grid_id = adopt_or_create(
-                state,
-                root,
-                "terminal_grid_alt",
-                ObjType::List,
-                actions_cover,
-            );
-            if self.alt_grid_id.is_none() {
-                return;
-            }
-        }
-        let Some(alt_grid_id) = self.alt_grid_id.clone() else {
-            return;
-        };
-        Self::ensure_lines(
-            state,
-            &alt_grid_id,
-            true,
-            self.height,
-            &mut self.alt_line_ids,
-        );
-
-        if self.links_id.is_none() {
-            self.links_id =
-                adopt_or_create(state, root, "terminal_links", ObjType::Map, actions_cover);
-            if self.links_id.is_none() {
-                return;
-            }
-        }
-        if self.images_id.is_none() {
-            self.images_id =
-                adopt_or_create(state, root, "terminal_images", ObjType::List, actions_cover);
-            if self.images_id.is_none() {
-                return;
-            }
-        }
-
-        // Adopt (or seed) a shared pane id so both peers of a shared terminal
-        // scope their collaboration presence under the *same* `PresenceKey`,
-        // and a peer's caret/selection is found when rendering. The first peer
-        // to touch the doc writes its id; late joiners read it back.
-        if let Some(id) = Self::shared_pane_id(state, root) {
-            self.pane_id = id;
-        } else if actions_cover {
-            let action = crate::resource::TerminalAction::ClaimPane {
-                pane_id: self.pane_id.clone(),
-            };
-            self.apply_session_action(state, &action);
-            if let Some(id) = Self::shared_pane_id(state, root) {
-                self.pane_id = id;
-            }
-        } else {
-            let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
-        }
-
-        if self.cursor_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "cursor") {
-                self.cursor_id = Some(id.clone());
-                if let Ok(Some((Value::Scalar(v), _))) = state.get(&id, "y")
-                    && let Some(y) = v.as_i64()
-                {
-                    let abs_y = y as usize;
-                    let history_offset = self.line_ids.len().saturating_sub(self.height);
-                    self.cursor_y = abs_y
-                        .saturating_sub(history_offset)
-                        .min(self.height.saturating_sub(1));
-                }
-            } else if actions_cover
-                && ui::tilo_actions::Action::apply(
-                    &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
-                    state,
-                )
-                .is_ok()
-                && let Ok(Some((Value::Object(ObjType::Map), cursor_id))) =
-                    state.get(root, "cursor")
-            {
-                self.cursor_id = Some(cursor_id);
-            } else if !actions_cover
-                && let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
-                && state.put(&cursor_id, "x", 0u64).is_ok()
-                && state.put(&cursor_id, "y", 0u64).is_ok()
-            {
-                self.cursor_id = Some(cursor_id);
+    /// Grow both buffers to a screen's height. Blank lines stay empty:
+    /// drawing pads them, and `print` grows a line when the cursor lands past
+    /// its end.
+    fn ensure_lines(&mut self) {
+        for alternate in [false, true] {
+            let lines = self.screen.lines_mut(alternate);
+            while lines.len() < self.height {
+                lines.push(std::rc::Rc::default());
             }
         }
     }
-
-    /// Ensure `grid_id` holds at least `min_len` blank lines and refresh
-    /// `ids` to mirror the list. Shared by the main and alternate buffers.
-    /// Lines are created empty; `print` grows them on demand (see below),
-    /// so no width is needed here.
-    fn ensure_lines(
-        state: &mut AutoCommit,
-        grid_id: &ObjId,
-        alternate: bool,
-        min_len: usize,
-        ids: &mut Vec<ObjId>,
-    ) {
-        // Blank lines stay empty. Pre-filling every new line with spaces
-        // splices a full row of characters into a fresh text object, and that
-        // insert is O(doc) per character — seeding an 80-column screen froze
-        // the compositor. Drawing pads visually; print grows a line when the
-        // cursor lands past its end.
-        let Some(min_len) = u32::try_from(min_len).ok() else {
-            return;
-        };
-        let key = if alternate {
-            "terminal_grid_alt"
-        } else {
-            "terminal_grid"
-        };
-        if grid_is_document_root(state, key, grid_id) {
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::EnsureLines { alternate, min_len },
-                state,
-            );
-        } else {
-            let target = min_len as usize;
-            let current_len = state.length(grid_id);
-            for y in current_len..target {
-                let Ok(line_id) = state.insert_object(grid_id, y, ObjType::Map) else {
-                    break;
-                };
-                let _ = state.put_object(&line_id, "text", ObjType::Text);
-            }
-        }
-        let new_len = state.length(grid_id);
-        if ids.len() != new_len {
-            ids.clear();
-            for i in 0..new_len {
-                if let Ok(Some((Value::Object(ObjType::Map), line_id))) = state.get(grid_id, i) {
-                    ids.push(line_id);
-                }
-            }
-        }
-    }
-}
-
-fn grid_is_document_root(state: &AutoCommit, key: &str, grid_id: &ObjId) -> bool {
-    let at = |parent: &ObjId| {
-        matches!(
-            state.get(parent, key),
-            Ok(Some((_, id))) if &id == grid_id
-        )
-    };
-    if at(&automerge::ROOT) {
-        return true;
-    }
-    matches!(
-        state.get(&automerge::ROOT, "terminal_panel"),
-        Ok(Some((Value::Object(ObjType::Map), panel))) if at(&panel)
-    )
-}
-
-fn adopt_or_create(
-    state: &mut AutoCommit,
-    root: &ObjId,
-    key: &str,
-    kind: ObjType,
-    at_document_root: bool,
-) -> Option<ObjId> {
-    if let Ok(Some((Value::Object(found), id))) = state.get(root, key)
-        && found == kind
-    {
-        return Some(id);
-    }
-    if at_document_root {
-        return None;
-    }
-    state.put_object(root, key, kind).ok()
 }
 
 /// Retained scrollback lines for the main buffer. Sized for a daily-driver
@@ -2501,9 +2127,187 @@ impl TerminalWidget {
     }
 }
 
+impl TerminalWidget {
+    /// Open the session, drain the PTY and mirror the document's screen.
+    fn sync_document(&mut self, state: &mut AppModel, root: &ModelPath) {
+        if self.sessions.is_live() {
+            self.ensure_session();
+        }
+        self.poll_folder_picker();
+        self.find_input.sync(state, root);
+        // Drain any bytes the PTY reader thread has queued and replay them
+        // through the vte parser *here*. A host that never calls `update`
+        // still advances the terminal: pumping from `sync`, driven by the
+        // waker (or an embedding host's own pump), is what shows output.
+        self.pump();
+        let (doc, _) = ui::doc::document(state, root);
+        self.record(doc);
+    }
+
+    /// Bring the session record up to date with this terminal: the session
+    /// changes waiting since the last sync, in order, then what the output
+    /// parsed since did to the screen, as one action. Nothing is recorded
+    /// for a terminal that has no record.
+    fn record(&mut self, doc: &mut AutoCommit) {
+        let Some(dispatch) = self.dispatch.clone() else {
+            self.pending_actions.clear();
+            return;
+        };
+        for action in std::mem::take(&mut self.pending_actions) {
+            if dispatch.apply_now(doc, &action).is_err() {
+                self.synced = None;
+            }
+        }
+        if !self.emulating {
+            return;
+        }
+        let edits = crate::screen::edits(self.synced.as_ref(), &self.screen);
+        if edits.is_empty() {
+            return;
+        }
+        let output = crate::resource::TerminalAction::Output { edits };
+        // A refused write leaves the record's screen unknown: the next one
+        // replaces it whole.
+        self.synced = dispatch
+            .apply_now(doc, &output)
+            .is_ok()
+            .then(|| self.screen.clone());
+    }
+
+    /// Queue a session change for the next sync.
+    fn submit(&mut self, action: crate::resource::TerminalAction) {
+        if self.dispatch.is_some() {
+            self.pending_actions.push(action);
+        }
+    }
+
+    /// Show the session as its record holds it, unless this terminal's own
+    /// emulator draws the screen: a past version, a collaborator's view of
+    /// a session running elsewhere, a screenshot before its output.
+    pub(crate) fn present_session(&mut self, state: &crate::resource::SessionState) {
+        self.recorded_target.clone_from(&state.target);
+        if !state.pane_id.is_empty() {
+            self.pane_id.clone_from(&state.pane_id);
+        }
+        if self.emulating {
+            return;
+        }
+        self.title.clone_from(&state.title);
+        self.screen = state.screen.clone();
+        self.show_screen();
+    }
+
+    /// Rebuild what is drawn from `screen`: the rows of the active buffer,
+    /// the cursor, the hyperlinks and the image placements. Only rows whose
+    /// line changed are converted again.
+    fn show_screen(&mut self) {
+        use std::collections::hash_map::Entry;
+        let lines = self.screen.active().clone();
+        let unchanged = lines.len() == self.mirrored.len()
+            && lines
+                .iter()
+                .zip(&self.mirrored)
+                .all(|(line, shown)| std::rc::Rc::ptr_eq(line, shown));
+        if !unchanged {
+            let mut previous: HashMap<*const crate::screen::Line, (String, Vec<Attr>)> =
+                HashMap::with_capacity(self.mirrored.len());
+            let rows = std::mem::take(&mut self.grid)
+                .into_iter()
+                .zip(std::mem::take(&mut self.grid_attrs));
+            for (line, row) in self.mirrored.iter().zip(rows) {
+                if let Entry::Vacant(slot) = previous.entry(std::rc::Rc::as_ptr(line)) {
+                    slot.insert(row);
+                }
+            }
+            for line in &lines {
+                let (text, attrs) =
+                    previous
+                        .remove(&std::rc::Rc::as_ptr(line))
+                        .unwrap_or_else(|| {
+                            (
+                                line.text.clone(),
+                                line.attrs
+                                    .chunks_exact(ATTR_BYTES)
+                                    .map(Attr::unpack)
+                                    .collect(),
+                            )
+                        });
+                self.grid.push(text);
+                self.grid_attrs.push(attrs);
+            }
+            self.mirrored = lines;
+        }
+        self.alt_active = self.screen.alternate;
+        if !self.emulating {
+            let (x, y) = self.screen.cursor;
+            let history_offset = self.grid.len().saturating_sub(self.height);
+            self.cursor_x = usize::try_from(x).unwrap_or(0);
+            self.cursor_y = usize::try_from(y)
+                .unwrap_or(0)
+                .saturating_sub(history_offset)
+                .min(self.height.saturating_sub(1));
+        }
+        self.links = self
+            .screen
+            .links
+            .iter()
+            .map(|(id, url)| (*id, url.clone()))
+            .collect();
+        self.next_link_id = self
+            .next_link_id
+            .max(self.links.keys().copied().max().unwrap_or(0));
+        self.image_placements.clone_from(&self.screen.images);
+        if self.grid.iter().any(|row| !row.trim().is_empty()) {
+            self.ever_nonblank = true;
+        }
+        if self.find_open {
+            self.refresh_find_matches();
+        }
+    }
+
+    /// Stage screenshot scenario `name`: the output its process printed,
+    /// parsed as PTY output, and the view state shown over it.
+    pub(crate) fn stage_scenario(&mut self, name: &str) {
+        if let Some((target, environments)) = crate::scenarios::target(name) {
+            self.show_target(target, environments);
+        }
+        self.feed(&crate::scenarios::output(name));
+        if name == "ended" {
+            self.mark_disconnected("Session ended — input unavailable");
+        }
+        self.stage_view(name);
+    }
+
+    /// The view state scenario `name` shows over its output.
+    fn stage_view(&mut self, name: &str) {
+        match name {
+            "scrollback" => self.scroll_up(20),
+            "find" => {
+                self.open_find();
+                self.set_find_query("build step 042");
+            }
+            "targets" => self.open_target_menu(),
+            "environments" => {
+                self.open_environments_panel();
+                self.set_environment_name_input("Writing");
+            }
+            "empty-menu" => self.open_context_menu_at(Point::new(24.0, 24.0)),
+            // A whole line of the session's output selected, as a
+            // triple-click selects it: the printed line, not the command
+            // that echoed it.
+            "shell-select" => {
+                if let Some(row) = self.find_row_last("primes below 20:") {
+                    let (cols, _) = self.grid_size();
+                    self.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Widget for TerminalWidget {
     ui::provides!(
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence
@@ -2541,7 +2345,7 @@ impl Widget for TerminalWidget {
             && matches!(request.type_id, "terminal.target" | "terminal.environment")
         {
             if request.type_id == "terminal.target" {
-                self.answer_target_operation(request.payload, doc, path)?;
+                self.answer_target_operation(request.payload)?;
             } else {
                 self.answer_environment_operation(request.payload)?;
             }
@@ -2591,68 +2395,16 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if self.sessions.is_live() {
-            self.ensure_session(state, root);
-        }
-        self.poll_folder_picker();
-        self.reset_stale_local_session(state, root);
-        self.find_input.sync(state, root);
-        // Drain any bytes the PTY reader thread has queued and replay them
-        // through the vte parser *here*, before reading the grid back out.
-        // The plain `ui::App` event loop only ever calls `sync` (never
-        // `update`), so if the pty were only pumped from `update` the live
-        // terminal would never advance. Pumping from `sync` — combined with
-        // the standalone waker (or an embedding host's app pump) driving the
-        // loop — is what makes a terminal actually show output.
-        self.pump(state, root);
-
-        let current_heads = state.get_heads();
-        let heads_unchanged = current_heads == self.last_sync_heads;
-        if !self.force_resync && self.mirror_valid && heads_unchanged {
-            self.pending_local_edit = false;
-            return;
-        }
-        // Choose the re-read strategy. A full re-read is required whenever the
-        // mirror can't be trusted line-for-line: the first frame, a main↔alt
-        // buffer swap (`force_resync`), or heads that moved without our own
-        // `feed` (a remote collaborator could have edited any line). The
-        // emulator's *own* writes only ever touch the live screen and the
-        // freshly appended tail, so those take the cheap incremental path.
-        let full_reread = !self.mirror_valid || self.force_resync || !self.pending_local_edit;
-        self.force_resync = false;
-        self.pending_local_edit = false;
-        self.last_sync_heads = current_heads;
-
-        self.init_crdt(state, root);
-
-        // Mirror whichever buffer is active. The alt buffer has no scrollback,
-        // so its list is exactly `height` lines. Cloned rather than borrowed:
-        // the mirror refresh below needs `&mut self` while still reading
-        // these ids, and a clone of a handful of `ObjId`s is cheap next to a
-        // full grid re-read.
-        let (grid_id, line_ids) = if self.alt_active {
-            (self.alt_grid_id.clone(), self.alt_line_ids.clone())
-        } else {
-            (self.grid_id.clone(), self.line_ids.clone())
-        };
-        let Some(grid_id) = grid_id else {
-            return;
-        };
-
-        let len = state.length(&grid_id);
-        self.refresh_grid_mirror(state, &line_ids, len, full_reread);
-        self.refresh_title_and_links(state, root);
-        self.refresh_image_placements(state);
-        self.refresh_cursor_from_crdt(state, line_ids.len());
-        if self.find_open {
-            self.refresh_find_matches();
-        }
+        self.sync_document(state, root);
     }
 
     fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
-        let (state, root) = ui::doc::document(state, root);
-        self.pump(state, root)
+        let pumped = self.pump();
+        if pumped {
+            let (doc, _) = ui::doc::document(state, root);
+            self.record(doc);
+        }
+        pumped
     }
 
     /// Whether queued output needs another visual frame. A standalone terminal
@@ -2672,14 +2424,6 @@ impl Widget for TerminalWidget {
         let queued = pending.is_some();
         self.deferred_output.set(pending);
         queued || self.folder_picker_pending()
-    }
-
-    /// The event-loop wake we requested has been delivered. Clear the coalescing
-    /// flag so the reader can request the next one; the App's redraw drives
-    /// `sync`, which drains the queued PTY bytes. The payload is unused — the
-    /// wake itself is the signal.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {
-        self.wake_pending.store(false, Ordering::Release);
     }
 
     fn build_layout(
@@ -2905,8 +2649,6 @@ impl Widget for TerminalWidget {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.init_crdt(ctx.state, ctx.path);
-
         // The menu is app-owned overlay content, so route every event to the
         // shared primitive while it is open and do not let keys/clicks fall
         // through to the PTY. This gives it Arrow/Enter/Escape keyboard
@@ -2922,7 +2664,7 @@ impl Widget for TerminalWidget {
                 },
             );
             if let Some(index) = self.context_menu.take_selection()
-                && !self.activate_target_menu_item(index, ctx.state, ctx.path)
+                && !self.activate_target_menu_item(index)
             {
                 self.activate_context_menu_item(index);
             }
@@ -3247,7 +2989,8 @@ impl Widget for TerminalWidget {
 
     /// Paint the terminal, then overlay remote collaborators' selections and
     /// carets in their own colours on top (following the `TextInput` model).
-    /// Grid content is shared via the CRDT; this adds the per-peer decoration.
+    /// Grid content is shared via the session record; this adds the per-peer
+    /// decoration.
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -3283,7 +3026,7 @@ impl Widget for TerminalWidget {
 
 impl ui::presence::capability::PublishesPresence for TerminalWidget {
     /// Scope this terminal's collaboration presence to a shared pane id (see
-    /// `terminal_pane_id` in the CRDT) so both peers of a shared session file
+    /// the session record's pane) so both peers of a shared session file
     /// their caret/selection under the same key and can find each other's.
     fn presence_key(&self) -> Option<PresenceKey> {
         Some(PresenceKey::App {
@@ -3293,7 +3036,7 @@ impl ui::presence::capability::PublishesPresence for TerminalWidget {
     }
     /// Broadcast the local view state to peers: the active text selection when
     /// there is one (so peers see what this user is selecting), otherwise the
-    /// cursor position. The grid/scrollback itself rides the shared CRDT, so
+    /// cursor position. The grid/scrollback itself rides the session record, so
     /// presence only needs to carry the per-user caret/selection.
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
         let key = self.presence_key()?;
@@ -3337,56 +3080,35 @@ impl TerminalWidget {
         self.framework_hosted = true;
     }
 
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>,
-    ) {
-        self.framework_dispatch = Some(dispatcher);
+    /// Record this terminal's session through `dispatcher`: the session
+    /// record's own when the framework hosts the terminal, or a parent's
+    /// child dispatcher when the terminal is nested in another resource (an
+    /// editor's terminal panel), whose action carries each
+    /// [`TerminalAction`](crate::resource::TerminalAction) and applies it
+    /// with [`apply_under`](crate::resource::TerminalAction::apply_under).
+    /// The parent then presents the nested session with
+    /// [`ResourceSurface::present`](ui::framework::ResourceSurface::present)
+    /// as it changes, read with
+    /// [`Terminal::read_under`](crate::resource::Terminal::read_under).
+    /// Everything the session is already running is recorded from the next
+    /// sync on, in full.
+    pub fn bind(&mut self, dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>) {
+        self.dispatch = Some(dispatcher);
+        self.synced = None;
         self.mark_framework_hosted();
-    }
-
-    /// Document-level session action: the stored dispatcher when hosted, the
-    /// local action host otherwise.
-    pub(crate) fn apply_session_action(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &crate::resource::TerminalAction,
-    ) {
-        let context =
-            ui::tilo_actions::ActionContext::for_action("so.tilo.terminal", "Terminal", action);
-        if let Some(dispatcher) = self.framework_dispatch.clone() {
-            let _ = dispatcher.apply_now_with(doc, action, context);
-        } else {
-            self.session_actions.dispatch_with_context(
-                doc,
-                <crate::resource::Terminal as ui::tilo_resource::Resource>::ACTION_TYPE,
-                action,
-                context,
-            );
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn retains_framework_dispatcher(&self) -> bool {
-        self.framework_dispatch.is_some()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_session_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.session_actions.last_dispatched()
     }
 }
 
 impl ui::resources::PublishesResources for TerminalWidget {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         if self.framework_hosted {
             return vec![self.transcript_resource()];
         }
-        vec![self.session_resource_with(Some(doc))]
+        vec![self.session_resource()]
     }
     fn action_directory_resource_page(
         &self,
-        doc: &AutoCommit,
+        _doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
@@ -3395,7 +3117,7 @@ impl ui::resources::PublishesResources for TerminalWidget {
                 if self.framework_hosted {
                     self.transcript_resource()
                 } else {
-                    self.session_resource_with(Some(doc))
+                    self.session_resource()
                 }
             })
             .into_iter()
@@ -3422,7 +3144,7 @@ impl ui::resources::PublishesResources for TerminalWidget {
         }
         Some(format!("{:016x}", revision.finish()))
     }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         fn find(resource: &Resource, id: &str) -> Option<Resource> {
             if resource.id.as_str() == id {
                 return Some(resource.clone());
@@ -3444,7 +3166,7 @@ impl ui::resources::PublishesResources for TerminalWidget {
             }
             return self.linked_resource(id);
         }
-        let session = self.session_resource_with(Some(doc));
+        let session = self.session_resource();
         if id == self.terminal_resource_id() || id == session.id.as_str() {
             return Some(session);
         }
@@ -3495,12 +3217,6 @@ impl ui::widget::controls::ActionControls for TerminalWidget {
         for (index, available) in availability {
             self.context_menu.set_item_enabled(index, available);
         }
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for TerminalWidget {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -4004,175 +3720,6 @@ impl TerminalWidget {
             // Typing snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
             *handled = true;
-        }
-    }
-
-    /// Re-read `line_ids[start..len]` from `state` into the `grid`/
-    /// `grid_attrs` mirror, choosing `start` by whether a full or
-    /// incremental re-read is needed. Helper for [`Widget::sync`].
-    fn refresh_grid_mirror(
-        &mut self,
-        state: &AutoCommit,
-        line_ids: &[ObjId],
-        len: usize,
-        full_reread: bool,
-    ) {
-        // Choose the first line to re-read. A full pass rebuilds the mirror;
-        // the incremental pass keeps the mirror aligned by dropping the oldest
-        // lines that were trimmed off the CRDT front, then re-reads from the
-        // *previous* frame's screen top through the end — that spans every row
-        // the emulator could have touched (the old screen scrolled into
-        // history plus everything freshly appended).
-        let start = if full_reread {
-            self.grid.clear();
-            self.grid_attrs.clear();
-            self.trimmed_front = 0;
-            0
-        } else {
-            let trimmed = self.trimmed_front;
-            let drop = trimmed.min(self.grid.len());
-            self.grid.drain(0..drop);
-            self.grid_attrs.drain(0..drop);
-            self.trimmed_front = 0;
-            self.synced_len
-                .saturating_sub(self.height)
-                .saturating_sub(trimmed)
-                .min(self.grid.len())
-        };
-        self.grid.resize(len, String::new());
-        self.grid_attrs.resize(len, Vec::new());
-
-        let end = len.min(line_ids.len());
-        for (i, line_id) in line_ids.iter().enumerate().take(end).skip(start) {
-            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(line_id, "text")
-                && let Ok(text) = state.text(&text_id)
-                && let Some(slot) = self.grid.get_mut(i)
-            {
-                *slot = text;
-            }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(line_id, "attrs")
-                && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
-                && let Some(slot) = self.grid_attrs.get_mut(i)
-            {
-                *slot = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
-            }
-        }
-        self.mirror_valid = true;
-        self.synced_len = len;
-    }
-
-    /// Refresh the window title + hyperlink registry from the CRDT so a
-    /// collaborator picking up a remote OSC 0/2/8 sees the same title and
-    /// can resolve the same links. The remote document is still treated as
-    /// untrusted: revalidate title text and cap the link materialisation rather
-    /// than assuming every collaborator used this build. Helper for
-    /// [`Widget::sync`].
-    fn refresh_title_and_links(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title")
-            && let Some(t) = v.as_str()
-            && let Some(t) = safe_osc_text(t.as_bytes(), MAX_OSC_TITLE_BYTES)
-        {
-            self.title = t;
-        }
-        if let Some(links_id) = self.links_id.clone() {
-            self.links.clear();
-            self.next_link_id = 0;
-            for key in state.keys(&links_id).take(MAX_OSC_LINKS) {
-                if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key)
-                    && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.as_str())
-                    && let Some(url) = safe_osc_text(url.as_bytes(), MAX_OSC_LINK_BYTES)
-                {
-                    self.next_link_id = self.next_link_id.max(id);
-                    self.links.insert(id, url);
-                }
-            }
-        }
-    }
-
-    fn refresh_image_placements(&mut self, state: &AutoCommit) {
-        let Some(images_id) = &self.images_id else {
-            return;
-        };
-        let scalar_u64 = |id: &ObjId, key: &str| -> Option<u64> {
-            let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
-                return None;
-            };
-            value.as_u64()
-        };
-        let scalar_string = |id: &ObjId, key: &str| -> Option<String> {
-            let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
-                return None;
-            };
-            value.as_str().map(ToOwned::to_owned)
-        };
-        let scalar_bool = |id: &ObjId, key: &str| -> Option<bool> {
-            let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
-                return None;
-            };
-            match value.as_ref() {
-                automerge::ScalarValue::Boolean(value) => Some(*value),
-                _ => None,
-            }
-        };
-        let mut placements = Vec::with_capacity(state.length(images_id));
-        for index in 0..state.length(images_id) {
-            let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(images_id, index) else {
-                continue;
-            };
-            let (Some(hash), Some(mime)) = (scalar_string(&id, "hash"), scalar_string(&id, "mime"))
-            else {
-                continue;
-            };
-            placements.push(TerminalImagePlacement {
-                hash,
-                mime,
-                byte_len: scalar_u64(&id, "byte_len").unwrap_or(0),
-                row: scalar_u64(&id, "row")
-                    .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(0),
-                col: scalar_u64(&id, "col")
-                    .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(0),
-                columns: scalar_u64(&id, "columns")
-                    .and_then(|value| u32::try_from(value).ok())
-                    .unwrap_or(0),
-                rows: scalar_u64(&id, "rows")
-                    .and_then(|value| u32::try_from(value).ok())
-                    .unwrap_or(0),
-                pixel_width: scalar_u64(&id, "pixel_width")
-                    .and_then(|value| u32::try_from(value).ok())
-                    .unwrap_or(0),
-                pixel_height: scalar_u64(&id, "pixel_height")
-                    .and_then(|value| u32::try_from(value).ok())
-                    .unwrap_or(0),
-                protocol_id: scalar_u64(&id, "protocol_id")
-                    .and_then(|value| u32::try_from(value).ok()),
-                alternate_screen: scalar_bool(&id, "alternate_screen").unwrap_or(false),
-            });
-        }
-        self.image_placements = placements;
-    }
-
-    /// Refresh the cursor position from the CRDT, converting the
-    /// buffer-absolute row the emulator wrote into a viewport-local row.
-    /// `active_len` is the length of the currently active buffer's line
-    /// list. Helper for [`Widget::sync`].
-    fn refresh_cursor_from_crdt(&mut self, state: &AutoCommit, active_len: usize) {
-        if let Some(cursor_id) = self.cursor_id.as_ref() {
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x")
-                && let Some(x) = v.as_i64()
-            {
-                self.cursor_x = x as usize;
-            }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y")
-                && let Some(y) = v.as_i64()
-            {
-                let abs_y = y as usize;
-                let history_offset = active_len.saturating_sub(self.height);
-                self.cursor_y = abs_y
-                    .saturating_sub(history_offset)
-                    .min(self.height.saturating_sub(1));
-            }
         }
     }
 
@@ -5637,19 +5184,10 @@ impl TerminalWidget {
 }
 
 pub struct TerminalPerformer<'a> {
-    pub state: &'a mut AutoCommit,
-    pub main_grid_id: ObjId,
-    pub alt_grid_id: ObjId,
-    pub cursor_id: ObjId,
-    /// CRDT map (`terminal_links`) storing OSC 8 link id → URL, so hyperlinks
-    /// resolve on every peer, not just the host that parsed the sequence.
-    pub links_id: ObjId,
-    pub images_id: ObjId,
-    /// Where Kitty graphics payloads are stored; the CRDT keeps only the hash.
+    /// The screen the output is drawn on.
+    pub screen: &'a mut crate::screen::Screen,
+    /// Where Kitty graphics payloads are stored; the screen keeps only the hash.
     pub content: &'a ContentStore,
-    pub main_line_ids: &'a mut Vec<ObjId>,
-    pub alt_line_ids: &'a mut Vec<ObjId>,
-    pub alt_active: &'a mut bool,
     pub width: usize,
     pub height: usize,
     pub cursor_x: usize,
@@ -5660,10 +5198,6 @@ pub struct TerminalPerformer<'a> {
     pub saved_cursor: &'a mut Option<(usize, usize, Attr)>,
     pub scroll_top: usize,
     pub scroll_bottom: usize,
-    /// Accumulates the count of oldest lines trimmed off the main buffer's
-    /// front this feed, so the widget's `sync` can keep its render mirror
-    /// aligned without a full re-read.
-    pub trimmed_front: &'a mut usize,
     /// Monotonic OSC 8 link-id allocator (shared with the widget so ids stay
     /// unique across feeds). `0` is reserved for "no link".
     pub next_link_id: &'a mut u16,
@@ -5671,7 +5205,7 @@ pub struct TerminalPerformer<'a> {
     /// printed while this is non-zero adopts it.
     pub current_link_id: u16,
     /// Out-param for an OSC 0/2 window-title change parsed this feed; the
-    /// widget writes it into the CRDT and its own `title` field afterwards.
+    /// widget records it in the session and its own `title` field afterwards.
     pub title_out: &'a mut Option<String>,
     /// Reply bytes accumulated for terminal capability queries (Device
     /// Attributes, Device Status Report, XTVERSION, DECRQM, …). A real
@@ -5682,26 +5216,21 @@ pub struct TerminalPerformer<'a> {
     /// from blocking for 10s on a Primary Device Attributes query that never
     /// gets answered.
     pub responses: &'a mut Vec<u8>,
-    /// Batches consecutive `print`s to the same line so a run of characters is
-    /// written to the CRDT once (a diffed text splice + one `attrs` put) rather
-    /// than once per cell. Per-cell `splice_text` + full-`attrs`-`put` is an
-    /// O(doc) write *per character*, so a screenful of output was O(n²) — the
-    /// exact per-keystroke document rewrite HIG §6 forbids, and enough to freeze
-    /// a debug build on a bulk paste / `cat`. Any non-`print` action flushes the
-    /// buffer first (see `flush_print_buf`)
-    /// so it never observes stale grid state.
+    /// Batches consecutive `print`s to the same line so a run of characters
+    /// replaces the line once rather than once per cell, which keeps a
+    /// screenful of output linear. Any non-`print` action flushes the buffer
+    /// first (see `flush_print_buf`) so it never observes stale grid state.
     pub print_buf: Option<PrintBuf>,
 }
 
 /// In-memory accumulator for a run of `print`s landing on one grid line.
-/// Mutated per character; written to the CRDT once when the line changes, any
-/// other emulator action runs, or the feed ends.
+/// Mutated per character; written to the line once when the line changes,
+/// any other emulator action runs, or the feed ends.
 pub struct PrintBuf {
-    line_obj: ObjId,
     text: String,
     attrs: Vec<u8>,
     alternate: bool,
-    index: u32,
+    index: usize,
 }
 
 fn splice_chars(text: &str, at: usize, delete: usize, insert: &str) -> String {
@@ -5754,48 +5283,29 @@ impl Perform for TerminalPerformer<'_> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some(index) = u32::try_from(y).ok() else {
-            return;
-        };
-        let Some(line_obj) = self.active_line_id(y) else {
-            return;
-        };
-
+        let alternate = self.screen.alternate;
         // Point the write buffer at this line, loading its current text + attrs
-        // once. Consecutive prints to the same line then mutate memory only; the
-        // CRDT is touched a single time when the line changes or an action
-        // flushes (below). This is what turns a screenful of output from O(n²)
-        // per-cell CRDT writes into O(cells) memory edits + O(lines) commits.
+        // once. Consecutive prints to the same line then mutate memory only;
+        // the line is replaced a single time when the print run ends.
         let need_load = self
             .print_buf
             .as_ref()
-            .is_none_or(|b| b.line_obj != line_obj);
+            .is_none_or(|b| b.index != y || b.alternate != alternate);
         if need_load {
             self.flush_print_buf();
-            let Ok(Some((Value::Object(ObjType::Text), text_id))) =
-                self.state.get(&line_obj, "text")
-            else {
+            let Some(line) = self.screen.active().get(y) else {
                 return;
             };
-            let text = self.state.text(&text_id).unwrap_or_default();
-            let attrs = match self.state.get(&line_obj, "attrs") {
-                Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                    automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
-                    _ => Vec::new(),
-                },
-                _ => Vec::new(),
-            };
             self.print_buf = Some(PrintBuf {
-                line_obj,
-                text,
-                attrs,
-                alternate: *self.alt_active,
-                index,
+                text: line.text.clone(),
+                attrs: line.attrs.clone(),
+                alternate,
+                index: y,
             });
         }
         // `need_load` above always leaves `print_buf` populated by this
-        // point — unless the CRDT `get` inside it failed, in which case that
-        // branch already returned. Nothing left to print into either way.
+        // point — unless the line is missing, in which case that branch
+        // already returned.
         let Some(buf) = self.print_buf.as_mut() else {
             return;
         };
@@ -5983,21 +5493,19 @@ impl Perform for TerminalPerformer<'_> {
                 }
             }
             // OSC 8 — hyperlink. Form: `OSC 8 ; <params> ; <URI> ST`. An empty
-            // URI closes the current link. We register the URI in the CRDT and
+            // URI closes the current link. We register the URI on the screen and
             // stamp its id onto subsequent cells via `current_link_id`.
             8 => {
                 let uri = params.get(2).copied().unwrap_or(b"");
                 if uri.is_empty() {
                     self.current_link_id = 0;
-                } else if self.state.length(&self.links_id) < MAX_OSC_LINKS
+                } else if self.screen.links.len() < MAX_OSC_LINKS
                     && let Some(url) = safe_osc_text(uri, MAX_OSC_LINK_BYTES)
                     && let Some(id) = self.next_link_id.checked_add(1)
                 {
                     *self.next_link_id = id;
-                    let action = crate::resource::TerminalAction::RegisterLink { id, url };
-                    if ui::tilo_actions::Action::apply(&action, self.state).is_ok() {
-                        self.current_link_id = id;
-                    }
+                    self.screen.links.insert(id, url);
+                    self.current_link_id = id;
                 }
             }
             _ => {}
@@ -6007,7 +5515,7 @@ impl Perform for TerminalPerformer<'_> {
 
 impl TerminalPerformer<'_> {
     /// Persist a complete direct Kitty transmission as a content-addressed blob
-    /// plus a lightweight CRDT placement descriptor. The local renderer
+    /// plus a lightweight placement on the screen. The local renderer
     /// validates and paints this subset, but no protocol success reply is sent:
     /// clients must not infer broad Kitty support from an acknowledgement.
     fn kitty_graphics(&mut self, payload: &[u8]) {
@@ -6025,20 +5533,22 @@ impl TerminalPerformer<'_> {
                 return;
             }
         };
-        let action = crate::resource::TerminalAction::PlaceImage {
+        if image.columns == 0 || image.rows == 0 || image.columns > 1024 || image.rows > 1024 {
+            return;
+        }
+        self.screen.images.push(TerminalImagePlacement {
             hash,
             mime: image.mime.to_string(),
             byte_len: image.bytes.len() as u64,
-            row: self.absolute_y() as u64,
-            col: self.cursor_x as u64,
-            columns: u64::from(image.columns),
-            rows: u64::from(image.rows),
-            pixel_width: u64::from(image.pixel_width),
-            pixel_height: u64::from(image.pixel_height),
-            protocol_id: image.protocol_id.map(u64::from),
-            alternate_screen: *self.alt_active,
-        };
-        let _ = ui::tilo_actions::Action::apply(&action, self.state);
+            row: self.absolute_y(),
+            col: self.cursor_x,
+            columns: image.columns,
+            rows: image.rows,
+            pixel_width: image.pixel_width,
+            pixel_height: image.pixel_height,
+            protocol_id: image.protocol_id,
+            alternate_screen: self.screen.alternate,
+        });
     }
 
     fn csi_first(p: &vte::Params) -> u16 {
@@ -6176,187 +5686,57 @@ impl TerminalPerformer<'_> {
         }
     }
 
-    fn active_grid_id(&self) -> ObjId {
-        if *self.alt_active {
-            self.alt_grid_id.clone()
-        } else {
-            self.main_grid_id.clone()
-        }
-    }
     fn active_len(&self) -> usize {
-        if *self.alt_active {
-            self.alt_line_ids.len()
-        } else {
-            self.main_line_ids.len()
-        }
-    }
-    fn active_line_id(&self, idx: usize) -> Option<ObjId> {
-        let ids: &Vec<ObjId> = if *self.alt_active {
-            self.alt_line_ids
-        } else {
-            self.main_line_ids
-        };
-        ids.get(idx).cloned()
-    }
-    fn active_line_ids_mut(&mut self) -> &mut Vec<ObjId> {
-        if *self.alt_active {
-            self.alt_line_ids
-        } else {
-            self.main_line_ids
-        }
+        self.screen.active().len()
     }
 
-    /// Insert a fresh blank line object into the active grid at `idx`,
-    /// returning its id. Does not touch `line_ids`. Returns `None` if the
-    /// underlying doc rejected the insert (nothing sane to fall back to —
-    /// callers skip the line rather than fabricate an id).
-    fn make_blank_line(&mut self, idx: usize) -> Option<ObjId> {
-        let grid_id = self.active_grid_id();
-        let text = " ".repeat(self.width);
-        let attrs = vec![Attr::default().pack(); self.width].concat();
-        let key = if *self.alt_active {
-            "terminal_grid_alt"
-        } else {
-            "terminal_grid"
-        };
-        if grid_is_document_root(self.state, key, &grid_id) {
-            let index = u32::try_from(idx).ok()?;
-            ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::InsertBlankLine {
-                    alternate: *self.alt_active,
-                    index,
-                    text,
-                    attrs,
-                },
-                self.state,
-            )
-            .ok()?;
-        } else {
-            let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
-            let text_id = self
-                .state
-                .put_object(&line_id, "text", ObjType::Text)
-                .ok()?;
-            let _ = self.state.splice_text(&text_id, 0, 0, &text);
-            let _ = self.state.put(&line_id, "attrs", attrs);
-        }
-        match self.state.get(&grid_id, idx).ok().flatten() {
-            Some((Value::Object(ObjType::Map), id)) => Some(id),
-            _ => None,
-        }
+    fn active_lines_mut(&mut self) -> &mut Vec<std::rc::Rc<crate::screen::Line>> {
+        let alternate = self.screen.alternate;
+        self.screen.lines_mut(alternate)
+    }
+
+    fn blank_line(&self) -> std::rc::Rc<crate::screen::Line> {
+        std::rc::Rc::new(crate::screen::Line {
+            text: " ".repeat(self.width),
+            attrs: vec![Attr::default().pack(); self.width].concat(),
+        })
+    }
+
+    /// Insert a blank line into the active buffer at `index`.
+    fn insert_blank_line(&mut self, index: usize) {
+        let line = self.blank_line();
+        let lines = self.active_lines_mut();
+        let index = index.min(lines.len());
+        lines.insert(index, line);
     }
 
     fn delete_grid_line(&mut self, index: usize) {
-        let grid_id = self.active_grid_id();
-        let key = if *self.alt_active {
-            "terminal_grid_alt"
-        } else {
-            "terminal_grid"
-        };
-        if grid_is_document_root(self.state, key, &grid_id) {
-            let Some(index) = u32::try_from(index).ok() else {
-                return;
-            };
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::DeleteGridLine {
-                    alternate: *self.alt_active,
-                    index,
-                },
-                self.state,
-            );
-        } else {
-            let _ = self.state.delete(&grid_id, index);
+        let lines = self.active_lines_mut();
+        if index < lines.len() {
+            lines.remove(index);
         }
     }
 
+    /// Replace one line of the active buffer. An unchanged line keeps its
+    /// allocation, which is how the session record learns it did not change.
     fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
-        let grid_id = self.active_grid_id();
-        let key = if *self.alt_active {
-            "terminal_grid_alt"
-        } else {
-            "terminal_grid"
-        };
-        if grid_is_document_root(self.state, key, &grid_id) {
-            let Some(index) = u32::try_from(index).ok() else {
-                return;
-            };
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::WriteLine {
-                    alternate: *self.alt_active,
-                    index,
-                    text,
-                    attrs,
-                },
-                self.state,
-            );
-        } else if let Some(line) = self.active_line_id(index) {
-            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line, "text")
-            {
-                ui::doc::splice_text_diffed(self.state, &text_id, &text);
-            }
-            let _ = self.state.put(&line, "attrs", attrs);
+        if let Some(line) = self.active_lines_mut().get_mut(index)
+            && (line.text != text || line.attrs != attrs)
+        {
+            *line = std::rc::Rc::new(crate::screen::Line { text, attrs });
         }
     }
 
-    fn line_text_and_attrs(&self, line_obj: &ObjId) -> Option<(String, Vec<u8>)> {
-        let Some((Value::Object(ObjType::Text), text_id)) =
-            self.state.get(line_obj, "text").ok().flatten()
-        else {
-            return None;
-        };
-        let text = self.state.text(&text_id).unwrap_or_default();
-        let attrs = match self.state.get(line_obj, "attrs").ok().flatten() {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
-        };
-        Some((text, attrs))
-    }
-
-    fn shift_nested_image_placements(&mut self, removed_rows: usize) {
-        for index in (0..self.state.length(&self.images_id)).rev() {
-            let Ok(Some((Value::Object(ObjType::Map), placement))) =
-                self.state.get(&self.images_id, index)
-            else {
-                continue;
-            };
-            let alternate = self
-                .state
-                .get(&placement, "alternate_screen")
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| {
-                    matches!(value, automerge::ScalarValue::Boolean(true)).then_some(true)
-                })
-                .unwrap_or(false);
-            if alternate {
-                continue;
-            }
-            let row = self
-                .state
-                .get(&placement, "row")
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| value.as_u64())
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(0);
-            if row < removed_rows {
-                let _ = self.state.delete(&self.images_id, index);
-            } else {
-                let _ = self
-                    .state
-                    .put(&placement, "row", (row - removed_rows) as u64);
-            }
-        }
+    fn line_text_and_attrs(&self, index: usize) -> Option<(String, Vec<u8>)> {
+        self.screen
+            .active()
+            .get(index)
+            .map(|line| (line.text.clone(), line.attrs.clone()))
     }
 
     fn newline(&mut self) {
         // A line feed leaves the current line; commit any buffered prints first
-        // so the appended/scrolled structure is computed over fresh CRDT state
+        // so the appended/scrolled structure is computed over the fresh line
         // (and so a print → auto-wrap → newline doesn't strand the old line).
         self.flush_print_buf();
         self.cursor_y += 1;
@@ -6365,45 +5745,30 @@ impl TerminalPerformer<'_> {
         }
         self.cursor_y = self.height - 1;
 
-        if *self.alt_active {
+        if self.screen.alternate {
             // Fixed-height alternate buffer: scroll the region up in place.
             self.scroll_region_up(1);
         } else {
             // Main buffer accumulates scrollback.
-            let idx = self.main_line_ids.len();
-            if let Some(line_id) = self.make_blank_line(idx) {
-                self.main_line_ids.push(line_id);
-            }
+            let line = self.blank_line();
+            self.screen.main.push(line);
 
             // Bound the retained scrollback. Trimming one line at a time on
             // every append made `Vec::remove(0)` an O(n) shift per output line
             // (O(n²) over a flood); instead let history overrun by a slack
-            // margin and drop the overflow in a single `drain`. The trimmed
-            // count feeds the widget's incremental `sync` so the render mirror
-            // stays aligned.
-            if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
-                let overflow = self.main_line_ids.len() - MAX_HISTORY;
-                if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
-                    if let Ok(count) = u32::try_from(overflow) {
-                        let _ = ui::tilo_actions::Action::apply(
-                            &crate::resource::TerminalAction::TrimGridPrefix { count },
-                            self.state,
-                        );
-                        let _ = ui::tilo_actions::Action::apply(
-                            &crate::resource::TerminalAction::ShiftImageRows {
-                                removed_rows: count,
-                            },
-                            self.state,
-                        );
+            // margin and drop the overflow in a single `drain`. Images on the
+            // dropped rows go with them; the others move up.
+            if self.screen.main.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
+                let overflow = self.screen.main.len() - MAX_HISTORY;
+                self.screen.main.drain(0..overflow);
+                self.screen.images.retain_mut(|image| {
+                    if image.alternate_screen {
+                        return true;
                     }
-                } else {
-                    for _ in 0..overflow {
-                        let _ = self.state.delete(&self.main_grid_id, 0);
-                    }
-                    self.shift_nested_image_placements(overflow);
-                }
-                self.main_line_ids.drain(0..overflow);
-                *self.trimmed_front += overflow;
+                    let kept = image.row >= overflow;
+                    image.row = image.row.saturating_sub(overflow);
+                    kept
+                });
             }
         }
     }
@@ -6424,10 +5789,7 @@ impl TerminalPerformer<'_> {
         let n = n.min(bot - top + 1);
         for _ in 0..n {
             self.delete_grid_line(top);
-            self.active_line_ids_mut().remove(top);
-            if let Some(line) = self.make_blank_line(bot) {
-                self.active_line_ids_mut().insert(bot, line);
-            }
+            self.insert_blank_line(bot);
         }
     }
 
@@ -6446,10 +5808,7 @@ impl TerminalPerformer<'_> {
         let n = n.min(bot - top + 1);
         for _ in 0..n {
             self.delete_grid_line(bot);
-            self.active_line_ids_mut().remove(bot);
-            if let Some(line) = self.make_blank_line(top) {
-                self.active_line_ids_mut().insert(top, line);
-            }
+            self.insert_blank_line(top);
         }
     }
 
@@ -6467,10 +5826,7 @@ impl TerminalPerformer<'_> {
         let n = n.min(bot - at + 1);
         for _ in 0..n {
             self.delete_grid_line(bot);
-            self.active_line_ids_mut().remove(bot);
-            if let Some(line) = self.make_blank_line(at) {
-                self.active_line_ids_mut().insert(at, line);
-            }
+            self.insert_blank_line(at);
         }
         self.cursor_x = 0;
     }
@@ -6489,10 +5845,7 @@ impl TerminalPerformer<'_> {
         let n = n.min(bot - at + 1);
         for _ in 0..n {
             self.delete_grid_line(at);
-            self.active_line_ids_mut().remove(at);
-            if let Some(line) = self.make_blank_line(bot) {
-                self.active_line_ids_mut().insert(bot, line);
-            }
+            self.insert_blank_line(bot);
         }
         self.cursor_x = 0;
     }
@@ -6529,10 +5882,7 @@ impl TerminalPerformer<'_> {
 
     fn erase_line(&mut self, mode: u16) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some(line_obj) = self.active_line_id(y) else {
-            return;
-        };
-        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+        let Some((text, mut attrs)) = self.line_text_and_attrs(y) else {
             return;
         };
         let len = text.chars().count();
@@ -6552,10 +5902,7 @@ impl TerminalPerformer<'_> {
 
     fn erase_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some(line_obj) = self.active_line_id(y) else {
-            return;
-        };
-        let Some((text, mut attrs)) = self.line_text_and_attrs(&line_obj) else {
+        let Some((text, mut attrs)) = self.line_text_and_attrs(y) else {
             return;
         };
         let len = text.chars().count();
@@ -6570,10 +5917,7 @@ impl TerminalPerformer<'_> {
 
     fn insert_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some(line_obj) = self.active_line_id(y) else {
-            return;
-        };
-        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+        let Some((text, attrs)) = self.line_text_and_attrs(y) else {
             return;
         };
         let n = n.min(self.width.saturating_sub(self.cursor_x));
@@ -6589,10 +5933,7 @@ impl TerminalPerformer<'_> {
 
     fn delete_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some(line_obj) = self.active_line_id(y) else {
-            return;
-        };
-        let Some((text, attrs)) = self.line_text_and_attrs(&line_obj) else {
+        let Some((text, attrs)) = self.line_text_and_attrs(y) else {
             return;
         };
         let len = text.chars().count();
@@ -6650,13 +5991,13 @@ impl TerminalPerformer<'_> {
     }
 
     fn enter_alt(&mut self, save_cursor: bool) {
-        if *self.alt_active {
+        if self.screen.alternate {
             return;
         }
         if save_cursor {
             *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
         }
-        *self.alt_active = true;
+        self.screen.alternate = true;
         // Present a cleared alternate screen and home the cursor.
         self.clear_alt_buffer();
         self.cursor_x = 0;
@@ -6667,10 +6008,10 @@ impl TerminalPerformer<'_> {
     }
 
     fn exit_alt(&mut self, restore_cursor: bool) {
-        if !*self.alt_active {
+        if !self.screen.alternate {
             return;
         }
-        *self.alt_active = false;
+        self.screen.alternate = false;
         self.scroll_top = 0;
         self.scroll_bottom = self.height.saturating_sub(1);
         if restore_cursor && let Some((x, y, a)) = self.saved_cursor.take() {
@@ -6685,16 +6026,15 @@ impl TerminalPerformer<'_> {
     /// `height` lines (a previous alt session may have left it longer).
     fn clear_alt_buffer(&mut self) {
         let width = self.width;
-        let count = self.alt_line_ids.len();
+        let count = self.screen.alt.len();
         let text = " ".repeat(width);
         let attrs = vec![Attr::default().pack(); width].concat();
         for index in 0..count {
             self.write_grid_line(index, text.clone(), attrs.clone());
         }
-        while self.alt_line_ids.len() > self.height {
-            let idx = self.alt_line_ids.len() - 1;
+        while self.screen.alt.len() > self.height {
+            let idx = self.screen.alt.len() - 1;
             self.delete_grid_line(idx);
-            self.alt_line_ids.pop();
         }
     }
 
@@ -6806,69 +6146,37 @@ impl TerminalPerformer<'_> {
     }
 
     /// Cursor position is tracked in the `cursor_x`/`cursor_y` fields as the
-    /// stream is parsed; the CRDT copy is written once per feed by
+    /// stream is parsed; the screen's copy is written once per feed by
     /// [`flush_cursor`](Self::flush_cursor) rather than on every cell, so this
     /// is intentionally a no-op kept only so the call sites read naturally.
     #[allow(
         clippy::needless_pass_by_ref_mut,
         clippy::unused_self,
-        reason = "deliberate no-op: `&mut self` marks every cursor-moving call site as a mutation for readability/symmetry with flush_cursor, even though the actual CRDT write is batched there"
+        reason = "deliberate no-op: `&mut self` marks every cursor-moving call site as a mutation for readability/symmetry with flush_cursor, even though the actual screen write is batched there"
     )]
     fn update_cursor(&mut self) {}
 
-    /// Commit any buffered run of printed characters to the CRDT: one diffed
-    /// text splice (touching only the changed span) + one `attrs` put for the
-    /// whole line, in place of the per-character write storm the naive path did.
-    /// A no-op when nothing is buffered.
+    /// Commit any buffered run of printed characters to its line, once for
+    /// the whole run. A no-op when nothing is buffered.
     pub(crate) fn flush_print_buf(&mut self) {
-        if let Some(buf) = self.print_buf.take() {
-            let grid = if buf.alternate {
-                &self.alt_grid_id
-            } else {
-                &self.main_grid_id
-            };
-            let key = if buf.alternate {
-                "terminal_grid_alt"
-            } else {
-                "terminal_grid"
-            };
-            if grid_is_document_root(self.state, key, grid) {
-                let _ = ui::tilo_actions::Action::apply(
-                    &crate::resource::TerminalAction::WriteLine {
-                        alternate: buf.alternate,
-                        index: buf.index,
-                        text: buf.text,
-                        attrs: buf.attrs,
-                    },
-                    self.state,
-                );
-            } else if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
-                self.state.get(&buf.line_obj, "text")
-            {
-                ui::doc::splice_text_diffed(self.state, &text_id, &buf.text);
-                let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
-            }
+        if let Some(buf) = self.print_buf.take()
+            && let Some(line) = self.screen.lines_mut(buf.alternate).get_mut(buf.index)
+            && (line.text != buf.text || line.attrs != buf.attrs)
+        {
+            *line = std::rc::Rc::new(crate::screen::Line {
+                text: buf.text,
+                attrs: buf.attrs,
+            });
         }
     }
 
-    /// Persist the final cursor position into the CRDT. Called once at the end
-    /// of a feed — the cursor is read back only by `sync`/`init_crdt`, so a
-    /// single write per batch is enough and avoids per-cell `put` churn.
+    /// Record the final cursor position. Called once at the end of a feed
+    /// rather than on every printed cell.
     pub fn flush_cursor(&mut self) {
         // Commit the last line of a print run that ended the feed (no trailing
         // control byte to flush it).
         self.flush_print_buf();
-        let x = self.cursor_x as u64;
-        let y = self.absolute_y() as u64;
-        if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::SetCursor { x, y },
-                self.state,
-            );
-        } else {
-            let _ = self.state.put(&self.cursor_id, "x", x);
-            let _ = self.state.put(&self.cursor_id, "y", y);
-        }
+        self.screen.cursor = (self.cursor_x as u64, self.absolute_y() as u64);
     }
 
     /// Stage `bytes` to be written back to the PTY once this feed's parse
@@ -6942,7 +6250,7 @@ impl TerminalPerformer<'_> {
             1004 => Some(self.modes.focus_report),
             1006 => Some(self.modes.mouse_sgr),
             2004 => Some(self.modes.bracketed_paste),
-            47 | 1047 | 1049 => Some(*self.alt_active),
+            47 | 1047 | 1049 => Some(self.screen.alternate),
             _ => None,
         };
         let pv = match state {
@@ -7901,8 +7209,7 @@ impl TerminalWidget {
         self.session_disconnected = Arc::new(AtomicBool::new(false));
         self.session_status_message =
             Arc::new(Mutex::new("Session ended — input unavailable".into()));
-        self.local_session_id = Some(uuid::Uuid::new_v4().to_string());
-        self.local_session_bound = false;
+        self.begin_local_session();
         let widget = self;
         #[cfg(unix)]
         {
@@ -7917,7 +7224,6 @@ impl TerminalWidget {
             let disconnected = widget.session_disconnected.clone();
             let status = widget.session_status_message.clone();
             let waker = widget.waker.clone();
-            let pending = widget.wake_pending.clone();
             let mut child = backend.child;
             if std::thread::Builder::new()
                 .name("tilo-terminal-child-wait".into())
@@ -7928,7 +7234,7 @@ impl TerminalWidget {
                         "Terminal process status failed — input unavailable"
                     };
                     set_terminal_disconnected(&disconnected, &status, message);
-                    request_terminal_wake(&waker, &pending);
+                    request_terminal_wake(&waker);
                 })
                 .is_err()
             {
@@ -7938,10 +7244,9 @@ impl TerminalWidget {
                 widget.mark_disconnected("Terminal unavailable — process monitor could not start");
             }
         }
-        // Share the waker + coalescing flag with the reader thread so fresh PTY
-        // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
+        // Share the waker with the reader thread so fresh PTY output wakes an
+        // idle host instead of waiting for a poll.
         let waker = widget.waker.clone();
-        let wake_pending = widget.wake_pending.clone();
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
 
@@ -7972,7 +7277,7 @@ impl TerminalWidget {
                             &session_status_message,
                             "Terminal reader failed — session unavailable",
                         );
-                        request_terminal_wake(&waker, &wake_pending);
+                        request_terminal_wake(&waker);
                         break;
                     };
                     let read = std::io::Read::read(&mut *r, &mut buf);
@@ -7988,7 +7293,7 @@ impl TerminalWidget {
                                 &session_status_message,
                                 "Session ended — input unavailable",
                             );
-                            request_terminal_wake(&waker, &wake_pending);
+                            request_terminal_wake(&waker);
                             break;
                         }
                         PtyReadDisposition::Data(n) => {
@@ -7996,17 +7301,15 @@ impl TerminalWidget {
                             if output_tx.send(chunk.to_vec()).is_err() {
                                 break;
                             }
-                            // Wake the event loop so `sync` drains the PTY. Coalesced
-                            // via `wake_pending`: at most one in-flight wake until the
-                            // App delivers it (`on_external_event` clears the flag).
-                            request_terminal_wake(&waker, &wake_pending);
+                            // Wake the host so `sync` drains the PTY.
+                            request_terminal_wake(&waker);
                         }
                     }
                 }
             });
         if reader_result.is_err() {
             widget.mark_disconnected("Terminal unavailable — PTY reader could not start");
-            request_terminal_wake(&widget.waker, &widget.wake_pending);
+            request_terminal_wake(&widget.waker);
         }
     }
 

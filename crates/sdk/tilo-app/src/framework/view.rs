@@ -191,6 +191,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.me()
     }
 
+    /// What the launch that opened this window named — the file a person
+    /// opened the app with, its command line — for a view that shows what
+    /// the launch's actions ([`ResourceApp::launch`](super::ResourceApp::launch))
+    /// made: the note a launch imported, opened. Empty for a plain start and
+    /// for a past version.
+    pub fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
+    }
+
     /// Whether this participant may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
     /// or disable something else while the participant may only view, bind to
@@ -255,7 +264,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// on them beyond the actions the launch took: the file a save writes
     /// back to. Empty for a plain start, a past version and a capture.
     pub fn launch_arguments(&self) -> &[String] {
-        &self.run.arguments
+        &self.run.launched.arguments
     }
 
     /// The app's typed settings of type `S`, kept current while this scope
@@ -266,6 +275,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
     {
         self.storage.follow(self.alive.clone())
+    }
+
+    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
+    /// theirs alone, kept in their own room and synced to their other
+    /// devices, never to a collaborator, whatever room this record is in.
+    /// `None` where the host keeps no records of the person's (a view of a
+    /// past version) or the record cannot be opened.
+    pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
     }
 
     /// The app's files, secrets and settings documents, as its host gave
@@ -577,7 +595,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
+        let jobs = self.effects.surface_jobs();
         surface.attach(SurfaceCx {
+            jobs: jobs.clone(),
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
             run: self.run.clone(),
@@ -590,6 +610,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.live.clone(),
             self.dispatch.clone(),
             &self.effects,
+            jobs,
             self.alive.clone(),
             surface,
         );
@@ -632,6 +653,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.effects.handle(self.alive.clone(), handle);
         }
         EffectsHandle { status }
+    }
+
+    /// Jobs the view starts on its own, with nobody invoking an effect: a
+    /// fetch when what it shows changes. See [`Jobs`](super::Jobs).
+    pub fn jobs(&self) -> super::Jobs<R> {
+        self.effects.view_jobs()
     }
 
     /// Drain a projection: what the resource's actions queued for the world

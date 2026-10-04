@@ -4,7 +4,9 @@
 //! affordances by their laid-out rect, and inject real winit pointer events
 //! through `Widget::handle_event` — the exact production path (`ActionBus` drain →
 //! `TubeApp::apply`). No app-level shortcuts: a passing test means a real click
-//! at the real coordinates did the real thing.
+//! at the real coordinates did the real thing. Controls that change the shared
+//! library go through the framework's door and are driven through the
+//! framework app in `resource.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -462,7 +464,7 @@ fn watch_app() -> TubeApp {
 }
 
 #[test]
-fn watch_and_settings_controls_toggle_state_through_real_clicks() {
+fn share_copies_a_link_through_a_real_click() {
     // Case `share_button_copies_a_link_and_is_not_wired_to_like`.
     {
         // Clicking Share must record a "link copied" notice (the visible
@@ -492,76 +494,6 @@ fn watch_and_settings_controls_toggle_state_through_real_clicks() {
         assert!(
             h.has_id("notices"),
             "the share confirmation shows in the toast strip"
-        );
-    }
-    // Case `like_button_toggles_liked_state_through_a_real_click`.
-    {
-        let mut h = Harness::new(watch_app(), VIEWPORT);
-        assert!(!h.app.model_for_test().is_liked(WATCH_ID));
-
-        h.click_id("like_btn");
-        assert!(
-            h.app.model_for_test().is_liked(WATCH_ID),
-            "clicking Like marks the video liked"
-        );
-
-        h.click_id("like_btn");
-        assert!(
-            !h.app.model_for_test().is_liked(WATCH_ID),
-            "clicking Like again unlikes it"
-        );
-    }
-    // Case `settings_category_mode_pill_cycles_the_skip_mode_through_a_real_click`.
-    {
-        use tube::model::{Category, SkipMode};
-        let app = TubeApp::new()
-            .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
-            .with_route_shot(Route::Settings);
-        let mut h = Harness::new(app, VIEWPORT);
-        // Sponsor defaults to Auto-skip; clicking its mode pill cycles it to Show.
-        assert_eq!(
-            h.app.model_for_test().settings.mode_of(Category::Sponsor),
-            SkipMode::Skip
-        );
-        h.click_id(&format!("mode_{}", Category::Sponsor.api_key()));
-        assert_eq!(
-            h.app.model_for_test().settings.mode_of(Category::Sponsor),
-            SkipMode::Show,
-            "clicking the mode pill cycles Auto-skip → Show"
-        );
-    }
-    // Case `subscribe_pill_toggles_subscription_through_a_real_click`.
-    {
-        let mut h = Harness::new(watch_app(), VIEWPORT);
-        let channel = h
-            .app
-            .model_for_test()
-            .video(WATCH_ID)
-            .unwrap()
-            .channel_id
-            .clone();
-        let before = h.app.model_for_test().is_subscribed(&channel);
-        h.click_id("subscribe_btn");
-        assert_ne!(
-            before,
-            h.app.model_for_test().is_subscribed(&channel),
-            "clicking the subscribe pill flips the subscription"
-        );
-    }
-    // Case `autoplay_switch_toggles_the_setting_through_a_real_switch_click`.
-    {
-        // Exercise `Switch::handle_event` for real (not app.apply): click the
-        // autoplay switch on the Settings page and prove the setting flips.
-        let app = TubeApp::new()
-            .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
-            .with_route_shot(Route::Settings);
-        let mut h = Harness::new(app, VIEWPORT);
-        let before = h.app.model_for_test().settings.autoplay;
-        h.click_id("switch_autoplay");
-        assert_ne!(
-            before,
-            h.app.model_for_test().settings.autoplay,
-            "clicking the autoplay switch flips the setting"
         );
     }
 }

@@ -33,11 +33,17 @@ pub mod live_rows;
 pub mod model_contract;
 #[path = "participant.rs"]
 pub mod participant;
+#[path = "person_records.rs"]
+pub mod person_records;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "scenarios.rs"]
 pub mod scenarios;
 #[path = "settings.rs"]
 pub mod settings;
+#[path = "surface_semantics.rs"]
+pub mod surface_semantics;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;
+#[path = "window_view.rs"]
+pub mod window_view;

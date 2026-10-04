@@ -33,10 +33,14 @@ use tilo_actions::{
 };
 use tilo_resource::{ActionRef, Effect, Invoke, Resource};
 use ui_core::WakeHandle;
+use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, SaveOutcome};
 use ui_core::widget::{ResourceOperation, ResourceOperationStart};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
+
+/// Why a file chooser answered nothing.
+const CHOOSER_GONE: &str = "the file chooser closed without answering";
 
 /// What an effect handler (or a job's completion) answers.
 #[derive(Debug)]
@@ -148,12 +152,17 @@ impl std::fmt::Debug for EffectReply {
 
 type Then<R, H> = Box<dyn FnOnce(&mut H, Box<dyn Any + Send>, &mut EffectCx<R, H>) -> EffectAnswer>;
 
+/// An answer a job waits for without a worker: polled on the UI thread each
+/// time the job is, `Some` once it arrived.
+type Source = Box<dyn FnMut() -> Option<Box<dyn Any + Send>>>;
+
 /// A job a handler or a completion started, not yet tracked.
 struct Started<R: Resource, H> {
     events: Receiver<JobEvent>,
     then: Option<Then<R, H>>,
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
+    source: Option<Source>,
 }
 
 impl<R: Resource, H> Started<R, H> {
@@ -247,6 +256,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             then,
             cancelled: Arc::clone(&cancelled),
             task: None,
+            source: None,
         }) {
             tracing::warn!("an effect started a second job; the first one is stopped");
             previous.stop();
@@ -314,6 +324,210 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     pub fn reply(&mut self) -> EffectReply {
         let (progress, _) = self.track(None);
         EffectReply { progress }
+    }
+
+    /// Run `then` on the UI thread with what `receiver` delivers, `None`
+    /// when its sender went away unanswered. Nothing waits on a thread (a
+    /// browser page has none to spare): the job looks each time the app
+    /// wakes, so the sender must wake it, as the host's services do.
+    fn wait_for<T: Send + 'static>(
+        &mut self,
+        receiver: Receiver<T>,
+        then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let (progress, _) = self.track(Some(Self::then(then)));
+        if let Some(started) = self.started.as_mut() {
+            started.source = Some(Box::new(move || {
+                // The job's own channel stays open while it waits here.
+                let _waiting = &progress;
+                match receiver.try_recv() {
+                    Ok(value) => Some(Box::new(Some(value)) as Box<dyn Any + Send>),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some(Box::new(None::<T>)),
+                }
+            }));
+        }
+        Effected::Pending
+    }
+
+    /// Ask the person to choose a file with the host's chooser (`request`
+    /// is an Open request), then run `then` on the UI thread with its name
+    /// and contents, or `None` when they cancelled. Works where files have
+    /// no paths, such as a browser page. The effect must be declared `job`.
+    pub fn choose_file(
+        &mut self,
+        request: PickRequest,
+        then: impl FnOnce(&mut H, Option<PickedContents>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let chosen = request.send_contents();
+        self.wait_for(chosen, move |host, outcome, cx| match outcome {
+            Some(ContentsOutcome::Picked(files)) => then(host, files.into_iter().next(), cx),
+            Some(ContentsOutcome::Cancelled) => then(host, None, cx),
+            Some(ContentsOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
+    }
+
+    /// Ask the person where to save `bytes` with the host's chooser
+    /// (`request` is a Save request suggesting a file name; a browser page
+    /// downloads them under it), then run `then` on the UI thread with
+    /// whether they were saved: `false` when the person cancelled. The
+    /// effect must be declared `job`.
+    pub fn save_file(
+        &mut self,
+        request: PickRequest,
+        bytes: Vec<u8>,
+        then: impl FnOnce(&mut H, bool, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let saved = request.send_save_contents(bytes);
+        self.wait_for(saved, move |host, outcome, cx| match outcome {
+            Some(SaveOutcome::Saved) => then(host, true, cx),
+            Some(SaveOutcome::Cancelled) => then(host, false, cx),
+            Some(SaveOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
+    }
+}
+
+/// Work a view or surface starts on its own, with nobody invoking an
+/// effect: a route fetched when the destination changes, a feed refreshed
+/// when it opens. Each job runs under a key; starting another under a key
+/// still running stops the earlier one, so the latest request wins. A job
+/// is started like an effect's ([`EffectCx::thread`], [`EffectCx::spawn`])
+/// and finishes the same way, on the UI thread, with ordinary actions; a
+/// surface's completion gets `&mut` the surface. Jobs run only in a window
+/// someone uses: a past version and a capture start none.
+///
+/// Get one from [`SurfaceCx::jobs`](super::SurfaceCx::jobs) or
+/// [`ViewCx::jobs`](super::ViewCx::jobs). Clones share the jobs.
+pub struct Jobs<R: Resource> {
+    env: Option<EffectEnv<R>>,
+    queue: Rc<RefCell<JobQueue>>,
+}
+
+impl<R: Resource> Clone for Jobs<R> {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.clone(),
+            queue: Rc::clone(&self.queue),
+        }
+    }
+}
+
+/// What the jobs' owner has yet to take up.
+#[derive(Default)]
+struct JobQueue {
+    /// Jobs started and not yet tracked, each a `Started<R, H>`.
+    started: Vec<(String, Box<dyn Any>)>,
+    cancelled: Vec<String>,
+    running: std::collections::HashSet<String>,
+}
+
+impl<R: Resource> Jobs<R> {
+    pub(crate) fn new(env: Option<EffectEnv<R>>) -> Self {
+        Self {
+            env,
+            queue: Rc::default(),
+        }
+    }
+
+    /// Start the job `key` as `start` does it, through an [`EffectCx`] whose
+    /// completions get `&mut H`: the surface itself for a surface's jobs
+    /// (`jobs.start::<Self>(…)`), `()` for a view's. Work it finishes at
+    /// once needs no job; a failure is logged, as nobody waits for it.
+    pub fn start<H: 'static>(
+        &self,
+        key: impl Into<String>,
+        start: impl FnOnce(&mut EffectCx<R, H>) -> EffectAnswer,
+    ) {
+        let Some(env) = &self.env else {
+            return;
+        };
+        let key = key.into();
+        let mut cx = EffectCx::<R, H>::new(env.clone(), None);
+        let answer = start(&mut cx);
+        match (answer, cx.started.take()) {
+            (Ok(Effected::Pending), Some(started)) => {
+                let mut queue = self.queue.borrow_mut();
+                queue.cancelled.retain(|cancelled| *cancelled != key);
+                queue.started.retain(|(queued, _)| *queued != key);
+                queue.running.insert(key.clone());
+                queue.started.push((key, Box::new(started)));
+            }
+            (answer, started) => {
+                if let Some(started) = started {
+                    started.stop();
+                }
+                if let Err(error) = answer {
+                    tracing::warn!(%error, kind = R::KIND, %key, "a job failed to start");
+                }
+            }
+        }
+    }
+
+    /// Stop the job `key`; its result, if it comes, is dropped.
+    pub fn cancel(&self, key: &str) {
+        let mut queue = self.queue.borrow_mut();
+        queue.started.retain(|(queued, _)| queued != key);
+        if queue.running.remove(key) {
+            queue.cancelled.push(key.to_owned());
+        }
+    }
+
+    /// Whether the job `key` is still running.
+    pub fn is_running(&self, key: &str) -> bool {
+        self.queue.borrow().running.contains(key)
+    }
+}
+
+/// The jobs one owner runs, polled where its completions get `&mut H`.
+pub(crate) struct OwnedJobs<R: Resource, H> {
+    jobs: Jobs<R>,
+    running: Running<R, H, String>,
+}
+
+impl<R: Resource, H: 'static> OwnedJobs<R, H> {
+    pub(crate) fn new(jobs: Jobs<R>) -> Self {
+        Self {
+            jobs,
+            running: Running::default(),
+        }
+    }
+
+    /// Take up the jobs started since, stop the cancelled ones, and finish
+    /// those that are done with `host`.
+    pub(crate) fn poll(&mut self, host: &mut H) {
+        let Some(env) = self.jobs.env.clone() else {
+            return;
+        };
+        {
+            let mut queue = self.jobs.queue.borrow_mut();
+            for key in std::mem::take(&mut queue.cancelled) {
+                self.running.cancel(&key);
+            }
+            let mut others = Vec::new();
+            for (key, started) in std::mem::take(&mut queue.started) {
+                match started.downcast::<Started<R, H>>() {
+                    Ok(started) => self.running.insert(key, *started),
+                    Err(started) => others.push((key, started)),
+                }
+            }
+            queue.started = others;
+        }
+        for key in self.running.keys() {
+            while let Some(polled) = self.running.poll(&key, host, &env, None) {
+                let Polled::Finished(result) = polled else {
+                    continue;
+                };
+                if let Some(result) = result {
+                    if let Err(error) = result {
+                        tracing::warn!(%error, kind = R::KIND, %key, "a job failed");
+                    }
+                    self.jobs.queue.borrow_mut().running.remove(&key);
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -391,6 +605,7 @@ struct Job<R: Resource, H> {
     then: Option<Then<R, H>>,
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
+    source: Option<Source>,
     sequence: u64,
 }
 
@@ -401,6 +616,7 @@ impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
             then: started.then,
             cancelled: started.cancelled,
             task: started.task,
+            source: started.source,
             sequence: 0,
         }
     }
@@ -428,11 +644,11 @@ enum Polled {
 }
 
 /// The jobs one handler runs, keyed by what they answer.
-pub(crate) struct Jobs<R: Resource, H, K = InvocationId> {
+pub(crate) struct Running<R: Resource, H, K = InvocationId> {
     running: HashMap<K, Job<R, H>>,
 }
 
-impl<R: Resource, H, K> Default for Jobs<R, H, K> {
+impl<R: Resource, H, K> Default for Running<R, H, K> {
     fn default() -> Self {
         Self {
             running: HashMap::new(),
@@ -440,7 +656,7 @@ impl<R: Resource, H, K> Default for Jobs<R, H, K> {
     }
 }
 
-impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Jobs<R, H, K> {
+impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
     fn insert(&mut self, key: K, started: Started<R, H>) {
         if let Some(previous) = self.running.insert(key, started.into()) {
             previous.stop();
@@ -470,7 +686,11 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Jobs<R, H, K> {
         invocation: Option<InvocationId>,
     ) -> Option<Polled> {
         let job = self.running.get_mut(key)?;
-        let event = match job.events.try_recv() {
+        let answered = job.source.as_mut().and_then(|source| source());
+        let event = match answered.map_or_else(
+            || job.events.try_recv(),
+            |value| Ok(JobEvent::Finished(value)),
+        ) {
             Ok(event) => event,
             Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => {
@@ -545,7 +765,7 @@ fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
 /// The handler of one effect vocabulary `E`, and the jobs it runs.
 pub(crate) struct EffectRunner<R: Resource, H, E> {
     env: EffectEnv<R>,
-    jobs: Jobs<R, H>,
+    jobs: Running<R, H>,
     marker: std::marker::PhantomData<fn(E)>,
 }
 
@@ -553,7 +773,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
     pub(crate) fn new(env: EffectEnv<R>) -> Self {
         Self {
             env,
-            jobs: Jobs::default(),
+            jobs: Running::default(),
             marker: std::marker::PhantomData,
         }
     }
@@ -756,7 +976,7 @@ struct Drain<R: Resource, K, T> {
     env: EffectEnv<R>,
     pending: Pending<R, K, T>,
     run: Handle<R, T>,
-    jobs: Jobs<R, (), K>,
+    jobs: Running<R, (), K>,
     /// Entries whose run finished, and the revision it finished at: they run
     /// again only once the document moved on and still lists them.
     settled: HashMap<K, u64>,
@@ -840,6 +1060,8 @@ struct Inner<R: Resource> {
 pub(crate) struct Effects<R: Resource> {
     env: Option<EffectEnv<R>>,
     inner: Rc<RefCell<Inner<R>>>,
+    /// The jobs the views start on their own, polled with the drains.
+    jobs: Rc<RefCell<OwnedJobs<R, ()>>>,
 }
 
 impl<R: Resource> Clone for Effects<R> {
@@ -847,6 +1069,7 @@ impl<R: Resource> Clone for Effects<R> {
         Self {
             env: self.env.clone(),
             inner: Rc::clone(&self.inner),
+            jobs: Rc::clone(&self.jobs),
         }
     }
 }
@@ -866,12 +1089,14 @@ impl<R: Resource> Default for Inner<R> {
 impl<R: Resource> Effects<R> {
     /// Effects of the live app, which run.
     pub(crate) fn live(dispatch: Dispatcher<R>, live: Live<R>) -> Self {
+        let env = EffectEnv {
+            dispatch,
+            live,
+            wake: WakeHandle::new(),
+        };
         Self {
-            env: Some(EffectEnv {
-                dispatch,
-                live,
-                wake: WakeHandle::new(),
-            }),
+            jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(Some(env.clone()))))),
+            env: Some(env),
             inner: Rc::default(),
         }
     }
@@ -882,11 +1107,27 @@ impl<R: Resource> Effects<R> {
         Self {
             env: None,
             inner: Rc::default(),
+            jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(None)))),
         }
     }
 
     pub(crate) fn env(&self) -> Option<&EffectEnv<R>> {
         self.env.as_ref()
+    }
+
+    /// The jobs the views start on their own.
+    pub(crate) fn view_jobs(&self) -> Jobs<R> {
+        self.jobs.borrow().jobs.clone()
+    }
+
+    /// Jobs for one surface, whose completions get `&mut` the surface.
+    pub(crate) fn surface_jobs(&self) -> Jobs<R> {
+        Jobs::new(self.env.clone())
+    }
+
+    /// Take up and finish the views' jobs.
+    pub(crate) fn poll_jobs(&self) {
+        self.jobs.borrow_mut().poll(&mut ());
     }
 
     /// Publish vocabulary `E` while `alive` lives, as `specs` describes it
@@ -937,7 +1178,7 @@ impl<R: Resource> Effects<R> {
                 env,
                 pending: Box::new(pending),
                 run: Box::new(run),
-                jobs: Jobs::default(),
+                jobs: Running::default(),
                 settled: HashMap::new(),
             }),
         });
