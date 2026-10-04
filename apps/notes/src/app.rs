@@ -2185,6 +2185,23 @@ impl NotesApp {
         Ok(())
     }
 
+    /// The published resource `id` a direct affordance acts through. Hosted
+    /// by the framework, the notebook itself is the framework root's door,
+    /// published from the [`Notebook`](crate::resource::Notebook) resource
+    /// over the state it presents; its pages stay this widget's.
+    fn acted_on_resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        use crate::resource::Notebook;
+        use ui::tilo_resource::Resource as _;
+        if self.actions.is_hosted() && id == Notebook::KIND {
+            return Some(ui::tilo_resource::publish::<Notebook>(
+                id,
+                Notebook::LABEL,
+                &self.workspace,
+            ));
+        }
+        ui::resources::resource(self, doc, id)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one flat dispatch over every canonical Notes event kind"
@@ -2263,7 +2280,8 @@ impl NotesApp {
             _ => None,
         };
         if let Some((resource_id, action_id)) = resource_action {
-            let resource = ui::resources::resource(self, doc, &resource_id)
+            let resource = self
+                .acted_on_resource(doc, &resource_id)
                 .ok_or("page action resource no longer exists")?;
             ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
         }

@@ -719,6 +719,31 @@ pub fn opened_for_the_room(
     None
 }
 
+/// Where this machine already shows its own window of `app_id`, in any
+/// workspace. The device's control panel has one window: opening it again
+/// focuses that window. A second process could not open its record, which
+/// the running one holds, and would exit with an error.
+pub fn opened_here(
+    tree: &WorkspaceTree,
+    app_id: &str,
+) -> Option<(crate::shell::state::WorkspaceId, StripId, GroupId, TabId)> {
+    let local_salt = tree.local_salt();
+    tree.desktop.workspaces.iter().find_map(|ws| {
+        ws.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group.tabs.iter().find_map(|tab| {
+                    let ours = crate::shell::state::peer_salt_of(tab.id) == local_salt;
+                    let hosts = matches!(
+                        &tab.tile,
+                        TileContent::Foreign { app_id: a, .. } if a.eq_ignore_ascii_case(app_id)
+                    );
+                    (ours && hosts).then_some((ws.id, strip.id, group.id, tab.id))
+                })
+            })
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +866,50 @@ mod tests {
             &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
             Verb::Read,
         )
+    }
+
+    /// Settings already open in another workspace is the window a second
+    /// open returns to; a peer's window of it is not this machine's.
+    #[test]
+    fn this_machines_own_window_of_an_app_is_found_in_any_workspace() {
+        const SETTINGS: &str = "so.tilo.settings";
+        let (mut tree, _) = tree_with_peer_window_for(room_owned_by("quinten"), SETTINGS);
+        assert!(
+            opened_here(&tree, SETTINGS).is_none(),
+            "a peer's window is not ours"
+        );
+
+        let mut other = Workspace::new(WorkspaceId::from(next_id()), "elsewhere");
+        let tab = Tab {
+            id: next_id(),
+            title: "Personal Settings".into(),
+            tile: TileContent::Foreign {
+                app_id: SETTINGS.into(),
+                surface_id: 7,
+            },
+        };
+        let tab_id = tab.id;
+        let group = WindowGroup {
+            id: next_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let group_id = group.id;
+        let mut strip = Strip::new(StripId::from(next_id()), "main");
+        strip.window_groups = vec![group];
+        let strip_id = strip.id;
+        other.strips = vec![strip];
+        let other_id = other.id;
+        tree.desktop.workspaces.push(other);
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+
+        assert_eq!(
+            opened_here(&tree, SETTINGS),
+            Some((other_id, strip_id, group_id, tab_id))
+        );
+        assert!(opened_here(&tree, "so.tilo.notes").is_none());
     }
 
     #[test]
