@@ -42,6 +42,7 @@ use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
 mod lsp_workflow;
+mod surface;
 #[cfg(test)]
 mod tests;
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -53,6 +54,7 @@ use ui::presence::PresenceCtx;
 use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::Effect as _;
 use ui::widget::{
     Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor,
     Widget,
@@ -338,31 +340,23 @@ impl ui::widget::controls::ActionControls for BottomPanelToggle {
     }
 }
 
+/// A control's binding to one of Code's effects, published on the project
+/// resource beside its document actions.
 #[allow(
     clippy::expect_used,
-    reason = "the binding is built from the command action on the resource returned by the same catalogue function"
+    reason = "every effect of the vocabulary is published with no parameters left to supply"
 )]
-fn bottom_panel_toggle_binding(
-    project_name: &str,
-    project_id: &str,
-    next_file_id: &str,
-    next_folder_id: &str,
-    entry_count: usize,
+pub(crate) fn effect_binding(
+    effect: &crate::effects::CodeEditorEffect,
 ) -> tilo_actions::ActionBinding<()> {
-    let resource = actions::project_root(&actions::CodeEditorResourceCtx {
-        project_name: project_name.to_string(),
-        project_id: project_id.to_string(),
-        next_file_id: next_file_id.to_string(),
-        next_file_name: format!("untitled-{entry_count}.txt"),
-        next_folder_id: next_folder_id.to_string(),
-        next_folder_name: format!("untitled-folder-{entry_count}"),
-        open_files: Vec::new(),
-        folders: Vec::new(),
-        symbols: Vec::new(),
-        search_results: Vec::new(),
-    });
-    tilo_actions::ActionBinding::unit_for(&resource, "command-toggle-bottom-panel")
-        .expect("Toggle bottom panel is part of the Code command catalogue")
+    let resource = tilo_actions::Resource::new(
+        crate::resource::PROJECT_KIND,
+        crate::resource::PROJECT_KIND,
+        "Code",
+    )
+    .with_action(effect.bound());
+    tilo_actions::ActionBinding::unit_for(&resource, effect.id())
+        .expect("a bound effect takes no arguments")
 }
 
 /// Width assumed before the window has been measured (first `build_layout`,
@@ -491,19 +485,14 @@ pub struct CodeApp {
     /// undo boundary and replays byte-identically on peers, the same path a
     /// Ctrl+K palette dispatch takes. See [`crate::actions`].
     actions: crate::resource::ActionSink,
-    /// Command selected through an exported resource action. Resource
-    /// operations intentionally receive an immutable document snapshot; the
-    /// next sync applies the command with mutable CRDT access.
-    pending_resource_command: Option<(String, Option<String>)>,
+    /// A command invoked through its published effect. An effect handler has
+    /// no document, so the next sync runs the command with it.
+    pending_command: Option<Command>,
     /// Tentative UUID used before the first sync persists it in the shared
     /// document; afterwards this is always the document's project identity.
     project_id: String,
-    /// The UUID captured in the exported New-file resource. It is rotated only
-    /// after dispatch, ensuring palette and on-screen activation use one
-    /// byte-identical canonical action without deriving identity from a local
-    /// tree arena slot.
-    next_new_file_id: String,
-    next_new_folder_id: String,
+    /// The file a New File command created, opened once its record arrives.
+    pending_open: Option<String>,
 
     /// Adaptive open/closed state of the file-tree sidebar (the shared flap
     /// kernel). Docked-open when wide, overlay-closed when narrow.
@@ -624,12 +613,31 @@ pub struct CodeApp {
     #[cfg(test)]
     search_refresh_stats: SearchRefreshStats,
 
+    /// Whether the editor serves a window someone uses, and may start work
+    /// that reaches outside the process (a language server).
+    live: bool,
+    /// The person's preferences, once the framework mounted the editor.
+    settings: Option<ui::framework::Setting<crate::settings::CodeSettings>>,
+    /// The chrome laid out last (dock shown, its tab, the find bar), so a
+    /// change made outside an event (an effect, a staged scenario) rebuilds
+    /// the layout before it is drawn.
+    laid_out: (bool, PanelTab, bool),
+    structure_dirty: bool,
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
     portal_intent: Option<PortalIntent>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    pending_resource_file: Option<(tilo_actions::InvocationId, ResourceFileOperation)>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// The answer owed to the effect that is opening or saving a file, given
+    /// once the picker or the write settles.
+    file_reply: Option<ui::framework::EffectReply>,
+    /// A save an effect asked for, written on the next sync, where the
+    /// buffer's text is.
+    pending_save: Option<(TreeId, Option<std::path::PathBuf>)>,
+    /// The screenshot scenario still being staged: the view state it shows is
+    /// set once the file it is about is open and bound.
+    staging: Option<Staging>,
+    /// Until when a staged scenario waits for a live source (the terminal's
+    /// shell) to draw.
+    staging_until: Option<Instant>,
 
     /// A save that stopped because the file changed on disk. Holds the buffer
     /// it was for, so the user's choice applies to the right one.
@@ -652,6 +660,12 @@ pub struct CodeApp {
     pending_jump: Option<(usize, usize)>,
 }
 
+/// A screenshot scenario being staged: `None` for a plain `--shots`.
+#[derive(Clone, Debug)]
+struct Staging {
+    scenario: Option<String>,
+}
+
 /// What a pending portal pick is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalIntent {
@@ -661,16 +675,6 @@ pub enum PortalIntent {
     OpenFile,
     /// Give this buffer a path and write it there.
     SaveAs(TreeId),
-}
-
-#[derive(Clone, Debug)]
-enum ResourceFileOperation {
-    OpenFile(std::path::PathBuf),
-    OpenFolder(std::path::PathBuf),
-    Save {
-        node: TreeId,
-        path: Option<std::path::PathBuf>,
-    },
 }
 
 /// A save refused because the file moved on underneath us.
@@ -879,14 +883,8 @@ impl CodeApp {
         tabs.set_show_maximize(false);
 
         let project_id = Uuid::new_v4().to_string();
-        let next_new_file_id = Uuid::new_v4().to_string();
-        let next_new_folder_id = Uuid::new_v4().to_string();
-        let panel_toggle = BottomPanelToggle::new(bottom_panel_toggle_binding(
-            &session.project.name,
-            &project_id,
-            &next_new_file_id,
-            &next_new_folder_id,
-            session.project.nodes.len(),
+        let panel_toggle = BottomPanelToggle::new(effect_binding(
+            &crate::effects::CodeEditorEffect::ToggleBottomPanel,
         ));
 
         CodeApp {
@@ -903,10 +901,9 @@ impl CodeApp {
             panel_toggle,
             palette: CommandPalette::new(),
             actions: crate::resource::ActionSink::default(),
-            pending_resource_command: None,
+            pending_command: None,
             project_id,
-            next_new_file_id,
-            next_new_folder_id,
+            pending_open: None,
             flap: FlapState::open_when_docked(),
             flap_tick: ui::time::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -961,9 +958,14 @@ impl CodeApp {
             search_refresh_stats: SearchRefreshStats::default(),
             portal: None,
             portal_intent: None,
-            resource_invocation: None,
-            pending_resource_file: None,
-            resource_result: None,
+            live: false,
+            settings: None,
+            laid_out: (false, PanelTab::Problems, false),
+            structure_dirty: false,
+            file_reply: None,
+            pending_save: None,
+            staging: None,
+            staging_until: None,
             conflict: None,
             conflict_hover: Point::new(-1.0, -1.0),
             conflict_buttons: Vec::new(),
@@ -1171,14 +1173,13 @@ impl CodeApp {
         }
         self.import_project_file_records(doc);
         self.sync_collaborative_files(doc);
-        // A Ctrl+K resource action can create the captured UUID without going
-        // through `apply_command`. Rotate only after its record is observable,
-        // so a palette refresh never re-publishes a duplicate CreateFile.
-        if EditorDoc::file(doc, &self.next_new_file_id).is_some() {
-            self.next_new_file_id = Uuid::new_v4().to_string();
-        }
-        if EditorDoc::file(doc, &self.next_new_folder_id).is_some() {
-            self.next_new_folder_id = Uuid::new_v4().to_string();
+        // A New File command opens the file it created once its record is in
+        // the project.
+        if let Some(id) = self.pending_open.clone()
+            && let Some(node) = self.session.project.node_for_resource(&id)
+        {
+            self.pending_open = None;
+            self.open_node(node);
         }
         // Seed each open buffer's text into the document, reading the real file
         // for a disk-backed node. This is the read half of "open a file": until
@@ -1416,26 +1417,21 @@ impl CodeApp {
         }
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
     #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.actions.mark_hosted_for_test();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn project_node_count(&self) -> usize {
-        self.session.project.nodes.len()
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
+        live: bool,
+        settings: ui::framework::Setting<crate::settings::CodeSettings>,
     ) {
         self.actions.attach(dispatcher);
+        self.live = live;
+        self.settings = Some(settings);
     }
 
     fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
@@ -1780,20 +1776,12 @@ impl CodeApp {
         scene.pop_layer();
     }
 
-    /// Refresh the command palette's entry set (files + commands).
+    /// Refresh the command palette's entry set (files + commands). Every row
+    /// invokes one of the effects published on the project, through the same
+    /// door as Ctrl+K and an agent.
     fn refresh_palette_entries(&mut self) {
-        let resources = actions::provide_resources(&self.code_resource_ctx(), &AutoCommit::new());
-        let mut native_rows = tilo_actions::flatten(&resources)
-            .into_iter()
-            .map(|flat| {
-                (
-                    (flat.resource_id.0.clone(), flat.action.id.clone()),
-                    ui::CommandEntry::from_flat_action(&flat),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        use crate::effects::CodeEditorEffect;
         let mut entries: Vec<Entry> = Vec::new();
-        // Files.
         for (id, node) in &self.session.project.nodes {
             if let NodeKind::File { .. } = node.kind {
                 let detail = self
@@ -1803,96 +1791,67 @@ impl CodeApp {
                     .rsplit_once('/')
                     .map_or("", |x| x.0)
                     .to_string();
-                if let Some(action) = native_rows
-                    .remove(&(actions::file_resource_id(&node.resource_id), "open".into()))
-                {
+                let resource = tilo_actions::Resource::new(
+                    actions::file_resource_id(&node.resource_id),
+                    "code_editor.file",
+                    node.name.clone(),
+                )
+                .with_action(
+                    CodeEditorEffect::Open {
+                        file: node.resource_id.clone(),
+                    }
+                    .bound(),
+                );
+                if let Some(flat) = tilo_actions::flatten(std::slice::from_ref(&resource)).first() {
                     entries.push(Entry {
                         detail,
                         kind: PaletteKind::File(*id),
-                        action,
+                        action: ui::CommandEntry::from_flat_action(flat),
                     });
                 }
             }
         }
-        // Commands.
-        for (cmd, _) in Command::all() {
-            if let Some(action) = native_rows.remove(&(
-                actions::project_resource_id(&self.project_id),
-                format!("command-{}", cmd.id()),
-            )) {
+        let project = tilo_actions::Resource::new(
+            crate::resource::PROJECT_KIND,
+            crate::resource::PROJECT_KIND,
+            self.session.project.name.clone(),
+        );
+        for (cmd, label) in Command::all() {
+            let effect = cmd.effect();
+            // Go to Line asks for its line in the palette; the effect takes it
+            // as its prompted value.
+            let bound = effect.bound();
+            let mut spec = if cmd == Command::GoToLine {
+                tilo_actions::ActionSpec::prompted_operation(
+                    effect.id(),
+                    label,
+                    "Line number",
+                    "e.g. 42",
+                    bound.kind,
+                    <CodeEditorEffect as ui::tilo_resource::Effect>::OPERATION,
+                    |_| tilo_actions::EncodedAction {
+                        type_id: <CodeEditorEffect as ui::tilo_resource::Effect>::OPERATION
+                            .to_owned(),
+                        payload: Vec::new(),
+                    },
+                )
+            } else {
+                bound
+            };
+            spec.label = label.to_string();
+            let resource = project.clone().with_action(spec);
+            if let Some(flat) = tilo_actions::flatten(std::slice::from_ref(&resource)).first() {
                 entries.push(Entry {
                     detail: String::new(),
                     kind: PaletteKind::Command(cmd),
-                    action,
+                    action: ui::CommandEntry::from_flat_action(flat),
                 });
             }
         }
         self.palette.set_entries(entries);
     }
 
-    /// The presentation context the Ctrl+K resource tree is built from: the
-    /// project name, the UUID the next created file will take, and every
-    /// materialised project file/folder. Everything here mirrors state the app
-    /// already holds; local arena IDs are never exported as identities.
-    pub(crate) fn code_resource_ctx(&self) -> actions::CodeEditorResourceCtx {
-        let open_files = self
-            .session
-            .project
-            .nodes
-            .iter()
-            .filter(|(_, node)| matches!(node.kind, NodeKind::File { .. }))
-            .map(|(id, node)| actions::OpenFileRef {
-                node: *id as u64,
-                id: node.resource_id.clone(),
-                name: node.name.clone(),
-                parent: node.parent.and_then(|parent| {
-                    self.session
-                        .project
-                        .get(parent)
-                        .map(|parent| parent.resource_id.clone())
-                }),
-                path: self.session.project.path_of(*id),
-                order: *id as i64,
-                can_save: self
-                    .session
-                    .buffer_of(*id)
-                    .is_some_and(|buffer| buffer.path.is_some()),
-            })
-            .collect();
-        actions::CodeEditorResourceCtx {
-            project_name: self.session.project.name.clone(),
-            project_id: self.project_id.clone(),
-            next_file_id: self.next_new_file_id.clone(),
-            next_file_name: format!("untitled-{}.txt", self.session.project.nodes.len()),
-            next_folder_id: self.next_new_folder_id.clone(),
-            next_folder_name: format!("untitled-folder-{}", self.session.project.nodes.len()),
-            open_files,
-            folders: self
-                .session
-                .project
-                .nodes
-                .values()
-                .filter(|node| matches!(node.kind, NodeKind::Folder { .. }))
-                .map(|node| actions::FolderRef {
-                    id: node.resource_id.clone(),
-                    name: node.name.clone(),
-                    parent: node.parent.and_then(|parent| {
-                        self.session
-                            .project
-                            .get(parent)
-                            .map(|parent| parent.resource_id.clone())
-                    }),
-                    path: self.session.project.path_of(node.id),
-                    order: node.id as i64,
-                })
-                .collect(),
-            symbols: self.search_symbols.clone(),
-            search_results: self.search_result_refs(),
-        }
-    }
-
     fn search_file_entries(&self) -> Vec<crate::search_provider::FileEntry> {
-        let open: HashSet<TreeId> = self.session.open.iter().map(|buffer| buffer.node).collect();
         self.session
             .project
             .nodes
@@ -1903,7 +1862,6 @@ impl CodeApp {
                 resource_id: item.resource_id.clone(),
                 name: item.name.clone(),
                 path: self.session.project.path_of(*node),
-                open: open.contains(node),
             })
             .collect()
     }
@@ -1976,13 +1934,11 @@ impl CodeApp {
             return;
         }
         self.refresh_search_symbols(doc);
-        let files = self.search_file_entries();
         let symbols = self.search_symbols.clone();
         let results = self.search_result_refs();
-        let ids = files
+        let ids = symbols
             .iter()
-            .map(|file| actions::open_file_address(&file.resource_id).resource)
-            .chain(symbols.iter().map(actions::symbol_resource_id))
+            .map(actions::symbol_resource_id)
             .chain(results.iter().map(actions::result_resource_id))
             .collect::<HashSet<_>>();
         for removed in self.search_catalog_ids.difference(&ids) {
@@ -1990,7 +1946,6 @@ impl CodeApp {
         }
         crate::search_provider::FileSearchProvider::index_into(
             &self.search_catalog,
-            files,
             symbols,
             results,
         );
@@ -2332,15 +2287,12 @@ impl CodeApp {
     fn apply_command(&mut self, cmd: Command, doc: &mut AutoCommit) {
         match cmd {
             Command::NewFile => {
-                // Create an untitled scratch file in the project root. The name
-                // and tree position are in-memory; the collaborative, replayable
-                // half — materialising the buffer in the shared document — is the
-                // one action Code exports, dispatched here through the host so it
-                // brackets one undo boundary and replays on peers. The Ctrl+K
-                // "New file" spec builds the byte-identical action.
+                // An untitled file at the project root, created through the
+                // project's own action and opened once it is there.
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
+                let id = Uuid::new_v4().to_string();
                 let action = actions::create_file_action(
-                    self.next_new_file_id.clone(),
+                    id.clone(),
                     name.clone(),
                     None,
                     i64::MAX / 2,
@@ -2352,12 +2304,10 @@ impl CodeApp {
                     &action,
                     actions::history_context(&action, &name, &self.project_id),
                 );
-                self.next_new_file_id = Uuid::new_v4().to_string();
                 self.sync_collaborative_files(doc);
-                if let actions::CodeEditorAction::CreateFile { id, .. } = &action
-                    && let Some(node) = self.session.project.node_for_resource(id)
-                {
-                    self.open_node(node);
+                match self.session.project.node_for_resource(&id) {
+                    Some(node) => self.open_node(node),
+                    None => self.pending_open = Some(id),
                 }
             }
             Command::OpenFolder => self.request_open_folder(),
@@ -2822,7 +2772,13 @@ impl CodeApp {
 
     /// Stage the find bar over the active buffer with a real query, so the shot
     /// shows real match highlighting and a real count.
-    pub fn shots_open_find(&mut self, query: &str, replace: bool, doc: &AutoCommit) {
+    pub(crate) fn shots_open_find(
+        &mut self,
+        query: &str,
+        replace: bool,
+        options: bool,
+        doc: &AutoCommit,
+    ) {
         self.find.open(replace, None);
         self.find.set_query(query);
         if replace {
@@ -2836,7 +2792,7 @@ impl CodeApp {
         } else {
             Some(0)
         });
-        if std::env::var_os("TILO_SHOTS_FIND_OPTIONS").is_some() {
+        if options {
             self.find.show_options_for_shots();
         }
     }
@@ -2898,30 +2854,6 @@ impl CodeApp {
             detail: Some("tilo-shell".to_string()),
             percentage: Some(37),
         };
-    }
-
-    /// Open the first file the tree found, so a shot of a real project shows a
-    /// real buffer instead of the empty state.
-    pub fn shots_open_first_file(&mut self) {
-        let first = self.session.project.visible_rows().into_iter().find(|id| {
-            !self
-                .session
-                .project
-                .get(*id)
-                .is_none_or(super::model::TreeNode::is_folder)
-        });
-        if let Some(id) = first {
-            self.open_node(id);
-        }
-    }
-
-    /// Open a specific file by path, revealing it in the tree first.
-    pub fn shots_open_path(&mut self, path: &std::path::Path) {
-        let path = disk::canonical(path);
-        if let Some(node) = self.session.project.reveal_path(&path) {
-            explorer::refresh(&mut self.sidebar, &self.session.project);
-            self.open_node(node);
-        }
     }
 
     /// Stage a multi-word selection in the editor for the selection screenshot.
@@ -3558,7 +3490,6 @@ impl Widget for CodeApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
     );
 
@@ -3600,67 +3531,22 @@ impl Widget for CodeApp {
         }))
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
-        if let Some((id, argument)) = self.pending_resource_command.take()
-            && let Some(command) = Command::from_id(&id)
-        {
-            if command == Command::GoToLine {
-                if let Some(line) = argument.and_then(|value| value.trim().parse::<usize>().ok()) {
-                    self.go_to_line(line.max(1));
-                }
-            } else {
-                self.apply_command(command, state);
-            }
+        if let Some(command) = self.pending_command.take() {
+            self.apply_command(command, state);
         }
-        if let Some((invocation, operation)) = self.pending_resource_file.take() {
+        if let Some((node, target)) = self.pending_save.take() {
             self.notice = None;
-            let result = match operation {
-                ResourceFileOperation::OpenFile(path) => self.open_disk_file(&path),
-                ResourceFileOperation::OpenFolder(path) => self.open_project_dir(&path),
-                ResourceFileOperation::Save { node, path } => {
-                    if let Some(path) = path {
-                        let name = path.file_name().map_or_else(
-                            || "untitled".to_string(),
-                            |name| name.to_string_lossy().into_owned(),
-                        );
-                        self.session.project.set_file_path(node, &path, &name);
-                        if let Some(buffer) = self.session.buffer_of_mut(node) {
-                            buffer.path = Some(path);
-                            buffer.name = name;
-                            buffer.stamp = None;
-                        }
-                        self.invalidate_search_projection();
-                    }
-                    if self.save_buffer(state, node, true) {
-                        Ok(())
-                    } else {
-                        Err("file could not be saved".into())
-                    }
-                }
-            };
-            self.resource_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "code_editor.io_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
+            let saved = self.save_to(state, node, target);
+            self.finish_file_effect(if saved {
+                Ok(())
+            } else {
+                Err("file could not be saved".into())
             });
         }
         if !self.seeded {
@@ -3672,6 +3558,7 @@ impl Widget for CodeApp {
         self.poll_portal(state);
         self.poll_search();
         self.ensure_buffers(state);
+        self.continue_staging(state);
         self.refresh_search_catalog(state);
         self.editor.sync(state, path);
         self.dispatch_editor_text_edits(state);
@@ -3725,6 +3612,15 @@ impl Widget for CodeApp {
         self.reconcile_tabs();
         self.refresh_diagnostics(state);
         self.refresh_status();
+        let chrome = (
+            self.panel_visible,
+            self.panel.active_tab(),
+            self.find.is_visible(),
+        );
+        if chrome != self.laid_out {
+            self.laid_out = chrome;
+            self.structure_dirty = true;
+        }
     }
 
     fn build_layout(
@@ -4213,70 +4109,20 @@ impl Widget for CodeApp {
         out
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_resource_file
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-        {
-            self.pending_resource_file = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("cancelled before file I/O".into()),
-            });
-        }
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.portal = None;
-            self.portal_intent = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            });
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// A capture waits while a scenario is still staging, a project search
+    /// is still streaming its hits, or the sidebar is still sliding.
+    fn has_pending_visual_work(&self) -> bool {
+        self.staging.is_some()
+            || self.search_job.is_some()
+            || self.flap.is_animating(self.sidebar_layout())
     }
 
     fn get_rect(&self) -> Rect {
@@ -4331,8 +4177,9 @@ impl Widget for CodeApp {
         // taffy-driven (set from `reveal` in `build_layout`), so the tree must
         // be rebuilt each animating frame to widen/collapse smoothly. Overlay
         // mode computes its geometry in `draw` and needs no rebuild.
-        self.sidebar_layout() == SplitLayout::Docked
-            && self.flap.is_animating(self.sidebar_layout())
+        std::mem::take(&mut self.structure_dirty)
+            || (self.sidebar_layout() == SplitLayout::Docked
+                && self.flap.is_animating(self.sidebar_layout()))
     }
 
     fn mark_drawn(&mut self) {
@@ -4353,47 +4200,6 @@ impl ui::search::capability::SearchSource for CodeApp {
         vec![Box::new(
             crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
         )]
-    }
-}
-
-impl ui::resources::PublishesResources for CodeApp {
-    /// Standalone / `--shots` publishes the project. When hosted, file
-    /// Document ops ride [`tilo_resource::publish`]; this returns only live
-    /// extras (save / symbols / search) — never a second project root.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // The framework root already publishes the project. The directory page
-        // keeps the same live extras as `resources`, never a second root.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    /// Resolve a searched file, symbol, or result through the current widget
-    /// state. This is deliberately lazy: a palette row carries only an inert
-    /// canonical address until activation.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        // The framework root already owns the project door.
-        if self.is_hosted() && id == crate::actions::project_resource_id(&self.project_id) {
-            return None;
-        }
-        self.publish_resource(doc, id)
     }
 }
 
@@ -4424,178 +4230,6 @@ impl ui::undo::CommittedActions for CodeApp {
     /// `Self::apply_command`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
-    }
-}
-
-impl CodeApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::CodeEditorOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let expected = crate::actions::operation_kind(&operation)?;
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
-            ));
-        }
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::Open { file_id },
-            ) => {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                self.open_node(node);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::RevealLocation {
-                    file_id,
-                    path,
-                    line,
-                    col,
-                    show_search,
-                },
-            ) => {
-                let target = file_id
-                    .as_deref()
-                    .and_then(|file| self.session.project.node_for_resource(file))
-                    .or_else(|| {
-                        path.as_deref().and_then(|path| {
-                            self.session.project.reveal_path(std::path::Path::new(path))
-                        })
-                    });
-                let Some(target) = target else {
-                    return Err("Code location no longer exists".to_string());
-                };
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.open_node(target);
-                self.pending_jump = Some((line, col));
-                if show_search {
-                    self.panel_visible = true;
-                    self.panel.set_tab(PanelTab::Search);
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CodeEditorOperation::Save { file_id, .. },
-            ) => {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                if !self.save_buffer(doc, node, false) {
-                    return Err("file could not be saved without user input".to_string());
-                }
-            }
-            (_, crate::actions::CodeEditorOperation::Command { id, argument }) => {
-                self.pending_resource_command = Some((id, argument));
-            }
-            _ => return Err("operation kind does not match Code operation".to_string()),
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::CodeEditorOperation;
-
-        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::CodeEditorOperation =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let expected = crate::actions::operation_kind(&operation)?;
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
-            ));
-        }
-        if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
-            return Err("another file operation is already running".into());
-        }
-        let resource = match operation {
-            CodeEditorOperation::OpenFile { path: Some(path) } => {
-                Some(ResourceFileOperation::OpenFile(path.into()))
-            }
-            CodeEditorOperation::OpenFolder { path: Some(path) } => {
-                Some(ResourceFileOperation::OpenFolder(path.into()))
-            }
-            CodeEditorOperation::Save {
-                file_id,
-                path: None,
-            } if self
-                .session
-                .project
-                .node_for_resource(&file_id)
-                .and_then(|node| self.session.buffer_of(node))
-                .and_then(|b| b.path.as_ref())
-                .is_none() =>
-            {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                self.request_save_as(node);
-                None
-            }
-            CodeEditorOperation::Save { file_id, path } => Some(ResourceFileOperation::Save {
-                node: self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?,
-                path: path.map(Into::into),
-            }),
-            CodeEditorOperation::OpenFile { path: None } => {
-                self.request_open_file();
-                None
-            }
-            CodeEditorOperation::OpenFolder { path: None } => {
-                self.request_open_folder();
-                None
-            }
-            other => {
-                return self
-                    .answer_resource_operation(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                        doc,
-                        path,
-                    )
-                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
-        };
-        self.notice = None;
-        if let Some(resource) = resource {
-            self.pending_resource_file = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 

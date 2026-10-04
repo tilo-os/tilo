@@ -36,7 +36,6 @@
 
 [ratchets.standalone_launch]
 "apps/chat/src/main.rs" = 1
-"apps/code-editor/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1

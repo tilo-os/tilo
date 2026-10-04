@@ -5,54 +5,6 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
-fn a_standalone_project_import_is_submitted_through_the_action() {
-    let mut app = CodeApp::with_sample();
-    assert!(!app.actions.is_hosted());
-    let mut doc = AutoCommit::new();
-    app.import_project_file_records(&mut doc);
-    let recorded = app
-        .actions
-        .last_dispatched()
-        .expect("imported files are submitted through the action sink");
-    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
-    assert!(
-        !EditorDoc::files(&doc).is_empty(),
-        "the sample project is in the document"
-    );
-}
-
-#[test]
-fn a_standalone_project_is_created_by_the_action() {
-    let mut app = CodeApp::new();
-    assert!(!app.actions.is_hosted());
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
-    assert_eq!(
-        EditorDoc::project_id(&doc).as_deref(),
-        Some(app.project_id.as_str())
-    );
-    let recorded = app
-        .actions
-        .last_dispatched()
-        .expect("the project is submitted through the action sink");
-    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
-}
-
-#[test]
-fn a_standalone_terminal_panel_is_created_by_the_action() {
-    let mut app = CodeApp::new();
-    assert!(!app.actions.is_hosted());
-    let mut doc = AutoCommit::new();
-    let id = app.terminal_document_root(&mut doc);
-    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id));
-    let recorded = app
-        .actions
-        .last_dispatched()
-        .expect("the terminal panel is submitted through the action sink");
-    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
-}
-
-#[test]
 fn hosted_terminal_panel_is_created_by_the_action() {
     let mut app = CodeApp::new();
     app.mark_hosted_for_test();
@@ -61,96 +13,6 @@ fn hosted_terminal_panel_is_created_by_the_action() {
     let id = app.terminal_document_root(&mut doc);
     assert_eq!(EditorDoc::terminal_panel(&doc), Some(id.clone()));
     assert_eq!(app.terminal_document_root(&mut doc), id);
-}
-
-#[test]
-fn resource_operations_accept_reject_wrong_kinds_and_resolve_late_files_lazily() {
-    // Each phase builds a fresh app and document.
-    direct_open_is_accepted_then_reports_the_exact_failure();
-    resource_operations_reject_wrong_kinds_without_changing_state();
-    large_resource_snapshot_is_bounded_but_late_file_activates_lazily();
-}
-
-fn direct_open_is_accepted_then_reports_the_exact_failure() {
-    let mut app = CodeApp::new();
-    let mut doc = AutoCommit::new();
-    let invocation = tilo_actions::InvocationId::new();
-    let payload = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
-        path: Some("/definitely/missing/tilo-code-file".into()),
-    })
-    .unwrap();
-    let started = Widget::start_operation(
-        &mut app,
-        &ui::widget::ResourceOperation::local(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CODE_EDITOR_OPERATION_TYPE,
-            &payload,
-        ),
-        &mut doc,
-        &automerge::ROOT,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
-    app.sync(&mut doc, &automerge::ROOT);
-    assert!(matches!(
-        app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-        Some(tilo_actions::InvocationUpdate::Failed { .. })
-    ));
-}
-
-fn resource_operations_reject_wrong_kinds_without_changing_state() {
-    let (mut app, mut doc) = synced_sample();
-    let active = app.active_file_node();
-    let other = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|node| Some(node.id) != active && matches!(node.kind, NodeKind::File { .. }))
-        .expect("sample has another file")
-        .id;
-    let open = serde_json::to_vec(&crate::actions::CodeEditorOperation::Open {
-        file_id: app.session.project.get(other).unwrap().resource_id.clone(),
-    })
-    .unwrap();
-    assert!(
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CODE_EDITOR_OPERATION_TYPE,
-                &open
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .is_err()
-    );
-    assert_eq!(app.active_file_node(), active);
-
-    let open_file = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
-        path: Some("/tmp/wrong-kind.rs".into()),
-    })
-    .unwrap();
-    assert!(
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                crate::actions::CODE_EDITOR_OPERATION_TYPE,
-                &open_file
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .is_err()
-    );
-    assert!(app.pending_resource_file.is_none());
-    assert!(app.resource_invocation.is_none());
 }
 
 #[test]
@@ -186,90 +48,6 @@ fn accessibility_exposes_project_and_active_document_context() {
     }));
 }
 
-fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
-    let hit = ui::search::capability::search_providers(app)[0]
-        .search(query)
-        .into_iter()
-        .find(|hit| hit.kind == kind)
-        .expect("search hit");
-    let address = hit.action_address().expect("canonical address");
-    let resource = ui::resources::resource(app, doc, &address.resource)
-        .expect("address resolves through current widget authority");
-    let encoded = tilo_actions::door::encode(&[resource], &address, None)
-        .expect("lazy resource exports the searched action");
-    assert!(matches!(
-        Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload
-            ),
-            doc,
-            &automerge::ROOT
-        )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
-    app.sync(doc, &automerge::ROOT);
-}
-
-#[test]
-fn search_hits_open_through_exported_actions_and_stale_addresses_are_refused() {
-    // Each phase builds a fresh synced sample.
-    file_search_uses_the_exported_open_action();
-    symbol_search_resolves_and_reproduces_the_exact_caret();
-    project_result_search_resolves_and_restores_results_context();
-    stale_search_address_is_refused_by_current_widget_authority();
-}
-
-fn file_search_uses_the_exported_open_action() {
-    let (mut app, mut doc) = synced_sample();
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|node| node.name == "prime.rs")
-        .unwrap()
-        .id;
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "prime.rs",
-        crate::search_provider::PROJECT_KIND,
-    );
-    assert_eq!(app.active_file_node(), Some(prime));
-}
-
-fn stale_search_address_is_refused_by_current_widget_authority() {
-    let (mut app, mut doc) = synced_sample();
-    let file = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|node| node.name == "prime.rs")
-        .expect("sample file")
-        .clone();
-    let address = crate::actions::open_file_address(&file.resource_id);
-    assert!(ui::resources::resource(&app, &doc, &address.resource).is_some());
-
-    app.session
-        .project
-        .remove_collaborative_file(&file.resource_id);
-    app.invalidate_search_projection();
-    app.refresh_search_catalog(&mut doc);
-    assert!(ui::resources::resource(&app, &doc, &address.resource).is_none());
-    assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("prime.rs")
-            .into_iter()
-            .all(|hit| hit.action_address() != Some(address.clone()))
-    );
-}
-
 #[test]
 fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
     // Each phase builds a fresh synced sample; rebuild counters must not leak.
@@ -303,10 +81,11 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     );
 
     let root = app.session.project.root;
-    let late = app
-        .session
-        .project
-        .add_file(root, "project-revision-needle.rs", "");
+    app.session.project.add_file(
+        root,
+        "project-revision-needle.rs",
+        "fn project_revision_needle() {}\n",
+    );
     app.invalidate_search_projection();
     app.sync(&mut doc, &automerge::ROOT);
     let after_project = app.search_refresh_stats();
@@ -314,22 +93,6 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         after_project.rebuilds,
         after_document.rebuilds.saturating_add(1)
     );
-    assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("project-revision-needle")
-            .iter()
-            .any(|hit| {
-                hit.action_address()
-                    == Some(crate::actions::open_file_address(
-                        &app.session
-                            .project
-                            .get(late)
-                            .expect("late file")
-                            .resource_id,
-                    ))
-            })
-    );
-
     app.search_hits.push(search::Hit {
         path: "/virtual/project-revision-needle.rs".into(),
         rel: "project-revision-needle.rs".into(),
@@ -367,113 +130,6 @@ fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor()
         before.saturating_add(2),
         "an exhausted generation must never make a stale catalogue look current"
     );
-}
-
-fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
-    let mut app = CodeApp::new();
-    let root = app.session.project.root;
-    let mut late_id = String::new();
-    for index in 0..=crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
-        let node = app
-            .session
-            .project
-            .add_file(root, &format!("file-{index}.rs"), "");
-        if index == crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
-            late_id = app
-                .session
-                .project
-                .get(node)
-                .expect("added file")
-                .resource_id
-                .clone();
-        }
-    }
-    let mut doc = AutoCommit::new();
-    app.refresh_search_catalog(&mut doc);
-    let snapshot = ui::resources::resources(&app, &doc);
-    assert!(
-        snapshot[0].children.len() <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT,
-        "the eager tree must remain bounded by its resource cap"
-    );
-
-    let address = crate::actions::open_file_address(&late_id);
-    assert!(
-        tilo_actions::door::resolve(&snapshot, &address).is_none(),
-        "the late file must not be eagerly materialized"
-    );
-    let resource = ui::resources::resource(&app, &doc, &address.resource)
-        .expect("late file is still current widget authority");
-    let encoded = tilo_actions::door::encode(&[resource], &address, None)
-        .expect("the lazy resource retains its open action");
-    assert!(matches!(
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .expect("operation routes through the widget"),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
-}
-
-fn symbol_search_resolves_and_reproduces_the_exact_caret() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.active_file_node().unwrap();
-    let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
-    let expected_line = text
-        .lines()
-        .position(|line| line.contains("fn parse_limit"))
-        .unwrap();
-    let expected_col = text
-        .lines()
-        .nth(expected_line)
-        .unwrap()
-        .find("parse_limit")
-        .unwrap();
-
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "parse_limit",
-        crate::search_provider::SYMBOL_KIND,
-    );
-    assert_eq!(app.active_file_node(), Some(node));
-    assert_eq!(app.editor.primary_caret(), (expected_line, expected_col));
-}
-
-fn project_result_search_resolves_and_restores_results_context() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.active_file_node().unwrap();
-    app.search_hits = vec![search::Hit {
-        path: "/virtual/ferris-cli/src/main.rs".into(),
-        rel: app.session.project.path_of(node),
-        line: 12,
-        col: 4,
-        len: 6,
-        preview: "canonical_result_needle".into(),
-        preview_offset: 0,
-    }];
-    app.last_search_needle = "canonical_result_needle".into();
-    app.push_search_state();
-    app.invalidate_search_projection();
-    app.refresh_search_catalog(&mut doc);
-
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "canonical_result_needle",
-        crate::search_provider::RESULT_KIND,
-    );
-    assert_eq!(app.active_file_node(), Some(node));
-    assert_eq!(app.editor.primary_caret(), (11, 4));
-    assert!(app.panel_visible);
-    assert_eq!(app.panel.active_tab(), PanelTab::Search);
 }
 
 #[test]
@@ -738,7 +394,8 @@ fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
     app.editor.move_caret_to(0, 0);
     app.editor.insert_for_test(&mut doc, "λ");
     let next = format!("λ{base}");
-    let expected = ui::resources::resources(&app, &doc)
+    let state = <crate::resource::CodeEditor as ui::tilo_resource::Resource>::read(&doc).unwrap();
+    let expected = <crate::resource::CodeEditor as ui::tilo_resource::Resource>::children(&state)
         .iter()
         .find_map(|resource| {
             find_resource(resource, &actions::file_resource_id(app.buffer_key(node)))
@@ -794,27 +451,16 @@ fn project_files_are_created_by_durable_actions_and_adopted_from_peers() {
 }
 
 fn new_file_command_dispatches_the_durable_create_file_action() {
-    // The on-screen "New file" command and the Ctrl+K "New file" spec must
-    // build the byte-identical action — one source of truth. Both carry the
-    // UUID captured at authoring time, never a local project-arena id.
+    // The on-screen "New file" command creates the file through the
+    // project's own action, under a UUID minted when it is authored (never a
+    // local project-arena id), and opens it.
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
     app.ensure_buffers(&mut doc); // seed the sample project's open buffers
-
-    let ctx = app.code_resource_ctx();
-    let expected_file_id = ctx.next_file_id.clone();
-    let resources = crate::actions::provide_resources(&ctx, &doc);
-    let spec = resources[0]
-        .actions
-        .iter()
-        .find(|a| a.id == "new-file")
-        .unwrap();
-    let from_spec = match &spec.input {
-        tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
-            panic!("new-file is an immediate action")
-        }
-    };
+    let before: std::collections::HashSet<String> = EditorDoc::files(&doc)
+        .into_iter()
+        .map(|file| file.id)
+        .collect();
 
     app.apply_command(Command::NewFile, &mut doc);
 
@@ -822,12 +468,15 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
         .actions
         .last_dispatched()
         .expect("New File dispatched an action");
-    assert_eq!(
-        dispatched, &from_spec,
-        "the command and the Ctrl+K spec build the identical action"
-    );
-    // The action actually materialised the buffer in the document.
-    assert!(EditorDoc::read_buffer_key(&doc, &expected_file_id).is_some());
+    assert_eq!(dispatched.type_id, actions::CODE_EDITOR_ACTION_TYPE);
+    let created = EditorDoc::files(&doc)
+        .into_iter()
+        .find(|file| !before.contains(&file.id))
+        .expect("the action created a file record");
+    assert!(uuid::Uuid::parse_str(&created.id).is_ok());
+    assert!(EditorDoc::read_buffer_key(&doc, &created.id).is_some());
+    let active = app.session.active_buffer().expect("the new file is open");
+    assert_eq!(active.name, created.name);
 }
 
 fn a_collaborative_file_is_adopted_as_a_tracked_file() {
@@ -1487,9 +1136,11 @@ fn fresh_editor_collapses_the_empty_bottom_panel() {
 }
 
 fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
-    let mut app = CodeApp::with_sample();
-    app.shots_open_terminal();
-    let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(app), (480, 900));
+    let mut sample = crate::test_support::sample();
+    sample.open("src/main.rs");
+    sample.editor(CodeApp::shots_open_terminal);
+    let driver = sample.app.harness();
+    driver.resize((480, 900)).unwrap();
 
     let panel = driver.targets()["bottom_panel"];
     driver.click_at(panel.center().x, panel.y1 - 20.0);
@@ -1544,11 +1195,10 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         find(&snapshot.root).expect("dock trigger semantics")
     }
 
-    let mut driver = ui::headless::Driver::new(
-        ui::State::new(),
-        Box::new(CodeApp::with_sample()),
-        (480, 900),
-    );
+    let mut sample = crate::test_support::sample();
+    sample.open("src/main.rs");
+    let driver = sample.app.harness();
+    driver.resize((480, 900)).unwrap();
     let targets = driver.targets();
     let tabs = targets.get("tabs").copied().expect("tab bar target");
     let trigger = targets
