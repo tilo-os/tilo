@@ -6203,8 +6203,6 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(&token, import_as_new)
@@ -7427,24 +7425,6 @@ impl Widget for ContactsApp {
         _permissions: &PermissionContext,
     ) {
         self.render(scene, transform, tr, theme, presence);
-    }
-}
-
-impl ui::undo::UndoPoints for ContactsApp {
-    fn needs_commit(&self) -> bool {
-        self.search.needs_commit()
-            || self
-                .form
-                .as_ref()
-                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
-    }
-    fn on_commit(&mut self) {
-        self.search.on_commit();
-        if let Some(form) = &mut self.form {
-            for f in &mut form.inputs {
-                f.ti.on_commit();
-            }
-        }
     }
 }
 
