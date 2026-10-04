@@ -48,6 +48,7 @@ pub fn agent_package_row(
         cli_commands: Vec::new(),
         runtime: String::new(),
         source: String::new(),
+        held: false,
         system: false,
     }
 }

@@ -5,9 +5,9 @@
 set -euo pipefail
 
 mode=${1:-}
-usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock}"
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock|auth}"
 case "$mode" in
-  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|post-identity|desktop|established|lock) ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|post-identity|desktop|established|lock|auth) ;;
   oobe-text) (($# > 1)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
@@ -323,6 +323,18 @@ wait_for_text() {
   return 1
 }
 
+wait_for_absent() {
+  local expected=$1
+  for _ in $(seq 1 400); do
+    if collect_tree && ! node_named "$expected" >/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree still exposes '$expected'" >&2
+  return 1
+}
+
 # A lock field must be identified as a password to the actual AT-SPI client,
 # not merely be a TextInput whose value happens to be blank. This platform
 # role tells readers and braille displays to suppress credential echo while
@@ -548,6 +560,55 @@ case "$mode" in
   lock)
     wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"
     assert_password_role "Password"
+    ;;
+  auth)
+    # Ask polkit for an administrator action on behalf of the graphical
+    # session, exactly as pkexec from a terminal in it would. polkit hands
+    # the request to the agent that session registered — the compositor —
+    # which draws the system authentication sheet. The sheet must be fully
+    # operable by an external reader: password text that takes focus and
+    # input without publishing it, and a Cancel that answers polkit.
+    session=$(loginctl show-user "$(id -un)" -p Display --value)
+    [[ -n "$session" ]] || { echo "no graphical login session" >&2; exit 1; }
+    answer=$(mktemp)
+    checker=""
+    trap 'rm -f "$answer"; [[ -z "$checker" ]] || kill "$checker" 2>/dev/null || true' EXIT
+    gdbus call --system --timeout 120 \
+      --dest org.freedesktop.PolicyKit1 \
+      --object-path /org/freedesktop/PolicyKit1/Authority \
+      --method org.freedesktop.PolicyKit1.Authority.CheckAuthorization \
+      "('unix-session', {'session-id': <'$session'>})" \
+      org.freedesktop.policykit.exec '{}' 1 '' >"$answer" 2>&1 &
+    checker=$!
+    wait_for_names "Administrator access" "Password" "Authenticate" "Cancel"
+    assert_password_role "Password"
+    focus_named "Password"
+    path=$(editable_node_named "Password")
+    result=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.EditableText.SetTextContents "not-the-password")
+    [[ ${result//[[:space:]]/} == '(true,)' ]] || {
+      echo "AT-SPI text update on the password was rejected: $result" >&2
+      exit 1
+    }
+    text=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.Text.GetText -- 0 -1 2>&1 || true)
+    [[ $text != *not-the-password* ]] || {
+      echo "the password field published what was typed: $text" >&2
+      exit 1
+    }
+    click_named "Cancel"
+    wait "$checker" || true
+    checker=""
+    grep -q '((false,' "$answer" || {
+      echo "polkit did not see the sheet dismissed:" >&2
+      cat "$answer" >&2
+      exit 1
+    }
+    wait_for_absent "Administrator access"
     ;;
 esac
 

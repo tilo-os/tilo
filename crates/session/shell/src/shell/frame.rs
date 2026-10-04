@@ -2921,6 +2921,14 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         scale: f64,
     ) -> ui::accesskit::TreeUpdate {
+        // A modal sheet takes every key, so the reader's cursor belongs on
+        // the part of it that has the keyboard: the host is the focused
+        // widget, and the sheet's focused node its active descendant.
+        let focus = if self.host.modal_sheet_owns_keyboard() {
+            self.host_node.or(focus)
+        } else {
+            focus
+        };
         ui::accesskit_bridge::build_tree_update(self.host.as_ref(), &self.node_map, focus, scale)
     }
 
