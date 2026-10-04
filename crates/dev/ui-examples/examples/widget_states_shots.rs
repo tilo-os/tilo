@@ -60,11 +60,11 @@ use tilo_ui::widget::{
     CardGrid, Checkbox, Chip, ChipLead, ChipStyle, Column, Container, ContextMenu, ControlSize,
     DatePicker, DropZone, Dropdown, Element, EmptyState, Field, IconSize, IconWidget, Image,
     Interaction, Link, ListRow, ListRowFace, MediaArt, MediaCard, MediaCardFace, MediaGrid,
-    MediaSource, MenuItem, ModalDialog, NavItem, NavList, NavSection, NumberInput, Popover,
-    PopoverSide, ProgressBar, ProgressRing, Property, PropertyList, Row, RowLeading, RowStatus,
-    SearchField, Section, Skeleton, Slider, Spinner, StatGroup, StatTile, Stepper, TabBar,
-    TabDescriptor, Text, TextInput, TimePicker, Toggle, ToggleGroup, Tone, Toolbar, TreeView,
-    Trend, Widget,
+    MediaSource, MenuItem, ModalDialog, NavItem, NavList, NavSection, NumberInput, ObjectHeader,
+    Popover, PopoverSide, ProgressBar, ProgressRing, Property, PropertyList, Row, RowLeading,
+    RowStatus, SearchField, Section, SectionHeader, Skeleton, Slider, Spinner, StatGroup, StatTile,
+    StatusLine, Stepper, TabBar, TabDescriptor, Text, TextInput, TimePicker, Toggle, ToggleGroup,
+    Tone, Toolbar, TreeView, Trend, Widget,
 };
 use tilo_ui::{LocalState, State, TextRole};
 
@@ -844,18 +844,25 @@ const fn block(
 
 /// Lay blocks out left to right, wrapping, each under its caption.
 fn block_page(theme: &Theme, blocks: &[Block], out: &Path) {
+    block_page_at(theme, blocks, out, PAGE_W);
+}
+
+/// [`block_page`] on a page `page_w` wide: blocks wider than the page are
+/// narrowed to it, as a narrow window narrows its panes.
+fn block_page_at(theme: &Theme, blocks: &[Block], out: &Path, page_w: f64) {
     let gap = 32.0;
     let caption_h = 24.0;
     let mut placed = Vec::new();
     let (mut x, mut y, mut row_h) = (MARGIN, MARGIN, 0.0_f64);
     for b in blocks {
-        if x + b.width > PAGE_W - MARGIN && x > MARGIN {
+        let width = b.width.min(page_w - 2.0 * MARGIN);
+        if x + width > page_w - MARGIN && x > MARGIN {
             x = MARGIN;
             y += row_h + gap;
             row_h = 0.0;
         }
-        placed.push((Rect::new(x, y, x + b.width, y + caption_h + b.height), b));
-        x += b.width + gap;
+        placed.push((Rect::new(x, y, x + width, y + caption_h + b.height), b));
+        x += width + gap;
         row_h = row_h.max(caption_h + b.height);
     }
     let height = y + row_h + MARGIN;
@@ -876,7 +883,7 @@ fn block_page(theme: &Theme, blocks: &[Block], out: &Path) {
         let mut widget = Column::new().with_no_padding().push((b.build)(theme));
         stamp_block(&mut scene, theme, cell, &mut widget);
     }
-    let mut renderer = OffscreenRenderer::new(PAGE_W as u32, height as u32);
+    let mut renderer = OffscreenRenderer::new(page_w as u32, height as u32);
     renderer.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
 }
@@ -1720,9 +1727,29 @@ pub fn run(args: &[String]) {
         eprintln!("widget_states: cannot create {}: {error}", out.display());
         std::process::exit(2);
     }
+    // An optional second argument names the pages to render, comma
+    // separated (`lists,tables`); without it every page renders.
+    let only: Option<Vec<String>> = args
+        .get(1)
+        .map(|pages| pages.split(',').map(str::to_owned).collect());
+    let wanted = |page: &str| {
+        only.as_ref()
+            .is_none_or(|pages| pages.iter().any(|p| p == page))
+    };
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let theme = theme.with_reduce_motion(true);
         let file = |page: &str| out.join(format!("{page}-{name}.png"));
+        if wanted("lists") {
+            block_page(&theme, &list_blocks(), &file("lists"));
+            block_page_at(&theme, &list_blocks(), &file("lists-narrow"), 800.0);
+        }
+        if wanted("tables") {
+            block_page(&theme, &table_blocks(), &file("tables"));
+            block_page_at(&theme, &table_blocks(), &file("tables-narrow"), 800.0);
+        }
+        if only.is_some() {
+            continue;
+        }
         grid_page(&theme, CONTROL_COLS, &control_specs(), &file("controls"));
         grid_page(&theme, SIZE_COLS, &size_specs(), &file("sizes"));
         grid_page(&theme, INPUT_COLS, &input_specs(), &file("inputs"));
@@ -1753,4 +1780,378 @@ pub fn run(args: &[String]) {
         );
         modal(&theme, &file("modal"));
     }
+}
+
+/// A painted host: a fixed-height leaf that paints a face across its width.
+struct Painted {
+    height: f64,
+    paint: fn(&mut PaintCtx<'_>, Rect),
+    rect: Rect,
+}
+
+impl Widget for Painted {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(taffy::Style {
+                size: Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::length(self.height as f32),
+                },
+                ..Default::default()
+            })
+            .unwrap_or_else(|_| NodeId::new(0));
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            ),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        (self.paint)(&mut PaintCtx::new(scene, transform, text, theme), self.rect);
+    }
+    fn name(&self) -> &'static str {
+        "Painted"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+/// A column with the content gutter a pane gives its lists, so lifts have
+/// the room they bleed into.
+fn gutter(content: Vec<Element>) -> Element {
+    let mut column = Column::new()
+        .with_horizontal_padding(16.0, 16.0)
+        .with_intrinsic_height()
+        .with_gap(16.0);
+    for item in content {
+        column = column.push(item);
+    }
+    Box::new(column)
+}
+
+fn list_blocks() -> Vec<Block> {
+    vec![
+        block("One content edge", 380.0, 330.0, |_| {
+            gutter(vec![
+                Box::new(Text::new("Rows, headers and sentences start on one edge.").dimmed()),
+                Box::new(
+                    Section::new(vec![
+                        Box::new(
+                            ListRow::new("a", "Inbox")
+                                .icon(Icon::Inbox)
+                                .meta("12")
+                                .on_view(|| {}),
+                        ),
+                        Box::new(
+                            ListRow::new("b", "Drafts")
+                                .icon(Icon::FileText)
+                                .selected(true)
+                                .on_view(|| {}),
+                        ),
+                        Box::new(
+                            ListRow::new("c", "Sent")
+                                .icon(Icon::Send)
+                                .selected(true)
+                                .on_view(|| {}),
+                        ),
+                        Box::new(
+                            ListRow::new("d", "Archive")
+                                .icon(Icon::Archive)
+                                .on_view(|| {}),
+                        ),
+                    ])
+                    .with_header(
+                        SectionHeader::group("Mailboxes")
+                            .count(4)
+                            .action(Button::new("clear", "Clear all", None)),
+                    ),
+                ),
+                Box::new(StatusLine::active("Synced a minute ago")),
+            ])
+        }),
+        block("Row parts", 440.0, 420.0, |_| {
+            gutter(vec![Box::new(Section::new(vec![
+                Box::new(
+                    ListRow::new("wifi", "Wi-Fi")
+                        .secondary("Home network")
+                        .icon(Icon::Wifi)
+                        .trailing(Box::new(Toggle::new("wifi-on", "wifi"))),
+                ),
+                Box::new(
+                    ListRow::new("tokyo", "Tokyo")
+                        .secondary("Tomorrow, 7 hours ahead")
+                        .title_value("02:41"),
+                ),
+                Box::new(
+                    ListRow::new("plan", "Atlas plan")
+                        .mark(Icon::Star)
+                        .tags(&[
+                            ("Draft", ChipStyle::Neutral),
+                            ("Shared", ChipStyle::Tinted(Tone::Info)),
+                        ])
+                        .meta("Yesterday"),
+                ),
+                Box::new(
+                    ListRow::new("aapl", "Apple")
+                        .badge("AAPL")
+                        .meta_spans(&[("182.10", Tone::Neutral), ("+2.4%", Tone::Success)]),
+                ),
+                Box::new(
+                    ListRow::new("thread", "Ana Lima")
+                        .avatar("Ana Lima", "ana")
+                        .subtitle("Launch checklist")
+                        .secondary(
+                            "The walkthrough is recorded; only the notes are left before we ship.",
+                        )
+                        .meta("09:12")
+                        .count(4)
+                        .emphasized(true),
+                ),
+                Box::new(ListRow::new("serif", "Serif").checked(true).on_view(|| {})),
+                Box::new(
+                    ListRow::new("mono", "Monospace")
+                        .checked(false)
+                        .with_enabled(false),
+                ),
+            ]))])
+        }),
+        block("Leading column", 380.0, 330.0, |_| {
+            gutter(vec![Box::new(Section::new(vec![
+                Box::new(
+                    ListRow::new("get", "/users")
+                        .badge("GET")
+                        .badge_tooltip("Reads the resource"),
+                ),
+                Box::new(ListRow::new("del", "/users/42").badge("DELETE")),
+                Box::new(
+                    ListRow::new("site", "example.org")
+                        .avatar("Example", "example.org")
+                        .square(),
+                ),
+                Box::new(
+                    ListRow::new("photo", "Coastline")
+                        .thumbnail(art().clone())
+                        .secondary("2.4 MB"),
+                ),
+                Box::new(
+                    ListRow::new("clip", "Harbour at dusk")
+                        .media(MediaSource::Placeholder, tilo_ui::widget::MediaAspect::Wide)
+                        .secondary("4:12"),
+                ),
+                Box::new(ListRow::new("pick", "Select message").checkbox(true, |_| {})),
+                Box::new(
+                    ListRow::new("cal", "Work")
+                        .swatch(vello::peniko::Color::from_rgb8(0x4a, 0x90, 0xd9)),
+                ),
+            ]))])
+        }),
+        block("Folding sections", 380.0, 260.0, |_| {
+            gutter(vec![
+                Box::new(
+                    Section::new(vec![
+                        Box::new(ListRow::new("w1", "Notes").icon(Icon::FileText)),
+                        Box::new(ListRow::new("w2", "Mail").icon(Icon::Mail)),
+                    ])
+                    .with_header(SectionHeader::group("This workspace").count(2))
+                    .collapsible(),
+                ),
+                Box::new(
+                    Section::new(vec![Box::new(
+                        ListRow::new("w3", "Terminal").icon(Icon::Terminal),
+                    )])
+                    .with_header(SectionHeader::group("Other workspaces").count(5))
+                    .collapsed(),
+                ),
+            ])
+        }),
+        block("Property lists", 440.0, 420.0, |_| {
+            gutter(vec![
+                Box::new(
+                    ObjectHeader::new("Ada Lovelace")
+                        .avatar("Ada Lovelace", "ada@example.org")
+                        .caption("ada@example.org"),
+                ),
+                Box::new(Section::new(vec![
+                    Box::new(PropertyList::sections(vec![
+                        (
+                            "Contact",
+                            vec![
+                                Property::new("Email", "ada@example.org")
+                                    .with_kind(tilo_ui::text_render::TextKind::Identifier)
+                                    .copyable(),
+                                Property::new("Phone", "+44 20 7946 0958")
+                                    .with_kind(tilo_ui::text_render::TextKind::Numeric),
+                            ],
+                        ),
+                        (
+                            "Account",
+                            vec![
+                                Property::new("Key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl")
+                                    .with_kind(tilo_ui::text_render::TextKind::Identifier)
+                                    .copyable()
+                                    .action(Icon::Eye, "Reveal", || {}),
+                                Property::new("Certificate", "Expired 3 days ago").tone(Tone::Danger),
+                                Property::new("Notes", "Prefers the morning for calls; the engine draft is in the shared folder."),
+                            ],
+                        ),
+                    ])),
+                ])),
+            ])
+        }),
+        block("Inspector, compact", 320.0, 260.0, |_| {
+            gutter(vec![Box::new(Section::new(vec![Box::new(
+                PropertyList::new(vec![
+                    Property::new("Offset", "0x0004_2A10")
+                        .with_kind(tilo_ui::text_render::TextKind::Numeric),
+                    Property::new("Type", "u32 little endian"),
+                    Property::new("Value", "1,048,576")
+                        .with_kind(tilo_ui::text_render::TextKind::Numeric),
+                    Property::new("Selection", "16 bytes"),
+                ])
+                .compact()
+                .striped(),
+            )]))])
+        }),
+        block("Chips", 380.0, 110.0, |_| {
+            gutter(vec![Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Chip::new("design").with_id("tag-design").on_click(|| {}),
+                    ))
+                    .push(Box::new(Chip::new("Sorted by date").menu().on_click(|| {})))
+                    .push(Box::new(Chip::new("Unread").selected(true))),
+            )])
+        }),
+    ]
+}
+
+#[derive(Clone)]
+struct Proc {
+    name: &'static str,
+    depth: usize,
+    children: bool,
+    open: bool,
+    cpu: &'static str,
+    level: (&'static str, Tone),
+    on: bool,
+}
+
+fn procs() -> Vec<Proc> {
+    let p = |name, depth, children, cpu, level, on| Proc {
+        name,
+        depth,
+        children,
+        open: children,
+        cpu,
+        level,
+        on,
+    };
+    vec![
+        p("systemd", 0, true, "0.1", ("Info", Tone::Info), true),
+        p("tilo-shell", 1, true, "4.2", ("Info", Tone::Info), true),
+        p(
+            "compositor",
+            2,
+            false,
+            "2.8",
+            ("Warning", Tone::Warning),
+            false,
+        ),
+        p(
+            "sync-daemon",
+            1,
+            false,
+            "0.6",
+            ("Error", Tone::Danger),
+            true,
+        ),
+        p("journald", 1, false, "0.2", ("Info", Tone::Info), false),
+    ]
+}
+
+fn table_blocks() -> Vec<Block> {
+    vec![
+        block("Table", 560.0, 220.0, |_| gutter(vec![table()])),
+        block("Tree, badges and boxes", 560.0, 300.0, |_| {
+            let mut t = DataTable::new(vec![
+                ColumnDef::checkbox("on", "On", |p: &Proc| p.on),
+                ColumnDef::new("name", "Process", ColumnWidth::Flex(1.0))
+                    .with_text(|p: &Proc| p.name.to_owned()),
+                ColumnDef::new("level", "Level", ColumnWidth::Auto)
+                    .with_badge(|p: &Proc| (p.level.0.to_owned(), p.level.1)),
+                ColumnDef::new("cpu", "CPU %", ColumnWidth::Auto)
+                    .with_kind(tilo_ui::text_render::TextKind::Numeric)
+                    .with_text(|p: &Proc| p.cpu.to_owned()),
+            ])
+            .selectable(true)
+            .tree(|p: &Proc| p.depth, |p| p.children, |p| p.open, |_, _| {})
+            .with_add_row("Add a process", || {});
+            t.set_rows(procs());
+            t.selection_mut().select_only(1);
+            gutter(vec![Box::new(t)])
+        }),
+        block("Compact, narrow", 320.0, 240.0, |_| {
+            let mut t = DataTable::new(vec![
+                ColumnDef::new("name", "Process", ColumnWidth::Auto)
+                    .with_text(|p: &Proc| p.name.to_owned()),
+                ColumnDef::new("level", "Level", ColumnWidth::Fixed(110.0))
+                    .with_badge(|p: &Proc| (p.level.0.to_owned(), p.level.1))
+                    .priority(1),
+                ColumnDef::new("cpu", "CPU %", ColumnWidth::Fixed(90.0))
+                    .with_kind(tilo_ui::text_render::TextKind::Numeric)
+                    .with_text(|p: &Proc| p.cpu.to_owned()),
+                ColumnDef::new("path", "Path", ColumnWidth::Fixed(200.0))
+                    .with_text(|p: &Proc| format!("/usr/bin/{}", p.name)),
+            ])
+            .compact();
+            t.set_rows(procs());
+            gutter(vec![Box::new(t)])
+        }),
+        block("Painted table", 560.0, 220.0, |_| {
+            gutter(vec![Box::new(Painted {
+                height: 200.0,
+                rect: Rect::ZERO,
+                paint: |ctx, rect| {
+                    use tilo_ui::widget::data_table::{DataTableFace, FaceColumn};
+                    let columns = [
+                        FaceColumn::new("Title", ColumnWidth::Flex(1.0)),
+                        FaceColumn::new("Artist", ColumnWidth::Auto),
+                        FaceColumn::new("Time", ColumnWidth::Auto)
+                            .with_kind(tilo_ui::text_render::TextKind::Numeric),
+                    ];
+                    let rows: [&[&str]; 4] = [
+                        &["So what", "Miles Davis", "9:22"],
+                        &["Freddie Freeloader", "Miles Davis", "9:46"],
+                        &["Blue in green", "Miles Davis", "5:37"],
+                        &["All blues", "Miles Davis", "11:33"],
+                    ];
+                    DataTableFace::new(&columns, &rows)
+                        .selected(Some(2))
+                        .hovered(Some(0))
+                        .sorted_by(0, true)
+                        .paint(ctx, rect);
+                },
+            })])
+        }),
+    ]
 }

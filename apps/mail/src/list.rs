@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use ui::chrome::RowJoin;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -102,8 +103,7 @@ struct Slot {
 
 /// How the rows sit in the list: inset from the column's edges (and clear
 /// of the scroll bar while the list scrolls), the first a step below the
-/// header, each a little apart from the next so two selected rows read as
-/// two.
+/// header, edge to edge so a run of selected rows is one lift.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RowFrame {
     x0: f64,
@@ -130,8 +130,8 @@ impl RowFrame {
             x0: list.x0 + edge,
             x1,
             top: list.y0 + edge,
-            pitch: row_h + f64::from(spacing.s1),
-            gap: f64::from(spacing.s1) / 2.0,
+            pitch: row_h,
+            gap: 0.0,
         }
     }
 
@@ -173,55 +173,32 @@ struct Press {
 struct RowText<'a> {
     sender: String,
     email: &'a str,
+    subject: String,
     preview: String,
     when: String,
     unread: bool,
 }
 
 impl<'a> RowText<'a> {
-    /// The row of message `id`; its subject is kept to the first of the
-    /// two secondary lines (`subject_w` wide) and the start of the message
-    /// fills the second.
-    fn of(
-        id: MessageId,
-        state: &'a MailState,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        (subject_w, hovered): (f64, bool),
-    ) -> Option<Self> {
+    /// The row of message `id`: the sender, the subject under it and the
+    /// start of the message.
+    fn of(id: MessageId, state: &'a MailState) -> Option<Self> {
         let message = state.mailbox.get(id)?;
         let when = format_relative(
             local_minutes(message.timestamp_min),
             local_minutes(state.now_min),
         );
-        // The row narrows its text for the time, or under the pointer for
-        // its actions: keep the subject on its own line beside either.
-        let spacing = &theme.tokens.spacing;
-        let metrics = &theme.tokens.metrics;
-        let trailing = if hovered {
-            3.0 * f64::from(metrics.bar_control_height) + 2.0 * f64::from(spacing.s1)
-        } else {
-            f64::from(
-                text.measure_style(&when, None, &theme.text(ui::TextRole::Caption).numeric())
-                    .0,
-            )
-        };
-        let subject_w = subject_w - trailing - f64::from(spacing.s3);
         let subject = message.thread_subject();
         let subject = if subject.trim().is_empty() {
             "No subject".to_owned()
         } else {
             subject
         };
-        let subject = text.elide_to_width_style(
-            &subject,
-            ui::num::f32_of_f64(subject_w.max(0.0)),
-            &theme.text(ui::TextRole::Caption),
-        );
         Some(Self {
             sender: message.from.display(),
             email: &message.from.email,
-            preview: format!("{subject}\n{}", message.snippet()),
+            subject,
+            preview: message.snippet(),
             when,
             unread: !message.read,
         })
@@ -408,8 +385,8 @@ fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
     let actions = row_actions(starred);
     let faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
     ListRowFace::new("")
+        .subtitle("")
         .secondary("")
-        .two_line_secondary()
         .actions(&faces)
         .interaction(Interaction {
             hovered: true,
@@ -422,26 +399,19 @@ fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
 #[derive(Clone, Copy, Debug)]
 struct RowState {
     selected: bool,
+    /// Whether the row above is selected.
+    previous_selected: bool,
     /// Whether the row below is selected; `None` for the last row.
     next_selected: Option<bool>,
-    /// The width the subject is kept to.
-    subject_w: f64,
 }
 
 impl MessageList {
     /// Paint one conversation's row.
     fn paint_row(&self, ctx: &mut PaintCtx<'_>, state: &MailState, slot: &Slot, row: RowState) {
-        let theme = ctx.theme;
         let hovered = self
             .pointer
             .filter(|p| self.rect.contains(*p) && slot.rect.contains(*p) && !state.bulk_selecting);
-        let Some(text) = RowText::of(
-            slot.id,
-            state,
-            ctx.text,
-            theme,
-            (row.subject_w, hovered.is_some()),
-        ) else {
+        let Some(text) = RowText::of(slot.id, state) else {
             return;
         };
         let actions = row_actions(slot.starred);
@@ -450,11 +420,15 @@ impl MessageList {
         let avatar = AvatarFace::new(&text.sender, text.email).image(image.as_ref());
         let mut face = ListRowFace::new(&text.sender)
             .leading(RowLeading::Avatar(avatar))
+            .subtitle(&text.subject)
             .secondary(&text.preview)
-            .two_line_secondary()
             .meta(&text.when)
             .emphasized(text.unread)
             .selected(row.selected)
+            .joined(RowJoin::new(
+                row.previous_selected,
+                row.next_selected.unwrap_or(false),
+            ))
             .actions(&action_faces)
             .interaction(Interaction {
                 hovered: hovered.is_some(),
@@ -537,8 +511,8 @@ impl Widget for MessageList {
         }
 
         self.row_h = ListRowFace::new("Ag")
+            .subtitle("Ag")
             .secondary("Ag")
-            .two_line_secondary()
             .height(ctx.text, theme);
         let unscrolled = RowFrame::new(r, self.row_h, false, theme);
         self.content_h = unscrolled.content_height(rows.len(), theme);
@@ -549,12 +523,6 @@ impl Widget for MessageList {
         self.reveal(&rows, state.selected, frame);
         self.clamp_scroll();
         let metrics = ScrollMetrics::new(self.content_h, r.height(), self.scroll);
-        // The row's text column: its insets, the avatar and the gap after it.
-        let spacing = &theme.tokens.spacing;
-        let subject_w = frame.x1
-            - frame.x0
-            - 3.0 * f64::from(spacing.s3)
-            - f64::from(theme.tokens.metrics.min_pointer_target);
 
         let selected_rows: Vec<bool> = rows
             .iter()
@@ -587,8 +555,11 @@ impl Widget for MessageList {
                     &slot,
                     RowState {
                         selected: selected_rows.get(index).copied().unwrap_or(false),
+                        previous_selected: index
+                            .checked_sub(1)
+                            .and_then(|above| selected_rows.get(above).copied())
+                            .unwrap_or(false),
                         next_selected: selected_rows.get(index + 1).copied(),
-                        subject_w,
                     },
                 );
             }

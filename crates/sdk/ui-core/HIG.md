@@ -853,11 +853,29 @@ a dark palette), so it stays at least `SELECTION_MIN_STEP` (OKLCH ΔL 0.06)
 from the ground on content, sidebar, inspector, raised and panel grounds in
 every material.
 
+**One content edge.** Inside a column, everything that is text starts on the
+column's content edge: a `ListRow`'s title, a `Section` or `SectionHeader`
+title, a `PropertyList`'s labels, a `StatTile`'s label, a `DataTable`'s first
+column, a `StatusLine`, an `ObjectHeader`. A section header's action ends its
+*label* on the trailing edge. What a row paints behind its text (the hover
+and selection lift, a zebra stripe, a header action's hover) **bleeds
+`chrome::row_bleed` (`s2`) outward past that edge** on both sides, so text
+never moves when a row is selected and a list lines up with the headings
+around it. A retained row grows its own layout box by the bleed when it
+paints; a face (`ListRowFace`, `PropertyListFace`) takes the row's outer
+rect, the content edge grown by the bleed. The column keeps the room for the
+bleed in its gutter; an app never insets a list, a header or a sentence by
+hand to make them line up. A list that clips its rows (`VirtualList`) stands
+them one bleed in from its own edges, so their lift fills it.
+
 **A selected list row is the lift and nothing else.** Every list paints its
 rows' hover and selection through `ui::chrome::paint_row_selection(scene,
-transform, rect, state, ground, theme)`: the row inset `s2` from the list's
-edges, at `radii.item` (6), primary ink, no border, no hue, no leading bar or
-stripe. `TreeView`, `NavList`, `paint_nav_row`, `ListRow`, `VirtualList` and
+transform, rect, state, ground, theme)`: the row's outer rect (the content
+edge grown by the bleed), at `radii.item` (6), primary ink, no border, no
+hue, no leading bar or stripe. A run of selected rows is one lift
+(`paint_row_selection_joined` with a `RowJoin`): the corners two lifted rows
+share are square, so a multi-selection has no notch. `TreeView`, `NavList`,
+`paint_nav_row`, `ListRow`, `VirtualList` and
 `DataTable` use it; a painted list calls it. A private `selected_on` / `row_tier_on` / `selection_fill` is a
 defect.
 

@@ -11,19 +11,15 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::WindowEvent;
 
-use ui::TextRole;
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
 use ui::format::bytes as format_bytes;
-use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
@@ -148,7 +144,6 @@ pub(crate) enum Request {
     Select(u32),
     /// Enter or a double click on a row.
     Activate(u32),
-    ToggleExpand(u32),
     SetExpanded(u32, bool),
     TreeMode(bool),
     SumChildren(bool),
@@ -304,82 +299,6 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
     StatGroup::new(tiles)
 }
 
-/// The chevron hit areas the name column painted this frame, by pid.
-#[derive(Clone, Default)]
-struct Twisties(Arc<Mutex<Vec<(u32, Rect)>>>);
-
-impl Twisties {
-    fn clear(&self) {
-        if let Ok(mut rects) = self.0.lock() {
-            rects.clear();
-        }
-    }
-
-    fn record(&self, pid: u32, rect: Rect) {
-        if let Ok(mut rects) = self.0.lock() {
-            rects.push((pid, rect));
-        }
-    }
-
-    fn at(&self, point: Point) -> Option<u32> {
-        self.0
-            .lock()
-            .ok()?
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(pid, _)| *pid)
-    }
-}
-
-/// Paint a name cell: indented by depth in a tree, with a disclosure
-/// chevron on a parent, then the name elided to the cell.
-fn paint_name(
-    row: &ProcessRow,
-    tree: bool,
-    twisties: &Twisties,
-    scene: &mut Scene,
-    theme: &Theme,
-    text: &mut TextRenderer,
-    cell: Rect,
-) {
-    let tokens = &theme.tokens;
-    let pad = f64::from(tokens.spacing.s2);
-    let style = theme.text(TextRole::Caption);
-    let mut x = cell.x0 + pad;
-    if tree {
-        x += f64::from(tokens.spacing.s4) * row.depth as f64;
-        let icon = f64::from(tokens.metrics.icon_sm);
-        if row.has_children {
-            let glyph =
-                Rect::from_center_size(Point::new(x + icon / 2.0, cell.center().y), (icon, icon));
-            let chevron = if row.expanded {
-                Icon::ChevronDown
-            } else {
-                Icon::ChevronRight
-            };
-            chevron.draw(scene, Affine::IDENTITY, glyph, theme.text_dim);
-            let reach = f64::from(tokens.spacing.s1);
-            twisties.record(
-                row.pid,
-                Rect::new(glyph.x0 - reach, cell.y0, glyph.x1 + reach, cell.y1),
-            );
-        }
-        x += icon + f64::from(tokens.spacing.s1);
-    }
-    let room = (cell.x1 - pad - x).max(0.0);
-    let label = text.elide_to_width_style(&row.name, room as f32, &style);
-    let (_, h) = text.measure_style(&label, None, &style);
-    let y = ui::text_metrics::centered_text_top(cell.y0, cell.height(), f64::from(h)).max(cell.y0);
-    text.draw_style(
-        scene,
-        &label,
-        theme.text_primary,
-        Affine::translate((x, y)),
-        None,
-        &style,
-    );
-}
-
 /// The table's shape: it is rebuilt when one of these changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TableShape {
@@ -389,22 +308,11 @@ struct TableShape {
 }
 
 /// The process table for `shape`, and the sort key of each of its columns.
-fn process_table(
-    shape: TableShape,
-    twisties: &Twisties,
-    shared: &Shared,
-) -> (DataTable<ProcessRow>, Vec<SortKey>) {
-    let tree = shape.tree;
-    let painted = twisties.clone();
+fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, Vec<SortKey>) {
     let mut columns = vec![(
         SortKey::Name,
         ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
-            .with_render(Box::new(
-                move |row: &ProcessRow, scene, theme, text, cell| {
-                    paint_name(row, tree, &painted, scene, theme, text, cell);
-                },
-            ))
-            .with_accessible_value(|row: &ProcessRow| row.name.clone()),
+            .with_text(|row: &ProcessRow| row.name.clone()),
     )];
     columns.push((
         SortKey::Cpu,
@@ -447,6 +355,7 @@ fn process_table(
     let header_keys = keys.clone();
     let sorts = Rc::clone(shared);
     let activations = Rc::clone(shared);
+    let menus = Rc::clone(shared);
     let table = DataTable::new(columns)
         .with_id("monitor.processes")
         .with_accessible_name("Processes")
@@ -462,7 +371,32 @@ fn process_table(
             if let Some(pid) = pid {
                 activations.borrow_mut().push(Request::Activate(pid));
             }
+        })
+        .on_row_context_menu(move |index, at, row| {
+            let pid = menus.borrow().rows.get(index).map(|process| process.pid);
+            if let Some(pid) = pid {
+                menus
+                    .borrow_mut()
+                    .push(Request::ContextMenu { pid, at, row });
+            }
         });
+    if !shape.tree {
+        return (table, keys);
+    }
+    // A tree: the table indents each process under its parent and folds a
+    // parent by its chevron, or by Right and Left on the selected row.
+    let folds = Rc::clone(shared);
+    let table = table.tree(
+        |row: &ProcessRow| row.depth,
+        |row| row.has_children,
+        |row| row.expanded,
+        move |index, open| {
+            let pid = folds.borrow().rows.get(index).map(|process| process.pid);
+            if let Some(pid) = pid {
+                folds.borrow_mut().push(Request::SetExpanded(pid, open));
+            }
+        },
+    );
     (table, keys)
 }
 
@@ -586,7 +520,6 @@ pub(crate) struct ProcessesPane {
     table: DataTable<ProcessRow>,
     sort_keys: Vec<SortKey>,
     shape: TableShape,
-    twisties: Twisties,
     /// The viewport height last handed to the table.
     viewport: f64,
     row_height: f64,
@@ -600,9 +533,6 @@ pub(crate) struct ProcessesPane {
     rect: Rect,
     /// Below this width the pane is compact (from the last layout's theme).
     compact_below: f64,
-    /// How far the table insets a row's selection lift (from the last
-    /// layout's theme).
-    lift_inset: f64,
     nodes: Nodes,
     layout_dirty: bool,
     structure_dirty: bool,
@@ -610,12 +540,11 @@ pub(crate) struct ProcessesPane {
 
 impl ProcessesPane {
     pub(crate) fn new(shared: Shared) -> Self {
-        let twisties = Twisties::default();
         let shape = TableShape {
             tree: true,
             compact: false,
         };
-        let (table, sort_keys) = process_table(shape, &twisties, &shared);
+        let (table, sort_keys) = process_table(shape, &shared);
         Self {
             seen: None,
             seen_rows: None,
@@ -630,7 +559,6 @@ impl ProcessesPane {
             table,
             sort_keys,
             shape,
-            twisties,
             viewport: 0.0,
             row_height: 0.0,
             placeholder: None,
@@ -641,7 +569,6 @@ impl ProcessesPane {
             cursor: Point::ZERO,
             rect: Rect::ZERO,
             compact_below: 0.0,
-            lift_inset: 0.0,
             nodes: Nodes::default(),
             layout_dirty: true,
             structure_dirty: true,
@@ -712,16 +639,13 @@ impl ProcessesPane {
     fn show_sort(&mut self, options: ListOptions) {
         // The app orders the rows (a tree sorts each group of siblings);
         // the table keeps that order and shows which column it is by.
-        self.table.sort_by_with(
-            |_, _| std::cmp::Ordering::Equal,
-            column_key(options.sort),
-            !options.descending,
-        );
+        self.table
+            .set_sort_indicator(column_key(options.sort), !options.descending);
     }
 
     fn rebuild_table(&mut self) {
         let rows = self.table.view_rows().into_iter().cloned().collect();
-        let (table, keys) = process_table(self.shape, &self.twisties, &self.shared);
+        let (table, keys) = process_table(self.shape, &self.shared);
         self.table = table;
         self.sort_keys = keys;
         self.table.set_rows(rows);
@@ -762,26 +686,19 @@ impl ProcessesPane {
         pid
     }
 
-    /// Scroll the table so the selected row is in view, centred when it was
-    /// out of sight.
+    /// Scroll the table so the selected row is in view.
     fn scroll_to_selection(&mut self) {
         let Some(index) = self.table.selection().primary() else {
             return;
         };
-        let top = index as f64 * self.row_height;
-        let scroll = f64::from(self.table.scroll_y());
-        if top < scroll || top + self.row_height > scroll + self.viewport {
-            let centred = (top - (self.viewport - self.row_height) / 2.0).max(0.0);
-            self.table.set_scroll_y(centred as f32);
-            self.layout_dirty = true;
-        }
+        self.table.reveal_row(index);
+        self.layout_dirty = true;
     }
 
     /// `pid`'s row as its selection lift covers it, once the rows are laid
     /// out.
     fn row_rect(&self, pid: u32) -> Option<Rect> {
-        let table = self.table.get_rect();
-        if table.width() <= 0.0 || self.viewport <= 0.0 {
+        if self.table.get_rect().width() <= 0.0 || self.viewport <= 0.0 {
             return None;
         }
         let index = self
@@ -789,15 +706,7 @@ impl ProcessesPane {
             .view_rows()
             .iter()
             .position(|row| row.pid == pid)?;
-        let header = (table.height() - self.viewport).max(0.0);
-        let y0 =
-            table.y0 + header + index as f64 * self.row_height - f64::from(self.table.scroll_y());
-        Some(Rect::new(
-            table.x0 + self.lift_inset,
-            y0,
-            table.x1 - self.lift_inset,
-            y0 + self.row_height,
-        ))
+        self.table.row_rect(index)
     }
 
     /// Where a person right-clicks `pid`'s row: in its name cell, past the
@@ -811,23 +720,6 @@ impl ProcessesPane {
         Some((Point::new(row.x0 + name * 0.6, row.center().y), row))
     }
 
-    /// The process whose row is under `point`, read from the rows the table
-    /// publishes (their bounds and their `row:<pid>:<n>` targets).
-    fn row_pid_at(&self, point: Point) -> Option<u32> {
-        let table = self.table.accessibility()?;
-        let row = table.children.iter().find(|row| {
-            row.bounds
-                .is_some_and(|bounds| bounds.to_rect().contains(point))
-        })?;
-        row.action_target
-            .as_deref()?
-            .strip_prefix("row:")?
-            .split(':')
-            .next()?
-            .parse()
-            .ok()
-    }
-
     /// Open a seeded row menu once the rows are laid out.
     fn open_seeded_menu(&self) {
         let Some(pid) = self.shared.borrow().menu_seed else {
@@ -839,11 +731,6 @@ impl ProcessesPane {
         let mut bridge = self.shared.borrow_mut();
         bridge.menu_seed = None;
         bridge.push(Request::ContextMenu { pid, at, row });
-    }
-
-    fn selected_row(&self) -> Option<ProcessRow> {
-        let index = self.table.selection().primary()?;
-        self.table.view_rows().get(index).map(|row| (*row).clone())
     }
 
     /// A pane `width` wide drops columns and stacks its filter.
@@ -910,76 +797,13 @@ impl ProcessesPane {
         band
     }
 
-    /// Route an event to the table, with the gestures the table leaves to
-    /// its host: the disclosure chevrons, ← and → on a parent, and the row
-    /// menu.
+    /// Route an event to the table and adopt the selection it moved to.
     fn route_to_table(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
         child: NodeId,
     ) {
-        let tree = self.options.is_some_and(|options| options.tree);
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if tree => {
-                if let Some(pid) = self.twisties.at(self.cursor) {
-                    self.shared.borrow_mut().push(Request::ToggleExpand(pid));
-                    *ctx.handled = true;
-                    return;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } if self.table.get_rect().contains(self.cursor) => {
-                // Choose the row under the pointer, then offer its actions.
-                if let Some(pid) = self.row_pid_at(self.cursor)
-                    && let Some(index) =
-                        self.table.view_rows().iter().position(|row| row.pid == pid)
-                {
-                    self.table.selection_mut().select_only(index);
-                    self.queue_selection();
-                    let row = self.row_rect(pid).unwrap_or_else(|| {
-                        Rect::from_center_size(self.cursor, (0.0, self.row_height))
-                    });
-                    self.shared.borrow_mut().push(Request::ContextMenu {
-                        pid,
-                        at: self.cursor,
-                        row,
-                    });
-                }
-                *ctx.handled = true;
-                return;
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(key @ (NamedKey::ArrowLeft | NamedKey::ArrowRight)),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if tree && self.table.is_focused() => {
-                if let Some(row) = self.selected_row()
-                    && row.has_children
-                {
-                    let open = *key == NamedKey::ArrowRight;
-                    if row.expanded != open {
-                        self.shared
-                            .borrow_mut()
-                            .push(Request::SetExpanded(row.pid, open));
-                    }
-                    *ctx.handled = true;
-                    return;
-                }
-            }
-            _ => {}
-        }
         self.table
             .handle_event(event, &mut ctx.reborrow(ctx.path, child));
         self.queue_selection();
@@ -1004,7 +828,6 @@ impl Widget for ProcessesPane {
         let tokens = &theme.tokens;
         let metrics = tokens.metrics;
         self.compact_below = f64::from(metrics.content_min_width + metrics.detail_min_width);
-        self.lift_inset = f64::from(tokens.spacing.s2);
         let compact = self.is_compact(self.rect.width());
         if compact != self.shape.compact {
             self.shape.compact = compact;
@@ -1156,7 +979,6 @@ impl Widget for ProcessesPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.twisties.clear();
         if let Some(summary) = &mut self.summary {
             summary.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -1811,23 +1633,9 @@ pub(crate) struct ProcessDetail<'a> {
     /// the table shows summed subtrees and the process has children: the
     /// numbers its row shows.
     pub with_children: Option<(f32, u64)>,
-    /// The inset of the property list's rows, so the tiles and buttons above
-    /// and below it start where its labels do.
-    pub inset: f32,
     /// The process's published resource; its Stop and Kill actions are what
     /// the buttons invoke.
     pub resource: Resource,
-}
-
-/// `child` inset by `inset` on both sides.
-fn inset_by(child: Element, inset: f32) -> Element {
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_horizontal_padding(inset, inset)
-            .push(child),
-    )
 }
 
 /// The inspector: the selected process's load, its facts and the actions
@@ -1904,9 +1712,9 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
 
     let body = Column::new()
         .with_intrinsic_height()
-        .push(inset_by(Box::new(tiles), detail.inset))
+        .push(Box::new(tiles))
         .push(Box::new(PropertyList::new(properties)))
-        .push(inset_by(Box::new(actions), detail.inset));
+        .push(Box::new(actions));
     Box::new(
         Scrollable::new_vertical()
             .with_semantic_key("monitor.process-detail")

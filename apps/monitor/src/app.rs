@@ -654,8 +654,6 @@ pub struct MonitorApp {
     shown_tab: Rc<std::cell::Cell<Tab>>,
     /// The machine, tab and cadence the header was built for.
     header_shown: Option<(String, Tab, Cadence)>,
-    /// The inspector's row inset in the last layout's theme.
-    detail_inset: f32,
     /// The sampling cadence menu under the header's button.
     cadence_menu: Popover,
     /// Model or view state changed since the panes were last told.
@@ -748,7 +746,6 @@ impl MonitorApp {
             shared,
             shown_tab,
             header_shown: None,
-            detail_inset: 0.0,
             cadence_menu: Popover::new().with_label("Update frequency"),
             stale: true,
             metrics_revision: 0,
@@ -1584,7 +1581,6 @@ impl MonitorApp {
             with_children
                 .map(|(cpu, memory)| (cpu.to_bits(), memory))
                 .hash(&mut hasher);
-            self.detail_inset.to_bits().hash(&mut hasher);
             for sample in &history {
                 sample.to_bits().hash(&mut hasher);
             }
@@ -1599,7 +1595,6 @@ impl MonitorApp {
             parent,
             cpu_history: history,
             with_children,
-            inset: self.detail_inset,
             resource: monitor_process_resource(&process),
         };
         self.shell
@@ -1640,7 +1635,6 @@ impl MonitorApp {
                         self.reveal_inspector();
                     }
                 }
-                Request::ToggleExpand(pid) => self.toggle_expand(pid),
                 Request::SetExpanded(pid, open) => self.set_expanded(pid, open),
                 Request::TreeMode(tree) => self.commit_tree_mode(doc, tree),
                 Request::SumChildren(sum) => {
@@ -1868,13 +1862,6 @@ impl Widget for MonitorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The inspector's tiles and buttons line up with its property list,
-        // whose rows the theme insets.
-        let inset = theme.tokens.spacing.s2;
-        if (inset - self.detail_inset).abs() > f32::EPSILON {
-            self.detail_inset = inset;
-            self.stale = true;
-        }
         self.publish();
         self.layout_dirty = false;
         let shell = self.shell.build_layout(taffy, theme, node_map);
@@ -2391,7 +2378,7 @@ mod tests {
         let push = |a: &MonitorApp, request: Request| a.shared.borrow_mut().push(request);
 
         push(&a, Request::Sort(SortKey::Mem));
-        push(&a, Request::ToggleExpand(shell));
+        push(&a, Request::SetExpanded(shell, true));
         push(&a, Request::KernelThreads(true));
         a.apply_requests(&mut doc);
         assert_eq!(a.sort_key, SortKey::Mem);
