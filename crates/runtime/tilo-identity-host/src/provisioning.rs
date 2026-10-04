@@ -471,17 +471,20 @@ pub fn install_joined_device(
         relay_service,
         cert.device_public_key,
     )?;
-    let rooms_dest = target_system
-        .user_pubkey
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "target identity root is missing",
-            )
-        })?
-        .join("personal-rooms.json");
+    // Beside the peer lists the shell reads it with.
+    let rooms_dest = tilo_relay_protocol::home_peer_registry_path(
+        target_system
+            .user_pubkey
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "target identity root is missing",
+                )
+            })?,
+    )
+    .with_file_name("personal-rooms.json");
     copy_personal_rooms(layout.local_rooms, &rooms_dest)?;
     Ok(cert)
 }
@@ -1519,7 +1522,11 @@ mod tests {
         .unwrap();
         assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
         let rooms: Vec<String> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/personal-rooms.json")).unwrap(),
+            &std::fs::read(
+                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                    .with_file_name("personal-rooms.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(rooms, vec!["11111111-1111-4111-8111-111111111111"]);
