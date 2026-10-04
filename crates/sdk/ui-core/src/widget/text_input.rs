@@ -1124,6 +1124,7 @@ impl TextInput {
         }
         if self.secret {
             self.text.zeroize();
+            self.last_notified_text.zeroize();
         }
         self.text = s.to_string();
         self.selection_anchor = None;
@@ -2942,7 +2943,7 @@ impl TextInput {
 
     #[must_use]
     pub fn disabled(mut self, on: bool) -> Self {
-        self.disabled = on;
+        self.set_disabled(on);
         self
     }
 
@@ -2953,6 +2954,7 @@ impl TextInput {
             self.is_dragging = false;
             self.is_hovered = false;
         }
+        self.reveal.set_enabled(!self.effectively_disabled());
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -3938,6 +3940,7 @@ impl Drop for TextInput {
     fn drop(&mut self) {
         if self.secret {
             self.text.zeroize();
+            self.last_notified_text.zeroize();
             self.preedit.zeroize();
         }
     }
@@ -4876,6 +4879,7 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
+        self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
 
