@@ -129,8 +129,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
 # Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
 # kernel image identity into that layer's cache key adds one ARG (153).
-[ "$instructions" -le 153 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 153)" >&2
+# Redeclaring RPMS_REF before the first snapshot install, for the same reason,
+# adds one more (154).
+[ "$instructions" -le 154 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
   exit 1
 }
 
