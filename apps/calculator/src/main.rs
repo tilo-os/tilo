@@ -9,8 +9,4 @@ extern crate runtime_dylib;
 
 ui::android_main!();
 
-/// Run the calculator.
-pub fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    ui::framework::run::<calculator::CalculatorShell>();
-}
+ui::main!(calculator::CalculatorShell);
