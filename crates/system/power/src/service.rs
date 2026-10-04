@@ -7,7 +7,9 @@
 //!
 //! * on the seat that owns them, takes a logind *block* lock so logind delegates the lid
 //!   switch and power key to the compositor's policy;
-//! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock;
+//! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock, and the other way
+//!   round holds the registry while another program (`systemd-inhibit`, a remote admin
+//!   session) holds a logind `idle` or `sleep` block lock, so idle-suspend waits for it;
 //! * polls the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
 //!   + a critical auto-suspend;
 //! * reacts to lid changes per policy (suspend / lock / ignore);
@@ -22,7 +24,7 @@ use tracing::{debug, info, warn};
 
 use crate::battery::{BatteryEvent, BatteryMonitor, BatterySnapshot};
 use crate::bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
-use crate::inhibit::InhibitRegistry;
+use crate::inhibit::{INHIBIT_POWER, INHIBIT_SUSPEND, InhibitRegistry, InhibitToken};
 use crate::logind::{LogindInhibitor, LogindManager};
 use crate::policy::{PowerAction, PowerPolicy};
 use crate::profiles::PowerProfilesMonitor;
@@ -117,6 +119,50 @@ pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
     }
 }
 
+/// Who names the logind locks Tilo's own power services take. Another Tilo session on the same
+/// machine (a second seat, a dev slot) mirrors its registry under these names too; counting its
+/// mirror as an outside hold would let two sessions keep each other awake forever.
+const OWN_INHIBITOR_WHO: [&str; 2] = ["Tilo power", "Tilo compositor"];
+
+/// How often the service re-reads logind's inhibitor list (in 250 ms ticks): 20 = every 5 s.
+const FOREIGN_INHIBITOR_POLL_EVERY: u32 = 20;
+
+/// One logind `ListInhibitors` row: `(what, who, why, mode, uid, pid)`.
+pub type LogindInhibitorRow = (String, String, String, String, u32, u32);
+
+/// The registry hold that mirrors other programs' logind block locks: their reasons
+/// (`who: why`) and the registry flags they map to. Pure — the service applies exactly this.
+///
+/// A `block` lock on `sleep` holds off idle-suspend only, so the screen still blanks and locks
+/// while, say, a remote admin keeps the machine awake; a `block` lock on `idle` is a request to
+/// keep the whole session awake and holds both. `delay` locks, Tilo's own locks
+/// ([`OWN_INHIBITOR_WHO`]) and anything this process (`own_pid`) holds are not outside holds.
+#[must_use]
+pub fn foreign_sleep_hold(rows: &[LogindInhibitorRow], own_pid: u32) -> Option<(Vec<String>, u32)> {
+    let mut reasons = Vec::new();
+    let mut flags = 0;
+    for (what, who, why, mode, _uid, pid) in rows {
+        if mode != "block" || *pid == own_pid || OWN_INHIBITOR_WHO.contains(&who.as_str()) {
+            continue;
+        }
+        let mut row_flags = 0;
+        for item in what.split(':') {
+            match item {
+                "idle" => row_flags |= INHIBIT_POWER,
+                "sleep" => row_flags |= INHIBIT_SUSPEND,
+                _ => {}
+            }
+        }
+        if row_flags != 0 {
+            flags |= row_flags;
+            reasons.push(format!("{who}: {why}"));
+        }
+    }
+    reasons.sort();
+    reasons.dedup();
+    (flags != 0).then_some((reasons, flags))
+}
+
 /// The running power service. Construct with [`Self::connect`], then [`Self::run`] on a
 /// tokio runtime.
 pub struct PowerService {
@@ -135,6 +181,9 @@ pub struct PowerService {
     /// The logind `idle:sleep` lock mirroring the registry (present iff the registry currently
     /// holds any inhibitor).
     idle_sleep_lock: Option<LogindInhibitor>,
+    /// The registry hold standing in for other programs' logind block locks, with the
+    /// [`foreign_sleep_hold`] it was taken for.
+    foreign_hold: Option<((Vec<String>, u32), InhibitToken)>,
     /// Delay inhibitor held while awake. It is released only after the
     /// compositor confirms that locked chrome has been submitted.
     sleep_delay_lock: Option<LogindInhibitor>,
@@ -198,6 +247,7 @@ impl PowerService {
             last_lid_closed: None,
             _delegate_lock: delegate,
             idle_sleep_lock: None,
+            foreign_hold: None,
             sleep_delay_lock,
             sleep_lock_drawn: false,
             preparing_for_sleep: false,
@@ -272,6 +322,9 @@ impl PowerService {
                         info!(target: "tilo::power", "subscribed to power-profile changes");
                     }
                     self.reap_suspend_task().await;
+                    if ticks.is_multiple_of(FOREIGN_INHIBITOR_POLL_EVERY) {
+                        self.poll_foreign_inhibitors().await;
+                    }
                     self.drain_commands().await;
                     self.mirror_inhibit_registry().await;
                     self.poll_lid().await;
@@ -443,6 +496,32 @@ impl PowerService {
         }
     }
 
+    /// Hold the registry while another program holds a logind `idle` or `sleep` block lock, so
+    /// the compositor's idle-suspend waits for it exactly as it waits for media or a running task.
+    async fn poll_foreign_inhibitors(&mut self) {
+        let rows = match self.logind.list_inhibitors().await {
+            Ok(rows) => rows,
+            Err(error) => {
+                debug!(target: "tilo::power", %error, "ListInhibitors failed");
+                return;
+            }
+        };
+        let wanted = foreign_sleep_hold(&rows, std::process::id());
+        if wanted.as_ref() == self.foreign_hold.as_ref().map(|(held, _)| held) {
+            return;
+        }
+        self.foreign_hold = wanted.map(|(reasons, flags)| {
+            info!(target: "tilo::power", ?reasons, "kept awake by another program");
+            let token = self
+                .registry
+                .acquire_for(format!("kept awake by {}", reasons.join(", ")), flags);
+            ((reasons, flags), token)
+        });
+        if self.foreign_hold.is_none() {
+            info!(target: "tilo::power", "no other program keeps the machine awake any more");
+        }
+    }
+
     /// Issue the suspend request, if logind allows it. The inhibitor registry is the compositor's
     /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
     async fn start_suspend(&mut self) {
@@ -566,6 +645,48 @@ mod tests {
             assert!(receives_seat_buttons(Some("")));
             assert!(!receives_seat_buttons(Some("seat-pr1307")));
             assert!(!receives_seat_buttons(Some("seat1")));
+        }
+        // Phase `outside_block_locks_hold_idle_suspend`.
+        {
+            let row = |what: &str, who: &str, mode: &str, pid: u32| -> LogindInhibitorRow {
+                (what.into(), who.into(), "why".into(), mode.into(), 0, pid)
+            };
+            let own = 100;
+            // Nothing held, Tilo's own locks, delay locks and this process's locks are no hold.
+            assert_eq!(foreign_sleep_hold(&[], own), None);
+            assert_eq!(
+                foreign_sleep_hold(
+                    &[
+                        row("idle:sleep", "Tilo power", "block", 7),
+                        row("sleep", "Tilo compositor", "delay", own),
+                        row("sleep", "NetworkManager", "delay", 3),
+                        row("handle-lid-switch", "Tilo compositor", "block", own),
+                        row("sleep", "anything", "block", own),
+                        row("shutdown", "packagekit", "block", 9),
+                    ],
+                    own,
+                ),
+                None
+            );
+            // A remote admin's `sleep` lock holds suspend only: the screen still blanks and locks.
+            assert_eq!(
+                foreign_sleep_hold(&[row("sleep", "tilo-vm", "block", 5)], own),
+                Some((vec!["tilo-vm: why".to_string()], INHIBIT_SUSPEND))
+            );
+            // An `idle` lock keeps the whole session awake.
+            assert_eq!(
+                foreign_sleep_hold(
+                    &[
+                        row("idle", "mpv", "block", 6),
+                        row("sleep", "tilo-vm", "block", 5),
+                    ],
+                    own,
+                ),
+                Some((
+                    vec!["mpv: why".to_string(), "tilo-vm: why".to_string()],
+                    INHIBIT_POWER
+                ))
+            );
         }
         // Phase `lid_edge_only_acts_on_close_transition`.
         {
