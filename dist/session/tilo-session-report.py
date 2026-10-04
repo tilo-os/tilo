@@ -33,6 +33,11 @@ KMS_MODE = re.compile(
     r"width=(?P<width>\d+) .*?height=(?P<height>\d+) .*?"
     r"refresh_mhz=(?P<refresh_mhz>\d+)"
 )
+KEY_LATENCY = re.compile(
+    r"KEY-LATENCY app=(?P<app>\S*) key_to_commit_us=(?P<key_to_commit_us>\d+) "
+    r"key_to_submit_us=(?P<key_to_submit_us>\d+) key_to_present_us=(?P<key_to_present_us>\d+)"
+)
+KEY_UNANSWERED = re.compile(r"KEY-LATENCY app=(?P<app>\S*) unanswered=1")
 LAUNCH_PACKAGE = re.compile(r"\bpackage_id=(?:\x1b\[[0-9;]*m)*(?P<id>[\w.-]+)")
 LAUNCH_FIELD = re.compile(
     r"\b(request_to_dispatch_us|request_to_spawn_us|request_to_map_us|"
@@ -164,6 +169,7 @@ def flight_report(path: Path) -> dict[str, object]:
     direct_status_samples = []
     kms_modes = []
     launch_samples: dict[str, dict[str, list[int]]] = {}
+    key_samples: dict[str, dict[str, list[int]]] = {}
     for line in lines:
         clean = ANSI.sub("", line)
         if match := KMS_MODE.search(clean):
@@ -175,6 +181,14 @@ def flight_report(path: Path) -> dict[str, object]:
                 metrics.setdefault(key, []).append(value)
         if match := DIRECT_STATUS.search(clean):
             direct_status_samples.append(match.groupdict())
+        if match := KEY_LATENCY.search(clean):
+            app = key_samples.setdefault(match.group("app") or "unknown", {})
+            for key, value in match.groupdict().items():
+                if key != "app":
+                    app.setdefault(key, []).append(int(value))
+        elif match := KEY_UNANSWERED.search(clean):
+            app = key_samples.setdefault(match.group("app") or "unknown", {})
+            app.setdefault("unanswered", []).append(1)
         if "DRM render phase summary" not in clean:
             continue
         fields = {key: int(value) for key, value in RENDER_PHASE_FIELD.findall(clean)}
@@ -200,6 +214,22 @@ def flight_report(path: Path) -> dict[str, object]:
                 "p95": percentile(values.copy(), 95),
                 "max": max(values),
             }
+            for key, values in sorted(metrics.items())
+        }
+    key_latency = {}
+    for app, metrics in sorted(key_samples.items()):
+        key_latency[app] = {
+            key: (
+                len(values)
+                if key == "unanswered"
+                else {
+                    "count": len(values),
+                    "p50": percentile(values.copy(), 50),
+                    "p95": percentile(values.copy(), 95),
+                    "p99": percentile(values.copy(), 99),
+                    "max": max(values),
+                }
+            )
             for key, values in sorted(metrics.items())
         }
     idle_wake_storm_max = 0
@@ -235,6 +265,7 @@ def flight_report(path: Path) -> dict[str, object]:
         "render_phase_last": render_phases[-1] if render_phases else None,
         "kms_modes": kms_modes,
         "launch_latency_us": launch_latency,
+        "key_latency_us": key_latency,
         "xwayland_ready": any("Connected to Xwayland" in line for line in lines),
         "xwayland_unavailable": any("X11 compatibility unavailable" in line for line in lines),
     }
@@ -310,6 +341,11 @@ def main() -> int:
         action="store_true",
         help="with --render-gate: direct GPU scanout must present even if it never started",
     )
+    parser.add_argument(
+        "--key-latency",
+        action="store_true",
+        help="print key-to-present latency of typing, per app (from KEY-LATENCY records)",
+    )
     parser.add_argument("--render-budget-ms", type=int, default=33)
     parser.add_argument("--frame-work-budget-ms", type=int, default=16)
     args = parser.parse_args()
@@ -320,6 +356,20 @@ def main() -> int:
         "flight": flight_report(args.root / flight_name),
         "frames": trace_report(args.root / trace_name),
     }
+    if args.key_latency:
+        keys = report["flight"].get("key_latency_us") or {}
+        if not keys:
+            print("no typed keys were answered in this login's record")
+        for app, metrics in keys.items():
+            print(f"{app}: unanswered={metrics.get('unanswered', 0)}")
+            for stage in ("key_to_commit_us", "key_to_submit_us", "key_to_present_us"):
+                if stats := metrics.get(stage):
+                    print(
+                        f"  {stage[:-3]:<16} n={stats['count']:<5} p50={stats['p50'] / 1000:.1f}ms "
+                        f"p95={stats['p95'] / 1000:.1f}ms p99={stats['p99'] / 1000:.1f}ms "
+                        f"max={stats['max'] / 1000:.1f}ms"
+                    )
+        return 0
     if args.render_gate:
         failures = render_gate(
             report,
