@@ -388,10 +388,8 @@ The reuse boundaries are:
 
 | Change | Work required |
 | --- | --- |
-| Unchanged WPE inputs | Import the authenticated completed WPE stage; do not compile WebKit again. |
 | Development public keys, owner, or update origin | Authenticate the retained raw rootfs, replace public trust, regenerate and verify its initramfs, then add the changed files as one image layer. |
 | Signing or final image assembly | Consume immutable compiled rootfs and tooling inputs. |
-| WPE recipe, toolchain, architecture, or dependency inputs | Produce a matching WPE artifact before the full OS consumer runs. |
 
 `os/dev/import-development-rootfs.py` verifies the retained digest and signed
 handoff against independently selected source identity. The rebind path keeps
@@ -399,10 +397,8 @@ the original kernel and generation. `complete-initramfs-rebind.py` clears the
 pending trust-replacement marker only after checking the actual initramfs key
 bytes against the selected public bundle. These checks do not prove bootability.
 
-The completed WPE artifact consumer rejects missing or mismatched receipts;
-it does not silently start an expensive fallback build. Compiler-cache hits,
-completed-stage reuse, and a successful OS build are separate evidence: a small
-cache fixture proves neither a completed WebKit build nor an installable image.
+Compiler-cache hits and a successful OS build are separate evidence: a small
+cache fixture does not prove an installable image.
 Measure cold compilation and warm reuse separately before setting build-time
 expectations. Native rebind execution, final sealing, and disk/VM acceptance
 remain required before using a rebound image for installation.

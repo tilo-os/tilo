@@ -4,6 +4,7 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod protocol;
+pub mod runtime;
 
 use crate::time::Duration;
 use std::collections::{HashMap, VecDeque};
@@ -149,6 +150,14 @@ fn owned_private_root(root: &Path) -> bool {
             .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
 }
 
+/// Remove a private window's disposable root that no engine will use, if it
+/// is one Browser owns.
+pub fn release_private_root(root: &Path) {
+    if owned_private_root(root) {
+        cleanup_private_root(root);
+    }
+}
+
 fn cleanup_private_root(root: &Path) {
     #[cfg(unix)]
     let _lock = {
@@ -249,32 +258,16 @@ fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
     routes.lock().ok()?.get(&id)?.upgrade()
 }
 
-/// Error-only surface used when a real engine cannot start. It never renders a
-/// page and repeats the diagnostic on navigation so the browser's normal error
-/// presentation remains actionable.
+/// Error-only surface used when the engine is not installed or cannot start.
+/// It never renders a page and answers navigation with its message, which is
+/// written for the person using the app.
 pub struct UnavailableEngine {
     message: String,
     shared: Shared,
-    _private_root: PrivateRootCleanup,
 }
 
 impl UnavailableEngine {
     pub fn new(message: String) -> Arc<Self> {
-        Self::build(message, None)
-    }
-
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the private root is not an owned Browser directory.
-    pub fn new_with_private_root(message: String, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
-            return Err("Private Chromium root is not owned by Browser".into());
-        }
-        Ok(Self::build(message, Some(root.to_owned())))
-    }
-
-    fn build(message: String, private_root: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             message,
             shared: Shared {
@@ -286,7 +279,6 @@ impl UnavailableEngine {
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
             },
-            _private_root: PrivateRootCleanup(private_root),
         })
     }
 }
@@ -325,32 +317,10 @@ impl WebViewEngine for UnavailableEngine {
 }
 
 fn host_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("TILO_CHROMIUM_HOST") {
-        return Ok(path.into());
-    }
-    #[cfg(test)]
-    let executable = std::env::var_os("TILO_TEST_CHROMIUM_DISCOVERY_EXE")
-        .map(PathBuf::from)
-        .map_or_else(std::env::current_exe, Ok)
-        .map_err(|error| error.to_string())?;
-    #[cfg(not(test))]
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let binary_name = if cfg!(target_os = "macos") {
-        "Browser Engine.app/Contents/MacOS/tilo-chromium-host"
-    } else {
-        "tilo-chromium-host"
-    };
-    for parent in executable.ancestors().skip(1).take(4) {
-        for candidate in [
-            parent.join("chromium").join(binary_name),
-            parent.join("Frameworks").join(binary_name),
-        ] {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
+    runtime::locate().map_err(|missing| {
+        tracing::warn!(hint = %missing.developer_hint(), "Chromium engine runtime missing");
+        runtime::NOT_INSTALLED_MESSAGE.to_owned()
+    })
 }
 
 fn spawn_command_writer(

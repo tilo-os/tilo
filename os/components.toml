@@ -188,20 +188,6 @@ files = [
   { from = "settings", to = "/usr/bin/settings", mode = "0755" },
 ]
 
-# Omitted when the image is built with TILO_WITH_BROWSER=0.
-[[component]]
-name = "browser"
-kind = "userspace"
-scope = "session"
-packages = ["browser"]
-bins = ["browser"]
-features = ["browser/wpe"]
-optional = true
-layer = "desktop-binaries"
-files = [
-  { from = "browser", to = "/usr/bin/browser", mode = "0755" },
-]
-
 # ---- Session: package management and user services -------------------------
 
 [[component]]

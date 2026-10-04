@@ -550,10 +550,6 @@ impl BrowserTabs {
             );
         }
     }
-    #[cfg(feature = "wpe")]
-    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
-        self.active().content_rect_handle()
-    }
     fn active(&self) -> &BrowserWidget {
         // A workspace always contains its active tab, including after last close.
         #[allow(clippy::unwrap_used, reason = "workspace retains an active tab")]

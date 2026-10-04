@@ -238,7 +238,7 @@ pub struct Shell {
 impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
     /// (null backend), Files, Notes, Editor, and a
-    /// Browser chrome. Production launches the packaged WPE-backed browser;
+    /// Browser chrome. Production launches the packaged Chromium browser;
     /// this in-process workspace mirror uses the same `BrowserWidget` contract.
     /// # Panics
     /// Panics if its explicitly temporary fixture directory cannot be created.

@@ -70,26 +70,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// Returns an error if a `--shots*` render mode fails to produce its PNG
 /// (missing/unreadable target path, offscreen render failure).
 pub fn main() {
-    // The SHM engine path reads WebKit's frames back on the CPU, yet with a
-    // real display WebKit still tries hardware GL for its compositor. On a
-    // machine whose GPU EGL is unreliable (e.g. a nested NVIDIA node
-    // reporting `driver (null)`) that context can wedge mid-render under
-    // load — the page freezes and never recovers while the chrome stays
-    // live. Pin WebKit's GL to software so the SHM path is reliable; the
-    // zero-copy dmabuf path (opt-in) keeps hardware. Overridable by setting
-    // the var yourself. wgpu (the chrome) uses Vulkan, so it's unaffected.
-    #[cfg(feature = "wpe")]
-    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_none()
-        && std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none()
-    {
-        // Safe: called at the very top of `main`, before any thread (or the
-        // WebKit WebProcess) that could read the environment concurrently.
-        unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
-    }
-
-    // The live handler installs the WebKit frame waker, and the dmabuf
-    // compositor when that path is on. The framework shell never wakes the
-    // window, so a page would sit until some other event.
+    // The live handler installs the engine's frame waker. The framework
+    // shell never wakes the window, so a page would sit until some other
+    // event.
     ui::launch::run_or_exit(&launch_spec());
 }
 
@@ -300,20 +283,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let mut engine = None;
     let mut make_root = || -> Result<Box<dyn Widget>, LaunchError> {
         let widget = browser_workspace(args)?;
-        let actual_engine = widget.engine_handle();
-        // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-        // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
-        // blits the imported texture over the content rect. A no-op otherwise.
-        #[cfg(feature = "wpe")]
-        if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
-            ui::render_thread::set_frame_post_processor(Box::new(
-                browser::compositor::WebViewCompositor::new(
-                    actual_engine.clone(),
-                    widget.content_rect_handle(),
-                ),
-            ));
-        }
-        engine = Some(actual_engine);
+        engine = Some(widget.engine_handle());
         Ok(Box::new(widget))
     };
     let mut app = if mode.is_private() {
