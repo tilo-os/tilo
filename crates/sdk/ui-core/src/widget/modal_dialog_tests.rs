@@ -1035,11 +1035,52 @@ fn a_three_way_question_stands_in_the_platform_order() {
 }
 
 #[test]
+fn enter_in_a_destructive_confirmation_is_the_safe_answer() {
+    let (erased, erase) = counter();
+    let (cancelled, cancel) = counter();
+    let mut d = ModalDialog::new("Erase disk?", TestContent)
+        .primary_action("Erase", erase)
+        .secondary_action("Cancel", cancel)
+        .with_destructive(true)
+        .open(true);
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    assert_eq!(cancelled.get(), 1, "Return is Cancel, as on macOS");
+    assert_eq!(erased.get(), 0, "Return never erases");
+    let p = d.primary_rect().center();
+    dispatch(&mut d, &cursor_at(p));
+    dispatch(&mut d, &left_press());
+    assert_eq!(
+        erased.get(),
+        1,
+        "a click still takes the destructive action"
+    );
+
+    // Where the platform stands the primary action first, the keyboard
+    // still starts on Cancel.
+    d.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Windows));
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    assert_eq!(d.keys.first().map(|k| k.slot), Some(Slot::Secondary));
+
+    // The painted sheet answers the same way.
+    let theme = Theme::dark();
+    let actions = [
+        ModalAction::secondary("Cancel"),
+        ModalAction::danger("Erase"),
+    ];
+    let layout = lay(&ModalSpec::new("Erase disk?").actions(&actions), &theme);
+    assert_eq!(
+        layout.primary,
+        Some(0),
+        "Enter is Cancel on a painted sheet"
+    );
+}
+
+#[test]
 fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
     let (fired, fire) = counter();
     let mut d = ModalDialog::new("Erase disk", TestContent)
         .primary_action("Erase", fire)
-        .with_destructive(true)
         .open(true);
     d.set_primary_enabled(false);
     lay_out(&mut d, WINDOW, &Theme::dark());
@@ -1251,7 +1292,7 @@ fn footer_actions_are_addressable_by_name() {
 }
 
 #[test]
-fn a_focused_switch_in_the_content_takes_space_and_enter_before_the_sheet() {
+fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
     use crate::headless::Framed;
     use crate::widget::{Column, TextInput, Toggle};
     let (saved, save) = counter();
@@ -1281,19 +1322,15 @@ fn a_focused_switch_in_the_content_takes_space_and_enter_before_the_sheet() {
     assert!(on.get(), "Space flips the focused switch");
     assert_eq!(saved.get(), 0, "and does not save");
 
+    // Return is the sheet's default answer, as on macOS, even on a switch.
     Framed::harness_mut(&mut framed).key("Enter");
-    assert!(!on.get(), "Enter operates the focused switch too");
-    assert_eq!(
-        saved.get(),
-        0,
-        "the switch took Enter, so the sheet does not save"
-    );
+    assert!(on.get(), "Enter leaves the switch as it is");
+    assert_eq!(saved.get(), 1, "Enter on a switch saves");
 
-    // A control that does not take the key leaves Enter to the sheet.
     let name = framed.content().children()[0].get_rect().center();
     Framed::harness_mut(&mut framed).click_at(name.x, name.y);
     Framed::harness_mut(&mut framed).key("Enter");
-    assert_eq!(saved.get(), 1, "Enter in a field saves");
+    assert_eq!(saved.get(), 2, "Enter in a field saves");
 }
 
 #[test]

@@ -97,7 +97,8 @@ looks more important than another.
 **Status.** Danger, warning and success exist only for status. They are muted
 (C ≤ 0.13) and never used as decoration. Danger red means an error or a
 failure, never unread, new or live. A destructive button uses danger ink
-on a neutral control and is filled only inside the confirmation step.
+on a neutral control and is filled only inside the confirmation step, where
+Return is still the safe answer (Cancel), never the destructive one.
 
 ## Shape
 

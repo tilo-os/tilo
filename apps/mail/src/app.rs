@@ -6064,7 +6064,32 @@ mod tests {
                 .borrow_mut()
                 .push_intent(Intent::ConfirmBulkPurge);
             app.process_intents();
+            // Return is the safe answer in a destructive confirmation.
             assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
+            assert!(app.bulk_purge_confirmation.is_none());
+            assert!(
+                ids.iter()
+                    .all(|id| app.shared.borrow().mailbox.get(*id).is_some()),
+                "Enter cancels a permanent delete"
+            );
+
+            // Operating "Delete permanently" deletes them.
+            app.shared
+                .borrow_mut()
+                .push_intent(Intent::ConfirmBulkPurge);
+            app.process_intents();
+            let confirmation = app
+                .bulk_purge_confirmation
+                .as_mut()
+                .expect("the confirmation is open");
+            assert!(Widget::perform_semantic_action(
+                &mut confirmation.dialog,
+                "modal.primary",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            app.settle_purge_confirmation(&mut doc);
             assert!(app.bulk_purge_confirmation.is_none());
             assert!(
                 ids.iter()
