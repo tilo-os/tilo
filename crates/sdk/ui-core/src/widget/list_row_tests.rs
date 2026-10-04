@@ -394,10 +394,19 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
 
     let row = ListRow::new("r", "/users")
         .badge("GET")
-        .badge_tooltip("Retrieves the resource");
+        .leading_tooltip("Retrieves the resource");
     let node = Widget::accessibility(&row).unwrap();
     assert_eq!(node.name.as_deref(), Some("GET /users"));
     assert_eq!(node.description.as_deref(), Some("Retrieves the resource"));
+
+    // An icon that names a kind says it the same way, and keeps the title
+    // as the row's whole name.
+    let row = ListRow::new("r", "Build server")
+        .icon(Icon::SquareTerminal)
+        .leading_tooltip("SSH");
+    let node = Widget::accessibility(&row).unwrap();
+    assert_eq!(node.name.as_deref(), Some("Build server"));
+    assert_eq!(node.description.as_deref(), Some("SSH"));
 }
 
 #[test]

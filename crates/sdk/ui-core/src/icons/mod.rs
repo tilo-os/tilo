@@ -377,11 +377,19 @@ pub enum Icon {
     SquaresIntersect,
     /// Where either shape is, but not both. Lucide `squares-exclude`.
     SquaresExclude,
+    /// A shell on another machine (SSH). Lucide `square-terminal`.
+    SquareTerminal,
+    /// Another machine's screen, shared (VNC). Lucide `screen-share`.
+    ScreenShare,
+    /// A desktop session in a window (RDP). Lucide `app-window`.
+    AppWindow,
+    /// One of your own devices. Lucide `monitor-smartphone`.
+    MonitorSmartphone,
 }
 
 impl Icon {
     /// Every icon, in declaration order.
-    pub const ALL: [Self; 218] = [
+    pub const ALL: [Self; 222] = [
         Self::LayoutGrid,
         Self::Settings2,
         Self::Mouse,
@@ -600,6 +608,10 @@ impl Icon {
         Self::SquaresSubtract,
         Self::SquaresIntersect,
         Self::SquaresExclude,
+        Self::SquareTerminal,
+        Self::ScreenShare,
+        Self::AppWindow,
+        Self::MonitorSmartphone,
     ];
 
     /// The icon's lucide kebab name (`Icon::LayoutGrid` → `layout-grid`):
@@ -826,6 +838,10 @@ impl Icon {
             Self::SquaresSubtract => "squares-subtract",
             Self::SquaresIntersect => "squares-intersect",
             Self::SquaresExclude => "squares-exclude",
+            Self::SquareTerminal => "square-terminal",
+            Self::ScreenShare => "screen-share",
+            Self::AppWindow => "app-window",
+            Self::MonitorSmartphone => "monitor-smartphone",
         }
     }
 
@@ -2090,6 +2106,30 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         .into_iter()
         .map(path_from_d)
         .collect(),
+        Icon::SquareTerminal => vec![
+            path_from_d("m7 11 2-2-2-2"),
+            path_from_d("M11 13h4"),
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+        ],
+        Icon::ScreenShare => vec![
+            path_from_d("M13 3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3"),
+            path_from_d("M8 21h8"),
+            path_from_d("M12 17v4"),
+            path_from_d("m17 8 5-5"),
+            path_from_d("M17 3h5v5"),
+        ],
+        Icon::AppWindow => vec![
+            rect_path(2.0, 4.0, 20.0, 16.0, 2.0),
+            path_from_d("M10 4v4"),
+            path_from_d("M2 8h20"),
+            path_from_d("M6 4v4"),
+        ],
+        Icon::MonitorSmartphone => vec![
+            path_from_d("M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"),
+            path_from_d("M10 19v-3.96 3.15"),
+            path_from_d("M7 19h5"),
+            rect_path(16.0, 12.0, 6.0, 10.0, 2.0),
+        ],
     }
 }
 

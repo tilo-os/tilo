@@ -1749,11 +1749,7 @@ impl RemoteApp {
         let connection = self.workspace.get(id);
         let name = connection.map_or("the machine", |c| c.name.as_str());
         let kind = connection.map_or(ConnectionKind::Ssh, |c| c.kind);
-        let icon = if kind.is_terminal() {
-            Icon::Terminal
-        } else {
-            Icon::Monitor
-        };
+        let icon = view::kind_icon(kind);
         let status = self.session.borrow().status();
         match status {
             None => StatusModel {

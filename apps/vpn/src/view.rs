@@ -219,7 +219,7 @@ fn connection_row(entry: &ListEntry<'_>, selected: Option<ConnId>, intents: &Int
     // title starts on one edge whichever protocols it holds.
     let row = ListRow::new(format!("vpn-connection-{id}"), &connection.name)
         .badge(connection.kind.badge())
-        .badge_tooltip(connection.kind.long_name())
+        .leading_tooltip(connection.kind.long_name())
         .secondary(secondary)
         .selected(selected == Some(id))
         .on_view(intents.sender(Intent::Select(id)));

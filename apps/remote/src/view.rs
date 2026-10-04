@@ -74,13 +74,7 @@ pub(crate) fn rail(
         NavItem::new(Destination::Pinned.id(), "Pinned").icon(Icon::Pin),
     ];
     if let Some(kind) = session {
-        items.push(NavItem::new(Destination::Session.id(), "Session").icon(
-            if kind.is_terminal() {
-                Icon::Terminal
-            } else {
-                Icon::Monitor
-            },
-        ));
+        items.push(NavItem::new(Destination::Session.id(), "Session").icon(kind_icon(kind)));
     }
     let requests = Rc::clone(requests);
     NavList::new(vec![NavSection::untitled("destinations", items)])
@@ -125,18 +119,21 @@ pub(crate) struct RowModel {
     pub selected: bool,
 }
 
-/// What a connection opens: a terminal or a screen.
-fn kind_icon(kind: ConnectionKind) -> Icon {
-    if kind.is_terminal() {
-        Icon::Terminal
-    } else {
-        Icon::Monitor
+/// The protocol a connection speaks, as one glyph: a row's leading mark,
+/// the session's rail item and its status page.
+pub(crate) fn kind_icon(kind: ConnectionKind) -> Icon {
+    match kind {
+        ConnectionKind::Ssh => Icon::SquareTerminal,
+        ConnectionKind::Vnc => Icon::ScreenShare,
+        ConnectionKind::Rdp => Icon::AppWindow,
+        ConnectionKind::Tilo => Icon::MonitorSmartphone,
     }
 }
 
 fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
     let list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
         .icon(kind_icon(row.kind))
+        .leading_tooltip(row.kind.label())
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
@@ -322,7 +319,7 @@ fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
         .enumerate()
         .map(|(index, device)| {
             let row = ListRow::new(format!("remote.device:{index}"), &device.name)
-                .icon(Icon::Monitor)
+                .icon(kind_icon(ConnectionKind::Tilo))
                 .selected(device.picked)
                 .on_activate(queue(requests, Action::PickTiloDevice(index)));
             Box::new(if device.online {

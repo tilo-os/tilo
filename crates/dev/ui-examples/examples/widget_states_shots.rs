@@ -2119,7 +2119,7 @@ fn list_blocks() -> Vec<Block> {
                 Box::new(
                     ListRow::new("get", "/users")
                         .badge("GET")
-                        .badge_tooltip("Reads the resource"),
+                        .leading_tooltip("Reads the resource"),
                 ),
                 Box::new(ListRow::new("del", "/users/42").badge("DELETE")),
                 Box::new(
