@@ -20,12 +20,8 @@ fn index_containers(catalog: &SearchCatalog, engine: &Engine) {
             &container.name,
             ActionAddress::new(&resource_id, "select"),
         )
-        .with_subtitle(format!(
-            "{} · {}",
-            container.image,
-            container.status.label()
-        ))
-        .with_icon(Icon::Square);
+        .with_subtitle(container.image.clone())
+        .with_icon(Icon::Archive);
         let searchable = format!(
             "{} {} {} {}",
             container.name,
@@ -41,7 +37,7 @@ fn index_containers(catalog: &SearchCatalog, engine: &Engine) {
             format!("{} logs", container.name),
             ActionAddress::new(&log_resource_id, "open"),
         )
-        .with_subtitle("Matching recent log output")
+        .with_subtitle(container.image.clone())
         .with_icon(Icon::FileText);
         let log_searchable = format!("{} {}", container.name, container.logs.join("\n"));
         let _ = catalog.upsert(&log_resource_id, log_searchable, log_result);
@@ -75,7 +71,7 @@ fn index_volumes(catalog: &SearchCatalog, engine: &Engine) {
             &volume.name,
             ActionAddress::new(&resource_id, "open"),
         )
-        .with_subtitle(format!("{} · used by {}", volume.driver, volume.in_use_by))
+        .with_subtitle(volume.mountpoint.clone())
         .with_icon(Icon::HardDrive);
         let _ = catalog.upsert(
             &resource_id,
@@ -93,11 +89,7 @@ fn index_distroboxes(catalog: &SearchCatalog, engine: &Engine) {
             &distrobox.name,
             ActionAddress::new(&resource_id, "open"),
         )
-        .with_subtitle(format!(
-            "{} · {}",
-            distrobox.image,
-            distrobox.status.label()
-        ))
+        .with_subtitle(distrobox.image.clone())
         .with_icon(Icon::Terminal);
         let _ = catalog.upsert(
             &resource_id,
@@ -285,7 +277,12 @@ mod tests {
             let mut cursor = None;
             let mut found = false;
             loop {
-                let page = provider.search_page("needle", cursor.as_ref(), 7, 3);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("needle"),
+                    cursor.as_ref(),
+                    7,
+                    3,
+                );
                 assert!(page.inspected <= 7);
                 found |= page
                     .results
