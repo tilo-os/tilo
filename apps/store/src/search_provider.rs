@@ -8,11 +8,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchCatalogError, SearchResult};
+use ui::search::{
+    CatalogSearchProvider, Facet, SearchCatalog, SearchCatalogError, SearchQuery, SearchResult,
+};
 
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 
+use crate::widgets::{category_label, provenance};
 use crate::{StoreItem, StoreSource};
 
 const DEFAULT_RESULT_LIMIT: usize = 100;
@@ -22,6 +25,11 @@ struct Row {
     resource_id: String,
     title: String,
     subtitle: String,
+    /// The values this app has for each facet, so a hit is admitted by the
+    /// filters the person picked or typed.
+    source: &'static str,
+    categories: Vec<String>,
+    statuses: Vec<&'static str>,
 }
 
 #[derive(Default)]
@@ -32,6 +40,8 @@ struct IndexState {
     /// swapped with its resolver rows in one short critical section.
     catalog: Option<SearchCatalog>,
     rows: BTreeMap<String, Row>,
+    /// The filter dimensions the current catalogue offers.
+    facets: Vec<Facet>,
     /// A failed rebuild deliberately withdraws the provider. Returning the
     /// prior directory after a malformed or exhausted publication would make
     /// agents act on a stale catalogue.
@@ -105,6 +115,7 @@ impl StoreSearchIndex {
                 state.revision = Some(staged.revision);
                 state.catalog = Some(staged.catalog);
                 state.rows = staged.rows;
+                state.facets = staged.facets;
                 state.available = true;
             }
             Err(error) => Self::fail_closed_locked(&mut state, &error),
@@ -124,6 +135,7 @@ impl StoreSearchIndex {
         state.revision = None;
         state.catalog = None;
         state.rows.clear();
+        state.facets.clear();
         state.available = false;
     }
 
@@ -142,6 +154,7 @@ struct StagedCatalogue {
     revision: [u8; 32],
     catalog: SearchCatalog,
     rows: BTreeMap<String, Row>,
+    facets: Vec<Facet>,
 }
 
 impl StagedCatalogue {
@@ -149,16 +162,23 @@ impl StagedCatalogue {
         let catalog = SearchCatalog::new("App Store");
         let mut rows = BTreeMap::new();
         let mut catalogue_rows = Vec::with_capacity(items.len());
+        let mut categories = std::collections::BTreeSet::new();
         for item in items {
+            let mut statuses = Vec::new();
+            if item.installed.is_installed() {
+                statuses.push("installed");
+            }
+            if item.installed.update_available() {
+                statuses.push("update");
+            }
+            categories.extend(item.categories.iter().cloned());
             let row = Row {
                 resource_id: resource_id(item),
                 title: item.name.clone(),
-                subtitle: format!(
-                    "{} · {} · {}",
-                    item.source.short_label(),
-                    item.trust.label(),
-                    item.latest_version()
-                ),
+                subtitle: provenance(item),
+                source: source_value(item),
+                categories: item.categories.clone(),
+                statuses,
             };
             let result = SearchResult::for_action(
                 "Apps",
@@ -173,10 +193,25 @@ impl StagedCatalogue {
             catalogue_rows.push((row.resource_id.clone(), searchable_text(item), result));
         }
         catalog.replace_all(catalogue_rows)?;
+        let mut category = Facet::new("category", "Category");
+        for value in categories {
+            let label = category_label(&value);
+            category = category.value(value, label);
+        }
+        let facets = vec![
+            Facet::new("source", "Source")
+                .value("tilo", "Tilo")
+                .value("flatpak", "Flatpak"),
+            category,
+            Facet::new("status", "Status")
+                .value("installed", "On this device")
+                .value("update", "Update available"),
+        ];
         Ok(Self {
             revision,
             catalog,
             rows,
+            facets,
         })
     }
 }
@@ -225,6 +260,35 @@ impl CatalogSearchProvider for StoreSearchProvider {
         }
     }
 
+    /// Source, category and status narrow a search the way the catalogue's
+    /// own filters narrowed its list.
+    fn facets(&self) -> Vec<Facet> {
+        self.index
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .facets
+            .clone()
+    }
+
+    fn admits(&self, hit: &SearchResult, query: &SearchQuery) -> bool {
+        let row = self
+            .index
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rows
+            .get(&hit.anchor())
+            .cloned();
+        let Some(row) = row else {
+            return false;
+        };
+        let categories: Vec<&str> = row.categories.iter().map(String::as_str).collect();
+        query.admits("source", &[row.source])
+            && query.admits("category", &categories)
+            && query.admits("status", &row.statuses)
+    }
+
     fn limited_work_budget(&self, limit: usize) -> usize {
         // A one-shot query inspects no more candidates than results it asked for.
         limit
@@ -241,6 +305,14 @@ impl CatalogSearchProvider for StoreSearchProvider {
             .rows
             .get(&address.resource)
             .map(Self::row_resource)
+    }
+}
+
+/// The value of the source facet: which feed the app comes from.
+fn source_value(item: &StoreItem) -> &'static str {
+    match item.source {
+        StoreSource::Tilo { .. } => "tilo",
+        StoreSource::Flathub => "flatpak",
     }
 }
 
@@ -331,7 +403,7 @@ mod tests {
             let index = StoreSearchIndex::default();
             index.sync(&items);
             let provider = index.provider();
-            let first = provider.search_page("example", None, 9, 4);
+            let first = provider.search_page(&ui::search::SearchQuery::new("example"), None, 9, 4);
             assert!(first.inspected <= 9);
             assert_eq!(first.results.len(), 4);
             assert!(first.next.is_some());
@@ -358,7 +430,7 @@ mod tests {
             index.sync(&[item(1), item(2)]);
             let provider = index.provider();
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&ui::search::SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("a two-row directory has a continuation");
 
@@ -454,5 +526,71 @@ mod tests {
         assert!(provider.resolve_action_resource(&address).is_some());
         continue_publish.send(()).expect("release publication");
         replacement.join().expect("replacement worker");
+    }
+
+    /// Source, category and status are facets: typed tokens and chips narrow a search by them.
+    #[test]
+    fn facets_narrow_a_search_by_source_category_and_status() {
+        let tilo = |index: usize, category: &str, installed: InstalledState| {
+            let mut entry = item(index);
+            entry.categories = vec![category.into()];
+            entry.installed = installed;
+            entry
+        };
+        let mut flatpak = tilo(3, "Games", InstalledState::Not);
+        flatpak.source = StoreSource::Flathub;
+        flatpak.trust = StoreTrust::Flathub;
+        let items = vec![
+            tilo(1, "Productivity", InstalledState::Not),
+            tilo(
+                2,
+                "Games",
+                InstalledState::Installed {
+                    version: "1.0.0".into(),
+                    available: "1.1.0".into(),
+                    pinned: false,
+                    user_managed: true,
+                },
+            ),
+            flatpak,
+        ];
+        let index = StoreSearchIndex::default();
+        index.sync(&items);
+        let provider = index.provider();
+
+        let facets = SearchProvider::facets(&provider);
+        let keys: Vec<&str> = facets.iter().map(|facet| facet.key.as_str()).collect();
+        assert_eq!(keys, ["source", "category", "status"]);
+        let category = facets.iter().find(|facet| facet.key == "category").unwrap();
+        let categories: Vec<&str> = category
+            .values
+            .iter()
+            .map(|value| value.value.as_str())
+            .collect();
+        assert_eq!(categories, ["Games", "Productivity"]);
+
+        let titles = |input: &str| -> Vec<String> {
+            let query = SearchQuery::parse(input, &facets);
+            let mut titles: Vec<String> = provider
+                .search_page(&query, None, 100, 100)
+                .results
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect();
+            titles.sort();
+            titles
+        };
+        assert_eq!(titles("example").len(), 3);
+        assert_eq!(titles("example source:flatpak"), ["Example App 3"]);
+        assert_eq!(
+            titles("example category:Games"),
+            ["Example App 2", "Example App 3"]
+        );
+        assert_eq!(titles("example status:installed"), ["Example App 2"]);
+        assert_eq!(titles("example status:update"), ["Example App 2"]);
+        assert_eq!(
+            titles("example source:tilo category:Games"),
+            ["Example App 2"]
+        );
     }
 }
