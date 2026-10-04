@@ -6580,7 +6580,7 @@ impl ShellNetwork {
         // that case `name_peer` is a no-op, so project the membership grant
         // explicitly instead of relying on the naming path to do it.
         tree.sync_room_doc(room);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         drop(replica);
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {

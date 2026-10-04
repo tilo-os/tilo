@@ -1379,7 +1379,7 @@ impl ChromeState {
                     // label and a peer cannot immediately write it back.
                     tree.sync_room_doc(room);
                     tree.seed_doc_from_cache();
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
             }
             self.bump();
@@ -1605,7 +1605,7 @@ impl ChromeState {
             // Focus is part of the serialized local session view. Commit
             // the complete address together so a compositor restart cannot
             // reopen the right layout with an older window selected.
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         self.bump();
     }
@@ -1726,7 +1726,7 @@ impl ChromeState {
             let mut tree = self.tree_mut();
             let reopened = crate::shell::closed_tabs::restore(&mut tree, entry);
             if reopened.is_some() {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             reopened
         };
@@ -2045,7 +2045,7 @@ impl ChromeState {
                 return false;
             }
             tree.desktop.active_strip.insert(ws_id, sid);
-            tree.flush_to_disk();
+            tree.queue_save();
             drop(tree);
             (true, name)
         };
@@ -2114,7 +2114,7 @@ impl ChromeState {
             );
             let id = strip.id;
             ws.strips.push(strip);
-            tree.flush_to_disk();
+            tree.queue_save();
             id
         };
         self.bump();
@@ -2149,7 +2149,7 @@ impl ChromeState {
                 tree.desktop.active_strip.insert(ws_id, first);
             }
             tree.desktop.active_group.remove(&strip);
-            tree.flush_to_disk();
+            tree.queue_save();
             true
         };
         if removed {
@@ -3323,7 +3323,7 @@ mod active_tab_tests {
                 }],
             });
             tree.persist_path = Some(path.clone());
-            tree.flush_to_disk();
+            tree.queue_save();
             let chrome = ChromeState::new(tree);
 
             chrome
@@ -3354,7 +3354,7 @@ mod active_tab_tests {
             let room = tree.desktop.workspaces[0].room;
             tree.persist_path = Some(path.clone());
             tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
-            tree.flush_to_disk();
+            tree.queue_save();
 
             // Establish a real shared-room lineage before the rename. Merely
             // assigning the same RoomId to two independently-seeded documents

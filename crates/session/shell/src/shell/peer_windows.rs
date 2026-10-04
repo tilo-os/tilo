@@ -171,7 +171,7 @@ pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: 
         }
     }
     if changed {
-        tree.flush_to_disk();
+        tree.queue_save();
     }
     changed
 }

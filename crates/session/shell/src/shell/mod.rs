@@ -59,6 +59,7 @@ pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod document_import;
+pub mod durable_writer;
 pub mod editor_app;
 pub mod emoji_recents;
 pub mod fabric_clock;
@@ -1305,7 +1306,7 @@ fn open_legacy_document_from_files(
                             path: path.clone(),
                         },
                     );
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
                 state.hosted_inputs.bind_document(
                     tab,
@@ -1385,7 +1386,7 @@ pub(crate) fn open_document_from_files(
                             path: path.clone(),
                         },
                     );
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
                 state.hosted_inputs.bind_document(
                     tab,
