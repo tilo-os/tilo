@@ -33,31 +33,9 @@ pub fn run(_args: &[String]) {
     };
 
     {
-        use automerge::ReadDoc;
         use automerge::transaction::Transactable;
         let _ = state.doc.put(&state.root, "request_save", false);
         let _ = state.doc.put(&state.root, "request_load", false);
-        let has_text = state
-            .doc
-            .get(&state.root, "text_val")
-            .ok()
-            .flatten()
-            .is_some();
-        if !has_text {
-            match state
-                .doc
-                .put_object(&state.root, "text_val", automerge::ObjType::Text)
-            {
-                Ok(text_id) => {
-                    let _ = state
-                        .doc
-                        .splice_text(&text_id, 0, 0, "Edit me and restart!");
-                }
-                Err(err) => {
-                    eprintln!("responsive_gallery: failed to seed text_val: {err}");
-                }
-            }
-        }
     }
 
     let root_widget = build_root_widget(&theme);
@@ -100,9 +78,9 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                         .push(Box::new(Text::new("welcome")))
                         .push(Box::new(SearchField::new().with_placeholder("Search")))
                         .push(Box::new(
-                            TextInput::new(vec![])
-                                .with_id("inp_1")
-                                .with_on_change_path("text_val"),
+                            TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("inp_1"),
                         )),
                 )),
             ))

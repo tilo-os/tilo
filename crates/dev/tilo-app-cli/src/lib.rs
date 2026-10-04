@@ -2818,18 +2818,21 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
     .with_no_padding()
 }}
 
-/// Build one `{name}` form whose controls bind directly to the app document.
+/// Build one `{name}` form for a serialized graph. The value is the graph's
+/// typed value at `value_path`, which the app reads when it acts on it; the
+/// checkbox is bound to the app document at `enabled_path`.
 ///
 /// Reusing either path in another component or ordinary graph control creates
-/// another synchronized view of the same persistent, undoable value.
-pub fn {module_name}_from_document(
+/// another synchronized view of the same value.
+pub fn {module_name}_in_graph(
     id: &str,
+    values: &ui::UiValues,
     value_path: &str,
     enabled_path: &str,
 ) -> ui::widget::Column {{
     let value_id = format!("{{id}}-value");
     let enabled_id = format!("{{id}}-enabled");
-    let value = TextInput::from_document_string(value_path)
+    let value = TextInput::from_state(&values.text(value_path))
         .with_id(&value_id)
         .with_placeholder("{name}-value-placeholder");
     let enabled = Checkbox::new(&enabled_id, enabled_path).with_id(&enabled_id);
@@ -2840,7 +2843,7 @@ pub fn {module_name}_from_document(
     .with_no_padding()
 }}
 
-/// Build this document-bound component from a serialized UI graph node.
+/// Build this component from a serialized UI graph node.
 ///
 /// Each graph instance receives explicit `value_path` and `enabled_path` props.
 /// Paths may be unique per instance or deliberately shared across views.
@@ -2857,8 +2860,9 @@ pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String>
             .filter(|path| !path.trim().is_empty())
             .ok_or_else(|| format!("{{key}} must be a non-empty string"))
     }};
-    Ok(Box::new({module_name}_from_document(
+    Ok(Box::new({module_name}_in_graph(
         request.id,
+        request.values,
         path("value_path")?,
         path("enabled_path")?,
     )))
@@ -2899,7 +2903,7 @@ mod tests {{
     }}
 
     #[test]
-    fn graph_factory_binds_shared_document_state() {{
+    fn graph_factory_binds_shared_graph_values_and_document_state() {{
         let document = ui::UiDocument::from_json(
             r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}}]}}}}"#,
         )
@@ -2913,13 +2917,13 @@ mod tests {{
         .expect("registered form component");
         let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
         app.perform_named("first-value", &Action::SetValue("Ada".into()))
-            .expect("first graph form edits shared text");
+            .expect("first graph form edits the shared value");
         app.expect(
             &SemanticExpectation::named("second-value")
                 .role(Role::TextInput)
                 .value("Ada"),
         )
-        .expect("second graph form observes shared document text");
+        .expect("second graph form observes the shared value");
         app.perform_named("first-enabled", &Action::ToggleCheck)
             .expect("first graph form edits shared boolean");
         app.expect(
@@ -2936,9 +2940,13 @@ mod tests {{
         )
         .expect("undo updates every bound view");
         assert!(app.perform_redo(), "document-bound toggle is redoable");
+        assert_eq!(
+            context.values().get("shared-value").as_deref(),
+            Some("Ada"),
+            "the app reads what the forms typed"
+        );
         let state = app.dump_json();
-        assert!(state.contains("shared-value"));
-        assert!(state.contains("Ada"));
+        assert!(!state.contains("shared-value"), "typing never writes the document");
         assert!(state.contains("shared-enabled"));
 
         let invalid = ui::UiDocument::from_json(

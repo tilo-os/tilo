@@ -1,5 +1,6 @@
 //! A built-in application that proves the component path end to end: a
 //! title the input edits and the heading shows, stored as an ordinary record.
+//! The input keeps what is typed; the page commits it to its record.
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
 };
@@ -7,7 +8,8 @@ use ui::launch::LaunchError;
 use ui::record::RecordKind;
 use ui::theme::Theme;
 use ui::ui_graph::{
-    UiButtonStyle, UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource,
+    UiBuildContext, UiButtonStyle, UiDocument, UiDocumentExt as _, UiNode, UiTextRole,
+    UiTextSource, UiValues,
 };
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
@@ -42,12 +44,20 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
             })
             .map_err(LaunchError::Record)?;
     }
+    let values = UiValues::default();
     let root = surface()
-        .build(&Theme::dark())
+        .build_with(
+            &Theme::dark(),
+            &UiBuildContext::default().with_values(values.clone()),
+        )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(AppComponent::new(
         context,
-        Box::new(Page(root)),
+        Box::new(Page {
+            root,
+            values,
+            committed: None,
+        }),
         tilo_actions::ActionRegistry::new(),
     ))
 }
@@ -55,8 +65,17 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
 /// The graph-built surface as the component's application root. It owns a
 /// layout node around the surface's, so traversal pairs widgets with nodes,
 /// and forwards input, updates and presence, whose `Widget` defaults do not
-/// reach children.
-struct Page(ui::widget::Element);
+/// reach children. It owns the record: what the title input types is
+/// committed to it here.
+struct Page {
+    root: ui::widget::Element,
+    values: UiValues,
+    /// The title last read from or committed to the record.
+    committed: Option<String>,
+}
+
+/// The value path of the title input and the record field it is kept in.
+const TITLE: &str = "title";
 
 impl AppWidget for Page {
     fn app_kind(&self) -> AppKind {
@@ -78,16 +97,31 @@ impl Widget for Page {
         "ScratchPage"
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.0.as_ref()]
+        vec![self.root.as_ref()]
     }
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![self.0.as_mut()]
+        vec![self.root.as_mut()]
     }
     fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        self.0.sync(state, path);
+        if self.committed.is_none() {
+            let (doc, root) = ui::doc::document(state, path);
+            let title = ui::doc::read_text(&*doc, root, TITLE).unwrap_or_default();
+            self.values.text(TITLE).set(title.clone());
+            self.committed = Some(title);
+        }
+        self.root.sync(state, path);
     }
     fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.0.update(state, path)
+        let mut changed = self.root.update(state, path);
+        let typed = self.values.get(TITLE);
+        if typed.is_some() && typed != self.committed {
+            let (doc, root) = ui::doc::document(state, path);
+            let title = typed.unwrap_or_default();
+            ui::doc::put_text_diffed(doc, root, TITLE, &title);
+            self.committed = Some(title);
+            changed = true;
+        }
+        changed
     }
     fn handle_event(
         &mut self,
@@ -98,10 +132,11 @@ impl Widget for Page {
             return;
         };
         let path = ctx.path.clone();
-        self.0.handle_event(event, &mut ctx.reborrow(&path, child));
+        self.root
+            .handle_event(event, &mut ctx.reborrow(&path, child));
     }
     fn wants_pointer_capture(&self) -> bool {
-        self.0.wants_pointer_capture()
+        self.root.wants_pointer_capture()
     }
     fn draw_with_presence(
         &mut self,
@@ -112,7 +147,7 @@ impl Widget for Page {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        self.0
+        self.root
             .draw_with_presence(scene, transform, text, theme, presence, permissions);
     }
     fn build_layout(
@@ -122,7 +157,7 @@ impl Widget for Page {
         nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         use ui::widget::TaffyTreeExt as _;
-        let child = self.0.build_layout(tree, theme, nodes);
+        let child = self.root.build_layout(tree, theme, nodes);
         let node = tree.parent_node(
             ui::taffy::Style {
                 display: ui::taffy::Display::Flex,
@@ -150,11 +185,11 @@ impl Widget for Page {
             origin.y + f64::from(location.y),
         );
         if let Some(&child) = tree.children(node).unwrap_or_default().first() {
-            self.0.apply_layout(tree, child, inner);
+            self.root.apply_layout(tree, child, inner);
         }
     }
     fn get_rect(&self) -> ui::kurbo::Rect {
-        self.0.get_rect()
+        self.root.get_rect()
     }
     fn draw(
         &mut self,
@@ -164,7 +199,7 @@ impl Widget for Page {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        self.0.draw(scene, transform, text, theme, presence);
+        self.root.draw(scene, transform, text, theme, presence);
     }
 }
 

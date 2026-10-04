@@ -360,12 +360,6 @@ fn seed_gallery_state(state: &mut State) {
     let _ = state.doc.put(&root, "cb_updates", true);
     let _ = state.doc.put(&root, "sld_vol", 0.65);
     let _ = state.doc.put(&root, "dd_quality", "High");
-    if let Ok(ti) = state
-        .doc
-        .put_object(&root, "ti_name", automerge::ObjType::Text)
-    {
-        let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
-    }
 
     for _ in 0..3 {
         table::insert_column(&mut state.doc, &root, usize::MAX);
@@ -437,9 +431,9 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(dim("Text field", theme))
                 .push(Box::new(
-                    TextInput::new(vec![])
-                        .with_id("g_name")
-                        .with_on_change_path("ti_name"),
+                    TextInput::local()
+                        .with_initial_value("Ada Lovelace")
+                        .with_id("g_name"),
                 ))
                 .push(dim("Search field", theme))
                 .push(Box::new(

@@ -98,9 +98,9 @@ fn build_tree() -> Box<dyn Widget> {
                         .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                         .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                         .push(Box::new(
-                            tilo_ui::widget::TextInput::new(vec![])
-                                .with_id("txt")
-                                .with_on_change_path("text_1"),
+                            tilo_ui::widget::TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("txt"),
                         )),
                 ))
                 .push(caption("row_indicators"))

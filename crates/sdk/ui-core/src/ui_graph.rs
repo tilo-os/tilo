@@ -45,6 +45,42 @@ pub struct UiComponentRequest<'a> {
     pub id: &'a str,
     pub name: &'a str,
     pub props: &'a serde_json::Map<String, serde_json::Value>,
+    /// The graph's typed values, for a component's own text inputs.
+    pub values: &'a UiValues,
+}
+
+/// What is typed into a graph's text inputs, by each input's `value_path`.
+///
+/// The values are view state, never written to the document: every input
+/// naming one path shows and edits the same value, and the app reads them
+/// when it acts on them, submitting its own resource actions.
+#[derive(Clone, Default)]
+pub struct UiValues(Rc<RefCell<HashMap<String, LocalState<String>>>>);
+
+impl UiValues {
+    /// The value inputs naming `path` edit, starting empty.
+    #[must_use]
+    pub fn text(&self, path: &str) -> LocalState<String> {
+        self.0
+            .borrow_mut()
+            .entry(path.to_owned())
+            .or_insert_with(|| LocalState::new(String::new()))
+            .clone()
+    }
+
+    /// What is typed at `path`, if an input names it.
+    #[must_use]
+    pub fn get(&self, path: &str) -> Option<String> {
+        self.0.borrow().get(path).map(LocalState::get)
+    }
+}
+
+impl fmt::Debug for UiValues {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut paths: Vec<String> = self.0.borrow().keys().cloned().collect();
+        paths.sort_unstable();
+        formatter.debug_tuple("UiValues").field(&paths).finish()
+    }
 }
 
 type UiComponentFactory =
@@ -56,6 +92,7 @@ pub struct UiBuildContext {
     router: Option<crate::widget::RouteHandle>,
     components: Rc<HashMap<String, Rc<UiComponentFactory>>>,
     component_placeholders: bool,
+    values: UiValues,
 }
 
 impl fmt::Debug for UiBuildContext {
@@ -67,6 +104,7 @@ impl fmt::Debug for UiBuildContext {
             .field("router", &self.router)
             .field("components", &components)
             .field("component_placeholders", &self.component_placeholders)
+            .field("values", &self.values)
             .finish()
     }
 }
@@ -91,6 +129,19 @@ impl UiBuildContext {
     ) -> Self {
         Rc::make_mut(&mut self.components).insert(name.into(), Rc::new(factory));
         self
+    }
+
+    /// Keep what the graph's inputs type in `values`, which the app reads.
+    #[must_use]
+    pub fn with_values(mut self, values: UiValues) -> Self {
+        self.values = values;
+        self
+    }
+
+    /// What the graph's inputs type, by their `value_path`.
+    #[must_use]
+    pub fn values(&self) -> &UiValues {
+        &self.values
     }
 
     /// Render unresolved components as named text placeholders.
@@ -350,16 +401,21 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             disabled,
         } => {
             let name = label.as_deref().unwrap_or(accessible_name);
-            let mut input = TextInput::local()
-                .with_id(id)
-                .with_accessible_name(name)
-                .with_placeholder(placeholder)
-                .with_initial_value(initial_value)
-                .multiline(*multiline)
-                .disabled(*disabled);
-            if let Some(path) = value_path {
-                input = input.with_on_change_path(path);
+            let input = match value_path {
+                Some(path) => {
+                    let value = context.values.text(path);
+                    if value.with(String::is_empty) && !initial_value.is_empty() {
+                        value.set(initial_value.clone());
+                    }
+                    TextInput::from_state(&value)
+                }
+                None => TextInput::local().with_initial_value(initial_value),
             }
+            .with_id(id)
+            .with_accessible_name(name)
+            .with_placeholder(placeholder)
+            .multiline(*multiline)
+            .disabled(*disabled);
             if let Some(label) = label {
                 Box::new(labeled_field(label, input))
             } else {
@@ -404,12 +460,16 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
         }
         UiNode::Component { id, name, props } => {
             if let Some(factory) = context.components.get(name) {
-                factory(UiComponentRequest { id, name, props }).map_err(|message| {
-                    UiGraphError::ComponentBuild {
-                        id: id.clone(),
-                        name: name.clone(),
-                        message,
-                    }
+                factory(UiComponentRequest {
+                    id,
+                    name,
+                    props,
+                    values: &context.values,
+                })
+                .map_err(|message| UiGraphError::ComponentBuild {
+                    id: id.clone(),
+                    name: name.clone(),
+                    message,
                 })?
             } else if context.component_placeholders {
                 Box::new(
@@ -1384,10 +1444,7 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(
-        dyn crate::resources::PublishesResources,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::resources::PublishesResources);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -1539,15 +1596,6 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
-    }
-}
-
-impl crate::undo::UndoPoints for LiveUi {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -3058,7 +3106,7 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    crate::provides!(dyn crate::undo::LocalUndo, dyn crate::undo::UndoPoints);
+    crate::provides!(dyn crate::undo::LocalUndo);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -3182,15 +3230,6 @@ impl Widget for UiGraphEditor {
             presence,
             permissions,
         );
-    }
-}
-
-impl crate::undo::UndoPoints for UiGraphEditor {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
