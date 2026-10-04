@@ -108,6 +108,12 @@ pub struct UshLauncherConfig {
     /// OCI references the members' supervisors fetch environment images
     /// from when no local store holds them (see `tilo_oci_images`).
     pub image_sources: Vec<String>,
+    /// The relay's identity root. Members' supervisors build missing tool
+    /// images with the `env-tools` builder, which signs them with the
+    /// relay's device key from here and trusts what it signed. Under
+    /// [`MemberIsolation::SeparateUids`] the key is not readable by members'
+    /// uids, so supervisors there can only use published tool images.
+    pub identity_root: Option<PathBuf>,
 }
 
 impl UshLauncherConfig {
@@ -121,6 +127,7 @@ impl UshLauncherConfig {
             isolation: MemberIsolation::SharedUid,
             cgroup_root: None,
             start_timeout: Duration::from_secs(10),
+            identity_root: None,
             image_sources: vec![
                 "registry.tilo.so/tilo/env-runtime".into(),
                 "registry.tilo.so/tilo/env-tools".into(),
@@ -232,6 +239,7 @@ impl UshGuestLauncher {
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("HOME", &home)
             .env("XDG_RUNTIME_DIR", area.runtime())
+            .env("XDG_CACHE_HOME", area.root().join("cache"))
             .env(ush::store::STORE_ENV, area.store())
             .env(ush::store::RECORDS_ENV, area.records())
             .env(ush::store::GRANT_ROOT_ENV, area.files())
@@ -246,6 +254,9 @@ impl UshGuestLauncher {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+        if let Some(identity_root) = &self.config.identity_root {
+            command.env("TILO_IDENTITY_ROOT", identity_root);
+        }
         if let Some(uid) = uid {
             use std::os::unix::process::CommandExt;
             command.uid(uid).gid(uid);

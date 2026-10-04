@@ -866,6 +866,7 @@ impl Relay {
                 environments: crate::environment_host::worker_environments(
                     cfg.environments.as_ref(),
                     &cfg.state_root.join("environments"),
+                    &cfg.identity_root,
                 ),
             };
             let worker_task = tokio::spawn(async move {

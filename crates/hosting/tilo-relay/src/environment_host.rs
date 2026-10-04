@@ -130,11 +130,14 @@ impl MemberQuota {
 }
 
 /// The environment hosting a relay's own compute worker runs: `ush`
-/// guests under `root`, as `config` describes. `None` config: none.
+/// guests under `root`, as `config` describes, building missing tool
+/// images signed with the relay's key from `identity_root`. `None` config:
+/// none.
 #[must_use]
 pub fn worker_environments(
     config: Option<&tilo_relay_protocol::config::EnvironmentsConfig>,
     root: &Path,
+    identity_root: &Path,
 ) -> crate::compute_worker::WorkerEnvironments {
     let Some(config) = config else {
         return crate::compute_worker::WorkerEnvironments::default();
@@ -144,6 +147,7 @@ pub fn worker_environments(
     launcher.ush_binary.clone_from(&config.ush_binary);
     launcher.cgroup_root.clone_from(&config.cgroup_root);
     launcher.image_sources.clone_from(&config.image_sources);
+    launcher.identity_root = Some(identity_root.to_path_buf());
     if let Some(first) = config.member_uid_first {
         launcher.isolation = crate::environment_guest::MemberIsolation::SeparateUids {
             first,
