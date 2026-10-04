@@ -71,6 +71,7 @@ try {
     scrolled: "window.scrollTo({ top: 300, behavior: 'instant' })",
     sidebar: "document.getElementById('side').scrollTop = 100",
     typed: "document.getElementById('q').value = 'hello'",
+    password: "document.getElementById('pw').value = 'secret'",
   };
   for (const [name, script] of Object.entries(states)) {
     await send("Runtime.evaluate", { expression: script });

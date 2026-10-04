@@ -548,6 +548,10 @@ pub struct State {
     /// stall waiting on the next damage pass. Held as `Arc` since
     /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
+    /// Apps that can stream their window's page as a display list, by app
+    /// id (`shell-ui`'s `PaintCapable`). Their windows reach web members as
+    /// paint streams instead of video.
+    pub paint_apps: HashMap<String, PaintApp>,
     /// Non-blocking bridge from surface commits into the collaboration
     /// transport, given the topic of the room the window's tab is in when
     /// known. Installed by the native compositor when peer sync is on;
@@ -1169,6 +1173,7 @@ impl State {
             personal_fabric_input: PersonalFabricInputHolders::default(),
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
+            paint_apps: HashMap::new(),
             legacy_stream_publisher: None,
             legacy_stream_routes: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
@@ -2227,7 +2232,9 @@ impl State {
                 tab,
                 viewers: recipients,
                 decode_limits,
+                paint,
             } = share;
+            let paint = *paint && self.paint_apps.contains_key(app_id);
             let recipients = recipients
                 .iter()
                 .copied()
@@ -2258,6 +2265,7 @@ impl State {
                 session.app_id == *app_id
                     && session.tab() == *tab
                     && session.dimensions() == (width, height)
+                    && session.is_paint() == paint
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
@@ -2267,9 +2275,14 @@ impl State {
             }
 
             self.unregister_share_session(surface);
-            let Ok(session) = SharedFlatpakSession::start_with_metrics(
-                host_peer, app_id, surface, width, height, config, &receivers, None,
-            ) else {
+            let started = if paint {
+                SharedFlatpakSession::start_paint(host_peer, app_id, surface, width, height, config)
+            } else {
+                SharedFlatpakSession::start_with_metrics(
+                    host_peer, app_id, surface, width, height, config, &receivers, None,
+                )
+            };
+            let Ok(session) = started else {
                 tracing::warn!(
                     surface,
                     app_id,
@@ -2293,7 +2306,127 @@ impl State {
                 }
             }
             self.register_share_session(Arc::clone(&session));
-            self.seed_share_frame(&session, surface);
+            if paint {
+                self.seed_paint_share(&session, surface);
+            } else {
+                self.seed_share_frame(&session, surface);
+            }
+        }
+    }
+
+    /// Start a new paint share from the app's current group (its latest
+    /// whole frame and what followed), and ask the app for a fresh one.
+    fn seed_paint_share(&mut self, session: &SharedFlatpakSession, surface: SurfaceId) {
+        let Some(app) = self.paint_apps.get_mut(&session.app_id) else {
+            return;
+        };
+        app.keyframe_wanted = true;
+        let group = app.group.clone();
+        if self.legacy_stream_publisher.is_some() {
+            for payload in group {
+                let _ = self.publish_legacy(surface, session.paint_message(payload));
+            }
+        }
+    }
+
+    /// An app announced it can stream its page (`shell-ui` `PaintCapable`).
+    pub fn note_paint_app(&mut self, app_id: &str, connection: u64) {
+        self.paint_apps
+            .entry(app_id.to_owned())
+            .or_insert_with(|| PaintApp::new(connection))
+            .connection = connection;
+    }
+
+    /// The app's `shell-ui` connection closed: its windows go back to video.
+    pub fn drop_paint_connection(&mut self, connection: u64) {
+        self.paint_apps
+            .retain(|_, app| app.connection != connection);
+    }
+
+    /// One frame of an app's page stream: kept for viewers that start later
+    /// and sent to every paint share of the app's windows.
+    pub fn receive_paint_frame(&mut self, app_id: &str, frame: PaintFrame) {
+        let PaintFrame {
+            payload,
+            page,
+            scale,
+        } = frame;
+        let Some(app) = self.paint_apps.get_mut(app_id) else {
+            return;
+        };
+        app.page = page;
+        app.scale = scale;
+        if ui::webview::paint::stream::wire::Payload::is_key(&payload) {
+            app.group.clear();
+            app.group_bytes = 0;
+        }
+        app.group_bytes = app.group_bytes.saturating_add(payload.len());
+        let keep = app.group_bytes <= MAX_PAINT_GROUP_BYTES;
+        if !keep {
+            // Too long to replay: start the next viewer from a new frame.
+            app.group.clear();
+            app.group_bytes = 0;
+            app.keyframe_wanted = true;
+        }
+        if self.legacy_stream_publisher.is_some() {
+            let sessions = self
+                .active_sessions
+                .values()
+                .filter(|session| session.is_paint() && session.app_id == app_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            for session in sessions {
+                let _ =
+                    self.publish_legacy(session.surface_id, session.paint_message(payload.clone()));
+            }
+        }
+        if keep && let Some(app) = self.paint_apps.get_mut(app_id) {
+            app.group.push(payload);
+        }
+    }
+
+    /// What to tell each paint app: `(connection, true)` to start streaming
+    /// from a whole frame, `(connection, false)` to stop. Watching follows
+    /// the paint shares of the app's windows.
+    pub fn paint_watch_changes(&mut self) -> Vec<(u64, bool)> {
+        let watched = self
+            .active_sessions
+            .values()
+            .filter(|session| session.is_paint())
+            .map(|session| session.app_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut changes = Vec::new();
+        for (app_id, app) in &mut self.paint_apps {
+            let now = watched.contains(app_id);
+            if now && (app.keyframe_wanted || !app.watched) {
+                changes.push((app.connection, true));
+            } else if !now && app.watched {
+                changes.push((app.connection, false));
+            }
+            app.watched = now;
+            app.keyframe_wanted = false;
+        }
+        changes
+    }
+
+    /// Input from a paint share's viewer is in page (CSS) pixels; the
+    /// window's surface-local input is logical, with the page at `page`.
+    fn paint_point_to_surface(&self, surface: SurfaceId, event: InputEvent) -> InputEvent {
+        let InputEvent::PointerMotion { x, y } = event else {
+            return event;
+        };
+        let Some(app) = self
+            .active_sessions
+            .get(&surface)
+            .filter(|session| session.is_paint())
+            .and_then(|session| self.paint_apps.get(&session.app_id))
+        else {
+            return event;
+        };
+        let [left, top, width, height] = app.page;
+        InputEvent::PointerMotion {
+            x: left + x.clamp(0.0, width.max(0.0)),
+            y: top + y.clamp(0.0, height.max(0.0)),
         }
     }
 
@@ -2572,6 +2705,7 @@ impl State {
         if previously_controlled && !still_controls {
             self.release_remote_focus_for_surface(peer, surface);
         }
+        let event = self.paint_point_to_surface(surface, event);
         let event = if self.personal_stream_viewers.contains(&(peer, surface)) {
             if matches!(
                 event,
@@ -3287,10 +3421,57 @@ pub struct LegacyShare {
     pub app_id: String,
     pub tab: u64,
     pub viewers: std::collections::HashSet<MsgPeerId>,
+    /// Every viewer is a host bridging the window to web members, which
+    /// draw a page streamed as a display list: an app that can stream its
+    /// page ([`PaintApp`]) is shared that way rather than as video.
+    pub paint: bool,
     /// The largest picture each viewer's hardware decoders take, by codec,
     /// where the viewer said: the stream is encoded no larger.
     pub decode_limits:
         HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+}
+
+/// Most bytes of an app's page stream kept for viewers that start later.
+const MAX_PAINT_GROUP_BYTES: usize = 8 * 1024 * 1024;
+
+/// An app that streams its window's page as a display list.
+#[derive(Debug)]
+pub struct PaintApp {
+    /// Its `shell-ui` connection, which the stream arrives on.
+    pub connection: u64,
+    /// Where the page sits in the window (logical x, y, w, h), as the app
+    /// last said; viewer input is offset by it.
+    pub page: [f64; 4],
+    /// The window's buffer scale, for a viewer that maps buffer pixels.
+    pub scale: f64,
+    /// The latest whole frame and what followed it.
+    group: Vec<Vec<u8>>,
+    group_bytes: usize,
+    /// What the app was last told: whether anyone watches.
+    watched: bool,
+    /// A new share started: ask for a whole frame.
+    keyframe_wanted: bool,
+}
+
+impl PaintApp {
+    fn new(connection: u64) -> Self {
+        Self {
+            connection,
+            page: [0.0; 4],
+            scale: 1.0,
+            group: Vec::new(),
+            group_bytes: 0,
+            watched: false,
+            keyframe_wanted: false,
+        }
+    }
+}
+
+/// One frame an app sent of its page stream.
+pub struct PaintFrame {
+    pub payload: Vec<u8>,
+    pub page: [f64; 4],
+    pub scale: f64,
 }
 
 impl State {
@@ -6211,6 +6392,78 @@ mod osk_identity_tests {
 )]
 mod tick_hook_tests {
     use super::*;
+
+    #[test]
+    fn a_paint_app_streams_its_page_to_web_viewers_instead_of_video() {
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        state.note_paint_app("so.tilo.browser", 5);
+        // As reconciliation starts it for a host bridging to web members.
+        let session = Arc::new(
+            SharedFlatpakSession::start_paint(1, "so.tilo.browser", 42, 800, 600, &cfg())
+                .expect("start"),
+        );
+        session.sync_viewers(&[9].into_iter().collect());
+        state.register_share_session(Arc::clone(&session));
+        assert_eq!(
+            state.paint_watch_changes(),
+            vec![(5, true)],
+            "the app is asked for a page"
+        );
+        assert!(state.paint_watch_changes().is_empty(), "and asked once");
+
+        state.receive_paint_frame(
+            "so.tilo.browser",
+            PaintFrame {
+                payload: vec![0, 7],
+                page: [10.0, 20.0, 780.0, 560.0],
+                scale: 2.0,
+            },
+        );
+        let messages = sent.lock().unwrap().clone();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            crate::network::NeighbourMsg::SurfaceStreamStart { codec, surface: 42, .. }
+                if codec == "tilo-paint"
+        )));
+        assert!(
+            messages.iter().any(|m| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceFrame { surface: 42, encoded_h264, .. }
+                    if encoded_h264 == &vec![0, 7]
+            )),
+            "the app's frame goes out as it came: {messages:?}"
+        );
+        // Input in page pixels lands where the page sits in the window.
+        assert_eq!(
+            state.paint_point_to_surface(42, InputEvent::PointerMotion { x: 5.0, y: 5.0 }),
+            InputEvent::PointerMotion { x: 15.0, y: 25.0 }
+        );
+        // An app that is not streaming ignores its frames' origin.
+        state.receive_paint_frame(
+            "org.example.Other",
+            PaintFrame {
+                payload: vec![0],
+                page: [0.0; 4],
+                scale: 1.0,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().len(), messages.len());
+
+        state.unregister_share_session(42);
+        assert_eq!(
+            state.paint_watch_changes(),
+            vec![(5, false)],
+            "nobody watches any more"
+        );
+        state.drop_paint_connection(5);
+        assert!(state.paint_apps.is_empty());
+    }
     use crate::collab::flatpak_share::SharedFlatpakSession;
     use crate::config::{EncoderChoice, FlatpakShareConfig};
     use crate::network::protocol::{PeerId, SurfaceId};

@@ -111,3 +111,6 @@ mod continuation_discovery;
 
 #[path = "block_commands.rs"]
 mod block_commands;
+
+#[path = "clipboard_safety.rs"]
+mod clipboard_safety;
