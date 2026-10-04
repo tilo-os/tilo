@@ -70,6 +70,11 @@ SHELL_TREE_NODE_LIMIT = 1024
 # AT-SPI connection without reading another process's /proc entry.
 SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
 OPEN_APP_ACTION = "Open an app"
+# AT-SPI role numbers (AtspiRole) the gate tells apart.
+ROLE_PAGE_TAB = 37
+ROLE_PAGE_TAB_LIST = 38
+# Document frame, spreadsheet, presentation, text, web and email.
+DOCUMENT_ROLES = frozenset({82, 92, 93, 94, 95, 96})
 LAUNCH_TIMEOUT_SECONDS = 120
 PAGE_TITLE = "Tilo browser engine check"
 # Typing the address and starting the engine, under emulation on some lanes.
@@ -178,6 +183,14 @@ class AtspiClient:
             "gdbus", "call", "--address", self.address, "--dest", self.bus_name,
             "--object-path", path, "--method", interface_method, *args, check=check,
         )
+
+    def role(self, path: str) -> int | None:
+        """The node's AT-SPI role number (AtspiRole). AccessKit answers
+        Accessible.GetRole but has no role-name method, so roles are compared
+        by number."""
+        reply = self.call(path, "org.a11y.atspi.Accessible.GetRole", check=False)
+        match = re.search(r"uint32\s+(\d+)", reply)
+        return int(match.group(1)) if match else None
 
     def property(self, path: str, name: str) -> str:
         return self.call(
@@ -506,16 +519,12 @@ def tab_lists(shell: AtspiClient) -> list[list[str]]:
             tree = shell.tree(SHELL_TREE_NODE_LIMIT)
             lists: list[list[str]] = []
             for path in tree:
-                role = shell.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-                if "'page tab list'" not in role:
+                if shell.role(path) != ROLE_PAGE_TAB_LIST:
                     continue
                 children = shell.call(path, "org.a11y.atspi.Accessible.GetChildren")
                 tabs = []
                 for child in PATH_RE.findall(children):
-                    child_role = shell.call(
-                        child, "org.a11y.atspi.Accessible.GetRoleName", check=False,
-                    )
-                    if "'page tab'" in child_role:
+                    if shell.role(child) == ROLE_PAGE_TAB:
                         tabs.append(tree.get(child, shell.property(child, "Name")).strip())
                 lists.append(tabs)
             return lists
@@ -851,8 +860,7 @@ def is_typing_target(client: AtspiClient, path: str, name: str, field: str | Non
             f"'{field}'" in name
             and "org.a11y.atspi.EditableText" in client.interfaces(path)
         )
-    role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-    return "document" in role and "Component" in client.interfaces(path)
+    return client.role(path) in DOCUMENT_ROLES and "Component" in client.interfaces(path)
 
 
 def prepare_typing(
@@ -888,8 +896,7 @@ def prepare_typing(
             if is_typing_target(client, path, name, field):
                 document = path
                 break
-            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-            seen.append(f"{role.strip()} {name.strip()}")
+            seen.append(f"role {client.role(path)} {name.strip()}")
         else:
             if time.monotonic() >= deadline:
                 close_app(pid)

@@ -11,7 +11,12 @@ use ui::invocation_scope::{
 
 #[derive(Clone)]
 pub(super) enum InvocationCaller {
-    Certified(Box<VerifiedActionCaller>),
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        // A host-owned restriction may be stricter than the signed certificate.
+        // Retain it as a restriction, never by modifying certificate evidence.
+        foreign_restriction: bool,
+    },
     Local {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
@@ -24,6 +29,7 @@ pub(super) struct OriginalInvocationData {
     spec: PublishedInvocationSpec,
     caller: InvocationCaller,
     time: crate::peer_actions::PolicyTime,
+    execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
     pub(super) fn capture(
@@ -33,6 +39,7 @@ impl OriginalInvocationData {
         revision: Option<&str>,
         caller: Option<InvocationCaller>,
         time: Option<crate::peer_actions::PolicyTime>,
+        execution: Option<tilo_actions::remote::ExecutionLease>,
     ) -> Option<Arc<Self>> {
         let spec = PublishedInvocationSpec {
             kind: offered.operation_kind,
@@ -62,6 +69,7 @@ impl OriginalInvocationData {
             spec,
             caller: caller?,
             time: time?,
+            execution,
         }))
     }
 }
@@ -103,7 +111,7 @@ impl OriginalInvocation {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed
             // evidence; room admission alone carries only the key identity.
-            InvocationCaller::Certified(caller) => {
+            InvocationCaller::Certified { caller, .. } => {
                 caller.admitted.certificate.as_ref().or_else(|| {
                     caller
                         .network
@@ -117,7 +125,7 @@ impl OriginalInvocation {
     }
     pub fn agent_id(&self) -> Option<&str> {
         match &self.data.caller {
-            InvocationCaller::Certified(caller) => caller.admitted.agent_id.as_deref(),
+            InvocationCaller::Certified { caller, .. } => caller.admitted.agent_id.as_deref(),
             InvocationCaller::Local { admitted, .. } => admitted.agent_id.as_deref(),
         }
     }
@@ -128,6 +136,14 @@ impl OriginalInvocation {
     ///
     /// Returns a message when the broker, worker, certificate or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
+        if self
+            .data
+            .execution
+            .as_ref()
+            .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("original invocation execution session ended".into());
+        }
         let now = self.data.time.now_ns().map_err(|error| error.to_string())?;
         let state = self
             .broker
@@ -163,7 +179,23 @@ impl OriginalInvocation {
             return Ok(None);
         }
         let room = &self.data.route.cluster_id;
-        Ok(Some(state.certified_person(room, self.certificate()?)))
+        let certificate = self.certificate()?;
+        let mut person = state.certified_person(room, certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.data.caller
+        {
+            // Re-evaluate the governing exemption with the original exact device;
+            // never let a weaker certificate erase the host's retained restriction.
+            person.capped |= super::cap_applies_in(
+                state.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                *foreign_restriction,
+                Some(&certificate.device_public_key),
+            );
+        }
+        Ok(Some(person))
     }
     fn original_actor(
         &self,
@@ -204,7 +236,7 @@ impl OriginalInvocation {
             .revalidate_admission(&self.worker.route, &admitted)
             .map_err(|error| error.to_string())?;
         match &self.data.caller {
-            InvocationCaller::Certified(caller) => {
+            InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
             }
             InvocationCaller::Local { route, admitted } => {

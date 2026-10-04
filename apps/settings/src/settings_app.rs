@@ -301,6 +301,32 @@ impl SettingsApp {
         }
     }
 
+    /// Show what a link or another app asked for: a pane, or one local
+    /// model's card in Agent Models. The switch happens at the next sync,
+    /// as a sidebar pick does: an effect arrives while the widget tree is
+    /// being walked, so the panes must not be rebuilt under it.
+    ///
+    /// # Errors
+    /// Returns why the pane does not exist.
+    pub(crate) fn show(&self, effect: crate::resource::SettingsEffect) -> Result<(), String> {
+        match effect {
+            crate::resource::SettingsEffect::ShowPane { pane } => {
+                let category = Category::ALL
+                    .iter()
+                    .copied()
+                    .find(|category| category.slug() == pane)
+                    .ok_or_else(|| "Settings pane is no longer available".to_string())?;
+                self.sidebar_selection.set(Some(category));
+            }
+            crate::resource::SettingsEffect::ShowLocalModel { id } => {
+                self.sidebar_selection.set(Some(Category::AgentModels));
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::RevealAgentModel(id)));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the current frame resolves to the narrow (phone) layout.
     pub fn is_narrow(&self) -> bool {
         match &self.shell {

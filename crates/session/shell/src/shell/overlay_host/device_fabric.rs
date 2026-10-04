@@ -107,6 +107,11 @@ pub enum DeviceFabricUiAction {
     Snapshot,
     /// Bypass presentation caching for semantic action revalidation.
     SnapshotFresh,
+    /// Wake the sleeping device `device` names (its label or id) through a
+    /// device awake on its LAN.
+    WakeDevice {
+        device: String,
+    },
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,

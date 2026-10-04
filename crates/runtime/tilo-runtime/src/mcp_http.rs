@@ -122,8 +122,17 @@ fn read_token(path: &Path) -> io::Result<String> {
 }
 
 struct Session<H> {
+    retire: Option<Box<dyn FnOnce() + Send + Sync>>,
     server: Arc<tokio::sync::Mutex<McpServer<H>>>,
     last_used: Instant,
+}
+
+impl<H> Drop for Session<H> {
+    fn drop(&mut self) {
+        if let Some(retire) = self.retire.take() {
+            retire();
+        }
+    }
 }
 
 /// The per-endpoint state shared by every connection.
@@ -361,15 +370,17 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         initialize: &Value,
     ) -> Option<(String, Arc<tokio::sync::Mutex<McpServer<H>>>)> {
         let id = uuid::Uuid::new_v4().to_string();
-        let server = Arc::new(tokio::sync::Mutex::new(
-            McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
-                .with_agent_run(agent_run_id(&id), client_label(initialize))
-                .with_computer(self.computer.clone())
-                .with_open_files(Arc::clone(&self.open_files))
-                .with_media(self.media.get().cloned()),
-        ));
+        let server = McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
+            .with_agent_run(agent_run_id(&id), client_label(initialize))
+            .with_computer(self.computer.clone())
+            .with_open_files(Arc::clone(&self.open_files))
+            .with_media(self.media.get().cloned());
+        let caller = server.execution_caller();
+        let host = self.host.clone();
+        let server = Arc::new(tokio::sync::Mutex::new(server));
         let now = Instant::now();
         let session = Session {
+            retire: Some(Box::new(move || host.retire_execution(&caller))),
             server: Arc::clone(&server),
             last_used: now,
         };
@@ -417,8 +428,20 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     }
 
     fn find(&self, id: &str) -> Option<Arc<tokio::sync::Mutex<McpServer<H>>>> {
-        self.sessions.lock().ok()?.get_mut(id).map(|session| {
-            session.last_used = Instant::now();
+        let mut sessions = self.sessions.lock().ok()?;
+        let now = Instant::now();
+        if sessions
+            .get(id)
+            .is_some_and(|session| now.duration_since(session.last_used) >= SESSION_IDLE)
+        {
+            let retired = sessions.remove(id);
+            drop(sessions);
+            drop(retired);
+            self.release_agent(id);
+            return None;
+        }
+        sessions.get_mut(id).map(|session| {
+            session.last_used = now;
             Arc::clone(&session.server)
         })
     }

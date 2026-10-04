@@ -40,6 +40,56 @@ impl Painted {
     }
 }
 
+/// `marks`, given in whole-grid cells, as the window of the grid at
+/// `origin`, `width` by `height` cells, receives them: moved into the
+/// window's cells, and those that cannot reach it left out. A mark painted
+/// dry outside the window still dries the wash before it, so it stays as an
+/// empty region that paints nothing; an eraser elsewhere dries nothing.
+pub fn windowed(
+    marks: &[Painted],
+    origin: (usize, usize),
+    width: usize,
+    height: usize,
+) -> Vec<Painted> {
+    let (dx, dy) = (-crate::grid::float(origin.0), -crate::grid::float(origin.1));
+    let (width, height) = (crate::grid::float(width), crate::grid::float(height));
+    marks
+        .iter()
+        .filter_map(|painted| {
+            let mark = painted.mark.translated(dx, dy);
+            let reaches = mark.reach().is_some_and(|[x0, y0, x1, y1]| {
+                x1 >= 0.0 && y1 >= 0.0 && x0 <= width && y0 <= height
+            });
+            let mark = if reaches {
+                mark
+            } else if let (
+                Mark::Stroke(crate::engine::Stroke { paint, .. })
+                | Mark::Fill(crate::engine::Fill { paint, .. }),
+                false,
+            ) = (&mark, mark.wet())
+            {
+                Mark::Fill(crate::engine::Fill {
+                    contours: Vec::new(),
+                    paint: *paint,
+                    opacity: 0.0,
+                    wet: false,
+                    brush: 0.0,
+                    angle: 0.0,
+                    params: mark.params().clone(),
+                    field: None,
+                })
+            } else {
+                return None;
+            };
+            Some(Painted {
+                fingerprint: painted.fingerprint,
+                seed: painted.seed,
+                mark,
+            })
+        })
+        .collect()
+}
+
 /// The seed of the randomness of the mark addressed by `id`.
 pub fn seed_of(id: &str) -> u64 {
     let hash = blake3::hash(id.as_bytes());
