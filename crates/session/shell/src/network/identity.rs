@@ -148,9 +148,11 @@ impl PeerIdentityStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let empty = RevocationList::new();
         let revocations = inner.revocations.get(user_pubkey).unwrap_or(&empty);
+        // Every certified device of the person, a host too: channel policy
+        // decides what each one receives.
         let policy = ChainPolicy {
             user_public_key: user_pubkey,
-            authority: Authority::Person,
+            authority: Authority::Device,
             revocations,
             now_ns,
         };
@@ -203,9 +205,9 @@ impl PeerIdentityStore {
             .unwrap_or_default()
     }
 
-    /// Remove every peer whose device may no longer act for its person at
-    /// `now_ns` — revoked, expired or not permitted — and return them, so
-    /// the caller can close what they had open.
+    /// Remove every peer whose device is no longer a certified device of its
+    /// person at `now_ns` — revoked or expired — and return them, so the
+    /// caller can close what they had open.
     pub fn drop_untrusted(&self, now_ns: u64) -> Vec<(PeerOrigin, PeerIdentity)> {
         let dropped: Vec<(PeerOrigin, PeerIdentity)> = {
             let inner = self
@@ -221,7 +223,7 @@ impl PeerIdentityStore {
                         &identity.device_cert,
                         &ChainPolicy {
                             user_public_key: &identity.user_pubkey,
-                            authority: Authority::Person,
+                            authority: Authority::Device,
                             revocations: inner
                                 .revocations
                                 .get(&identity.user_pubkey)
@@ -254,16 +256,31 @@ impl PeerIdentityStore {
         dropped
     }
 
-    /// `peer`'s identity while its device may still act for its person at
-    /// `now_ns`: certificate valid and unexpired, not revoked by its root,
-    /// and not a dedicated host. `None` once any link fails.
+    /// `peer`'s identity while its device is still a certified device of its
+    /// person at `now_ns`: certificate valid and unexpired, not revoked by
+    /// its root. `None` once any link fails. This admits the transport peer;
+    /// what it may do is decided by the person's role in each room, and a
+    /// signature as the person goes through [`Self::verify_signature_from`].
     pub fn trusted(&self, peer: &PeerOrigin, now_ns: u64) -> Option<PeerIdentity> {
         let identity = self.get(peer)?;
-        self.check_chain(&identity, now_ns).ok()?;
+        self.check_chain(&identity, Authority::Device, now_ns)
+            .ok()?;
         Some(identity)
     }
 
-    fn check_chain(&self, identity: &PeerIdentity, now_ns: u64) -> Result<(), PeerIdentityError> {
+    /// Whether `identity` — announced or known from elsewhere, such as a
+    /// room's governance — still holds `authority` for its person at
+    /// `now_ns`, against the revocations this store holds.
+    pub fn holds(&self, identity: &PeerIdentity, authority: Authority, now_ns: u64) -> bool {
+        self.check_chain(identity, authority, now_ns).is_ok()
+    }
+
+    fn check_chain(
+        &self,
+        identity: &PeerIdentity,
+        authority: Authority,
+        now_ns: u64,
+    ) -> Result<(), PeerIdentityError> {
         let revocations = self
             .inner
             .read()
@@ -276,7 +293,7 @@ impl PeerIdentityStore {
             &identity.device_cert,
             &ChainPolicy {
                 user_public_key: &identity.user_pubkey,
-                authority: Authority::Person,
+                authority,
                 revocations: &revocations,
                 now_ns,
             },
@@ -302,7 +319,7 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, PeerIdentityError> {
         let identity = self.get(peer).ok_or(PeerIdentityError::UnknownPeer)?;
-        self.check_chain(&identity, now_ns)?;
+        self.check_chain(&identity, Authority::Person, now_ns)?;
         let vk = ed25519_dalek::VerifyingKey::from_bytes(&identity.device_pubkey)
             .map_err(|_| PeerIdentityError::BadDevicePubkey)?;
         let sig = ed25519_dalek::Signature::from_bytes(signature);
@@ -607,7 +624,9 @@ mod tests {
                     .unwrap_err(),
                 PeerIdentityError::NotPermitted(Authority::Person)
             );
-            assert!(store.trusted(&peer(4), 700).is_none());
+            // It is still one of the person's devices at the transport.
+            assert!(store.trusted(&peer(4), 700).is_some());
+            assert!(store.drop_untrusted(700).is_empty());
         }
         // Phase `different_users_get_separate_revocation_lists`.
         {

@@ -276,7 +276,13 @@ fn sign(
         Err(error) => return Response::Error(error.to_string()),
     };
     match require_trusted_current_device(&profile) {
-        Ok(signer) => Response::Signature(signer.sign_raw(message).to_vec()),
+        Ok(signer) => Response::Signature(
+            signer
+                .sign_framed_bytes(&runtime_identity::app_action_signing_bytes(
+                    app_id, action, message,
+                ))
+                .to_vec(),
+        ),
         Err(error) => Response::Denied(error.to_string()),
     }
 }
@@ -293,7 +299,7 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
     match require_trusted_current_device(&profile) {
         Ok(signer) => Response::Signature(
             signer
-                .sign_raw(&runtime_identity::collaboration_join_signing_bytes(
+                .sign_framed_bytes(&runtime_identity::collaboration_join_signing_bytes(
                     workspace_id,
                 ))
                 .to_vec(),
@@ -396,7 +402,7 @@ fn sign_collaboration_op(
         Ok(bytes) => bytes,
         Err(error) => return Response::Error(error.to_string()),
     };
-    Response::Signature(signer.sign_raw(&signing_bytes).to_vec())
+    Response::Signature(signer.sign_framed_bytes(&signing_bytes).to_vec())
 }
 
 /// The route a [`Request::ChannelKeys`] names, with the launch binding it
@@ -483,6 +489,26 @@ pub fn trusted_current_device(
 fn require_trusted_current_device(
     profile: &crate::registry::IdentityProfile,
 ) -> io::Result<tilo_user_identity::DeviceSigner> {
+    device_signer_for(profile, tilo_user_identity::Authority::Person).map(|(signer, _)| signer)
+}
+
+/// This machine's device key, paired with its certificate for `profile`'s
+/// identity, while that chain grants `authority` now: root-signed, inside its
+/// validity window, not revoked by that root, and enrolled in the identity's
+/// fleet. Also returns the fleet's revocations, for a caller that verifies
+/// other devices' signatures for the same person.
+///
+/// # Errors
+///
+/// Returns an error when the key, certificate or fleet cannot be read, and
+/// `PermissionDenied` naming the first failing link of the chain.
+pub fn device_signer_for(
+    profile: &crate::registry::IdentityProfile,
+    authority: tilo_user_identity::Authority,
+) -> io::Result<(
+    tilo_user_identity::DeviceSigner,
+    tilo_user_identity::RevocationList,
+)> {
     let paths = crate::provisioning::collaboration_identity_paths();
     let device = tilo_user_identity::persist::load_device_key(&paths)
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -490,19 +516,21 @@ fn require_trusted_current_device(
     let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load(&profile.id)?;
-    trusted_device_signer(
+    let signer = trusted_device_signer(
         device,
         cert,
         &profile.user_public_key,
         &fleet,
+        authority,
         crate::device_fleet::now_ns(),
-    )
+    )?;
+    Ok((signer, fleet.revocation_list()))
 }
 
 /// Pair this machine's device key with its certificate for `user_public_key`
 /// while the certificate lets the device act for that person at `now_ns`:
 /// root-signed, inside its validity window, not revoked by that root, granting
-/// [`tilo_user_identity::Authority::Person`], and enrolled in `fleet`.
+/// `authority`, and enrolled in `fleet`.
 ///
 /// # Errors
 ///
@@ -512,6 +540,7 @@ pub(crate) fn trusted_device_signer(
     cert: tilo_user_identity::DeviceCert,
     user_public_key: &[u8; 32],
     fleet: &crate::device_fleet::DeviceFleet,
+    authority: tilo_user_identity::Authority,
     now_ns: u64,
 ) -> io::Result<tilo_user_identity::DeviceSigner> {
     let denied = |message: String| io::Error::new(io::ErrorKind::PermissionDenied, message);
@@ -524,7 +553,7 @@ pub(crate) fn trusted_device_signer(
     signer
         .check(&tilo_user_identity::ChainPolicy {
             user_public_key,
-            authority: tilo_user_identity::Authority::Person,
+            authority,
             revocations: &revocations,
             now_ns,
         })
@@ -659,6 +688,20 @@ mod tests {
         )
     }
 
+    /// An app's signature can never stand for a document operation: an
+    /// operation's canonical bytes open with its length-prefixed payload, and
+    /// no length decodes from the opening bytes of an app action frame.
+    #[test]
+    fn app_action_frames_never_decode_as_document_operations() {
+        let frame = runtime_identity::app_action_signing_bytes(
+            "so.tilo.notes",
+            "document.save",
+            b"payload",
+        );
+        assert!(postcard::take_from_bytes::<Vec<u8>>(&frame).is_err());
+        assert!(postcard::from_bytes::<SignedOp>(&frame).is_err());
+    }
+
     #[test]
     fn identity_service_wire_is_pinned_and_signing_requires_the_exact_capability() {
         // Phase `identity_service_wire_bytes_are_pinned`.
@@ -733,13 +776,21 @@ mod tests {
             .expect("device certificate");
             tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
             assert_eq!(cert.user_public_key, profile.user_public_key);
-            VerifyingKey::from_bytes(&cert.device_public_key)
-                .expect("key")
+            let device = VerifyingKey::from_bytes(&cert.device_public_key).expect("key");
+            let signature = Signature::from_slice(&signature).expect("signature");
+            device
                 .verify(
-                    b"payload",
-                    &Signature::from_slice(&signature).expect("signature"),
+                    &runtime_identity::app_action_signing_bytes(
+                        "so.tilo.notes",
+                        "document.save",
+                        b"payload",
+                    ),
+                    &signature,
                 )
                 .expect("valid device signature");
+            // The app chose only the message: the signature covers its app
+            // and action too, so it never stands for the bare bytes.
+            assert!(device.verify(b"payload", &signature).is_err());
             assert!(matches!(
                 sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
                 Response::Denied(_)
@@ -1030,10 +1081,66 @@ mod tests {
         let signature = identity
             .sign_for("document.save", b"saved")
             .expect("granted sign");
-        VerifyingKey::from_bytes(&identity.signing_public_key())
-            .expect("key")
-            .verify(b"saved", &Signature::from_bytes(&signature))
-            .expect("signature");
+        let device_key = VerifyingKey::from_bytes(&identity.signing_public_key()).expect("key");
+        let signed = Signature::from_bytes(&signature);
+        // The signature covers the app and action the launch bound, never
+        // the bare message.
+        device_key
+            .verify(
+                &runtime_identity::app_action_signing_bytes(
+                    "so.tilo.notes",
+                    "document.save",
+                    b"saved",
+                ),
+                &signed,
+            )
+            .expect("app action signature");
+        assert!(device_key.verify(b"saved", &signed).is_err());
+        for (app, action) in [
+            ("so.tilo.other", "document.save"),
+            ("so.tilo.notes", "document.delete"),
+        ] {
+            assert!(
+                device_key
+                    .verify(
+                        &runtime_identity::app_action_signing_bytes(app, action, b"saved"),
+                        &signed
+                    )
+                    .is_err()
+            );
+        }
+        // An app that asks for a signature over a delegated-signature digest
+        // gets nothing it could present as the person.
+        let delegated = tilo_user_identity::DelegatedSignature {
+            cert: cert.clone(),
+            signature: identity
+                .sign_for(
+                    "document.save",
+                    &tilo_user_identity::delegated_signing_digest(
+                        &cert.user_public_key,
+                        &cert.device_public_key,
+                        "tilo.ownership-transfer.proposal.v2",
+                        b"forged",
+                    )
+                    .expect("digest"),
+                )
+                .expect("granted sign"),
+        };
+        let none = tilo_user_identity::RevocationList::new();
+        assert_eq!(
+            tilo_user_identity::verify_delegated(
+                &delegated,
+                "tilo.ownership-transfer.proposal.v2",
+                b"forged",
+                &tilo_user_identity::ChainPolicy {
+                    user_public_key: &cert.user_public_key,
+                    authority: tilo_user_identity::Authority::Person,
+                    revocations: &none,
+                    now_ns: crate::device_fleet::now_ns(),
+                },
+            ),
+            Err(tilo_user_identity::ChainError::BadSignature)
+        );
         let join_proof = identity
             .sign_collaboration_join(&workspace_id)
             .expect("the launcher-bound workspace may request a join proof");
@@ -1155,7 +1262,14 @@ mod tests {
         let joined = certify(&root, &device, DeviceCapabilities::joined(), None);
         let attempt = |cert: &tilo_user_identity::DeviceCert,
                        fleet: &crate::device_fleet::DeviceFleet| {
-            trusted_device_signer(device.clone(), cert.clone(), &user.public_key, fleet, NOW)
+            trusted_device_signer(
+                device.clone(),
+                cert.clone(),
+                &user.public_key,
+                fleet,
+                tilo_user_identity::Authority::Person,
+                NOW,
+            )
         };
 
         assert!(
@@ -1167,6 +1281,34 @@ mod tests {
         fleet.certificates.push(joined.clone());
         let signer = attempt(&joined, &fleet).unwrap();
         assert_eq!(signer.cert(), &joined);
+        let viewer = certify(
+            &root,
+            &device,
+            DeviceCapabilities {
+                can_own_workspaces: false,
+                ..DeviceCapabilities::member()
+            },
+            None,
+        );
+        fleet.certificates.push(viewer.clone());
+        let owning = |cert: &tilo_user_identity::DeviceCert| {
+            trusted_device_signer(
+                device.clone(),
+                cert.clone(),
+                &user.public_key,
+                &fleet,
+                tilo_user_identity::Authority::OwnWorkspaces,
+                NOW,
+            )
+        };
+        assert!(owning(&joined).is_ok());
+        assert!(
+            owning(&viewer)
+                .unwrap_err()
+                .to_string()
+                .contains("own workspaces")
+        );
+        fleet.certificates.pop();
 
         let expired = certify(&root, &device, DeviceCapabilities::joined(), Some(NOW));
         assert!(attempt(&expired, &fleet).is_err());
