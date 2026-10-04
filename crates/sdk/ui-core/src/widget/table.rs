@@ -570,6 +570,12 @@ impl Table {
             .and_then(|index| self.projected_position(index))
     }
 
+    pub(super) fn projected_is_composing(&self) -> bool {
+        self.cells
+            .iter()
+            .any(|input| input.is_focused() && input.is_composing())
+    }
+
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
         crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?)
@@ -652,8 +658,8 @@ impl Table {
                 if let Some((start, end)) = input.selection_range_public()
                     && let Some(selected) = input.value().get(start..end)
                 {
-                    crate::text_selection::clipboard_copy(selected);
-                    if command == "cut" {
+                    let accepted = crate::text_selection::clipboard_copy_accepted(selected);
+                    if command == "cut" && accepted {
                         input.delete_local_selection();
                     }
                 }

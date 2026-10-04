@@ -664,6 +664,13 @@ complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 30 ms quiet period.
+When the debug build is too slow to judge what you are changing (painting,
+video, large documents), `tilo-app dev --release` builds the app with the
+`thin-app` profile thin Tilo builds ship with: release optimisation without
+LTO, so it still links quickly and reloads in place. `--profile NAME` picks any
+Cargo profile; one other than `dev` or `thin-app` restarts the app on each
+change instead, as an LTO profile cannot link the toolkit dynamically.
+`scripts/agent-loop/session.py start APP --release` passes it on.
 `tilo-app dev --platform web` runs the same loop in the browser
 ([The web](#the-web)).
 
@@ -1533,6 +1540,32 @@ should see where the agent is operating. After a direct agent invocation the
 host resolves the action back to the shortest enabled visible semantic path,
 so the ordinary retained UI updates from the same state transition a human
 would have caused.
+
+#### Tabs belong to the desktop
+
+An app shows one thing: a page, a file, a conversation. Never build a tab
+strip, a list of open documents or a "switch document" control into an app.
+Several things side by side are several instances of the app, and the shell
+groups them as tabs of a window group, with one tab model, one set of chords
+and one closed-tab history for every app.
+
+When the app wants another of itself next to it — a link opened in a new tab,
+"open beside", a file from a project tree — call
+`ui::shell_tabs::open_beside(Some(uri), background)`. The shell launches
+another instance right after this app's tab, opening `uri` (a scheme the
+manifest declares under `[providers] schemes`), in front or, with
+`background`, behind the current tab. `ui::shell_tabs::close_this()` closes
+the app's own tab through the desktop's tab lifecycle, so it can be reopened.
+Each instance keeps its own record; what it shows comes back on restart or
+reopen through its continuity metadata, not through a session file of the
+app's own.
+
+Ctrl+T (another instance), Ctrl+W (close this tab) and Ctrl+Shift+T (reopen
+the last closed tab) — Cmd on macOS — reach these requests whenever the
+focused widget leaves the chord unhandled; Ctrl+Tab and Ctrl+Shift+Tab are
+the shell's own tab bindings. Outside a Tilo session the same calls open a
+new window of the app and close this one. The `tab.open-beside` shell action
+is the same open for agents and scripts.
 
 ### One driveability surface
 

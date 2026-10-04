@@ -48,6 +48,8 @@ tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
 # The registry's web artifact is a zip of the immutable version.
 zip.workspace = true
+# Reuse the validator generation/features already locked in workspace-hack.
+wasmparser = { version = "=0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

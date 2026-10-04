@@ -1,4 +1,6 @@
 use super::*;
+use crate::text_edit::SUGGESTION_SETTLE;
+use crate::text_selection::{next_word_boundary, prev_word_boundary};
 
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
@@ -7,11 +9,11 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
         let mut input = TextInput::local().with_initial_value("editable");
         input.set_focus(true);
         input.set_selection(1, 4);
-        input.preedit = "composing".into();
+        input.core.set_preedit("composing", None);
         let before = (
             input.cursor_pos(),
             input.selection_range(),
-            input.preedit.clone(),
+            input.core.preedit().to_owned(),
         );
         let theme = Theme::dark();
         let mut visible = Scene::new();
@@ -29,7 +31,7 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
             (
                 input.cursor_pos(),
                 input.selection_range(),
-                input.preedit.clone()
+                input.core.preedit().to_owned()
             ),
             before
         );
@@ -326,8 +328,7 @@ fn caret_and_selection_survive_widget_state_round_trip() {
     // Case `selection_survives_widget_state_round_trip_and_legacy_state_still_loads`.
     {
         let mut original = TextInput::local().with_initial_value("hello world");
-        original.cursor_pos = 5;
-        original.selection_anchor = Some(1);
+        original.core.set_selection(1, 5);
         let saved = crate::undo::get_state(&original).unwrap();
         let mut rebuilt = TextInput::local().with_initial_value("hello world");
         crate::undo::set_state(&mut rebuilt, &saved);
@@ -445,7 +446,7 @@ fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
     let mut ti = TextInput::local();
     ti.set_focus(true);
     ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-    ti.selection_anchor = Some(0);
+    ti.core.set_selection(0, 0);
     let mut doc = AutoCommit::new();
     for text in ["Hello", " ", "world"] {
         assert!(drive(
@@ -496,7 +497,7 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
             mods(false, false),
         ));
         assert_eq!(ti.value(), "a漢b");
-        assert!(ti.preedit.is_empty());
+        assert!(!ti.core.has_preedit());
 
         ti.set_focus(false);
         assert!(Widget::ime_cursor_rect(&ti).is_none());
@@ -533,8 +534,7 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
         );
         assert!(Widget::ime_cursor_rect(&ti).is_some());
 
-        ti.preedit.clear();
-        ti.preedit_cursor = None;
+        ti.core.clear_preedit();
         draw_with_theme(&mut ti, &Theme::dark());
         let dark_signature = ti.shaped_layout_signature;
         draw_with_theme(&mut ti, &Theme::light());
@@ -564,8 +564,7 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
             "caret-only movement reuses the shaped paragraph"
         );
 
-        ti.preedit = "漢".into();
-        ti.preedit_cursor = Some(("漢".len(), "漢".len()));
+        ti.core.set_preedit("漢", Some(("漢".len(), "漢".len())));
         draw_to_populate(&mut ti);
         assert_ne!(
             ti.shaped_layout_signature, initial_signature,
@@ -1208,8 +1207,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
         let mut doc = AutoCommit::new();
         // Pre-select "world" so Cut/Copy are present and the selection survives a copy.
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
+        ti.core.set_selection(6, 11);
 
         ti.open_context_menu([50.0, 18.0]);
         let labels = ti.context_menu_labels();
@@ -1244,8 +1242,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
         let mut doc = AutoCommit::new();
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 5; // "hello"
+        ti.core.set_selection(0, 5); // "hello"
         ti.open_context_menu([10.0, 18.0]);
         let cut_idx = ti
             .context_menu
@@ -1319,8 +1316,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         let mut ti = TextInput::local()
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 3;
+        ti.core.set_selection(0, 3);
         ti.open_context_menu([10.0, 10.0]);
 
         let item_idx = ti
@@ -1345,8 +1341,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             .with_spellcheck(false)
             .with_text_action("translate", "Translate")
             .with_initial_value("hello world");
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 5;
+        ti.core.set_selection(0, 5);
         ti.open_context_menu([10.0, 10.0]);
         let item_idx = ti
             .context_actions
@@ -1469,13 +1464,13 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
             .with_spell_language("en_US")
             .with_initial_value("teh wrold");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(crate::time::now());
+        ti.core.set_caret(ti.text.len());
+        ti.typing.touch();
 
         ti.refresh_spelling();
         // Dictionary warm-up can dominate this unit test in an unoptimised
         // build. Model a fresh edit after checking to test presentation timing.
-        ti.last_edit_time = Some(crate::time::now());
+        ti.typing.touch();
 
         assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
         assert!(ti.spelling_span_is_visible(0, 3));
@@ -1490,8 +1485,8 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
             .with_spell_language("en_US")
             .with_initial_value("wrold ");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(crate::time::now());
+        ti.core.set_caret(ti.text.len());
+        ti.typing.touch();
 
         ti.refresh_spelling();
 
@@ -1506,10 +1501,13 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
             .with_spell_language("en_US")
             .with_initial_value("wrold");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = crate::time::now()
+        ti.core.set_caret(ti.text.len());
+        if let Some(at) = crate::time::now()
             .checked_sub(SPELL_EDIT_SETTLE)
-            .and_then(|t| t.checked_sub(Duration::from_millis(1)));
+            .and_then(|t| t.checked_sub(Duration::from_millis(1)))
+        {
+            ti.typing.touch_at(at);
+        }
 
         ti.refresh_spelling();
 
@@ -1517,29 +1515,130 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
         assert!(ti.spelling_span_is_visible(0, 5));
         assert!(!Widget::needs_animation_frame(&ti));
     }
+}
 
-    // Case `external_language_check_coalesces_rapid_prefixes_without_dropping_old_spans`.
-    {
-        let mut ti = TextInput::local()
-            .with_spellcheck(true)
-            .with_spell_language("de_DE")
-            .with_initial_value("alt neu");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.spell_spans = vec![(0, 3)];
-        ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.last_edit_time = Some(crate::time::now());
+/// A focused en-US field holding `text` with the caret at its end.
+fn suggesting_field(text: &str) -> TextInput {
+    let mut ti = TextInput::local()
+        .with_spellcheck(true)
+        .with_autocorrect(true)
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    ti.set_focus(true);
+    ti.core.set_caret(ti.text.len());
+    ti
+}
 
-        ti.refresh_spelling();
+#[test]
+fn a_short_pause_at_the_end_of_a_misspelled_word_shows_its_suggestion() {
+    let mut ti = suggesting_field("so beautifull");
+    let start = crate::time::now();
 
-        assert_eq!(ti.spell_spans, vec![(0, 3)]);
-        assert_eq!(
-            ti.spell_cache_key,
-            Some(("de_DE".to_string(), "alt".to_string()))
-        );
-        assert!(!Widget::needs_animation_frame(&ti));
-        assert!(Widget::next_wake_deadline(&ti).is_some());
-    }
+    ti.refresh_suggestion_at(start);
+    assert!(
+        ti.autocorrection_preview.is_none(),
+        "nothing is offered while the word may still be growing"
+    );
+    assert_eq!(ti.caret_word.deadline(), Some(start + SUGGESTION_SETTLE));
+
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE - Duration::from_millis(1));
+    assert!(ti.autocorrection_preview.is_none());
+
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    let preview = ti
+        .autocorrection_preview
+        .clone()
+        .expect("a settled misspelled word gets a suggestion");
+    assert_eq!(
+        (preview.start, preview.end, preview.original.as_str()),
+        (3, 13, "beautifull")
+    );
+    assert_eq!(preview.replacement, "beautiful");
+    assert!(
+        !preview.automatic,
+        "an ordinary suggestion, not autocorrect"
+    );
+    assert!(!ti.spelling_span_is_visible(3, 13));
+
+    // A boundary does not apply an ordinary suggestion …
+    let mut doc = AutoCommit::new();
+    let mut boundary = suggesting_field("so beautifull");
+    boundary.refresh_suggestion_at(start);
+    boundary.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    assert!(boundary.autocorrection_preview.is_some());
+    boundary.insert_word_boundary(" ", &mut doc, None);
+    assert_eq!(boundary.value(), "so beautifull ");
+
+    // … a click on its chip does.
+    assert!(ti.accept_suggestion(&mut doc, &automerge::ROOT));
+    assert_eq!(ti.value(), "so beautiful");
+    assert_eq!(ti.cursor_pos(), "so beautiful".len());
+    assert!(ti.autocorrection_preview.is_none());
+}
+
+#[test]
+fn moving_the_caret_back_into_an_earlier_word_shows_its_suggestion() {
+    let mut ti = suggesting_field("beautifull day");
+    let start = crate::time::now();
+    ti.refresh_suggestion_at(start);
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    assert!(
+        ti.autocorrection_preview.is_none(),
+        "`day` is spelled right"
+    );
+
+    // Back into the first word: it settles after the same short wait.
+    let back = start + SUGGESTION_SETTLE * 2;
+    ti.set_cursor_pos(4);
+    ti.refresh_suggestion_at(back);
+    assert!(ti.autocorrection_preview.is_none());
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    let preview = ti.autocorrection_preview.clone().expect("suggestion");
+    assert_eq!((preview.start, preview.end), (0, 10));
+    assert_eq!(preview.replacement, "beautiful");
+
+    // Moving within the word keeps the suggestion; leaving it clears it.
+    ti.set_cursor_pos(7);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(ti.autocorrection_preview.is_some());
+    ti.set_cursor_pos(10);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(
+        ti.autocorrection_preview.is_some(),
+        "the word's end is in it"
+    );
+    ti.set_cursor_pos(ti.text.len());
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(ti.autocorrection_preview.is_none());
+
+    // A selection or an unfocused field offers nothing.
+    ti.set_selection(0, 4);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 3);
+    assert!(ti.autocorrection_preview.is_none());
+    ti.set_cursor_pos(4);
+    ti.set_focus(false);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 4);
+    assert!(ti.autocorrection_preview.is_none());
+}
+
+#[test]
+fn the_settling_word_schedules_its_own_wake() {
+    let mut ti = suggesting_field("so beautifull");
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + Duration::from_secs(3600);
+    ti.refresh_suggestion_at(now);
+    assert_eq!(
+        Widget::next_wake_deadline(&ti),
+        Some(now + SUGGESTION_SETTLE),
+        "the suggestion appears without further input"
+    );
+    let mut off = TextInput::local()
+        .with_spellcheck(false)
+        .with_autocorrect(false)
+        .with_initial_value("so beautifull");
+    off.set_focus(true);
+    off.refresh_suggestion_at(now);
+    assert_eq!(Widget::next_wake_deadline(&off), None);
 }
 
 #[test]
@@ -1551,7 +1650,7 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_autocorrect(true)
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        ti.cursor_pos = ti.text.len();
+        ti.core.set_caret(ti.text.len());
         let mut doc = AutoCommit::new();
         ti.insert_word_boundary(" ", &mut doc, None);
         assert_eq!(ti.value(), "the ");
@@ -1571,7 +1670,7 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_spell_language("en_US")
             .with_initial_value("adress");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
+        ti.core.set_caret(ti.text.len());
 
         ti.refresh_autocorrection_preview();
         ti.refresh_spelling();
@@ -1595,7 +1694,7 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_autocorrect(false)
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        off.cursor_pos = off.text.len();
+        off.core.set_caret(off.text.len());
         let mut doc = AutoCommit::new();
         off.insert_word_boundary(" ", &mut doc, None);
         assert_eq!(off.value(), "teh ");
@@ -1604,7 +1703,7 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_autocorrect(true)
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        known.cursor_pos = known.text.len();
+        known.core.set_caret(known.text.len());
         known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
         known.insert_word_boundary(" ", &mut doc, None);
         assert_eq!(known.value(), "teh ");
@@ -1654,8 +1753,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
     {
         let mut ti = TextInput::new(Vec::new()).with_on_change_path("text_1");
         ti.text = "hello world".to_string();
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
+        ti.core.set_selection(6, 11);
         let mut doc = AutoCommit::new();
         let obj_id = doc
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
@@ -1663,7 +1761,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
         ti.delete_selection(&mut doc, Some(&obj_id));
         assert_eq!(ti.text, "hello ");
-        assert_eq!(ti.cursor_pos, 6);
+        assert_eq!(ti.core.caret(), 6);
         assert!(!ti.has_selection());
     }
 
@@ -1702,8 +1800,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
     {
         let mut ti = TextInput::new(Vec::new()).with_on_change_path("text_1");
         ti.text = "hello world".to_string();
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
+        ti.core.set_selection(6, 11);
         let mut doc = AutoCommit::new();
         let obj_id = doc
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
@@ -1711,7 +1808,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
         ti.insert_str("there", &mut doc, Some(&obj_id));
         assert_eq!(ti.text, "hello there");
-        assert_eq!(ti.cursor_pos, "hello there".len());
+        assert_eq!(ti.core.caret(), "hello there".len());
         assert!(!ti.has_selection());
     }
 
@@ -2121,8 +2218,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         use crate::a11y::{AccessibleTextSelection, Role};
         let mut ti = TextInput::new(Vec::new());
         ti.text = "hello".to_string();
-        ti.selection_anchor = Some(1);
-        ti.cursor_pos = 4;
+        ti.core.set_selection(1, 4);
         let node = Widget::accessibility(&ti).unwrap();
         assert_eq!(node.role, Role::TextInput);
         assert_eq!(node.value.as_deref(), Some("hello"));
@@ -3588,10 +3684,8 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     input.bind_text(stale.clone());
     input.sync(&mut doc, &automerge::ROOT);
     input.set_focus(true);
-    input.cursor_pos = 4;
-    input.selection_anchor = Some(1);
-    input.preedit = "編".into();
-    input.preedit_cursor = Some((0, "編".len()));
+    input.core.set_selection(1, 4);
+    input.core.set_preedit("編", Some((0, "編".len())));
     input.scroll_x = 17.0;
     input.scroll_y = 23.0;
 
@@ -3605,10 +3699,10 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     assert_eq!(input.bound_obj(), None);
     assert_eq!(input.value(), "draft");
     assert!(input.is_focused);
-    assert_eq!(input.cursor_pos, 4);
-    assert_eq!(input.selection_anchor, Some(1));
-    assert_eq!(input.preedit, "編");
-    assert_eq!(input.preedit_cursor, Some((0, "編".len())));
+    assert_eq!(input.core.caret(), 4);
+    assert_eq!(input.core.anchor(), 1);
+    assert_eq!(input.core.preedit(), "編");
+    assert_eq!(input.core.preedit_cursor(), Some((0, "編".len())));
     assert_eq!(input.scroll_x, 17.0);
     assert_eq!(input.scroll_y, 23.0);
 
@@ -3617,10 +3711,8 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     input.sync(&mut doc, &automerge::ROOT);
     assert_eq!(input.value(), "draft", "sync ignores the stale object");
 
-    input.preedit.clear();
-    input.preedit_cursor = None;
-    input.selection_anchor = None;
-    input.cursor_pos = input.value().len();
+    input.core.clear_preedit();
+    input.core.set_caret(input.value().len());
     assert!(drive(
         &mut input,
         &mut doc,
@@ -3970,8 +4062,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
 #[test]
 fn accessible_selection_preserves_anchor_and_focus_direction() {
     let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
-    input.selection_anchor = Some(8);
-    input.cursor_pos = 1;
+    input.core.set_selection(8, 1);
 
     assert_eq!(input.selection_range_public(), Some((1, 8)));
     assert_eq!(input.selection_anchor_focus_public(), Some((8, 1)));
@@ -3983,8 +4074,7 @@ fn insertion_collapses_an_empty_drag_selection() {
         let mut ti = TextInput::new(Vec::new());
         ti.set_text(text);
         // A real same-position drag may retain an anchor at its caret.
-        ti.cursor_pos = caret;
-        ti.selection_anchor = Some(caret);
+        ti.core.set_selection(caret, caret);
         let mut doc = AutoCommit::new();
         ti.insert_str("N", &mut doc, None);
         assert_eq!(ti.selection_range_public(), None);

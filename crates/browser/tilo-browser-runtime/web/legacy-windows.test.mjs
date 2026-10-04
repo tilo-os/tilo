@@ -89,6 +89,7 @@ test('decoding starts at a keyframe and skips a backlog until the next one', () 
 
 // --- minimal DOM and live layer --------------------------------------------------
 function fakeDocument() {
+  const doc = {createElement: element, activeElement: null};
   function element(tag) {
     return {
       tag, children: [], parent: null, dataset: {}, style: {}, width: 0, height: 0, drawn: 0,
@@ -96,13 +97,13 @@ function fakeDocument() {
       append(...nodes) { for (const child of nodes) { child.parent = this; this.children.push(child); } },
       addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
       dispatch(type, event = {}) { for (const handler of this.listeners[type] ?? []) handler({preventDefault() {}, ...event}); },
-      focus() {},
+      focus() { doc.activeElement = this; },
       getBoundingClientRect() { return {left: 10, top: 36, width: 400, height: 264}; },
       remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; },
       getContext() { const node = this; return {drawImage() { node.drawn++; }}; },
     };
   }
-  return {createElement: element};
+  return doc;
 }
 function fakeLive() {
   const watches = [];
@@ -119,7 +120,7 @@ function fakeLive() {
     },
   };
 }
-function mount({control = false, refuse = false, dismissed = () => []} = {}) {
+function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
@@ -134,7 +135,9 @@ function mount({control = false, refuse = false, dismissed = () => []} = {}) {
     surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
     windows: () => rects,
     setWindows: list => shown.push(list),
-    dismissed,
+    dismissed, focusWindow, focusDesktop,
+    paintFrame,
+    takePaintInput,
     sendInput: async (publisher, stream, events) => {
       if (events.length) sent.push({publisher, stream, events});
       return events.length ? control && !refuse : control;
@@ -143,7 +146,7 @@ function mount({control = false, refuse = false, dismissed = () => []} = {}) {
     setInterval: callback => { poll = callback; return 1; }, clearInterval: () => {},
   });
   return {
-    layer, live, codecs, shown, sent, clock, surface,
+    layer, live, codecs, shown, sent, clock, surface, doc,
     run: () => { for (const callback of frames.splice(0)) callback(); },
     place: next => { rects = next; },
     poll: () => poll(),
@@ -154,7 +157,7 @@ test('a listed stream opens a desktop window, is decoded and drawn over it until
   const m = mount();
   assert.deepEqual(m.live.watches.map(w => w.record), [INDEX_RECORD]);
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
-  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium'}], 'the desktop opens a window for it');
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}], 'the desktop opens a window for it');
   assert.deepEqual(m.live.watches[1], {...m.live.watches[1], publisher: SHELL, record: {app: LEGACY_APP, record: STREAM.record}});
   m.live.deliver(STREAM.record, 'cd'.repeat(32), chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, SPS_IDR));
   assert.equal(m.codecs.decoders.length, 0, 'another namespace cannot feed the stream');
@@ -253,6 +256,30 @@ test('a member the host lets drive the window clicks, scrolls, types and pastes 
   ], 'the pasted text reaches the window before its paste key');
   assert.equal(m.layer.stats().inputSent, events.length);
   m.layer.close();
+});
+
+test('the window the desktop focuses takes the keyboard, and a click focuses its desktop window', async () => {
+  const focused = [];
+  let desktop = 0;
+  const m = await controlled({control: true, focusWindow: key => focused.push(key), focusDesktop: () => { desktop++; m.doc.activeElement = m.surface; }});
+  assert.notEqual(m.doc.activeElement, m.canvas, 'an unfocused window leaves the keyboard alone');
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  assert.equal(m.doc.activeElement, m.canvas, 'opening it, or choosing its tab, focuses it');
+  await tick();
+  assert.deepEqual(m.sent.flatMap(request => request.events)[0], {KeyboardFocus: {surface: 0, focused: true}});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: false}]);
+  m.run();
+  assert.equal(desktop, 1, 'the desktop focusing another window takes the keyboard back');
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  assert.equal(m.doc.activeElement, m.canvas);
+  assert.deepEqual(focused, [KEY], 'a click into the window focuses its desktop window');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  assert.notEqual(watcher.doc.activeElement, watcher.canvas, 'a watcher keeps typing on the desktop');
+  watcher.layer.close();
 });
 
 test('closing a window a member drives closes it at its source', async () => {
@@ -355,4 +382,58 @@ test('blur releases held buttons and keys before relinquishing keyboard focus', 
   assert.ok(events.some(event => event.PointerButton?.button === 272 && event.PointerButton.pressed === false));
   assert.deepEqual(events.at(-1), {KeyboardFocus: {surface: 0, focused: false}});
   m.layer.close();
+});
+
+const PAINT = {...STREAM, app: 'so.tilo.browser', codec: 'tilo-paint'};
+const PAINT_KEY = `${SHELL}:${PAINT.surface}`;
+
+test('a painted page is handed to the runtime to draw, not decoded as video', async () => {
+  const painted = [];
+  const m = mount({paintFrame: (key, bytes) => { painted.push({key, bytes: [...bytes]}); return true; }});
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  assert.deepEqual(m.shown.at(-1), [{key: PAINT_KEY, app: PAINT.app, title: 'Browser', codec: 'tilo-paint'}],
+    'the desktop opens a window it draws itself');
+  assert.equal(m.layer.layer.children.length, 0, 'no canvas over the desktop');
+  m.live.deliver(PAINT.record, SHELL, json(2, PAINT));
+  // A whole frame (first byte 0) split across two chunks, then a patch.
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST, 0, [0, 1, 2], 5));
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_KEY | CHUNK_LAST, 0, [3, 4], 5));
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 1, [1, 9]));
+  assert.deepEqual(painted, [{key: PAINT_KEY, bytes: [0, 1, 2, 3, 4]}, {key: PAINT_KEY, bytes: [1, 9]}]);
+  assert.equal(m.codecs.decoders.length, 0, 'no video decoder');
+  assert.equal(m.layer.stats().drawn, 2);
+  // A start that changes the codec cannot turn the page into video.
+  m.live.deliver(PAINT.record, SHELL, json(2, {...PAINT, codec: 'h264'}));
+  assert.equal(m.layer.streams()[0].codec, 'tilo-paint');
+  m.place([{key: PAINT_KEY, rect: [0, 0, 100, 100]}]);
+  m.run();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, []));
+  assert.equal(m.layer.stats().streams, 0);
+  m.layer.close();
+  await tick();
+});
+
+test('input on a painted page goes to its host only when this member drives it', async () => {
+  const events = [{PointerMotion: {x: 20, y: 30}}, {PointerButton: {button: 272, pressed: true}}];
+  let pending = [{key: PAINT_KEY, events}];
+  const take = () => { const out = pending; pending = []; return out; };
+  const watcher = mount({takePaintInput: take});
+  watcher.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  await tick();
+  watcher.run();
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watching member sends nothing');
+  watcher.layer.close();
+
+  pending = [{key: PAINT_KEY, events}, {key: 'unknown:0000000000000001', events}];
+  const driver = mount({control: true, takePaintInput: take});
+  driver.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  await tick();
+  driver.run();
+  await tick();
+  assert.ok(driver.sent.every(({publisher, stream}) => publisher === SHELL && stream === PAINT.surface),
+    'only to the painted stream\'s host; an unknown window\'s input is dropped');
+  assert.deepEqual(driver.sent.flatMap(request => request.events), events, 'in order');
+  driver.layer.close();
+  await tick();
 });

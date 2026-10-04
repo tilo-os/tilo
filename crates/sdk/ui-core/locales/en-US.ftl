@@ -256,6 +256,8 @@ terminal-target-host = This device (unconfined)
 terminal-target-default = Default environment
 terminal-target-legacy = legacy VM
 terminal-target-manage = Manage environments…
+terminal-run-on = Run on:
+terminal-run-on-this-device = This device
 terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
 terminal-host-denied = This device's own shell was not allowed
 terminal-env-title = Environments
@@ -309,9 +311,6 @@ text-input-show-password = Show password
 text-input-hide-password = Hide password
 
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Welcome back to Tilo
-greeter-sign-in = Sign in to continue
-greeter-passcode-intro = Enter your passcode to open your desktop.
 lock-welcome-back = Welcome back
 
 # Now playing: Quick Settings and the lock screen.
@@ -420,3 +419,16 @@ history-day-today = Today
 history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
+
+widget-block-duplicate = Duplicate block and children
+
+widget-block-duplicate-selection = Duplicate selected or focused blocks
+
+widget-block-move-selection-up = Move selected blocks up
+widget-block-move-selection-down = Move selected blocks down
+
+block-editor-replace-placeholder = Replace with
+block-editor-replace = Replace
+
+block-editor-replace-all = Replace all
+block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field

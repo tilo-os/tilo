@@ -10,12 +10,12 @@ use std::process::Command;
 
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
-use crate::apply::{Apply, Session, SessionProcess};
+use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
 use crate::input;
-use crate::slots::DeviceSession;
+use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
@@ -73,8 +73,167 @@ fn device_session_unit(listing: &str) -> Option<String> {
         .map(|(unit, _)| (*unit).to_owned())
 }
 
+/// One logind session, as `loginctl show-session` describes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LogindSession {
+    id: String,
+    name: String,
+    seat: String,
+    class: String,
+    remote: bool,
+    state: String,
+    leader: u32,
+    scope: String,
+}
+
+/// `loginctl show-session <id>` output (`Key=value` lines).
+fn parse_logind_session(id: &str, text: &str) -> LogindSession {
+    let mut session = LogindSession {
+        id: id.to_owned(),
+        ..LogindSession::default()
+    };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().to_owned();
+        match key {
+            "Name" => session.name = value,
+            "Seat" => session.seat = value,
+            "Class" => session.class = value,
+            "Remote" => session.remote = value == "yes",
+            "State" => session.state = value,
+            "Leader" => session.leader = value.parse().unwrap_or(0),
+            "Scope" => session.scope = value,
+            _ => {}
+        }
+    }
+    session
+}
+
+/// The owner's login among `sessions`: a local user session on seat0 that
+/// greetd (main process `greetd`) started; its session worker, the leader,
+/// is greetd's child. `parent` gives a process's parent. The greeter's own
+/// session is of class `greeter`, and a tilo-vm slot's session is started by
+/// systemd, not greetd.
+fn greetd_login(
+    sessions: &[LogindSession],
+    greetd: u32,
+    parent: impl Fn(u32) -> Option<u32>,
+) -> Option<&LogindSession> {
+    sessions.iter().find(|s| {
+        s.seat == "seat0"
+            && s.class == "user"
+            && !s.remote
+            && matches!(s.state.as_str(), "active" | "online")
+            && s.leader > 0
+            && greetd > 0
+            && parent(s.leader) == Some(greetd)
+            && s.scope.starts_with("session-")
+    })
+}
+
+/// The process name `tilo-session` runs under (its script's file name).
+const LOGIN_WRAPPER: &str = "tilo-session";
+/// The compositor's process name.
+const COMPOSITOR: &str = "shell";
+
+fn parent_of(pid: u32) -> Option<u32> {
+    proc_field(pid, "PPid:")?.parse().ok()
+}
+
+fn comm(pid: u32) -> Option<String> {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|c| c.trim().to_owned())
+}
+
+/// The processes in the cgroup `pid` belongs to (a login's session scope).
+fn cgroup_members(pid: u32) -> Vec<u32> {
+    let Some(path) = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("0::").map(str::to_owned))
+        })
+    else {
+        return Vec::new();
+    };
+    fs::read_to_string(format!("/sys/fs/cgroup{path}/cgroup.procs"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect()
+}
+
+/// The running compositor `wrapper` (a `tilo-session`) started.
+fn compositor_of(wrapper: u32) -> Option<u32> {
+    fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
+        .ok()?
+        .split_whitespace()
+        .filter_map(|c| c.parse::<u32>().ok())
+        .find(|c| comm(*c).as_deref() == Some(COMPOSITOR) && !zombie(*c))
+}
+
+fn zombie(pid: u32) -> bool {
+    proc_field(pid, "State:").is_none_or(|state| state.starts_with('Z'))
+}
+
+/// The owner's Tilo login through greetd on seat0, if someone is logged in.
+fn login_session() -> Option<DeviceSession> {
+    let greetd = Command::new("systemctl")
+        .args(["show", "--property=MainPID", "--value", GREETER_UNIT])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|pid| *pid > 0)?;
+    let listing = Command::new("loginctl")
+        .args(["list-sessions", "--no-legend"])
+        .output()
+        .ok()?;
+    let sessions: Vec<LogindSession> = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|id| {
+            let shown = Command::new("loginctl")
+                .args(["show-session", id])
+                .output()
+                .ok()?;
+            Some(parse_logind_session(
+                id,
+                &String::from_utf8_lossy(&shown.stdout),
+            ))
+        })
+        .collect();
+    let login = greetd_login(&sessions, greetd, parent_of)?;
+    let uid = uid_of(&login.name)?;
+    // A Tilo login runs tilo-session as its user; another desktop is not
+    // the device slot.
+    let wrapper = cgroup_members(login.leader).into_iter().find(|pid| {
+        comm(*pid).as_deref() == Some(LOGIN_WRAPPER)
+            && proc_field(*pid, "Uid:").and_then(|u| u.split_whitespace().next().map(str::to_owned))
+                == Some(uid.to_string())
+    })?;
+    Some(DeviceSession {
+        unit: login.scope.clone(),
+        account: login.name.clone(),
+        units: Vec::new(),
+        control_socket: device_control_socket(uid),
+        login: Some(Login {
+            session: Some(login.id.clone()),
+            wrapper: Some(wrapper),
+        }),
+    })
+}
+
 /// The compositor's control socket in the board session
-/// (`TILO_TEST_CONTROL`, set by `tilo-seat-session`).
+/// (`TILO_TEST_CONTROL`, set by `tilo-seat-session`) and in a dev image's
+/// greetd login (set by `tilo-session`).
 fn device_control_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
 }
@@ -208,7 +367,7 @@ impl Apply for SystemdApply {
 
     fn device_session(&mut self) -> Option<DeviceSession> {
         if !Path::new(DEVICE_SESSION_MARKER).exists() {
-            return None;
+            return login_session();
         }
         let listing = Command::new("systemctl")
             .args([
@@ -235,6 +394,7 @@ impl Apply for SystemdApply {
                 .map(|u| (*u).to_owned())
                 .collect(),
             control_socket: device_control_socket(uid),
+            login: None,
         })
     }
 
@@ -283,6 +443,50 @@ impl Apply for SystemdApply {
 
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
         systemctl("restart", unit)
+    }
+
+    fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
+        let step = format!("restart {}'s desktop", session.user);
+        let fail = |detail: String| DaemonError::Apply {
+            step: step.clone(),
+            detail,
+        };
+        let wrapper = session
+            .login
+            .as_ref()
+            .and_then(|login| login.wrapper)
+            .filter(|pid| comm(*pid).as_deref() == Some(LOGIN_WRAPPER))
+            .ok_or_else(|| fail("the login's tilo-session is gone: the owner logged out".into()))?;
+        let old = compositor_of(wrapper);
+        run(
+            &step,
+            Command::new("kill").args(["-USR1", &wrapper.to_string()]),
+        )?;
+        let Some(old) = old else {
+            return Ok(());
+        };
+        // tilo-session sends the compositor SIGTERM and waits for it.
+        let started = std::time::Instant::now();
+        while Path::new(&format!("/proc/{old}")).exists() && !zombie(old) {
+            if started.elapsed() >= DESKTOP_EXIT_TIMEOUT {
+                return Err(fail(format!(
+                    "the compositor (pid {old}) did not exit within {}s of SIGTERM",
+                    DESKTOP_EXIT_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Ok(())
+    }
+
+    fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError> {
+        run(
+            &format!("systemctl --user restart {unit} as {user}"),
+            Command::new("systemctl")
+                .arg(format!("--machine={user}@"))
+                .args(["--user", "restart", unit]),
+        )
+        .map(drop)
     }
 
     fn unit_state(&mut self, unit: &str) -> String {
@@ -482,6 +686,11 @@ impl Apply for SystemdApply {
         // Restart=always turns a failing start into active/activating flapping,
         // so the unit has to stay active under one main process for a while.
         const SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+        if let Some(login) = &session.login {
+            return login
+                .wrapper
+                .map_or(Ok(()), |wrapper| wait_desktop(wrapper, SETTLE));
+        }
         // A board session first waits for its user manager, the network and
         // the clock (tilo-board-session-prepare).
         let timeout = std::time::Duration::from_secs(if session.stand_in { 20 } else { 120 });
@@ -515,6 +724,13 @@ impl Apply for SystemdApply {
     }
 
     fn session_pid(&mut self, session: &Session) -> Option<u32> {
+        // A login: its compositor, whose environment has the session's
+        // variables, else the tilo-session around it.
+        if let Some(login) = &session.login {
+            let wrapper = login.wrapper?;
+            return compositor_of(wrapper)
+                .or_else(|| (comm(wrapper).as_deref() == Some(LOGIN_WRAPPER)).then_some(wrapper));
+        }
         let output = Command::new("systemctl")
             .args(["show", "--property=MainPID", "--value", &session.unit])
             .output()
@@ -672,6 +888,44 @@ impl Apply for SystemdApply {
             });
         let _ = fs::remove_dir_all(&dir);
         result
+    }
+}
+
+/// How long a login's compositor may take to exit after SIGTERM.
+const DESKTOP_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long the restarted compositor may take to come up.
+const DESKTOP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wait until `wrapper` (a login's tilo-session) runs one compositor for
+/// `settle`. The wrapper exiting means the compositor did not come up and
+/// the owner is back at the login screen.
+fn wait_desktop(wrapper: u32, settle: std::time::Duration) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut stable: Option<(std::time::Instant, u32)> = None;
+    loop {
+        if comm(wrapper).as_deref() != Some(LOGIN_WRAPPER) || zombie(wrapper) {
+            return Err(
+                "the login ended because its compositor did not keep running; \
+                 the machine shows the login screen"
+                    .into(),
+            );
+        }
+        match (compositor_of(wrapper), stable) {
+            (Some(pid), Some((since, seen))) if pid == seen => {
+                if since.elapsed() >= settle {
+                    return Ok(());
+                }
+            }
+            (Some(pid), _) => stable = Some((std::time::Instant::now(), pid)),
+            (None, _) => stable = None,
+        }
+        if started.elapsed() >= DESKTOP_START_TIMEOUT {
+            return Err(format!(
+                "no compositor kept running within {}s",
+                DESKTOP_START_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
@@ -899,6 +1153,66 @@ mod tests {
                 device_session_unit("tilo-board-headless-session@.service loaded"),
                 None
             );
+        }
+    }
+
+    /// On a laptop the device slot is the owner's greetd login: the session
+    /// greetd's worker leads on seat0, never the greeter's or a slot's.
+    #[test]
+    fn the_device_session_of_a_laptop_is_the_owners_greetd_login() {
+        // Phase `a_login_is_found_by_its_greetd_worker`.
+        {
+            let shown = |id: &str, text: &str| parse_logind_session(id, text);
+            let greeter = shown(
+                "1",
+                "Name=greetd\nSeat=seat0\nClass=greeter\nRemote=no\nState=closing\nLeader=900\nScope=session-1.scope\n",
+            );
+            let ssh = shown(
+                "2",
+                "Name=tester\nSeat=\nClass=user\nRemote=yes\nState=active\nLeader=700\nScope=session-2.scope\n",
+            );
+            let slot = shown(
+                "4",
+                "Name=tds-a\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=800\nScope=session-4.scope\n",
+            );
+            let owner = shown(
+                "3",
+                "Name=tester\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=901\nScope=session-3.scope\n",
+            );
+            assert_eq!(owner.leader, 901);
+            assert_eq!(owner.scope, "session-3.scope");
+            // greetd is pid 500; its workers lead the greeter's and the owner's sessions.
+            let parent = |pid: u32| match pid {
+                900 | 901 => Some(500),
+                _ => Some(1),
+            };
+            let sessions = [greeter, ssh, slot, owner];
+            assert_eq!(
+                greetd_login(&sessions, 500, parent).map(|s| s.id.as_str()),
+                Some("3")
+            );
+            assert_eq!(greetd_login(&sessions[..3], 500, parent), None);
+            assert_eq!(greetd_login(&sessions, 0, parent), None);
+        }
+        // Phase `the_names_match_tilo_session`.
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let wrapper = repo.join("os/usr/libexec").join(LOGIN_WRAPPER);
+            let script = fs::read_to_string(&wrapper).unwrap();
+            assert!(
+                script.contains("trap request_restart USR1"),
+                "{}",
+                wrapper.display()
+            );
+            assert!(script.contains("readonly SHELL_BIN=/usr/bin/shell"));
+            assert_eq!(Path::new("/usr/bin/shell").file_name().unwrap(), COMPOSITOR);
+            assert!(script.contains(
+                r#"export TILO_TEST_CONTROL="$runtime_dir/tilo-session/test-control.sock""#
+            ));
+            let session =
+                fs::read_to_string(repo.join("os/usr/share/wayland-sessions/shell.desktop"))
+                    .unwrap();
+            assert!(session.contains(&format!("Exec=/usr/libexec/{LOGIN_WRAPPER} ")));
         }
     }
 

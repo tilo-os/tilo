@@ -489,16 +489,81 @@ fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str),
     let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
         .map_err(|error| error.to_string())?
         .ok_or("Image is larger than 1 MiB")?;
-    let extension = if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
-        "png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "jpg"
-    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        "webp"
-    } else {
-        return Err("Choose a PNG, JPEG, or WebP image".into());
-    };
+    let extension = image_extension(&bytes).ok_or("Choose a PNG, JPEG, or WebP image")?;
     Ok((bytes, extension))
+}
+
+/// The file extension of a PNG, JPEG or WebP image, by its magic bytes.
+fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        Some("png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// `bytes` as an image the notebook keeps, with its extension: as given when
+/// it fits an asset, else re-encoded (JPEG, or PNG to keep transparency) and
+/// scaled down until it does. A screenshot is often larger than an asset may
+/// be, and pasting it must still work.
+fn fit_image_asset(bytes: Vec<u8>) -> Result<(Vec<u8>, &'static str), String> {
+    const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
+    let extension = image_extension(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    if bytes.len() <= MAX {
+        return Ok((bytes, extension));
+    }
+    let mut image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+    drop(bytes);
+    let transparent = image.color().has_alpha();
+    for _ in 0..8 {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        if transparent {
+            image
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .map_err(|error| error.to_string())?;
+        } else {
+            image::DynamicImage::ImageRgb8(image.to_rgb8())
+                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    &mut encoded,
+                    85,
+                ))
+                .map_err(|error| error.to_string())?;
+        }
+        let encoded = encoded.into_inner();
+        if encoded.len() <= MAX {
+            return Ok((encoded, if transparent { "png" } else { "jpg" }));
+        }
+        let (width, height) = (image.width(), image.height());
+        if width < 64 || height < 64 {
+            break;
+        }
+        image = image.resize(
+            width.saturating_mul(3) / 4,
+            height.saturating_mul(3) / 4,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    Err("Image is too large to keep in a note".into())
+}
+
+/// A pasted or dropped image, kept the way a chosen one is: as a file beside
+/// a folder notebook, else as a notebook asset.
+fn image_from_bytes(root: Option<&std::path::Path>, bytes: Vec<u8>) -> Result<LoadedImage, String> {
+    let (bytes, extension) = fit_image_asset(bytes)?;
+    if let Some(root) = root {
+        let assets = root.join("assets");
+        crate::files::create_dir_all(&assets).map_err(|error| error.to_string())?;
+        let name = format!("{}.{}", uuid::Uuid::new_v4(), extension);
+        tilo_files::native::atomic::write(&assets.join(&name), &bytes)
+            .map_err(|error| error.to_string())?;
+        return Ok((format!("../assets/{name}"), None));
+    }
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    Ok((format!("asset:{digest}"), Some(bytes)))
 }
 
 #[cfg(test)]
@@ -599,6 +664,9 @@ pub struct NotesApp {
     legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
+    /// The framework host's durability state when Notes is hosted as a
+    /// resource surface: the host reports there, not to this widget.
+    hosted_save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
     pub(crate) workspace_lock: Option<advisory_lock::FileLock>,
     /// A host-portal file choice in flight. File access never escapes the
     /// workspace sandbox without an explicit portal grant.
@@ -949,6 +1017,7 @@ impl NotesApp {
             workspace_asset_root,
             legacy_read_blocked: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            hosted_save_status: None,
             workspace_lock: None,
             markdown_transfer: None,
             markdown_job: ui::LatestRequest::new(),
@@ -1055,8 +1124,19 @@ impl NotesApp {
         let announce = self.status.state().save_status != save_status
             || self.status.state().page_path != path
             || self.status.state().page_count != self.workspace.pages().len();
+        let save_problem = match &self.record_save_status {
+            ui::record::RecordSaveStatus::Failed(reason)
+                if self.shots_save_status.is_none()
+                    && self.legacy_read_blocked.is_none()
+                    && self.legacy_fixture_storage.is_none() =>
+            {
+                Some(reason.clone())
+            }
+            _ => None,
+        };
         self.status.set_state(StatusBarState {
             save_status,
+            save_problem,
             page_path: path,
             page_count: self.workspace.pages().len(),
             word_count,
@@ -1108,7 +1188,9 @@ impl NotesApp {
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
-        let label = if self.built_narrow {
+        let label = if self.status.needs_attention() {
+            self.status.save_detail()
+        } else if self.built_narrow {
             self.status.save_text().to_string()
         } else {
             self.status.bubble_text()
@@ -1125,9 +1207,8 @@ impl NotesApp {
         // Reveal zone: the bottom-right corner band (plus the pill), so nudging
         // the pointer there re-surfaces the status on demand.
         let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
-        let over = self.shots_status
-            || self.status.state().save_status == SaveStatus::Failed
-            || zone.contains(self.last_mouse);
+        let over =
+            self.shots_status || self.status.needs_attention() || zone.contains(self.last_mouse);
         self.status_bubble.set_hover(over, now);
         // The bubble is useful status, but its fade is decorative.  Keep its
         // visibility transition discrete under reduced motion so people never
@@ -1279,6 +1360,106 @@ impl NotesApp {
             })
             .collect();
         self.main.set_transclusion_previews(previews);
+    }
+
+    /// Store clipboard bytes and replace their original target in one action.
+    fn drain_pasted_images(&mut self, doc: &mut AutoCommit) {
+        for request in self.main.take_pasted_images() {
+            let Some(page) = self.main.page_id() else {
+                continue;
+            };
+            let root = self
+                .legacy_fixture_storage
+                .as_ref()
+                .map(|legacy| legacy.root.clone());
+            let target_check = if root.is_some() {
+                self.main
+                    .body_editor_mut()
+                    .image_paste_action(doc, &request.target, String::new())
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            } else {
+                Ok(())
+            };
+            let result = target_check
+                .and_then(|()| image_from_bytes(root.as_deref(), request.image.bytes))
+                .and_then(|(destination, bytes)| {
+                    let edit = self
+                        .main
+                        .body_editor_mut()
+                        .image_paste_action(
+                            doc,
+                            &request.target,
+                            format!("![Pasted image]({destination})"),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let action = if let Some(bytes) = bytes {
+                        actions::add_image_asset_action(page, bytes, edit)
+                    } else {
+                        actions::edit_body_action(page, edit)
+                    };
+                    let scope = self.markdown_scope();
+                    self.dispatch_transfer_action(doc, &action, scope.as_ref())
+                });
+            match result {
+                Ok(()) => {
+                    self.bound_page = None;
+                    self.self_dirty = true;
+                }
+                Err(error) => {
+                    self.transfer_toasts.push(
+                        format!("Image paste failed: {error}"),
+                        ui::widget::toast::ToastKind::Error,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Insert the image `bytes`, named after `source`, into the open note.
+    fn insert_image_bytes(
+        &mut self,
+        doc: &mut AutoCommit,
+        source: &std::path::Path,
+        bytes: Vec<u8>,
+    ) {
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let root = self
+            .legacy_fixture_storage
+            .as_ref()
+            .map(|legacy| legacy.root.clone());
+        let loaded = image_from_bytes(root.as_deref(), bytes);
+        if let Err(error) = self.insert_loaded_image(doc, page, source, loaded) {
+            tracing::warn!(%error, "notes: image not inserted");
+        }
+    }
+
+    /// Image files dropped on the window go into the open note.
+    fn handle_dropped_file(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let WindowEvent::DroppedFile(path) = event else {
+            return false;
+        };
+        if self.main.page_id().is_none() {
+            return false;
+        }
+        let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| bytes.ok_or_else(|| "Image is too large".to_owned()));
+        match bytes {
+            Ok(bytes) => self.insert_image_bytes(ctx.state, path, bytes),
+            Err(error) => self.transfer_toasts.push(
+                format!("Image import failed: {error}"),
+                ui::widget::toast::ToastKind::Error,
+            ),
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn drain_transclusion_opens(&mut self, doc: &AutoCommit) {
@@ -2025,11 +2206,29 @@ impl NotesApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
+        save_status: ui::LocalState<ui::record::RecordSaveStatus>,
     ) {
         self.main.attach_notebook(dispatcher.clone());
         self.actions.attach(dispatcher);
         self.seeded = true;
         self.adopted = true;
+        self.hosted_save_status = Some(save_status);
+        self.follow_hosted_save_status();
+    }
+
+    /// Take the framework host's latest durability report, when hosted.
+    fn follow_hosted_save_status(&mut self) {
+        let Some(status) = self
+            .hosted_save_status
+            .as_ref()
+            .map(|state| state.with(Clone::clone))
+        else {
+            return;
+        };
+        if status != self.record_save_status {
+            self.record_save_status = status;
+            self.refresh_status();
+        }
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
@@ -4427,6 +4626,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.follow_hosted_save_status();
         let (state, path) = ui::doc::document(state, path);
         self.refresh_canonical_assets(state);
         if self.legacy_fixture_storage.is_none() {
@@ -4434,6 +4634,7 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
+        self.drain_pasted_images(state);
         if self.legacy_fixture_storage.is_none() {
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
@@ -4848,6 +5049,9 @@ impl Widget for NotesApp {
         if self.handle_link_click(event, ctx.state, ctx.handled) {
             return;
         }
+        if self.handle_dropped_file(event, ctx) {
+            return;
+        }
         self.route_to_children(event, ctx);
     }
 
@@ -4878,7 +5082,11 @@ impl Widget for NotesApp {
         children.push(
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
-                .with_description(self.status.right_text())
+                .with_description(if self.status.needs_attention() {
+                    self.status.save_detail()
+                } else {
+                    self.status.right_text()
+                })
                 .with_live(ui::a11y::Politeness::Polite)
                 .with_hashed_key("notes.save-status"),
         );

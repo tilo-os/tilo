@@ -35,6 +35,8 @@ use crate::portal::desktop_services::{
 use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
 use crate::shell::i18n::{t, t_args};
 
+pub mod accessibility;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
     pub handle: String,
@@ -2085,9 +2087,7 @@ impl PortalDialogController {
         }
         match logical_key {
             Key::Named(NamedKey::Backspace) => {
-                if let Some((index, _)) = self.launcher_name.char_indices().next_back() {
-                    self.launcher_name.truncate(index);
-                }
+                ui::delete_last_grapheme(&mut self.launcher_name);
                 true
             }
             Key::Named(NamedKey::Space) => {
