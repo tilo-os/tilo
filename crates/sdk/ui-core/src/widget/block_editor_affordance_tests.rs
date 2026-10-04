@@ -125,7 +125,7 @@ fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
 
 #[test]
 fn typed_list_and_task_markers_promote_preserving_identity_and_depth() {
-    fn typed_list_markers_promote_and_preserve_identity_through_reload() {
+    fn typed_list_markers_promote_in_place_and_emit_ops_on_the_same_block() {
         for (marker, expected) in [
             ("- ", BlockKind::Bullet { indent: 0 }),
             ("* ", BlockKind::Bullet { indent: 0 }),
@@ -155,24 +155,31 @@ fn typed_list_and_task_markers_promote_preserving_identity_and_depth() {
             ),
         ] {
             let mut doc = AutoCommit::new();
-            let list = doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
             let mut editor = BlockEditor::new();
-            editor.bind_blocks(&mut doc, list.clone());
             editor.focus_block(0, CursorPlacement::Start);
             let id = editor.blocks[0].id.clone();
             type_text(&mut editor, &mut doc, marker);
             assert_eq!(editor.blocks[0].kind, expected, "{marker}");
             assert_eq!(editor.blocks[0].text(), "");
-            let bound = editor.blocks[0].line.bound_obj();
             type_text(&mut editor, &mut doc, "Buy milk");
             assert_eq!(editor.blocks[0].text(), "Buy milk");
             assert_eq!(editor.blocks[0].id, id);
-            assert_eq!(editor.blocks[0].line.bound_obj(), bound);
-            let mut reloaded = BlockEditor::new();
-            reloaded.bind_blocks(&mut doc, list);
-            assert_eq!(reloaded.blocks[0].kind, expected);
-            assert_eq!(reloaded.blocks[0].text(), "Buy milk");
-            assert_eq!(reloaded.blocks[0].id, id);
+            assert_eq!(
+                editor.take_edit_ops(),
+                vec![
+                    BlockEditOp::SetKind {
+                        block_id: id.clone(),
+                        kind: kind_to_str(&expected),
+                    },
+                    BlockEditOp::TextSplice {
+                        block_id: id,
+                        start: 0,
+                        end: 0,
+                        text: "Buy milk".into(),
+                    },
+                ],
+                "{marker}: the owner sees a conversion of the same block"
+            );
         }
     }
 
@@ -198,6 +205,6 @@ fn typed_list_and_task_markers_promote_preserving_identity_and_depth() {
         assert_eq!(editor.blocks[0].text(), "A literal - [ ] marker");
     }
 
-    typed_list_markers_promote_and_preserve_identity_through_reload();
+    typed_list_markers_promote_in_place_and_emit_ops_on_the_same_block();
     typed_task_conversion_preserves_nested_depth_and_literal_prose();
 }

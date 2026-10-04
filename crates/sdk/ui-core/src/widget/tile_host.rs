@@ -827,25 +827,43 @@ impl TileHost {
         }
     }
 
-    fn commit_pending_to_current_record(&mut self) -> Result<(), String> {
+    /// Record the step the app's owner reported against the record it wrote.
+    /// The host's node sweep cannot reach a live root History hides, and a
+    /// transition must not carry the bracket over to the next record. The
+    /// bracket is taken only under the record's loan, so a busy record leaves
+    /// it with the owner.
+    fn record_owner_step_to_current_record(&mut self) -> Result<(), String> {
+        fn take(widget: &mut dyn Widget, out: &mut Vec<Vec<automerge::ChangeHash>>) {
+            if let Some(before) = crate::undo::take_committed_action(widget) {
+                out.push(before);
+            }
+            for child in widget.children_mut() {
+                if child.legacy_callback_boundary().is_none() {
+                    take(child, out);
+                }
+            }
+        }
         let (Some(binding), TileContent::App(root)) = (&self.binding, &mut self.content) else {
             return Ok(());
         };
-        if !crate::undo::needs_commit(root.as_ref()) {
-            return Ok(());
-        }
         binding
             .store
             .with_action_state(&binding.live, |doc, history, _| {
-                let context = crate::undo::take_commit_context(root.as_mut());
-                history.commit_action_authored_with_message(
+                let mut brackets = Vec::new();
+                take(root.as_mut(), &mut brackets);
+                let Some(before) = brackets
+                    .into_iter()
+                    .max_by_key(|before| doc.get_changes(before).len())
+                else {
+                    return;
+                };
+                history.record_committed_action_authored(
                     doc,
+                    before,
                     None,
                     crate::undo::get_state(root.as_ref()),
                     Some(crate::collaboration::local_user_id()),
-                    context.and_then(|context| context.change_message()),
                 );
-                crate::undo::on_commit(root.as_mut());
             })
             .map_err(|error| error.to_string())
     }
@@ -950,7 +968,7 @@ impl TileHost {
                 retry_pending: true,
             });
         }
-        if let Err(error) = self.commit_pending_to_current_record() {
+        if let Err(error) = self.record_owner_step_to_current_record() {
             self.record_transition_error = Some(error.clone());
             return Err(OwnerTransitionError {
                 message: error,
@@ -1632,8 +1650,7 @@ impl Widget for TileHost {
         dyn crate::search::capability::SearchSource,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::view::capability::ViewState,
-        dyn crate::component_lifecycle::ComponentLifecycle,
-        dyn crate::undo::UndoPoints
+        dyn crate::component_lifecycle::ComponentLifecycle
     );
 
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -2093,10 +2110,7 @@ impl Widget for TileHost {
                 w.update(doc, &ROOT)
             })
             .unwrap_or(false);
-        // Close the burst against *this* record's history: the host's own
-        // commit pass no longer touches the document the tab is editing,
-        // and would otherwise leave it open forever.
-        let _ = self.commit_pending_to_current_record();
+        let _ = self.record_owner_step_to_current_record();
         changed
     }
     fn build_layout(
@@ -2329,7 +2343,6 @@ impl Widget for TileHost {
                     }
                 })
             });
-            crate::undo::on_commit(app.as_mut());
             *ctx.handled = true;
             return;
         }
@@ -2453,37 +2466,6 @@ impl Widget for TileHost {
             || opening_indicator
             || inner
             || pending_handover
-    }
-}
-
-impl crate::undo::UndoPoints for TileHost {
-    /// A bound tile has already committed the app's burst against its own
-    /// record in [`Widget::update`]; saying "yes" here would commit the
-    /// host's own, unrelated document too.
-    fn needs_commit(&self) -> bool {
-        if self
-            .history
-            .as_ref()
-            .is_some_and(|history| !history.live_interactive())
-            || crate::history_mode::frame::FrameworkInputFrame::active()
-        {
-            return false;
-        }
-        if self.binding.is_some() {
-            return false;
-        }
-        match &self.content {
-            TileContent::App(w) => crate::undo::needs_commit(w.as_ref()),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
-        }
-    }
-    fn on_commit(&mut self) {
-        if self.binding.is_some() {
-            return;
-        }
-        if let TileContent::App(w) = &mut self.content {
-            crate::undo::on_commit(w.as_mut());
-        }
     }
 }
 

@@ -2,8 +2,9 @@
 //! [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
 //! sortable list view), this is a structural editor: the user types into
 //! cells and adds / removes rows and columns anywhere via hover affordances
-//! in the gutters, with every mutation writing straight through to the
-//! Automerge document.
+//! in the gutters. The widget only reads the document: every change the user
+//! makes is a [`TableEdit`] its owner takes ([`Table::take_edits`]) and
+//! submits as an action, applying it with [`apply`].
 //!
 //! # Data model (under the widget's `path`, a Map)
 //!
@@ -342,8 +343,48 @@ fn usize_to_f64(n: usize) -> f64 {
 }
 
 fn set_col_width(doc: &mut AutoCommit, t: &ObjId, cid: &str, w: f64) {
+    ensure(doc, t);
     if let Some(m) = widths_map(doc, t) {
         let _ = doc.put(&m, cid, w.max(MIN_COL_W));
+    }
+}
+
+/// A change the user made to a table, in display coordinates, for its owner
+/// to submit as an action.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TableEdit {
+    /// Cell `(row, column)` now reads `text`.
+    SetCell {
+        row: usize,
+        column: usize,
+        text: String,
+    },
+    /// A new empty row at `at`.
+    InsertRow { at: usize },
+    /// A new empty column at `at`.
+    InsertColumn { at: usize },
+    /// Row `at` removed.
+    RemoveRow { at: usize },
+    /// Column `at` removed.
+    RemoveColumn { at: usize },
+    /// Column `column` is `width` logical pixels wide.
+    ResizeColumn { column: usize, width: f64 },
+}
+
+/// Apply `edit` to the table at `t`: what an owner's action does with a
+/// [`TableEdit`] the widget handed it.
+pub fn apply(doc: &mut AutoCommit, t: &ObjId, edit: &TableEdit) {
+    match edit {
+        TableEdit::SetCell { row, column, text } => set_cell_text(doc, t, *row, *column, text),
+        TableEdit::InsertRow { at } => insert_row(doc, t, *at),
+        TableEdit::InsertColumn { at } => insert_column(doc, t, *at),
+        TableEdit::RemoveRow { at } => remove_row(doc, t, *at),
+        TableEdit::RemoveColumn { at } => remove_column(doc, t, *at),
+        TableEdit::ResizeColumn { column, width } => {
+            if let Some(cid) = col_ids(doc, t).into_iter().nth(*column) {
+                set_col_width(doc, t, &cid, *width);
+            }
+        }
     }
 }
 
@@ -390,18 +431,8 @@ struct Resize {
 // Widget
 // ===========================================================================
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag is an independent dirty/seed marker read and cleared on its own \
-              schedule (sync seed, per-frame redraw, per-frame layout, pending-commit); they \
-              are never combined into a state machine, so a bitflags/enum encoding would not \
-              simplify the call sites"
-)]
 pub struct Table {
     id: String,
-    /// Optional seed applied once when the model is first initialised.
-    seed: Option<(usize, usize)>,
-    seed_header: bool,
 
     // --- model mirror (refreshed each `sync`) ---
     row_ids: Vec<String>,
@@ -412,8 +443,12 @@ pub struct Table {
     /// Cell editors in row-major order (`len == rows * cols`). Rebuilt only
     /// when the set of `(row, col)` ids changes.
     cells: Vec<TextInput>,
+    /// What each cell showed at the last sync, so only a change is an edit.
+    synced: Vec<String>,
     /// Resolved `cells` map, so children are rooted correctly.
     cells_obj: Option<ObjId>,
+    /// The user's changes, waiting for the owner.
+    edits: Vec<TableEdit>,
 
     // --- layout ---
     rect: Rect,
@@ -424,7 +459,6 @@ pub struct Table {
     resize: Option<Resize>,
     dirty: bool,
     structure_dirty: bool,
-    pending_commit: bool,
     projection_exit: Option<bool>,
 }
 
@@ -432,38 +466,49 @@ impl Table {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            seed: None,
-            seed_header: false,
             row_ids: Vec::new(),
             col_ids: Vec::new(),
             col_widths: Vec::new(),
             header: false,
             cells: Vec::new(),
+            synced: Vec::new(),
             cells_obj: None,
+            edits: Vec::new(),
             rect: Rect::ZERO,
             last_cursor: None,
             hover: Hover::None,
             resize: None,
             dirty: true,
             structure_dirty: false,
-            pending_commit: false,
             projection_exit: None,
         }
     }
 
-    /// Seed the table with `rows`×`cols` empty cells the first time it is
-    /// synced against a fresh (uninitialised) document.
-    #[must_use]
-    pub fn seeded(mut self, rows: usize, cols: usize) -> Self {
-        self.seed = Some((rows, cols));
-        self
+    /// The user's changes since the last call, in the order made, for the
+    /// owner to submit as actions (each applied with [`apply`]).
+    pub fn take_edits(&mut self) -> Vec<TableEdit> {
+        std::mem::take(&mut self.edits)
     }
 
-    /// Render the first row as a header band (also applied on first seed).
-    #[must_use]
-    pub fn with_header(mut self) -> Self {
-        self.seed_header = true;
-        self
+    /// Hand each cell's typing since the last sync to the owner.
+    fn collect_cell_edits(&mut self) {
+        let columns = self.n_cols();
+        for (index, cell) in self.cells.iter_mut().enumerate() {
+            let Some(text) = cell.take_dirty() else {
+                continue;
+            };
+            if self.synced.get(index) == Some(&text) || columns == 0 {
+                continue;
+            }
+            if let Some(seen) = self.synced.get_mut(index) {
+                seen.clone_from(&text);
+            }
+            self.edits.push(TableEdit::SetCell {
+                row: index / columns,
+                column: index % columns,
+                text,
+            });
+        }
     }
 
     fn n_rows(&self) -> usize {
@@ -490,7 +535,6 @@ impl Table {
     fn make_cell(rid: &str, cid: &str) -> TextInput {
         TextInput::new(vec![])
             .with_id(&format!("cell_{rid}_{cid}"))
-            .with_on_change_path(&cell_key(rid, cid))
             .with_plain_chrome()
             .with_font_size(CELL_FONT)
     }
@@ -1189,55 +1233,39 @@ impl Table {
     /// currently over. Returns `true` when the press was fully consumed by a
     /// table-level affordance (insert/delete/resize) — in that case the
     /// caller must not also forward the event to the cell editors.
-    fn handle_press(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-    ) -> bool {
+    fn handle_press(&mut self, p: Point, handled: &mut bool) -> bool {
         match self.hit(p) {
             Hover::EmptyAdd => {
                 if self.n_cols() == 0 {
-                    insert_column(state, path, 0);
+                    self.edits.push(TableEdit::InsertColumn { at: 0 });
                 }
                 if self.n_rows() == 0 {
-                    insert_row(state, path, 0);
+                    self.edits.push(TableEdit::InsertRow { at: 0 });
                 }
-                self.structure_dirty = true;
-                self.pending_commit = true;
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::InsertCol(i) => {
-                insert_column(state, path, i);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::InsertColumn { at: i });
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::InsertRow(i) => {
-                insert_row(state, path, i);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::InsertRow { at: i });
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::DeleteCol(c) => {
-                remove_column(state, path, c);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::RemoveColumn { at: c });
                 self.dirty = true;
                 *handled = true;
                 true
             }
             Hover::DeleteRow(r) => {
-                remove_row(state, path, r);
-                self.structure_dirty = true;
-                self.pending_commit = true;
+                self.edits.push(TableEdit::RemoveRow { at: r });
                 self.dirty = true;
                 *handled = true;
                 true
@@ -1246,13 +1274,13 @@ impl Table {
                 let Some(col) = i.checked_sub(1) else {
                     return false;
                 };
-                let Some(cid) = self.col_ids.get(col) else {
+                let Some(&orig_w) = self.col_widths.get(col) else {
                     return false;
                 };
                 self.resize = Some(Resize {
                     col,
                     start_x: p.x,
-                    orig_w: col_width(state, path, cid),
+                    orig_w,
                 });
                 *handled = true;
                 true
@@ -1335,26 +1363,8 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
-        ensure(state, path);
-        // First-run seed.
-        if let Some((r, c)) = self.seed.take() {
-            let (er, ec) = dims(state, path);
-            if er == 0 && ec == 0 {
-                for _ in 0..c {
-                    insert_column(state, path, usize::MAX);
-                }
-                for _ in 0..r {
-                    insert_row(state, path, usize::MAX);
-                }
-                if self.seed_header {
-                    set_header(state, path, true);
-                }
-            }
-        }
 
         let new_rows = row_ids(state, path);
         let new_cols = col_ids(state, path);
@@ -1380,12 +1390,27 @@ impl Widget for Table {
             self.dirty = true;
         }
 
-        // Pull each cell's text from the `cells` map.
+        // Each cell shows its text in the `cells` map; typing stays local.
         if let Some(cells_obj) = self.cells_obj.clone() {
-            for cell in &mut self.cells {
+            let keys: Vec<String> = self
+                .row_ids
+                .iter()
+                .flat_map(|rid| self.col_ids.iter().map(move |cid| cell_key(rid, cid)))
+                .collect();
+            for (cell, key) in self.cells.iter_mut().zip(&keys) {
+                match child_obj(state, &cells_obj, key, ObjType::Text) {
+                    Some(obj) if cell.bound_obj() != Some(&obj) => cell.bind_text(obj),
+                    Some(_) => {}
+                    None => cell.clear_text_binding(),
+                }
                 cell.sync(state, &cells_obj);
             }
         }
+        self.synced = self
+            .cells
+            .iter()
+            .map(|cell| cell.value().to_owned())
+            .collect();
     }
 
     #[allow(
@@ -1538,8 +1563,10 @@ impl Widget for Table {
                     let p =
                         Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
-                    if let Some(cid) = self.col_ids.get(rz.col).cloned() {
-                        set_col_width(ctx.state, ctx.path, &cid, new_w);
+                    // The column follows the pointer here; the owner gets
+                    // the width when the drag ends.
+                    if let Some(width) = self.col_widths.get_mut(rz.col) {
+                        *width = new_w;
                     }
                     self.structure_dirty = true; // re-run build_layout with new tracks
                     self.dirty = true;
@@ -1550,8 +1577,14 @@ impl Widget for Table {
                     state: ElementState::Released,
                     ..
                 } => {
-                    self.resize = None;
-                    self.pending_commit = true;
+                    if let Some(rz) = self.resize.take()
+                        && let Some(&width) = self.col_widths.get(rz.col)
+                    {
+                        self.edits.push(TableEdit::ResizeColumn {
+                            column: rz.col,
+                            width,
+                        });
+                    }
                     *ctx.handled = true;
                     return;
                 }
@@ -1576,7 +1609,7 @@ impl Widget for Table {
                 ..
             } => {
                 if let Some(p) = self.last_cursor
-                    && self.handle_press(p, ctx.state, ctx.path, ctx.handled)
+                    && self.handle_press(p, ctx.handled)
                 {
                     return;
                 }
@@ -1608,6 +1641,7 @@ impl Widget for Table {
         }
 
         self.forward_to_cells(event, ctx, &child_nodes);
+        self.collect_cell_edits();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1677,22 +1711,6 @@ impl Widget for Table {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         Some(AccessNode::new(Role::Table))
-    }
-}
-
-impl crate::undo::UndoPoints for Table {
-    fn needs_commit(&self) -> bool {
-        self.pending_commit
-            || self
-                .cells
-                .iter()
-                .any(|cell| crate::undo::needs_commit(cell))
-    }
-    fn on_commit(&mut self) {
-        self.pending_commit = false;
-        for c in &mut self.cells {
-            c.on_commit();
-        }
     }
 }
 
@@ -1954,6 +1972,10 @@ mod tests {
                 taffy,
             },
         );
+        // The owner applies what the table hands it, as an app's action does.
+        for edit in table.take_edits() {
+            apply(doc, root, &edit);
+        }
         (handled, focus_target)
     }
 
@@ -2077,6 +2099,16 @@ mod tests {
                 &cursor(bx + 40.0, by),
                 mods,
             );
+            assert!(
+                (col_width(&doc, &t, &cid0) - before).abs() < 0.5,
+                "the column follows the pointer; the owner gets the width when the drag ends"
+            );
+            let release = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            };
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &release, mods);
 
             let after = col_width(&doc, &t, &cid0);
             assert!(
@@ -2113,7 +2145,7 @@ mod tests {
 
     #[test]
     fn cell_editing_splices_only_changed_text_and_moves_focus() {
-        // Case `typing_into_a_focused_cell_writes_through_to_the_doc`.
+        // Case `typing_into_a_focused_cell_reaches_the_owner_as_cell_edits`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
@@ -2133,7 +2165,7 @@ mod tests {
             assert_eq!(
                 cell_text(&doc, &t, 0, 0),
                 "hi",
-                "keystrokes splice into the cell's Text"
+                "keystrokes reach the cell's Text through the owner"
             );
         }
 

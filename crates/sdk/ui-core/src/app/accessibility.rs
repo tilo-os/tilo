@@ -584,12 +584,11 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let context = crate::undo::take_commit_context(self.root_widget.as_mut());
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
             Some(self.collaboration.local_author.clone()),
-            context,
+            None,
         );
         self.focus_history.stable_focus_idx = self
             .focused_node

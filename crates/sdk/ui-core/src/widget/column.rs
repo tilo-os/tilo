@@ -251,8 +251,7 @@ impl Widget for Column {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -635,19 +634,6 @@ impl Widget for Column {
         self.descendant_caches_released = true;
         for child in &mut self.children {
             child.release_scene_cache();
-        }
-    }
-}
-
-impl crate::undo::UndoPoints for Column {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
         }
     }
 }

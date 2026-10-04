@@ -10,14 +10,10 @@ struct HostedPumpProbe {
     syncs: std::rc::Rc<Cell<usize>>,
     pending_label: std::rc::Rc<RefCell<Option<String>>>,
     label: String,
-    commit: std::rc::Rc<Cell<bool>>,
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
-    crate::provides!(
-        dyn crate::resources::PublishesResources,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::resources::PublishesResources);
 
     crate::testing::inert_widget_methods!(
         unregistered_leaf_layout,
@@ -34,15 +30,6 @@ impl Widget for HostedPumpProbe {
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
-    }
-}
-
-impl crate::undo::UndoPoints for HostedPumpProbe {
-    fn needs_commit(&self) -> bool {
-        self.commit.get()
-    }
-    fn on_commit(&mut self) {
-        self.commit.set(false);
     }
 }
 
@@ -86,7 +73,6 @@ struct HostedPumpFixture {
     calls: std::rc::Rc<Cell<usize>>,
     syncs: std::rc::Rc<Cell<usize>>,
     pending_label: std::rc::Rc<RefCell<Option<String>>>,
-    commit: std::rc::Rc<Cell<bool>>,
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
 }
@@ -119,7 +105,6 @@ impl HostedPumpFixture {
         let calls = std::rc::Rc::new(Cell::new(0));
         let syncs = std::rc::Rc::new(Cell::new(0));
         let pending_label = std::rc::Rc::new(RefCell::new(None));
-        let commit = std::rc::Rc::new(Cell::new(false));
         let mut app = App::from_scoped_parts_with_controlled_inputs(
             scope,
             State::new(),
@@ -128,7 +113,6 @@ impl HostedPumpFixture {
                 syncs: syncs.clone(),
                 pending_label: pending_label.clone(),
                 label: "Before".into(),
-                commit: commit.clone(),
                 actions,
             }),
         );
@@ -148,7 +132,6 @@ impl HostedPumpFixture {
             calls,
             syncs,
             pending_label,
-            commit,
             sent,
             events,
         };
@@ -253,20 +236,6 @@ fn hosted_pump_queue_only_notification_updates_without_forced_sync() {
     );
     assert!(!report.synced, "a queue wake alone is not model-dirty");
     assert_eq!(fixture.syncs.get(), syncs);
-    fixture.assert_idle();
-}
-
-#[test]
-fn hosted_pump_local_commit_refreshes_resources() {
-    let mut fixture = HostedPumpFixture::new(1);
-    // A widget-local edit with no wake: only needs_commit reports it.
-    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
-    fixture.commit.set(true);
-    let report = fixture.pump();
-    assert!(report.published);
-    assert_eq!(fixture.labels().len(), 3);
-    // The commit set needs_sync; the next pass syncs it like the window runner.
-    assert!(fixture.pump().synced);
     fixture.assert_idle();
 }
 

@@ -757,7 +757,6 @@ fn execute_owned(
                 }
                 if state.pending.is_some()
                     || doc.pending_ops() != 0
-                    || crate::undo::needs_commit(root)
                     || !history.matches_recorded_frontier(doc)
                 {
                     return Err(refused(

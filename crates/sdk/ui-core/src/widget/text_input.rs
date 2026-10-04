@@ -31,7 +31,7 @@ use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -218,21 +218,10 @@ pub struct TextInput {
     /// A programmatic/model change can alter multiline measurement without
     /// pretending to be a user edit through `take_dirty`.
     model_layout_dirty: bool,
-    /// Gates whether edits splice into `state`, materialising a missing path
-    /// lazily on the first effective edit.
-    crdt_bound: bool,
-    /// Action-owned parents can retain a bound text object for reconciliation
-    /// while keeping optimistic input entirely local until they dispatch their
-    /// own semantic operation.
-    direct_crdt_writes: bool,
-    /// Distinguishes an uninitialised binding (where a local initial value may
-    /// remain visible) from a path removed by undo or a remote model change.
-    path_was_present: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
     external_buffer: Option<Arc<Mutex<String>>>,
-    on_change_path: String,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
     /// Authoritative cosmic-text geometry for a visible, unmasked single-line
@@ -261,9 +250,9 @@ pub struct TextInput {
     /// Renders without the rounded-rect chrome, for block-editor cells that
     /// should read as document copy, not a form field.
     plain: bool,
-    /// Direct Automerge `Text` binding, wins over `on_change_path` — how
-    /// `BlockEditor` binds text nested inside a `List`, which a flat string
-    /// key can't address.
+    /// The Automerge `Text` this input shows, read on every sync. Edits stay
+    /// local for the owner to submit ([`Self::take_dirty`]); how
+    /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
     /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
@@ -434,7 +423,6 @@ impl TextInput {
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             drag_select: DragSelect::new(),
-            on_change_path: String::new(),
             last_mouse_pos: Point::ZERO,
             char_x_positions: Vec::new(),
             single_layout: None,
@@ -452,9 +440,6 @@ impl TextInput {
             last_notified_text: String::new(),
             local_state: None,
             model_layout_dirty: false,
-            crdt_bound: false,
-            direct_crdt_writes: true,
-            path_was_present: false,
             external_buffer: None,
             font_size_override: None,
             layout_text_scale: None,
@@ -530,24 +515,20 @@ impl TextInput {
         self.local_author = author;
     }
 
-    /// After binding, `sync` reads from `obj` regardless of the string-path mode.
+    /// Show the text object `obj`, read on every sync. What the user types
+    /// stays local until the owner takes it ([`Self::take_dirty`]) and
+    /// submits it as an action.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.local_state = None;
         self.bound_text = Some(obj);
-        self.crdt_bound = true;
     }
 
-    /// Detach an explicit nested-Text binding without changing live input state.
+    /// Stop showing a text object, keeping what the input shows.
     ///
-    /// A direct binding replaces any earlier local or flat-path mode. Detaching
-    /// therefore leaves the input intentionally unbound until an owner calls
-    /// [`Self::bind_text`] again; it does not revive a discarded fallback.
+    /// A binding replaces any earlier local mode, so the input stays unbound
+    /// until an owner calls [`Self::bind_text`] again.
     pub fn clear_text_binding(&mut self) {
-        if self.bound_text.take().is_none() {
-            return;
-        }
-        self.crdt_bound = false;
-        self.path_was_present = false;
+        self.bound_text = None;
     }
 
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
@@ -567,24 +548,19 @@ impl TextInput {
         let text = state
             .text(obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
-        if self.adopt_model_text(text) {
-            self.dirty = true;
-        }
+        // Showing the document's text is not a user edit.
+        self.adopt_model_text(text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         Ok(())
     }
 
     /// Replace text read from model state without reporting a user edit.
-    /// Returns whether the value changed so direct bindings can preserve
-    /// their existing reconciliation signal.
-    fn adopt_model_text(&mut self, text: String) -> bool {
-        if self.text == text {
-            return false;
+    fn adopt_model_text(&mut self, text: String) {
+        if self.text != text {
+            self.text = text;
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
-        self.text = text;
-        self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
-        true
     }
 
     /// Capture the resolved theme scale before a renderer-backed measurement.
@@ -592,54 +568,6 @@ impl TextInput {
         if self.layout_text_scale != Some(text_scale) {
             self.layout_text_scale = Some(text_scale);
             self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
-        }
-    }
-
-    /// Keep the binding readable while an owning action bridge handles user writes.
-    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
-        self.direct_crdt_writes = enabled;
-    }
-
-    fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
-        if !self.direct_crdt_writes {
-            return None;
-        }
-        if self.action.is_some() {
-            return None;
-        }
-        if let Some(obj) = &self.bound_text {
-            return Some(obj.clone());
-        }
-        if self.crdt_bound
-            && let Ok(Some((Value::Object(ObjType::Text), id))) =
-                state.get(root, self.on_change_path.as_str())
-        {
-            return Some(id);
-        }
-        None
-    }
-
-    /// Materialise a path-bound text object after the first effective edit.
-    ///
-    /// Path bindings deliberately stay absent while the user only focuses or
-    /// navigates the field. When an edit was applied locally without an
-    /// existing Automerge text object, publish the complete resulting value as
-    /// one text object so sibling document readers observe that first edit.
-    fn persist_first_path_edit(&self, previous_text: &str, state: &mut AutoCommit, root: &ObjId) {
-        if self.action.is_some()
-            || !self.crdt_bound
-            || self.bound_text.is_some()
-            || self.on_change_path.is_empty()
-            || self.text == previous_text
-            || self.resolve_text_obj(state, root).is_some()
-        {
-            return;
-        }
-        let Ok(obj) = state.put_object(root, self.on_change_path.as_str(), ObjType::Text) else {
-            return;
-        };
-        if !self.text.is_empty() {
-            let _ = state.splice_text(&obj, 0, 0, self.text.as_str());
         }
     }
 
@@ -1046,11 +974,9 @@ impl TextInput {
         display
     }
 
-    /// No CRDT integration — for a field with no CRDT path to spend.
+    /// A field with no document binding.
     pub fn local() -> Self {
-        let mut s = Self::new(Vec::new());
-        s.crdt_bound = false;
-        s
+        Self::new(Vec::new())
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
@@ -1071,22 +997,6 @@ impl TextInput {
         let (value, binding) = crate::local_state::LocalBinding::new(state);
         let mut input = Self::local().with_initial_value(&value);
         input.local_state = Some(binding);
-        input
-    }
-
-    /// Create an input bound to one root-level document string.
-    ///
-    /// The path may contain either an Automerge string scalar or `Text`
-    /// object. The first effective edit upgrades a missing path (or scalar)
-    /// to collaborative `Text`; focus and selection alone do not materialise
-    /// model state. Pair with
-    /// [`Text::from_document_string`](super::Text::from_document_string) for a
-    /// synchronized read-only view without app-owned callbacks.
-    pub fn from_document_string(path: impl Into<String>) -> Self {
-        let path = path.into();
-        let mut input = Self::local();
-        input.crdt_bound = !path.is_empty();
-        input.on_change_path = path;
         input
     }
 
@@ -1194,20 +1104,16 @@ impl TextInput {
         }
     }
 
-    /// Local-mode only. In CRDT-bound mode prefer a real key event instead,
-    /// so the splice carries authorship marks.
+    /// Insert `s` at the caret as the user's edit.
     pub fn insert_at_cursor(&mut self, s: &str) {
-        // `insert_str` only touches the CRDT when given an object id.
-        let mut sink = AutoCommit::new();
-        self.insert_str(s, &mut sink, None);
+        self.insert_str(s);
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
     }
 
     /// Delete the selected text in a host-owned local projection.
     pub(super) fn delete_local_selection(&mut self) {
-        let mut sink = AutoCommit::new();
-        self.delete_selection(&mut sink, None);
+        self.delete_selection();
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
     }
@@ -2701,26 +2607,12 @@ impl TextInput {
         self.reveal.set_field_id(id);
     }
 
-    /// Bind this input to one root-level document string.
-    ///
-    /// Prefer [`Self::from_document_string`] when constructing a new field;
-    /// this builder remains useful when the rest of the input is assembled
-    /// dynamically first.
-    #[must_use]
-    pub fn with_on_change_path(mut self, path: &str) -> Self {
-        self.local_state = None;
-        self.on_change_path = path.to_string();
-        self.crdt_bound = !path.is_empty();
-        self
-    }
-
     /// Mirror edits into caller-owned process-local memory without creating a
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
         self.local_state = None;
         self.external_buffer = Some(buffer);
-        self.crdt_bound = false;
         self
     }
 
@@ -3100,33 +2992,16 @@ impl TextInput {
         self.goal_x = None;
     }
 
-    /// Apply an [`Edit`] from the core to the mirror and, when bound, the
-    /// CRDT text, stamping the local author over inserted text. Returns
-    /// whether the edit landed.
-    fn apply_edit(&mut self, edit: &Edit, state: &mut AutoCommit, obj_id: Option<&ObjId>) -> bool {
+    /// Apply an [`Edit`] from the core to the shown text, for the owner to
+    /// take as the user's edit. Returns whether the edit landed.
+    fn apply_edit(&mut self, edit: &Edit) -> bool {
         if edit.is_noop() {
             return false;
         }
-        let Some(splice) = edit.char_splice(&self.text) else {
+        if edit.char_splice(&self.text).is_none() {
             // Computed against text that has since moved under the caret.
             self.clamp_to_text();
             return false;
-        };
-        if let Some(obj_id) = obj_id {
-            edit.splice_automerge(state, obj_id, &self.text);
-            // Latest-wins per position, so a peer typing into another's text
-            // splits their run correctly.
-            if let Some(author) = &self.local_author
-                && splice.inserted > 0
-            {
-                let mark = automerge::marks::Mark::new(
-                    AUTHOR_MARK.to_string(),
-                    author.clone(),
-                    splice.at,
-                    splice.at.saturating_add(splice.inserted),
-                );
-                let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
-            }
         }
         edit.apply(&mut self.text);
         self.goal_x = None;
@@ -3136,29 +3011,29 @@ impl TextInput {
     }
 
     /// No-op if there's no selection.
-    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn delete_selection(&mut self) {
         if !self.core.has_selection() {
             return;
         }
         let edit = self.core.delete_selection();
-        self.apply_edit(&edit, state, obj_id);
+        self.apply_edit(&edit);
     }
 
-    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn insert_str(&mut self, s: &str) {
         let edit = self.core.insert(s);
-        self.apply_insert(&edit, state, obj_id);
+        self.apply_insert(&edit);
     }
 
-    fn apply_insert(&mut self, edit: &Edit, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn apply_insert(&mut self, edit: &Edit) {
         if edit.inserted.is_empty() {
             return;
         }
         self.last_autocorrection = None;
-        self.apply_edit(edit, state, obj_id);
+        self.apply_edit(edit);
     }
 
     /// `width == 0` removes a single leading whitespace char instead of a tab-stop.
-    fn outdent(&mut self, width: usize, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn outdent(&mut self, width: usize) {
         let caret = self.core.caret();
         let Some(before_caret) = self.text.get(..caret) else {
             return;
@@ -3187,7 +3062,7 @@ impl TextInput {
             removed: remove,
             inserted: String::new(),
         };
-        if self.apply_edit(&edit, state, obj_id) {
+        if self.apply_edit(&edit) {
             self.core
                 .set_caret(caret.saturating_sub(remove).max(line_start));
         }
@@ -3218,24 +3093,24 @@ impl TextInput {
         }
     }
 
-    fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn do_cut(&mut self) {
         if let Some(s) = self.shareable_selection() {
             let owned = s.to_string();
             // Delete only once the text is on a clipboard; a failed copy
             // must not lose the selection.
             if crate::text_selection::clipboard_copy_accepted(&owned) {
-                self.delete_selection(state, obj_id);
+                self.delete_selection();
             }
         }
     }
 
     /// Single-line strips all control characters; multiline keeps newlines
     /// (normalising `\r\n`/`\r` to `\n`) and tabs.
-    fn do_paste(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn do_paste(&mut self) {
         if let Some(paste) = clipboard_paste() {
             let cleaned = self.clean_pasted_text(&paste);
             if !cleaned.is_empty() {
-                self.insert_str(&cleaned, state, obj_id);
+                self.insert_str(&cleaned);
             }
         }
     }
@@ -3280,11 +3155,7 @@ impl TextInput {
         self.field_allows_spelling() && crate::text_assistance::preferences().check_spelling
     }
 
-    fn autocorrect_previous_word(
-        &mut self,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) -> Option<Autocorrection> {
+    fn autocorrect_previous_word(&mut self) -> Option<Autocorrection> {
         if !self.autocorrect_enabled() || self.has_selection() || self.core.caret() == 0 {
             return None;
         }
@@ -3301,7 +3172,7 @@ impl TextInput {
         let (start, end) = (preview.start, preview.end);
         let (original, replacement) = (preview.original, preview.replacement);
         self.core.set_selection(start, end);
-        self.insert_str(&replacement, state, obj_id);
+        self.insert_str(&replacement);
         let replacement_end = start.saturating_add(replacement.len());
         Some(Autocorrection {
             start,
@@ -3413,7 +3284,7 @@ impl TextInput {
     }
 
     /// Replace the previewed word with its correction (a click on the chip).
-    fn accept_suggestion(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn accept_suggestion(&mut self) -> bool {
         let Some(preview) = self.autocorrection_preview.take() else {
             return false;
         };
@@ -3421,13 +3292,8 @@ impl TextInput {
             self.clear_suggestion();
             return false;
         }
-        let previous_text = self.text.clone();
-        let obj_id = self.resolve_text_obj(state, root);
         self.core.set_selection(preview.start, preview.end);
-        self.insert_str(&preview.replacement, state, obj_id.as_ref());
-        if obj_id.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
-        }
+        self.insert_str(&preview.replacement);
         self.clear_suggestion();
         self.suggestion_chip = None;
         self.spell_cache_key = None;
@@ -3454,26 +3320,16 @@ impl TextInput {
         })
     }
 
-    fn insert_word_boundary(
-        &mut self,
-        boundary: &str,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) {
-        let correction = self.autocorrect_previous_word(state, obj_id);
-        self.insert_str(boundary, state, obj_id);
+    fn insert_word_boundary(&mut self, boundary: &str) {
+        let correction = self.autocorrect_previous_word();
+        self.insert_str(boundary);
         if let Some(mut correction) = correction {
             correction.boundary_end = self.core.caret();
             self.last_autocorrection = Some(correction);
         }
     }
 
-    fn undo_last_autocorrection(
-        &mut self,
-        remove_boundary: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) -> bool {
+    fn undo_last_autocorrection(&mut self, remove_boundary: bool) -> bool {
         let Some(correction) = self.last_autocorrection.clone() else {
             return false;
         };
@@ -3496,7 +3352,7 @@ impl TextInput {
             correction.end
         };
         self.core.set_selection(correction.start, replace_end);
-        self.insert_str(&correction.original, state, obj_id);
+        self.insert_str(&correction.original);
         true
     }
 
@@ -3775,19 +3631,14 @@ impl TextInput {
     }
 
     /// Out-of-range / separator rows are ignored.
-    fn dispatch_context_action(
-        &mut self,
-        idx: usize,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) -> bool {
+    fn dispatch_context_action(&mut self, idx: usize) -> bool {
         let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
         match action {
-            CtxAction::Cut => self.do_cut(state, obj_id),
+            CtxAction::Cut => self.do_cut(),
             CtxAction::Copy => self.do_copy(),
-            CtxAction::Paste => self.do_paste(state, obj_id),
+            CtxAction::Paste => self.do_paste(),
             CtxAction::SelectAll => self.do_select_all(),
             CtxAction::ApplySpelling {
                 start,
@@ -3795,7 +3646,7 @@ impl TextInput {
                 replacement,
             } => {
                 self.core.set_selection(start, end);
-                self.insert_str(&replacement, state, obj_id);
+                self.insert_str(&replacement);
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
@@ -3814,7 +3665,7 @@ impl TextInput {
                 self.refresh_spelling();
             }
             CtxAction::UndoAutocorrection => {
-                let _ = self.undo_last_autocorrection(false, state, obj_id);
+                let _ = self.undo_last_autocorrection(false);
             }
             CtxAction::TextAction(index) => {
                 if let (Some(action), Some((start, end)), Some(selected)) = (
@@ -3935,7 +3786,7 @@ impl Widget for TextInput {
     }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = crate::doc::document(state, root);
+        let (state, _) = crate::doc::document(state, root);
         let local_value = self
             .local_state
             .as_mut()
@@ -3951,44 +3802,9 @@ impl Widget for TextInput {
             value.zeroize();
             value.push_str(&self.text);
         }
-        // Directly-bound Text wins over the string-path mode entirely.
         if self.bound_text.is_some() {
             let _ = self.adopt_bound_text(state);
-            return;
         }
-        if !self.crdt_bound {
-            return;
-        }
-        match state.get(root, self.on_change_path.as_str()) {
-            Ok(Some((val, obj_id))) => {
-                self.path_was_present = true;
-                match val {
-                    Value::Scalar(s) => {
-                        if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                            self.adopt_model_text(text.to_string());
-                        }
-                    }
-                    Value::Object(ObjType::Text) => {
-                        if let Ok(text) = state.text(&obj_id) {
-                            self.adopt_model_text(text);
-                        }
-                    }
-                    Value::Object(_) => {}
-                }
-            }
-            Ok(None) if self.path_was_present => {
-                self.path_was_present = false;
-                self.adopt_model_text(String::new());
-                self.core.set_caret(0);
-                self.goal_x = None;
-            }
-            Ok(None) | Err(_) => {
-                // Keep an app-provided initial value until the binding has
-                // existed. An error is likewise not evidence of deletion.
-            }
-        }
-        self.clamp_to_text();
-        self.last_notified_text.clone_from(&self.text);
     }
 
     fn build_layout(
@@ -4278,7 +4094,7 @@ impl Widget for TextInput {
             && self
                 .suggestion_chip
                 .is_some_and(|chip| chip.contains(self.last_mouse_pos))
-            && self.accept_suggestion(ctx.state, ctx.path)
+            && self.accept_suggestion()
         {
             *ctx.handled = true;
             self.notify_user_change();
@@ -4310,8 +4126,6 @@ impl Widget for TextInput {
                 self.handle_left_click(
                     *element_state,
                     *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
                     ctx.focus_target,
                     ctx.node_id,
                     ctx.handled,
@@ -4322,13 +4136,7 @@ impl Widget for TextInput {
                 button: MouseButton::Middle,
                 ..
             } if self.is_hovered && !self.effectively_disabled() => {
-                self.handle_middle_click(
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.handled,
-                );
+                self.handle_middle_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::Touch(touch) => {
                 self.handle_touch_event(
@@ -4354,13 +4162,11 @@ impl Widget for TextInput {
                     text.as_deref(),
                     *element_state,
                     *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
                     ctx.handled,
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
-                self.handle_ime_commit(t, ctx.state, ctx.path, ctx.handled);
+                self.handle_ime_commit(t, ctx.handled);
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(t, cursor)) => {
                 self.handle_ime_preedit(t, *cursor, ctx.handled);
@@ -4557,18 +4363,16 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _state: &mut AppModel,
+        _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let (state, root) = crate::doc::document(state, root);
 
         if self.effectively_disabled() {
             return false;
         }
         match action {
             Action::SetValue(value) => {
-                let previous_text = self.text.clone();
                 let cleaned = if self.multiline {
                     value
                         .replace("\r\n", "\n")
@@ -4580,16 +4384,12 @@ impl Widget for TextInput {
                     value.chars().filter(|c| !c.is_control()).collect()
                 };
                 self.core.select_all(&self.text);
-                let obj = self.resolve_text_obj(state, root);
                 // SetValue replaces the complete value, including an empty
                 // replacement. insert_str intentionally ignores empty typing.
                 if cleaned.is_empty() {
-                    self.delete_selection(state, obj.as_ref());
+                    self.delete_selection();
                 } else {
-                    self.insert_str(&cleaned, state, obj.as_ref());
-                }
-                if obj.is_none() {
-                    self.persist_first_path_edit(&previous_text, state, root);
+                    self.insert_str(&cleaned);
                 }
                 self.notify_user_change();
                 true
@@ -4748,12 +4548,6 @@ impl Widget for TextInput {
 }
 
 impl crate::undo::UndoPoints for TextInput {
-    fn needs_commit(&self) -> bool {
-        self.typing.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.typing.close();
-    }
     fn get_state(&self) -> Option<String> {
         if self.core.has_selection() {
             let anchor = self.core.anchor();
@@ -4791,18 +4585,10 @@ impl crate::undo::UndoPoints for TextInput {
 }
 
 impl crate::presence::capability::PublishesPresence for TextInput {
-    /// The widget's path, else the document field it edits (an input bound
-    /// with [`TextInput::with_on_change_path`] or
-    /// [`TextInput::from_document_string`] has no structural path), so peers
-    /// editing the same field share carets.
+    /// The widget's path, so peers editing the same field share carets.
     fn presence_key(&self) -> Option<PresenceKey> {
-        if !self.path.is_empty() {
-            return Some(PresenceKey::Widget {
-                path: self.path.clone(),
-            });
-        }
-        (!self.on_change_path.is_empty()).then(|| PresenceKey::Widget {
-            path: vec![PathSegment::Field(self.on_change_path.clone())],
+        (!self.path.is_empty()).then(|| PresenceKey::Widget {
+            path: self.path.clone(),
         })
     }
 
@@ -4867,16 +4653,10 @@ impl TextInput {
         let control_id = self.test_id().unwrap_or("text_input");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if self.crdt_bound || self.bound_text.is_some() {
+        } else if self.bound_text.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(
-                    if self.on_change_path.is_empty() {
-                        "<nested-text>".to_string()
-                    } else {
-                        self.on_change_path.clone()
-                    },
-                ),
+                kind: ControlBindingKind::CollaborativeDocument("<nested-text>".to_string()),
             }]
         } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
@@ -5391,8 +5171,6 @@ impl TextInput {
         &mut self,
         element_state: ElementState,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
@@ -5402,12 +5180,7 @@ impl TextInput {
             if element_state == ElementState::Pressed {
                 let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
                 if let Some(idx) = self.context_menu.item_at(point) {
-                    let previous_text = self.text.clone();
-                    let obj_id_opt = self.resolve_text_obj(state, root);
-                    self.dispatch_context_action(idx, state, obj_id_opt.as_ref());
-                    if obj_id_opt.is_none() {
-                        self.persist_first_path_edit(&previous_text, state, root);
-                    }
+                    self.dispatch_context_action(idx);
                 } else {
                     self.context_menu.close();
                 }
@@ -5451,28 +5224,17 @@ impl TextInput {
 
     fn handle_middle_click(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
     ) {
         let primary = clipboard_paste_primary();
-        self.handle_middle_click_with_primary(
-            primary.as_deref(),
-            state,
-            root,
-            focus_target,
-            node_id,
-            handled,
-        );
+        self.handle_middle_click_with_primary(primary.as_deref(), focus_target, node_id, handled);
     }
 
     fn handle_middle_click_with_primary(
         &mut self,
         primary: Option<&str>,
-        state: &mut AutoCommit,
-        root: &ObjId,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
@@ -5483,17 +5245,11 @@ impl TextInput {
         let position = self.resolve_position(self.last_mouse_pos);
         self.core.set_caret_position(position);
         self.goal_x = None;
-
-        let previous_text = self.text.clone();
-        let obj_id = self.resolve_text_obj(state, root);
         if let Some(paste) = primary {
             let cleaned = self.clean_pasted_text(paste);
             if !cleaned.is_empty() {
-                self.insert_str(&cleaned, state, obj_id.as_ref());
+                self.insert_str(&cleaned);
             }
-        }
-        if obj_id.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
         }
         *handled = true;
     }
@@ -5567,21 +5323,15 @@ impl TextInput {
         *handled = true;
     }
 
-    fn handle_enter_key(
-        &mut self,
-        shift: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_enter_key(&mut self, shift: bool, handled: &mut bool) {
         let correction = (self.enter_submits || self.multiline)
-            .then(|| self.autocorrect_previous_word(state, obj_id))
+            .then(|| self.autocorrect_previous_word())
             .flatten();
         if self.enter_submits && !shift {
             self.submit_requested = true;
             *handled = true;
         } else if self.multiline {
-            self.insert_str("\n", state, obj_id);
+            self.insert_str("\n");
             *handled = true;
         }
         if let Some(mut correction) = correction {
@@ -5591,61 +5341,37 @@ impl TextInput {
     }
 
     /// Only reached when `self.tab_spaces.is_some()` — otherwise the host keeps Tab for focus traversal.
-    fn handle_tab_key(
-        &mut self,
-        shift: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_tab_key(&mut self, shift: bool, handled: &mut bool) {
         let width = self.tab_spaces.unwrap_or(0);
         if shift {
-            self.outdent(width, state, obj_id);
+            self.outdent(width);
         } else if width == 0 {
-            self.insert_str("\t", state, obj_id);
+            self.insert_str("\t");
         } else {
             let spaces = " ".repeat(width);
-            self.insert_str(&spaces, state, obj_id);
+            self.insert_str(&spaces);
         }
         *handled = true;
     }
 
-    fn handle_backspace_key(
-        &mut self,
-        ctrl: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
-        if !ctrl && self.undo_last_autocorrection(true, state, obj_id) {
+    fn handle_backspace_key(&mut self, ctrl: bool, handled: &mut bool) {
+        if !ctrl && self.undo_last_autocorrection(true) {
             *handled = true;
             return;
         }
         self.last_autocorrection = None;
         let edit = self.core.delete_backward(&self.text, ctrl);
-        self.apply_edit(&edit, state, obj_id);
+        self.apply_edit(&edit);
         *handled = true;
     }
 
-    fn handle_delete_key(
-        &mut self,
-        ctrl: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_delete_key(&mut self, ctrl: bool, handled: &mut bool) {
         let edit = self.core.delete_forward(&self.text, ctrl);
-        self.apply_edit(&edit, state, obj_id);
+        self.apply_edit(&edit);
         *handled = true;
     }
 
-    fn handle_ctrl_shortcut(
-        &mut self,
-        c: &str,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_ctrl_shortcut(&mut self, c: &str, handled: &mut bool) {
         let lc = c.to_lowercase();
         match lc.as_str() {
             "a" => {
@@ -5657,11 +5383,11 @@ impl TextInput {
                 *handled = true;
             }
             "x" => {
-                self.do_cut(state, obj_id);
+                self.do_cut();
                 *handled = true;
             }
             "v" => {
-                self.do_paste(state, obj_id);
+                self.do_paste();
                 *handled = true;
             }
             _ => {}
@@ -5719,8 +5445,6 @@ impl TextInput {
         text: Option<&str>,
         element_state: ElementState,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
         handled: &mut bool,
     ) {
         if element_state != ElementState::Pressed {
@@ -5735,9 +5459,6 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        let previous_text = self.text.clone();
-        let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
-        let obj_id = obj_id_opt.as_ref();
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
@@ -5754,51 +5475,40 @@ impl TextInput {
             }
             Key::Named(NamedKey::Home) => self.handle_home(shift, ctrl, handled),
             Key::Named(NamedKey::End) => self.handle_end(shift, ctrl, handled),
-            Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, state, obj_id, handled),
+            Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, handled),
             Key::Named(NamedKey::Tab) if self.tab_spaces.is_some() => {
-                self.handle_tab_key(shift, state, obj_id, handled);
+                self.handle_tab_key(shift, handled);
             }
             Key::Named(NamedKey::Backspace) => {
-                self.handle_backspace_key(ctrl, state, obj_id, handled);
+                self.handle_backspace_key(ctrl, handled);
             }
-            Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, state, obj_id, handled),
+            Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, handled),
             Key::Named(NamedKey::Space) => {
-                self.insert_word_boundary(" ", state, obj_id);
+                self.insert_word_boundary(" ");
                 *handled = true;
             }
             Key::Character(c) if ctrl => {
-                self.handle_ctrl_shortcut(c.as_str(), state, obj_id, handled);
+                self.handle_ctrl_shortcut(c.as_str(), handled);
             }
             _ => {
                 if let Some(t) = text
                     && !t.chars().all(char::is_control)
                 {
                     if t.chars().next().is_some_and(is_autocorrect_boundary) {
-                        self.insert_word_boundary(t, state, obj_id);
+                        self.insert_word_boundary(t);
                     } else {
-                        self.insert_str(t, state, obj_id);
+                        self.insert_str(t);
                     }
                     *handled = true;
                 }
             }
         }
-        if obj_id_opt.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
-        }
     }
 
-    fn handle_ime_commit(
-        &mut self,
-        t: &str,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-    ) {
+    fn handle_ime_commit(&mut self, t: &str, handled: &mut bool) {
         if !self.is_focused {
             return;
         }
-        let previous_text = self.text.clone();
-        let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         let trailing_boundary = t
             .char_indices()
             .next_back()
@@ -5811,22 +5521,15 @@ impl TextInput {
             if let Some(prefix) = t.get(..boundary_at)
                 && !prefix.is_empty()
             {
-                self.insert_str(prefix, state, obj_id_opt.as_ref());
+                self.insert_str(prefix);
             }
             let mut encoded = [0; 4];
-            self.insert_word_boundary(
-                boundary.encode_utf8(&mut encoded),
-                state,
-                obj_id_opt.as_ref(),
-            );
+            self.insert_word_boundary(boundary.encode_utf8(&mut encoded));
             *handled = true;
         } else {
             let edit = self.core.commit(t);
-            self.apply_insert(&edit, state, obj_id_opt.as_ref());
+            self.apply_insert(&edit);
             *handled = true;
-        }
-        if obj_id_opt.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
         }
     }
 

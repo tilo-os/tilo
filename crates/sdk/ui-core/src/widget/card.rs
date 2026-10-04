@@ -133,8 +133,6 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
 }
 
 impl Widget for Card {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
@@ -287,15 +285,6 @@ impl Widget for Card {
     }
 }
 
-impl crate::undo::UndoPoints for Card {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.inner.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.inner.as_mut());
-    }
-}
-
 // ---------------------------------------------------------------------------
 // CardGrid — a responsive grid of equal, aligned cards.
 // ---------------------------------------------------------------------------
@@ -421,8 +410,6 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
@@ -562,19 +549,6 @@ impl Widget for CardGrid {
             dirty |= card.take_structure_dirty();
         }
         dirty
-    }
-}
-
-impl crate::undo::UndoPoints for CardGrid {
-    fn needs_commit(&self) -> bool {
-        self.cards
-            .iter()
-            .any(|c| crate::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for card in &mut self.cards {
-            crate::undo::on_commit(card.as_mut());
-        }
     }
 }
 

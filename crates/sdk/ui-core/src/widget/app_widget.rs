@@ -1557,17 +1557,6 @@ mod component_adapter {
     }
 
     impl crate::undo::UndoPoints for BoundAppWidget {
-        fn needs_commit(&self) -> bool {
-            // Consumed under the canonical record admission.
-            false
-        }
-        fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-            // Consumed under the canonical record admission.
-            None
-        }
-        fn on_commit(&mut self) {
-            // Consumed under the canonical record admission.
-        }
         fn get_state(&self) -> Option<String> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

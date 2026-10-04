@@ -18,7 +18,6 @@ impl Fixture {
             Block::table(source, true),
             Block::paragraph("After"),
         ]);
-        editor.set_action_interception(true);
         let mut fixture = Self {
             editor: crate::component_support::framed_block_editor(
                 editor,
@@ -78,10 +77,9 @@ impl Fixture {
         event: WindowEvent,
         modifiers: ModifiersState,
     ) -> Vec<ui::widget::BlockEditOp> {
-        self.editor.begin_action_intercept();
         Framed::harness_mut(&mut self.editor)
             .dispatch_to_root_with(&event, &Modifiers::from(modifiers));
-        let ops = self.editor.take_intercepted_ops();
+        let ops = self.editor.take_edit_ops();
         self.paint();
         ops
     }

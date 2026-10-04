@@ -2874,18 +2874,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        if idle_model.local_commit {
-            if let Some(origin) = self.native_input_origin {
-                crate::native_scenario::log::emit_json(
-                    "tilo-native-commit-redraw",
-                    serde_json::json!({
-                        "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
-                        "at_us": origin.elapsed().as_micros(),
-                    }),
-                );
-            }
-        }
-
         if app.reconcile_fullscreen(&window) {
             request_primary_redraw();
         }

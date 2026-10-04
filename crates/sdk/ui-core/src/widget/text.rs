@@ -233,10 +233,8 @@ impl Text {
         text
     }
 
-    /// Display a string scalar or Automerge `Text` object stored under `key`.
-    /// This is the zero-boilerplate companion to
-    /// [`TextInput::from_document_string`](super::TextInput::from_document_string)
-    /// using the same key; use [`Self::from_document`] for projections.
+    /// Display a string scalar or Automerge `Text` object stored under `key`;
+    /// use [`Self::from_document`] for projections.
     pub fn from_document_string(key: impl Into<String>) -> Self {
         use automerge::{ObjType, ReadDoc, ScalarValue, Value};
 
@@ -758,8 +756,7 @@ impl Text {
 impl Widget for Text {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1043,12 +1040,6 @@ impl Widget for Text {
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
-    }
-}
-
-impl crate::undo::UndoPoints for Text {
-    fn needs_commit(&self) -> bool {
-        false
     }
 }
 
