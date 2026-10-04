@@ -16,8 +16,8 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState,
     ListRow, ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyList, Row,
-    Scrollable, Section, SegmentedStyle, Spacer, StatGroup, StatTile, Text, ToggleGroup, Tone,
-    Widget,
+    Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile, Text, ToggleGroup,
+    Tone, Widget,
 };
 
 use crate::doc::{DetailTab, Section as Place};
@@ -54,6 +54,8 @@ pub(crate) enum Intent {
     PromptSubmit,
     PromptCancel,
     ClosePull,
+    /// Ask the engine again whether it is there.
+    Reconnect,
 }
 
 /// The queue controls write to and the app drains.
@@ -97,25 +99,25 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// The sections of the engine, with what each holds.
-pub(crate) fn section_list(engine: &Engine, selected: Place, intents: &Intents) -> NavList {
+/// The sections of the engine, with what each holds. An engine that did
+/// not answer holds nothing anyone counted, so its sections show no count.
+pub(crate) fn section_list(
+    engine: &Engine,
+    selected: Place,
+    counted: bool,
+    intents: &Intents,
+) -> NavList {
+    let item = |place: Place, icon: Icon, n: usize| {
+        let item = NavItem::new(place_id(place), place.label())
+            .icon(icon)
+            .without_actions();
+        if counted { item.count(count(n)) } else { item }
+    };
     let items = vec![
-        NavItem::new(place_id(Place::Containers), Place::Containers.label())
-            .icon(Icon::Archive)
-            .count(count(engine.containers.len()))
-            .without_actions(),
-        NavItem::new(place_id(Place::Images), Place::Images.label())
-            .icon(Icon::Layers)
-            .count(count(engine.images.len()))
-            .without_actions(),
-        NavItem::new(place_id(Place::Volumes), Place::Volumes.label())
-            .icon(Icon::HardDrive)
-            .count(count(engine.volumes.len()))
-            .without_actions(),
-        NavItem::new(place_id(Place::Distrobox), Place::Distrobox.label())
-            .icon(Icon::Terminal)
-            .count(count(engine.distroboxes.len()))
-            .without_actions(),
+        item(Place::Containers, Icon::Archive, engine.containers.len()),
+        item(Place::Images, Icon::Layers, engine.images.len()),
+        item(Place::Volumes, Icon::HardDrive, engine.volumes.len()),
+        item(Place::Distrobox, Icon::Terminal, engine.distroboxes.len()),
     ];
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("sections", items)])
@@ -151,7 +153,7 @@ pub(crate) fn sidebar(
     Box::new(
         Column::new()
             .with_no_padding()
-            .push(Box::new(section_list(engine, selected, intents)))
+            .push(Box::new(section_list(engine, selected, connected, intents)))
             .push(Box::new(Spacer::new()))
             .push(Box::new(footer)),
     )
@@ -274,8 +276,11 @@ pub(crate) fn container_list(
     let rows: Vec<Element> = listed
         .iter()
         .map(|c| {
+            // The state in words beside its dot, so it never rests on
+            // colour alone.
             let mut row = ListRow::new(format!("container-{}", c.id), c.name.clone())
                 .secondary(c.image.clone())
+                .meta(c.status.label())
                 .selected(selected == Some(c.id.as_str()))
                 .on_activate(intents.on(Intent::Select(Some(c.id.clone()))));
             row = with_status(row, c.status);
@@ -310,17 +315,20 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
             intents,
         ))
     } else {
-        engine_missing()
+        engine_missing(intents)
     }
 }
 
-/// Podman did not answer: say so, once.
-pub(crate) fn engine_missing() -> Element {
-    Box::new(
+/// Podman did not answer: say so, once, and offer to ask again.
+pub(crate) fn engine_missing(intents: &Intents) -> Element {
+    Box::new(ActOnEmpty::new(
         EmptyState::new("Podman isn't available")
             .with_icon(Icon::Archive)
-            .with_message("Install Podman or start its user service to manage containers here."),
-    )
+            .with_message("Install Podman or start its user service to manage containers here.")
+            .with_action("Try again"),
+        Intent::Reconnect,
+        intents,
+    ))
 }
 
 /// The content beside the list while nothing is chosen.
@@ -332,29 +340,61 @@ pub(crate) fn nothing_selected() -> Element {
     )
 }
 
-/// A stack whose children sit one `s1` step apart: a title and the line
-/// that belongs to it.
-struct Tight(Column);
+/// A stack whose gap and insets are spacing steps, resolved from the theme
+/// at layout so they follow the spacing scale.
+struct Stack {
+    column: Column,
+    gap: SpacingStep,
+    inset_x: SpacingStep,
+    inset_y: SpacingStep,
+    /// As wide as its widest child instead of its parent.
+    hug: bool,
+}
 
-impl Tight {
-    fn new(children: Vec<Element>) -> Self {
+impl Stack {
+    fn new(gap: SpacingStep, children: Vec<Element>) -> Self {
         let mut column = Column::new().with_intrinsic_height().with_no_padding();
         for child in children {
             column = column.push(child);
         }
-        Self(column)
+        Self {
+            column,
+            gap,
+            inset_x: SpacingStep::S0,
+            inset_y: SpacingStep::S0,
+            hug: false,
+        }
+    }
+
+    /// A title and the line that belongs to it, one `s1` step apart.
+    fn tight(children: Vec<Element>) -> Self {
+        Self::new(SpacingStep::S1, children)
+    }
+
+    /// Inset the stack's content from its edges.
+    fn inset(mut self, x: SpacingStep, y: SpacingStep) -> Self {
+        self.inset_x = x;
+        self.inset_y = y;
+        self
+    }
+
+    /// Take the width of the widest child, so lines inside a sideways
+    /// scroll keep their length instead of wrapping to the viewport.
+    fn hugging(mut self) -> Self {
+        self.hug = true;
+        self
     }
 }
 
-impl ui::widget::Decorator for Tight {
+impl ui::widget::Decorator for Stack {
     type Inner = Column;
 
     fn inner(&self) -> &Column {
-        &self.0
+        &self.column
     }
 
     fn inner_mut(&mut self) -> &mut Column {
-        &mut self.0
+        &mut self.column
     }
 
     fn build_layout(
@@ -363,8 +403,21 @@ impl ui::widget::Decorator for Tight {
         theme: &ui::theme::Theme,
         node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
-        self.0.set_gap(theme.tokens.spacing.s1);
-        self.0.build_layout(taffy, theme, node_map)
+        let spacing = &theme.tokens.spacing;
+        let (x, y) = (spacing.step(self.inset_x), spacing.step(self.inset_y));
+        self.column = std::mem::take(&mut self.column).with_horizontal_padding(x, x);
+        self.column.set_vertical_padding(y);
+        self.column.set_gap(spacing.step(self.gap));
+        let node = self.column.build_layout(taffy, theme, node_map);
+        if self.hug
+            && let Ok(style) = taffy.style(node)
+        {
+            let mut style = style.clone();
+            style.size.width = ui::taffy::Dimension::auto();
+            style.flex_shrink = 0.0;
+            let _ = taffy.set_style(node, style);
+        }
+        node
     }
 }
 
@@ -382,7 +435,7 @@ pub(crate) struct DetailModel<'a> {
 /// of detail.
 pub(crate) fn container_detail(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let c = model.container;
-    let title = Tight::new(vec![
+    let title = Stack::tight(vec![
         Box::new(
             Text::new(&c.name)
                 .with_role(TextRole::Title)
@@ -504,31 +557,132 @@ fn note(text: &str) -> Element {
     Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
 }
 
+/// How serious a log line is, read from the level word it carries
+/// (`WARN`, `[error]`, `level=warning`, `ERROR:`). Lines without one are
+/// plain output.
+pub(crate) fn line_severity(line: &str) -> Tone {
+    let mut tone = Tone::Neutral;
+    let words = line.split(|c: char| c.is_whitespace() || matches!(c, '=' | '[' | ']' | ':'));
+    for word in words {
+        match word.to_ascii_lowercase().as_str() {
+            "error" | "err" | "fatal" | "panic" | "crit" | "critical" | "emerg" | "alert" => {
+                return Tone::Danger;
+            }
+            "warn" | "warning" => tone = Tone::Warning,
+            _ => {}
+        }
+    }
+    tone
+}
+
+/// One line of output, in the ink of its severity: a warning or an error
+/// reads at a glance, as it does in a terminal.
+struct LogLine {
+    text: Text,
+    tone: Tone,
+    ink: Option<ui::vello::peniko::Color>,
+}
+
+impl LogLine {
+    fn new(line: &str) -> Self {
+        Self {
+            text: Text::new(line).with_role(TextRole::Code),
+            tone: line_severity(line),
+            ink: None,
+        }
+    }
+}
+
+impl ui::widget::Decorator for LogLine {
+    type Inner = Text;
+
+    fn inner(&self) -> &Text {
+        &self.text
+    }
+
+    fn inner_mut(&mut self) -> &mut Text {
+        &mut self.text
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: ui::vello::kurbo::Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if self.tone != Tone::Neutral {
+            // The status colour, made legible on the well the line sits on.
+            let colors = &theme.tokens.colors;
+            let ink = colors.ink_on_any(
+                &[colors.surfaces.content],
+                self.tone.colour(theme),
+                ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            );
+            if self.ink != Some(ink) {
+                self.ink = Some(ink);
+                self.text = std::mem::replace(&mut self.text, Text::new("")).with_color(ink);
+            }
+        }
+        self.text.draw(scene, transform, text, theme, presence);
+    }
+}
+
 fn logs(c: &Container) -> Element {
     if c.logs.is_empty() {
         return note("The container hasn't written any log output.");
     }
-    Box::new(Well::new().with_background().with_child(Box::new(
-        Text::new(&c.logs.join("\n")).with_role(TextRole::Code),
-    )))
+    output(c.logs.iter().map(String::as_str))
+}
+
+/// Output as the process wrote it, in a well: one line per line, never
+/// broken inside a word. A line wider than the column scrolls sideways.
+fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
+    let lines: Vec<Element> = lines
+        .map(|line| Box::new(LogLine::new(line)) as Element)
+        .collect();
+    Box::new(
+        Well::new().with_background().with_child(Box::new(
+            Scrollable::new_horizontal()
+                .fit_content_height()
+                .with_child(Box::new(Stack::new(SpacingStep::S0, lines).hugging())),
+        )),
+    )
 }
 
 /// One measured share: its name, its reading and the bar.
 fn usage(label: &str, reading: &str, fraction: f32) -> Element {
-    let line = Row::new()
-        .no_wrap()
-        .push(Box::new(Text::new(label).with_role(TextRole::Label)))
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(
-            Text::new(reading)
-                .with_role(TextRole::Caption)
-                .numeric()
-                .dimmed(),
-        ));
-    Box::new(Tight::new(vec![
-        Box::new(line),
+    Box::new(Stack::tight(vec![
+        line(label, reading),
         Box::new(ProgressBar::new(fraction.clamp(0.0, 1.0)).with_label(label)),
     ]))
+}
+
+/// A name and its reading on one line, the reading at the trailing edge.
+fn line(label: &str, reading: &str) -> Element {
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new(label).with_role(TextRole::Label)))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(
+                Text::new(reading)
+                    .with_role(TextRole::Caption)
+                    .numeric()
+                    .dimmed(),
+            )),
+    )
+}
+
+/// A tile for an amount of data: the figure, and its unit beside it.
+fn bytes_tile(label: &str, bytes: u64) -> Element {
+    let formatted = ui::format::bytes(bytes);
+    let tile = match formatted.rsplit_once(' ') {
+        Some((value, unit)) => StatTile::new(label, value).unit(unit),
+        None => StatTile::new(label, formatted.as_str()),
+    };
+    Box::new(tile)
 }
 
 fn stats(c: &Container) -> Element {
@@ -547,28 +701,21 @@ fn stats(c: &Container) -> Element {
         ui::format::bytes(s.mem_bytes)
     };
     let tiles: Vec<Element> = vec![
-        Box::new(StatTile::new("Received", ui::format::bytes(s.net_rx_bytes))),
-        Box::new(StatTile::new("Sent", ui::format::bytes(s.net_tx_bytes))),
-        Box::new(StatTile::new("Processes", s.pids.to_string())),
+        bytes_tile("Received", s.net_rx_bytes),
+        bytes_tile("Sent", s.net_tx_bytes),
+        bytes_tile("Read from disk", s.block_read_bytes),
+        bytes_tile("Written to disk", s.block_write_bytes),
     ];
-    let io = PropertyList::new(vec![
-        Property::new("Disk reads", ui::format::bytes(s.block_read_bytes))
-            .with_kind(TextKind::Numeric),
-        Property::new("Disk writes", ui::format::bytes(s.block_write_bytes))
-            .with_kind(TextKind::Numeric),
-    ]);
     stack(vec![
         Section::titled(
             "Usage",
             vec![
                 usage("CPU", &cpu, s.cpu_percent),
                 usage("Memory", &memory, s.mem_fraction()),
+                line("Processes", &s.pids.to_string()),
             ],
         ),
-        Section::titled(
-            "Activity",
-            vec![Box::new(StatGroup::new(tiles)), Box::new(io)],
-        ),
+        Section::titled("Activity", vec![Box::new(StatGroup::new(tiles))]),
     ])
 }
 
@@ -707,20 +854,30 @@ fn used_by(n: u32) -> String {
 }
 
 /// One page of a section: a sentence about the whole, then its list.
+///
+/// The list runs edge to edge like the containers list, so its rows' text
+/// lines up with the column's title; the sentence takes the same edge.
 fn page(summary: Option<String>, rows: Vec<Element>) -> Element {
-    let mut column = Column::new().with_intrinsic_height();
+    let mut children: Vec<Element> = Vec::new();
     if let Some(summary) = summary {
-        column = column.push(Box::new(
-            Text::new(&summary).with_role(TextRole::Body).dimmed(),
+        children.push(Box::new(
+            Stack::new(
+                SpacingStep::S0,
+                vec![Box::new(
+                    Text::new(&summary).with_role(TextRole::Body).dimmed(),
+                )],
+            )
+            .inset(SpacingStep::S3, SpacingStep::S3),
         ));
     }
-    Box::new(column.push(Box::new(Section::new(rows))))
+    children.push(Box::new(Section::new(rows)));
+    Box::new(Stack::new(SpacingStep::S0, children))
 }
 
 pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.images.is_empty() {
         if !engine.live && !controls {
-            return engine_missing();
+            return engine_missing(intents);
         }
         return Box::new(ActOnEmpty::new(
             EmptyState::new("No images")
@@ -784,7 +941,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
 pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.volumes.is_empty() {
         if !engine.live && !controls {
-            return engine_missing();
+            return engine_missing(intents);
         }
         return Box::new(ActOnEmpty::new(
             EmptyState::new("No volumes")
@@ -824,7 +981,7 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
 pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.distroboxes.is_empty() {
         if !engine.live && !controls {
-            return engine_missing();
+            return engine_missing(intents);
         }
         return Box::new(
             EmptyState::new("No distroboxes")
@@ -942,35 +1099,32 @@ impl ui::widget::Decorator for ActOnEmpty {
 
 /// The body of the pull sheet: the state of the pull and its latest output.
 pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
-    let bar = if pull.done || pull.failed.is_some() {
-        ProgressBar::new(1.0)
-    } else {
-        ProgressBar::indeterminate()
-    }
-    .with_label("Image pull");
-    let state = match &pull.failed {
-        Some(error) => format!("The pull failed: {error}"),
-        None if pull.done => "Finished.".to_owned(),
-        None => "Downloading layers.".to_owned(),
+    let state: Element = match &pull.failed {
+        Some(error) => Box::new(Text::new(error).with_role(TextRole::Body)),
+        None if pull.done => Box::new(
+            Text::new("The image is ready to create containers from.")
+                .with_role(TextRole::Body)
+                .dimmed(),
+        ),
+        // A pull reports layers, not a share of the whole: it spins
+        // instead of pretending to a fraction.
+        None => Box::new(
+            Row::new()
+                .no_wrap()
+                .push(Box::new(Spinner::new()))
+                .push(Box::new(
+                    Text::new("Downloading layers")
+                        .with_role(TextRole::Body)
+                        .dimmed(),
+                )),
+        ),
     };
-    let tail: Vec<&str> = pull
-        .lines
-        .iter()
-        .rev()
-        .take(8)
-        .rev()
-        .map(String::as_str)
-        .collect();
+    let skip = pull.lines.len().saturating_sub(8);
     Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .push(Box::new(bar))
-        .push(Box::new(
-            Text::new(&state).with_role(TextRole::Body).dimmed(),
-        ))
-        .push(Box::new(Well::new().with_background().with_child(
-            Box::new(Text::new(&tail.join("\n")).with_role(TextRole::Code)),
-        )))
+        .push(state)
+        .push(output(pull.lines.iter().skip(skip).map(String::as_str)))
 }
 
 // ---- the window ------------------------------------------------------------
@@ -993,7 +1147,6 @@ pub(crate) struct Model {
     /// Podman did not answer a live app: the pages say so instead of
     /// showing empty lists.
     pub missing: bool,
-    pub history_in_header: bool,
     /// Digests of what each column shows, taken once per publish so the
     /// columns compare a hash instead of the engine on every frame.
     pub list_digest: Digest,
@@ -1051,7 +1204,7 @@ pub(crate) fn window(parts: &Parts) -> ModelView<(Place, bool, bool)> {
     let p = parts.clone();
     ModelView::from_state_by(
         &parts.model,
-        |m: &Model| (m.view.section, m.controls, m.history_in_header),
+        |m: &Model| (m.view.section, m.controls, m.missing),
         move |m: &Model| -> Element { Box::new(window_shell(m, &p)) },
     )
 }
@@ -1059,23 +1212,34 @@ pub(crate) fn window(parts: &Parts) -> ModelView<(Place, bool, bool)> {
 fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
     let section = m.view.section;
     let intents = &parts.intents;
-    let mut shell = ui::widget::NavShell::new()
+    let shell = ui::widget::NavShell::new()
         .with_id("containers-shell")
         .with_pane_state(&parts.pane)
         .sidebar(sidebar_view(parts));
-    let history: Vec<Element> = if m.history_in_header {
-        vec![Box::new(ui::widget::history_button())]
-    } else {
-        Vec::new()
-    };
+    if m.missing {
+        // Nothing to list or search: the page says why, in one column.
+        return shell
+            .content(page_view(parts))
+            .content_header(section.label(), Vec::new());
+    }
     let mut actions = vec![search_button()];
+    if section == Place::Containers {
+        if m.controls {
+            // The list column is narrow; its one action is a glyph so the
+            // title keeps its room beside the sidebar toggle.
+            actions.push(Box::new(
+                Button::icon_only("containers-new", Icon::Plus, "New container")
+                    .role(ButtonRole::Primary)
+                    .on_view(intents.on(Intent::NewContainer)),
+            ));
+        }
+        return shell
+            .overview(list_view(parts))
+            .content(detail_view(parts))
+            .overview_header(section.label(), actions)
+            .content_header("", vec![close_detail(parts)]);
+    }
     let main = match section {
-        Place::Containers => Some((
-            "containers-new",
-            "New container",
-            Icon::Plus,
-            Intent::NewContainer,
-        )),
         Place::Images => Some((
             "images-pull",
             "Pull image",
@@ -1083,26 +1247,35 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             Intent::PullImage(None),
         )),
         Place::Volumes => Some(("volumes-new", "New volume", Icon::Plus, Intent::NewVolume)),
-        Place::Distrobox => None,
+        Place::Containers | Place::Distrobox => None,
     };
     if let Some((id, label, icon, intent)) = main
         && m.controls
     {
         actions.push(primary(id, label, icon, intent, intents));
     }
-    if section == Place::Containers {
-        shell = shell
-            .overview(list_view(parts))
-            .content(detail_view(parts))
-            .overview_header(section.label(), actions)
-            .content_header("", history);
-    } else {
-        actions.extend(history);
-        shell = shell
-            .content(page_view(parts))
-            .content_header(section.label(), actions);
-    }
     shell
+        .content(page_view(parts))
+        .content_header(section.label(), actions)
+}
+
+/// The detail's close control, while a container is chosen.
+fn close_detail(parts: &Parts) -> Element {
+    let intents = parts.intents.clone();
+    Box::new(ModelView::from_state_by(
+        &parts.model,
+        |m: &Model| m.view.selected.is_some(),
+        move |m: &Model| -> Element {
+            if m.view.selected.is_some() {
+                Box::new(
+                    Button::icon_only("detail-close", Icon::X, "Close details")
+                        .on_view(intents.on(Intent::Select(None))),
+                )
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        },
+    ))
 }
 
 fn sidebar_view(parts: &Parts) -> Element {
@@ -1153,7 +1326,7 @@ fn list_view(parts: &Parts) -> Element {
         },
         move |m: &Model| {
             if m.missing {
-                return engine_missing();
+                return engine_missing(&intents);
             }
             container_list(&m.engine, m.view.selected.as_deref(), m.controls, &intents)
         },
@@ -1193,7 +1366,7 @@ fn page_view(parts: &Parts) -> Element {
         |m: &Model| (m.view.section, m.page_digest, m.controls, m.missing),
         move |m: &Model| {
             if m.missing {
-                return engine_missing();
+                return engine_missing(&intents);
             }
             match m.view.section {
                 Place::Images => images_page(&m.engine, m.controls, &intents),

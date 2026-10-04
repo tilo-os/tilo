@@ -384,7 +384,7 @@ impl CreateField {
             CreateField::Ports => "8080:80, 8443:443",
             CreateField::Env => "TZ=UTC, LOG_LEVEL=info",
             CreateField::Volumes => "pgdata:/var/lib/postgresql/data",
-            CreateField::Command => "npm start",
+            CreateField::Command => "",
         }
     }
     /// Index of this field in [`Self::ALL`].

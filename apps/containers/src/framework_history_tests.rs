@@ -471,8 +471,15 @@ fn restore_and_return(driver: &mut ui::headless::Driver, selected: automerge::Ch
 }
 
 fn history_round_trip(driver: &mut ui::headless::Driver, selected: automerge::ChangeHash) {
-    driver.click_named("history-open").unwrap();
+    open_history(driver);
     restore_and_return(driver, selected);
+}
+
+/// Open History as the History shortcut does. The header row's control sits
+/// under a dialog's scrim while one is open, and these scenes open History
+/// with a dialog up; the shortcut reaches it from anywhere.
+fn open_history(driver: &mut ui::headless::Driver) {
+    driver.open_history().unwrap();
 }
 
 fn expect_request(
@@ -799,7 +806,7 @@ fn managed_history_retains_private_instances_scroll_engine_intent_and_channels()
     );
     assert_eq!(before.background_channels, (true, true));
 
-    driver.click_named("history-open").unwrap();
+    open_history(&mut driver);
     let suspended = driver.pending_history_controls();
     assert_single_armed_restart(&suspended);
     assert_eq!(suspended[0].status, PendingControlStatus::Suspended);
@@ -891,14 +898,11 @@ fn managed_history_retains_private_instances_scroll_engine_intent_and_channels()
     let crate::app::ControlledRuntimeRequest::Refresh(pull_refresh) = recv("pull refresh") else {
         panic!("expected refresh after retained pull completion");
     };
-    assert_eq!(
-        node_named_role(
-            &driver,
-            "Image pull",
-            ui::accesskit::Role::ProgressIndicator,
-        )
-        .value(),
-        Some("100%")
+    assert!(
+        driver
+            .a11y_node_named("Pulled quay.io/example/armed:1")
+            .is_some(),
+        "the retained pull finished in its sheet"
     );
 
     pull_refresh
@@ -999,7 +1003,7 @@ fn unreachable_private_route_saves_the_armed_restart_and_drops_the_hidden_emissi
         })
     });
     denied.set(true);
-    armed.driver.click_named("history-open").unwrap();
+    open_history(&mut armed.driver);
     // Mounted custody saves the armed restart without private traversal.
     assert_single_armed_restart(&armed.driver.pending_history_controls());
 
@@ -1031,7 +1035,7 @@ fn unreachable_private_route_saves_the_armed_restart_and_drops_the_hidden_emissi
 #[test]
 fn mounted_callbacks_drop_hidden_emissions_and_a_fresh_restart_confirms_once() {
     let (mut armed, _) = armed_driver(|root| root);
-    armed.driver.click_named("history-open").unwrap();
+    open_history(&mut armed.driver);
     assert_single_armed_restart(&armed.driver.pending_history_controls());
 
     armed.arm.set(true);
@@ -1055,8 +1059,8 @@ fn mounted_callbacks_drop_hidden_emissions_and_a_fresh_restart_confirms_once() {
         ..
     } = armed;
     let hide = driver
-        .a11y_node_named("Hide")
-        .expect("the running pull can be hidden");
+        .a11y_node_named("Close")
+        .expect("the running pull's sheet can be closed");
     driver
         .perform_a11y_action(hide, &ui::a11y::Action::Activate)
         .unwrap();
@@ -1178,15 +1182,15 @@ fn controlled_pull_stream_crosses_managed_history_once() {
     pull.line("Copying retained blob").unwrap();
     pull.done().unwrap();
     driver.relayout();
-    let progress = node_named_role(
-        &driver,
-        "Image pull",
-        ui::accesskit::Role::ProgressIndicator,
-    );
-    assert_eq!(progress.value(), Some("100%"));
     assert!(
         driver
-            .a11y_node_named("Pulling quay.io/example/retained:1")
+            .a11y_node_named("Pulled quay.io/example/retained:1")
+            .is_some(),
+        "the sheet says the pull finished"
+    );
+    assert!(
+        driver
+            .a11y_node_named("The image is ready to create containers from.")
             .is_some()
     );
     assert!(matches!(

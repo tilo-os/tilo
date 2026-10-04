@@ -398,10 +398,16 @@ pub struct ContainersApp {
     /// Document actions: local host for standalone / `--shots` / unit tests;
     /// framework dispatcher when [`ResourceSurface::attach`] runs.
     pub(crate) actions: crate::resource::ActionSink,
-    /// The History button sits in the window's header row. The History
-    /// fixtures leave it to the window's own History bar, which the shared
-    /// adapter conformance suite drives.
-    history_in_header: bool,
+}
+
+/// A press of Escape, whatever modifiers are held.
+fn is_escape(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event: key, .. }
+            if key.state == ElementState::Pressed
+                && key.logical_key == Key::Named(NamedKey::Escape)
+    )
 }
 
 fn controlled_input() -> TextInput {
@@ -426,9 +432,7 @@ impl ContainersApp {
         } else {
             (None, None)
         };
-        let mut app = Self::with_engine(engine, live, !live, bg_tx, bg_rx, TextInput::local);
-        app.history_in_header = true;
-        app
+        Self::with_engine(engine, live, !live, bg_tx, bg_rx, TextInput::local)
     }
 
     fn with_engine(
@@ -494,7 +498,6 @@ impl ContainersApp {
             view: ViewState::default(),
             motion_reduced: false,
             actions: crate::resource::ActionSink::default(),
-            history_in_header: false,
         }
     }
 
@@ -1078,14 +1081,18 @@ impl ContainersApp {
     fn rebuild_pull(&mut self) {
         let had = self.pull_dialog.is_some();
         self.pull_dialog = self.pull.as_ref().map(|pull| {
-            let close = self.intents.clone();
             let dismiss = self.intents.clone();
-            let settled = pull.done || pull.failed.is_some();
-            ModalDialog::new(format!("Pulling {}", pull.reference), view::pull_body(pull))
+            let title = if pull.failed.is_some() {
+                format!("Couldn't pull {}", pull.reference)
+            } else if pull.done {
+                format!("Pulled {}", pull.reference)
+            } else {
+                format!("Pulling {}", pull.reference)
+            };
+            // One way out: the close control (and Escape). Closing while the
+            // pull runs only hides it; a toast says when it finishes.
+            ModalDialog::new(title, view::pull_body(pull))
                 .with_test_id("containers-pull-dialog")
-                .primary_action(if settled { "Done" } else { "Hide" }, move || {
-                    close.push(Intent::ClosePull);
-                })
                 .on_dismiss(move || dismiss.push(Intent::ClosePull))
                 .open(true)
         });
@@ -1310,6 +1317,7 @@ impl ContainersApp {
                 self.pull = None;
                 self.rebuild_pull();
             }
+            Intent::Reconnect => self.spawn_refresh(),
         }
     }
 
@@ -1338,7 +1346,6 @@ impl ContainersApp {
                 controls: self.engine_controls_available(),
                 connected: self.connected(),
                 missing: self.live && !self.engine.live,
-                history_in_header: self.history_in_header,
                 ..view::Model::default()
             }
             .digested(),
@@ -1416,9 +1423,6 @@ impl ContainersApp {
             return;
         }
         let intent = match &key.logical_key {
-            Key::Named(NamedKey::Escape) if self.view.selected.is_some() => {
-                Some(Intent::Select(None))
-            }
             Key::Character(ch) => match ch.as_str() {
                 "1" => Some(Intent::ShowSection(Section::Containers)),
                 "2" => Some(Intent::ShowSection(Section::Images)),
@@ -1832,11 +1836,19 @@ impl Widget for ContainersApp {
             }
             *ctx.handled = true;
         } else {
+            let pane = self.parts.pane.get();
             if let Some(&node) = children.first() {
                 self.window
                     .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             }
-            if !*ctx.handled {
+            // Escape closes the detail the same way at every width: in a
+            // narrow window the shell takes it as Back, and the selection
+            // goes with the screen it was shown on.
+            let went_back = pane == NavPane::Content && self.parts.pane.get() == NavPane::Overview;
+            if is_escape(event) && self.view.selected.is_some() && (went_back || !*ctx.handled) {
+                self.intents.push(Intent::Select(None));
+                *ctx.handled = true;
+            } else if !*ctx.handled {
                 self.handle_keys(event, ctx);
             }
         }
@@ -2244,6 +2256,70 @@ mod tests {
         assert!(
             ViewDoc::selected(doc_of(&mut d)).is_none(),
             "Escape returns from the detail to the list"
+        );
+    }
+
+    #[test]
+    fn the_detail_closes_from_its_header_control() {
+        let mut d = driver(ContainersApp::new(false));
+        assert!(ViewDoc::selected(doc_of(&mut d)).is_some());
+        d.click_named("detail-close").unwrap();
+        assert!(
+            ViewDoc::selected(doc_of(&mut d)).is_none(),
+            "the close control clears the chosen container"
+        );
+        d.relayout();
+        assert!(
+            !d.targets().contains_key("detail-close"),
+            "with nothing chosen there is nothing to close"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_detail_in_a_narrow_window_too() {
+        let mut d = ui::headless::Driver::for_root(
+            ui::State::new(),
+            ContainersApp::new(false),
+            (390, 844),
+            ui::Theme::dark(),
+        );
+        assert!(ViewDoc::selected(doc_of(&mut d)).is_some());
+        assert_eq!(app_of(&mut d).parts.pane.get(), NavPane::Content);
+        d.key("Escape");
+        assert!(
+            ViewDoc::selected(doc_of(&mut d)).is_none(),
+            "Escape clears the selection as it does in a wide window"
+        );
+        assert_eq!(
+            app_of(&mut d).parts.pane.get(),
+            NavPane::Overview,
+            "and the list is in front again"
+        );
+    }
+
+    #[test]
+    fn log_lines_read_their_severity() {
+        use ui::widget::Tone;
+        assert_eq!(
+            view::line_severity("2026-06-30T13:05:01Z WARN  api::auth: 1 failed login"),
+            Tone::Warning
+        );
+        assert_eq!(
+            view::line_severity("WARNING: Console endpoint is listening on a dynamic port"),
+            Tone::Warning
+        );
+        assert_eq!(
+            view::line_severity("logger=sqlstore level=error msg=\"database locked\""),
+            Tone::Danger
+        );
+        assert_eq!(
+            view::line_severity("2026/06/30 09:14:01 [error] 1#1: open() failed"),
+            Tone::Danger
+        );
+        assert_eq!(
+            view::line_severity("api::http: GET /api/errors 200 12ms"),
+            Tone::Neutral,
+            "a word that only contains a level is not one"
         );
     }
 
