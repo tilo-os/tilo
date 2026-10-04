@@ -748,7 +748,7 @@ impl MailApp {
     fn build_shell(shared: &Shared, overview_title: &str) -> NavShell {
         let add_account = {
             let shared = shared.clone();
-            Button::icon_only("mail-add-account", ui::icons::Icon::Plus, "Add account").on_click(
+            Button::icon_only("mail-add-account", ui::icons::Icon::Plus, "Add account").on_view(
                 move || {
                     shared
                         .borrow_mut()
@@ -3549,13 +3549,19 @@ impl Widget for MailApp {
         )? {
             return Ok(Some(started));
         }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+        if self.answer_resource_operation(
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput::default(),
+            )));
+        }
+        // Not Mail's: a control's own operation (a header or sheet button).
+        ui::widget::start_in_children(self, op, doc, path)
     }
 
     fn poll_resource_operation(
