@@ -48,6 +48,7 @@ pub mod native_fixture;
 pub mod nearby_send;
 pub mod open_with;
 pub mod path_bar;
+pub mod places;
 pub mod places_sidebar;
 pub mod received_shares;
 pub mod recent;

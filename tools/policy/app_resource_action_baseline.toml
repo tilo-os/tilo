@@ -19,7 +19,6 @@
 # for every table is empty.
 
 [ratchets.app_action_host]
-"apps/file-explorer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
 
