@@ -137,6 +137,32 @@ TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/no-initrd
 [ -z "$(ls -A "$work/generator-booted")" ]
 echo 'ok: no root discovery units outside the initrd'
 
+# Exercise the encrypted production path with an attach implementation that
+# checks the actual options received by systemd-cryptsetup, not a source grep.
+cat >"$work/bin/encrypted" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat >"$work/bin/attach" <<'EOF'
+#!/bin/bash
+[ "$1" = attach ] && [ "$2" = root ] && [ "$4" = - ]
+case ",$5," in *,tries=0,*) ;; *) exit 1 ;; esac
+case ",$5," in *,timeout=0,*) ;; *) exit 1 ;; esac
+case ",$5," in *,password-cache=no,*) ;; *) exit 1 ;; esac
+case ",$5," in *,tpm2-device=auto,*) ;; *) exit 1 ;; esac
+case ",$5," in *,fido2-device=auto,*) ;; *) exit 1 ;; esac
+EOF
+chmod +x "$work/bin/encrypted" "$work/bin/attach"
+TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
+TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_TEST_DISK=disk0 \
+TILO_ROOT_TEST_PARTS="$esp tilo-root:$tilo_type" \
+TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
+TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/encrypted" \
+TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK=true \
+TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
+test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
+echo 'ok: encrypted root keeps retrying without cached failed passphrases and retains token unlock'
+
 # The install preflight binds both the PCR policy and the exact target UKI to
 # the offline authority. A signed policy beside a substituted UKI is refused.
 mkdir -p "$work/preflight/predictions"
