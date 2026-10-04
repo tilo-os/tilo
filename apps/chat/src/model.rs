@@ -110,7 +110,9 @@ pub struct Category {
     pub name: String,
     pub order: u32,
     /// Collapsed categories hide their channels in the sidebar (the
-    /// active channel still shows so you never lose your place).
+    /// active channel still shows so you never lose your place). Each
+    /// person's own ([`crate::preferences::ChatPreferences`]), not the
+    /// document's.
     pub collapsed: bool,
 }
 

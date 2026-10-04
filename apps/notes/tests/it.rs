@@ -36,14 +36,8 @@ mod offscreen_smoke;
 mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
-#[path = "page_file_io.rs"]
-mod page_file_io;
-#[path = "peer_caret_visual.rs"]
-mod peer_caret_visual;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
-#[path = "save_failure_status.rs"]
-mod save_failure_status;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -67,6 +61,8 @@ mod workspace_persistence;
 mod canonical_component;
 #[path = "support/component.rs"]
 mod component_support;
+#[path = "support/framework.rs"]
+mod framework_support;
 
 #[path = "canonical_actions.rs"]
 mod canonical_actions;

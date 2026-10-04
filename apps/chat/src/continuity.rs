@@ -251,6 +251,7 @@ mod tests {
     fn app_and_doc() -> (ChatApp, AutoCommit) {
         let mut app = ChatApp::new_ephemeral();
         let mut doc = AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
         Widget::sync(&mut app, &mut doc, &ROOT);
         (app, doc)
     }

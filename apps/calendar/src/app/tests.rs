@@ -1,6 +1,5 @@
 use super::*;
 use automerge::ROOT;
-use serial_test::serial;
 use ui::headless::Framed;
 
 impl CalendarApp {
@@ -448,38 +447,7 @@ fn user_edits_and_source_identity_persist_across_restart() {
 }
 
 #[test]
-#[serial]
 fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
-    // Case `import_reads_a_real_ics_file`.
-    {
-        // Import pulls the newest `.ics` from the transfer directory through
-        // the real parse path — not a bundled sample.
-        let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
-        let today = chrono::Local::now().date_naive();
-        std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
-
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        app.sync(&mut state, &automerge::ROOT);
-        let before = app.model.events.len();
-        app.apply_action(Action::Import, &mut state);
-        assert!(
-            app.model.events.len() > before,
-            "imported events landed in the model"
-        );
-        assert!(
-            app.model
-                .events
-                .iter()
-                .any(|e| e.title == "Quarterly all-hands"),
-            "the .ics file's event parsed in"
-        );
-        drop(env);
-        std::fs::remove_dir_all(&dir).ok();
-    }
     // Case `uuid_vtodo_import_preserves_identity_and_is_idempotent`.
     {
         let id = Uuid::new_v4();
@@ -553,37 +521,52 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
             assert!(CalDoc::read_model(&state.doc).tasks.is_empty());
         }
     }
-    // Case `resource_import_is_stable_until_invoked_then_commits_one_batch`.
-    {
-        let dir =
-            std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temporary transfer directory");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
-        let today = chrono::Local::now().date_naive();
-        std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today))
-            .expect("write fixture");
+}
 
-        let mut app =
-            ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-        let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {
-            app.state()
-                .events
-                .iter()
-                .filter(|event| event.title == "Quarterly all-hands")
-                .count()
-        };
-        assert_eq!(imported(&app), 0, "nothing is read before the import");
-        app.effect(&crate::resource::CalendarEffect::ImportLatestIcs)
-            .expect("the import runs");
-        app.settle();
-        assert_eq!(imported(&app), 1, "the file's events were imported");
-        assert!(app.undo(), "the import is one undo step");
-        assert_eq!(imported(&app), 0);
+/// A calendar file the person chooses imports as one undo step, and the
+/// calendar exports to a file they choose.
+#[test]
+fn a_chosen_ics_file_imports_as_one_undo_step_and_exports_again() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let invite = dir.path().join("invite.ics");
+    let today = chrono::Local::now().date_naive();
+    std::fs::write(&invite, crate::ics::sample_ics(today)).expect("write fixture");
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
 
-        drop(env);
-        std::fs::remove_dir_all(&dir).ok();
-    }
+    let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+    let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {
+        app.state()
+            .events
+            .iter()
+            .filter(|event| event.title == "Quarterly all-hands")
+            .count()
+    };
+    assert_eq!(imported(&app), 0, "nothing is read before the import");
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(invite));
+    app.effect(&crate::resource::CalendarEffect::ImportIcs)
+        .expect("the import runs");
+    app.settle();
+    assert_eq!(imported(&app), 1, "the chosen file's events were imported");
+
+    let exported = dir.path().join("exported.ics");
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(exported.clone()));
+    app.effect(&crate::resource::CalendarEffect::ExportIcs)
+        .expect("the export runs");
+    let body = std::fs::read_to_string(&exported).expect("export wrote the chosen file");
+    assert!(body.starts_with("BEGIN:VCALENDAR"), "a real iCalendar file");
+    assert!(body.contains("Quarterly all-hands"), "carrying the events");
+    assert_eq!(
+        recorder
+            .pick_requests()
+            .iter()
+            .map(|request| request.title().to_owned())
+            .collect::<Vec<_>>(),
+        ["Import a calendar", "Export calendar"]
+    );
+
+    assert!(app.undo(), "the import is one undo step");
+    assert_eq!(imported(&app), 0);
 }
 
 #[test]
@@ -2139,7 +2122,6 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
 }
 
 #[test]
-#[serial]
 fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
     // Case `escape_blurs_notes_before_dismissing_the_editor`.
     {
@@ -2157,12 +2139,7 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
     // Case `keyboard_shortcuts_switch_views_navigate_and_act`.
     {
         // Every shortcut goes through the production `Widget::handle_event` key
-        // path, not `apply_action`. 'e'/'i' touch the transfer dir, so redirect
-        // it to a temp dir first.
-        let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
+        // path, not `apply_action`.
 
         let mut h = Harness::new(1280, 800);
         // Close the demo's detail so the notes editor doesn't own keystrokes.
@@ -2209,16 +2186,6 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
         let (app, doc) = h.parts();
         app.apply_action(Action::CloseDetail, doc);
         h.relayout();
-
-        // 'e' exports through the keyboard: a real .ics lands in the transfer dir.
-        h.type_char("e");
-        assert!(
-            crate::store::newest_ics(&dir).is_some(),
-            "'e' exported an .ics through the key path"
-        );
-
-        drop(env);
-        std::fs::remove_dir_all(&dir).ok();
     }
     // Case `delete_key_in_the_title_field_does_not_delete_the_event`.
     {
@@ -3064,7 +3031,6 @@ fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
 // --- detail chips: colour / recurrence / reminder ----------------------
 
 #[test]
-#[serial]
 fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
     // Case `cycling_recurrence_updates_selected_event_and_mirrors_to_crdt`.
     {
@@ -3132,40 +3098,6 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
             ics.contains("TRIGGER:-PT30M"),
             "the reminder chip's value reaches the exported alarm"
         );
-    }
-    // Case `export_writes_a_real_ics_file_to_the_transfer_dir`.
-    {
-        let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
-
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        app.sync(&mut state, &automerge::ROOT);
-        app.apply_action(Action::Export, &mut state);
-
-        let written = crate::store::newest_ics(&dir).expect("export wrote an .ics file");
-        let body = std::fs::read_to_string(&written).unwrap();
-        assert!(body.starts_with("BEGIN:VCALENDAR"), "a real iCalendar file");
-        assert!(
-            body.contains("BEGIN:VEVENT"),
-            "carrying the exported events"
-        );
-        assert!(
-            app.status.as_deref().unwrap_or("").contains("Exported"),
-            "the status pill confirms the export"
-        );
-        assert!(
-            app.status
-                .as_deref()
-                .unwrap_or("")
-                .contains(&format!("{} tasks", app.model.tasks.len())),
-            "the confirmation truthfully includes the exported VTODO count"
-        );
-
-        drop(env);
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

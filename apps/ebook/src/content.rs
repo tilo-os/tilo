@@ -186,6 +186,55 @@ pub fn open_handed_book(
     Ok(HandedBook { book, content })
 }
 
+/// A book ready to join the shelf: parsed, its bytes where the shelf finds
+/// them again, and the row it joins with.
+pub struct Placed {
+    pub book: Book,
+    pub entry: LibraryEntry,
+    pub path: PathBuf,
+}
+
+/// Place a book a person chose by its contents where the library reads it
+/// again: on the shared workspace when this device has one, so peers read
+/// it too (collaborative by default, as an import is), else in `store`.
+///
+/// # Errors
+/// A reader-safe reason when the bytes are not a readable EPUB or nowhere
+/// keeps them.
+pub fn place_chosen_book(
+    bytes: &[u8],
+    store: Option<&tilo_content::ContentStore>,
+) -> Result<Placed, String> {
+    let book = parse_epub(bytes, 0, "").map_err(|error| error.to_string())?;
+    if let Ok(path) = write_shared_copy(bytes, &book.id) {
+        let (book, entry) = prepare_imported_book(&path, book);
+        return Ok(Placed { book, entry, path });
+    }
+    let handed = HandedBook {
+        book,
+        content: store
+            .map(|store| store.put(bytes))
+            .transpose()
+            .map_err(|error| format!("the book could not be kept: {error}"))?,
+    };
+    Ok(placed(handed))
+}
+
+/// A handed-over book as it joins the shelf.
+pub fn placed(mut handed: HandedBook) -> Placed {
+    handed.book.cover_tint = tint_for(&handed.book.id);
+    let entry = handed_book_entry(&handed);
+    let path = handed
+        .content
+        .as_deref()
+        .map_or_else(|| PathBuf::from(BUNDLED_PATH), content_path);
+    Placed {
+        book: handed.book,
+        entry,
+        path,
+    }
+}
+
 /// The library row for a handed-over book.
 pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
     LibraryEntry {

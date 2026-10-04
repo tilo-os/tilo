@@ -151,14 +151,14 @@ pub enum CalendarEffect {
     Sync,
     /// Export ICS
     ///
-    /// Writes every event and task to an iCalendar file in Downloads.
-    #[effect(device_only)]
+    /// Saves every event and task to an iCalendar file you choose.
+    #[effect(job, device_only)]
     ExportIcs,
-    /// Import latest ICS
+    /// Import ICS
     ///
-    /// Imports the newest iCalendar file in Downloads.
-    #[effect(device_only)]
-    ImportLatestIcs,
+    /// Imports the events and tasks of an iCalendar file you choose.
+    #[effect(job, device_only)]
+    ImportIcs,
     /// Prepare invitation in Mail
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;

@@ -103,6 +103,7 @@ pub struct HostContext {
     launch_arguments: Vec<String>,
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
+    private: bool,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -326,6 +327,7 @@ impl HostContext {
             launch_arguments: Vec::new(),
             handoff: None,
             launch_options: Vec::new(),
+            private: false,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -394,6 +396,16 @@ impl HostContext {
     /// The launch options the host handed over, once.
     pub fn take_launch_options(&mut self) -> Vec<LaunchOption> {
         std::mem::take(&mut self.launch_options)
+    }
+    /// Prepare the instance as a private window: its profile is thrown away
+    /// with the process, and nothing it shows reaches the person's other
+    /// windows, devices or collaborators.
+    pub fn provide_private(&mut self) {
+        self.private = true;
+    }
+    /// Whether the instance is a private window.
+    pub fn is_private(&self) -> bool {
+        self.private
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
@@ -821,6 +833,26 @@ impl AppComponent {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, None)
+    }
+    /// Register presentation for this component's document, as
+    /// [`Self::register_document_history`], and for the files of the mounted
+    /// filesystem it shows: every checked-file scope reads the file `files`
+    /// names.
+    /// # Errors
+    /// As [`Self::register_document_history`].
+    pub fn register_document_and_file_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        files: crate::history_mode::checked_files::FileHistorySource,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, Some(files))
+    }
+    fn register_history_of(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        files: Option<crate::history_mode::checked_files::FileHistorySource>,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         use crate::history_mode::{
             HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration,
         };
@@ -839,9 +871,13 @@ impl AppComponent {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } => {
-                    Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner)
-                }
+                HistoryPresentation::CheckedFiles { .. } => match &files {
+                    Some(source) => Ok(HistorySourceRegistration::CheckedFiles {
+                        scope: scope.key,
+                        source: source.clone(),
+                    }),
+                    None => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
+                },
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.history = Some(HistoryRegistration::new(definition, sources)?);

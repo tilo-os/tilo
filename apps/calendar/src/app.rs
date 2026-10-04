@@ -18,15 +18,14 @@
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!   shortcuts, and forward to the editor when notes are active.
 
-/// A user-named text file (an `.ics` in the transfer folder), whole.
-fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
-    let (dir, name) = tilo_files::file_at(path)?;
-    let bytes = tilo_files::blocking::read(&dir, &name)?;
-    String::from_utf8(bytes)
-        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
-}
-
 use std::collections::{HashMap, HashSet};
+
+/// The files the calendar imports and exports.
+fn ics_filter() -> ui::portal::FileFilter {
+    ui::portal::FileFilter::new("iCalendar files")
+        .mimetype("text/calendar")
+        .glob("*.ics")
+}
 use std::fmt::Write as _;
 use ui::widget::{AppModel, ModelPath};
 
@@ -1480,18 +1479,12 @@ impl CalendarApp {
             .find(|calendar| calendar.id == id)
     }
 
-    /// Read the transfer directory only for an explicitly invoked import.
-    fn latest_ics_import_action() -> Result<crate::actions::CalendarAction, String> {
-        let dir = crate::store::transfer_dir();
-        let path = crate::store::newest_ics(&dir)
-            .ok_or_else(|| format!("No .ics files found in {}", dir.display()))?;
-        let payload = read_text(&path).map_err(|error| format!("Import failed: {error}"))?;
-        crate::actions::import_action(&payload).ok_or_else(|| {
-            format!(
-                "{} contains no new supported calendar items",
-                path.display()
-            )
-        })
+    /// Invoke one of the calendar's effects through the door, as the palette
+    /// or an agent does.
+    fn invoke_effect(&self, effect: &crate::resource::CalendarEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(effect);
+        }
     }
 
     // --- mutations -------------------------------------------------------
@@ -2399,84 +2392,67 @@ impl CalendarApp {
         });
     }
 
-    /// Write every event and task to an iCalendar file in the transfer
-    /// directory.
-    fn export_ics(&mut self) -> Result<(), String> {
+    /// Every event and task as an iCalendar file, and the name to suggest
+    /// for it.
+    fn ics_export(&mut self) -> Result<(String, String), String> {
         self.dirty = true;
         if self.model.events.is_empty() && self.model.tasks.is_empty() {
             self.status = Some("Nothing to export yet".into());
             return Err("There are no events or tasks to export".into());
         }
-        let ics = ics::export(&self.model);
-        let dir = crate::store::transfer_dir();
-        let path = dir.join(ics::suggested_filename(self.anchor));
-        let written = tilo_files::file_at(&path).and_then(|(dir, name)| {
-            tilo_files::blocking::save_document(&dir, &name, ics.as_bytes())
-        });
-        match written {
-            Ok(()) => {
-                self.status = Some(format!(
-                    "Exported {} events · {} tasks to {}",
-                    self.model.events.len(),
-                    self.model.tasks.len(),
-                    path.display()
-                ));
-                Ok(())
-            }
-            Err(error) => {
-                let message = format!("Export failed: {error}");
-                self.status = Some(message.clone());
-                Err(message)
-            }
-        }
+        Ok((
+            ics::export(&self.model),
+            ics::suggested_filename(self.anchor),
+        ))
     }
 
-    /// Import the most recent `.ics` file from the transfer directory (the
-    /// user's Downloads folder) through the real [`ics::parse`] path, merging
-    /// new events/tasks into the model and the CRDT. De-duped by (title,
-    /// start) for events and by title for tasks so a repeated import is close
-    /// to idempotent.
-    fn import_ics(&mut self, doc: &mut AutoCommit) {
-        let dir = crate::store::transfer_dir();
-        let Some(path) = crate::store::newest_ics(&dir) else {
-            self.status = Some(format!("No .ics files found in {}", dir.display()));
-            self.dirty = true;
-            return;
-        };
-        let payload = match read_text(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                self.status = Some(format!("Import failed: {e}"));
-                self.dirty = true;
-                return;
-            }
-        };
-        let source = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file")
-            .to_string();
-        let Some(action) = crate::actions::import_action(&payload) else {
-            self.status = Some(format!("{source} holds no events or tasks"));
-            self.dirty = true;
-            return;
-        };
-        let (events_before, tasks_before) = (self.model.events.len(), self.model.tasks.len());
-        self.dispatch_action(doc, &action);
-        self.model = CalDoc::read_model(doc);
-        let added_e = self.model.events.len().saturating_sub(events_before);
-        let added_t = self.model.tasks.len().saturating_sub(tasks_before);
-        if added_e == 0 && added_t == 0 {
-            self.status = Some(format!("{source} already imported"));
-            self.dirty = true;
-            return;
-        }
-        self.model_heads = doc.get_heads();
-        self.model.events.sort_by_key(|e| e.start);
-        self.status = Some(format!(
-            "Imported {added_e} events · {added_t} tasks from {source}"
-        ));
-        self.dirty = true;
+    /// Save every event and task to an iCalendar file the person chooses.
+    fn export_ics(
+        &mut self,
+        cx: &mut ui::framework::EffectCx<crate::resource::Calendar, Self>,
+    ) -> ui::framework::EffectAnswer {
+        let (ics, name) = self.ics_export()?;
+        let request =
+            ui::portal::PickRequest::save("Export calendar", "Export", &name).filter(ics_filter());
+        Ok(
+            cx.save_file(request, ics.into_bytes(), |app: &mut Self, saved, _| {
+                app.status = Some(if saved {
+                    format!(
+                        "Exported {} events · {} tasks",
+                        app.model.events.len(),
+                        app.model.tasks.len()
+                    )
+                } else {
+                    "Export cancelled".into()
+                });
+                app.dirty = true;
+                Ok(ui::framework::Effected::done())
+            }),
+        )
+    }
+
+    /// Import the events and tasks of an iCalendar file the person chooses
+    /// through the real [`ics::parse`] path, as one action. Items already in
+    /// the calendar are not added twice.
+    fn import_ics(
+        cx: &mut ui::framework::EffectCx<crate::resource::Calendar, Self>,
+    ) -> ui::framework::Effected {
+        let request = ui::portal::PickRequest::open("Import a calendar", "Import")
+            .filter(ics_filter())
+            .all_files();
+        cx.choose_file(request, |app: &mut Self, chosen, cx| {
+            let Some(file) = chosen else {
+                return Ok(ui::framework::Effected::done());
+            };
+            let payload = String::from_utf8(file.bytes)
+                .map_err(|_| format!("{} is not an iCalendar file", file.name))?;
+            let action = crate::actions::import_action(&payload)
+                .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
+            cx.apply(&action);
+            app.status = Some(format!("Imported calendar items from {}", file.name));
+            app.dirty = true;
+            Ok(ui::framework::Effected::done())
+        })
     }
 
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut AutoCommit, f: F) {
@@ -3029,10 +3005,8 @@ impl CalendarApp {
                 self.toggle_account_collapsed(&id);
             }
             Action::Sync => self.start_sync(doc),
-            Action::Export => {
-                let _ = self.export_ics();
-            }
-            Action::Import => self.import_ics(doc),
+            Action::Export => self.invoke_effect(&crate::resource::CalendarEffect::ExportIcs),
+            Action::Import => self.invoke_effect(&crate::resource::CalendarEffect::ImportIcs),
             Action::MiniMonth(outcome) => match outcome {
                 MiniMonthOutcome::SelectDate(date) => self.anchor = date,
                 MiniMonthOutcome::ShiftMonth(months) => {
@@ -6673,16 +6647,8 @@ impl CalendarApp {
                 self.dirty = true;
                 Ok(Effected::Pending)
             }
-            CalendarEffect::ExportIcs => {
-                self.export_ics()?;
-                Ok(Effected::done())
-            }
-            CalendarEffect::ImportLatestIcs => {
-                cx.apply(&Self::latest_ics_import_action()?);
-                self.status = Some("Imported calendar items from the latest ICS file".into());
-                self.dirty = true;
-                Ok(Effected::done())
-            }
+            CalendarEffect::ExportIcs => self.export_ics(cx),
+            CalendarEffect::ImportIcs => Ok(Self::import_ics(cx)),
             CalendarEffect::PrepareInMail {
                 event_id,
                 attendee_id,

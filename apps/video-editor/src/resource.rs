@@ -50,9 +50,8 @@ impl Resource for VideoProject {
     }
 
     /// Named catalogue actions an agent can invoke without the playhead.
-    /// Playhead-bound conveniences (split/trim/mark-at-playhead, mix trim) ride
-    /// [`crate::actions::live_playhead_resources`] on the live surface — nested
-    /// under the project when standalone, returned alone when hosted.
+    /// Edits bound to the playhead (split, trim and mark at it, the mix trim)
+    /// are the editor's [`crate::actions::playhead_declarations`].
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
             ActionDecl::new(
@@ -77,9 +76,8 @@ impl Resource for VideoProject {
         ]
     }
 
-    /// Tracks, clips, media and markers — the richer palette tree, published
-    /// through `tilo_resource::publish` rather than a second hand-built root.
-    /// Playhead/mix live extras are stripped so they stay on the surface door.
+    /// Tracks, clips, media and markers, each with the actions its data
+    /// implies.
     fn children(project: &Project) -> Vec<tilo_actions::Resource> {
         let ctx = VideoResourceCtx {
             project: project.clone(),
@@ -89,18 +87,12 @@ impl Resource for VideoProject {
         crate::actions::project_tree(&ctx)
             .into_iter()
             .next()
-            .map(|root| {
-                root.children
-                    .into_iter()
-                    .filter(|child| child.kind != "video.playhead")
-                    .collect()
-            })
+            .map(|root| root.children)
             .unwrap_or_default()
     }
 
     /// Document actions whose payload is bound from the current project
-    /// (rename, frame size, add track/title, …). Playhead-bound conveniences
-    /// stay on [`crate::actions::live_playhead_resources`].
+    /// (rename, frame size, add track/title, …).
     fn bound_actions(project: &Project) -> Vec<ActionSpec> {
         let ctx = VideoResourceCtx {
             project: project.clone(),
@@ -230,15 +222,15 @@ impl ResourceApp for VideoEditor {
 mod tests {
     use super::*;
     use crate::app::VideoEditorApp;
-    use ui::resources::PublishesResources;
+    use ui::framework::ResourceSurface;
     use ui::tilo_actions::OperationKind;
 
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one assertion covers publish ownership and hosted playhead extras"
+        reason = "one scenario covers the published actions and the playhead-bound ones"
     )]
-    fn the_surface_publishes_only_playhead_extras_beside_the_resource() {
+    fn the_project_publishes_its_actions_and_the_editor_binds_the_playhead_edits() {
         let published = ui::tilo_resource::publish::<VideoProject>(
             "video.project",
             "Project",
@@ -282,49 +274,60 @@ mod tests {
         );
 
         let mut app = VideoEditorApp::new();
-        let state = ui::State::new();
         let sample = crate::doc::sample_project();
         let clip = sample
             .clips
             .first()
-            .expect("sample project carries a clip for playhead extras");
+            .expect("sample project carries a clip for playhead edits")
+            .clone();
         let at = clip.start + (clip.end() - clip.start) * 0.5;
-        app.seed_unpublished_project_for_test(sample.clone());
+        app.seed_unpublished_project_for_test(sample);
         app.set_playhead_for_test(at);
-        let extras = app.resources(&state.doc);
+        let bound = ResourceSurface::<VideoProject>::bound_declarations(&app);
+        let ids: Vec<&str> = bound.iter().map(|decl| decl.id).collect();
+        for expected in [
+            "mark-in",
+            "mark-out",
+            "add-marker-here",
+            "split-clip",
+            "trim-in-clip",
+            "trim-out-clip",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "`{expected}` is bound to the playhead: {ids:?}"
+            );
+        }
+        let split = bound
+            .iter()
+            .find(|decl| decl.id == "split-clip")
+            .expect("split-clip");
+        let args = tilo_actions::ActionArgs::bind_json(
+            &split.params,
+            &serde_json::Map::from_iter([(
+                "clip".to_owned(),
+                serde_json::json!(clip.id.to_string()),
+            )]),
+        )
+        .expect("the clip binds");
         assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "video.project"
-                    && resource.kind != "video_editor.project"),
-            "the surface must not publish the project root beside the resource: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
+            matches!(
+                (split.build)(&args, 0),
+                Ok(VideoEditorAction::SplitClip { .. } | VideoEditorAction::UpsertClips { .. })
+            ),
+            "splitting the clip under the playhead cuts it"
         );
-        assert_eq!(
-            extras.len(),
-            1,
-            "the surface publishes the playhead slice alone"
-        );
-        assert_eq!(extras[0].kind, "video.playhead");
+        let elsewhere = tilo_actions::ActionArgs::bind_json(
+            &split.params,
+            &serde_json::Map::from_iter([
+                ("clip".to_owned(), serde_json::json!(clip.id.to_string())),
+                ("at".to_owned(), serde_json::json!(clip.end() + 100.0)),
+            ]),
+        )
+        .expect("the clip and time bind");
         assert!(
-            extras[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "mark-in" || action.id == "mark-out"),
-            "the playhead slice offers its mark conveniences"
-        );
-        assert!(
-            extras[0].children.iter().any(|clip| {
-                clip.kind == "video.playhead-clip"
-                    && clip
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "split" || action.id == "trim-in")
-            }),
-            "the playhead slice nests split/trim on playhead-clip rows"
+            (split.build)(&elsewhere, 0).is_err(),
+            "a time the clip does not cover is refused"
         );
     }
 }

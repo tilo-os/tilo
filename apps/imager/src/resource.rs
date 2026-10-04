@@ -1,17 +1,24 @@
-//! Imager as a [`tilo_resource::Resource`]: install profile is document state;
-//! write/verify jobs are Effects in [`Resource::local_operations`].
+//! Imager as a [`tilo_resource::Resource`].
+//!
+//! The document holds what a person reviews and authors: the image to write,
+//! the images reviewed before it and the install profile. Its edits are
+//! [`ImagerAction`]s, offered by name for the source and profile that apply
+//! now ([`Resource::bound_declarations`]).
+//!
+//! Everything else belongs to this machine: the drives the probe sees are
+//! [`LiveRow`]s beneath the resource, and writing one is the
+//! [`ImagerEffect::Write`] job, whose progress, cancellation and outcome
+//! reach whoever started it — the Write button, the palette or an agent.
 
 use std::rc::Rc;
 
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, OperationKind};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::tilo_resource::{self, ActionDecl, Doc, Effect, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    IMAGER_ACTION_TYPE, ImagerAction, document_children, export_config_spec, operation_resource,
-    register,
-};
+use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction, profile_declarations, register};
 use crate::app::ImagerApp;
 use crate::doc::ImagerDoc;
 use crate::model::{InstallProfile, Source};
@@ -63,66 +70,51 @@ impl Resource for Imager {
         previous.same_text_field(next)
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        // Profile field ActionSpecs are state-gated (only an authenticated
-        // installable Tilo image) and live on the customization child from
-        // [`children`]. Typed declarations here would advertise them for a
-        // plain ISO too.
-        Vec::new()
-    }
-
-    fn bound_actions(state: &ImagerState) -> Vec<ActionSpec> {
-        // Clear-source is bound on the reviewed source child in [`children`].
-        let _ = state;
-        Vec::new()
-    }
-
-    fn children(state: &ImagerState) -> Vec<tilo_actions::Resource> {
-        document_children(state.source.as_ref(), &state.profile)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        // Device / job availability is machine-local; publish a conservative
-        // baseline here. Standalone surfaces overlay live write availability on
-        // the same root via [`overlay_live_write_ops`].
-        let mut ops = operation_resource(None, false, false, crate::write::write_available())
-            .actions
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect::<Vec<_>>();
-        ops.push(export_config_spec(false));
-        ops
+    /// Clearing the reviewed image, and the profile fields that image
+    /// carries: the media profile only for an authenticated Tilo image, the
+    /// on-write Wi-Fi and enrollment for any image.
+    fn bound_declarations(state: &ImagerState) -> Vec<ActionDecl<Self>> {
+        profile_declarations(state.source.as_ref())
     }
 }
 
-/// Replace the conservative write-plan Effects on a published root with the
-/// live availability for this surface. Same resource id — not a second tree.
-pub(crate) fn overlay_live_write_ops(root: &mut tilo_actions::Resource, app: &ImagerApp) {
-    const LIVE: &[&str] = &["write", "verify", "cancel", "status", "export-config"];
-    root.actions
-        .retain(|spec| !LIVE.contains(&spec.id.as_str()));
-    let available = app.resource_source().is_some() && app.target().is_some();
-    let mut job = operation_resource(
-        app.target()
-            .map(crate::model::TargetDrive::dev_path)
-            .as_deref(),
-        available,
-        !app.startup_write_reconciled() || app.job_active(),
-        crate::write::write_available(),
-    );
-    job.actions.push(export_config_spec(available));
-    for action in job.actions {
-        if matches!(action.kind, OperationKind::View | OperationKind::Effect) {
-            root.actions.push(action);
-        }
-    }
-}
-
-/// Hosted-only extras that are not on the framework resource. Job progress and
-/// probed targets are widget/machine state; status/write Effects already live
-/// on [`Imager::local_operations`], so hosted surfaces publish nothing extra.
-pub(crate) fn live_extras(_app: &ImagerApp) -> Vec<tilo_actions::Resource> {
-    Vec::new()
+/// What the imager does on this machine, with no document delta. Writing
+/// erases the target drive; it runs as a job whose progress and outcome
+/// reach its caller, and read-back verification is part of it.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "imager.write-plan")]
+pub enum ImagerEffect {
+    /// Erase drive and write image.
+    #[effect(job, cancellable, permission = "admin")]
+    Write {
+        #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
+        device: String,
+        #[param("The exact target device name shown by Imager, e.g. sdb")]
+        confirmation: String,
+    },
+    /// Show image-write status.
+    #[effect(returns, permission = "read")]
+    Status,
+    /// Export headless configuration.
+    #[effect(returns, permission = "read")]
+    ExportConfig,
+    /// Set Wi-Fi password.
+    SetWifiPsk {
+        #[param(
+            secret,
+            "The Wi-Fi passphrase, kept on this machine for the next write"
+        )]
+        value: String,
+    },
+    /// Rescan drives.
+    #[effect(permission = "read")]
+    Rescan,
+    /// Choose target drive.
+    #[effect(permission = "read")]
+    ChooseDrive {
+        #[param("Kernel name of a removable drive, e.g. sdb")]
+        drive: String,
+    },
 }
 
 /// Framework app.
@@ -142,7 +134,7 @@ impl ResourceApp for ImagerShell {
     }
 }
 
-impl ResourceSurface<Imager> for ImagerApp {
+impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
     fn present(&mut self, state: &Rc<ImagerState>) {
         self.present_state(state);
     }
@@ -150,60 +142,26 @@ impl ResourceSurface<Imager> for ImagerApp {
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
         self.attach_framework(cx.dispatcher());
     }
+
+    fn effect(&mut self, effect: ImagerEffect, cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+
+    /// The removable drives the probe sees and the write job: a handful,
+    /// so all of them are published.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.published_rows()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ui::tilo_actions::Action as _;
-
-    #[test]
-    fn resource_publish_owns_profile_door_and_hosted_keeps_no_duplicate_root() {
-        let mut doc = automerge::AutoCommit::new();
-        ImagerDoc::seed_demo(&mut doc);
-        let state = Imager::read(&doc).expect("seeded imager state");
-        let published =
-            ui::tilo_resource::publish::<Imager>("imager.sources", "Image sources", &state);
-        assert_eq!(published.kind, "imager.sources");
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "write" && action.kind == OperationKind::Effect),
-            "write Effect must be on the framework resource"
-        );
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "export-config"),
-            "export-config View must be on the framework resource"
-        );
-        let source = published
-            .children
-            .iter()
-            .find(|child| child.kind == "imager.source")
-            .expect("reviewed source child");
-        assert!(
-            source
-                .actions
-                .iter()
-                .any(|action| action.id == "clear-source"),
-            "clear-source must ride the source child"
-        );
-        let customization = published
-            .children
-            .iter()
-            .find(|child| child.kind == "imager.customization")
-            .expect("customization child must carry the install-profile palette");
-        assert!(
-            customization
-                .actions
-                .iter()
-                .any(|action| action.id == "hostname"),
-            "hostname must be on the customization child"
-        );
-    }
 
     /// The wizard over the sample drives and releases, hosted as the live
     /// app hosts it.
@@ -354,5 +312,167 @@ mod tests {
             })
             .expect("the hosted wizard");
         assert_eq!(shown, (None, "lab".to_owned(), true));
+    }
+
+    fn find<'a>(
+        resources: &'a [ui::tilo_actions::Resource],
+        id: &str,
+    ) -> Option<&'a ui::tilo_actions::Resource> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource)
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+
+    fn ids(resource: &ui::tilo_actions::Resource) -> Vec<&str> {
+        resource
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn one_tree_holds_the_profile_actions_effects_drives_and_job() {
+        let mut app = customizing();
+        let resources = app.harness().resources();
+        let root = find(&resources, Imager::KIND).expect("the imager resource");
+        let root_ids = ids(root);
+        for id in [
+            "clear-source",
+            "hostname",
+            "filesystem",
+            "wifi-ssid",
+            "write",
+            "status",
+            "export-config",
+            "set-wifi-psk",
+            "rescan",
+            "choose-drive",
+        ] {
+            assert!(root_ids.contains(&id), "{id} in {root_ids:?}");
+        }
+        let write = root
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert!(
+            !write.contract.availability.is_available(),
+            "no privileged writer in tests"
+        );
+
+        let drive = find(&resources, "imager.target:demo-sandisk-ultra").expect("the USB stick");
+        assert_eq!(ids(drive), ["choose-drive", "write"]);
+        let row_write = drive
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert_eq!(
+            row_write.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::Phrase {
+                phrase: "sdb".into()
+            },
+            "writing a drive asks for its name"
+        );
+        assert!(
+            find(&resources, "imager.target:demo-samsung-990").is_none(),
+            "an internal disk is not a write target here"
+        );
+        let job = find(&resources, "imager.job").expect("the write job");
+        assert_eq!(ids(job), ["status"]);
+        for row in [drive, job] {
+            assert!(
+                row.actions
+                    .iter()
+                    .all(|action| action.kind != ui::tilo_actions::OperationKind::Document)
+            );
+        }
+    }
+
+    #[test]
+    fn effects_choose_drives_report_status_and_export_the_plan() {
+        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SelectSource {
+                source: Box::new(crate::model::sample_source()),
+                previous: None,
+                recent_rank: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            app.effect(&ImagerEffect::ExportConfig).is_err(),
+            "no plan without a drive"
+        );
+        assert!(
+            app.effect(&ImagerEffect::ChooseDrive {
+                drive: "nvme0n1".into()
+            })
+            .is_err(),
+            "an internal disk is refused"
+        );
+        app.effect(&ImagerEffect::ChooseDrive {
+            drive: "sdb".into(),
+        })
+        .unwrap();
+        let exported = app.effect(&ImagerEffect::ExportConfig).unwrap();
+        assert!(
+            exported
+                .value
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .is_some_and(|text| text.contains("\"schema\": 1"))
+        );
+        let status = app.effect(&ImagerEffect::Status).unwrap();
+        assert_eq!(
+            status
+                .value
+                .as_ref()
+                .and_then(|value| value["phase"].as_str()),
+            Some("idle")
+        );
+        app.effect(&ImagerEffect::SetWifiPsk {
+            value: "hunter22".into(),
+        })
+        .unwrap();
+        assert!(
+            app.effect(&ImagerEffect::Write {
+                device: "/dev/sdb".into(),
+                confirmation: "sdb".into(),
+            })
+            .is_err(),
+            "the write is refused without the privileged writer"
+        );
+        assert!(
+            app.read_document(
+                |doc| !String::from_utf8_lossy(&doc.clone().save()).contains("hunter22")
+            ),
+            "the passphrase never reaches the document"
+        );
+    }
+
+    #[test]
+    fn declared_profile_actions_check_their_arguments() {
+        let mut app = customizing();
+        app.call("filesystem", serde_json::json!({ "filesystem": "xfs" }))
+            .unwrap();
+        assert_eq!(
+            app.state().profile.filesystem,
+            crate::model::Filesystem::Xfs
+        );
+        assert!(
+            app.call("filesystem", serde_json::json!({ "filesystem": "fat" }))
+                .is_err()
+        );
+        app.call("enroll-identity", serde_json::json!({ "on": true }))
+            .unwrap();
+        assert!(app.state().profile.enroll_local_identity);
+        app.call("clear-source", serde_json::json!({})).unwrap();
+        assert!(app.state().source.is_none());
     }
 }

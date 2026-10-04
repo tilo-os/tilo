@@ -1208,6 +1208,7 @@ impl NotesResourceCtx {
                     .collect(),
             },
             bodies: std::sync::Arc::new(bodies),
+            ..crate::Workspace::default()
         }
     }
 }
@@ -1235,6 +1236,22 @@ pub fn read_bodies(doc: &AutoCommit, pages: &[PageMeta]) -> Bodies {
     pages
         .iter()
         .map(|page| (page.id, NotesDoc::page_stored_blocks(doc, page.id)))
+        .collect()
+}
+
+/// Each note's body as rich text, read where the notebook keeps it.
+pub fn read_body_states(
+    doc: &AutoCommit,
+    pages: &[PageMeta],
+) -> HashMap<PageId, tilo_document::RichTextState> {
+    pages
+        .iter()
+        .filter_map(|page| {
+            let body = NotesDoc::page_body(doc, page.id)?;
+            RichText::read_under(doc, &body)
+                .ok()
+                .map(|state| (page.id, state))
+        })
         .collect()
 }
 
@@ -1609,13 +1626,14 @@ impl<'a> PageResourceIndex<'a> {
 }
 
 /// Build one page resource and a bounded contextual slice of its descendants.
+#[cfg(test)]
 pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta], doc: &AutoCommit) -> Resource {
     let workspace = crate::notebook::project(doc, None).ok();
     page_resource_in(m, pages, workspace.as_ref(), &read_bodies(doc, pages))
 }
 
 /// [`page_resource`] in the notebook `workspace`, whose notes say `bodies`.
-fn page_resource_in(
+pub(crate) fn page_resource_in(
     m: &PageMeta,
     pages: &[PageMeta],
     workspace: Option<&crate::Workspace>,
@@ -1675,12 +1693,12 @@ pub(crate) fn page_body_dispatcher(
 
 /// A page's body, published as the rich-text resource it is: its actions
 /// apply as the notebook's [`NotesAction::EditBody`] on that page.
-fn page_body_child(page: &PageMeta) -> Resource {
+fn page_body_child(page: &PageMeta, state: Option<&tilo_document::RichTextState>) -> Resource {
     let id = page_body_id(page.id);
     let mut body = ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
         &id,
         &page.title,
-        None,
+        state,
         page_body_edit(page.id),
     );
     stamp_published_dynamic_continuations(&mut body, id.as_bytes());
@@ -1835,7 +1853,10 @@ fn page_resource_from_index(
         }
     }
     // Nested rich-text body — same action vocabulary as a root RichText.
-    res = res.with_child(page_body_child(m));
+    res = res.with_child(page_body_child(
+        m,
+        workspace.and_then(|workspace| workspace.body_states.get(&m.id)),
+    ));
     res
 }
 
@@ -1966,10 +1987,9 @@ fn block_resource_in_page(
 /// tree, each exporting rename / delete / new-child. Every document-mutating
 /// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    vec![notebook_resource(
-        ctx,
-        &ctx.workspace(read_bodies(doc, &ctx.pages)),
-    )]
+    let mut workspace = ctx.workspace(read_bodies(doc, &ctx.pages));
+    workspace.body_states = std::rc::Rc::new(read_body_states(doc, &ctx.pages));
+    vec![notebook_resource(ctx, &workspace)]
 }
 
 /// Attach Draft continuation domains to published dynamic doors that still
@@ -2387,7 +2407,7 @@ fn tag_page_resource(tag: TagId, page: &PageMeta) -> Resource {
     page_ref
 }
 
-// Inherent resource publication (was ResourceProvider)
+/// The note `id` within `resource`, at any depth.
 fn find_note(resource: &Resource, id: &str) -> Option<Resource> {
     if resource.id.as_str() == id {
         return Some(resource.clone());
@@ -2398,23 +2418,6 @@ fn find_note(resource: &Resource, id: &str) -> Option<Resource> {
         }
     }
     None
-}
-
-impl crate::app::NotesApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        self.notes_resource_ctx_for(doc)
-            .map(|ctx| provide_resources(&ctx, doc))
-            .unwrap_or_default()
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let ctx = self.notes_resource_ctx_for(doc)?;
-        let workspace = ctx.workspace(read_bodies(doc, &ctx.pages));
-        if id == "notes.notebook" {
-            return Some(notebook_resource(&ctx, &workspace));
-        }
-        notebook_child(&workspace, id)
-    }
 }
 
 #[cfg(test)]
@@ -2896,9 +2899,13 @@ mod tests {
     }
 
     fn notebook_resources(doc: &AutoCommit) -> Vec<Resource> {
-        let author = ui::permissions::UserId("action-contract".into());
-        let app = crate::app::NotesApp::from_document(doc, &author).expect("a canonical notebook");
-        app.publish_resources(doc)
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Notebook::read(doc).expect("a canonical notebook");
+        vec![ui::tilo_resource::publish::<crate::resource::Notebook>(
+            "notes.notebook",
+            "Notes",
+            &state,
+        )]
     }
 
     fn page_meta(doc: &AutoCommit, id: PageId) -> PageMeta {

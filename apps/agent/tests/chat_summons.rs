@@ -10,11 +10,10 @@
 use crate::typed_peer;
 use automerge::AutoCommit;
 use chat::{
-    actions::ChatAction,
-    doc::ChatDoc,
+    doc::{ChatDoc, NewMessage},
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
-use tilo_actions::{Action, ActionAddress};
+use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
 use tilo_automerge::ApplyIncoming as _;
 use typed_peer::{TypedPeer, send};
@@ -171,40 +170,37 @@ fn scenario_outcome(
     let mut owner_online = true;
     let mut chat = AutoCommit::new();
     ChatDoc::seed_starter(&mut chat, "human-author", "Human", "HU");
-    let request = ChatAction::SendMessage {
-        channel: "c_general".into(),
-        id: "request-1".into(),
-        author: "human-author".into(),
-        ts: 1,
-        text: text.into(),
-        parent: None,
-        attachment: None,
-        body: Vec::new(),
-        reference: wait_for_owner.then(|| {
-            tilo_reference::ResourceRef::whole(
-                "word-processor.document",
-                "word-processor.document",
-                "Owner document",
-            )
-        }),
-        mentions: mention
-            .map(|user| chat::mention::Mention {
-                user: user.into(),
-                start: 0,
-                len: 7,
-                is_agent: true,
-            })
-            .into_iter()
-            .collect(),
+    let mut request = |number: usize| {
+        ChatDoc::push_message_with_id(
+            &mut chat,
+            "c_general",
+            &format!("request-{number}"),
+            NewMessage {
+                author: "human-author".into(),
+                ts: i64::try_from(number).unwrap(),
+                text: text.into(),
+                reference: wait_for_owner.then(|| {
+                    tilo_reference::ResourceRef::whole(
+                        "word-processor.document",
+                        "word-processor.document",
+                        "Owner document",
+                    )
+                }),
+                mentions: mention
+                    .map(|user| chat::mention::Mention {
+                        user: user.into(),
+                        start: 0,
+                        len: 7,
+                        is_agent: true,
+                    })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        )
     };
-    request.apply(&mut chat).unwrap();
-    for number in 2..=requests {
-        let mut additional = request.clone();
-        if let ChatAction::SendMessage { id, ts, .. } = &mut additional {
-            *id = format!("request-{number}");
-            *ts = i64::try_from(number).unwrap();
-        }
-        additional.apply(&mut chat).unwrap();
+    for number in 1..=requests.max(1) {
+        request(number);
     }
     let mut document = AutoCommit::new();
     let schema = tilo_doc::model::init(&mut document, &automerge::ROOT);

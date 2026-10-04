@@ -857,15 +857,7 @@ impl ChatApp {
             }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
-            Hit::CategoryToggle(id) if self.can_participate() => {
-                let collapsed = self
-                    .category(&id)
-                    .is_some_and(|category| category.collapsed);
-                self.perform_action(
-                    doc,
-                    &actions::set_category_collapsed_action(&id, !collapsed),
-                );
-            }
+            Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
             Hit::AddChannel {
@@ -983,7 +975,7 @@ impl ChatApp {
 
     fn on_hit_add_channel(&mut self, workspace: &str, category: &str, doc: &mut AutoCommit) {
         let id = new_channel_id();
-        self.perform_action(
+        self.apply_action(
             doc,
             &actions::create_channel_action(
                 workspace,
@@ -998,7 +990,7 @@ impl ChatApp {
 
     fn on_hit_add_category(&mut self, ws: &str, doc: &mut AutoCommit) {
         let id = new_category_id();
-        self.perform_action(
+        self.apply_action(
             doc,
             &actions::create_category_action(ws, &id, "New Category"),
         );
@@ -1008,7 +1000,7 @@ impl ChatApp {
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut AutoCommit) {
         if self.can_participate() {
             let action = self.reaction_toggle_action(msg, emoji);
-            self.perform_action(doc, &action);
+            self.apply_action(doc, &action);
             self.reload(doc);
         }
     }
@@ -1044,7 +1036,7 @@ impl ChatApp {
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
                 let action = self.reaction_toggle_action(&target, e);
-                self.perform_action(doc, &action);
+                self.apply_action(doc, &action);
                 self.reload(doc);
             }
         } else {
@@ -1053,73 +1045,37 @@ impl ChatApp {
         self.emoji_open = false;
     }
 
-    /// The header Call button. A click while the call is expanded collapses
-    /// it — a button-only toggle; everything else is the published
-    /// `start-call` Effect, run through the same operation path an agent,
-    /// the palette or the Home launchpad uses.
+    /// Join this workspace's voice channel; if it has none, make one to
+    /// start the call in so the header "Call" button is never a dead end (a
+    /// text-only workspace can still huddle).
     fn on_hit_start_call(&mut self, doc: &mut AutoCommit) {
-        if self.call.active && self.call.expanded {
-            self.call.expanded = false;
-            self.request_relayout();
-            return;
-        }
-        let payload = serde_json::to_vec(&actions::ChatOperation::StartCall { video: false })
-            .unwrap_or_default();
-        if let Err(error) = self.perform_operation(
-            ui::tilo_actions::OperationKind::Effect,
-            actions::CHAT_OPERATION_TYPE,
-            &payload,
-            doc,
-        ) {
-            self.media_error = Some(error);
-        }
-    }
-
-    /// Start a call in the active workspace: join its voice channel, making
-    /// one first when it has none so a text-only workspace can still huddle.
-    /// A call already running is revealed, never closed. Video is refused —
-    /// the native call path carries microphone audio only.
-    pub(crate) fn start_call(&mut self, video: bool, doc: &mut AutoCommit) -> Result<(), String> {
-        if video {
-            return Err(actions::video_call_unavailable_reason());
-        }
-        if !self.call_allows(crate::call::CallAction::Join) {
-            return Err("Call action is not permitted".into());
-        }
         if self.call.active {
-            self.call.expanded = true;
+            self.call.expanded = !self.call.expanded;
             self.request_relayout();
-            return Ok(());
-        }
-        if self.active_ws.is_empty() {
-            return Err("No chat workspace is open".into());
-        }
-        let existing = self
-            .ws_channels()
-            .into_iter()
-            .find(|c| c.kind == ChannelKind::Voice)
-            .map(|channel| channel.id.clone());
-        let channel = if let Some(existing) = existing {
-            existing
         } else {
-            if !self.can_participate() {
-                return Err("A room writer must create a voice channel".into());
-            }
-            let ws = self.active_ws.clone();
-            let id = new_channel_id();
-            self.perform_action(
-                doc,
-                &actions::create_channel_action(&ws, "", &id, "Voice", ChannelKind::Voice),
-            );
-            self.reload(doc);
-            id
-        };
-        self.native_voice_command(
-            &channel,
-            ui::native_media::Command::Join {
-                channel_id: channel.clone(),
-            },
-        )
+            let existing = self
+                .ws_channels()
+                .into_iter()
+                .find(|c| c.kind == ChannelKind::Voice)
+                .map(|channel| channel.id.clone());
+            let channel = if let Some(existing) = existing {
+                existing
+            } else {
+                if !self.can_participate() {
+                    self.media_error = Some("A room writer must create a voice channel".into());
+                    return;
+                }
+                let ws = self.active_ws.clone();
+                let id = new_channel_id();
+                self.apply_action(
+                    doc,
+                    &actions::create_channel_action(&ws, "", &id, "Voice", ChannelKind::Voice),
+                );
+                self.reload(doc);
+                id
+            };
+            self.join_voice(&channel, doc);
+        }
     }
 
     fn on_hit_dismiss(&mut self) {
@@ -1182,18 +1138,18 @@ impl ChatApp {
                 MenuAction::PinMessage => {
                     let channel = self.active_channel.clone();
                     let pinned = self.message(&id).is_some_and(|m| m.pinned);
-                    self.perform_action(doc, &actions::pin_message_action(&channel, &id, !pinned));
+                    self.apply_action(doc, &actions::pin_message_action(&channel, &id, !pinned));
                 }
                 MenuAction::DeleteMessage => {
                     let channel = self.active_channel.clone();
-                    self.perform_action(doc, &actions::delete_message_action(&channel, &id));
+                    self.apply_action(doc, &actions::delete_message_action(&channel, &id));
                 }
                 _ => {}
             },
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
                     let id = new_category_id();
-                    self.perform_action(
+                    self.apply_action(
                         doc,
                         &actions::create_category_action(&ws, &id, "New Category"),
                     );
@@ -1208,23 +1164,23 @@ impl ChatApp {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
             MenuAction::Delete => {
-                self.perform_action(doc, &actions::delete_channel_action(id));
+                self.apply_action(doc, &actions::delete_channel_action(id));
                 if self.active_channel == id {
                     self.active_channel.clear(); // reload picks a new one
                 }
             }
             MenuAction::Archive => {
                 let archived = self.channel(id).is_some_and(|c| c.archived);
-                self.perform_action(doc, &actions::archive_channel_action(id, !archived));
+                self.apply_action(doc, &actions::archive_channel_action(id, !archived));
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
                 }
             }
             MenuAction::MoveUp => {
-                self.perform_action(doc, &actions::reorder_channel_action(id, true));
+                self.apply_action(doc, &actions::reorder_channel_action(id, true));
             }
             MenuAction::MoveDown => {
-                self.perform_action(doc, &actions::reorder_channel_action(id, false));
+                self.apply_action(doc, &actions::reorder_channel_action(id, false));
             }
             _ => {}
         }
@@ -1235,14 +1191,11 @@ impl ChatApp {
         let ws = self.active_ws.clone();
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Category(id.to_string())),
-            MenuAction::Delete => self.perform_action(doc, &actions::delete_category_action(id)),
-            MenuAction::ToggleCollapse => {
-                let collapsed = self.category(id).is_some_and(|category| category.collapsed);
-                self.perform_action(doc, &actions::set_category_collapsed_action(id, !collapsed));
-            }
+            MenuAction::Delete => self.apply_action(doc, &actions::delete_category_action(id)),
+            MenuAction::ToggleCollapse => self.toggle_category(id),
             MenuAction::NewChannelHere => {
                 let new_id = new_channel_id();
-                self.perform_action(
+                self.apply_action(
                     doc,
                     &actions::create_channel_action(
                         &ws,
@@ -1256,7 +1209,7 @@ impl ChatApp {
             }
             MenuAction::NewVoiceChannelHere => {
                 let new_id = new_channel_id();
-                self.perform_action(
+                self.apply_action(
                     doc,
                     &actions::create_channel_action(
                         &ws,
@@ -1295,10 +1248,10 @@ impl ChatApp {
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        self.perform_action(doc, &actions::rename_channel_action(&id, &text));
+                        self.apply_action(doc, &actions::rename_channel_action(&id, &text));
                     }
                     MenuTarget::Category(id) => {
-                        self.perform_action(doc, &actions::rename_category_action(&id, &text));
+                        self.apply_action(doc, &actions::rename_category_action(&id, &text));
                     }
                     MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
@@ -1512,7 +1465,7 @@ impl ChatApp {
             return;
         }
         let channel = self.active_channel.clone();
-        self.perform_action(
+        self.apply_action(
             doc,
             &actions::edit_message_action(&channel, &id, &text, now_secs()).with_body(body),
         );
@@ -1551,18 +1504,16 @@ impl ChatApp {
         // draft clear is presentation (ephemeral per-channel composer state) and
         // stays a direct write inside the same event.
         let channel = self.active_channel.clone();
-        let author = self.me.id.clone();
         // Bind `@name` to participants once, here, at authoring time. The
         // message carries the resolved references, so no reader — a peer, a
         // notification, an agent watching the room — ever re-parses the body to
         // work out who it was addressed to.
         let mentions = crate::body::mentions(&blocks, &self.participants());
-        self.perform_action(
+        self.apply_action(
             doc,
             &actions::send_message_action(
                 &channel,
                 &new_message_id(),
-                &author,
                 now_secs(),
                 &text,
                 parent,
@@ -1571,7 +1522,7 @@ impl ChatApp {
             )
             .with_body(body),
         );
-        ChatDoc::clear_draft(doc, &key);
+        self.apply_action(doc, &actions::ChatAction::ClearDraft { key });
         self.focused_composer_mut().sync(doc);
         if matches!(self.focus, Focus::Main) {
             self.jump_to_latest();
@@ -1716,7 +1667,6 @@ impl ChatApp {
         self.attachment_pending = Some(AttachmentImportPending {
             token,
             channel: channel.into(),
-            author: self.me.id.clone(),
         });
         self.attachment_status = Some("Preparing attachment…".into());
         let sender = self.attachment_result_tx.clone();
@@ -1795,12 +1745,11 @@ impl ChatApp {
         } else {
             crate::model::Attachment::File { name, blob, size }
         };
-        self.perform_action(
+        self.apply_action(
             doc,
             &actions::send_message_action(
                 &pending.channel,
                 &new_message_id(),
-                &pending.author,
                 now_secs(),
                 "",
                 None,
@@ -1974,23 +1923,12 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
 
             // The palette's delete spec for c_crit (built before the mutation).
-            let resources = crate::actions::provide_resources(&app.chat_resource_ctx(), &doc);
-            let ws = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
-                .or_else(|| {
-                    resources.iter().find_map(|root| {
-                        root.children
-                            .iter()
-                            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
-                    })
-                })
-                .expect("Acme workspace root");
-            let crit = ws
-                .children
-                .iter()
-                .find(|c| c.id.as_str() == "chat.channel:c_crit")
-                .expect("c_crit is a channel resource");
+            let state = <crate::resource::Chat as ui::tilo_resource::Resource>::read(&doc).unwrap();
+            let crit = <crate::resource::Chat as ui::tilo_resource::Resource>::child(
+                &state,
+                "chat.channel:c_crit",
+            )
+            .expect("c_crit is a channel resource");
             let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
             let from_spec = match &spec.input {
                 tilo_actions::ActionInput::Immediate(e) => e.clone(),
@@ -2150,24 +2088,20 @@ mod tests {
             app.active_channel = "c_general".into();
             app.focus = Focus::Main;
             app.thread_open = None;
-            let me = app.me.id.clone();
             ChatDoc::set_draft(&mut doc, "c_general", "hi from the composer");
             app.reload(&doc);
             app.on_hit(Hit::Send, &mut doc);
-            let dispatched = app.last_dispatched().expect("send dispatched an action");
-            assert_eq!(dispatched.type_id, crate::actions::CHAT_ACTION_TYPE);
-            let action: crate::actions::ChatAction =
-                serde_json::from_slice(&dispatched.payload).expect("payload decodes to ChatAction");
+            let action = app
+                .dispatched
+                .borrow()
+                .iter()
+                .find(|action| matches!(action, crate::actions::ChatAction::SendMessage { .. }))
+                .cloned()
+                .expect("send dispatched a message");
             match action {
-                crate::actions::ChatAction::SendMessage {
-                    channel,
-                    text,
-                    author,
-                    ..
-                } => {
+                crate::actions::ChatAction::SendMessage { channel, text, .. } => {
                     assert_eq!(channel, "c_general");
                     assert_eq!(text, "hi from the composer");
-                    assert_eq!(author, me);
                 }
                 other => panic!("expected SendMessage, got {other:?}"),
             }
@@ -2359,51 +2293,6 @@ mod tests {
             assert!(app.users.iter().all(|u| u.id == model::ME));
         }
 
-        // Phase: live_sync_seeds_empty_starter_never_the_demo.
-        {
-            use ui::Widget;
-            // Drive the real production `sync` for a live instance that has no
-            // persistence behind it. It must scaffold the honest
-            // empty starter — one local user, a `#general` with no messages — and
-            // never the fabricated demo (its people, channels, and the screenshare
-            // conversation thread).
-            // Pin the data dir to an empty temp path so the live sync's persistence
-            // load can't adopt a real chat store left on the dev machine — the test
-            // must exercise the fresh-first-run seed, not whatever is on disk.
-            let data = tempfile::tempdir().unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_CHAT_DATA", data.path());
-            let mut app = ChatApp::new_ephemeral();
-            app.is_live = true; // a live view with no disk behind it
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            drop(env);
-
-            let ws = ChatDoc::list_workspaces(&doc);
-            assert!(
-                ws.iter().any(|w| w.id == "ws_home"),
-                "the real starter workspace"
-            );
-            assert!(
-                ws.iter().all(|w| w.id != "ws_acme"),
-                "no fabricated demo workspace"
-            );
-
-            let chans = ChatDoc::list_channels(&doc);
-            assert!(
-                chans.iter().all(|c| c.id != "c_crit"),
-                "no fabricated demo channels"
-            );
-
-            assert!(
-                ChatDoc::list_messages(&doc, "c_general").is_empty(),
-                "a fresh live run has no fabricated conversation"
-            );
-            let users = ChatDoc::list_users(&doc);
-            assert_eq!(users.len(), 1, "only the local user — no fabricated people");
-            assert_eq!(users[0].id, model::ME);
-        }
-
         // Phase: workspace_switch_resets_view_state.
         {
             let (mut app, doc) = app_with_doc();
@@ -2487,7 +2376,9 @@ mod tests {
                 )),
                 "seeded conversation has an image attachment"
             );
-            app.prewarm_images();
+            app.request_visible_images();
+            app.images
+                .block_until_idle(ui::clock::Duration::from_secs(3));
             assert!(
                 app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
                 "the shared ImageStore decoded the attachment thumbnail"
@@ -2656,7 +2547,6 @@ mod tests {
             app.attachment_pending = Some(AttachmentImportPending {
                 token: 7,
                 channel: app.active_channel.clone(),
-                author: app.me.id.clone(),
             });
             app.attachment_result_tx
                 .try_send(AttachmentImportResult::Failed {
@@ -2775,7 +2665,7 @@ mod tests {
             let (mut app, _doc) = app_with_doc();
             app.call.join("c_huddle");
             render_frame(&mut app, 1200.0, 800.0);
-            app.debug_stage_floating_call_for_shot("floating-call-collapse-000");
+            app.stage_floating_call("floating-call-collapse-000");
 
             let stable_content = app.call_video_rect();
             let mut prior_height = f64::INFINITY;
@@ -3685,7 +3575,7 @@ mod tests {
         // Phase: narrow_elided_header_and_icon_controls_publish_hover_help.
         {
             let (mut app, _doc) = app_with_doc();
-            app.seed_shot_scenario("narrow");
+            app.stage_view("narrow");
             render_frame(&mut app, 390.0, 844.0);
             let channel = app.channel(&app.active_channel).expect("active channel");
             let (_, header_tip) = app
@@ -3789,7 +3679,7 @@ mod tests {
                 ("collaboration", 1280.0, 720.0),
             ] {
                 let (mut app, _doc) = app_with_doc();
-                app.seed_shot_scenario(scenario);
+                app.stage_view(scenario);
                 render_frame(&mut app, width, height);
                 let targets: Vec<_> = app
                     .semantic_hits()
@@ -4356,7 +4246,6 @@ mod tests {
                     .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
                 "a voice channel was created to hold the call"
             );
-            assert!(ChatDoc::list_voice_members(&doc, &app.call.channel).is_empty());
             assert!(app.call.muted);
             assert_eq!(
                 app.native_voice.snapshot.state,
@@ -4426,170 +4315,6 @@ mod tests {
             assert!(buttons.iter().any(|(l, ..)| *l == "Unmute"));
             assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
         }
-    }
-
-    /// The root's published Effect, encoded exactly as a caller of the
-    /// `chat.workspace` resource receives it.
-    fn published_start_call(id: &str) -> ui::tilo_actions::EncodedAction {
-        let spec = crate::actions::start_call_operations()
-            .into_iter()
-            .find(|spec| spec.id == id)
-            .expect("the Chat root publishes this call Effect");
-        ui::testing::action_contract::spec_encoding(&spec, None)
-    }
-
-    /// Start the published operation through the widget's operation door —
-    /// where the host hands an invoked `start-call` to Chat.
-    fn invoke_published(
-        app: &mut ChatApp,
-        doc: &mut AutoCommit,
-        id: &str,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use ui::Widget as _;
-        let encoded = published_start_call(id);
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            doc,
-            &automerge::ROOT,
-        )
-    }
-
-    fn voice_channels(app: &ChatApp, ws: &str) -> usize {
-        app.channels
-            .iter()
-            .filter(|c| c.workspace == ws && c.kind == ChannelKind::Voice)
-            .count()
-    }
-
-    /// The joins sent to the native voice service (status polls aside).
-    fn voice_commands(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
-        use ui::widget::Collaborative as _;
-        app.take_collab_requests()
-            .into_iter()
-            .filter_map(|request| match request {
-                ui::collaboration::CollabRequest::NativeMediaCommand { command, .. }
-                    if matches!(command.command, ui::native_media::Command::Join { .. }) =>
-                {
-                    Some(command.command)
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn start_call_operation_joins_the_workspace_voice_channel_creating_one_when_text_only() {
-        // A text-only workspace gains a voice channel and the call starts in it.
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit_workspace("ws_jam".into());
-        app.reload(&doc);
-        assert_eq!(voice_channels(&app, "ws_jam"), 0);
-        let started = invoke_published(&mut app, &mut doc, "start-call")
-            .expect("start-call runs")
-            .expect("Chat handles start-call");
-        assert!(matches!(
-            started,
-            ui::widget::ResourceOperationStart::Completed(_)
-        ));
-        assert_eq!(voice_channels(&app, "ws_jam"), 1);
-        assert!(
-            ChatDoc::list_channels(&doc)
-                .iter()
-                .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
-            "the voice channel is in the shared document"
-        );
-        assert!(app.call.active);
-        let channel = app.channel(&app.call.channel).expect("call channel");
-        assert_eq!(channel.kind, ChannelKind::Voice);
-        assert_eq!(channel.workspace, "ws_jam");
-        assert_eq!(
-            app.native_voice.snapshot.state,
-            ui::native_media::State::Preparing
-        );
-
-        // A workspace with a voice channel joins it without making another.
-        let (mut app, mut doc) = app_with_doc();
-        let before = voice_channels(&app, "ws_acme");
-        assert!(before > 0);
-        invoke_published(&mut app, &mut doc, "start-call").expect("start-call runs");
-        assert!(app.call.active);
-        assert_eq!(voice_channels(&app, "ws_acme"), before);
-        assert_eq!(
-            voice_commands(&mut app),
-            vec![ui::native_media::Command::Join {
-                channel_id: app.call.channel.clone()
-            }]
-        );
-
-        // Invoking it again reveals the running call; it never closes it.
-        app.call.expanded = false;
-        for _ in 0..2 {
-            invoke_published(&mut app, &mut doc, "start-call").expect("start-call runs");
-            assert!(app.call.active);
-            assert!(app.call.expanded, "start-call reveals, never collapses");
-        }
-        assert!(voice_commands(&mut app).is_empty(), "no second join");
-        assert_eq!(voice_channels(&app, "ws_acme"), before);
-    }
-
-    #[test]
-    fn start_video_call_is_refused_because_calls_are_voice_only() {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit_workspace("ws_jam".into());
-        app.reload(&doc);
-        let before = doc.save();
-        let error = invoke_published(&mut app, &mut doc, "start-video-call")
-            .expect_err("video calls are refused");
-        assert_eq!(error, crate::actions::video_call_unavailable_reason());
-        assert!(!app.call.active);
-        assert_eq!(voice_channels(&app, "ws_jam"), 0);
-        assert!(voice_commands(&mut app).is_empty());
-        assert_eq!(doc.save(), before, "a refused video call changes nothing");
-    }
-
-    #[test]
-    fn header_call_button_and_start_call_operation_produce_the_same_effect() {
-        let (mut pointer, mut pointer_doc) = app_with_doc();
-        let (mut operation, mut operation_doc) = app_with_doc();
-        pointer.on_hit_workspace("ws_jam".into());
-        pointer.reload(&pointer_doc);
-        operation.on_hit_workspace("ws_jam".into());
-        operation.reload(&operation_doc);
-
-        pointer.on_hit(Hit::StartCall, &mut pointer_doc);
-        invoke_published(&mut operation, &mut operation_doc, "start-call")
-            .expect("start-call runs");
-
-        for app in [&pointer, &operation] {
-            assert!(app.call.active);
-            assert_eq!(voice_channels(app, "ws_jam"), 1);
-            assert_eq!(app.channel(&app.call.channel).unwrap().name, "Voice");
-        }
-        for app in [&mut pointer, &mut operation] {
-            let channel_id = app.call.channel.clone();
-            assert_eq!(
-                voice_commands(app),
-                vec![ui::native_media::Command::Join { channel_id }]
-            );
-        }
-        assert_eq!(
-            ChatDoc::list_channels(&pointer_doc).len(),
-            ChatDoc::list_channels(&operation_doc).len()
-        );
-        assert_eq!(pointer.call.expanded, operation.call.expanded);
-
-        // The button keeps its own collapse toggle on a second click; the
-        // operation only ever reveals.
-        pointer.call.expanded = true;
-        pointer.on_hit(Hit::StartCall, &mut pointer_doc);
-        assert!(pointer.call.active && !pointer.call.expanded);
-        pointer.on_hit(Hit::StartCall, &mut pointer_doc);
-        assert!(pointer.call.active && pointer.call.expanded);
     }
 
     /// Answer every voice request with the broker's reply when this app has
@@ -4717,28 +4442,6 @@ mod tests {
     }
 
     #[test]
-    fn durable_screen_share_history_never_promotes_native_voice_to_video() {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
-        service_streams(&mut app, "c_huddle", 3);
-        app.on_hit(Hit::CallExpand, &mut doc);
-        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_aria", true);
-        app.reload(&doc);
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 800.0);
-        assert!(app.screen_sharer().is_none());
-        assert!(matches!(
-            app.overlay_stage(),
-            crate::render_call::CallStage::Grid(_)
-        ));
-        assert_eq!(app.overlay_tiles().len(), 4);
-        assert!(
-            ChatDoc::list_voice_members(&doc, "c_huddle")
-                .iter()
-                .any(|member| member.user == "u_aria" && member.sharing)
-        );
-    }
-
-    #[test]
     fn expanded_controls_do_not_advertise_screen_capture() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
@@ -4796,6 +4499,7 @@ mod tests {
             initials: initials.into(),
             color_idx: color,
         };
+        app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", id));
         app.active_ws = "ws_home".into();
         app.active_channel = "c_general".into();
         app.thread_open = None;
@@ -5112,7 +4816,5 @@ mod tests {
         }
         assert_eq!(doc_a.save(), before_a);
         assert_eq!(doc_b.save(), before_b);
-        assert!(ChatDoc::list_voice_members(&doc_a, "c_lounge").is_empty());
-        assert!(ChatDoc::list_voice_members(&doc_b, "c_lounge").is_empty());
     }
 }

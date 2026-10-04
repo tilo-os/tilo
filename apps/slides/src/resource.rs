@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, ViewCx};
 use ui::record::RecordId;
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
@@ -34,10 +34,14 @@ impl ResourceApp for SlidesShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<SlidesDeck>) -> Element {
-        let content = cx.content().unwrap_or_else(crate::assets::app_content);
         // In a container, the editor is a widget of the view's tree that
         // tests and staging reach by its type.
-        Box::new(ui::widget::Stack::new().push(cx.surface(SlidesApp::new(content))))
+        let editor = SlidesApp::new(cx);
+        Box::new(ui::widget::Stack::new().push(cx.surface(editor)))
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::strings::CATALOG)
     }
 
     fn label(state: &SlidesResourceCtx) -> String {
@@ -156,10 +160,6 @@ impl ResourceSurface<SlidesDeck> for SlidesApp {
         self.adopt_resource_state(state);
     }
 
-    fn attach(&mut self, cx: SurfaceCx<SlidesDeck>) {
-        self.attach_framework(cx.dispatcher());
-    }
-
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
     }
@@ -177,11 +177,8 @@ mod tests {
     use crate::actions::{
         ADD_ELEMENT, ADD_SLIDE, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT,
     };
-    use crate::model::{Deck, PaletteKind, Slide, seed_deck};
-    use ui::framework::ResourceSurface;
-    use ui::resources::PublishesResources;
+    use crate::model::{Deck, PaletteKind, seed_deck};
     use ui::tilo_resource::Resource;
-    use ui::widget::Widget;
 
     use ui::framework::testing::TestApp;
 
@@ -309,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_resources_keep_selection_extras_without_deck_root() {
+    fn the_deck_publishes_its_operations_and_durable_slides() {
         let ctx = SlidesResourceCtx::from_deck(&seed_deck());
         let published = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", "Deck", &ctx);
         assert_eq!(published.kind, "slides.deck");
@@ -352,105 +349,6 @@ mod tests {
                 .flat_map(|child| child.children.iter())
                 .all(|child| child.kind != "slides.selection"),
             "selection is not document state"
-        );
-
-        let mut app = SlidesApp::sample();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        assert!(
-            !app.is_framework_hosted(),
-            "standalone stays on the full action tree"
-        );
-
-        let slide = app
-            .slides_resource_ctx()
-            .slides
-            .get(app.current_slide())
-            .cloned()
-            .expect("demo deck has a current slide");
-        let element = slide
-            .elements
-            .first()
-            .cloned()
-            .expect("current slide has an element for selection extras");
-        app.select_element_for_test(element.id.clone());
-
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "slides.deck");
-        let standalone_selection = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.id.0 == format!("slides.slide:{}", slide.data.id))
-            .expect("current slide is published")
-            .children
-            .iter()
-            .find(|child| child.kind == "slides.selection")
-            .expect("standalone nests selection under the current slide");
-        assert!(
-            standalone_selection
-                .actions
-                .iter()
-                .any(|action| action.id == "delete"),
-            "standalone selection offers delete on the focused element"
-        );
-
-        app.set_framework_hosted(true);
-        assert!(app.is_framework_hosted());
-        let extras = app.resources(&state.doc);
-        assert!(
-            extras.iter().all(|resource| resource.kind != "slides.deck"),
-            "hosted must not republish the deck root beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(extras.len(), 1, "hosted returns the selection slice alone");
-        assert_eq!(extras[0].kind, "slides.selection");
-        assert_eq!(
-            extras[0].id, standalone_selection.id,
-            "hosted selection tree matches the standalone nested slice"
-        );
-        assert!(
-            extras[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "delete" || action.id == "bring-front"),
-            "hosted keeps selection-bound element conveniences"
-        );
-    }
-
-    #[test]
-    fn present_empty_does_not_wipe_unpublished_local_deck() {
-        let mut app = SlidesApp::new(crate::assets::app_content());
-        let mut local = Deck {
-            title: "local-only".into(),
-            palette: crate::model::PaletteKind::Indigo,
-            slides: Vec::new(),
-        };
-        let mut slide = Slide::new(crate::model::Layout::TitleContent);
-        slide.add(crate::model::Element::text(
-            "Not published yet",
-            96.0,
-            96.0,
-            400.0,
-            60.0,
-            32.0,
-        ));
-        let kept_id = slide.id.clone();
-        local.slides.push(slide);
-        app.seed_unpublished_deck_for_test(local);
-        let empty = Rc::new(SlidesResourceCtx {
-            deck_title: String::new(),
-            slides: Vec::new(),
-            selection: None,
-        });
-        ResourceSurface::<SlidesDeck>::present(&mut app, &empty);
-        assert_eq!(
-            app.local_slide_ids_for_test(),
-            vec![kept_id],
-            "empty present must not wipe an unpublished local deck"
         );
     }
 }

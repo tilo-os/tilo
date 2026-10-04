@@ -16,7 +16,6 @@ pub fn launch() -> Result<(), String> {
 fn launch_executable(executable: &Path) -> Result<(), String> {
     let child = Command::new(executable)
         .arg("--private")
-        .env("TILO_BROWSER_PRIVATE", "1")
         .env_remove("TILO_BROWSER_APP_ROOT")
         .env_remove("TILO_CHROMIUM_PROFILE")
         // Runtime sockets belong to the parent process. The SDK closes them
@@ -94,7 +93,7 @@ mod tests {
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$TILO_BROWSER_PRIVATE\" \"$TILO_BROWSER_APP_ROOT\" \"$TILO_CHROMIUM_PROFILE\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\" \"$TILO_RUNTIME_RESUME_LIVE\" \"$TILO_RUNTIME_PROFILE\" \"$TILO_RUNTIME_BINARY\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$TILO_BROWSER_APP_ROOT\" \"$TILO_CHROMIUM_PROFILE\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\" \"$TILO_RUNTIME_RESUME_LIVE\" \"$TILO_RUNTIME_PROFILE\" \"$TILO_RUNTIME_BINARY\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
                 capture = capture.display()
             ),
         )
@@ -108,7 +107,7 @@ mod tests {
         let lines = std::fs::read_to_string(capture).unwrap();
         assert_eq!(
             lines,
-            "1\n--private\n1\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime-mcp\n"
+            "1\n--private\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime-mcp\n"
         );
     }
 }

@@ -1138,6 +1138,9 @@ impl BrowserWidget {
         crate::capabilities::Capabilities::cancel_all(&self.engine);
     }
     pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
+        self.dispatch.clone_from(&other.dispatch);
+        self.bookmarks = other.bookmarks.clone();
+        self.apply_preferences(other.settings.clone());
         self.window_scale = other.window_scale;
         self.capabilities.share_downloads(&other.capabilities);
         self.site.share_runtime_state(&other.site);
@@ -1375,6 +1378,35 @@ impl BrowserWidget {
                 })
             },
         )]
+    }
+
+    /// Stage the window for a screenshot scenario: the chrome state each one
+    /// shows, as the engine, the network and the person would leave it.
+    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("pip-active") => self.debug_show_active_pip(),
+            Some("pip-empty") => self.debug_show_empty_pip_feedback(),
+            Some("settings") => self.debug_show_settings(),
+            Some("history-paused") => self.debug_show_history_paused(),
+            Some("loading") => self.debug_show_loading(),
+            Some("error") => self.debug_show_load_error(),
+            Some("suggestions") => {
+                self.debug_force_suggestions(crate::history::sample_entries());
+                self.suggestions.move_selection(1);
+            }
+            Some("library-history") => self.debug_show_library("history"),
+            Some("library-bookmarks") => self.debug_show_library("bookmarks"),
+            Some("library-extensions") => self.debug_show_library("extensions"),
+            Some("library-filtered") => {
+                self.debug_show_library("history");
+                self.debug_set_library_filter("rust");
+            }
+            Some(downloads) if downloads.starts_with("downloads-") => {
+                self.debug_show_downloads(downloads.trim_start_matches("downloads-"));
+            }
+            _ => {}
+        }
+        self.structure_dirty = true;
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
