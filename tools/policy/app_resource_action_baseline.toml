@@ -91,7 +91,6 @@
 # the resource's publication (`ResourceSurface::publishes_document_actions`).
 # The framework drops such actions from every other surface.
 [ratchets.surface_document_actions]
-"apps/ebook/src/resource.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
 "apps/video-editor/src/app.rs" = 1

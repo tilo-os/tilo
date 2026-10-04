@@ -25,7 +25,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use ui::widget::{AppModel, ModelPath};
 
@@ -418,12 +417,12 @@ enum SettingsTab {
     Colours,
     /// Library management: the folders watched for new books.
     Library,
-    /// Device-local reader key bindings.
+    /// The reader key bindings the person chose.
     Shortcuts,
 }
 
-/// Reader commands whose single-character bindings can be tailored per
-/// device. Navigation keys (arrows/PageUp/PageDown) always remain available,
+/// Reader commands whose single-character bindings each person can tailor.
+/// Navigation keys (arrows/PageUp/PageDown) always remain available,
 /// so changing a binding can never strand a keyboard reader.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ReaderShortcut {
@@ -790,13 +789,6 @@ impl BooksApp {
         self.library.as_ref()
     }
 
-    pub(crate) fn resolve_search_resource(
-        &self,
-        address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
-        ui::search::SearchProvider::resolve_action_resource(&self.search_provider, address)
-    }
-
     pub(crate) fn current_book_resource_context(&self) -> Option<crate::actions::BookResourceCtx> {
         let book = self.open_book()?;
         let block = self.page_top_block;
@@ -1122,11 +1114,6 @@ pub struct BooksApp {
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
     search_provider: crate::search_provider::BookSearchProvider,
-    /// Small live action surface (current reader controls plus settings
-    /// resources) merged into the compact immutable action-label provider.
-    action_search_resources: Arc<Vec<tilo_actions::Resource>>,
-    action_search_epoch: Arc<AtomicU64>,
-    action_search_fingerprint: u64,
     /// A single off-UI builder. A newer snapshot supersedes its result before
     /// publication instead of mutating a live provider in place.
     search_worker: Option<SearchWorker>,
@@ -1154,6 +1141,8 @@ pub struct BooksApp {
     watched_sources: HashMap<PathBuf, String>,
     /// Device-local portal grants, persisted outside the collaborative doc.
     local_library: LocalLibrary,
+    /// The person's own reader key bindings.
+    reader_keys: crate::reader_keys::ReaderKeys,
     /// The command currently awaiting a one-key local binding in Settings.
     shortcut_capture: Option<ReaderShortcut>,
     /// A short, local capture error announced through the row's accessible
@@ -1352,9 +1341,6 @@ impl BooksApp {
             annotations: Vec::new(),
             all_annotations: Arc::new(Vec::new()),
             search_provider: crate::search_provider::BookSearchProvider::new(&[], &[]),
-            action_search_resources: Arc::new(Vec::new()),
-            action_search_epoch: Arc::new(AtomicU64::new(1)),
-            action_search_fingerprint: 0,
             search_worker: None,
             search_fingerprint: 0,
             search_revision: 0,
@@ -1367,6 +1353,7 @@ impl BooksApp {
             watched_folders: Vec::new(),
             watched_sources: HashMap::new(),
             local_library: LocalLibrary::default(),
+            reader_keys: crate::reader_keys::ReaderKeys::default(),
             shortcut_capture: None,
             shortcut_capture_error: None,
             shelf_controls: ShelfControls::default(),
@@ -3478,6 +3465,15 @@ impl BooksApp {
         );
     }
 
+    /// The library's edits bound to where the reader is in the open book.
+    pub(crate) fn reading_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Ebook>> {
+        self.current_book_resource_context()
+            .map(|ctx| crate::actions::reading_declarations(&ctx))
+            .unwrap_or_default()
+    }
+
     /// Show the shelf settings, put books the library newly lists on the
     /// shelf, and drop books it no longer lists. An empty projection does
     /// not wipe a shelf that has not been published yet.
@@ -3536,6 +3532,7 @@ impl BooksApp {
         self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
         if self.live {
             self.local_library = LocalLibrary::load(cx.storage().settings());
+            self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);
         }
@@ -4144,7 +4141,7 @@ impl BooksApp {
                     format!(
                         "Change {} shortcut, currently {}",
                         shortcut.label(),
-                        self.local_library
+                        self.reader_keys
                             .shortcut(shortcut.id(), shortcut.default_key())
                     )
                 }
@@ -4597,74 +4594,6 @@ impl Widget for BooksApp {
         }
         self.refresh_from_doc(doc);
         self.persist_progress(doc);
-        let mut live_actions = vec![Self::publish_resource(self, doc, "ebook.settings")];
-        if let Some(book) = self.open_book() {
-            live_actions.push(Self::publish_resource(
-                self,
-                doc,
-                &format!("ebook.book:{}", book.id),
-            ));
-        }
-        live_actions.extend(
-            self.fonts
-                .iter()
-                .map(|font| Self::publish_resource(self, doc, &format!("ebook.font:{}", font.id))),
-        );
-        live_actions.extend(self.schemes.iter().map(|scheme| {
-            Self::publish_resource(self, doc, &format!("ebook.scheme:{}", scheme.id))
-        }));
-        let live_actions = live_actions.into_iter().flatten().collect::<Vec<_>>();
-        let mut action_hasher = std::collections::hash_map::DefaultHasher::new();
-        self.book_id().hash(&mut action_hasher);
-        self.chapter.hash(&mut action_hasher);
-        self.page_top_block.hash(&mut action_hasher);
-        self.sel
-            .map(|selection| {
-                (
-                    selection.anchor.block,
-                    selection.anchor.ch,
-                    selection.head.block,
-                    selection.head.ch,
-                )
-            })
-            .hash(&mut action_hasher);
-        for resource in &live_actions {
-            resource.id.hash(&mut action_hasher);
-            for action in &resource.actions {
-                action.id.hash(&mut action_hasher);
-                action.label.hash(&mut action_hasher);
-                action.description.hash(&mut action_hasher);
-                action.operation_type.hash(&mut action_hasher);
-                match &action.input {
-                    tilo_actions::ActionInput::Immediate(encoded) => {
-                        0_u8.hash(&mut action_hasher);
-                        encoded.type_id.hash(&mut action_hasher);
-                        encoded.payload.hash(&mut action_hasher);
-                    }
-                    tilo_actions::ActionInput::Deferred { type_id, .. } => {
-                        2_u8.hash(&mut action_hasher);
-                        type_id.hash(&mut action_hasher);
-                    }
-                    tilo_actions::ActionInput::Prompted {
-                        prompt,
-                        placeholder,
-                        collects,
-                        ..
-                    } => {
-                        1_u8.hash(&mut action_hasher);
-                        prompt.hash(&mut action_hasher);
-                        placeholder.hash(&mut action_hasher);
-                        (*collects as u8).hash(&mut action_hasher);
-                    }
-                }
-            }
-        }
-        let action_fingerprint = action_hasher.finish();
-        if action_fingerprint != self.action_search_fingerprint {
-            self.action_search_fingerprint = action_fingerprint;
-            self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
-        }
-        self.action_search_resources = Arc::new(live_actions);
         let registry = BooksDoc::read_library_entries(doc);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for book in self.library.iter() {
@@ -4699,7 +4628,6 @@ impl Widget for BooksApp {
                 self.search_provider = build.provider;
                 self.search_fingerprint = fingerprint;
                 self.search_revision = build.generation;
-                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
             }
         }
         if fingerprint != self.search_fingerprint && self.search_worker.is_none() {
@@ -4712,7 +4640,6 @@ impl Widget for BooksApp {
                     Arc::new(registry),
                     0,
                 );
-                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
                 return;
             };
             let registry = Arc::new(registry);
@@ -4734,7 +4661,6 @@ impl Widget for BooksApp {
                     Arc::new(Vec::new()),
                     0,
                 );
-                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
             }
         }
     }
@@ -5333,18 +5259,7 @@ impl ui::search::capability::SearchSource for BooksApp {
     /// Make books, chapters and annotations findable through canonical
     /// resource view actions in the unified Ctrl+K palette.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![
-            Box::new(self.search_provider.clone()),
-            Box::new(
-                self.search_provider
-                    .action_search_provider()
-                    .with_live_resources(
-                        (*self.action_search_resources).clone(),
-                        Arc::clone(&self.action_search_epoch),
-                        self.action_search_epoch.load(Ordering::Acquire),
-                    ),
-            ),
-        ]
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -5353,7 +5268,7 @@ impl ui::resources::PublishesResources for BooksApp {
     /// only where it is in the open book.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         self.current_book_resource_context()
-            .map(|ctx| crate::actions::live_reading_resources(&ctx))
+            .map(|ctx| vec![crate::actions::reading_resource(&ctx)])
             .unwrap_or_default()
     }
     fn action_directory_resource_page(
@@ -5387,12 +5302,10 @@ impl ui::resources::PublishesResources for BooksApp {
     fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
         Some(format!("ebook-search:{}", self.search_revision))
     }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        // The framework root already owns the library door.
-        if id == "ebook.library" {
-            return None;
-        }
-        self.publish_resource(doc, id)
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.current_book_resource_context()
+            .map(|ctx| crate::actions::reading_resource(&ctx))
+            .filter(|resource| resource.id.as_str() == id)
     }
 }
 
@@ -6057,7 +5970,7 @@ impl BooksApp {
     }
 
     fn reader_shortcut_matches(&self, shortcut: ReaderShortcut, pressed: &str) -> bool {
-        self.local_library
+        self.reader_keys
             .shortcut(shortcut.id(), shortcut.default_key())
             .eq_ignore_ascii_case(pressed)
     }
@@ -6076,13 +5989,12 @@ impl BooksApp {
             }
             Key::Character(character) => {
                 if self
-                    .local_library
+                    .reader_keys
                     .set_shortcut(shortcut.id(), character.as_str())
                 {
-                    self.local_library.save();
                     self.shortcut_capture = None;
                     self.shortcut_capture_error = None;
-                } else if crate::local_library::reserved_reader_key(character.as_str()) {
+                } else if crate::reader_keys::reserved_reader_key(character.as_str()) {
                     self.shortcut_capture_error = Some(format!(
                         "{} is reserved for a built-in reader command. Choose another key.",
                         character.to_uppercase()
@@ -9976,7 +9888,7 @@ impl BooksApp {
         total_h
     }
 
-    /// Device-local keyboard binding editor. Each row records one printable
+    /// The person's keyboard binding editor. Each row records one printable
     /// key directly; bindings are deliberately not part of the Automerge
     /// document because another reader's keyboard layout is not shared book
     /// state. Arrow/Page navigation remains available as a reliable fallback.
@@ -10060,7 +9972,7 @@ impl BooksApp {
             let binding = if capturing {
                 "Press a key…".to_string()
             } else {
-                self.local_library
+                self.reader_keys
                     .shortcut(shortcut.id(), shortcut.default_key())
                     .to_uppercase()
             };

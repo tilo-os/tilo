@@ -169,16 +169,20 @@ fn invoke(
     Ok(())
 }
 
-/// Where the reader is in `book` (`ebook.book:…`): the resource its
-/// selection-bound edits are published on.
+/// The library resource, which every edit is published on.
+const LIBRARY: &str = "ebook.library";
+
+/// Where the reader is in `book` (`ebook.book:…`): the resource its view
+/// operations (selecting, going to a passage) are published on.
 fn reading(book: &str) -> String {
     book.replacen("ebook.book:", "ebook.selection:", 1)
 }
 
-/// The edits bound to where the reader is in `book`.
-fn selection_actions(driver: &FrameHarness, book: &str) -> Vec<String> {
+/// The library's actions, where its edits bound to where the reader is
+/// in `book` are published.
+fn selection_actions(driver: &FrameHarness, _book: &str) -> Vec<String> {
     driver
-        .bound_resources(Some(&reading(book)))
+        .bound_resources(Some(LIBRARY))
         .ok()
         .and_then(|resources| resources.into_iter().next())
         .map(|resource| {
@@ -253,16 +257,16 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
 
     invoke(
         &mut first,
-        &reading(&book),
+        LIBRARY,
         "highlight-selection",
         serde_json::json!({}),
     )
     .expect("highlight");
     invoke(
         &mut first,
-        &reading(&book),
+        LIBRARY,
         "note-selection",
-        serde_json::json!({"value": "The keeper's debt"}),
+        serde_json::json!({"text": "The keeper's debt"}),
     )
     .expect("note");
 
@@ -509,7 +513,7 @@ fn highlight_passage(driver: &mut FrameHarness, book: &str, passage: serde_json:
     invoke(driver, &reading(book), "select-passage", passage).expect("select");
     invoke(
         driver,
-        &reading(book),
+        LIBRARY,
         "highlight-selection",
         serde_json::json!({}),
     )
