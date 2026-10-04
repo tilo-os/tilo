@@ -333,7 +333,10 @@ fn keyboard_pointer_and_semantic_navigation() {
         let images = d
             .a11y_nodes()
             .into_iter()
-            .find(|(_, node)| node.label() == Some("Images"))
+            // The destination, not a header that names it.
+            .find(|(_, node)| {
+                node.label() == Some("Images") && node.role() != ui::accesskit::Role::Heading
+            })
             .map(|(id, _)| id)
             .expect("the Images destination is named");
         d.perform_a11y_action(images, &ui::a11y::Action::Activate)

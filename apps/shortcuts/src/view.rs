@@ -448,29 +448,26 @@ fn library_sections(live: &Live<Workbench>, door: &LocalState<DoorState>) -> Vec
             })
             .collect()
     });
-    let saved: Vec<NavItem> = door.with(|door| {
-        door.library
-            .ready()
-            .map(|library| {
-                library
-                    .iter()
-                    .map(|shortcut| {
-                        NavItem::new(format!("{SAVED}{}", shortcut.id), shortcut.name.clone())
-                            .icon(Icon::Play)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+    // `None` until the library has loaded: then the section says nothing
+    // rather than that there is nothing.
+    let saved: Option<Vec<NavItem>> = door.with(|door| {
+        door.library.ready().map(|library| {
+            library
+                .iter()
+                .map(|shortcut| {
+                    NavItem::new(format!("{SAVED}{}", shortcut.id), shortcut.name.clone())
+                        .icon(Icon::Play)
+                })
+                .collect()
+        })
     });
     let mut sections = vec![NavSection::untitled(
         "overview",
         vec![NavItem::new(OVERVIEW, "Overview").icon(Icon::LayoutGrid)],
     )];
-    if !drafts.is_empty() {
-        sections.push(NavSection::new("drafts", "Drafts", drafts));
-    }
-    if !saved.is_empty() {
-        sections.push(NavSection::new("saved", "Saved", saved));
+    sections.push(NavSection::new("drafts", "Drafts", drafts).empty_caption("No drafts"));
+    if let Some(saved) = saved {
+        sections.push(NavSection::new("saved", "Saved", saved).empty_caption("No saved shortcuts"));
     }
     sections
 }

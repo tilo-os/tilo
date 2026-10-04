@@ -807,8 +807,7 @@ impl BackupsApp {
     }
 
     fn set_content_header(&mut self, title: String, actions: Vec<ui::widget::Element>) {
-        let shell = std::mem::take(&mut self.shell);
-        self.shell = shell.content_header(title, actions);
+        self.shell.set_content_header(title, actions);
     }
 
     /// Rebuild the columns when what they show changed.

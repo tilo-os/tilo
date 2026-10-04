@@ -77,6 +77,8 @@ pub struct Dispatcher<R: Resource> {
     applied: Rc<Cell<bool>>,
     /// The boundary last taken opened a step that stays open.
     opened: Rc<Cell<bool>>,
+    /// The view shows a past version in History, not the live resource.
+    past: bool,
     marker: std::marker::PhantomData<fn(R)>,
 }
 
@@ -110,6 +112,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            past: self.past,
             marker: std::marker::PhantomData,
         }
     }
@@ -139,6 +142,7 @@ impl<R: Resource> Dispatcher<R> {
             continuing: Rc::default(),
             applied: Rc::default(),
             opened: Rc::default(),
+            past: false,
             marker: std::marker::PhantomData,
         }
     }
@@ -149,6 +153,22 @@ impl<R: Resource> Dispatcher<R> {
     /// view of a past version, which nobody edits.
     pub fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// A dispatcher for a past version in History: nothing it is given is
+    /// ever applied.
+    pub(crate) fn past(mut self) -> Self {
+        self.past = true;
+        self.read_only.set(true);
+        self
+    }
+
+    /// Whether the view shows a past version in History mode, drawn from a
+    /// frozen document. Such a view must start no work: no worker, no
+    /// network, no files. A surface that would fetch or watch something
+    /// presents what the document holds instead.
+    pub fn is_past(&self) -> bool {
+        self.past
     }
 
     /// Whether edits from this participant will be refused, as of now: it
@@ -429,6 +449,7 @@ impl<R: Resource> Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            past: self.past,
             marker: std::marker::PhantomData,
         }
     }

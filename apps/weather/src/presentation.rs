@@ -57,7 +57,7 @@ impl PlaceRowText {
             .selected(selected)
             .interaction(interaction);
         match &self.temperature {
-            Some(temperature) => face.meta(temperature),
+            Some(temperature) => face.title_value(temperature),
             None => face,
         }
     }

@@ -469,11 +469,13 @@ impl DocumentTable {
     }
 
     fn make_cell(rid: &str, cid: &str) -> TextInput {
-        TextInput::new(vec![])
+        let mut cell = TextInput::new(vec![])
             .with_id(&format!("cell_{rid}_{cid}"))
             .with_on_change_path(&cell_key(rid, cid))
             .with_plain_chrome()
-            .with_text_role(TextRole::Body)
+            .with_text_role(TextRole::Body);
+        cell.keep_document_inset();
+        cell
     }
 
     /// Local projection for hosts whose canonical table is already represented
@@ -493,6 +495,7 @@ impl DocumentTable {
                 .map(|_| {
                     let mut input = TextInput::local().with_plain_chrome();
                     input.set_multiline(true);
+                    input.keep_document_inset();
                     input
                 })
                 .collect();

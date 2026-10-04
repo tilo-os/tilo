@@ -281,11 +281,13 @@ mod tests {
     const STANDALONE_ENTRYPOINTS: &[&str] = &[
         "block_editor_typing.rs",
         "card_composition_shots.rs",
+        "distinct_letters_shots.rs",
         "form_composition_shots.rs",
         "managed_history_probe.rs",
         "manual_composition_shots.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "reading_face_shots.rs",
         "search_latency.rs",
         "type_specimen_shots.rs",
         "windows_host.rs",

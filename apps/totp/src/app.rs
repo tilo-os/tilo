@@ -39,12 +39,8 @@ use ui::presence::PresenceCtx;
 use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{
-    Banner, BannerContent, BannerKind, Button, ButtonFace, ButtonRole, ControlSize, TaffyTreeExt,
-    Widget,
-};
+use ui::widget::{Banner, BannerContent, BannerKind, TaffyTreeExt, Widget};
 
 use crate::actions::TotpAction;
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
@@ -834,61 +830,32 @@ impl AuthenticatorApp {
         self.banner_rect = Rect::ZERO;
         self.retry_rect = Rect::ZERO;
         if self.persistence_pending() {
-            let metrics = &theme.tokens.metrics;
-            let pad = f64::from(spacing.s4);
-            let gap = f64::from(spacing.s3);
-            let detail = self
-                .persistence_message
-                .as_deref()
-                .unwrap_or(UNSAVED_DETAIL);
-            let headline_style = theme.text(TextRole::Body).strong();
-            let detail_style = theme.text(TextRole::Caption);
-            let retry_h = ButtonFace::height(ControlSize::Regular, theme);
-            let retry_w = ButtonFace::new(Rect::ZERO, RETRY_LABEL)
-                .role(ButtonRole::Secondary)
-                .intrinsic_width(ctx.text, theme);
-            // The banner spans the column the rows stand in. Its text starts
-            // after the icon; Retry sits inside the box at its trailing edge
-            // when both lines fit beside it, and under the box otherwise.
-            let text_x = pad + f64::from(metrics.icon_md) + gap;
-            let (headline_w, _) = ctx.text.measure_style(UNSAVED_TITLE, None, &headline_style);
-            let (detail_w, _) = ctx.text.measure_style(detail, None, &detail_style);
-            let natural_w = f64::from(headline_w.max(detail_w));
-            let beside = text_x + natural_w + gap + retry_w + pad <= self.column.width();
-            let text_w = (self.column.width() - text_x - pad).max(1.0);
-            let (_, headline_h) = ctx.text.measure_style(
-                UNSAVED_TITLE,
-                Some(ui::num::f32_of_f64(text_w)),
-                &headline_style,
-            );
-            let (_, detail_h) =
-                ctx.text
-                    .measure_style(detail, Some(ui::num::f32_of_f64(text_w)), &detail_style);
-            let banner_h =
-                (f64::from(headline_h) + f64::from(spacing.s1) + f64::from(detail_h) + 2.0 * gap)
-                    .max(f64::from(metrics.panel_row_height));
+            // The banner spans the column the rows stand in and holds Retry:
+            // beside its text when it fits, under it inside the box when not.
+            let content = self.banner_content();
+            let banner_h = Banner::height(&content, self.column.width(), ctx.text, theme);
             let y0 = top + f64::from(spacing.s2);
-            self.banner_rect = Rect::new(self.column.x0, y0, self.column.x1, y0 + banner_h);
-            let retry_origin = if beside {
-                Point::new(
-                    self.column.x1 - pad - retry_w,
-                    y0 + (banner_h - retry_h) / 2.0,
-                )
-            } else {
-                Point::new(
-                    self.column.x1 - retry_w,
-                    y0 + banner_h + f64::from(spacing.s2),
-                )
-            };
-            self.retry_rect = Rect::from_origin_size(retry_origin, (retry_w, retry_h));
-            top = if beside {
-                self.banner_rect.y1
-            } else {
-                self.retry_rect.y1
-            } + f64::from(spacing.s2);
+            let banner = Rect::new(self.column.x0, y0, self.column.x1, y0 + banner_h);
+            let retry = Banner::layout(&content, banner, ctx.text, theme)
+                .action
+                .unwrap_or(Rect::ZERO);
+            self.banner_rect = banner;
+            self.retry_rect = retry;
+            top = self.banner_rect.y1 + f64::from(spacing.s2);
         }
         let list_rect = Rect::new(self.rect.x0, top, self.rect.x1, self.rect.y1);
         self.list.set_viewport(list_rect, self.column);
+    }
+
+    /// The unsaved-changes banner, with Retry inside it.
+    fn banner_content(&self) -> BannerContent<'_> {
+        BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
+            .with_message(Some(
+                self.persistence_message
+                    .as_deref()
+                    .unwrap_or(UNSAVED_DETAIL),
+            ))
+            .action(RETRY_LABEL)
     }
 
     fn paint_banner(&self, ctx: &mut PaintCtx<'_>) {
@@ -898,27 +865,8 @@ impl AuthenticatorApp {
         Banner::paint(
             ctx,
             self.banner_rect,
-            &BannerContent {
-                kind: BannerKind::Warning,
-                icon: BannerKind::Warning.default_icon(),
-                title: UNSAVED_TITLE,
-                message: Some(
-                    self.persistence_message
-                        .as_deref()
-                        .unwrap_or(UNSAVED_DETAIL),
-                ),
-                dismissible: false,
-            },
+            &self.banner_content(),
             self.last_mouse,
-        );
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &ButtonFace::new(self.retry_rect, RETRY_LABEL)
-                .role(ButtonRole::Secondary)
-                .hovered(self.retry_rect.contains(self.last_mouse)),
         );
     }
 
@@ -932,7 +880,7 @@ impl AuthenticatorApp {
         let Some((msg, when, kind)) = &self.toast else {
             return;
         };
-        if when.elapsed() > TOAST_TTL {
+        if ui::widget::toast::transient_expired(*when, TOAST_TTL) {
             return;
         }
         paint_transient(

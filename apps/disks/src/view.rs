@@ -18,13 +18,15 @@ use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Button, ButtonRole, Chip, ChipStyle, Element, EmptyState, ListRow, NavItem, NavList,
-    NavSection, Property, PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer,
-    StatGroup, StatTile, Text, ToggleGroup, Tone,
+    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, SegmentedStyle,
+    Spacer, StatGroup, StatTile, Text, ToggleGroup, Tone,
 };
 
 use crate::app::{ActionKind, Tab};
 use crate::map::{MapEntry, PartitionMap};
-use crate::model::{AttrSeverity, Drive, Partition, SmartAttr, SmartInfo, SmartStatus, fmt_hours};
+use crate::model::{
+    AttrSeverity, Drive, DriveKind, Partition, SmartAttr, SmartInfo, SmartStatus, fmt_hours,
+};
 
 /// What a control in the window asks for. The app applies each one to the
 /// window and the machine, the same way for a click, a key or an
@@ -62,15 +64,36 @@ pub(crate) struct DetailModel<'a> {
     pub enabled: [bool; 5],
 }
 
-/// The drive list: one destination per drive, under the name it shows.
-pub(crate) fn drive_list(labels: Vec<String>, selected: usize, intents: &Intents) -> NavList {
-    let items = labels
-        .into_iter()
+/// The glyph of a drive: a stick for USB, the drive for the rest.
+pub(crate) fn drive_icon(drive: &Drive) -> Icon {
+    match drive.kind {
+        DriveKind::Usb => Icon::Usb,
+        _ if drive.removable => Icon::SdCard,
+        DriveKind::Zram | DriveKind::Virtual => Icon::Layers,
+        _ => Icon::HardDrive,
+    }
+}
+
+/// The drive list: one destination per drive under the name it shows, its
+/// size beside it and a dot when its health needs the person.
+pub(crate) fn drive_list(
+    drives: &[(&Drive, String)],
+    selected: usize,
+    intents: &Intents,
+) -> NavList {
+    let items = drives
+        .iter()
         .enumerate()
-        .map(|(index, label)| {
-            NavItem::new(drive_id(index), label)
-                .icon(Icon::HardDrive)
-                .without_actions()
+        .map(|(index, (drive, label))| {
+            let item = NavItem::new(drive_id(index), label.clone())
+                .icon(drive_icon(drive))
+                .meta(bytes_si(drive.size))
+                .without_actions();
+            match drive.smart_status() {
+                SmartStatus::Warning => item.status(RowStatus::Warning),
+                SmartStatus::Failing => item.status(RowStatus::Error),
+                SmartStatus::Passed | SmartStatus::Unknown => item,
+            }
         })
         .collect();
     let intents = intents.clone();

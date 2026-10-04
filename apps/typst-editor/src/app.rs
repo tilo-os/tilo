@@ -1326,6 +1326,7 @@ impl Widget for TypstApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::WindowHeader,
         dyn ui::resources::PublishesResources,
         dyn ui::undo::UndoPoints
     );
@@ -1624,13 +1625,9 @@ impl Widget for TypstApp {
     ) {
         // The diagnostic's hover card and the controls' open lists float
         // above both panes.
-        self.editor.draw_tooltip(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.diagnostics.diags(),
-        );
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.editor
+            .draw_tooltip(scene, transform, text_renderer, theme, window);
         for child in self.chrome.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -1746,6 +1743,7 @@ impl Widget for TypstApp {
         if self.show_diagnostics {
             children.extend(self.diagnostics.accessibility());
         }
+
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Typst editor")
@@ -1912,6 +1910,15 @@ impl ui::resources::PublishesResources for TypstApp {
 impl ui::widget::controls::ActionControls for TypstApp {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
+    }
+}
+
+/// The bar is the window's header row: it holds the History control the
+/// host offers, and the window draws no History bar above the editor.
+impl ui::widget::WindowHeader for TypstApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.chrome.set_history(control);
+        self.dirty = true;
     }
 }
 

@@ -27,6 +27,9 @@ pub struct ConnectionRow {
     pub id: Uuid,
     pub name: String,
     pub engine: Engine,
+    /// Where it connects: `host:port`, or the database file's name; empty
+    /// for the bundled sample.
+    pub address: String,
     /// The bundled sample cannot be removed.
     pub removable: bool,
 }

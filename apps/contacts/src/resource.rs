@@ -101,7 +101,7 @@ impl Resource for Contacts {
                     .first()
                     .map(|email| email.value.clone())
                     .unwrap_or_default(),
-                action: None,
+                ..Default::default()
             })
             .collect()
     }

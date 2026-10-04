@@ -1979,7 +1979,27 @@ mod tests {
             "Remove opens the confirmation"
         );
         assert!(app_of(&mut d).engine.find(&first.id).is_some());
+        // The dialog opens on its safe answer: Enter keeps the container.
         d.key("Enter");
+        assert!(app_of(&mut d).confirm.is_none());
+        assert!(
+            app_of(&mut d).engine.find(&first.id).is_some(),
+            "Enter on the opened confirmation cancels"
+        );
+
+        d.click_named(&format!("detail-remove-{}", first.id))
+            .unwrap();
+        let remove = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label() == Some("Remove container")
+                    && node.role() == ui::accesskit::Role::Button
+            })
+            .map(|(id, _)| id)
+            .expect("the confirmation's Remove container action");
+        d.perform_a11y_action(remove, &ui::a11y::Action::Activate)
+            .unwrap();
         assert!(app_of(&mut d).confirm.is_none());
         assert!(
             app_of(&mut d).engine.find(&first.id).is_none(),

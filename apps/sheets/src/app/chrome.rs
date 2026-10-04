@@ -17,8 +17,7 @@ use ui::icons::Icon;
 use ui::surface::separator;
 use ui::widget::toolbar;
 use ui::widget::{
-    ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, SegmentedFace, SegmentedStyle,
-    paint_focus_ring,
+    ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle,
 };
 
 /// Reference label the name box is sized for, so it never resizes with the
@@ -476,17 +475,9 @@ impl SheetsApp {
     /// The field face of the formula bar: its raised ground with the derived
     /// edge, ringed in your colour while it has focus.
     fn paint_field(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, focused: bool) {
-        let radius = f64::from(theme.tokens.radii.control);
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            radius,
-            theme.tokens.colors.surfaces.raised,
-        );
-        if focused {
-            paint_focus_ring(scene, transform, rect, radius, theme);
-        }
+        FieldFace::new(rect, "")
+            .focused(focused)
+            .paint_chrome(scene, transform, theme);
     }
 
     /// Formula bar's name box: its field, and either the live edit buffer or

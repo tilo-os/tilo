@@ -40,6 +40,39 @@ const DEFAULT_WIDTH: f64 = 140.0;
 /// Gap between the field and each stepper button.
 const GAP: f64 = 4.0;
 
+/// What goes between a number and its `unit` in `locale`: nothing before a
+/// percent, per-mille or degree sign in the locales that write them so
+/// (`50%`, `20°`), a no-break space where the locale sets them apart
+/// (`50 %` in German and French), and a space before a word unit (`16 px`).
+fn unit_joiner(locale: &str, unit: &str) -> &'static str {
+    let sign = matches!(unit, "%" | "‰" | "°" | "′" | "″");
+    if !sign {
+        return " ";
+    }
+    let language = locale
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let spaced = unit != "°"
+        && matches!(
+            language.as_str(),
+            "de" | "fr"
+                | "es"
+                | "nb"
+                | "nn"
+                | "no"
+                | "sv"
+                | "fi"
+                | "da"
+                | "cs"
+                | "sk"
+                | "ru"
+                | "et"
+        );
+    if spaced { "\u{a0}" } else { "" }
+}
+
 /// Parse the leading numeric portion of `s` into an `f64`. Tolerates a
 /// leading sign, one decimal point, and any trailing non-numeric suffix
 /// (so `"16 px"`, `"16px"`, `"-3.5%"` all parse to their number). Returns
@@ -143,6 +176,11 @@ pub struct NumberInput {
     /// Unit suffix shown after the number (`"px"`, `"%"`, `"pt"`). Purely
     /// cosmetic — it's baked into the display text and stripped on parse.
     suffix: String,
+    /// Shows a value in the app's own terms ("Now", "10:57") instead of
+    /// the number and its unit.
+    formatter: Option<Box<dyn Fn(f64) -> String>>,
+    /// Reads typed text back into a value, paired with `formatter`.
+    parser: Option<Box<dyn Fn(&str) -> Option<f64>>>,
     rect: Rect,
     field: TextInput,
     field_rect: Rect,
@@ -196,6 +234,8 @@ impl NumberInput {
             step: 1.0,
             decimals: 0,
             suffix: String::new(),
+            formatter: None,
+            parser: None,
             rect: Rect::ZERO,
             field: TextInput::local().with_kind(TextInputKind::Number),
             field_rect: Rect::ZERO,
@@ -267,7 +307,32 @@ impl NumberInput {
         self
     }
 
-    /// Unit suffix appended to the displayed number (`"px"`, `"%"`, …).
+    /// Show each value in the app's own words (a time stepper's "Now" or
+    /// "10:57"); `parse` reads what the person types back into a value
+    /// (`None` keeps the current one). The control is measured to hold every
+    /// formatted value in range.
+    #[must_use]
+    pub fn with_value_format(
+        mut self,
+        format: impl Fn(f64) -> String + 'static,
+        parse: impl Fn(&str) -> Option<f64> + 'static,
+    ) -> Self {
+        self.formatter = Some(Box::new(format));
+        self.parser = Some(Box::new(parse));
+        self.sync_field();
+        self
+    }
+
+    /// Read typed text as a value: the app's parser, or the leading number.
+    fn parse_text(&self, text: &str) -> Option<f64> {
+        match &self.parser {
+            Some(parse) => parse(text),
+            None => parse_leading_number(text),
+        }
+    }
+
+    /// Unit suffix appended to the displayed number (`"px"`, `"%"`, …),
+    /// placed as the locale writes it (`50%` in English, `50 %` in German).
     #[must_use]
     pub fn with_suffix(mut self, suffix: &str) -> Self {
         self.suffix = suffix.to_string();
@@ -379,6 +444,9 @@ impl NumberInput {
 
     /// `value` formatted exactly as [`Self::format_value`] would show it.
     fn format_display(&self, value: f64) -> String {
+        if let Some(format) = &self.formatter {
+            return format(value);
+        }
         let n = if self.decimals == 0 {
             format!("{}", round_to_i64(value))
         } else {
@@ -387,7 +455,8 @@ impl NumberInput {
         if self.suffix.is_empty() {
             n
         } else {
-            format!("{} {}", n, self.suffix)
+            let locale = crate::i18n::I18nManager::current_locale();
+            format!("{n}{}{}", unit_joiner(&locale, &self.suffix), self.suffix)
         }
     }
 
@@ -465,7 +534,7 @@ impl NumberInput {
     /// — the caller flushes via [`flush_crdt`](NumberInput::flush_crdt) or
     /// the next `sync`.
     fn commit_local(&mut self) {
-        if let Some(parsed) = parse_leading_number(self.field.value()) {
+        if let Some(parsed) = self.parse_text(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
             if (clamped - self.value).abs() > f64::EPSILON {
                 self.value = clamped;
@@ -921,7 +990,7 @@ impl Widget for NumberInput {
                 true
             }
             Action::SetValue(v) => {
-                let Some(parsed) = parse_leading_number(v) else {
+                let Some(parsed) = self.parse_text(v) else {
                     return false;
                 };
                 let clamped = parsed.clamp(self.min, self.max);
@@ -1065,7 +1134,7 @@ mod tests {
                     compact.rect.height(),
                     crate::widget::ControlSize::Small.height(&theme)
                 );
-                let (widest, _) = text.measure_style("400 %", None, &compact.value_style);
+                let (widest, _) = text.measure_style("400%", None, &compact.value_style);
                 assert!(f64::from(widest) <= compact.field_rect.width());
             }
         }
@@ -1557,5 +1626,44 @@ mod tests {
                 42.0
             );
         }
+    }
+
+    #[test]
+    fn values_read_in_the_apps_words_and_units_sit_where_the_locale_puts_them() {
+        assert_eq!(unit_joiner("en-US", "%"), "");
+        assert_eq!(unit_joiner("de-DE", "%"), "\u{a0}");
+        assert_eq!(unit_joiner("fr", "%"), "\u{a0}");
+        assert_eq!(unit_joiner("de-DE", "°"), "");
+        assert_eq!(unit_joiner("en-US", "px"), " ");
+        let percent = NumberInput::new(50.0).with_suffix("%");
+        assert_eq!(percent.field.value(), "50%");
+
+        let mut time = NumberInput::new(0.0)
+            .with_range(0.0, 1440.0)
+            .with_step(1.0)
+            .with_value_format(
+                |minutes| {
+                    if minutes == 0.0 {
+                        "Now".to_owned()
+                    } else {
+                        let minutes = round_to_i64(minutes);
+                        format!("{}:{:02}", minutes / 60, minutes % 60)
+                    }
+                },
+                |text| {
+                    if text.trim().eq_ignore_ascii_case("now") {
+                        return Some(0.0);
+                    }
+                    let (hours, minutes) = text.trim().split_once(':')?;
+                    Some(hours.parse::<f64>().ok()? * 60.0 + minutes.parse::<f64>().ok()?)
+                },
+            );
+        assert_eq!(time.field.value(), "Now");
+        time.set_value(657.0);
+        assert_eq!(time.field.value(), "10:57");
+        time.field.set_text("11:05");
+        time.commit_local();
+        assert_eq!(time.value(), 665.0);
+        assert_eq!(time.field.value(), "11:05");
     }
 }

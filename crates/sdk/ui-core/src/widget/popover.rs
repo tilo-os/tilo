@@ -44,6 +44,9 @@ use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
 /// [`Popover::resolved_side`].
 pub use crate::widget::floating_surface::PopoverSide;
 
+/// Which edge of its anchor a popover lines up with.
+pub use crate::widget::floating_surface::PanelAlign;
+
 /// The body of an option menu: no content widget.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoContent;
@@ -115,6 +118,10 @@ impl MenuMetrics {
 
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent open, presentation and invalidation flags"
+)]
 pub struct Popover<C: Widget = NoContent> {
     content: C,
     options: Option<Options>,
@@ -124,17 +131,28 @@ pub struct Popover<C: Widget = NoContent> {
     anchor: Rect,
     side: PopoverSide,
     resolved_side: PopoverSide,
+    align: PanelAlign,
     /// Bounds the panel stays inside. `None` uses the window the top layer
     /// paints over.
     viewport: Option<Rect>,
+    /// The window the top layer last painted over.
+    presented: Option<Rect>,
     /// The panel, resolved by [`Self::place`] (also run by layout and paint).
     rect: Rect,
     on_dismiss: Option<Box<dyn FnMut()>>,
     last_cursor: Point,
     layout_theme: Theme,
-    /// Isolated taffy tree for the content, kept so events reach it.
-    content_taffy: Option<TaffyTree<()>>,
-    content_node: Option<NodeId>,
+    /// The content's own tree, when no host lays it out.
+    detached: Option<floating_surface::DetachedContent>,
+    /// The content's node in the host's tree, once a host has built it: a
+    /// field in it then takes focus like any other.
+    host_content: Option<NodeId>,
+    /// The content's size as the host measured it.
+    content_size: (f64, f64),
+    /// Where the content's top-left was last placed.
+    content_origin: Point,
+    /// The host must place the content again.
+    stale: bool,
 }
 
 impl Default for Popover {
@@ -153,14 +171,32 @@ impl<C: Widget> Popover<C> {
             anchor: Rect::ZERO,
             side: PopoverSide::Below,
             resolved_side: PopoverSide::Below,
+            align: PanelAlign::Leading,
             viewport: None,
+            presented: None,
             rect: Rect::ZERO,
             on_dismiss: None,
             last_cursor: Point::ZERO,
             layout_theme: Theme::dark(),
-            content_taffy: None,
-            content_node: None,
+            detached: None,
+            host_content: None,
+            content_size: (0.0, 0.0),
+            content_origin: Point::ZERO,
+            stale: false,
         }
+    }
+
+    /// Line the panel up with the anchor's trailing edge instead of its
+    /// leading edge: a popover from a button at the end of a header row.
+    #[must_use]
+    pub fn aligned(mut self, align: PanelAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    /// [`Self::aligned`] after construction.
+    pub fn set_align(&mut self, align: PanelAlign) {
+        self.align = align;
     }
 
     /// A closed popover showing `content` next to `anchor`.
@@ -225,6 +261,9 @@ impl<C: Widget> Popover<C> {
     }
 
     pub fn set_open(&mut self, open: bool) {
+        if open && !self.open {
+            self.stale = self.host_content.is_some();
+        }
         self.open = open;
     }
 
@@ -272,10 +311,20 @@ impl<C: Widget> Popover<C> {
     /// Callable without a paint, so a hand-drawn host or a test can hit-test
     /// right after opening.
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let viewport = self
-            .viewport
-            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        let viewport = self.room(theme);
         self.place_in(viewport, tr, theme);
+    }
+
+    /// Where the panel may go: the given viewport, else the window the top
+    /// layer last painted over (less the edge margin every floating panel
+    /// keeps), else anywhere.
+    fn room(&self, theme: &Theme) -> Rect {
+        self.viewport
+            .or_else(|| {
+                self.presented
+                    .map(|window| floating_surface::panel_room(window, theme))
+            })
+            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6))
     }
 
     #[allow(
@@ -293,6 +342,9 @@ impl<C: Widget> Popover<C> {
                 w = w.max(m.text_x + tw + f64::from(theme.tokens.spacing.s4));
             }
             (w, options.items.len().max(1) as f64 * m.row)
+        } else if self.host_content.is_some() {
+            // The host measured the content at its own width.
+            self.content_size
         } else {
             // Layout rounds the measured size to whole pixels, so text measured
             // at its max-content width can come back a fraction short and wrap
@@ -302,11 +354,17 @@ impl<C: Widget> Popover<C> {
         };
         let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
         let gap = f64::from(theme.tokens.spacing.s1);
-        let (rect, side) =
-            floating_surface::place_anchored(self.anchor, (w, h), self.side, gap, viewport);
+        let (rect, side) = floating_surface::place_aligned(
+            self.anchor,
+            (w, h),
+            self.side,
+            self.align,
+            gap,
+            viewport,
+        );
         self.resolved_side = side;
         self.rect = rect;
-        if self.options.is_none() {
+        if self.options.is_none() && self.host_content.is_none() {
             self.place_content(tr, theme);
         }
     }
@@ -320,26 +378,27 @@ impl<C: Widget> Popover<C> {
         floating_surface::DetachedContent::lay_out(&mut self.content, theme, available, tr).size()
     }
 
+    /// Where the content's top-left belongs: inside the panel's padding.
+    fn content_target(&self, theme: &Theme) -> Point {
+        self.rect.inset(-self.padding(theme)).origin()
+    }
+
     /// Lay the content out inside the panel's padding, in its own tree.
     fn place_content(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let inner = self.rect.inset(-self.padding(theme));
         if inner.width() <= 0.0 || inner.height() <= 0.0 {
             return;
         }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a popover's body is a bounded screen-pixel size"
-        )]
         let available = Size {
-            width: taffy::AvailableSpace::Definite(inner.width() as f32),
-            height: taffy::AvailableSpace::Definite(inner.height() as f32),
+            width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(inner.width())),
+            height: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(inner.height())),
         };
         let content =
             floating_surface::DetachedContent::lay_out(&mut self.content, theme, available, tr);
         self.content
             .apply_layout(&content.taffy, content.node, inner.origin());
-        self.content_node = Some(content.node);
-        self.content_taffy = Some(content.taffy);
+        self.content_origin = inner.origin();
+        self.detached = Some(content);
     }
 
     fn dismiss(&mut self) {
@@ -349,29 +408,39 @@ impl<C: Widget> Popover<C> {
         }
     }
 
+    /// Forward `event` to the content; returns whether it consumed it. A
+    /// hosted popover's content is addressed by its node in the host's
+    /// tree, so a field's focus request names a node the window knows.
     fn forward_to_content(
         &mut self,
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
-        let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) else {
-            return false;
-        };
-        let mut handled = false;
-        self.content.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: ctx.state,
-                path: ctx.path,
-                handled: &mut handled,
-                focus_target: ctx.focus_target,
-                node_id: node,
-                taffy,
-            },
-        );
-        handled
+        let before = std::mem::replace(ctx.handled, false);
+        if let Some(node) = self.host_content {
+            self.content
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        } else if let Some(content) = &self.detached {
+            let mut detached_focus = None;
+            self.content.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    // A node of the popover's own tree means nothing to the
+                    // window; the content keeps its own focus.
+                    focus_target: &mut detached_focus,
+                    node_id: content.node,
+                    taffy: &content.taffy,
+                },
+            );
+        }
+        let consumed = *ctx.handled;
+        *ctx.handled = before || consumed;
+        consumed
     }
 
     #[allow(
@@ -443,6 +512,268 @@ impl<C: Widget> Popover<C> {
             color,
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+    }
+}
+
+/// The body of a prompt popover ([`Popover::prompt`]): a caption, one
+/// field and a hint under it. Enter submits what was typed; Escape closes
+/// the popover without it.
+pub struct PopoverPrompt {
+    caption: String,
+    hint: String,
+    input: crate::widget::TextInput,
+    submitted: Option<String>,
+    /// How many characters the field is sized for.
+    chars: usize,
+    rect: Rect,
+    theme: Theme,
+}
+
+impl PopoverPrompt {
+    fn new(caption: &str, placeholder: &str, hint: &str) -> Self {
+        let mut input = crate::widget::TextInput::local().with_placeholder(placeholder);
+        input.set_focus(true);
+        Self {
+            caption: caption.to_string(),
+            hint: hint.to_string(),
+            input,
+            submitted: None,
+            chars: 24,
+            rect: Rect::ZERO,
+            theme: Theme::dark(),
+        }
+    }
+
+    /// The field's text.
+    pub fn value(&self) -> &str {
+        self.input.value()
+    }
+
+    /// The field, for its kind, filter or mono face.
+    pub fn input_mut(&mut self) -> &mut crate::widget::TextInput {
+        &mut self.input
+    }
+
+    /// Replace the hint under the field (a range, or why the value is not
+    /// accepted).
+    pub fn set_hint(&mut self, hint: &str) {
+        hint.clone_into(&mut self.hint);
+    }
+
+    fn line(theme: &Theme, role: TextRole) -> f64 {
+        f64::from(theme.text(role).line_height_px())
+    }
+
+    fn gap(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// The prompt's size: the field is wide enough for `chars` characters of
+    /// body text, never narrower than a utility panel's half.
+    fn size(&self, theme: &Theme) -> (f64, f64) {
+        let em = f64::from(theme.text(TextRole::Body).size) * 0.6;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a prompt's character count is small"
+        )]
+        let width =
+            (em * self.chars as f64).max(f64::from(theme.tokens.metrics.panel_width_utility) / 2.0);
+        let mut height = crate::widget::ControlSize::Regular.height(theme);
+        if !self.caption.is_empty() {
+            height += Self::line(theme, TextRole::Label) + Self::gap(theme);
+        }
+        if !self.hint.is_empty() {
+            height += Self::line(theme, TextRole::Caption) + Self::gap(theme);
+        }
+        (width, height)
+    }
+
+    fn field_rect(&self) -> Rect {
+        let theme = &self.theme;
+        let top = if self.caption.is_empty() {
+            self.rect.y0
+        } else {
+            self.rect.y0 + Self::line(theme, TextRole::Label) + Self::gap(theme)
+        };
+        Rect::new(
+            self.rect.x0,
+            top,
+            self.rect.x1,
+            top + crate::widget::ControlSize::Regular.height(theme),
+        )
+    }
+}
+
+impl Widget for PopoverPrompt {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.theme = theme.clone();
+        let (w, h) = self.size(theme);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(crate::num::f32_of_f64(w)),
+                height: Dimension::length(crate::num::f32_of_f64(h)),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            ),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+        let field = self.field_rect();
+        self.input.apply_layout_external(field);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let colors = &theme.tokens.colors;
+        if !self.caption.is_empty() {
+            tr.draw_style(
+                scene,
+                &self.caption,
+                colors.text_primary,
+                transform.pre_translate(Vec2::new(self.rect.x0, self.rect.y0)),
+                Some(crate::num::f32_of_f64(self.rect.width())),
+                &theme.text(TextRole::Label),
+            );
+        }
+        self.input.draw(scene, transform, tr, theme, presence);
+        if !self.hint.is_empty() {
+            let y = self.field_rect().y1 + Self::gap(theme);
+            tr.draw_style(
+                scene,
+                &self.hint,
+                colors.text_dim,
+                transform.pre_translate(Vec2::new(self.rect.x0, y)),
+                Some(crate::num::f32_of_f64(self.rect.width())),
+                &theme.text(TextRole::Caption),
+            );
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Enter),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            self.submitted = Some(self.input.value().to_string());
+            *ctx.handled = true;
+            return;
+        }
+        self.input.handle_event(event, ctx);
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.input.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.input.is_focused()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.input)
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = Widget::accessibility(&self.input)?;
+        // The caption names the field; a placeholder is only an example
+        // of what goes in it.
+        if !self.caption.is_empty() {
+            node.name = Some(self.caption.clone());
+        }
+        if !self.hint.is_empty() {
+            node.description = Some(self.hint.clone());
+        }
+        Some(node)
+    }
+
+    fn name(&self) -> &'static str {
+        "PopoverPrompt"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl Popover<PopoverPrompt> {
+    /// A prompt next to the control that asks for one value ("Go to
+    /// offset"): `caption` over one field, `hint` under it. Enter submits
+    /// ([`Self::take_submitted`]), Escape or a click outside closes.
+    pub fn prompt(caption: &str, placeholder: &str, hint: &str) -> Self {
+        Self::with_content(PopoverPrompt::new(caption, placeholder, hint))
+    }
+
+    /// Size the field for `chars` characters (default 24).
+    #[must_use]
+    pub fn with_field_chars(mut self, chars: usize) -> Self {
+        self.content.chars = chars.max(4);
+        self
+    }
+
+    /// Configure the field: its kind, its id, a filter.
+    #[must_use]
+    pub fn with_field(
+        mut self,
+        configure: impl FnOnce(crate::widget::TextInput) -> crate::widget::TextInput,
+    ) -> Self {
+        let input = std::mem::replace(&mut self.content.input, crate::widget::TextInput::local());
+        self.content.input = configure(input);
+        self
+    }
+
+    /// Open at `anchor` with `initial` in the field, selected so typing
+    /// replaces it, and the field focused.
+    pub fn open_prompt(&mut self, anchor: Rect, initial: &str) {
+        self.set_anchor(anchor);
+        self.content.input.set_text(initial);
+        self.content.input.select_all();
+        self.content.input.set_focus(true);
+        self.content.submitted = None;
+        self.set_open(true);
+    }
+
+    /// What was submitted with Enter, once; the popover closes with it.
+    pub fn take_submitted(&mut self) -> Option<String> {
+        let submitted = self.content.submitted.take();
+        if submitted.is_some() {
+            self.open = false;
+        }
+        submitted
     }
 }
 
@@ -592,20 +923,79 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // A zero-extent leaf: the panel is placed against the anchor, not by
-        // the parent's flexbox. Registered so the host's sweeps reach it.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
-            ..Default::default()
+        if self.options.is_some() {
+            // A zero-extent leaf: the panel is placed against the anchor, not
+            // by the parent's flexbox. Registered so the host's sweeps reach it.
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::length(0.0),
+                },
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
+        // The content is laid out in the host's tree, out of flow, at its
+        // own (max-content) width: its fields focus like any other, and it
+        // takes no room from the row the popover is mounted in.
+        self.detached = None;
+        let content = self.content.build_layout(taffy, theme, node_map);
+        self.host_content = Some(content);
+        let width = self.presented.map_or(Dimension::auto(), |w| {
+            Dimension::length(crate::num::f32_of_f64(w.width()))
         });
+        let node = taffy.parent_node(
+            Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    top: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                },
+                size: Size {
+                    width,
+                    height: Dimension::auto(),
+                },
+                flex_direction: taffy::FlexDirection::Row,
+                align_items: Some(taffy::AlignItems::FlexStart),
+                ..Default::default()
+            },
+            &[content],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, _origin: Point) {
+        if let Some(content) = taffy
+            .children(node)
+            .ok()
+            .and_then(|c| c.first().copied())
+            .filter(|&c| Some(c) == self.host_content)
+        {
+            let l = taffy.layout(content).copied().unwrap_or_default();
+            self.content_size = (f64::from(l.size.width), f64::from(l.size.height));
+            let theme = self.layout_theme.clone();
+            if self.open {
+                crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+                    self.place(tr, &theme);
+                });
+            }
+            let target = self.content_target(&theme);
+            self.content.apply_layout(
+                taffy,
+                content,
+                Point::new(
+                    target.x - f64::from(l.location.x),
+                    target.y - f64::from(l.location.y),
+                ),
+            );
+            self.content_origin = target;
+            self.stale = false;
+            return;
+        }
         // Resolve the panel so hit-testing works before the first paint, at
         // the active theme and text scale.
         if self.open {
@@ -637,21 +1027,68 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             return;
         }
         self.layout_theme = theme.clone();
-        let viewport = self
-            .viewport
-            .or_else(|| presence.viewport.get())
-            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        if let Some(window) = presence.viewport.get() {
+            if self
+                .presented
+                .is_none_or(|w| (w.width() - window.width()).abs() > 0.5)
+            {
+                self.stale = self.host_content.is_some();
+            }
+            self.presented = Some(window);
+        }
+        let viewport = self.room(theme);
         self.place_in(viewport, text_renderer, theme);
         floating_surface::paint(scene, transform, self.rect, theme);
         if self.options.is_some() {
             self.paint_options(scene, transform, text_renderer, theme);
         } else {
             let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+            // A hosted content follows the panel on the host's next layout
+            // pass; until then it is drawn where it belongs.
+            let shift = self.content_target(theme) - self.content_origin;
+            if shift.hypot() > 0.01 {
+                self.stale = true;
+            }
+            let transform = transform * Affine::translate(shift);
             self.content
                 .draw(scene, transform, text_renderer, &on_panel, presence);
             self.content
                 .draw_overlay(scene, transform, text_renderer, &on_panel, presence);
         }
+    }
+
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        // The content's max-content width is bounded by the popover node:
+        // give it the window's width once the top layer has named it.
+        let (Some(window), true) = (self.presented, self.host_content.is_some()) else {
+            return false;
+        };
+        let Ok(mut style) = taffy.style(node).cloned() else {
+            return false;
+        };
+        let width = Dimension::length(crate::num::f32_of_f64(window.width()));
+        if style.size.width == width {
+            return false;
+        }
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.stale || (self.open && self.options.is_none() && self.content.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.stale || (self.open && self.options.is_none() && self.content.layout_needs_measure())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.open && (self.stale || self.content.needs_animation_frame())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -829,6 +1266,218 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 })
                 .with_children(children),
         )
+    }
+}
+
+/// A button that opens a popover anchored to its own rect
+/// ([`crate::widget::Button::with_popover`]): a filter's options, a share
+/// sheet's details. A click, Enter or Space opens it and closes it again;
+/// the button reads as expanded while it is open.
+pub struct PopoverButton<C: Widget + 'static> {
+    button: crate::widget::Button,
+    popover: Popover<C>,
+    request: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl crate::widget::Button {
+    /// Make this button open `content` in a popover anchored to its own
+    /// rect.
+    #[must_use]
+    pub fn with_popover<C: Widget + 'static>(self, content: C) -> PopoverButton<C> {
+        let request = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::rc::Rc::clone(&request);
+        PopoverButton {
+            button: self.on_click(move || flag.set(true)),
+            popover: Popover::with_content(content),
+            request,
+        }
+    }
+}
+
+impl<C: Widget + 'static> PopoverButton<C> {
+    /// Prefer opening on `side` of the button.
+    #[must_use]
+    pub fn side(mut self, side: PopoverSide) -> Self {
+        self.popover = self.popover.side(side);
+        self
+    }
+
+    /// Line the popover up with the button's trailing edge.
+    #[must_use]
+    pub fn aligned(mut self, align: PanelAlign) -> Self {
+        self.popover.set_align(align);
+        self
+    }
+
+    pub fn popover(&self) -> &Popover<C> {
+        &self.popover
+    }
+
+    pub fn popover_mut(&mut self) -> &mut Popover<C> {
+        &mut self.popover
+    }
+
+    pub fn button_mut(&mut self) -> &mut crate::widget::Button {
+        &mut self.button
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.popover.is_open()
+    }
+
+    /// Open the popover at the button (a stage hook, a shortcut).
+    pub fn open(&mut self) {
+        self.popover.set_anchor(Widget::get_rect(&self.button));
+        self.popover.set_open(true);
+    }
+
+    pub fn close(&mut self) {
+        self.popover.close();
+    }
+
+    /// Answer the button's click (or its keyboard activation): open, or
+    /// close an open popover.
+    fn take_request(&mut self) {
+        if self.request.replace(false) {
+            if self.popover.is_open() {
+                self.popover.close();
+            } else {
+                self.open();
+            }
+        }
+    }
+
+    /// The button's and the popover's nodes under this widget's node.
+    fn nodes(taffy: &TaffyTree<()>, node: NodeId) -> Option<(NodeId, NodeId)> {
+        let children = taffy.children(node).ok()?;
+        Some((*children.first()?, *children.get(1)?))
+    }
+}
+
+impl<C: Widget + 'static> Widget for PopoverButton<C> {
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.button.set_platform_conventions(conventions);
+        self.popover.set_platform_conventions(conventions);
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.button.sync(state, path);
+        self.popover.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let button = self.button.build_layout(taffy, theme, node_map);
+        let popover = self.popover.build_layout(taffy, theme, node_map);
+        // The popover's node stands out of flow beside the button's, so the
+        // pair is as big as the button and the popover's content joins the
+        // window's tree (and its focus order) while it is open.
+        let node = taffy.parent_node(Style::default(), &[button, popover]);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        let at = Point::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+        );
+        let Some((button, popover)) = Self::nodes(taffy, node) else {
+            return;
+        };
+        self.button.apply_layout(taffy, button, at);
+        self.popover.set_anchor(self.button.get_rect());
+        self.popover.apply_layout(taffy, popover, at);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // A keyboard activation reaches the button through the host.
+        self.take_request();
+        self.button
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.button
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.popover.set_anchor(self.button.get_rect());
+        self.popover
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let nodes = Self::nodes(ctx.taffy, ctx.node_id);
+        let (button, popover) = nodes.unwrap_or((ctx.node_id, ctx.node_id));
+        if self.popover.is_open() {
+            self.popover
+                .handle_event(event, &mut ctx.reborrow(ctx.path, popover));
+            if !self.popover.is_open() {
+                // The press that closed it on the button must not reopen it.
+                self.request.set(false);
+            }
+            return;
+        }
+        self.button
+            .handle_event(event, &mut ctx.reborrow(ctx.path, button));
+        self.take_request();
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.button, &self.popover]
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.button);
+        visitor(&self.popover);
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.button, &mut self.popover]
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.request.get() || self.popover.is_open() || self.button.needs_redraw()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.popover.modal_capture()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.popover.is_open() || self.button.wants_pointer_capture()
+    }
+
+    fn name(&self) -> &'static str {
+        "PopoverButton"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.button.get_rect()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        // Presentational: the button and the popover speak for themselves;
+        // the button's expanded state follows the popover.
+        None
     }
 }
 

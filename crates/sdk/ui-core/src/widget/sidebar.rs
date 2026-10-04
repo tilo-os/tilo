@@ -99,6 +99,32 @@ pub struct SidebarDrawer {
     // --- self-tick animation ---
     last_tick: Option<Instant>,
     animating: bool,
+
+    /// Never docks: a drawer over the content at every width.
+    overlay_only: bool,
+    /// An icon rail stands beside the text list inside the drawer.
+    with_rail: bool,
+    /// `metrics.rail_width` of the theme last handed to [`Self::scale_for`].
+    rail_column: f64,
+    /// A snap asked for before the first [`Self::resolve`], kept until the
+    /// layout is known.
+    pending_snap: Option<bool>,
+    resolved_once: bool,
+    /// The bottom of the header row [`Self::header`] laid out: a floating
+    /// drawer starts under it.
+    header_bottom: Option<f64>,
+    toggle: DrawerToggle,
+}
+
+/// The drawer's show/hide button in a painted header row: its rect, hover
+/// and press, and the platform the shortcut is spelled for.
+#[derive(Clone, Debug, Default)]
+struct DrawerToggle {
+    rect: Rect,
+    hovered: bool,
+    pressed: bool,
+    pointer: Option<Point>,
+    conventions: crate::platform::PlatformConventions,
 }
 
 impl Default for SidebarDrawer {
@@ -127,6 +153,13 @@ impl SidebarDrawer {
             scrim_rect: Rect::ZERO,
             last_tick: None,
             animating: false,
+            overlay_only: false,
+            with_rail: false,
+            rail_column: f64::from(Metrics::BASE.rail_width),
+            pending_snap: None,
+            resolved_once: false,
+            header_bottom: None,
+            toggle: DrawerToggle::default(),
         }
     }
 
@@ -182,6 +215,22 @@ impl SidebarDrawer {
         self.flap = FlapState::closed_by_default();
         self
     }
+    /// A drawer over the content at every width, never docked (controls
+    /// over full-bleed media: a player's queue, a viewer's info).
+    #[must_use]
+    pub fn overlay_only(mut self) -> Self {
+        self.overlay_only = true;
+        self
+    }
+    /// An icon rail beside the text list in the one drawer (workspaces
+    /// beside a workspace's channels). The rail is `metrics.rail_width`
+    /// wide, following `ui_scale`; the drawer grows by it, and
+    /// [`Self::rail_rect`] and [`Self::list_rect`] split the panel.
+    #[must_use]
+    pub fn with_rail(mut self) -> Self {
+        self.with_rail = true;
+        self
+    }
 
     // --- dynamic setters (per-frame reconfig) -------------------------------
     //
@@ -206,6 +255,18 @@ impl SidebarDrawer {
         self.responsive_scale = theme.responsive_scale();
         self.ui_scale = f64::from(theme.ui_scale);
         self.float_inset = f64::from(theme.tokens.spacing.s2);
+        self.rail_column = f64::from(theme.tokens.metrics.rail_width);
+    }
+
+    /// The icon rail's width inside the drawer ([`Self::with_rail`]), or 0.
+    fn rail_column_width(&self) -> f64 {
+        if self.with_rail {
+            // Before `scale_for` the base metric, scaled by the cached UI
+            // scale; after it, the theme's metric (already scaled).
+            self.rail_column
+        } else {
+            0.0
+        }
     }
 
     fn resolve_extent(&self, extent: AuthoredExtent) -> f64 {
@@ -216,13 +277,13 @@ impl SidebarDrawer {
     pub fn resolved_breakpoint(&self) -> f64 {
         self.resolve_extent(self.breakpoint)
     }
-    /// The docked width as laid out.
+    /// The docked width as laid out (with the rail, where it has one).
     pub fn resolved_docked_width(&self) -> f64 {
-        self.resolve_extent(self.docked_width)
+        self.resolve_extent(self.docked_width) + self.rail_column_width()
     }
-    /// The overlay width as laid out (text-sized).
+    /// The overlay width as laid out (text-sized, with the rail).
     pub fn resolved_overlay_width(&self) -> f64 {
-        self.resolve_extent(self.overlay_width)
+        self.resolve_extent(self.overlay_width) + self.rail_column_width()
     }
     /// The collapsed rail width as laid out (icon-sized: `ui_scale` only).
     pub fn resolved_rail_width(&self) -> f64 {
@@ -234,8 +295,12 @@ impl SidebarDrawer {
     pub fn anchored_side(&self) -> SidebarSide {
         self.side
     }
-    /// Docked at/above the (resolved) breakpoint.
+    /// Docked at/above the (resolved) breakpoint; always an overlay for
+    /// [`Self::overlay_only`].
     pub fn layout_for(&self, width: f64) -> SplitLayout {
+        if self.overlay_only {
+            return SplitLayout::Overlay;
+        }
         SplitLayout::from_width(width, self.resolved_breakpoint())
     }
     pub fn layout(&self) -> SplitLayout {
@@ -264,8 +329,14 @@ impl SidebarDrawer {
         self.flap.close();
     }
     /// Snap to `open` with NO animation — deterministic `--shots` / tests.
+    /// Before the first [`Self::resolve`] the snap is kept until the layout
+    /// is known, so it lands in the size class the drawer is shown in.
     pub fn snap(&mut self, open: bool) {
-        self.flap.snap(open);
+        if self.resolved_once {
+            self.flap.snap(open);
+        } else {
+            self.pending_snap = Some(open);
+        }
     }
     /// The eased reveal in `0..=1` (scrim strength, docked inset).
     pub fn reveal(&self) -> f64 {
@@ -290,6 +361,250 @@ impl SidebarDrawer {
     /// Overlay mode only; `Rect::ZERO` when absent.
     pub fn scrim_rect(&self) -> Rect {
         self.scrim_rect
+    }
+    /// The icon rail inside the panel ([`Self::with_rail`]): its leading
+    /// strip (trailing, for a right drawer), or `Rect::ZERO`.
+    pub fn rail_rect(&self) -> Rect {
+        let w = self.rail_column_width().min(self.sidebar_rect.width());
+        if w <= 0.0 {
+            return Rect::ZERO;
+        }
+        let r = self.sidebar_rect;
+        match self.side {
+            SidebarSide::Left => Rect::new(r.x0, r.y0, r.x0 + w, r.y1),
+            SidebarSide::Right => Rect::new(r.x1 - w, r.y0, r.x1, r.y1),
+        }
+    }
+    /// The text list inside the panel: the panel beside the rail.
+    pub fn list_rect(&self) -> Rect {
+        let rail = self.rail_rect();
+        let r = self.sidebar_rect;
+        if rail == Rect::ZERO {
+            return r;
+        }
+        match self.side {
+            SidebarSide::Left => Rect::new(rail.x1, r.y0, r.x1, r.y1),
+            SidebarSide::Right => Rect::new(r.x0, r.y0, rail.x0, r.y1),
+        }
+    }
+
+    // --- the header row and the toggle --------------------------------------
+
+    /// The window's header row across the top of `area`, with this drawer's
+    /// toggle in it: at the leading corner for a sidebar, the trailing one
+    /// for an inspector. A floating drawer then opens under the row, which
+    /// stays live. Paint the toggle with [`Self::paint_toggle`] and route
+    /// events to it with [`Self::handle_event`].
+    pub fn header(&mut self, area: Rect, theme: &Theme) -> crate::chrome::HeaderRowFace {
+        self.header_with_history(area, theme, false)
+    }
+
+    /// [`Self::header`] with the window's History control in the row's
+    /// trailing corner (`history`: the host offered it,
+    /// [`crate::widget::HistoryOpener::is_shown`]).
+    pub fn header_with_history(
+        &mut self,
+        area: Rect,
+        theme: &Theme,
+        history: bool,
+    ) -> crate::chrome::HeaderRowFace {
+        let face = crate::chrome::HeaderRowFace::new(area, theme);
+        let face = match self.side {
+            SidebarSide::Left => face.with_toggle().with_history_if(history),
+            SidebarSide::Right => face.with_history_if(history).with_trailing(),
+        };
+        self.toggle.rect = match self.side {
+            SidebarSide::Left => face.toggle,
+            SidebarSide::Right => face.trailing,
+        };
+        self.header_bottom = Some(face.row.y1);
+        face
+    }
+
+    /// The toggle's rect in the header row, or `Rect::ZERO` before
+    /// [`Self::header`].
+    pub fn toggle_rect(&self) -> Rect {
+        self.toggle.rect
+    }
+
+    /// Spell the show/hide shortcut for `conventions`.
+    pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.toggle.conventions = conventions;
+    }
+
+    /// What the toggle does now, for its name and tooltip.
+    fn toggle_name(&self) -> &'static str {
+        match (self.side, self.is_open()) {
+            (SidebarSide::Left, true) => "Hide sidebar",
+            (SidebarSide::Left, false) => "Show sidebar",
+            (SidebarSide::Right, true) => "Hide inspector",
+            (SidebarSide::Right, false) => "Show inspector",
+        }
+    }
+
+    /// Route `event` to the drawer's own parts: the toggle (hover, a press
+    /// and release on it), `HostShortcut::Sidebar` for a sidebar, Escape
+    /// and a press on the scrim for an open floating drawer. Returns whether
+    /// the drawer took the event; call [`Self::resolve`] first so the rects
+    /// match the last paint.
+    pub fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = if ctx.scale_factor > 0.0 {
+                    ctx.scale_factor
+                } else {
+                    1.0
+                };
+                let p = Point::new(position.x / scale, position.y / scale);
+                self.toggle.pointer = Some(p);
+                self.toggle.hovered =
+                    self.toggle.rect.width() > 0.0 && self.toggle.rect.contains(p);
+                false
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.toggle.pointer = None;
+                self.toggle.hovered = false;
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(p) = self.toggle.pointer else {
+                    return false;
+                };
+                if self.toggle.rect.width() > 0.0 && self.toggle.rect.contains(p) {
+                    self.toggle.pressed = true;
+                    return true;
+                }
+                self.press_dismisses(p)
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let was = std::mem::take(&mut self.toggle.pressed);
+                if was
+                    && self
+                        .toggle
+                        .pointer
+                        .is_some_and(|p| self.toggle.rect.contains(p))
+                {
+                    self.toggle();
+                }
+                was
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let modifiers = ctx.modifiers.state();
+                let conventions = self.toggle.conventions;
+                if self.side == SidebarSide::Left
+                    && conventions.command_modifier_down(modifiers)
+                    && let Key::Character(c) = logical_key
+                    && crate::platform::HostShortcut::resolve(conventions, c, modifiers.shift_key())
+                        == Some(crate::platform::HostShortcut::Sidebar)
+                {
+                    self.toggle();
+                    return true;
+                }
+                if *logical_key == Key::Named(NamedKey::Escape)
+                    && self.is_overlay()
+                    && self.is_open()
+                {
+                    self.close();
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Paint the toggle at its place in the header row, with the theme of
+    /// the ground it stands on.
+    pub fn paint_toggle(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.toggle.rect.width() <= 0.0 {
+            return;
+        }
+        self.draw_toggle(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.toggle.rect,
+            self.toggle.hovered,
+        );
+    }
+
+    /// The toggle's node in the window's semantic tree: a button named for
+    /// what it does ("Show sidebar"), with its shortcut. Route an `Activate`
+    /// on it back with [`Self::perform_toggle_action`].
+    pub fn toggle_accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if self.toggle.rect.width() <= 0.0 {
+            return None;
+        }
+        let mut node = AccessNode::new(Role::Button)
+            .with_name(self.toggle_name())
+            .with_action_target(self.toggle_target())
+            .with_bounds(self.toggle.rect)
+            .with_state(AccessState {
+                focusable: true,
+                expanded: Some(self.is_open()),
+                ..Default::default()
+            });
+        if self.side == SidebarSide::Left {
+            let shortcut = crate::platform::HostShortcut::Sidebar
+                .shortcut(self.toggle.conventions)
+                .label(self.toggle.conventions);
+            node = node.with_description(shortcut);
+        }
+        Some(node)
+    }
+
+    fn toggle_target(&self) -> &'static str {
+        match self.side {
+            SidebarSide::Left => "sidebar-toggle",
+            SidebarSide::Right => "inspector-toggle",
+        }
+    }
+
+    /// Toggle from the toggle's node (`key_path` from
+    /// `Widget::perform_action_at`); returns whether it did.
+    pub fn perform_toggle_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+    ) -> bool {
+        let ours = key_path
+            .last()
+            .is_some_and(|key| *key == crate::a11y::hash_key(&self.toggle_target()));
+        if ours && matches!(action, crate::a11y::Action::Activate) {
+            self.toggle();
+            return true;
+        }
+        false
     }
 
     /// Advance the eased reveal off a real wall-clock delta over the
@@ -323,8 +638,20 @@ impl SidebarDrawer {
         self.outer = outer;
         self.layout = self.layout_for(outer.width());
         self.flap.reconcile(self.layout);
+        self.resolved_once = true;
+        if let Some(open) = self.pending_snap.take() {
+            self.flap.snap(open);
+        }
         self.recompute_rects();
         self.content_rect
+    }
+
+    /// The top of the area a floating drawer and its scrim cover: under the
+    /// header row [`Self::header`] laid out, when it lies in `outer`.
+    fn overlay_top(&self, o: Rect) -> f64 {
+        self.header_bottom
+            .filter(|bottom| *bottom > o.y0 && *bottom < o.y1)
+            .unwrap_or(o.y0)
     }
 
     fn recompute_rects(&mut self) {
@@ -362,7 +689,8 @@ impl SidebarDrawer {
                     .resolved_overlay_width()
                     .min((o.width() - 2.0 * gap).max(0.0));
                 let travel = w + gap;
-                let (y0, y1) = (o.y0 + gap, (o.y1 - gap).max(o.y0 + gap));
+                let top = self.overlay_top(o);
+                let (y0, y1) = (top + gap, (o.y1 - gap).max(top + gap));
                 self.sidebar_rect = match self.side {
                     SidebarSide::Left => {
                         let x0 = o.x0 + gap - travel * (1.0 - slide);
@@ -374,7 +702,7 @@ impl SidebarDrawer {
                     }
                 };
                 self.scrim_rect = if self.flap.is_open(self.layout) || slide > 0.001 {
-                    o
+                    Rect::new(o.x0, top, o.x1, o.y1)
                 } else {
                     Rect::ZERO
                 };
@@ -436,6 +764,19 @@ impl SidebarDrawer {
             crate::surface::region(scene, transform, rect, region, theme);
             theme.in_region(region)
         }
+    }
+
+    /// Paint the floating drawer panel at `rect` for a host that lays its
+    /// panel out itself (a timeline's bin over the canvas): the floating
+    /// material, `radii.panel` and the floating shadow, as an open overlay
+    /// drawer. Returns the theme to draw the panel's contents with.
+    pub fn paint_panel_in(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        theme: &Theme,
+    ) -> Theme {
+        paint_floating_drawer(scene, transform, rect, theme)
     }
 
     /// Paint the show/hide control inside `rect`: the same Plain icon
@@ -692,6 +1033,142 @@ mod tests {
                 theme.region(crate::surface::Region::Sidebar)
             );
         }
+    }
+
+    /// Route `event` to the drawer's own parts with a throwaway context.
+    fn route(d: &mut SidebarDrawer, event: &winit::event::WindowEvent) -> bool {
+        route_with(d, event, winit::event::Modifiers::default())
+    }
+
+    fn route_with(
+        d: &mut SidebarDrawer,
+        event: &winit::event::WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy
+            .new_leaf(taffy::Style::default())
+            .expect("a leaf node");
+        let mut doc = automerge::AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        d.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
+        )
+    }
+
+    #[test]
+    fn a_painted_header_row_owns_the_toggle_and_the_drawer_opens_under_it() {
+        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        let theme = Theme::dark();
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let mut d = SidebarDrawer::new();
+        d.scale_for(&theme);
+        d.set_platform_conventions(crate::platform::PlatformConventions::new(
+            crate::platform::Platform::Linux,
+        ));
+        let face = d.header_with_history(narrow(), &theme, true);
+        assert_eq!(d.toggle_rect(), face.toggle);
+        assert!(face.toggle.x0 < face.history.x0);
+        d.resolve(narrow());
+        assert!(!d.is_open());
+        let node = d.toggle_accessibility().expect("a node");
+        assert_eq!(node.name.as_deref(), Some("Show sidebar"));
+
+        // A click on the toggle opens the drawer, under the header row.
+        let p = face.toggle.center();
+        let device = DeviceId::dummy();
+        route(
+            &mut d,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            },
+        );
+        for state in [ElementState::Pressed, ElementState::Released] {
+            assert!(route(
+                &mut d,
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state,
+                    button: MouseButton::Left,
+                },
+            ));
+        }
+        assert!(d.is_open());
+        d.snap(true);
+        d.resolve(narrow());
+        assert!((d.sidebar_rect().y0 - (face.row.y1 + gap)).abs() < 0.5);
+        assert!(
+            (d.scrim_rect().y0 - face.row.y1).abs() < 0.5,
+            "the row stays live"
+        );
+
+        // The system shortcut closes it, as in every app.
+        let key = crate::synthetic_input::key_event(
+            &winit::keyboard::Key::Character("L".into()),
+            ElementState::Pressed,
+        );
+        let modifiers = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+        );
+        assert!(route_with(&mut d, &key, modifiers));
+        assert!(!d.is_open());
+        assert!(
+            d.perform_toggle_action(&crate::a11y::Action::Activate, &[node.key.expect("keyed")])
+        );
+        assert!(d.is_open());
+    }
+
+    #[test]
+    fn overlay_only_rail_and_an_early_snap() {
+        let theme = Theme::dark();
+        let mut d = SidebarDrawer::new().overlay_only();
+        d.resolve(wide());
+        assert!(d.is_overlay(), "never docks");
+
+        // A snap before the first resolve lands in the layout shown.
+        let mut d = SidebarDrawer::new();
+        d.snap(true);
+        d.resolve(narrow());
+        assert!(d.is_open(), "the drawer opens over a narrow window");
+        d.resolve(wide());
+        assert!(d.is_open(), "the docked default was not overwritten");
+
+        let mut d = SidebarDrawer::new().with_rail();
+        d.scale_for(&theme);
+        d.resolve(wide());
+        let rail = d.rail_rect();
+        assert!((rail.width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5);
+        assert_eq!(rail.x0, d.sidebar_rect().x0);
+        assert_eq!(d.list_rect().x0, rail.x1);
+        assert!(
+            (d.list_rect().width() - f64::from(theme.tokens.metrics.sidebar_width)).abs() < 0.5,
+            "the list keeps the sidebar's width beside the rail"
+        );
+
+        let mut scene = Scene::new();
+        let local = SidebarDrawer::paint_panel_in(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(10.0, 70.0, 330.0, 700.0),
+            &theme,
+        );
+        assert_eq!(
+            local.tokens.colors.surfaces.content,
+            crate::chrome::panel_ground(&theme)
+        );
+        assert!(scene.encoding().draw_tags.len() >= 2);
     }
 
     #[test]

@@ -506,6 +506,8 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = [
   "crates/dev/ui-examples/examples/gallery_shots.rs",
   "crates/dev/ui-examples/examples/type_specimen_shots.rs",
+  "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
+  "crates/dev/ui-examples/examples/reading_face_shots.rs",
 ]
 
 [[cargo]]
@@ -562,6 +564,8 @@ readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
+  # Android packaging copies the standalone font catalog out of the SDK.
+  "crates/dev/tilo-app-cli/src/android.rs",
 ]
 
 [[cargo]]
@@ -675,10 +679,7 @@ readers = ["crates/doc/format-host/tests/integration.rs"]
 [[cargo]]
 package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
-readers = [
-  "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
-  "apps/notes/src/shots.rs", "apps/notes/tests/support/component.rs",
-]
+readers = ["apps/notes/src/app.rs", "apps/notes/tests/support/component.rs"]
 
 [[cargo]]
 package = "ebook"

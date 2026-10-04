@@ -167,6 +167,9 @@ pub(super) struct Geo {
     pub header_h: f64,
     /// The show/hide control of the inspector.
     pub toggle: Rect,
+    /// The window's History control, in the trailing corner of the header
+    /// row that reaches the window's edge, or `Rect::ZERO`.
+    pub history: Rect,
     /// The edit-mode strip.
     pub mode: Rect,
     /// The endianness strip, at the top of the inspector.
@@ -327,6 +330,33 @@ impl HexView {
         } else {
             Rect::ZERO
         };
+        // The window's History control stands in the top-trailing corner:
+        // the docked inspector's header, else the content's; a toggle in the
+        // same header steps in beside it.
+        geo.history = if self.history.is_shown() {
+            let edge = if visible && docked {
+                panel.x1
+            } else {
+                outer.x1
+            };
+            let y0 = outer.y0 + f64::midpoint(0.0, header_h - target);
+            Rect::new(edge - inset - target, y0, edge - inset, y0 + target)
+        } else {
+            Rect::ZERO
+        };
+        if geo.history.width() > 0.0
+            && geo.toggle.width() > 0.0
+            && (geo.toggle.x1 - geo.history.x1).abs() < 0.5
+            && (geo.toggle.y0 - geo.history.y0).abs() < 0.5
+        {
+            let step = target + f64::from(sp.s2);
+            geo.toggle = Rect::new(
+                geo.toggle.x0 - step,
+                geo.toggle.y0,
+                geo.toggle.x1 - step,
+                geo.toggle.y1,
+            );
+        }
         geo.content = content;
         geo.inspector = panel;
         geo.inspector_visible = visible;

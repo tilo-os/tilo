@@ -427,14 +427,14 @@ impl DisksApp {
         });
         self.built = Some(key);
         if !listed_before {
-            let labels = self
+            let drives: Vec<_> = self
                 .topo
                 .drives
                 .iter()
-                .map(|drive| self.display_name(drive).to_owned())
+                .map(|drive| (drive, self.display_name(drive).to_owned()))
                 .collect();
             self.shell.set_sidebar(Some(Box::new(view::drive_list(
-                labels,
+                &drives,
                 self.selected,
                 &self.intents,
             ))));

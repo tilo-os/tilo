@@ -8466,7 +8466,7 @@ impl VideoEditorApp {
             draw_icon_button(
                 &mut ctx,
                 r.export_btn,
-                Icon::ArrowUp,
+                Icon::Upload,
                 "Export video",
                 ButtonRole::Primary,
                 hovered(r.export_btn),

@@ -972,7 +972,7 @@ impl App {
         );
         let mut text_renderer = TextRenderer::new();
         text_renderer.set_text_scale(theme.text_scale);
-        text_renderer.set_ui_face(&theme.tokens.typography.sans_family);
+        text_renderer.apply_typography(&theme.tokens.typography);
         crate::application::ComponentRunnerInputs {
             theme,
             text_renderer,
@@ -1558,7 +1558,7 @@ impl App {
                 ),
         };
         self.text_renderer
-            .set_ui_face(&self.theme.tokens.typography.sans_family);
+            .apply_typography(&self.theme.tokens.typography);
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
         // transitions immediately and prevents a forgotten app-local curve

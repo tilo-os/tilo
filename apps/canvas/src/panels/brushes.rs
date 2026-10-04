@@ -113,7 +113,6 @@ pub fn picker(
     super::inspector::swatches(&vec![paper; presets.len()], labels, 4)
         .with_cell(CELL.0)
         .with_cell_height(CELL.1)
-        .bare()
         .selecting(presets.iter().position(|preset| *preset == chosen))
         .with_painter(move |scene, transform, rect: Rect, index, theme, text| {
             let ink = colour();

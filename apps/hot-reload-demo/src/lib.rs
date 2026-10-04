@@ -12,7 +12,7 @@ fn install_catalog() {
 }
 
 use ui::prelude::*;
-use ui::widget::{Column, Field, Form, FormPage, FormSection, LabelPlacement};
+use ui::widget::{Column, EmptyState, Field, Form, FormPage, FormSection, LabelPlacement};
 
 /// A durable document. Text fields are collaborative text: two people typing
 /// in the same field merge character by character.
@@ -102,7 +102,7 @@ impl ResourceApp for App {
             .input(|document| document.body.clone(), Document::SET_BODY)
             .with_id("document-body-input")
             .with_placeholder("document-body-placeholder")
-            .multiline(true);
+            .with_min_lines(6);
         let has_content =
             cx.value(|document| !document.title.is_empty() || !document.body.is_empty());
         let preview = cx.switch(&has_content, |cx, has_content| -> Element {
@@ -122,11 +122,9 @@ impl ResourceApp for App {
                         )),
                 )
             } else {
-                Box::new(
-                    Text::new("document-preview-empty")
-                        .with_role(TextRole::Body)
-                        .dimmed(),
-                )
+                // An empty section of the page: a heading-sized empty state
+                // that hugs its content.
+                Box::new(EmptyState::new("document-preview-empty").inline())
             }
         });
         Box::new(FormPage::new(

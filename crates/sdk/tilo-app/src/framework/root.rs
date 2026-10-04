@@ -76,6 +76,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
         reason = "used by native-only render / past-version draw; unused on wasm"
     )]
     past: Option<super::preview::DrawPast>,
+    /// Whether the resource keeps document state History shows.
+    history: bool,
 }
 
 /// The operation type of the framework's `render` view.
@@ -210,7 +212,15 @@ impl<R: Resource> ResourceRoot<R> {
             drawn_theme: None,
             render_text: None,
             past: None,
+            history: true,
         }
+    }
+
+    /// A root whose resource keeps no document state: it publishes no
+    /// History actions and its window offers no History.
+    pub(crate) fn without_history(mut self) -> Self {
+        self.history = false;
+        self
     }
 
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
@@ -332,7 +342,7 @@ impl<R: Resource> ResourceRoot<R> {
         {
             resource = resource.with_action(render_spec());
         }
-        for spec in super::history::specs() {
+        for spec in super::history::specs().into_iter().filter(|_| self.history) {
             if !resource
                 .actions
                 .iter()
@@ -519,23 +529,86 @@ impl ResourceSearch {
             .into_iter()
             .filter_map(|hit| {
                 let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
-                let anchor = entry.anchor.clone().unwrap_or_default();
-                if scope.is_some_and(|scope| !tilo_resource::scope_contains(scope, &anchor)) {
+                if scope.is_some_and(|scope| !entry.in_scope(scope)) {
                     return None;
                 }
-                let result = match &entry.action {
+                let anchor = entry.anchor.clone().unwrap_or_default();
+                let mut result = match &entry.action {
                     Some(action) => {
                         SearchResult::for_action(self.name, entry.title.clone(), action)
                     }
                     None => SearchResult::new(self.name, entry.title.clone(), anchor),
-                };
-                Some(
-                    result
-                        .with_preview(entry.text.clone())
-                        .with_score(hit.rank.unwrap_or(0)),
-                )
+                }
+                .with_preview(entry.text.clone())
+                .with_score(hit.rank.unwrap_or(0));
+                if let Some(within) = &entry.within {
+                    result = result.within(within.clone());
+                }
+                if let Some(row) = &entry.row {
+                    result = with_row(result, &entry.title, row);
+                }
+                Some(result)
             })
             .collect()
+    }
+}
+
+/// `result` read as the entry's row: its subtitle, its icon and its shape.
+fn with_row(mut result: SearchResult, title: &str, row: &tilo_resource::SearchRow) -> SearchResult {
+    use tilo_resource::SearchRowShape;
+    use ui_core::search::SearchRow;
+    if let Some(subtitle) = &row.subtitle {
+        result = result.with_subtitle(subtitle.clone());
+    }
+    if let Some(icon) = row
+        .icon
+        .as_deref()
+        .and_then(ui_core::icons::Icon::from_name)
+    {
+        result = result.with_icon(icon);
+    }
+    let shaped = match &row.shape {
+        SearchRowShape::Plain => None,
+        SearchRowShape::Message {
+            sender,
+            snippet,
+            date,
+            unread,
+        } => {
+            let mut shaped = SearchRow::message(sender.clone(), title).unread(*unread);
+            if let Some(snippet) = snippet {
+                shaped = shaped.snippet(snippet.clone());
+            }
+            if let Some(date) = date {
+                shaped = shaped.date(date.clone());
+            }
+            Some(shaped)
+        }
+        SearchRowShape::Media { byline, duration } => {
+            let mut shaped = SearchRow::media(title);
+            if let Some(byline) = byline {
+                shaped = shaped.byline(byline.clone());
+            }
+            if let Some(duration) = duration {
+                shaped = shaped.duration(duration.clone());
+            }
+            Some(shaped)
+        }
+        SearchRowShape::FileHit {
+            path,
+            line,
+            snippet,
+        } => {
+            let mut shaped = SearchRow::file_hit(path.clone(), snippet.clone());
+            if let Some(line) = line {
+                shaped = shaped.line(*line);
+            }
+            Some(shaped)
+        }
+    };
+    match shaped {
+        Some(shaped) => result.with_row(shaped),
+        None => result,
     }
 }
 
@@ -573,12 +646,60 @@ impl SearchProvider for ResourceSearch {
     }
 }
 
+use ui_core::history_mode::capability::DocumentHistory;
+
+/// The view's own History custody, forwarded; a resource that keeps no
+/// document state has no History, so the window adds no History control
+/// beside it.
+impl<R: Resource> DocumentHistory for ResourceRoot<R> {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui_core::history_mode::HistoryRegistration>,
+        ui_core::history_mode::HistoryRegistrationError,
+    > {
+        ui_core::history_mode::capability::history_registration(self.content.as_ref())
+    }
+
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        ui_core::history_mode::capability::history_restore_readiness(self.content.as_ref(), scope)
+    }
+
+    fn document_history_definition(
+        &self,
+    ) -> Option<&'static ui_core::history_mode::HistoryDefinition> {
+        ui_core::history_mode::capability::document_history_definition(self.content.as_ref())
+    }
+
+    fn provides_document_history(&self) -> bool {
+        !self.history
+            || ui_core::widget::capability::capability::<dyn DocumentHistory>(self.content.as_ref())
+                .is_some_and(DocumentHistory::provides_document_history)
+    }
+
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ui_core::automerge::ChangeHash],
+        doc: &ui_core::automerge::AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) {
+        ui_core::history_mode::capability::document_action_applied(
+            self.content.as_mut(),
+            action,
+            before,
+            doc,
+            path,
+        );
+    }
+}
+
 // The root is the app's view plus what the framework adds: it keeps the
 // state current, publishes the resource, forwards edits and indexes search.
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn DocumentHistory; inner = content);
 
     type Inner = dyn Widget;
 
@@ -996,8 +1117,35 @@ mod search_tests {
 
     fn entries(_: &Mailbox) -> Vec<SearchEntry> {
         vec![
-            SearchEntry::new("Invoice from Ada", "March").anchored("folder:inbox/msg:1"),
-            SearchEntry::new("Invoice to Grace", "April").anchored("folder:sent/msg:2"),
+            SearchEntry {
+                anchor: Some("folder:inbox/msg:1".into()),
+                title: "Invoice from Ada".into(),
+                text: "March".into(),
+                ..Default::default()
+            },
+            SearchEntry {
+                anchor: Some("folder:sent/msg:2".into()),
+                title: "Invoice to Grace".into(),
+                text: "April".into(),
+                ..Default::default()
+            },
+            // A flat id that lies in the inbox, read as a message row.
+            SearchEntry {
+                anchor: Some("msg:3".into()),
+                title: "Invoice reminder".into(),
+                text: "May".into(),
+                within: Some("folder:inbox".into()),
+                row: Some(
+                    tilo_resource::SearchRow::shaped(tilo_resource::SearchRowShape::Message {
+                        sender: "Ada".into(),
+                        snippet: None,
+                        date: None,
+                        unread: true,
+                    })
+                    .icon("mail"),
+                ),
+                ..Default::default()
+            },
         ]
     }
 
@@ -1032,7 +1180,7 @@ mod search_tests {
     #[test]
     fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
         let mut app = TestApp::<MailApp>::new().unwrap();
-        let (titles, scoped, declared) = app
+        let (titles, mut scoped, declared, reminder) = app
             .harness()
             .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
                 let providers = ui_core::search::capability::search_providers(root);
@@ -1045,15 +1193,29 @@ mod search_tests {
                         .map(|hit| hit.title)
                         .collect::<Vec<_>>()
                 };
+                let reminder = search
+                    .search_page(&SearchQuery::new("reminder"), None, 10, 10)
+                    .results
+                    .into_iter()
+                    .next();
                 (
                     titles(&SearchQuery::new("invoice")),
                     titles(&SearchQuery::new("invoice").within("folder:inbox")),
                     search.search_scopes(),
+                    reminder,
                 )
             })
             .unwrap();
-        assert_eq!(titles.len(), 2);
-        assert_eq!(scoped, ["Invoice from Ada"]);
+        assert_eq!(titles.len(), 3);
+        scoped.sort();
+        assert_eq!(scoped, ["Invoice from Ada", "Invoice reminder"]);
+        let reminder = reminder.expect("the flat-id entry is found");
+        assert_eq!(reminder.anchor(), "folder:inbox");
+        assert_eq!(reminder.icon, Some(ui_core::icons::Icon::Mail));
+        assert!(matches!(
+            reminder.row,
+            Some(ui_core::search::SearchRow::Message { unread: true, .. })
+        ));
         assert_eq!(declared, [ScopeDecl::new("folder:inbox", "Inbox")]);
 
         // Picking a hit opens the app at it.

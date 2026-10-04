@@ -200,6 +200,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.read_only()
     }
 
+    /// Whether this view shows a past version in History mode, drawn from a
+    /// frozen document. It must start no work there: a surface that fetches,
+    /// watches or spawns a worker is built without it and presents what the
+    /// document holds.
+    pub fn is_past(&self) -> bool {
+        self.dispatch.is_past()
+    }
+
     /// Whether this participant may only view, as state that follows role
     /// changes while the app runs.
     pub fn read_only_state(&self) -> LocalState<bool> {

@@ -202,12 +202,10 @@ const TRACK_HEIGHT: f32 = 24.0;
 /// same proportions.
 const KNOB_EDGE_GAP: f64 = 2.0;
 
-/// The pill's rect inside a layout target: centred, never stretched.
-fn track_rect(target: Rect) -> Rect {
-    Rect::from_center_size(
-        target.center(),
-        (f64::from(TRACK_WIDTH), f64::from(TRACK_HEIGHT)),
-    )
+/// The pill's rect inside a layout target: centred, never stretched, at
+/// the theme's size.
+fn track_rect(target: Rect, theme: &Theme) -> Rect {
+    Rect::from_center_size(target.center(), ToggleFace::size(theme))
 }
 
 /// The resolved colours of one switch face.
@@ -381,6 +379,16 @@ impl ToggleFace {
     pub fn colors(&self, theme: &Theme) -> ToggleColors {
         toggle_face_colors(theme, self.on, self.interact)
     }
+    /// The switch's `(width, height)` in `theme`: size a painted host's
+    /// rect with it, so a painted switch matches the retained one.
+    #[must_use]
+    pub fn size(theme: &Theme) -> (f64, f64) {
+        let scale = f64::from(theme.ui_scale);
+        (
+            f64::from(TRACK_WIDTH) * scale,
+            f64::from(TRACK_HEIGHT) * scale,
+        )
+    }
 }
 
 /// Build the accessibility node shared by retained toggles and
@@ -500,13 +508,20 @@ impl Widget for Toggle {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let (track_w, track_h) = ToggleFace::size(theme);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a switch is a few dozen logical pixels, far inside f32"
+        )]
+        let (track_w, track_h) = (track_w as f32, track_h as f32);
+        let target = self.interaction.minimum_target();
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(TRACK_WIDTH.max(self.interaction.minimum_target())),
-                height: Dimension::length(self.interaction.minimum_target()),
+                width: Dimension::length(track_w.max(target)),
+                height: Dimension::length(track_h.max(target)),
             },
             // A switch is a fixed target, like a button: in a row that also
             // holds a percent-width field it must not be the item that gives.
@@ -544,11 +559,17 @@ impl Widget for Toggle {
             scene,
             transform,
             theme,
-            &ToggleFace::new(track_rect(self.rect), self.is_checked)
+            &ToggleFace::new(track_rect(self.rect, theme), self.is_checked)
                 .hovered(self.is_hovered)
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
+    }
+
+    /// A fixed size: only the first layout (and a theme change, which
+    /// rebuilds the tree) needs one.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -559,11 +580,11 @@ impl Widget for Toggle {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                let hover = self.rect.contains(logical_pos);
-                if hover != self.is_hovered {
-                    self.is_hovered = hover;
-                    *ctx.handled = true;
-                }
+                // A hover change is a repaint, not consumed input: a parent
+                // that stops at the first handled child must still deliver
+                // this move to the control the pointer went to, or a switch
+                // beside this one never learns it is under the pointer.
+                self.is_hovered = self.rect.contains(logical_pos);
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -809,7 +830,7 @@ mod tests {
             let target = Rect::new(20.0, 30.0, 64.0, 62.0);
             let pill = Rect::new(20.0, 34.0, 64.0, 58.0);
             assert_eq!(
-                track_rect(target),
+                track_rect(target, &theme),
                 pill,
                 "44×24 pill centred in the 44×32 target"
             );
@@ -1171,5 +1192,64 @@ mod tests {
                 true
             );
         }
+    }
+    #[test]
+    fn the_switch_size_follows_the_ui_scale_and_layout_settles() {
+        let (w, h) = ToggleFace::size(&Theme::dark());
+        assert_eq!((w, h), (44.0, 24.0));
+        let (w2, _) = ToggleFace::size(&Theme::dark().with_ui_scale(1.5));
+        assert!((w2 - 66.0).abs() < 1e-9);
+        let mut toggle = Toggle::new("t", "t");
+        assert!(Widget::is_layout_dirty(&toggle));
+        let mut tree = TaffyTree::new();
+        let node = toggle.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        toggle.apply_layout(&tree, node, Point::new(1.0, 1.0));
+        assert!(!Widget::is_layout_dirty(&toggle));
+    }
+
+    /// A hover change repaints but consumes nothing: leaving one switch for
+    /// its neighbour must still reach the neighbour.
+    #[test]
+    fn a_hover_change_leaves_the_move_for_the_next_control() {
+        use winit::event::DeviceId;
+        let mut t = Toggle::new("id", "on");
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = t.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        t.apply_layout(&tree, node, Point::ZERO);
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut focus = None;
+        for position in [(10.0, 10.0), (500.0, 10.0)] {
+            let mut handled = false;
+            t.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: position.into(),
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+            assert!(!handled, "a move to {position:?} is not consumed");
+        }
+        assert!(!t.is_hovered);
     }
 }

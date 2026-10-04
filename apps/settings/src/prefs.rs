@@ -530,6 +530,11 @@ pub struct AppearancePrefs {
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]
     pub forced_colors: bool,
+    /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in
+    /// all text. `None` follows the theme's typeface (on with Hyperlegible);
+    /// [`Self::distinct_letters_effective`] is what the system shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distinct_letters: Option<bool>,
 }
 
 fn default_mode() -> String {
@@ -600,6 +605,7 @@ impl Default for AppearancePrefs {
             wallpaper_target: default_wallpaper_target(),
             distribution_defaults: None,
             forced_colors: false,
+            distinct_letters: None,
         }
     }
 }
@@ -727,8 +733,32 @@ impl AppearancePrefs {
             ui_scale: self.ui_scale as f32,
             reduce_motion: self.reduce_motion,
             reduce_transparency: self.reduce_transparency,
+            distinct_letters: self.distinct_letters,
             ..ui::theme::AccessibilityLayer::default()
         }))
+    }
+
+    /// Whether similar letters are set apart everywhere: the person's
+    /// choice, else what the theme's typeface does.
+    pub fn distinct_letters_effective(&self) -> bool {
+        self.distinct_letters
+            .unwrap_or_else(|| self.distinct_letters_by_face())
+    }
+
+    /// What the theme the mode shows does with no choice made: on with
+    /// Hyperlegible, off otherwise.
+    pub fn distinct_letters_by_face(&self) -> bool {
+        let unset = Self {
+            distinct_letters: None,
+            ..self.clone()
+        };
+        unset.resolve_theme().tokens.typography.distinct_letters
+    }
+
+    /// Record `on` as the person's choice: no choice when it is what the
+    /// typeface does anyway, so a later Hyperlegible theme still turns it on.
+    pub fn choose_distinct_letters(&mut self, on: bool) {
+        self.distinct_letters = (on != self.distinct_letters_by_face()).then_some(on);
     }
 
     /// The chosen theme before the accessibility comforts.
@@ -1761,6 +1791,40 @@ mod tests {
                 .any(|choice| choice.reference == "custom:ember"),
             "a dark theme is not offered for light mode"
         );
+    }
+
+    /// "Always distinguish similar letters" follows the typeface until the
+    /// person chooses, and a choice that matches the typeface stays no
+    /// choice so a later Hyperlegible theme still turns it on.
+    #[test]
+    fn distinct_letters_follow_the_typeface_until_chosen() {
+        let mut prefs = AppearancePrefs::default();
+        assert!(
+            !prefs.distinct_letters_effective(),
+            "off in the default face"
+        );
+        assert!(!prefs.resolve_theme().tokens.typography.distinct_letters);
+
+        prefs.choose_distinct_letters(true);
+        assert_eq!(prefs.distinct_letters, Some(true));
+        assert!(prefs.resolve_theme().tokens.typography.distinct_letters);
+        prefs.choose_distinct_letters(false);
+        assert_eq!(prefs.distinct_letters, None, "the typeface's own value");
+
+        let mut legible = ui::theme::Preset::DarkGraphite.document();
+        legible.id = "legible".into();
+        legible.name = "Legible".into();
+        legible.type_.face = "Hyperlegible".into();
+        let mut prefs = AppearancePrefs {
+            dark_theme: "custom:legible".into(),
+            custom_themes: vec![serde_json::to_value(&legible).unwrap()],
+            ..AppearancePrefs::default()
+        };
+        assert!(prefs.distinct_letters_by_face(), "on with Hyperlegible");
+        assert!(prefs.distinct_letters_effective());
+        prefs.choose_distinct_letters(false);
+        assert_eq!(prefs.distinct_letters, Some(false));
+        assert!(!prefs.resolve_theme().tokens.typography.distinct_letters);
     }
 
     /// Writing one section never clobbers the region store's locale, a theme

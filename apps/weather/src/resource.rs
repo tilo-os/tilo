@@ -104,7 +104,7 @@ impl Resource for Weather {
                 anchor: Some(crate::actions::location_resource_id(location.id)),
                 title: location.name.clone(),
                 text: location.region.clone(),
-                action: None,
+                ..Default::default()
             })
             .collect()
     }

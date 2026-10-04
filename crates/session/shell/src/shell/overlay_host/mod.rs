@@ -21159,236 +21159,251 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(view) = self.portal_dialogs.view() else {
-            return;
-        };
-        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
-            return;
-        };
-        draw_scrim_at(scene, transform, self.rect, 1.0, theme);
-        // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
-        // shadow along that outline, painted before the surface so the
-        // sheet sits on its shadow rather than under it. Was a 16 px
-        // radius (off the scale) with a sprite shadow on a ramp slot until
-        // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
-        // `surfaces.raised` body) belong to the portal owner (S2).
-        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
-        let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
-        ui::surface::shadow(
-            scene,
-            transform,
-            layout.sheet,
-            sheet_radius,
-            &theme.tokens.elevation.floating,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &sheet,
-        );
-        crate::shell::trusted_ui::paint_seal(scene, transform, layout.sheet, theme, sheet_radius);
-        text_renderer.draw_text(
-            scene,
-            &view.title(),
-            20.0,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &view.app_name(),
-            14.0,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &view.detail(),
-            14.0,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
-            None,
-        );
-        for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
-            let selected = index == self.portal_dialogs.selected();
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                *rect,
-                choice,
-                &theme.text(TextRole::Body),
-                ui::chrome::SelectionState::active(selected),
-            );
-        }
-        // USB is intentionally a real multi-select sheet, rather than a
-        // generic all-or-nothing permission prompt.  A row click or Space
-        // toggles only that device; Enter commits the resulting subset.
-        let usb_start = self.portal_dialogs.visible_selection_start();
-        for (visible_index, (device, rect)) in view
-            .usb_devices()
-            .iter()
-            .skip(usb_start)
-            .zip(&layout.choices)
-            .enumerate()
-        {
-            let index = usb_start.saturating_add(visible_index);
-            let access_key = if device.writable {
-                "portal-usb-row-read-write"
-            } else {
-                "portal-usb-row-read-only"
+        // A review sheet is a security surface: the app, the files and the
+        // devices it names are read letter by letter.
+        text_renderer.security_surface(|text_renderer| {
+            let Some(view) = self.portal_dialogs.view() else {
+                return;
             };
-            let label = format!(
-                "[{}] {}",
-                if device.selected { "✓" } else { " " },
-                crate::shell::i18n::t_args(access_key, &[("device", device.label.as_str().into())])
-            );
-            let focused = index == self.portal_dialogs.selected();
-            draw_filter_chip(
+            let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+                return;
+            };
+            draw_scrim_at(scene, transform, self.rect, 1.0, theme);
+            // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
+            // shadow along that outline, painted before the surface so the
+            // sheet sits on its shadow rather than under it. Was a 16 px
+            // radius (off the scale) with a sprite shadow on a ramp slot until
+            // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
+            // `surfaces.raised` body) belong to the portal owner (S2).
+            let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+            let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
+            ui::surface::shadow(
                 scene,
                 transform,
-                text_renderer,
-                theme,
-                *rect,
-                &label,
-                &theme.text(TextRole::Body),
-                ui::chrome::SelectionState::active(focused),
+                layout.sheet,
+                sheet_radius,
+                &theme.tokens.elevation.floating,
             );
-        }
-        if let Some(editor) = view.launcher_editor() {
-            // A shortcut step's answer is a real text field, painted below.
-            if let Some(name_rect) = layout.launcher_name
-                && !matches!(
-                    view,
-                    crate::shell::portal_dialog::DialogView::ShortcutStep { .. }
-                )
-            {
-                let focused = self.portal_dialogs.launcher_name_focused();
-                draw_filter_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    name_rect,
-                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
-                    &theme.text(TextRole::Body),
-                    ui::chrome::SelectionState::active(focused),
-                );
-            }
-            for (index, (label, rect)) in editor
-                .icon_choices
-                .iter()
-                .zip(&layout.launcher_icons)
-                .enumerate()
-            {
-                let selected = self.portal_dialogs.launcher_icon() == Some(index);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &sheet,
+            );
+            crate::shell::trusted_ui::paint_seal(
+                scene,
+                transform,
+                layout.sheet,
+                theme,
+                sheet_radius,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.title(),
+                20.0,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.app_name(),
+                14.0,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.detail(),
+                14.0,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
+                None,
+            );
+            for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
+                let selected = index == self.portal_dialogs.selected();
                 draw_filter_chip(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     *rect,
-                    label,
+                    choice,
                     &theme.text(TextRole::Body),
                     ui::chrome::SelectionState::active(selected),
                 );
             }
-        }
-        // The sheet's text fields: an authentication answer, a shortcut
-        // step's, or one row per network secret labelled by its
-        // placeholder. Secret ones stay hidden until their own show/hide
-        // control is used.
-        let presence = PresenceCtx::default();
-        for field in self.portal_dialogs.place_fields(&layout) {
-            field.draw(scene, transform, text_renderer, theme, &presence);
-        }
-        if let (Some(rect), Some((remember, focused))) =
-            (layout.remember, self.portal_dialogs.remember_display())
-        {
-            let label = format!(
-                "[{}] {}",
-                if remember { "✓" } else { " " },
-                crate::shell::i18n::t("portal-remember-device")
-            );
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                &label,
-                &theme.text(TextRole::Body),
-                ui::chrome::SelectionState::active(focused),
-            );
-        }
-        if let Some(error) = self.portal_dialogs.entry_error() {
-            text_renderer.draw_text(
-                scene,
-                error,
-                12.0,
-                theme.tokens.colors.semantic.warning,
-                transform.pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
-                None,
-            );
-        }
-        for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
-            let accelerator = row.accelerator.as_deref().map_or_else(
-                || crate::shell::i18n::t("portal-shortcut-not-set"),
-                crate::portal::global_shortcuts::display_accelerator,
-            );
-            let label = if row.description.is_empty() {
-                format!("{}  —  {accelerator}", row.id)
-            } else {
-                format!("{}  —  {accelerator}", row.description)
-            };
-            let selected = index == self.portal_dialogs.selected();
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                *rect,
-                &label,
-                &theme.text(TextRole::Body),
-                ui::chrome::SelectionState::active(selected),
-            );
-            if let Some(status) = &row.status {
+            // USB is intentionally a real multi-select sheet, rather than a
+            // generic all-or-nothing permission prompt.  A row click or Space
+            // toggles only that device; Enter commits the resulting subset.
+            let usb_start = self.portal_dialogs.visible_selection_start();
+            for (visible_index, (device, rect)) in view
+                .usb_devices()
+                .iter()
+                .skip(usb_start)
+                .zip(&layout.choices)
+                .enumerate()
+            {
+                let index = usb_start.saturating_add(visible_index);
+                let access_key = if device.writable {
+                    "portal-usb-row-read-write"
+                } else {
+                    "portal-usb-row-read-only"
+                };
+                let label = format!(
+                    "[{}] {}",
+                    if device.selected { "✓" } else { " " },
+                    crate::shell::i18n::t_args(
+                        access_key,
+                        &[("device", device.label.as_str().into())]
+                    )
+                );
+                let focused = index == self.portal_dialogs.selected();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(focused),
+                );
+            }
+            if let Some(editor) = view.launcher_editor() {
+                // A shortcut step's answer is a real text field, painted below.
+                if let Some(name_rect) = layout.launcher_name
+                    && !matches!(
+                        view,
+                        crate::shell::portal_dialog::DialogView::ShortcutStep { .. }
+                    )
+                {
+                    let focused = self.portal_dialogs.launcher_name_focused();
+                    draw_filter_chip(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        name_rect,
+                        self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                        &theme.text(TextRole::Body),
+                        ui::chrome::SelectionState::active(focused),
+                    );
+                }
+                for (index, (label, rect)) in editor
+                    .icon_choices
+                    .iter()
+                    .zip(&layout.launcher_icons)
+                    .enumerate()
+                {
+                    let selected = self.portal_dialogs.launcher_icon() == Some(index);
+                    draw_filter_chip(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        *rect,
+                        label,
+                        &theme.text(TextRole::Body),
+                        ui::chrome::SelectionState::active(selected),
+                    );
+                }
+            }
+            // The sheet's text fields: an authentication answer, a shortcut
+            // step's, or one row per network secret labelled by its
+            // placeholder. Secret ones stay hidden until their own show/hide
+            // control is used.
+            let presence = PresenceCtx::default();
+            for field in self.portal_dialogs.place_fields(&layout) {
+                field.draw(scene, transform, text_renderer, theme, &presence);
+            }
+            if let (Some(rect), Some((remember, focused))) =
+                (layout.remember, self.portal_dialogs.remember_display())
+            {
+                let label = format!(
+                    "[{}] {}",
+                    if remember { "✓" } else { " " },
+                    crate::shell::i18n::t("portal-remember-device")
+                );
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(focused),
+                );
+            }
+            if let Some(error) = self.portal_dialogs.entry_error() {
                 text_renderer.draw_text(
                     scene,
-                    status,
-                    11.0,
+                    error,
+                    12.0,
                     theme.tokens.colors.semantic.warning,
-                    transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                    transform
+                        .pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
                     None,
                 );
             }
-        }
-        // The sheet's two buttons are the shared `Button` (never a chip
-        // painter wearing button colours): Cancel neutral, the commit
-        // primary, both at the Control radius. Was `surfaces.base` /
-        // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(layout.cancel, &view.cancel_label())
-                .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
-        );
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(layout.confirm, &view.confirm_label())
-                .role(ButtonRole::Primary)
-                .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
-        );
+            for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate()
+            {
+                let accelerator = row.accelerator.as_deref().map_or_else(
+                    || crate::shell::i18n::t("portal-shortcut-not-set"),
+                    crate::portal::global_shortcuts::display_accelerator,
+                );
+                let label = if row.description.is_empty() {
+                    format!("{}  —  {accelerator}", row.id)
+                } else {
+                    format!("{}  —  {accelerator}", row.description)
+                };
+                let selected = index == self.portal_dialogs.selected();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(selected),
+                );
+                if let Some(status) = &row.status {
+                    text_renderer.draw_text(
+                        scene,
+                        status,
+                        11.0,
+                        theme.tokens.colors.semantic.warning,
+                        transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                        None,
+                    );
+                }
+            }
+            // The sheet's two buttons are the shared `Button` (never a chip
+            // painter wearing button colours): Cancel neutral, the commit
+            // primary, both at the Control radius. Was `surfaces.base` /
+            // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(layout.cancel, &view.cancel_label())
+                    .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(layout.confirm, &view.confirm_label())
+                    .role(ButtonRole::Primary)
+                    .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
+            );
+        });
     }
 
     /// Paints an overlapping stack of member faces, right-aligned at

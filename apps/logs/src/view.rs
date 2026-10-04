@@ -27,8 +27,8 @@ use ui::tilo_actions::ActionBinding;
 use ui::tokens::Spacing;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
-    AppModel, BadgeFace, ChipStyle, Dropdown, Element, EmptyState, FilterCount, ModelPath,
-    SearchField, TaffyTreeExt, Widget,
+    AppModel, ChipStyle, Dropdown, Element, EmptyState, FilterCount, ModelPath, SearchField,
+    TaffyTreeExt, Widget,
 };
 use ui::{LocalState, TextRole};
 
@@ -136,23 +136,6 @@ fn severity_options() -> Vec<(String, String)> {
 }
 
 /// Paint a row's severity badge, leading in its cell and centred on the row.
-fn paint_severity(
-    row: &JournalRow,
-    scene: &mut Scene,
-    theme: &Theme,
-    text: &mut TextRenderer,
-    cell: Rect,
-) {
-    let label = row.priority.long();
-    let w = BadgeFace::intrinsic_width(label, text, theme);
-    let h = BadgeFace::height(theme);
-    let x0 = cell.x0 + f64::from(theme.tokens.spacing.s2);
-    let y0 = cell.center().y - h / 2.0;
-    BadgeFace::new(Rect::new(x0, y0, x0 + w, y0 + h), label)
-        .style(severity_style(row.priority))
-        .paint(scene, Affine::IDENTITY, text, theme);
-}
-
 /// The badge style a severity is shown in.
 pub(crate) fn severity_style(priority: Priority) -> ChipStyle {
     match priority.tone() {
@@ -161,28 +144,23 @@ pub(crate) fn severity_style(priority: Priority) -> ChipStyle {
     }
 }
 
-/// The journal table. `compact` drops the unit column for a narrow window;
+/// The journal table. The unit column gives way first in a narrow window;
 /// the unit stays in the inspector and in each row's spoken value.
-fn journal_table(level_width: f32, compact: bool) -> DataTable<JournalRow> {
-    let mut columns = vec![
+fn journal_table() -> DataTable<JournalRow> {
+    let columns = vec![
         ColumnDef::new("time", "Time", ColumnWidth::Auto)
             .with_kind(TextKind::Numeric)
             .with_text(|row: &JournalRow| row.time.clone()),
-        ColumnDef::new("level", "Level", ColumnWidth::Fixed(level_width))
-            .with_render(Box::new(paint_severity))
-            .with_accessible_value(|row: &JournalRow| row.priority.long().to_owned()),
-    ];
-    if !compact {
-        columns.push(
-            ColumnDef::new("unit", "Unit", ColumnWidth::Auto)
-                .with_text(|row: &JournalRow| row.unit.clone()),
-        );
-    }
-    columns.push(
+        ColumnDef::new("level", "Level", ColumnWidth::Auto)
+            .with_badge(|row: &JournalRow| (row.priority.long().to_owned(), row.priority.tone())),
+        ColumnDef::new("unit", "Unit", ColumnWidth::Auto)
+            .with_text(|row: &JournalRow| row.unit.clone())
+            .priority(1),
         ColumnDef::new("message", "Message", ColumnWidth::Flex(1.0))
             .with_text(|row: &JournalRow| row.message.clone()),
-    );
+    ];
     DataTable::new(columns)
+        .compact()
         .with_id("logs.entries")
         .with_accessible_name("Journal entries")
         .selectable(true)
@@ -200,13 +178,6 @@ struct Nodes {
     body_child: Option<NodeId>,
 }
 
-/// The table's shape: it is rebuilt when one of these changes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct TableShape {
-    level_width: f32,
-    compact: bool,
-}
-
 /// The journal: the filter field and the facet dropdowns over the entry
 /// table, or one empty state when there is nothing to list.
 #[allow(
@@ -222,7 +193,6 @@ pub(crate) struct JournalPane {
     boot: Dropdown,
     severity: Dropdown,
     table: DataTable<JournalRow>,
-    shape: TableShape,
     /// The viewport height last handed to the table.
     viewport: f64,
     row_height: f64,
@@ -258,10 +228,6 @@ impl JournalPane {
                 })
         };
         severity.set_value_options(severity_options());
-        let shape = TableShape {
-            level_width: 0.0,
-            compact: false,
-        };
         Self {
             shared,
             seen: None,
@@ -272,8 +238,7 @@ impl JournalPane {
             unit,
             boot,
             severity,
-            table: journal_table(1.0, false),
-            shape,
+            table: journal_table(),
             viewport: 0.0,
             row_height: 0.0,
             placeholder: None,
@@ -384,23 +349,6 @@ impl JournalPane {
         if let Some(entry_id) = entry {
             self.shared.borrow_mut().push(Request::Select(entry_id));
         }
-    }
-
-    /// Rebuild the table when its shape changes, keeping rows and selection.
-    fn ensure_table(&mut self, shape: TableShape) {
-        if shape == self.shape {
-            return;
-        }
-        self.shape = shape;
-        let rows = self.table.view_rows().into_iter().cloned().collect();
-        let selected = self.table.selection().primary();
-        self.table = journal_table(shape.level_width, shape.compact);
-        self.table.set_rows(rows);
-        if let Some(index) = selected {
-            self.table.selection_mut().select_only(index);
-        }
-        self.viewport = 0.0;
-        self.structure_dirty = true;
     }
 
     /// The filter field and the facet dropdowns: one band on a wide pane,
@@ -567,14 +515,6 @@ impl Widget for JournalPane {
         let tokens = &theme.tokens;
         let metrics = tokens.metrics;
         let growth = theme.text_growth();
-        // Wide enough for "Emergency" in a badge, at this text size.
-        let level_width = (tokens.spacing.s16 + tokens.spacing.s8) * growth;
-        let compact = self.rect.width() > 0.0
-            && self.rect.width() < f64::from(metrics.content_min_width + metrics.detail_min_width);
-        self.ensure_table(TableShape {
-            level_width,
-            compact,
-        });
         self.wide = self.rect.width() <= 0.0
             || self.rect.width() >= 2.0 * f64::from(metrics.content_min_width * growth);
         self.row_height = f64::from(metrics.min_pointer_target);

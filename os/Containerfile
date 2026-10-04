@@ -1656,7 +1656,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         adwaita-sans-fonts \
     && dnf clean all && ${FINALIZE_RPMDB} \
     && python3 /tilo-src/tools/font-catalog.py stage \
-        /tilo-src/crates/sdk/ui-core/assets/fonts /usr/share/fonts/tilo --scope product \
+        /tilo-src/crates/sdk/ui-core/assets/fonts /usr/share/fonts/tilo --scope os \
     && install -D -m 0644 /tilo-src/57-tilo-fonts.conf /usr/share/fontconfig/conf.avail/57-tilo-fonts.conf \
     && ln -s ../../../usr/share/fontconfig/conf.avail/57-tilo-fonts.conf /etc/fonts/conf.d/57-tilo-fonts.conf \
     && fc-cache -s \

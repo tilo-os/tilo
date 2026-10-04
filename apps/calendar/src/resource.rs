@@ -377,13 +377,13 @@ impl Resource for Calendar {
             anchor: Some(format!("calendar.event:{}", event.id)),
             title: event.display_title().to_owned(),
             text: event.location.clone(),
-            action: None,
+            ..Default::default()
         });
         let tasks = state.tasks.iter().map(|task| SearchEntry {
             anchor: Some(format!("calendar.task:{}", task.id)),
             title: task.title.clone(),
             text: String::new(),
-            action: None,
+            ..Default::default()
         });
         events.chain(tasks).collect()
     }

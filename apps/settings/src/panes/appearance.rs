@@ -56,6 +56,7 @@ pub const COLOUR_KEY: &str = "identity.colour";
 pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
 pub const REDUCE_MOTION_KEY: &str = "appearance.reduce_motion";
 pub const REDUCE_TRANSPARENCY_KEY: &str = "appearance.reduce_transparency";
+pub const DISTINCT_LETTERS_KEY: &str = "appearance.distinct_letters";
 pub const TEXT_SIZE_KEY: &str = "appearance.text_size";
 pub const UI_SCALE_KEY: &str = "appearance.ui_scale";
 pub const SCHEDULE_KEY: &str = "appearance.schedule";
@@ -441,6 +442,17 @@ impl AppearancePane {
                     .with_id("appearance.reduce_transparency"),
                 ),
             ),
+            setting_row_described(
+                &t("settings-appearance-distinct-letters"),
+                &t("settings-appearance-distinct-letters-desc"),
+                Box::new(
+                    Toggle::new(
+                        "settings.appearance.distinct_letters",
+                        "appearance.distinct_letters.edit",
+                    )
+                    .with_id("appearance.distinct_letters"),
+                ),
+            ),
         ];
         let theme_card = card(&t("settings-appearance-theme-card"), rows(theme_rows));
 
@@ -793,6 +805,10 @@ impl AppearancePane {
         );
         self.dispatch(
             state,
+            &set_bool_action(DISTINCT_LETTERS_KEY, prefs.distinct_letters_effective()),
+        );
+        self.dispatch(
+            state,
             &set_bool_action(REDUCE_MOTION_KEY, prefs.reduce_motion),
         );
         self.dispatch(
@@ -874,6 +890,29 @@ impl AppearancePane {
         } else {
             (current.to_string(), false)
         }
+    }
+
+    /// "Always distinguish similar letters" shows what the system does: the
+    /// person's choice, else the typeface's. A theme change that moves the
+    /// typeface's default while no choice is made moves the switch with it
+    /// rather than freezing the old value as a choice.
+    fn reconcile_distinct_letters(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        let effective = self.prefs.distinct_letters_effective();
+        let draft = Self::draft_key(DISTINCT_LETTERS_KEY);
+        let canonical = read_bool(state, root, DISTINCT_LETTERS_KEY);
+        if self.prefs.distinct_letters.is_none()
+            && canonical.is_some_and(|value| value != effective)
+            && read_bool(state, root, &draft) == canonical
+        {
+            let _ = state.put(root, DISTINCT_LETTERS_KEY, effective);
+            let _ = state.put(root, draft, effective);
+            return false;
+        }
+        let (on, changed) = self.reconcile_bool(state, root, DISTINCT_LETTERS_KEY, effective);
+        if on != effective {
+            self.prefs.choose_distinct_letters(on);
+        }
+        changed
     }
 
     fn reconcile_bool(
@@ -1021,6 +1060,7 @@ impl Widget for AppearancePane {
         if reduce_transparency != self.prefs.reduce_transparency {
             self.prefs.reduce_transparency = reduce_transparency;
         }
+        changed |= self.reconcile_distinct_letters(state, root);
         let (reduce_motion, motion_changed) =
             self.reconcile_bool(state, root, REDUCE_MOTION_KEY, self.prefs.reduce_motion);
         changed |= motion_changed;

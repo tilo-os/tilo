@@ -40,6 +40,7 @@ use crate::tokens::colors::{
 use crate::widget::TaffyTreeExt;
 use crate::widget::Tone;
 use crate::widget::Widget;
+use crate::widget::activation::Activation;
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
@@ -190,7 +191,8 @@ impl PillMetrics {
         }
     }
 
-    /// The narrowest pill showing everything without eliding.
+    /// The narrowest pill showing everything without eliding. `trailing` is
+    /// a remove × or a menu chevron.
     fn intrinsic_width(
         &self,
         label: &str,
@@ -229,6 +231,8 @@ pub struct ChipFace<'a> {
     hovered: bool,
     removable: bool,
     remove_hovered: bool,
+    menu: bool,
+    focused: bool,
     bare: bool,
     opacity: f32,
 }
@@ -244,9 +248,23 @@ impl<'a> ChipFace<'a> {
             hovered: false,
             removable: false,
             remove_hovered: false,
+            menu: false,
+            focused: false,
             bare: false,
             opacity: 1.0,
         }
+    }
+    /// A trailing chevron: the chip opens a menu of choices.
+    #[must_use]
+    pub fn menu(mut self) -> Self {
+        self.menu = true;
+        self
+    }
+    /// Keyboard focus: the focus ring around the pill.
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
     }
     #[must_use]
     pub fn lead(mut self, lead: ChipLead) -> Self {
@@ -327,6 +345,14 @@ impl<'a> ChipFace<'a> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // A slot wider than the pill needs (a key on a keyboard) centres the
+        // label in it.
+        let intrinsic = PillMetrics::of(theme, TextRole::Label).intrinsic_width(
+            self.label,
+            self.lead,
+            self.removable || self.menu,
+            text_renderer,
+        );
         paint_pill(
             &PillPaint {
                 rect: self.rect,
@@ -336,16 +362,21 @@ impl<'a> ChipFace<'a> {
                 selected: self.selected,
                 hovered: self.hovered,
                 remove: self.removable.then_some(self.remove_hovered),
+                menu: self.menu,
                 bare: self.bare,
                 opacity: self.opacity,
                 role: TextRole::Label,
-                centred: false,
+                centred: !self.removable && !self.menu && self.rect.width() > intrinsic + 1.0,
             },
             scene,
             transform,
             text_renderer,
             theme,
         );
+        if self.focused {
+            let radius = f64::from(theme.tokens.radii.full).min(self.rect.height() / 2.0);
+            crate::widget::paint_focus_ring(scene, transform, self.rect, radius, theme);
+        }
     }
 }
 
@@ -360,6 +391,8 @@ pub(crate) struct PillPaint<'a> {
     pub hovered: bool,
     /// `Some(hovered)` paints a trailing ×.
     pub remove: Option<bool>,
+    /// A trailing chevron: the chip opens a menu.
+    pub menu: bool,
     pub bare: bool,
     pub opacity: f32,
     pub role: TextRole,
@@ -450,7 +483,7 @@ pub(crate) fn paint_pill(
         metrics.pad_x.min(rect.width() / 4.0)
     };
     let lead_w = metrics.lead_width(pill.lead);
-    let trailing = if pill.remove.is_some() {
+    let trailing = if pill.remove.is_some() || pill.menu {
         metrics.gap + metrics.glyph
     } else {
         0.0
@@ -491,7 +524,7 @@ pub(crate) fn paint_pill(
         }
         + label_w;
     // A pill with nothing but a lead, and a badge, centre their content.
-    let mut x = if pill.centred || (label_w <= 0.0 && pill.remove.is_none()) {
+    let mut x = if pill.centred || (label_w <= 0.0 && pill.remove.is_none() && !pill.menu) {
         rect.center().x - content_w / 2.0
     } else {
         rect.x0 + inset
@@ -548,6 +581,19 @@ pub(crate) fn paint_pill(
             fade(ink),
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+    } else if pill.menu {
+        let x1 = rect.x1 - inset;
+        let glyph = Rect::from_center_size(
+            Point::new(x1 - metrics.glyph / 2.0, cy),
+            (metrics.glyph, metrics.glyph),
+        );
+        Icon::ChevronDown.draw_with_stroke(
+            scene,
+            transform,
+            glyph,
+            fade(colors.lead),
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 }
 
@@ -563,6 +609,7 @@ pub struct Chip {
     selectable: bool,
     selected: bool,
     removable: bool,
+    menu: bool,
     lead: ChipLead,
     style: ChipStyle,
     toggled: bool,
@@ -571,6 +618,12 @@ pub struct Chip {
     x_rect: Rect,
     last_cursor: Point,
     hovered: bool,
+    focused: bool,
+    /// What pressing the chip does when it navigates or opens something (a
+    /// tag, a backlink, a filter menu): a callback or a bound action.
+    activation: Activation,
+    tooltip: Option<String>,
+    accessible_name: Option<String>,
     /// The geometry resolved at `build_layout`, for `measure` and
     /// `adjust_layout_with_measure`, which have no theme of their own.
     metrics: PillMetrics,
@@ -590,11 +643,16 @@ impl Chip {
     pub fn new(label: impl Into<String>) -> Self {
         static STOCK: std::sync::LazyLock<PillMetrics> =
             std::sync::LazyLock::new(|| PillMetrics::of(&Theme::dark(), TextRole::Label));
+        let label = label.into();
         Self {
-            label: label.into(),
+            activation: Activation::new(label.clone()),
+            tooltip: None,
+            accessible_name: None,
+            label,
             selectable: false,
             selected: false,
             removable: false,
+            menu: false,
             lead: ChipLead::None,
             style: ChipStyle::Neutral,
             toggled: false,
@@ -603,11 +661,58 @@ impl Chip {
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             hovered: false,
+            focused: false,
             metrics: STOCK.clone(),
             min_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             interaction: crate::interaction::InteractionEnvironment::default(),
             footprint: None,
         }
+    }
+
+    /// A stable id for tests, inspection and the chip's bound action
+    /// (defaults to the label). Set it before [`Self::on_click`].
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.activation = Activation::new(id);
+        self
+    }
+
+    /// Run `f` when the chip is pressed (a pointer, Enter or Space, or
+    /// assistive technology): a tag that opens its notes, a backlink.
+    #[must_use]
+    pub fn on_click(mut self, f: impl FnMut() + 'static) -> Self {
+        self.activation.set_callback(Box::new(f));
+        self
+    }
+
+    /// [`Self::on_click`] through an exported resource action.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        self.activation.set_action(binding);
+        self
+    }
+
+    /// What the chip does or stands for, shown when the pointer rests on it.
+    #[must_use]
+    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+
+    /// The name the chip is announced by when its label alone is not enough
+    /// ("Tag: design").
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// A trailing chevron: pressing the chip opens a menu of choices.
+    #[must_use]
+    pub fn menu(mut self) -> Self {
+        self.menu = true;
+        self.footprint = None;
+        self
     }
 
     /// The larger of the theme's metric and the interaction environment's
@@ -702,14 +807,32 @@ impl Chip {
         self.x_rect
     }
 
+    /// Whether pressing the body does something.
+    fn pressable(&self) -> bool {
+        self.selectable || self.activation.is_bound()
+    }
+
+    /// Press the body: toggle a filter, or run the bound activation.
+    fn press(&mut self) -> bool {
+        if self.selectable {
+            self.selected = !self.selected;
+            self.toggled = true;
+            return true;
+        }
+        self.activation.activate()
+    }
+
     #[allow(
         clippy::cast_possible_truncation,
         reason = "pill dimensions are small pixel counts well within f32's exact-integer range; taffy's Size requires f32"
     )]
     fn measured_footprint(&self, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
-        let width =
-            self.metrics
-                .intrinsic_width(&self.label, self.lead, self.removable, text_renderer);
+        let width = self.metrics.intrinsic_width(
+            &self.label,
+            self.lead,
+            self.removable || self.menu,
+            text_renderer,
+        );
         taffy::Size {
             width: width.ceil() as f32,
             height: self.metrics.height.ceil() as f32,
@@ -718,6 +841,8 @@ impl Chip {
 }
 
 impl Widget for Chip {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -756,7 +881,13 @@ impl Widget for Chip {
             .footprint
             .map_or_else(taffy::Dimension::auto, |size| length(size.width));
         let node = taffy.leaf_node(Style {
-            flex_shrink: 0.0,
+            // A pill wider than its line gives way and elides its label rather
+            // than running past the edge.
+            flex_shrink: 1.0,
+            min_size: taffy::Size {
+                width: length(self.metrics.height as f32),
+                height: taffy::Dimension::auto(),
+            },
             size: taffy::Size {
                 width,
                 height: length(self.metrics.height as f32),
@@ -844,15 +975,17 @@ impl Widget for Chip {
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
+        let pressed = self.activation.state.pressed;
         paint_pill(
             &PillPaint {
                 rect: self.rect,
                 label: &self.label,
                 lead: self.lead,
                 style: self.style,
-                selected: self.selectable && self.selected,
-                hovered: self.selectable && self.hovered && !remove_hovered,
+                selected: (self.selectable && self.selected) || pressed,
+                hovered: self.pressable() && self.hovered && !remove_hovered,
                 remove: self.removable.then_some(remove_hovered),
+                menu: self.menu,
                 bare: false,
                 opacity: 1.0,
                 role: TextRole::Label,
@@ -863,6 +996,10 @@ impl Widget for Chip {
             text_renderer,
             theme,
         );
+        if self.focused {
+            let radius = f64::from(theme.tokens.radii.full).min(self.rect.height() / 2.0);
+            crate::widget::paint_focus_ring(scene, transform, self.rect, radius, theme);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -874,17 +1011,36 @@ impl Widget for Chip {
             }
             WindowEvent::CursorLeft { .. } => self.hovered = false,
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
+                state,
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.removable && self.remove_hit_rect().contains(self.last_cursor) {
-                    self.removed = true;
-                    *ctx.handled = true;
-                } else if self.selectable && self.hit_rect().contains(self.last_cursor) {
-                    self.selected = !self.selected;
-                    self.toggled = true;
-                    *ctx.handled = true;
+                let over_x = self.removable && self.remove_hit_rect().contains(self.last_cursor);
+                let over_body = self.hit_rect().contains(self.last_cursor);
+                match state {
+                    ElementState::Pressed if over_x => {
+                        self.removed = true;
+                        *ctx.handled = true;
+                    }
+                    ElementState::Pressed if self.selectable && over_body => {
+                        self.selected = !self.selected;
+                        self.toggled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
+                    }
+                    ElementState::Pressed if self.activation.is_enabled() && over_body => {
+                        self.activation.state.pressed = true;
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
+                    }
+                    ElementState::Released if self.activation.state.pressed => {
+                        self.activation.state.pressed = false;
+                        *ctx.handled = true;
+                        if over_body && !over_x {
+                            self.activation.activate();
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -892,15 +1048,50 @@ impl Widget for Chip {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if (self.selectable || self.removable) && self.hit_rect().contains(point) {
+        if (self.pressable() || self.removable) && self.hit_rect().contains(point) {
             Some(winit::window::CursorIcon::Pointer)
         } else {
             None
         }
     }
 
+    fn is_focusable(&self) -> bool {
+        self.pressable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Enter, Space and assistive technology press the chip as a click does;
+    /// Delete is the × of a removable one.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::AppModel,
+        _root: &crate::widget::ModelPath,
+    ) -> bool {
+        use crate::a11y::Action;
+        match action {
+            Action::Activate | Action::ToggleCheck if self.pressable() => self.press(),
+            _ => false,
+        }
+    }
+
     fn name(&self) -> &'static str {
         "Chip"
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip.as_deref()
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(self.activation.id())
     }
 
     fn get_rect(&self) -> Rect {
@@ -909,16 +1100,36 @@ impl Widget for Chip {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self
+            .accessible_name
+            .clone()
+            .unwrap_or_else(|| self.label.clone());
         if self.selectable {
             Some(
                 AccessNode::new(Role::ToggleButton)
-                    .with_name(self.label.clone())
+                    .with_name(name)
+                    .with_bounds(self.rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
+                            .focused(self.focused)
                             .selected(self.selected)
                             .checked(self.selected),
                     ),
+            )
+        } else if self.activation.is_bound() {
+            let mut state = AccessState::new()
+                .focusable(true)
+                .focused(self.focused)
+                .disabled(!self.activation.is_enabled());
+            if self.menu {
+                state = state.expanded(false);
+            }
+            Some(
+                AccessNode::new(Role::Button)
+                    .with_name(name)
+                    .with_bounds(self.rect)
+                    .with_state(state),
             )
         } else {
             Some(AccessNode::new(Role::StaticText).with_value(self.label.clone()))
@@ -926,6 +1137,7 @@ impl Widget for Chip {
     }
 }
 
+crate::widget::activation::activation_controls!(Chip, activation);
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,5 +1480,79 @@ mod tests {
         );
         let rect = harness.inspection().root.children[0].rect;
         Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_chip_that_navigates_is_a_focusable_button() {
+        let opened = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&opened);
+        let mut chip = Chip::new("design")
+            .with_id("tag-design")
+            .on_click(move || counter.set(counter.get() + 1));
+        assert!(chip.is_focusable());
+        let node = Widget::accessibility(&chip).unwrap();
+        assert_eq!(node.role, crate::a11y::Role::Button);
+        assert_eq!(node.name.as_deref(), Some("design"));
+        assert_eq!(chip.test_id(), Some("tag-design"));
+        let mut doc = automerge::AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut chip,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
+        // A pointer click runs it too.
+        let mut harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(chip))),
+            (400, 100),
+        );
+        let [x, y, w, h] = harness.inspection().root.children[0].rect;
+        harness.click_at(x + w / 2.0, y + h / 2.0);
+        assert_eq!(opened.get(), 2);
+        // A plain label chip is not a control.
+        assert!(!Chip::new("label").is_focusable());
+    }
+
+    #[test]
+    fn a_menu_chip_reserves_its_chevron_and_a_wide_face_centres_its_label() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let plain = ChipFace::intrinsic_width("Sort", ChipLead::None, false, &mut text, &theme);
+        let menu = PillMetrics::of(&theme, TextRole::Label).intrinsic_width(
+            "Sort",
+            ChipLead::None,
+            true,
+            &mut text,
+        );
+        assert!(menu > plain);
+        let chip = Chip::new("Sort").menu().on_click(|| {});
+        let node = Widget::accessibility(&chip).unwrap();
+        assert_eq!(node.state.expanded, Some(false));
+        // A key wider than its label: the label sits in the middle.
+        let paint_x = |width: f64, text: &mut TextRenderer| {
+            let mut scene = Scene::new();
+            ChipFace::new(Rect::new(0.0, 0.0, width, ChipFace::height(&theme)), "q").paint(
+                &mut scene,
+                Affine::IDENTITY,
+                text,
+                &theme,
+            );
+            scene.encoding().resources.glyph_runs[0]
+                .transform
+                .translation[0]
+        };
+        let narrow = paint_x(plain.max(28.0), &mut text);
+        let wide = paint_x(120.0, &mut text);
+        assert!(f64::from(wide) > 40.0, "centred: {wide}");
+        assert!(wide > narrow);
     }
 }

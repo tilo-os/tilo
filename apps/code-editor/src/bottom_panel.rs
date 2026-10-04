@@ -148,7 +148,10 @@ impl BottomPanel {
                 TabDescriptor::new(PanelTab::Terminal.id(), "Terminal"),
             ],
             active.id(),
-        );
+        )
+        // Two fixed views: nothing to add, and the dock closes as a whole.
+        .closable(false)
+        .without_new_tab();
         tabs.set_show_maximize(false);
         tabs
     }
@@ -502,17 +505,6 @@ impl Widget for BottomPanel {
             && self.tab != tab
         {
             self.tab = tab;
-            self.tab_changed = true;
-            self.dirty = true;
-        }
-        if self.tabs.take_close().is_some() {
-            self.close_requested = true;
-            self.dirty = true;
-        }
-        // The strip's "+" opens a terminal, the one thing the dock can add.
-        if self.tabs.take_new_tab().is_some() {
-            self.tab = PanelTab::Terminal;
-            self.tabs.set_active(PanelTab::Terminal.id());
             self.tab_changed = true;
             self.dirty = true;
         }

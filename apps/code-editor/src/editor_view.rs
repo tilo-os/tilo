@@ -31,7 +31,7 @@ use ui::text_selection::{
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AppModel, Autocomplete, Button, ButtonFace, ControlSize, EmptyState, ModelPath, Suggestion,
+    AppModel, Button, ButtonFace, ControlSize, EmptyState, ModelPath, Suggestion, SuggestionList,
     Widget,
 };
 use vello::Scene;
@@ -213,7 +213,7 @@ pub struct EditorView {
     completion_anchor: (usize, usize),
     /// The toolkit's suggestion list, used for its dropdown only: the editor
     /// owns the text and the keys, this paints the rows beside the caret.
-    completion_popup: Autocomplete,
+    completion_list: SuggestionList,
     /// A hover tooltip's text, drawn near the caret until dismissed.
     hover_text: Option<String>,
     /// A pending language-server request the app should perform (set by a
@@ -281,7 +281,9 @@ impl EditorView {
             completion_index: 0,
             completion_active: false,
             completion_anchor: (0, 0),
-            completion_popup: Autocomplete::new().with_text_role(TextRole::Code),
+            completion_list: SuggestionList::new()
+                .with_text_role(TextRole::Code)
+                .with_max_visible(COMPLETION_ROWS),
             hover_text: None,
             lsp_ask: None,
             find_matches: Vec::new(),
@@ -1747,26 +1749,15 @@ impl EditorView {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
         caret_x: f64,
         caret_top: f64,
     ) {
         if !self.completion_active() {
             return;
         }
-        let total = self.completions.len();
-        let shown = total.min(COMPLETION_ROWS);
-        // Scroll the window so the selected row stays visible.
-        let offset = if self.completion_index >= COMPLETION_ROWS {
-            self.completion_index - COMPLETION_ROWS + 1
-        } else {
-            0
-        };
         let suggestions: Vec<Suggestion> = self
             .completions
             .iter()
-            .skip(offset)
-            .take(shown)
             .map(|item| {
                 let suggestion = Suggestion::labelled(&item.insert_text, &item.label)
                     .with_icon(completion_kind_icon(item));
@@ -1776,56 +1767,18 @@ impl EditorView {
                 }
             })
             .collect();
-        // The list is as wide as its widest label and detail need, within
-        // the editor.
-        let spacing = &theme.tokens.spacing;
-        let label_style = theme.text(TextRole::Code);
-        let detail_style = theme.text(TextRole::Caption);
-        let icon = f64::from(theme.tokens.metrics.icon_md);
-        let wanted = self
-            .completions
-            .iter()
-            .skip(offset)
-            .take(shown)
-            .map(|item| {
-                let label = f64::from(
-                    text_renderer
-                        .measure_style(&item.label, None, &label_style)
-                        .0,
-                );
-                let detail = item.detail.as_deref().map_or(0.0, |detail| {
-                    f64::from(text_renderer.measure_style(detail, None, &detail_style).0)
-                });
-                label + detail
-            })
-            .fold(0.0, f64::max);
-        let chrome = icon + 6.0 * f64::from(spacing.s4);
-        let width = (wanted + chrome)
-            .max(f64::from(theme.tokens.metrics.panel_width_utility))
-            .min((self.rect.width() - 2.0 * f64::from(spacing.s4)).max(0.0));
-        // The list opens a little under its (zero-height) field, so the field
-        // sits at the caret's bottom edge, or above the list when the editor
-        // ends first.
-        let row_h = f64::from(theme.tokens.metrics.menu_row_height);
-        let list_h = shown as f64 * row_h + f64::from(spacing.s2);
-        let drop_gap = f64::from(spacing.s1) * 1.5;
-        let below = caret_top + self.line_h;
-        let anchor_y = if below + drop_gap + list_h <= self.rect.y1 {
-            below
-        } else {
-            caret_top - list_h - 2.0 * drop_gap
-        };
-        let x = caret_x
-            .min(self.rect.x1 - width - f64::from(spacing.s2))
-            .max(self.rect.x0 + self.gutter_width());
-        self.completion_popup
-            .apply_layout_external(Rect::new(x, anchor_y, x + width, anchor_y));
-        self.completion_popup.set_suggestions(suggestions);
-        self.completion_popup.open();
-        self.completion_popup
-            .set_highlight(Some(self.completion_index - offset));
-        self.completion_popup
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        // The shared suggestion list opens from the caret's line: below it,
+        // or above it when the editor ends first; it scrolls to keep the
+        // chosen row in view and sizes itself to its labels and details.
+        let x = caret_x.max(self.rect.x0 + self.gutter_width());
+        self.completion_list.set_suggestions(suggestions);
+        self.completion_list
+            .set_anchor(Rect::new(x, caret_top, x, caret_top + self.line_h));
+        self.completion_list.set_viewport(self.rect);
+        self.completion_list
+            .set_highlight(Some(self.completion_index));
+        self.completion_list
+            .paint(scene, transform, text_renderer, theme);
     }
 
     /// Draw the hover tooltip: a small panel near the caret with the server's
@@ -2370,15 +2323,7 @@ impl Widget for EditorView {
         let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
         let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_h;
 
-        self.draw_completion_popup(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            caret_x,
-            caret_top,
-        );
+        self.draw_completion_popup(scene, transform, text_renderer, theme, caret_x, caret_top);
         self.draw_hover_tooltip(scene, transform, text_renderer, theme, caret_x, caret_top);
     }
 

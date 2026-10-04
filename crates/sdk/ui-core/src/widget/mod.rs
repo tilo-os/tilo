@@ -2240,12 +2240,13 @@ pub use sidebar::{
     SidebarSide,
 };
 mod nav_shell;
-pub(crate) mod window_header;
+pub mod window_header;
 pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
+pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
 mod nav_list;
-pub use nav_list::{NavAction, NavDrop, NavItem, NavList, NavSection};
+pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
@@ -2264,13 +2265,15 @@ pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
-pub use text_input::{TextActionRequest, TextInput, TextInputKind};
+pub use text_input::{
+    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextInput, TextInputKind,
+};
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;
-pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
+pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
 pub use number_input::NumberInput;
 pub mod marks;
@@ -2293,9 +2296,9 @@ pub use page_palette::PageJumpPalette;
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
-pub use dropdown::Dropdown;
+pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor, draw_app_mark};
+pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -2328,7 +2331,7 @@ pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
-pub use context_menu::{ContextMenu, MenuItem};
+pub use context_menu::{ContextMenu, MenuButton, MenuItem};
 pub mod data_table;
 mod virtual_table_semantics;
 pub use virtual_table_semantics::{
@@ -2368,7 +2371,7 @@ pub mod file_picker;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
-pub use progress_bar::ProgressBar;
+pub use progress_bar::{ProgressBar, ProgressBarFace};
 pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
@@ -2382,9 +2385,12 @@ pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod popover;
-pub use popover::{Popover, PopoverSide};
+pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{
+    ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
+    SheetResponse,
+};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
@@ -2399,11 +2405,11 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarFace, AvatarSize, initials_for_name};
+pub use avatar::{Avatar, AvatarFace, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
-pub use icon::IconWidget;
+pub use icon::{IconSize, IconWidget};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -2459,7 +2465,7 @@ pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
     BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
-    ProgressRingSize,
+    ProgressRingSize, RingReading,
 };
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
@@ -2478,14 +2484,18 @@ pub use tree_view::{
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
-pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
+pub use virtual_list::{
+    DuplicateListKey, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
+};
 mod activation;
 pub use activation::{Interaction, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{
-    MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize, MediaSource,
-    OwnedBadge, justified_rows,
+    ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
+    MediaSource, OwnedBadge, justified_rows,
 };
+pub mod capture_button;
+pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub mod skeleton;
@@ -2493,10 +2503,13 @@ pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
-pub use property_list::{Property, PropertyList, PropertyListFace, PropertyRow};
+pub use property_list::{
+    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyRow, PropertyValue,
+    property_label_column,
+};
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, SwipeAction,
+    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
     badge_column_width,
 };
 pub mod keyframe;
@@ -2509,13 +2522,13 @@ pub use synthetic_focus::{
     semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
 };
 pub mod toggle_group;
-pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
+pub use toggle_group::{Segment, SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::{EmptyState, EmptyStateContent};
+pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
 pub mod find_bar;
 pub use find_bar::{
     FindBar, FindMatch, FindMode, FindOptions, FindScope, Findable, paint_find_match, with_findable,
@@ -2527,7 +2540,7 @@ pub use search_results::SearchResultsView;
 pub mod stat_tile;
 pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerKind};
+pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;
@@ -2536,7 +2549,7 @@ pub use tone::Tone;
 pub mod collaboration_overview;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
 mod section;
-pub use section::{Section, SectionHeader};
+pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,

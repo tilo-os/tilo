@@ -67,9 +67,6 @@ pub(super) struct ChromeMetrics {
     pub(super) field_pad: f64,
     /// Height of the drop-to-delete zone at the foot of the sidebar.
     pub(super) drop_zone_h: f64,
-    /// How far the open fill picker paints past its own right edge (its hex
-    /// field and colour readout), which its popover makes room for.
-    pub(super) picker_spill: f64,
 }
 
 impl ChromeMetrics {
@@ -101,7 +98,6 @@ impl ChromeMetrics {
                 + f64::from(metrics.icon_lg)
                 + f64::from(sp.s2)
                 + line(TextRole::Body),
-            picker_spill: 0.0,
         }
     }
 
@@ -198,8 +194,6 @@ pub(super) enum ButtonKind {
         name: String,
         active: bool,
     },
-    /// A labelled on/off command (bold, italic): a lift while on.
-    Toggle { label: String, active: bool },
     /// One segment of a segmented strip. Consecutive segments of one
     /// `group` on one row paint as one strip.
     Segment {
@@ -330,7 +324,11 @@ impl Chrome {
 /// icon set has one.
 pub(super) fn insert_tools() -> [(String, Option<Icon>, Hit); 5] {
     [
-        (tr("slides-tool-text"), None, Hit::Insert(ElementKind::Text)),
+        (
+            tr("slides-tool-text"),
+            Some(Icon::Type),
+            Hit::Insert(ElementKind::Text),
+        ),
         (
             tr("slides-tool-rectangle"),
             Some(Icon::Square),
@@ -377,17 +375,16 @@ impl SlidesApp {
     /// Every label the chrome reserves a measured slot for this frame.
     pub(super) fn chrome_label_set(&self) -> Vec<(String, Measure)> {
         let button = |s: String| (s, Measure::Button { icon: false });
+        let command = |s: String| (s, Measure::Button { icon: true });
         let mut set = vec![
             (tr("slides-present"), Measure::Button { icon: true }),
             (self.deck.title.clone(), Measure::Heading),
             (String::new(), Measure::FontInput),
-            button(tr("slides-bring-front")),
-            button(tr("slides-send-back")),
-            button(tr("slides-duplicate")),
-            button(tr("slides-delete")),
+            command(tr("slides-bring-front")),
+            command(tr("slides-send-back")),
+            command(tr("slides-duplicate")),
+            command(tr("slides-delete")),
             button(tr("slides-custom-colour")),
-            button(tr("slides-bold")),
-            button(tr("slides-italic")),
         ];
         set.extend(insert_tools().into_iter().map(|(label, icon, _)| {
             (
@@ -425,32 +422,7 @@ impl SlidesApp {
             DropZoneFace::new(&crate::strings::tr("slides-drop-to-delete"))
                 .icon(Icon::Trash)
                 .height(tr, theme, zone_w, 0.0);
-        self.chrome_metrics.picker_spill = self.fill_picker_spill(tr, theme);
         self.drawer_theme_scale(theme);
-    }
-
-    /// How far the fill picker's hex field and colour readout reach past
-    /// the picker's own width, measured on the picker laid out at its
-    /// preferred size. The readout is measured at its widest value so the
-    /// popover does not shift while a colour is dragged. Zero while closed.
-    fn fill_picker_spill(&mut self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        if !self.fill_picker_open {
-            return 0.0;
-        }
-        let (w, h) = self.fill_picker.preferred_size();
-        self.fill_picker
-            .apply_layout_external(Rect::new(0.0, 0.0, w, h));
-        let hex = self.fill_picker.hex_input_rect();
-        let style = theme.text(TextRole::Caption);
-        let readout = [
-            "rgb(888, 888, 888)",
-            "rgb(000, 000, 000)",
-            &self.fill_picker.rgb_string(),
-        ]
-        .iter()
-        .map(|sample| f64::from(tr.measure_style(sample, None, &style).0))
-        .fold(0.0_f64, f64::max);
-        (hex.x1.max(hex.x0 + readout) - w).max(0.0).ceil()
     }
 
     /// The breakpoint below which both side panels become drawers: a slide
@@ -882,9 +854,9 @@ impl SlidesApp {
         let (w, h) = self.fill_picker.preferred_size();
         let (top, bottom) = self.fill_picker_panel_insets();
         let x = if inspector.width() > 1.0 {
-            inspector.x0 - m.s2 - m.s4 - m.picker_spill - w
+            inspector.x0 - m.s2 - m.s4 - w
         } else {
-            r.x1 - m.s4 - m.s2 - m.picker_spill - w
+            r.x1 - m.s4 - m.s2 - w
         }
         .max(r.x0 + m.s4 + m.s2);
         let y = (r.y0 + m.header_h + top + m.s2)
@@ -907,7 +879,7 @@ impl SlidesApp {
         Rect::new(
             picker.x0 - side,
             picker.y0 - top,
-            picker.x1 + self.chrome_metrics.picker_spill + side,
+            picker.x1 + side,
             picker.y1 + bottom,
         )
     }
@@ -1071,8 +1043,9 @@ impl SlidesApp {
             Self::push_section_label(m, labels, x0, &mut y, &tr("slides-font"));
             let field_w = m.width("", Measure::FontInput).min(x1 - x0);
             *font_input = Some(Rect::new(x0, y, x0 + field_w, y + m.control_h));
-            let bold_w = m.width(&tr("slides-bold"), Measure::Button { icon: false });
-            let italic_w = m.width(&tr("slides-italic"), Measure::Button { icon: false });
+            // Bold and italic are square glyph toggles.
+            let bold_w = m.control_h;
+            let italic_w = m.control_h;
             let toggles_w = bold_w + m.s1 + italic_w;
             let toggles_y = if field_w + m.s2 + toggles_w <= x1 - x0 + 0.5 {
                 y
@@ -1087,16 +1060,18 @@ impl SlidesApp {
             );
             buttons.push(UiButton {
                 rect: bold,
-                kind: ButtonKind::Toggle {
-                    label: tr("slides-bold"),
+                kind: ButtonKind::Icon {
+                    icon: Icon::Bold,
+                    name: tr("slides-bold"),
                     active: el.bold,
                 },
                 hit: Hit::ToggleBold,
             });
             buttons.push(UiButton {
                 rect: Rect::new(x1 - italic_w, toggles_y, x1, toggles_y + m.control_h),
-                kind: ButtonKind::Toggle {
-                    label: tr("slides-italic"),
+                kind: ButtonKind::Icon {
+                    icon: Icon::Italic,
+                    name: tr("slides-italic"),
                     active: el.italic,
                 },
                 hit: Hit::ToggleItalic,
@@ -1116,17 +1091,25 @@ impl SlidesApp {
         let actions = [
             (
                 tr("slides-bring-front"),
+                Icon::BringToFront,
                 ButtonRole::Secondary,
                 Hit::BringFront,
             ),
-            (tr("slides-send-back"), ButtonRole::Secondary, Hit::SendBack),
+            (
+                tr("slides-send-back"),
+                Icon::SendToBack,
+                ButtonRole::Secondary,
+                Hit::SendBack,
+            ),
             (
                 tr("slides-duplicate"),
+                Icon::Copy,
                 ButtonRole::Secondary,
                 Hit::DuplicateElement,
             ),
             (
                 tr("slides-delete"),
+                Icon::Trash2,
                 ButtonRole::Destructive,
                 Hit::DeleteElement,
             ),
@@ -1134,11 +1117,11 @@ impl SlidesApp {
         let half = (x1 - x0 - m.s2) / 2.0;
         let widest = actions
             .iter()
-            .map(|(label, ..)| m.width(label, Measure::Button { icon: false }))
+            .map(|(label, ..)| m.width(label, Measure::Button { icon: true }))
             .fold(0.0_f64, f64::max);
         let cols = if widest <= half + 0.5 { 2 } else { 1 };
         let cell = if cols == 2 { half } else { x1 - x0 };
-        for (i, (label, role, hit)) in actions.into_iter().enumerate() {
+        for (i, (label, icon, role, hit)) in actions.into_iter().enumerate() {
             let col = (i % cols) as f64;
             let row = (i / cols) as f64;
             let x = x0 + col * (cell + m.s2);
@@ -1147,7 +1130,7 @@ impl SlidesApp {
                 rect: Rect::new(x, top, x + cell, top + m.control_h),
                 kind: ButtonKind::Command {
                     label,
-                    icon: None,
+                    icon: Some(icon),
                     role,
                 },
                 hit,
@@ -1615,13 +1598,6 @@ impl SlidesApp {
                     Some(icon) => face.icon(*icon),
                     None => face,
                 };
-                Button::paint(scene, t, tr, theme, &face);
-            }
-            ButtonKind::Toggle { label, active } => {
-                let face = ButtonFace::new(b.rect, label)
-                    .role(ButtonRole::Plain)
-                    .toggled(*active)
-                    .hovered(hovered);
                 Button::paint(scene, t, tr, theme, &face);
             }
             ButtonKind::Segment { .. } => {

@@ -304,8 +304,11 @@ impl App {
         .unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
-        let _ =
-            crate::bound_dispatch::refresh_bound_controls(self.root_widget.as_mut(), &snapshots);
+        let _ = crate::bound_dispatch::refresh_bound_controls(
+            self.root_widget.as_mut(),
+            &snapshots,
+            &history_door,
+        );
         trace.finish(CacheResult::NotApplicable);
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
