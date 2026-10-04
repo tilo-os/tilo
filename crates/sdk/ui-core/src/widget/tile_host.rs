@@ -544,7 +544,7 @@ impl TileHost {
     pub fn from_component(mut component: crate::application::AppComponent) -> Self {
         let registration = component.history.take();
         let mut tile = Self::new(TileContent::App(Box::new(
-            crate::widget::app_widget::BoundAppWidget { component },
+            crate::widget::app_widget::BoundAppWidget::new(component),
         )));
         if let Some(registration) = registration {
             tile.install_history_registration(registration);
@@ -1287,7 +1287,7 @@ impl TileHost {
     ) -> Vec<crate::application::ComponentCloseReport> {
         let history = component.history.take();
         self.replace_content(TileContent::App(Box::new(
-            crate::widget::app_widget::BoundAppWidget { component },
+            crate::widget::app_widget::BoundAppWidget::new(component),
         )));
         if let Some(history) = history {
             self.install_history_registration(history);

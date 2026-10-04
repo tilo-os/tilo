@@ -820,7 +820,7 @@ impl RoutedOwners {
                 .unwrap();
             component.mount(|_| {}).unwrap();
             bindings.push(component.callback_binding());
-            root = root.push(Box::new(crate::widget::BoundAppWidget { component }));
+            root = root.push(Box::new(crate::widget::BoundAppWidget::new(component)));
         }
         let mut state = State::new();
         state.doc.put(ROOT, "outer", "outer only").unwrap();
@@ -1258,7 +1258,7 @@ impl RoutedPrimary {
         component.mount(|_| {}).unwrap();
         let mut app = App::new_with_controlled_inputs(
             State::new(),
-            Box::new(crate::widget::BoundAppWidget { component }),
+            Box::new(crate::widget::BoundAppWidget::new(component)),
         );
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
@@ -5704,7 +5704,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
         host: _host,
     } = bridge_component(None, false);
     let root = Box::new(
-        crate::widget::Column::new().push(Box::new(crate::widget::BoundAppWidget { component })),
+        crate::widget::Column::new().push(Box::new(crate::widget::BoundAppWidget::new(component))),
     );
     let mut app = App::from_managed_root_with_controlled_inputs(
         State::new(),
@@ -5974,7 +5974,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
     let root = Box::new(CustodyDeniedRoot {
         child: Box::new(
             crate::widget::Column::new()
-                .push(Box::new(crate::widget::BoundAppWidget { component }))
+                .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
                     crate::widget::Button::new("live-pulse", "Live pulse", None).on_click(|| {}),
                 )),
@@ -6664,7 +6664,7 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
     let root = Box::new(CustodyDeniedRoot {
         child: Box::new(
             crate::widget::Column::new()
-                .push(Box::new(crate::widget::BoundAppWidget { component }))
+                .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
                     crate::widget::Button::new("live-pulse", "Live pulse", None).on_click(|| {}),
                 )),
@@ -6813,7 +6813,7 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
             .no_wrap()
             .push(outer.child)
             .push(Box::new(tile))
-            .push(Box::new(crate::widget::BoundAppWidget { component })),
+            .push(Box::new(crate::widget::BoundAppWidget::new(component))),
     );
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(outer));
     layout(&mut app);

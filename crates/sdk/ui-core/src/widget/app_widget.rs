@@ -279,6 +279,18 @@ mod component_adapter {
 
     pub(crate) struct BoundAppWidget {
         pub(crate) component: AppComponent,
+        /// A complete-content capture laid the root out in a tree of its own:
+        /// the host rebuilds its layout before the next frame.
+        relayout: bool,
+    }
+
+    impl BoundAppWidget {
+        pub(crate) fn new(component: AppComponent) -> Self {
+            Self {
+                component,
+                relayout: false,
+            }
+        }
     }
 
     impl Continuable for BoundAppWidget {
@@ -527,13 +539,24 @@ mod component_adapter {
     }
 
     impl CompleteContentProvider for BoundAppWidget {
+        /// The root's own complete content, else a scrolling document it
+        /// shows at full height: the window taller by what the document's
+        /// primary scroll hides.
         fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return None;
             };
             let root = self.component.root.as_deref()?;
-            root.complete_content_size()
+            if let Some(size) = root.complete_content_size() {
+                return Some(size);
+            }
+            let hidden = unrolled_height(root)?;
+            let rect = root.get_rect();
+            Some(vello::kurbo::Size::new(
+                rect.width(),
+                rect.height() + hidden,
+            ))
         }
 
         fn draw_complete_content(
@@ -552,8 +575,56 @@ mod component_adapter {
             let Some(root) = self.component.root.as_deref_mut() else {
                 return false;
             };
-            root.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
+            if root.complete_content_size().is_some() {
+                return root.draw_complete_content(
+                    scene,
+                    bounds,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+            }
+            if unrolled_height(root).is_none() || bounds.area() <= 0.0 {
+                return false;
+            }
+            // The capture is another presentation of the same view: lay the
+            // root out at the complete size, where its document fits without
+            // scrolling, draw it, and lay it back out where it lives, at the
+            // place its reader had scrolled to.
+            let live = root.get_rect();
+            let offset = root
+                .primary_vertical_scroll()
+                .map(|region| region.metrics.offset);
+            if crate::widget::layout::lay_out_detached(root, bounds, theme, text_renderer).is_err()
+            {
+                return false;
+            }
+            let permissions = binding.permissions.borrow().clone();
+            root.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                &permissions,
+            );
+            let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
+            if let Some(offset) = offset {
+                let _ = root.apply_primary_vertical_scroll(
+                    crate::widget::PrimaryScrollAction::Absolute(offset),
+                );
+            }
+            self.relayout = true;
+            true
         }
+    }
+
+    /// How much of the root's document its primary vertical scroll hides.
+    fn unrolled_height(root: &dyn Widget) -> Option<f64> {
+        let metrics = root.primary_vertical_scroll()?.metrics;
+        let hidden = metrics.content - metrics.viewport;
+        (hidden.is_finite() && hidden > 1.0).then_some(hidden)
     }
 
     impl Widget for BoundAppWidget {
@@ -1367,14 +1438,15 @@ mod component_adapter {
             root.modal_capture()
         }
         fn take_structure_dirty(&mut self) -> bool {
+            let relayout = std::mem::take(&mut self.relayout);
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
-                return false;
+                return relayout;
             };
             let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
+                return relayout;
             };
-            root.take_structure_dirty()
+            root.take_structure_dirty() || relayout
         }
         fn needs_redraw(&self) -> bool {
             let binding = self.component.callback_binding();
@@ -1979,7 +2051,7 @@ mod native_lifecycle_tests {
         let component =
             probe::instantiate_probe(&host, 41, LaunchTarget::New, RestoreInput::None).unwrap();
         let binding = component.callback_binding();
-        let mut widget = BoundAppWidget { component };
+        let mut widget = BoundAppWidget::new(component);
         let native_host = crate::widget::NativeViewHost::headless(
             crate::platform::PlatformConventions::default(),
             1.0,

@@ -99,7 +99,7 @@ impl App {
         }
         let binding = component.callback_binding();
         let history = component.history.take();
-        let mut root: Box<dyn Widget> = Box::new(crate::widget::BoundAppWidget { component });
+        let mut root: Box<dyn Widget> = Box::new(crate::widget::BoundAppWidget::new(component));
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
         {

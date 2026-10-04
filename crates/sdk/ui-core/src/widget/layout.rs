@@ -1459,3 +1459,57 @@ pub(super) fn allocation_or_content_size(
         },
     }
 }
+
+/// Lay `widget` out on its own at `rect`, in a layout tree of its own, with
+/// the passes the host runs (build, resolve, apply) but at a size the host
+/// did not give it: a capture drawing a scrolling document at its full
+/// height. The widget's retained layout nodes then name that tree, so the
+/// host must rebuild its own before it lays the widget out again.
+///
+/// # Errors
+///
+/// Returns the solver's error when Taffy rejects the tree.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "window-space layout dimensions narrowed for taffy; never near f32::MAX"
+)]
+pub(crate) fn lay_out_detached(
+    widget: &mut dyn Widget,
+    rect: vello::kurbo::Rect,
+    theme: &Theme,
+    text: &mut TextRenderer,
+) -> Result<(), WidgetLayoutError> {
+    let (w, h) = (rect.width() as f32, rect.height() as f32);
+    let mut taffy = TaffyTree::new();
+    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = widget.build_layout(&mut taffy, theme, &mut nodes);
+    let root = taffy.new_with_children(
+        taffy::Style {
+            size: Size {
+                width: taffy::Dimension::length(w),
+                height: taffy::Dimension::length(h),
+            },
+            ..Default::default()
+        },
+        &[child],
+    )?;
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: `widget`, `taffy`, `child` and `nodes` come from the build
+    // above and stay exclusively borrowed while layout runs.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &nodes);
+        compute_widget_layout(
+            &mut taffy,
+            root,
+            Size {
+                width: AvailableSpace::Definite(w),
+                height: AvailableSpace::Definite(h),
+            },
+            &nodes,
+            &bindings,
+            text,
+        )?;
+    }
+    widget.apply_layout(&taffy, child, rect.origin());
+    Ok(())
+}

@@ -846,7 +846,7 @@ impl FrameHarness {
             return Err(component.setup_error(error));
         }
         let history = component.history.take();
-        let root = Box::new(crate::widget::BoundAppWidget { component });
+        let root = Box::new(crate::widget::BoundAppWidget::new(component));
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
         {
@@ -7282,6 +7282,28 @@ impl FrameHarness {
             participant,
             label,
         );
+    }
+
+    /// What a whole-window capture draws of the root, as the desktop's
+    /// "full app" capture does: the size the root shows beyond its window
+    /// and its scene at that size. `None` when it shows nothing more than
+    /// the window. The next frame lays the root out again as it lives.
+    pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {
+        use crate::widget::CompleteContentWidgetExt as _;
+        let size = self.root.complete_content_size()?;
+        let origin = self.root.get_rect().origin();
+        let bounds = vello::kurbo::Rect::from_origin_size(origin, size);
+        let mut scene = Scene::new();
+        let drawn = self.root.draw_complete_content(
+            &mut scene,
+            bounds,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
+        self.discard_layout_tree();
+        drawn.then_some((size, scene))
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`]
