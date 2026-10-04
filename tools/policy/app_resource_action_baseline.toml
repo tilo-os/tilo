@@ -31,7 +31,6 @@
 "apps/contacts/src/resource.rs" = 2
 "apps/containers/src/resource.rs" = 2
 "apps/db-client/src/resource.rs" = 2
-"apps/diffmerge/src/resource.rs" = 2
 "apps/disk-usage/src/resource.rs" = 1
 "apps/disks/src/resource.rs" = 2
 "apps/ebook/src/resource.rs" = 2
@@ -87,8 +86,6 @@
 "apps/contacts/src/main.rs" = 1
 "apps/containers/src/main.rs" = 2
 "apps/db-client/src/main.rs" = 2
-"apps/diffmerge/src/lib.rs" = 2
-"apps/diffmerge/src/main.rs" = 2
 "apps/disks/src/main.rs" = 1
 "apps/ebook/src/main.rs" = 1
 "apps/feeds/src/lib.rs" = 2
@@ -155,7 +152,6 @@
 "apps/contacts/src/framework_history.rs" = 1
 "apps/containers/src/framework_history.rs" = 1
 "apps/db-client/src/doc.rs" = 1
-"apps/diffmerge/src/framework_history.rs" = 1
 "apps/maps/src/app/interaction.rs" = 1
 "apps/maps/src/offline_panel.rs" = 1
 "apps/music/src/doc.rs" = 1
