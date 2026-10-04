@@ -59,6 +59,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             greetd = (target / "systemd/system/greetd.service.d/10-tilo-firstboot-user.conf").read_text()
             self.assertIn("Requires=tilo-firstboot-user.service", greetd)
             self.assertIn("After=tilo-firstboot-user.service", greetd)
+            self.assertIn("ExecStartPre=/usr/bin/bash /etc/tilo/firstboot-user --check-session", greetd)
             self.assertIn("After=tilo-firstboot-user.service", (target / "systemd/system/sshd.service.d/10-tilo-firstboot-user.conf").read_text())
             self.assertEqual(authorized.read_text(), "ssh-ed25519 fixture-key\n")
             self.assertFalse((target.parent / "usr").exists())
@@ -73,6 +74,21 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             result = self.stage(source, target)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(enable.resolve(), unit)
+
+    def test_session_check_rejects_missing_account_even_without_seed(self):
+        with tempfile.TemporaryDirectory() as work:
+            config = Path(work) / "greetd.toml"
+            script = ROOT / "os/usr/libexec/tilo-firstboot-user"
+            def check(text):
+                config.write_text(text)
+                return subprocess.run(["bash", "-c", 'source "$1"; check_firstboot_session_user "$2"',
+                                       "session-check", str(script), str(config)], capture_output=True, text=True)
+            result = check('[initial_session]\nuser = "tilo-fixture-missing-9472"\n')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("account is unavailable", result.stderr)
+            self.assertNotEqual(check('[initial_session]\ncommand = "shell"\n').returncode, 0)
+            self.assertEqual(check('[initial_session]\nuser = "root"\n').returncode, 0)
+            self.assertEqual(check('[default_session]\nuser = "greetd"\n').returncode, 0)
 
     def test_base_os_ships_native_firstboot_runtime(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
