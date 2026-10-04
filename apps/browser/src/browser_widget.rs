@@ -5740,6 +5740,7 @@ impl AppWidget for BrowserWidget {
 mod architecture_tests {
     use super::*;
     use ui::tilo_actions::OperationKind;
+    use ui::widget::HostDelivery as _;
 
     /// What the window does for the effect an encoded invocation names.
     fn effect_operation(payload: &[u8]) -> BrowserOperation {
@@ -6172,13 +6173,10 @@ mod architecture_tests {
                 });
             compose(&mut widget);
             let result = widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
-                    ),
+                .start_encoded(
+                    OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
                     &mut AutoCommit::new(),
                     &automerge::ROOT,
                 )
@@ -6818,6 +6816,7 @@ mod tests {
     use super::*;
     use ui::tilo_actions::{ActionSpec, OperationKind};
     use ui::webview::PageKey;
+    use ui::widget::HostDelivery as _;
 
     /// What the window does for the effect an encoded invocation names.
     fn effect_operation(payload: &[u8]) -> BrowserOperation {
@@ -7771,13 +7770,10 @@ mod tests {
                 "browser.credentials.close",
             ] {
                 let result = widget
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec(id).unwrap(),
-                        ),
+                    .start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec(id).unwrap(),
                         &mut doc,
                         &root,
                     )
@@ -7835,13 +7831,10 @@ mod tests {
             layout_at(&mut widget, 390.0, 700.0);
             for id in ["browser.credentials.open", "browser.credentials.close"] {
                 let result = widget
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec(id).unwrap(),
-                        ),
+                    .start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec(id).unwrap(),
                         &mut doc,
                         &root,
                     )
@@ -8125,13 +8118,10 @@ mod tests {
                 if information {
                     assert!(
                         widget
-                            .start_operation(
-                                &ui::widget::ResourceOperation::local(
-                                    ui::tilo_actions::InvocationId::new(),
-                                    OperationKind::Effect,
-                                    "tilo.ui.control.invoke",
-                                    &serde_json::to_vec("browser.site.connection").unwrap()
-                                ),
+                            .start_encoded(
+                                OperationKind::Effect,
+                                "tilo.ui.control.invoke",
+                                &serde_json::to_vec("browser.site.connection").unwrap(),
                                 &mut doc,
                                 &root
                             )
@@ -8172,13 +8162,10 @@ mod tests {
             layout_at(&mut widget, 1000.0, 700.0);
             assert!(widget.site_panel.is_some());
             let result = widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.site.close").unwrap(),
-                    ),
+                .start_encoded(
+                    OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.site.close").unwrap(),
                     &mut doc,
                     &root,
                 )
@@ -8301,13 +8288,10 @@ mod tests {
             assert!(widget.site_panel.is_some());
             assert!(
                 widget
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::Effect,
-                            "tilo.ui.control.invoke",
-                            &serde_json::to_vec("browser.site.toggle").unwrap()
-                        ),
+                    .start_encoded(
+                        OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.site.toggle").unwrap(),
                         &mut doc,
                         &root
                     )

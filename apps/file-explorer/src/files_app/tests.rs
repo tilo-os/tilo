@@ -455,12 +455,9 @@ mod open_with_tests {
         assert!(matches!(
             crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
@@ -529,12 +526,9 @@ mod open_with_tests {
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
         crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            spec.kind,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -1122,12 +1116,9 @@ mod command_path_tests {
         assert!(matches!(
             crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &undo_encoded.type_id,
-                    &undo_encoded.payload
-                ),
+                OperationKind::Effect,
+                &undo_encoded.type_id,
+                &undo_encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
@@ -1572,12 +1563,9 @@ mod command_path_tests {
         w.refresh();
         let error = crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                &open.type_id,
-                &open.payload,
-            ),
+            OperationKind::View,
+            &open.type_id,
+            &open.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -1701,12 +1689,9 @@ mod command_path_tests {
             };
             crate::files_app::published::start(
                 files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 doc,
                 &automerge::ROOT,
             )
@@ -1778,12 +1763,9 @@ mod command_path_tests {
             .unwrap();
             let started = crate::files_app::published::start(
                 &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT,
             );
@@ -2064,12 +2046,9 @@ mod command_path_tests {
         .expect("the current resource must export the transfer action");
         crate::files_app::published::start(
             files,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -2249,12 +2228,9 @@ mod command_path_tests {
         assert!(
             crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut document,
                 &automerge::ROOT
             )
@@ -3398,12 +3374,9 @@ mod command_path_tests {
         assert!(matches!(
             crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
@@ -3882,6 +3855,7 @@ mod responsive_body_tests {
     use std::collections::HashMap;
     use taffy::prelude::*;
     use ui::theme::Theme;
+    use ui::widget::HostDelivery as _;
 
     include!("../native_proof_tests.rs");
 
@@ -4259,15 +4233,12 @@ mod responsive_body_tests {
     fn shared_toolbar_resource_action_opens_view_options() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.view_menu""#,
-                ),
+            h.w.start_encoded(
+                tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
+                br#""files.view_menu""#,
                 &mut h.state.doc,
-                &h.state.root,
+                &h.state.root
             )
             .unwrap()
             .is_some(),

@@ -412,6 +412,7 @@ impl Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::HostDelivery as _;
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
     }
@@ -448,13 +449,10 @@ mod tests {
             let mut rows = capabilities.downloads(&engine);
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
             let result = rows
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.download.cancel.7").unwrap(),
                     &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
@@ -615,13 +613,10 @@ mod tests {
             let mut rows = capabilities.downloads(&engine);
             assert!(contains(rows.as_ref(), "browser.download.retry.41"));
             let result = rows
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.download.retry.41").unwrap(),
                     &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
