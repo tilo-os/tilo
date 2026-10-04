@@ -2790,6 +2790,37 @@ jobs:
           # The call card starts the workspace's call through Chat's own
           # action: Chat opens already in the call, not on a Call button.
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
+          # Tabs are the desktop's. Ctrl+T on the real keyboard in an app
+          # opens another instance of it as a tab beside the first: one
+          # window group gains exactly one tab and a second process of the
+          # app joins the bus. No app keeps a tab strip of its own.
+          new_tab_gate() {
+            local app="$1" log gate status=0
+            log="$(mktemp /var/tmp/tilo-new-tab.XXXXXX)"
+            ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh new-tab "$app" >"$log" 2>&1 &
+            gate=$!
+            for _ in $(seq 1 180); do
+              grep -q '^READY' "$log" && break
+              kill -0 "$gate" 2>/dev/null || break
+              sleep 1
+            done
+            if ! grep -q '^READY' "$log"; then
+              wait "$gate" || true
+              cat "$log"
+              echo "$app did not open for the Ctrl+T gate" >&2
+              return 1
+            fi
+            ./os/dev/vm.sh keys ctrl-t
+            wait "$gate" || status=$?
+            cat "$log"
+            return "$status"
+          }
+          new_tab_gate Files
+          if [[ "$TILO_WITH_BROWSER" == 1 ]]; then
+            new_tab_gate Browser
+          else
+            echo '::notice::image built without the Browser; its Ctrl+T desktop-tab gate is inapplicable'
+          fi
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
           # The system authentication sheet is drawn by the compositor, not
           # an app window. A real polkit request from the graphical session

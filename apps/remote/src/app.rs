@@ -3491,6 +3491,10 @@ impl RemoteApp {
 
     /// Answer `effect`. Opening a session and sending text answer once the
     /// transport says how it went ([`Self::settle_pending_effect`]).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over the remote effect vocabulary"
+    )]
     pub(crate) fn answer_effect(
         &mut self,
         effect: crate::actions::RemoteEffect,
