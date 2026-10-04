@@ -1738,6 +1738,16 @@ there reaches it as well. A record larger than one frame travels as the
 identity there is no person room; the records are kept on the device in a
 scope no route can name.
 
+**A device acting for several people routes each one's room to that
+person.** Besides the root that certified it, a device can carry workspace
+identities — other roots that certified the same device key for a workspace
+of theirs. Each has its own person room: the device joins each root's
+continuity topic presenting that root's certificate, sends a record of a
+root's room only to that root's other devices (and hosts) on that topic,
+and takes in a record only into the person room of the root that certified
+its sender. A workspace identity's route carries its person records and
+nothing else of the device fabric.
+
 **The framework opens it.** A view or surface asks for the person's record of
 a resource type — `cx.person::<WatchHistory>()` — and gets a
 `PersonRecord<P>`: its state, kept current when another window or device
@@ -1769,8 +1779,6 @@ kept, and takes it in only from a device the same root certified.
 - A person record larger than the collaboration transport's limit (64 MiB in
   one mutation) is refused like any record's; one that grows toward it
   should become a collection.
-- A process hosting several identities routes only its own root's person
-  room.
 
 ## 14. Permissions
 
