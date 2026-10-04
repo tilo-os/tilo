@@ -41,6 +41,23 @@ impl App {
     }
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
+    /// Apply a preference change a control asked for (see
+    /// [`Widget::take_accessibility_request`](crate::widget::Widget::take_accessibility_request)).
+    /// Returns whether one was pending.
+    pub fn apply_accessibility_request(&mut self) -> bool {
+        let Some(request) = self.root_widget.take_accessibility_request() else {
+            return false;
+        };
+        match request {
+            crate::a11y::AccessibilityRequest::TextScale(factor) => self.set_text_scale(factor),
+            crate::a11y::AccessibilityRequest::HighContrast(on) => self.set_high_contrast(on),
+            crate::a11y::AccessibilityRequest::ScreenReader(on) => {
+                self.set_screen_reader_enabled(on);
+            }
+        }
+        true
+    }
+
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
         let mut s = self.accessibility.a11y;
         s.screen_reader = self.accessibility.screen_reader.is_some();

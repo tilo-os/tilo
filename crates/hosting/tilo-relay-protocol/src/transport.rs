@@ -92,6 +92,8 @@ pub struct HomePeerManagementResponse {
     pub files_ready: bool,
     /// Active service advertisement after capability clamping.
     pub services: crate::mesh::ServiceCapabilities,
+    /// What its workers run for environments right now.
+    pub environments: crate::home_peer::RelayEnvironments,
     /// Whether this response completed permanent decommissioning.
     pub decommissioned: bool,
 }

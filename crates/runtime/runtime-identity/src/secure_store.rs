@@ -7,8 +7,7 @@
 //! mode-0700 identity directory. That fallback is deliberately named *broker
 //! file*: the launcher may read it, sandboxed applications never receive
 //! either its path or its bytes. macOS always has the Keychain, so there a
-//! failing Keychain fails the operation, and a broker file an earlier build
-//! wrote moves into the Keychain the next time its identity is secured.
+//! failing Keychain fails the operation.
 //!
 //! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does

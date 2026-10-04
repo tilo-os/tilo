@@ -337,6 +337,12 @@ pub fn clipboard_paste() -> Option<String> {
     clipboard().text(ClipboardTarget::Clipboard)
 }
 
+/// The image on the clipboard, when another app copied one (a screenshot,
+/// an image from a viewer or a browser). `None` when it holds no image.
+pub fn clipboard_paste_image() -> Option<crate::clipboard::ClipboardImage> {
+    clipboard().image()
+}
+
 /// Push `text` onto the **primary selection** — the mouse-driven "select then
 /// middle-click paste" buffer, distinct from the Ctrl+C clipboard. Terminals
 /// and editors set this whenever a range is selected so a middle-click paste

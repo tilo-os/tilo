@@ -38,7 +38,7 @@ Unchecked entries need implementation or caller-level qualification.
 | P0 | Selection / multiselect | Cross-block text selection, subtree-aware indent/duplicate/move batches | Dedicated whole-block selection mode and delete/convert commands |
 | P1 | Move / drag and drop | Shared atomic selected sibling batches, per-ID group movement and semantic controls (increment 3) | Pointer batch dragging and browser qualification |
 | P1 | Duplicate / delete / convert | Shared duplication of focused/selected blocks and subtrees (increment 2); canonical insert/delete/style actions | Whole-block delete/convert batches and pointer menu |
-| P0 | Plain / rich / Markdown paste | Text clipboard and canonical paste vocabulary | Rich clipboard negotiation, formatting and literal/plain modes |
+| P0 | Plain / rich / Markdown paste | Text clipboard, canonical paste vocabulary; cuts wait for accepted clipboard writes | Rich MIME negotiation, formatting/literal modes; atomic image replacement |
 | P0 | Markdown import/export | Notes `markdown`, canonical page projection | Nested/inline/code/table round trips; document extension limits |
 | P0 | Undo / redo | Canonical Notes actions; indent and duplicate atomicity/concurrency caller tests | Independent first-type undo-to-empty failure; remaining command qualification |
 | P0 | IME / Unicode / caret | Shared line/table composition guards, Unicode joins, safe copy selection | Browser/OS input-method qualification |
@@ -203,3 +203,41 @@ The refusal stays latched if a later peer edit makes the old IDs contiguous agai
   Alt+Down check leaves block order unchanged. Semantic commands work; fixing
   focused-editor browser routing requires coordination with the host owner.
   No keyboard assertion was weakened to claim a browser shortcut pass.
+
+### Independent increment: clipboard refusal safety
+
+Shared block text, image previews, visual formulas and projected table cells now
+wait for the clipboard backend to accept a cut before deleting content. A refused
+write preserves text, marks, selection and history. Image Copy leaves the caret
+and selection untouched, including the browser host's copy-before-cut preflight.
+Successful cuts retain their existing single canonical undo boundary.
+
+- Red: actual Notes keyboard and context-menu cuts deleted selected Unicode text
+  when a synthetic backend refused the write. Image-preview cases additionally
+  exposed hidden source to subsequent typing. The browser preflight reproduced
+  that image selection fault after the first native repair.
+- Green: five actual Notes caller tests cover marked cross-block Unicode text,
+  table-cell menus and image previews, refusal followed by successful retry and
+  one-step undo. All 59 shared block-editor tests pass, including the new visual
+  formula refusal regression and bounded-keystroke-work coverage.
+- Strict all-target Notes and SDK Clippy passes. The standard offline Notes WASM
+  bundle builds. Disposable Chrome passes cross-block and image-preview clipboard
+  events, rejected writes, accepted retry and atomic undo. These tests use only
+  synthetic clipboard event objects; no user clipboard or notes are accessed.
+- Required shell test compilation fails with 22 unresolved Linux-only compositor
+  imports on Darwin. The same check fails with every candidate production file
+  restored to exact base `0bb7a0e8db490119be1628bc9e6638ee0076e900`.
+- An adjacent actual-Notes image-paste test fails on that unchanged base: context
+  menu replacement retains the old image. An immediate-commit experiment fixed
+  replacement but split it into two undo actions, so the experiment was reverted.
+  The full unweakened reproducer is retained for the next atomic image-paste
+  increment. This change does not claim rich MIME clipboard or image-paste parity.
+- Independent final review found no remaining safety-diff issues. Shared History,
+  browser transport, geometry, runtime and running user applications are unchanged.
+- Main integration `ab9a8c57ae` retained both independently added SDK tests.
+  All five Notes cases, all 60 SDK block-editor tests, the standard WASM build
+  and both browser checks pass again. Main introduced `spellbook 0.4.2`; its
+  exact pinned source fetch was approved before resuming offline validation.
+- Strict all-target Clippy passes again after that integration. The mandatory
+  shell check reproduces the same 22 Darwin errors; both failing compositor
+  modules are unchanged between the proven base and integrated main.

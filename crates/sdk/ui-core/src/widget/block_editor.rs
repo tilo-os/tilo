@@ -24,7 +24,7 @@ use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::{clipboard_copy, clipboard_paste};
+use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
@@ -609,6 +609,10 @@ pub struct BlockEditor {
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
     pending_external_link_opens: Vec<String>,
+    /// Images pasted into the editor, for its host to store and place after
+    /// the caret: the editor holds text, and an image becomes a block once
+    /// the host keeps its bytes with the document.
+    pasted_images: Vec<crate::clipboard::ClipboardImage>,
     /// Painted copy controls for fenced-code runs. Each tuple retains the
     /// inclusive block range so pointer and accessibility activation copy the
     /// exact source, including newlines, without touching document state.
@@ -757,6 +761,7 @@ impl BlockEditor {
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
+            pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
             copied_code_start: None,
             copied_code_feedback: None,
@@ -3108,26 +3113,25 @@ impl BlockEditor {
             self.dirty = true;
             return true;
         }
-        if self.document_selection.is_none()
-            && let Some(index) = self.focused
-            && let Some(block) = self.blocks.get(index)
-            && self
-                .image_attachments
+        // A preview's source is the clipboard candidate, not a live text
+        // selection until a replacement actually succeeds.
+        let image_selection = self.focused.and_then(|index| {
+            let block = self.blocks.get(index)?;
+            self.image_attachments
                 .get(&block.id)
-                .is_some_and(|image| !image.editing)
-        {
-            self.document_selection = Some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: index,
-                    byte: 0,
-                },
-                cursor: DocumentPosition {
-                    block: index,
-                    byte: block.text().len(),
-                },
-            });
-        }
-        let selection = self.document_selection.or_else(|| {
+                .filter(|image| !image.editing)
+                .map(|_| DocumentSelection {
+                    anchor: DocumentPosition {
+                        block: index,
+                        byte: 0,
+                    },
+                    cursor: DocumentPosition {
+                        block: index,
+                        byte: block.text().len(),
+                    },
+                })
+        });
+        let selection = self.document_selection.or(image_selection).or_else(|| {
             let index = self.focused?;
             let line = &self.blocks.get(index)?.line;
             let (start, end) = line
@@ -3150,6 +3154,14 @@ impl BlockEditor {
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
             return true;
         }
+        if command == "paste" {
+            let prior = self.document_selection;
+            self.document_selection = prior.or(image_selection);
+            if self.paste_image() {
+                return true;
+            }
+            self.document_selection = prior;
+        }
         // An unavailable clipboard must never turn Paste into Delete.
         let replacement = if command == "paste" {
             let Some(value) = clipboard_paste() else {
@@ -3159,19 +3171,21 @@ impl BlockEditor {
         } else {
             String::new()
         };
-        if command != "copy" {
-            self.begin_action_intercept();
-        }
         let prior = self.document_selection;
         self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut")
-            && let Some(text) = self.selected_text()
-        {
-            clipboard_copy(&text);
+        if matches!(command, "copy" | "cut") {
+            let accepted = self
+                .selected_text()
+                .is_some_and(|text| clipboard_copy_accepted(&text));
+            if command == "cut" && !accepted {
+                self.document_selection = prior;
+                return true;
+            }
         }
         if command == "copy" {
             self.document_selection = prior;
         } else {
+            self.begin_action_intercept();
             self.replace_document_selection(&replacement);
             self.set_focus(true);
             let ops = self.take_intercepted_ops();
@@ -3492,7 +3506,19 @@ impl BlockEditor {
             }
             let control = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
             if control && let Key::Character(key) = logical_key {
-                if matches!(key.as_str(), "c" | "x" | "v") {
+                if key == "c" {
+                    // Browser cut first copies to its event clipboard. Copying
+                    // a preview must not expose a replacement text selection.
+                    clipboard_copy(self.blocks[index].text());
+                    *ctx.handled = true;
+                    return true;
+                }
+                if matches!(key.as_str(), "x" | "v") {
+                    let cutting = key == "x";
+                    if cutting && !clipboard_copy_accepted(self.blocks[index].text()) {
+                        *ctx.handled = true;
+                        return true;
+                    }
                     let end = self.blocks[index].text().len();
                     self.select_document_range(
                         DocumentPosition {
@@ -3504,7 +3530,11 @@ impl BlockEditor {
                             byte: end,
                         },
                     );
-                    self.handle_document_selection_ctrl_key(logical_key);
+                    if cutting {
+                        self.replace_document_selection("");
+                    } else {
+                        self.handle_document_selection_ctrl_key(logical_key);
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -3669,6 +3699,73 @@ impl BlockEditor {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.pending_external_link_opens.pop()
+    }
+
+    /// The images pasted since the last call, oldest first, for the host to
+    /// store with the document and insert after the focused block.
+    pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
+        std::mem::take(&mut self.pasted_images)
+    }
+
+    /// Paste the clipboard's image, when it holds one and the caret is in
+    /// prose (code and tables take text). A selection is replaced, as a text
+    /// paste replaces it.
+    fn paste_image(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let in_prose = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                !matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                )
+            });
+        if !in_prose {
+            return false;
+        }
+        let Some(image) = crate::clipboard_paste_image() else {
+            return false;
+        };
+        if self.document_selection.is_some() {
+            self.replace_document_selection("");
+        }
+        self.pasted_images.push(image);
+        self.dirty = true;
+        true
+    }
+
+    /// Ctrl+V (Cmd+V) with an image on the clipboard.
+    fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::Key;
+
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = ctx.modifiers.state();
+        let command = mods.control_key() || mods.super_key();
+        if !self.is_focused
+            || !command
+            || mods.alt_key()
+            || !key.eq_ignore_ascii_case("v")
+            || !self.paste_image()
+        {
+            return false;
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn copy_code_run(&mut self, start: usize, end: usize) -> bool {
@@ -5035,8 +5132,9 @@ fn handle_visual_formula_key(
                 false
             }
             "x" | "X" => {
-                if let Some(value) = editor.selected_linear() {
-                    clipboard_copy(&value);
+                if let Some(value) = editor.selected_linear()
+                    && clipboard_copy_accepted(&value)
+                {
                     editor.delete_selection();
                     return true;
                 }
@@ -5917,10 +6015,13 @@ impl BlockEditor {
                 Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("x") => {
-                if let Some(selected) = self.selected_text() {
-                    clipboard_copy(&selected);
+                if self
+                    .selected_text()
+                    .is_some_and(|selected| clipboard_copy_accepted(&selected))
+                {
+                    self.replace_document_selection("");
                 }
-                Some(self.replace_document_selection(""))
+                Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("v") => {
                 Some(clipboard_paste().is_none_or(|paste| self.replace_document_selection(&paste)))
@@ -8152,6 +8253,24 @@ impl Widget for BlockEditor {
         children
     }
 
+    /// Block lines are not children, so their fields' timers (a settling
+    /// squiggle, a suggestion for the word under the caret) are collected
+    /// here alongside the children's.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let mut earliest = self
+            .blocks
+            .iter()
+            .filter_map(|block| block.line.next_wake_deadline())
+            .min();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest =
+                    Some(earliest.map_or(deadline, |old: crate::time::Instant| old.min(deadline)));
+            }
+        });
+        earliest
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.copied_code_feedback.is_some()
             || self
@@ -10043,6 +10162,10 @@ mod retained_layout_tests;
 #[path = "block_editor_outline_tests.rs"]
 mod outline_tests;
 
+#[cfg(test)]
+#[path = "block_editor_image_paste_tests.rs"]
+mod image_paste_tests;
+
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
     /// Keyboard commands operate on one authored fence, across its source rows.
@@ -11119,6 +11242,10 @@ impl BlockEditor {
         }
 
         if self.handle_find_event(event, ctx) {
+            return;
+        }
+
+        if self.try_paste_image_key(event, ctx) {
             return;
         }
 
