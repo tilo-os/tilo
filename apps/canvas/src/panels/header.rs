@@ -6,13 +6,14 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::text_render::FontChoice;
+use ui::widget::EditableLabel;
 
 use super::icon_button;
 use crate::actions::CanvasAction;
 use crate::model::Artwork;
 use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
-use crate::tools::{Tools, ViewRequest};
+use crate::tools::{Sheet, Tools, ViewRequest};
 
 /// The least room the title keeps, so it reads as a title, not a field.
 const TITLE: f32 = 96.0; // about ten letters of the title face: a text width, not spacing
@@ -22,16 +23,26 @@ const READOUT: f32 = 52.0; // "6400%" in the caption face: a text width, not spa
 
 /// The header.
 pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    let title = cx
-        .input(
-            |art: &Artwork| art.title.clone(),
-            ArtworkResource::SET_TITLE,
-        )
-        .with_plain_chrome()
-        .with_font_family(FontChoice::Serif)
-        .with_font_size(17.0)
-        .with_placeholder(&ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-artwork-title"));
+    // The title reads as a title until it is clicked; the edit lands as
+    // one step when Enter or a click away ends it, not one per letter.
+    let titled = cx.value(|art: &Artwork| art.title.clone());
+    let title = cx.switch(&titled, |cx, title| {
+        Box::new(
+            cx.actions().bind(
+                EditableLabel::new(title)
+                    .edits_on_click()
+                    .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
+                    .with_font_family(FontChoice::Serif)
+                    .with_font_size(17.0)
+                    .with_id("canvas-title")
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-artwork-title",
+                    ))
+                    .filling(),
+                ArtworkResource::SET_TITLE,
+            ),
+        ) as Element
+    });
     let lookup = ui::i18n::I18nManager::lookup_plain;
     Box::new(
         Row::new()
@@ -46,10 +57,16 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .with_no_padding()
                     .with_flex_grow()
                     .with_min_width(TITLE)
-                    .with_child(Box::new(title)),
+                    .with_child(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(0.0)
+                            .push(title)
+                            .push(notice(cx, tools)),
+                    )),
             ))
             .push(add_picture(tools))
-            .push(export(tools))
             .push(Box::new(Spacer::fixed(6.0)))
             .push(Box::new(icon_button(
                 cx,
@@ -70,7 +87,14 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 &tools.sidebar,
                 "canvas-sidebar",
                 Icon::PanelRight,
-            ))),
+            )))
+            .push(Box::new(sheet_button(
+                tools,
+                "canvas-export-open",
+                Icon::Download,
+                Sheet::Export,
+            )))
+            .push(menu(cx, tools)),
     )
 }
 
@@ -102,27 +126,6 @@ fn add_picture(tools: &Tools) -> Element {
                 *picking.borrow_mut() = Some(request);
             }),
     )
-}
-
-/// Export the artwork as a picture, saved where the person chooses: the
-/// same rendering as the `export` action.
-fn export(tools: &Tools) -> Element {
-    let mut menu = Dropdown::from_state(Vec::new(), &tools.export)
-        .as_menu(Icon::Download)
-        .with_id("canvas-export")
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-export"));
-    menu.set_value_options(
-        ["png", "jpeg", "webp"]
-            .into_iter()
-            .map(|format| {
-                (
-                    format.to_owned(),
-                    ui::i18n::I18nManager::lookup_plain(&format!("canvas-export-{format}")),
-                )
-            })
-            .collect(),
-    );
-    Box::new(menu)
 }
 
 /// What of the artwork the strip over the canvas follows: whether there is
@@ -483,6 +486,92 @@ fn combine_commands(tools: &Tools) -> Vec<Command> {
     })
     .collect()
 }
+
+/// What the last open, save or export came to, in a caption under the
+/// title: one line, cut short where it would crowd the header.
+fn notice(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    cx.switch(&tools.notice, |_, notice| {
+        let Some(said) = notice else {
+            return Box::new(Spacer::fixed(0.0)) as Element;
+        };
+        let shown = if said.chars().count() > NOTICE_LETTERS {
+            let cut: String = said.chars().take(NOTICE_LETTERS - 1).collect();
+            format!("{}…", cut.trim_end())
+        } else {
+            said.clone()
+        };
+        Box::new(
+            Text::new(&shown)
+                .with_role(TextRole::Caption)
+                .dimmed()
+                .with_live(ui::a11y::Politeness::Polite),
+        )
+    })
+}
+
+/// The most letters of a notice shown beside the title.
+const NOTICE_LETTERS: usize = 44;
+
+/// A button opening one of the window's dialogs.
+fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
+    let sheet = tools.sheet.clone();
+    let name = ui::i18n::I18nManager::lookup_plain(id);
+    Button::new(id, "", None)
+        .with_icon(icon)
+        .ghost()
+        .with_accessible_name(&name)
+        .tooltip(name.clone())
+        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        .on_view(move || sheet.set(Some(which)))
+}
+
+/// The artwork's menu: new, open, save, a copy, export, and the keys.
+fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let tools = tools.clone();
+    cx.switch(&tools.recents.clone(), move |_, recents| {
+        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let items = [
+            ("new", "canvas-menu-new"),
+            ("open", "canvas-menu-open"),
+            ("save", "canvas-menu-save"),
+            ("save-as", "canvas-menu-save-as"),
+            ("duplicate", "canvas-menu-duplicate"),
+            ("export", "canvas-menu-export"),
+            ("keys", "canvas-menu-keys"),
+        ];
+        let entry = |(value, id): &(&str, &str)| ((*value).to_owned(), lookup(id));
+        // New and open first, then the artworks worked on lately to open
+        // again in one step, then saving, exporting and the keys.
+        let (start, rest) = items.split_at(2);
+        let mut options: Vec<(String, String)> = start.iter().map(entry).collect();
+        options.extend(recents.iter().take(MENU_RECENTS).map(|recent| {
+            let name = if recent.title.is_empty() {
+                std::path::Path::new(&recent.path)
+                    .file_stem()
+                    .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
+            } else {
+                recent.title.clone()
+            };
+            (
+                format!("{RECENT}{}", recent.path),
+                ui::i18n::I18nManager::format("canvas-menu-recent", &[("name", name.into())]),
+            )
+        }));
+        options.extend(rest.iter().map(entry));
+        // The choice is view state the file desk carries out.
+        let mut menu = Dropdown::from_state(Vec::new(), &tools.menu)
+            .as_menu(Icon::Menu)
+            .with_id("canvas-menu")
+            .with_accessible_name(lookup("canvas-menu"));
+        menu.set_value_options(options);
+        Box::new(menu) as Element
+    })
+}
+
+/// How a recent artwork's menu entry is told from the others.
+pub(crate) const RECENT: &str = "recent:";
+/// How many recent artworks the menu offers.
+const MENU_RECENTS: usize = 5;
 
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the
 /// window.

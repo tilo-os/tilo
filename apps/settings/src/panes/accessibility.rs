@@ -33,13 +33,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair, SystemPrefs,
 };
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{
+    El, caption, card, choice_row, error_row, rows, setting_row_described, value_row,
+};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -469,6 +471,11 @@ impl AccessibilityPane {
                     ),
                 ),
             ]
+        } else if let Some(error) = super::installed_programs_unreadable() {
+            vec![error_row(
+                &t("a11y-screen-reader"),
+                &t_args("settings-programs-error", &[("error", error.into())]),
+            )]
         } else {
             vec![value_row(
                 &t("a11y-screen-reader"),

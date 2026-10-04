@@ -24,7 +24,7 @@
 //! sets, and the stub refuses every name.
 //!
 //! **Fail closed.** When the policy needs the filter and the kernel will
-//! not take it, [`spawn_egress`] fails and the caller does not start the
+//! not take it, `spawn_egress` fails and the caller does not start the
 //! sandbox. `pasta` is only attached once the filter is in place; before
 //! that the namespace has no route out at all.
 //!
@@ -32,10 +32,15 @@
 //! whatever else is served from it (a CDN). Names are what the user grants;
 //! addresses are the closest the kernel can enforce.
 //!
-//! # Using it
+//! Policy, repository discovery and host configuration are portable. Namespace
+//! creation and enforcement are available only on Linux. Callers on other
+//! platforms must reject gated execution; they must not substitute host networking.
+//!
+//! # Using it (Linux)
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[cfg(target_os = "linux")] {
 //! use tilo_egress::{EgressOptions, EgressPolicy, Netns, spawn_egress};
 //! let netns = Netns::create()?;
 //! let policy = EgressPolicy::from_grants(["github.com", ".crates.io"]);
@@ -43,6 +48,7 @@
 //! // Bind `egress.resolv_conf()` at the sandbox's /etc/resolv.conf, then:
 //! let mut cmd = std::process::Command::new("bwrap");
 //! netns.enter(&mut cmd);
+//! # }
 //! # Ok(()) }
 //! ```
 
@@ -58,26 +64,40 @@
     )
 )]
 
+mod config;
+
 pub mod allowed;
 pub mod dns;
+#[cfg(target_os = "linux")]
 pub mod netns;
+#[cfg(target_os = "linux")]
 pub mod nft;
+#[cfg(target_os = "linux")]
 pub mod pasta;
 pub mod policy;
 pub mod repos;
+#[cfg(target_os = "linux")]
 pub mod stub;
 
-use std::net::{IpAddr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{IpAddr, SocketAddr};
+#[cfg(target_os = "linux")]
+use std::net::{TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(target_os = "linux")]
 pub use netns::Netns;
 pub use policy::{Allowed, EgressPolicy, HostPattern};
 pub use repos::{RepoHosts, metalink_mirror_hosts};
 
+#[cfg(target_os = "linux")]
 use crate::allowed::AllowedAddrs;
+#[cfg(target_os = "linux")]
 use crate::nft::Netfilter;
+#[cfg(target_os = "linux")]
 use crate::pasta::Pasta;
+#[cfg(target_os = "linux")]
 use crate::stub::{Filter, Shared, Stub};
 
 /// The sandbox's `/etc/resolv.conf`: the stub, and nothing else.
@@ -129,8 +149,8 @@ impl EgressOptions {
     pub fn from_host(host_root: &Path) -> Self {
         let conf = std::fs::read_to_string(host_root.join("etc/resolv.conf")).unwrap_or_default();
         Self {
-            upstream: stub::nameservers(&conf),
-            pasta: pasta::find(),
+            upstream: config::nameservers(&conf),
+            pasta: config::find_pasta(),
             map_host_loopback: None,
             refuse_netfilter: false,
         }
@@ -150,6 +170,7 @@ pub enum Enforcement {
 
 /// Egress for one sandbox: the stub, the filter and `pasta`. Dropping it
 /// stops all three; the namespace itself belongs to the [`Netns`].
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct Egress {
     shared: Arc<Shared>,
@@ -163,6 +184,7 @@ pub struct Egress {
 ///
 /// # Errors
 /// See [`EgressError`]; every error means the sandbox must not start.
+#[cfg(target_os = "linux")]
 pub fn spawn_egress(
     netns: &Netns,
     policy: EgressPolicy,
@@ -225,6 +247,7 @@ pub fn spawn_egress(
     })
 }
 
+#[cfg(target_os = "linux")]
 impl Egress {
     /// The sandbox's `/etc/resolv.conf`.
     pub fn resolv_conf(&self) -> &'static str {

@@ -1142,6 +1142,12 @@ impl TextInput {
         &self.text
     }
 
+    /// Whether an IME candidate is displayed but not yet committed as text.
+    /// Composite editors must leave candidate-selection keys to the IME.
+    pub fn is_composing(&self) -> bool {
+        !self.preedit.is_empty()
+    }
+
     /// Register an app-local callback for committed user edits.
     ///
     /// Keyboard input, paste, accessibility edits, and committed IME text

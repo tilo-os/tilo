@@ -2734,6 +2734,10 @@ jobs:
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          # The sandboxed Settings reads the device's network through the
+          # system authorities it is granted: its Network pane must say what
+          # nmcli says on the same booted, connected VM, and show no read error.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh settings-network
           # The empty workspace's cards perform what they name: the Notes card
           # opens Notes itself rather than a launcher pre-filled with "Notes".
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
@@ -2752,10 +2756,23 @@ jobs:
           ./os/dev/vm.sh type "$typed_sentence"
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing"
 
+          # Keyboards and mice plugged in after login must reach the running
+          # compositor: a USB keyboard hot-added on QEMU's own bus, then a
+          # virtual keyboard plugged and unplugged repeatedly, every time
+          # listed in the compositor's input snapshot as opened and dropped.
+          usb_kbd='QEMU QEMU USB Keyboard'
+          usb_kbds=$(./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh count '$usb_kbd'")
+          ./os/dev/vm.sh cmd 'device_add usb-kbd,id=hotplug-kbd'
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $((usb_kbds + 1))"
+          ./os/dev/vm.sh cmd 'device_del hotplug-kbd'
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $usb_kbds"
+
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
-          # protected password field and instructions on the session bus.
-          ./os/dev/vm.sh keys meta_l-l
+          # protected password field and instructions on the session bus. The
+          # chord comes from the last virtual keyboard plugged in above, so it
+          # also proves a hot-plugged device's keys reach the compositor.
+          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh uinput \"\$XDG_RUNTIME_DIR/tilo/input-state.json\""
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
