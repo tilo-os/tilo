@@ -560,7 +560,9 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     let list = app.harness().targets()["shortcuts-library"];
     // A click in the first row (the overview) puts focus in the list.
     app.harness().click_at(list.x0 + 40.0, list.y0 + 16.0);
-    // The section header is a stop of its own; the next one is the shortcut.
+    // Each section header is a stop of its own (the empty Drafts says so
+    // in a line the keys pass over); the next stop is the shortcut.
+    app.harness().key("Down");
     app.harness().key("Down");
     app.harness().key("Down");
     act(
@@ -588,6 +590,7 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     assert_eq!(inputs["title"], "Call Sam");
 
     // Back on the overview, the run is listed and leads to the shortcut.
+    app.harness().key("Up");
     app.harness().key("Up");
     app.harness().key("Up");
     act(&mut app, "run-record-1", &Action::Activate);

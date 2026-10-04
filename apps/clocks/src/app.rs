@@ -256,6 +256,16 @@ impl Screen {
         }
     }
 
+    /// The screen's icon in the sidebar.
+    fn icon(self) -> Icon {
+        match self {
+            Self::World => Icon::Globe,
+            Self::Alarms => Icon::AlarmClock,
+            Self::Timers => Icon::Hourglass,
+            Self::Stopwatch => Icon::Timer,
+        }
+    }
+
     fn from_id(id: &str) -> Self {
         Self::ALL
             .into_iter()
@@ -631,7 +641,8 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     let list_state = state.clone();
     let list = ModelView::from_state(state, move |s| {
         if s.alarms.is_empty() {
-            return Box::new(EmptyState::new("No alarms set").with_icon(Icon::Bell)) as Element;
+            return Box::new(EmptyState::new("No alarms set").with_icon(Icon::AlarmClock))
+                as Element;
         }
         let cards: Vec<Element> = s
             .alarms
@@ -1223,7 +1234,7 @@ fn surface(
         "screens",
         Screen::ALL
             .into_iter()
-            .map(|screen| NavItem::new(screen.id(), screen.title()))
+            .map(|screen| NavItem::new(screen.id(), screen.title()).icon(screen.icon()))
             .collect(),
     )])
     .with_id("clocks.screens")
