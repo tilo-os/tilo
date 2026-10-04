@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, ViewCx};
 use ui::record::RecordId;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{ActionDecl, Invoke};
 use ui::widget::Element;
 
 use crate::actions::{SlidesAction, SlidesDeck, SlidesResourceCtx, replace_deck_action};
@@ -164,10 +164,8 @@ impl ResourceSurface<SlidesDeck> for SlidesApp {
         self.stage_scenario(scenario);
     }
 
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
+    fn bound_declarations(&self) -> Vec<ActionDecl<SlidesDeck>> {
+        self.selection_declarations()
     }
 }
 
