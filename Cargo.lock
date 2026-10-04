@@ -3099,6 +3099,7 @@ dependencies = [
  "package-store",
  "serde",
  "serde_json",
+ "settings-store",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-files",
