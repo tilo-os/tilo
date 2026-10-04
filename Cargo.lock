@@ -16780,8 +16780,8 @@ dependencies = [
 name = "tilo-ui-builder"
 version = "0.1.0"
 dependencies = [
+ "tilo-app",
  "tilo-files",
- "tilo-ui",
  "workspace-hack",
 ]
 
@@ -17761,7 +17761,6 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
- "tilo-paths",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",

@@ -2156,7 +2156,7 @@ stopped.
 - Package-document default, legacy `RecordSet`, qdoc local store, shell
   crawl, path identities, the Automerge namespace compatibility projection,
   the relay's opaque co-edit store.
-- `LaunchSpec::new` requires a definition.
+- Every `LaunchSpec` launches a definition (done: the widget-root launch path is gone).
 - Exit: the deleted code is gone, and the B1–B12 numbers are no worse than
   after stage 6.
 

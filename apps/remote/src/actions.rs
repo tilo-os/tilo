@@ -661,9 +661,10 @@ mod tests {
                 .iter()
                 .map(|action| (action.id.as_str(), action.kind))
                 .collect();
-            for expected in [("add-connection", OperationKind::Document)] {
-                assert!(actions.contains(&expected), "{actions:?}");
-            }
+            assert!(
+                actions.contains(&("add-connection", OperationKind::Document)),
+                "{actions:?}"
+            );
             assert_eq!(root.children.len(), 1, "one saved connection child");
             let r = &root.children[0];
             assert_eq!(r.label, "Build Box");

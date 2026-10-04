@@ -4128,7 +4128,11 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         &app_dir,
         "src/main.rs",
         "launch lifecycle",
-        &["ui::main!", "framework::run::<", "LaunchSpec::new"],
+        &[
+            "ui::main!",
+            "framework::run::<",
+            "framework::launch_spec::<",
+        ],
         &mut checks,
     );
     let draws_nothing = manifest
