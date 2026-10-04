@@ -1001,6 +1001,15 @@ impl CalDoc {
             .iter()
             .map(|event| (true, event.id))
             .chain(model.tasks.iter().map(|task| (false, task.id)));
+        model.push_queue = Self::outbox(doc);
+        model.delete_queue = Self::delete_outbox(doc);
+        model.bindings = model
+            .push_queue
+            .iter()
+            .copied()
+            .chain(model.delete_queue.iter().map(|(_, id)| *id))
+            .filter_map(|id| Self::remote_binding(doc, id).map(|binding| (id, binding)))
+            .collect();
         model.notes = owners
             .filter_map(|(event, id)| {
                 let text = Self::note_text(doc, event, id);

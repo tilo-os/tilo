@@ -1280,8 +1280,9 @@ fn apply_upsert_event(doc: &mut Doc, data: &EventData) {
         CalDoc::clear_tombstone(doc, "event", event.id);
         CalDoc::update_event(doc, &event);
         // A remote-calendar event is an outside consequence: the push outbox
-        // is the projection Sync drains. Undo of a remote delete restores
-        // through UpsertEvent and must re-queue the upload the same way.
+        // is the projection the live window drains to its server. Undo of a
+        // remote delete restores through UpsertEvent and must re-queue the
+        // upload the same way.
         if remote.is_some() {
             CalDoc::enqueue_push(doc, event.id);
         }
@@ -2790,7 +2791,7 @@ mod tests {
     }
 
     /// Creating a remote-calendar event queues a push; after that push is
-    /// drained (as Sync's Effect does), undo must run the inverse document
+    /// drained (as the upload drain does), undo must run the inverse document
     /// action through `apply` so a `CalDAV` delete is queued. Inverse Automerge
     /// patches alone leave the server copy to be resurrected by a later pull.
     #[test]
@@ -2839,7 +2840,7 @@ mod tests {
             CalDoc::outbox(&doc).contains(&id),
             "creating a remote event records the push outbox entry"
         );
-        // Sync's Effect drained the push queue after a successful PUT.
+        // The upload drain acknowledged the push after a successful PUT.
         CalDoc::dequeue_push(&mut doc, id);
         assert!(CalDoc::delete_outbox(&doc).is_empty());
 
@@ -2866,7 +2867,7 @@ mod tests {
             .inverse_before(&live)
             .expect("remote delete names a restoring upsert");
         delete.apply(&mut live).unwrap();
-        CalDoc::dequeue_delete(&mut live, id); // sync drained del_outbox
+        CalDoc::dequeue_delete(&mut live, id); // the delete drain acknowledged it
         undo_delete.apply(&mut live).expect("restore applies");
         assert!(CalDoc::read_model(&live).event(id).is_some());
         assert!(
