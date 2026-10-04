@@ -206,14 +206,13 @@ fn read_shared(doc: &Doc) -> TubeShared {
 }
 
 /// The screenshot scenarios, each over the bundled sample catalogue: Home,
-/// its empty and loading states, device sync, the palette, a playing watch
+/// its empty and loading states, device sync, a playing watch
 /// page, the narrow window with its rail summoned, and every screen.
 pub(crate) const SCENARIOS: &[&str] = &[
     "home",
     "empty",
     "loading",
     "device-sync",
-    "palette",
     "play-demo",
     "narrow",
     "trending",
