@@ -720,9 +720,6 @@ mod tests {
         }
         // Case `missing_sources_separate_absent_bytes_from_titles_and_present_files`.
         {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_VE_MEDIA_DIR");
-
             let mut p = Project::new("moved");
             // A reference whose bytes are nowhere on this box.
             p.media.push(MediaItem {

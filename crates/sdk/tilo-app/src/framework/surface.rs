@@ -296,7 +296,7 @@ impl<R: Resource> SurfaceCx<R> {
     /// What the window's launch named (paths, URLs), as
     /// [`ViewCx::launch_arguments`](super::ViewCx::launch_arguments).
     pub fn launch_arguments(&self) -> &[String] {
-        &self.run.arguments
+        &self.run.launched.arguments
     }
 
     /// The id of the app the surface is part of, which its presence keys
@@ -314,6 +314,12 @@ impl<R: Resource> SurfaceCx<R> {
         S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
     {
         self.storage.follow(self.alive.clone())
+    }
+
+    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)),
+    /// as [`ViewCx::person`](super::ViewCx::person) opens it.
+    pub fn person<P: tilo_resource::Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
     }
 
     /// The app's files, secrets and settings documents, as its host gave
@@ -480,8 +486,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
-    // A surface is found by its own type (`FrameHarness::with_widget_mut`),
-    // so a test reaches the widget the host wraps.
+    // The host is invisible to whoever reaches the surface by its type (a
+    // test driving it, a host that embeds it): it answers as the surface.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(&self.surface)
     }

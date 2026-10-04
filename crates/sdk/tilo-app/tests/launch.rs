@@ -43,7 +43,21 @@ impl ResourceApp for SketchApp {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Sketch>) -> Element {
-        Box::new(cx.text(|sketch| sketch.source.clone()))
+        // The view shows what the launch named, as an app opens what its
+        // launch actions made.
+        let launch = cx.launch();
+        let named = launch
+            .file()
+            .map(|file| file.name().to_owned())
+            .or_else(|| launch.argument().map(str::to_owned))
+            .unwrap_or_default();
+        Box::new(
+            Column::new()
+                .push(Box::new(cx.text(|sketch| sketch.source.clone())))
+                .push(Box::new(Text::dynamic(move || {
+                    format!("Launched on {named}")
+                }))),
+        )
     }
 
     /// One sketch per traced image.
@@ -74,10 +88,20 @@ fn a_path_argument_opens_the_record_of_that_path() {
         &RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"))
     );
     assert_eq!(app.state().source, "/pictures/harbour.png");
+    let frame = app.harness().inspection_json().unwrap();
+    assert!(
+        frame.contains("Launched on /pictures/harbour.png"),
+        "{frame}"
+    );
 
-    let plain = TestApp::<SketchApp>::new().unwrap();
+    let mut plain = TestApp::<SketchApp>::new().unwrap();
     assert_eq!(plain.record(), &RecordId::room_default());
     assert_eq!(plain.state().source, "");
+    let frame = plain.harness().inspection_json().unwrap();
+    assert!(
+        frame.contains("Launched on") && !frame.contains("Launched on /"),
+        "{frame}"
+    );
 }
 
 #[test]
@@ -132,6 +156,8 @@ fn a_handed_file_reaches_the_app_and_learns_the_resource_that_holds_it() {
         .collect();
     assert_eq!(notes, ["keeper"]);
     assert_eq!(receipt.opened_resource().as_deref(), Some("test.sketch"));
+    let frame = app.harness().inspection_json().unwrap();
+    assert!(frame.contains("Launched on lighthouse.txt"), "{frame}");
 }
 
 #[test]

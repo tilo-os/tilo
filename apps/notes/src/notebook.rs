@@ -13,13 +13,12 @@ use std::collections::HashMap;
 
 /// 3: page bodies are rich text (`body`).
 pub const NOTES_SCHEMA_VERSION: u32 = 3;
-const OWNED_FIELDS: [&str; 6] = [
+const OWNED_FIELDS: [&str; 5] = [
     "notes_schema_version",
     "pages",
     "tags",
     "tag_assignments",
     "assets",
-    "notes_import_v1",
 ];
 /// Largest image a note accepts. The notebook records only a reference and
 /// the bytes live in the device content store, but the insert action still
@@ -223,9 +222,11 @@ fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<W
         }
         data.tag_assignments.push(TagAssignment { page, tag });
     }
-    let workspace = Workspace { data };
+    let workspace = Workspace {
+        data,
+        ..Workspace::default()
+    };
     workspace.check_invariants()?;
-    validate_receipt(doc)?;
     // The established NotesDoc readers determine display order after strict
     // validation has ruled out their permissive malformed-data fallbacks.
     Ok(Workspace {
@@ -235,6 +236,7 @@ fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<W
             tag_assignments: workspace.data.tag_assignments,
             selected: None,
         },
+        ..Workspace::default()
     })
 }
 
@@ -633,48 +635,6 @@ fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
     tilo_doc::model::open(doc, &body)
         .map(|_| ())
         .map_err(|error| format!("body is not rich text: {error}"))
-}
-
-fn validate_receipt(doc: &AutoCommit) -> Result<(), String> {
-    if doc
-        .get_all(ROOT, "notes_import_v1")
-        .map_err(|e| e.to_string())?
-        .is_empty()
-    {
-        return Ok(());
-    }
-    let receipt = object(doc, &ROOT, "notes_import_v1", ObjType::Map)?;
-    let mut keys = doc.keys(&receipt).collect::<Vec<_>>();
-    keys.sort();
-    if keys
-        != [
-            "destination_id",
-            "format",
-            "snapshot_digest",
-            "source_key",
-            "version",
-        ]
-    {
-        return Err("import receipt has unsupported fields".into());
-    }
-    let key = string(doc, &receipt, "source_key")?;
-    let digest = string(doc, &receipt, "snapshot_digest")?;
-    if key.len() != 64
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        || digest.len() != 64
-        || !digest.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Err("import receipt has invalid digest or source key".into());
-    }
-    if string(doc, &receipt, "format")? != "workspace-json-markdown-v1"
-        || integer(doc, &receipt, "version")? != 1
-        || ui::record::RecordId::parse(&string(doc, &receipt, "destination_id")?).is_none()
-    {
-        return Err("unsupported import receipt".into());
-    }
-    Ok(())
 }
 
 #[cfg(test)]
