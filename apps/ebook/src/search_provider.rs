@@ -18,7 +18,7 @@ use tilo_actions::{
 };
 use ui::icons::Icon;
 use ui::search::SearchResult;
-use ui::tilo_resource::{SearchBody, SearchPiece, SearchText};
+use ui::tilo_resource::{SearchBody, SearchPiece, SearchText, SearchWeight};
 
 use crate::actions::{
     CommentDraft, EBOOK_OPERATION_TYPE, EbookOperation, NoteDraft, change_color_action,
@@ -264,10 +264,10 @@ impl BookSearch {
             .collect();
 
         // `fields` beyond the title and subtitle (an author, a subject, a
-        // note) are what else the entry is found by.
+        // note) are what else the entry is found by, each at its weight.
         let mut add = |result: SearchResult,
                        target: SearchTarget,
-                       fields: &[&str],
+                       fields: &[(&str, SearchWeight)],
                        body: Option<SearchBody>|
          -> bool {
             let Some(address) = result.action_address() else {
@@ -279,17 +279,12 @@ impl BookSearch {
             {
                 return false;
             }
-            let mut entry = ui::tilo_resource::SearchEntry::new(
-                result.title.clone(),
-                fields
-                    .iter()
-                    .filter(|field| !field.trim().is_empty())
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-            .invoking(address)
-            .grouped(result.kind.clone());
+            let mut entry = ui::tilo_resource::SearchEntry::new(result.title.clone(), "")
+                .invoking(address)
+                .grouped(result.kind.clone());
+            for (text, weight) in fields {
+                entry = entry.field(*text, *weight);
+            }
             if let Some(subtitle) = &result.subtitle {
                 entry = entry.subtitled(subtitle.clone());
             }
@@ -346,7 +341,10 @@ impl BookSearch {
                         book: book_index,
                         chapter: chapter_index,
                     },
-                    &[&book.author],
+                    &[
+                        (&title, SearchWeight::Subtitle),
+                        (&book.author, SearchWeight::Metadata),
+                    ],
                     chapter_bodies.get(chapter_index).cloned(),
                 ) {
                     return Self::unavailable(books, annotations, registry);
@@ -372,7 +370,7 @@ impl BookSearch {
             if !add(
                 result,
                 SearchTarget::RemoteBook(registry_index),
-                &[&entry.subject],
+                &[(&entry.subject, SearchWeight::Metadata)],
                 None,
             ) {
                 return Self::unavailable(books, annotations, registry);
@@ -420,7 +418,13 @@ impl BookSearch {
                     hydrated: hydrated.contains(annotation.doc_id.as_str()),
                     comment,
                 },
-                &[&annotation.note, &annotation.excerpt, &author, &kind],
+                &[
+                    (&annotation.note, SearchWeight::Title),
+                    (&annotation.excerpt, SearchWeight::Title),
+                    (&title, SearchWeight::Subtitle),
+                    (&author, SearchWeight::Metadata),
+                    (&kind, SearchWeight::Metadata),
+                ],
                 None,
             ) {
                 return Self::unavailable(books, annotations, registry);
