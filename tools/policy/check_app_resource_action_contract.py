@@ -52,7 +52,9 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 # The framework's launch installs the resource's replay decoder
 # (`Resource::register`) into the component registry itself.
-FRAMEWORK_LAUNCH = re.compile(r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<")
+FRAMEWORK_LAUNCH = re.compile(
+    r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\bui\s*::\s*main\s*!\s*\("
+)
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )

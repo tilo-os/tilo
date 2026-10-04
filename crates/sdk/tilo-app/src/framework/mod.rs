@@ -219,7 +219,9 @@ pub use app::{ResourceApp, SeedCx, definition};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
-pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
+pub use effect::{
+    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress, Projection,
+};
 pub use launch::{Command, LaunchInput};
 pub use live::Live;
 pub use preview::PastVersion;

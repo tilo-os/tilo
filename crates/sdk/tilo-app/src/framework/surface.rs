@@ -13,7 +13,7 @@ use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widg
 use ui_core::{PresencePayload, WakeHandle};
 
 use super::dispatch::Dispatcher;
-use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects};
+use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Projection};
 use super::live::Live;
 use super::rows::{LiveRow, outside_document, resolved_outside_document};
 use super::scenario::{Run, RunMode};
@@ -316,11 +316,12 @@ impl<R: Resource> SurfaceCx<R> {
         &self,
         pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
         run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) where
+    ) -> Projection
+    where
         K: Eq + Hash + Clone + 'static,
         T: 'static,
     {
-        self.effects.drain(self.alive.clone(), pending, run);
+        self.effects.drain(self.alive.clone(), pending, run)
     }
 }
 
