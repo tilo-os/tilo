@@ -47,7 +47,6 @@
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
-"apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
 "apps/tube/src/app.rs" = 2
