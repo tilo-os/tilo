@@ -10,15 +10,16 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
-    Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, DEVICE_SLOT,
-    GcResult, HelloResult, InputAction, InputResult, Issue, KeptLayer, LayerImportResult,
-    LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest,
-    OutputSpec, Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult,
-    ShotResult, SlotCreateResult, SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult,
-    StatusResult, Storage, TestIdentity, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
+    Action, AppInstallResult, ApplyResult, AwakeLease, BaseInfo, BootConfirmResult, ComponentInfo,
+    DEVICE_SLOT, GcResult, HelloResult, InputAction, InputResult, Issue, KeptLayer,
+    LayerImportResult, LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease,
+    LogsResult, Manifest, OutputSpec, Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope,
+    SeatResult, ShotResult, SlotCreateResult, SlotFile, SlotInfo, SlotKind, SlotRmResult,
+    SlotShowResult, StatusResult, Storage, TestIdentity, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
 use crate::apply::{self, Apply, GREETER_UNIT, Restarts, Session, SessionChange};
+use crate::awake;
 use crate::error::DaemonError;
 use crate::layers::LayerStore;
 use crate::locks::{Guard, Locks};
@@ -455,6 +456,7 @@ impl Daemon {
                 base: self.base.clone(),
                 issues: self.issues()?,
                 tools: detect_tools(),
+                awake: Some(self.renew_awake(awake::Change::Request)),
             });
         }
         match self.client_protocol {
@@ -547,6 +549,17 @@ impl Daemon {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.install_app(&p.slot, p.source)?)
             }
+            Request::Awake(p) => {
+                let change = match (p.off, p.seconds) {
+                    (true, _) => Some(awake::Change::Off),
+                    (false, Some(seconds)) => Some(awake::Change::Hold(seconds)),
+                    (false, None) => None,
+                };
+                to_value(&match change {
+                    Some(change) => self.renew_awake(change),
+                    None => self.awake_lease(),
+                })
+            }
             Request::BootConfirm(p) => {
                 let _locks = self.slot_locks(VM_SLOT)?;
                 to_value(&self.confirm_boot(p.expect_version.as_deref())?)
@@ -619,6 +632,58 @@ impl Daemon {
             version,
             output,
         })
+    }
+
+    fn lease_path(&self) -> PathBuf {
+        self.root.join(awake::LEASE_FILE)
+    }
+
+    /// Renew (or release) the keep-awake lease and make the lock follow it.
+    /// A failure is reported in the lease, never as the request's error:
+    /// a machine that cannot be held awake can still be driven.
+    fn renew_awake(&mut self, change: awake::Change) -> AwakeLease {
+        let path = self.lease_path();
+        let now = tilo_clock::unix_now();
+        let (lease, write) = awake::renewal(awake::read(&path), now, change);
+        let mut problem = None;
+        if write
+            && let Err(error) = serde_json::to_vec(&lease)
+                .map_err(|e| DaemonError::InvalidParams(e.to_string()))
+                .and_then(|bytes| crate::fsutil::write_atomic(&path, &bytes))
+        {
+            problem = Some(error.to_string());
+        }
+        let applied = if lease.active(now) {
+            self.apply.hold_awake(&path)
+        } else {
+            self.apply.release_awake()
+        };
+        if let Err(error) = applied {
+            problem = Some(error.to_string());
+        }
+        AwakeLease {
+            problem,
+            ..self.awake_lease()
+        }
+    }
+
+    /// The keep-awake lease as it stands.
+    fn awake_lease(&mut self) -> AwakeLease {
+        let now = tilo_clock::unix_now();
+        let lease = awake::read(&self.lease_path()).filter(|lease| lease.active(now));
+        let held = self.apply.unit_state(awake::AWAKE_UNIT) == "active";
+        AwakeLease {
+            until: lease.map(|lease| lease.deadline()),
+            hold_until: lease.and_then(|lease| lease.hold_until.filter(|&hold| hold > now)),
+            held,
+            problem: (lease.is_some() && !held).then(|| {
+                format!(
+                    "{} is not running; journalctl -u {} says why",
+                    awake::AWAKE_UNIT,
+                    awake::AWAKE_UNIT
+                )
+            }),
+        }
     }
 
     fn status(&mut self, slot: Option<String>) -> Result<StatusResult, DaemonError> {
@@ -1441,6 +1506,57 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    /// Every connection's hello takes the keep-awake lease; `awake` holds it
+    /// longer, reports it, and releases it, and the next hello takes it again.
+    #[test]
+    fn every_connection_keeps_the_machine_awake_until_released() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        let hello = |daemon: &mut Daemon| -> HelloResult {
+            serde_json::from_value(
+                daemon
+                    .handle(Request::Hello(tilo_vm_protocol::Hello {
+                        protocol: PROTOCOL_VERSION,
+                        client_version: String::new(),
+                    }))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let awake = |daemon: &mut Daemon, seconds, off| -> AwakeLease {
+            serde_json::from_value(
+                daemon
+                    .handle(Request::Awake(tilo_vm_protocol::Awake { seconds, off }))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let now = tilo_clock::unix_now();
+        let lease = hello(&mut daemon).awake.unwrap();
+        assert!(lease.held, "{lease:?}");
+        assert_eq!(lease.problem, None);
+        let until = lease.until.unwrap();
+        assert!((now + 1800..now + 1810).contains(&until), "{until}");
+        assert!(root.path().join(awake::LEASE_FILE).is_file());
+
+        let held = awake(&mut daemon, Some(7200), false);
+        assert!(held.held);
+        assert!(held.until.unwrap() >= now + 7200);
+        assert_eq!(held.hold_until, held.until);
+        // Reporting changes nothing; a new connection keeps the hold.
+        assert_eq!(awake(&mut daemon, None, false).until, held.until);
+        assert_eq!(hello(&mut daemon).awake.unwrap().until, held.until);
+
+        let off = awake(&mut daemon, None, true);
+        assert_eq!(off, AwakeLease::default());
+        assert!(hello(&mut daemon).awake.unwrap().held);
+    }
 
     /// A laptop's `device` slot (the owner's greetd login) and the `vm` slot
     /// merge one system-wide layer set: neither drops the other's layers, and
