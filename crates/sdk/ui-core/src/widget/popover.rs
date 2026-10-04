@@ -28,8 +28,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -119,11 +118,11 @@ struct MenuMetrics {
 impl MenuMetrics {
     fn of(theme: &Theme) -> Self {
         let t = &theme.tokens;
-        let check = f64::from(t.metrics.icon_md);
+        let check = f64::from(t.metrics.icon_sm);
         Self {
-            // A Regular row (`docs/design-language.md`, "Space and density").
-            row: f64::from(t.metrics.bar_height),
-            pad: f64::from(t.spacing.s2),
+            // A menu row, the height every menu shares (HIG §9.5).
+            row: f64::from(t.metrics.menu_row_height),
+            pad: crate::widget::floating_surface::menu_inset(theme),
             // Leading padding, the check column, then the label.
             text_x: f64::from(t.spacing.s3) + check + f64::from(t.spacing.s2),
             check,
@@ -435,38 +434,29 @@ impl<C: Widget> Popover<C> {
             return;
         };
         let m = MenuMetrics::of(theme);
-        // Selection is a lift of the ground it stands on: the panel's.
         let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
         let colors = &on_panel.tokens.colors;
-        let radius = f64::from(
-            theme
-                .tokens
-                .radii
-                .concentric(theme.tokens.radii.panel, theme.tokens.spacing.s2),
-        );
         let style = on_panel.text(TextRole::Body);
         for (idx, label) in options.items.iter().enumerate() {
             let row = self.row_rect_in(idx, theme);
-            if idx == options.highlighted {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.intent.selection,
-                    None,
-                    &RoundedRect::from_rect(row, radius),
-                );
-            }
+            // The armed row is inverted, as in every menu (HIG §9.3); the
+            // applied option carries the check.
+            let ink = if idx == options.highlighted {
+                crate::widget::floating_surface::paint_armed_row(scene, transform, row, theme)
+            } else {
+                colors.text_primary
+            };
             if options.selected == Some(idx) {
                 let x = self.rect.x0 + f64::from(theme.tokens.spacing.s3);
                 let cy = row.center().y;
-                Self::check_mark(scene, transform, x, cy, m.check, colors.text_primary);
+                Self::check_mark(scene, transform, x, cy, m.check, ink);
             }
             let (_, lh) = tr.measure_style(label, None, &style);
             let ty = crate::text_metrics::centered_text_top(row.y0, row.height(), f64::from(lh));
             tr.draw_style(
                 scene,
                 label,
-                colors.text_primary,
+                ink,
                 transform.pre_translate(Vec2::new(self.rect.x0 + m.text_x, ty)),
                 None,
                 &style,

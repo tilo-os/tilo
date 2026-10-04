@@ -256,7 +256,7 @@ fn planned_paragraphs_keep_their_final_empty_line() {
 }
 
 /// Tilo Sans' full build with its held-back distinct I and l and slashed
-/// zero (`vendor/fonts/tilo-sans/scripts/toolkit_fixture.py`).
+/// zero (`scripts/toolkit_fixture.py` in tilo/tilo-sans).
 const FEATURES_FIXTURE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf"
