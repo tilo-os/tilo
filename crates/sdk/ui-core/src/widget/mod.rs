@@ -2505,6 +2505,8 @@ pub use media_card::{
 };
 pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
+pub mod transport;
+pub use transport::{TransportControl, TransportFace};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub mod skeleton;

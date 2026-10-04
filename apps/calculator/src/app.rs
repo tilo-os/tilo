@@ -32,6 +32,7 @@ use crate::graph3d::Graph3dScreen;
 use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
 use crate::resource::{Calculator, CalculatorState};
+use ui::chrome::HeaderRowMetrics;
 
 /// The labels of the angle-unit strip, and the condensed forms for a narrow
 /// header.
@@ -68,6 +69,14 @@ pub struct CalculatorApp {
     area: Rect,
     /// The header row's measurements in the last theme.
     header: Header,
+    /// The window header row's measurements in the last theme.
+    row_metrics: HeaderRowMetrics,
+    /// Holds the window's History control the host offers.
+    history: ui::widget::HistoryOpener,
+    /// Where the History control stands in the window's trailing corner.
+    history_rect: Rect,
+    /// The retained History button was replaced: the layout tree is rebuilt.
+    structure_dirty: bool,
     /// The header row over the content column.
     header_band: Rect,
     seg_rects: [Rect; 3],
@@ -143,6 +152,10 @@ impl CalculatorApp {
             g3: Graph3dScreen::default(),
             area: Rect::ZERO,
             header: Header::default(),
+            row_metrics: HeaderRowMetrics::default(),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
+            structure_dirty: false,
             header_band: Rect::ZERO,
             seg_rects: [Rect::ZERO; 3],
             unit_rects: [Rect::ZERO; 2],
@@ -252,6 +265,12 @@ impl CalculatorApp {
     /// between breakpoints reflows rather than staying frozen at the launch
     /// layout.
     fn relayout(&mut self) {
+        let reserve = if self.history.is_shown() {
+            self.row_metrics.chip + self.row_metrics.gap
+        } else {
+            0.0
+        };
+        self.calc.set_trailing_reserve(reserve);
         self.layout_active();
         self.layout_header();
     }
@@ -296,6 +315,20 @@ impl CalculatorApp {
         self.header_band = h.band(content);
         let band = self.header_band;
         let (mut left, mut right) = (band.x0 + h.inset, band.x1 - h.inset);
+        let row = Rect::new(self.area.x0, band.y0, self.area.x1, band.y1);
+        self.history_rect = if self.history.is_shown() {
+            self.row_metrics.trailing_chip(row, 0)
+        } else {
+            Rect::ZERO
+        };
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(self.history_rect);
+        }
+        // The History control stands in the window's trailing corner, so a
+        // content column that reaches it leaves the room.
+        if self.history_rect != Rect::ZERO && band.x1 >= self.area.x1 - 0.5 {
+            right -= self.row_metrics.chip + self.row_metrics.gap;
+        }
         if self.toggle_on_content() {
             let seat = h.chip + h.gap;
             match self.model.mode {
@@ -351,6 +384,7 @@ impl CalculatorApp {
     /// caller re-runs `relayout` before painting this frame.
     fn measure_header(&mut self, tr: &mut TextRenderer, theme: &Theme) -> bool {
         self.header = Header::of(theme);
+        self.row_metrics = HeaderRowMetrics::resolve(theme);
         let size = ControlSize::Regular;
         let modes = Mode::all();
         let full: Vec<&str> = modes.iter().map(|m| m.label()).collect();
@@ -1205,6 +1239,11 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
+    ui::provides!(
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
+    );
+
     fn is_focusable(&self) -> bool {
         true
     }
@@ -1267,23 +1306,58 @@ impl Widget for CalculatorApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errs when the tree is at capacity; degrade to an
-        // inert node rather than aborting the whole session.
+        // A History button the header replaced may be dropped now: this pass
+        // rebuilds the tree without it. The button is seated by hand in the
+        // header row, so its taffy geometry is unused; the node exists so the
+        // button is registered for a11y, focus and events.
+        self.history.tree_rebuilt();
+        let children: Vec<NodeId> = self
+            .history
+            .button_mut()
+            .into_iter()
+            .map(|button| button.build_layout(taffy, theme, node_map))
+            .collect();
+        // `new_with_children` only errs when the tree is at capacity or a
+        // child belongs to another tree; degrade to an inert node rather than
+        // aborting the whole session.
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &children,
+            )
             .unwrap_or_else(|_| NodeId::from(0u64));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.history
+            .button()
+            .into_iter()
+            .map(|button| button as &dyn Widget)
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.history
+            .button_mut()
+            .into_iter()
+            .map(|button| button as &mut dyn Widget)
+            .collect()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1333,6 +1407,9 @@ impl Widget for CalculatorApp {
                 .draw_content(scene, t, tr, theme, &self.model, pointer),
         }
         self.draw_header(scene, t, tr, theme);
+        if let Some(button) = self.history.button_mut() {
+            button.draw(scene, t, tr, theme, presence);
+        }
         match self.model.mode {
             Mode::Calc => self.calc.draw_panel(scene, t, tr, theme, &self.model),
             Mode::Graph2d => {
@@ -1385,6 +1462,25 @@ impl Widget for CalculatorApp {
             return;
         }
         self.relayout();
+
+        // The window's History control is a retained button seated in the
+        // header row; the layout tree may lag it by a frame when it was just
+        // offered, so one with no node yet is addressed by the window's own.
+        if !self.drawer_blocks() {
+            let node = ctx
+                .taffy
+                .children(ctx.node_id)
+                .ok()
+                .and_then(|nodes| nodes.first().copied())
+                .unwrap_or(ctx.node_id);
+            if let Some(button) = self.history.button_mut() {
+                button.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                if *ctx.handled {
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1798,6 +1894,20 @@ impl Widget for CalculatorApp {
         self.area == Rect::ZERO
     }
 }
+
+/// The header row is the window's: it holds the History control the host
+/// offers, so the window draws no History bar above the calculator.
+impl ui::widget::WindowHeader for CalculatorApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.structure_dirty |= self.history.take_rebuilt();
+            self.dirty = true;
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for CalculatorApp {}
 
 impl ui::widget::AppWidget for CalculatorApp {
     fn app_kind(&self) -> ui::widget::AppKind {
@@ -2538,6 +2648,35 @@ mod tests {
         app.measure_header(&mut TextRenderer::new(), theme);
         app.relayout();
         app
+    }
+
+    /// The window's History control stands in the trailing corner of the header
+    /// row, and nothing else on the row reaches under it.
+    #[test]
+    fn history_control_seats_in_the_trailing_corner_clear_of_the_row() {
+        use ui::widget::{HistoryControl, WindowHeader};
+        for w in [1280.0, 520.0] {
+            let theme = Theme::dark();
+            let mut app = laid_out(w, &theme);
+            assert_eq!(app.history_rect, Rect::ZERO, "no control, no seat");
+            app.set_history_control(Some(HistoryControl::Closed));
+            app.relayout();
+            let seat = app.history_rect;
+            assert!(
+                seat.width() > 0.0 && (seat.x1 - w).abs() < 16.0,
+                "the control stands in the corner at {w}: {seat:?}"
+            );
+            assert!(
+                app.unit_rects[1].x1 <= seat.x0 + 0.5,
+                "the unit strip clears the control at {w}: {:?} vs {seat:?}",
+                app.unit_rects[1]
+            );
+            let toggle = app.calc.toggle_rect();
+            assert!(
+                toggle == Rect::ZERO || toggle.x1 <= seat.x0 + 0.5,
+                "the panel button clears the control at {w}: {toggle:?} vs {seat:?}"
+            );
+        }
     }
 
     /// Header geometry: the mode strip and the angle-unit strip never clip or
