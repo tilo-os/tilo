@@ -152,29 +152,10 @@ impl ColorSwatchFace {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.item);
         let ground = colors.surfaces.content;
-        // The chosen swatch is marked by a concentric ring in primary ink,
-        // a gap of the ground between it and the fill; keyboard focus is
-        // that ring in your colour.
-        let marked = self.selected || self.focused;
-        // The ring is a focus-ring stroke; the ground shows half a spacing
-        // step between it and the fill.
-        let ring = 2.0_f32;
-        let mark_inset = ring + theme.tokens.spacing.s1 / 2.0;
-        let fill_rect = if marked {
-            self.rect.inset(-f64::from(mark_inset))
-        } else {
-            self.rect
-        };
-        let fill_radius = if marked {
-            f64::from(
-                theme
-                    .tokens
-                    .radii
-                    .concentric(theme.tokens.radii.item, mark_inset),
-            )
-        } else {
-            radius
-        };
+        // The chosen swatch keeps its full fill; its mark is a ring outside
+        // it (see `paint_mark`), so choosing never shrinks the colour.
+        let fill_rect = self.rect;
+        let fill_radius = radius;
         let shape = RoundedRect::from_rect(fill_rect, fill_radius);
         scene.fill(Fill::NonZero, transform, self.color, None, &shape);
         // The fill's edge is derived from the fill and the ground it stands
@@ -228,8 +209,12 @@ impl ColorSwatchFace {
         let radius = f64::from(theme.tokens.radii.item);
         let ground = colors.surfaces.content;
         let marked = self.selected || self.focused;
-        let ring_width = 2.0;
         if marked {
+            // Offset outside the swatch: a gap of the ground, then the ring,
+            // each half a spacing step, concentric with the swatch's corner.
+            let gap = f64::from(theme.tokens.spacing.s1) / 2.0;
+            let ring_width = gap;
+            let reach = gap + ring_width / 2.0;
             let ink = if self.focused {
                 colors.intent.you
             } else {
@@ -240,10 +225,7 @@ impl ColorSwatchFace {
                 transform,
                 ink,
                 None,
-                &RoundedRect::from_rect(
-                    self.rect.inset(-ring_width / 2.0),
-                    radius - ring_width / 2.0,
-                ),
+                &RoundedRect::from_rect(self.rect.inset(reach), radius + reach),
             );
         } else if self.hovered {
             // Hover: a ring that reads on the swatch's own fill.
