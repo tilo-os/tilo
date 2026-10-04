@@ -22,6 +22,24 @@ fn app_with_sample() -> BooksApp {
     BooksApp::with_library(load_sample_library())
 }
 
+/// The reader on the sample shelf as screenshot `scenario` stages it: the
+/// scenario's actions applied to the library, then its view state.
+fn staged(scenario: &str) -> (BooksApp, AutoCommit) {
+    use tilo_actions::Action as _;
+
+    let mut doc = AutoCommit::new();
+    for invoke in crate::scenarios::actions(Some(scenario)) {
+        let action: crate::actions::EbookAction =
+            serde_json::from_value(invoke.arguments[ui::tilo_resource::APPLY_PARAM].clone())
+                .unwrap();
+        action.apply(&mut doc).unwrap();
+    }
+    let mut app = app_with_sample();
+    app.sync(&mut doc, &automerge::ROOT);
+    app.stage_scenario(scenario);
+    (app, doc)
+}
+
 fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
     let deadline = tilo_test_env::hang_deadline();
     while ui::time::now() < deadline {
@@ -3023,7 +3041,7 @@ fn live_start_is_empty_and_onboards() {
     {
         // The live app opens onto the shelf (its home), empty until the document
         // load on the first sync — never a fabricated starter book.
-        let app = BooksApp::new();
+        let app = BooksApp::new(false);
         assert!(
             app.library.is_empty(),
             "no books before the document is loaded"
@@ -3289,38 +3307,6 @@ fn library_shelf_layout_filtering_and_keyboard() {
 )]
 #[test]
 fn importing_and_removing_books_keeps_one_identity() {
-    // --- phase: opening_a_book_by_path_imports_it_and_opens_it ---
-    // The core of the redesign: opening a book by path imports it into the
-    // library (so it's there next time) AND opens it. Exercised through the OS
-    // file-association entry point, which drains on the first sync.
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("handed-off.epub");
-        std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
-
-        let mut app = BooksApp::open_path(&path);
-        let mut doc = AutoCommit::new();
-        frame(&mut app, &mut doc, 1000.0, 720.0);
-        wait_for_import(&mut app, &mut doc);
-
-        assert_eq!(
-            app.view,
-            View::Reader,
-            "the handed-off book opens in the reader"
-        );
-        assert_eq!(app.library.len(), 1, "and is now on the shelf");
-        assert!(
-            !app.library[0].title.is_empty(),
-            "the real epub parsed a title"
-        );
-        // Persisted, so it is there on the next launch.
-        assert_eq!(
-            BooksDoc::read_library_entries(&doc).len(),
-            1,
-            "the opened book is recorded in the library"
-        );
-    }
-
     // --- phase: a_picked_book_is_imported_and_opened_via_the_frame_drain ---
     // A book chosen through the host file picker loads through the per-frame
     // portal drain (a recording host answers it — no real dialog).
@@ -4114,9 +4100,7 @@ fn reader_shots_render_within_the_page_box() {
     {
         use ui::offscreen::OffscreenRenderer;
 
-        let mut app = BooksApp::with_library(Vec::new());
-        let mut doc = AutoCommit::new();
-        app.seed_shot_scenario("large-text");
+        let (mut app, mut doc) = staged("large-text");
         let scene = render_scene(&mut app, &mut doc, 480.0, 900.0);
 
         assert_eq!(app.settings.font_scale, 2.0);
@@ -4154,9 +4138,7 @@ fn reader_shots_render_within_the_page_box() {
 
     // --- phase: reduced_motion_shot_keeps_the_desktop_reader_chrome ---
     {
-        let mut app = BooksApp::with_library(Vec::new());
-        let mut doc = AutoCommit::new();
-        app.seed_shot_scenario("reduced-motion");
+        let (mut app, mut doc) = staged("reduced-motion");
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
         assert!(app.reduce_motion);

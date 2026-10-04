@@ -6,21 +6,18 @@
 //! public metadata live in the CRDT ([`crate::doc`]). Source paths and folder
 //! grants remain local. Shared copies resolve from their content-addressed
 //! workspace filename; local copies are rediscovered only through explicitly
-//! supplied watch roots. [`load_library`] hydrates those available books and
-//! auto-imports anything new.
+//! supplied watch roots. [`hydrate_library`] reads those available books, and
+//! [`find_watched_books`] finds new ones for the reader to shelve.
 //!
-//! The bundled EPUB + the multi-book sample library are reserved for the
-//! hermetic `--shots`/test path.
+//! The multi-book sample library is reserved for screenshots and tests; the
+//! bundled EPUB is the browser's one book.
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 
-use automerge::AutoCommit;
-use tilo_actions::Action;
 use tilo_clock::unix_now_ms;
 
-use crate::doc::BooksDoc;
 use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
 use crate::model::{Book, Chapter, LibraryEntry};
 use crate::xhtml::parse_xhtml;
@@ -28,7 +25,7 @@ use crate::xhtml::parse_xhtml;
 /// The bundled EPUB, parsed by the real container reader. The `--shots`/test
 /// sample library and test fixtures use it; the native live shelf never gains
 /// it by itself, and only a host without files places it there
-/// ([`record_bundled_book`]).
+/// ([`bundled_book_entry`]).
 pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 
 /// The shelf location of a bundled book: inside the app, never shared.
@@ -110,36 +107,9 @@ fn tint_for(id: &str) -> usize {
     id.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % 5
 }
 
-/// Parse the `.epub` at `path` and record it in the library, returning the
-/// parsed book. The entry is keyed by the book's content hash, so importing the
-/// same file again (from any path) updates one entry rather than duplicating it.
-pub fn import_path(doc: &mut AutoCommit, path: &Path) -> Option<Book> {
-    match import_path_detailed(doc, path) {
-        Ok(book) => Some(book),
-        Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "ebook: import skipped");
-            None
-        }
-    }
-}
-
-/// Like [`import_path`], but retain a reader-safe reason for a visible error
-/// state. The UI uses this for a picker or file-association request so a
-/// rejected oversized/corrupt book is never reported as a vague empty shelf.
-///
-/// # Errors
-///
-/// Returns a concise reason when the path cannot be read within the EPUB byte
-/// budget or the EPUB container/content cannot be parsed safely.
-pub fn import_path_detailed(doc: &mut AutoCommit, path: &Path) -> Result<Book, String> {
-    let book = parse_path_detailed(path)?;
-    Ok(record_imported_book(doc, path, book))
-}
-
-/// Parse an EPUB without mutating the shared document. This is deliberately
-/// separate from [`import_path_detailed`] so the potentially expensive file
-/// read/hash/parse can run in the one bounded worker while CRDT writes remain
-/// on the UI thread.
+/// Parse an EPUB without touching the library. The potentially expensive
+/// file read/hash/parse runs in the one bounded worker; the shelf row is the
+/// UI thread's action.
 ///
 /// # Errors
 ///
@@ -246,18 +216,8 @@ fn content_book(entry: &LibraryEntry, store: &tilo_content::ContentStore) -> Opt
     })
 }
 
-/// Commit a previously parsed book to the library CRDT. Call this only on the
-/// UI/document owner after [`parse_path_detailed`] has completed.
-pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, book: Book) -> Book {
-    let (book, entry) = prepare_imported_book(path, book);
-    let _ = crate::actions::restore_library_book_action(&entry).apply(doc);
-    book
-}
-
-/// Build the canonical shelf action input while keeping the actual durable
-/// commit with the app's [`ui::ActionHost`]. Startup migration uses
-/// [`record_imported_book`]; interactive import/share paths use this helper so
-/// their history boundary is observable by the shell and agents.
+/// A parsed book and the shelf row it joins with: the row is the library's
+/// action, taken by whoever shelves it.
 pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry) {
     book.cover_tint = tint_for(&book.id);
     let entry = LibraryEntry {
@@ -270,24 +230,6 @@ pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry
         content: None,
     };
     (book, entry)
-}
-
-/// Copy a local book into the workspace so the reader's peers get it, record the
-/// new (shared) location, and return the re-hydrated book + its workspace path.
-/// A book already on the workspace is returned unchanged.
-pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, PathBuf)> {
-    if is_shared(src) {
-        return None;
-    }
-    let (book, dest) = parse_shared_path_detailed(src).ok()?;
-    // `parse_shared_path_detailed` intentionally falls back to local-only
-    // when a host exposes no workspace mount. The explicit Share control must
-    // not report that fallback as a successful share.
-    if !is_shared(&dest) {
-        return None;
-    }
-    let book = record_imported_book(doc, &dest, book);
-    Some((book, dest))
 }
 
 /// Materialise a content-addressed EPUB object in the shared workspace.
@@ -321,45 +263,42 @@ fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
-/// Load the reader's library: auto-import any new books found in a watched
-/// folder, then hydrate every recorded book from disk. A recorded book whose
-/// file can't be read right now (e.g. an as-yet-unhydrated workspace book) is
-/// skipped from the shelf but kept in the registry, so it reappears once its
-/// bytes are available.
-pub fn load_library<S: BuildHasher>(
-    doc: &mut AutoCommit,
-    watched_folders: &[PathBuf],
-    local_books: &HashMap<String, PathBuf, S>,
-) -> Vec<LoadedBook> {
-    load_library_with_content(doc, watched_folders, local_books, None)
+/// A book found in a folder the reader watches, where its file is, and the
+/// shelf row it joins with.
+pub struct FoundBook {
+    pub path: PathBuf,
+    pub entry: LibraryEntry,
 }
 
-/// [`load_library`], also reading books whose rows name bytes in `content`.
-pub fn load_library_with_content<S: BuildHasher>(
-    doc: &mut AutoCommit,
-    watched_folders: &[PathBuf],
+/// The books in the folders the reader watches (and any `EBOOK_LIBRARY_DIR`
+/// override), each placed on the shared workspace where there is one, as
+/// picker imports are: collaborative by default, with an honest local
+/// fallback. Unreadable files are skipped.
+pub fn find_watched_books(watched_folders: &[PathBuf]) -> Vec<FoundBook> {
+    scan_watched(watched_folders)
+        .into_iter()
+        .filter_map(|path| {
+            let (book, path) = parse_shared_path_detailed(&path).ok()?;
+            let (_, entry) = prepare_imported_book(&path, book);
+            Some(FoundBook { path, entry })
+        })
+        .collect()
+}
+
+/// The shelf's books whose bytes this device can read: a shared workspace
+/// copy, a local file the reader opened (`local_books`), the content store,
+/// or the book compiled into the app. A row whose bytes are nowhere here
+/// (an as-yet-unhydrated workspace book) is skipped, and shows once they
+/// are.
+pub fn hydrate_library<S: BuildHasher>(
+    entries: &[LibraryEntry],
     local_books: &HashMap<String, PathBuf, S>,
     content: Option<&tilo_content::ContentStore>,
 ) -> Vec<LoadedBook> {
-    // 1. Pull in anything new from the folders the reader watches (and the env
-    //    override the OS/tests use to point at a synced library).
-    let watched = scan_watched(watched_folders);
-    let mut discovered = HashMap::new();
-    for path in watched {
-        // Startup discovery follows the same collaborative-by-default policy
-        // as picker imports.  The synchronous loader predates the worker, but
-        // it still records the materialised workspace path (or the honest
-        // local fallback) rather than publishing metadata for a private file.
-        if let Ok((book, resolved_path)) = parse_shared_path_detailed(&path) {
-            let book = record_imported_book(doc, &resolved_path, book);
-            discovered.insert(book.id, resolved_path);
-        }
-    }
-
-    // 2. Hydrate the recorded library. Prefer a shared copy over a local one when
-    //    the same content is recorded twice, so the shelf shows it as shared.
+    // Prefer a shared copy over a local one when the same content is
+    // recorded twice, so the shelf shows it as shared.
     let mut out: Vec<LoadedBook> = Vec::new();
-    for entry in BooksDoc::read_library_entries(doc) {
+    for entry in entries {
         let canonical_shared = workspace_book_path(&entry.id);
         let path = if canonical_shared.is_file() {
             Some(canonical_shared)
@@ -367,13 +306,12 @@ pub fn load_library_with_content<S: BuildHasher>(
             local_books
                 .get(&entry.id)
                 .cloned()
-                .or_else(|| discovered.remove(&entry.id))
                 .filter(|path| path.is_file())
         } else {
             None
         };
         let Some(path) = path else {
-            if let Some(loaded) = content.and_then(|store| content_book(&entry, store)) {
+            if let Some(loaded) = content.and_then(|store| content_book(entry, store)) {
                 out.push(loaded);
                 if out.len() >= MAX_LIBRARY {
                     break;
@@ -530,12 +468,21 @@ pub fn bundled_book(id: &str) -> Option<Book> {
     parse_epub(SAMPLE_EPUB, 0, "EPUB").ok()
 }
 
-/// Put the bundled book on the shelf and return its id. Only for a host with
-/// no files and no picker (the browser), where it is the one book there is to
-/// read; the native shelf starts empty.
-pub fn record_bundled_book(doc: &mut AutoCommit) -> Option<String> {
+/// The shelf row of the bundled book. Only for a host with no files and no
+/// picker (the browser), where it is the one book there is to read; the
+/// native shelf starts empty.
+pub fn bundled_book_entry() -> Option<LibraryEntry> {
     let book = bundled_book(&bundled_book_id())?;
-    Some(record_imported_book(doc, Path::new(BUNDLED_PATH), book).id)
+    Some(prepare_imported_book(Path::new(BUNDLED_PATH), book).1)
+}
+
+/// Whether chosen files have native paths here; without them (a browser
+/// page) books are opened by their contents.
+pub fn native_paths() -> bool {
+    matches!(
+        tilo_files::availability(tilo_files::Feature::NativePaths),
+        tilo_files::Availability::Available
+    )
 }
 
 // --- Sample library: hermetic `--shots` / test content only -----------------
@@ -668,7 +615,21 @@ mod tests {
     //! when dropped.
 
     use super::*;
+    use crate::doc::BooksDoc;
+    use automerge::AutoCommit;
     use serial_test::serial;
+    use tilo_actions::Action;
+
+    /// Read, place and shelve the EPUB at `path` as the reader's importer
+    /// does, returning the parsed book.
+    fn shelve_path(doc: &mut AutoCommit, path: &Path) -> Book {
+        let (book, path) = parse_shared_path_detailed(path).expect("a real epub imports");
+        let (book, entry) = prepare_imported_book(&path, book);
+        crate::actions::restore_library_book_action(&entry)
+            .apply(doc)
+            .unwrap();
+        book
+    }
 
     fn workspace_env(path: &Path) -> tilo_test_env::ScopedEnv {
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -714,8 +675,7 @@ mod tests {
             let bad = tmp.path().join("damaged.epub");
             std::fs::write(&bad, b"definitely not a zip").unwrap();
 
-            let error = import_path_detailed(&mut AutoCommit::new(), &bad)
-                .expect_err("a corrupt EPUB does not import");
+            let error = parse_path_detailed(&bad).expect_err("a corrupt EPUB does not import");
             assert!(
                 error.contains("open epub zip"),
                 "the UI receives the actual parse reason, not a generic failure: {error}"
@@ -734,10 +694,10 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let mut library_env = tilo_test_env::ScopedEnv::new();
             library_env.set(LIBRARY_DIR_ENV, tmp.path());
-            let mut doc = AutoCommit::new();
-            let lib = load_library(&mut doc, &[], &HashMap::new());
+            let found = find_watched_books(&[]);
             drop(library_env);
-            assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
+            assert!(found.is_empty(), "no epubs anywhere -> nothing to shelve");
+            assert!(hydrate_library(&[], &HashMap::new(), None).is_empty());
         }
 
         // --- phase: watched_path_list_preserves_native_paths ---
@@ -771,14 +731,14 @@ mod tests {
             library_env.set(LIBRARY_DIR_ENV, tmp.path());
             let mut doc = AutoCommit::new();
 
-            let book = import_path(&mut doc, &path).expect("a real epub imports");
+            let book = shelve_path(&mut doc, &path);
             assert!(
                 book.id.starts_with("book:"),
                 "the import produced a content id"
             );
             // Recorded once, and hydrating the library yields exactly that book.
             assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
-            let lib = load_library(&mut doc, &[], &HashMap::new());
+            let lib = hydrate_library(&BooksDoc::read_library_entries(&doc), &HashMap::new(), None);
             drop(library_env);
             assert_eq!(lib.len(), 1, "the imported book is on the shelf");
             assert_eq!(lib[0].book.id, book.id);
@@ -791,7 +751,7 @@ mod tests {
             );
 
             // Importing the very same file again does not duplicate the shelf entry.
-            import_path(&mut doc, &path).unwrap();
+            shelve_path(&mut doc, &path);
             assert_eq!(
                 BooksDoc::read_library_entries(&doc).len(),
                 1,
@@ -809,11 +769,12 @@ mod tests {
             let path = directory.path().join("one-off.epub");
             std::fs::write(&path, SAMPLE_EPUB).unwrap();
             let mut doc = AutoCommit::new();
-            let book = import_path(&mut doc, &path).unwrap();
+            let book = shelve_path(&mut doc, &path);
             let mut local_books = HashMap::new();
             local_books.insert(book.id.clone(), path.clone());
 
-            let restored = load_library(&mut doc, &[], &local_books);
+            let restored =
+                hydrate_library(&BooksDoc::read_library_entries(&doc), &local_books, None);
             assert_eq!(restored.len(), 1);
             assert_eq!(restored[0].book.id, book.id);
             assert_eq!(restored[0].path, path);
@@ -828,14 +789,23 @@ mod tests {
             std::fs::write(sub.join("beta.EPUB"), SAMPLE_EPUB).unwrap();
             std::fs::write(watched.path().join("readme.txt"), b"not a book").unwrap();
 
-            let mut doc = AutoCommit::new();
-            let lib = load_library(&mut doc, &[watched.path().to_path_buf()], &HashMap::new());
+            let found = find_watched_books(&[watched.path().to_path_buf()]);
+            assert_eq!(found.len(), 2, "both epubs found, the .txt ignored");
             // Both epubs are the *same bytes*, so they share a content id and collapse
-            // to a single library entry — the non-epub is ignored.
+            // to a single library entry.
+            let mut doc = AutoCommit::new();
+            let mut local_books = HashMap::new();
+            for book in &found {
+                crate::actions::shelve_found_book_action(&book.entry)
+                    .apply(&mut doc)
+                    .unwrap();
+                local_books.insert(book.entry.id.clone(), book.path.clone());
+            }
+            let lib = hydrate_library(&BooksDoc::read_library_entries(&doc), &local_books, None);
             assert_eq!(
                 lib.len(),
                 1,
-                "watched epubs imported (deduped by content), .txt ignored"
+                "watched epubs shelved once (deduped by content)"
             );
         }
     }
@@ -851,7 +821,6 @@ mod tests {
         let (_, destination) = parse_shared_path_detailed(&path).unwrap();
         assert_eq!(destination, path);
         assert!(!is_shared(&destination));
-        assert!(share_to_workspace(&mut AutoCommit::new(), &path).is_none());
     }
 
     /// Workspace books are shared, shared parses materialise first, and sharing keeps identity without overwriting unrelated files.
@@ -895,7 +864,10 @@ mod tests {
             // free to discard a superseded result without leaving a ghost shelf
             // row behind.
             let mut doc = AutoCommit::new();
-            let recorded = record_imported_book(&mut doc, &destination, book);
+            let (recorded, entry) = prepare_imported_book(&destination, book);
+            crate::actions::restore_library_book_action(&entry)
+                .apply(&mut doc)
+                .unwrap();
             let entries = BooksDoc::read_library_entries(&doc);
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].id, recorded.id);
@@ -917,11 +889,10 @@ mod tests {
             let src = home.path().join("mine.epub");
             std::fs::write(&src, SAMPLE_EPUB).unwrap();
 
-            let mut doc = AutoCommit::new();
-            let before = import_path(&mut doc, &src).unwrap();
+            let before = parse_path_detailed(&src).unwrap();
             assert!(!is_shared(&src));
 
-            let (after, dest) = share_to_workspace(&mut doc, &src).expect("share succeeds");
+            let (after, dest) = parse_shared_path_detailed(&src).expect("share succeeds");
             assert!(is_shared(&dest), "the copy lands on the workspace");
             assert!(dest.exists(), "the file was actually copied");
             assert_eq!(
@@ -930,6 +901,10 @@ mod tests {
             );
             // The library records canonical shared availability, not a workspace
             // root that might mean something different on another device.
+            let mut doc = AutoCommit::new();
+            crate::actions::restore_library_book_action(&prepare_imported_book(&dest, after).1)
+                .apply(&mut doc)
+                .unwrap();
             let entries = BooksDoc::read_library_entries(&doc);
             assert_eq!(entries.len(), 1);
             assert!(entries[0].shared, "the shared copy is discoverable by id");
@@ -950,8 +925,7 @@ mod tests {
             let old_destination = books.join("book.epub");
             std::fs::write(&old_destination, b"another reader's file").unwrap();
 
-            let mut doc = AutoCommit::new();
-            let (_book, destination) = share_to_workspace(&mut doc, &src).expect("share succeeds");
+            let (_book, destination) = parse_shared_path_detailed(&src).expect("share succeeds");
             assert_ne!(
                 destination, old_destination,
                 "share uses a content-addressed name"
@@ -975,7 +949,11 @@ mod tests {
         let workspace = tempfile::NamedTempFile::new().unwrap();
         let _workspace = workspace_env(workspace.path());
         let mut doc = AutoCommit::new();
-        let id = record_bundled_book(&mut doc).expect("the bundled book records");
+        let entry = bundled_book_entry().expect("the bundled book has a shelf row");
+        crate::actions::restore_library_book_action(&entry)
+            .apply(&mut doc)
+            .unwrap();
+        let id = entry.id;
         assert_eq!(id, content_id(SAMPLE_EPUB));
         let entries = BooksDoc::read_library_entries(&doc);
         assert_eq!(entries.len(), 1);
@@ -984,7 +962,7 @@ mod tests {
             "the bundled copy is nobody's shared file"
         );
 
-        let library = load_library(&mut doc, &[], &HashMap::new());
+        let library = hydrate_library(&entries, &HashMap::new(), None);
         assert_eq!(library.len(), 1);
         assert_eq!(library[0].book.id, id);
         assert_eq!(library[0].book.title, "The Lantern-Keeper's Almanac");
@@ -1012,15 +990,13 @@ mod tests {
         assert_eq!(entries[0].content.as_deref(), Some(hash.as_str()));
         assert!(!entries[0].shared, "a handed book is nobody's shared file");
 
-        let library = load_library_with_content(&mut doc, &[], &HashMap::new(), Some(&store));
+        let library = hydrate_library(&entries, &HashMap::new(), Some(&store));
         assert_eq!(library.len(), 1);
         assert_eq!(library[0].book.id, handed.book.id);
         assert_eq!(library[0].book.chapters.len(), 3);
         // A device without the bytes keeps the row but has nothing to show.
         let elsewhere = tilo_content::ContentStore::memory();
-        assert!(
-            load_library_with_content(&mut doc, &[], &HashMap::new(), Some(&elsewhere)).is_empty()
-        );
+        assert!(hydrate_library(&entries, &HashMap::new(), Some(&elsewhere)).is_empty());
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
 
         // Content that is not the row's book is never shown as it.
@@ -1031,7 +1007,12 @@ mod tests {
         entry.content = Some(other_hash);
         BooksDoc::upsert_library_entry(&mut forged, &entry);
         assert!(
-            load_library_with_content(&mut forged, &[], &HashMap::new(), Some(&store)).is_empty()
+            hydrate_library(
+                &BooksDoc::read_library_entries(&forged),
+                &HashMap::new(),
+                Some(&store)
+            )
+            .is_empty()
         );
         assert!(
             crate::actions::restore_library_book_action(&entry)
