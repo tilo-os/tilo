@@ -49,6 +49,13 @@ pub(crate) fn with_settings_file(
     prepared
 }
 
+/// The content store of a `--data-dir` profile.
+pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    super::app::profile_content(
+        &std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf()),
+    )
+}
+
 /// The settings document of a `--data-dir` profile.
 pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
     std::path::absolute(directory)
@@ -63,6 +70,15 @@ impl Profile {
         match self {
             Self::Temporary(directory) => directory.path().join("settings.json"),
             Self::DataDir(directory) => data_dir_settings(directory),
+        }
+    }
+
+    /// The profile's content store, which the app keeps handed files and
+    /// other bytes its record names in, instead of the person's.
+    fn content(&self) -> tilo_content::ContentStore {
+        match self {
+            Self::Temporary(directory) => super::app::profile_content(directory.path()),
+            Self::DataDir(directory) => data_dir_content(directory),
         }
     }
 }
@@ -238,6 +254,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             }
             None => A::shot_viewport(None),
         };
+        prepared.context.provide_content(profile.content());
         let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;

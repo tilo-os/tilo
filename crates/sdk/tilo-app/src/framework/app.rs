@@ -405,7 +405,8 @@ fn create<A: ResourceApp>(
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
-    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
+    let input = LaunchInput::new(&arguments, file.as_ref()).with_content(context.content());
+    for invoke in A::launch(&input, created) {
         root.dispatcher().invoke(invoke);
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
@@ -609,6 +610,7 @@ fn prepare_named(
             .map_err(operation)?;
         let root = profile.path().join("state");
         let settings = profile.path().join("settings.json");
+        let content = profile_content(profile.path());
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
             "capture-device".into(),
@@ -619,6 +621,7 @@ fn prepare_named(
             Rc::new(CaptureProfile(profile)),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
+        prepared.context.provide_content(content);
         // An audit and a headless drive certify and drive the app someone
         // uses; only a screenshot is built from fixtures.
         if args.shots.is_some() || args.responsive_matrix.is_some() {
@@ -636,7 +639,10 @@ fn prepare_named(
             role_permissions(&author.0, Role::Owner),
         )?;
         return prepare_on(&mut host, definition, DATA_DIR_INSTANCE, named, inputs).map(
-            |prepared| {
+            |mut prepared| {
+                prepared
+                    .context
+                    .provide_content(super::testing::data_dir_content(directory.as_ref()));
                 super::testing::with_settings_file(
                     prepared,
                     super::testing::data_dir_settings(directory.as_ref()),
@@ -646,7 +652,18 @@ fn prepare_named(
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    prepare_on(native.host_mut(), definition, instance, named, inputs)
+    let mut prepared = prepare_on(native.host_mut(), definition, instance, named, inputs)?;
+    prepared
+        .context
+        .provide_content(tilo_content::ContentStore::for_app());
+    Ok(prepared)
+}
+
+/// The content store of a profile the launch keeps in `directory`: the
+/// bytes its records name live with them, and go with them.
+#[cfg(tilo_native_runner)]
+pub(crate) fn profile_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    tilo_content::ContentStore::in_dir(directory.join("content"))
 }
 
 /// Take the launch's actions ([`ResourceApp::launch`]) as the live host's
