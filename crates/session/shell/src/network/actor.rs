@@ -4084,6 +4084,7 @@ mod tests {
                         since: vec![],
                         room: String::new(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -4285,6 +4286,7 @@ mod tests {
                         since: vec![],
                         room: "responsive".into(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -4904,6 +4906,7 @@ mod tests {
                         since: vec![],
                         room: "hosted".into(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -5859,6 +5862,7 @@ mod tests {
                     since: vec![],
                     room: "after-ready".into(),
                     invite_id: None,
+                    nonce: 0,
                 },
             })
             .await

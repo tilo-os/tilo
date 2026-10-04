@@ -13,7 +13,7 @@ use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widg
 use ui_core::{PresencePayload, WakeHandle};
 
 use super::dispatch::Dispatcher;
-use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects};
+use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Projection};
 use super::live::Live;
 use super::rows::{LiveRow, outside_document, resolved_outside_document};
 use super::scenario::{Run, RunMode};
@@ -293,6 +293,12 @@ impl<R: Resource> SurfaceCx<R> {
         self.run.content()
     }
 
+    /// What the window's launch named (paths, URLs), as
+    /// [`ViewCx::launch_arguments`](super::ViewCx::launch_arguments).
+    pub fn launch_arguments(&self) -> &[String] {
+        &self.run.arguments
+    }
+
     /// The id of the app the surface is part of, which its presence keys
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {
@@ -342,11 +348,12 @@ impl<R: Resource> SurfaceCx<R> {
         &self,
         pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
         run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) where
+    ) -> Projection
+    where
         K: Eq + Hash + Clone + 'static,
         T: 'static,
     {
-        self.effects.drain(self.alive.clone(), pending, run);
+        self.effects.drain(self.alive.clone(), pending, run)
     }
 }
 
@@ -392,7 +399,14 @@ impl ResourceSelection {
 /// Presents resource changes to a hosted surface, routes its effects to it,
 /// and otherwise stays out of its way: layout, drawing and input are the
 /// surface's own.
+///
+/// The surface is laid out first, so the host and the surface it forwards
+/// its name to are one address: the window's map of named widgets, which
+/// keys a widget by address and name, finds the surface's own node when a
+/// test or a headless drive names it.
+#[repr(C)]
 pub(crate) struct SurfaceHost<R: Resource, S, E> {
+    surface: S,
     live: Live<R>,
     presented: u64,
     dispatch: Dispatcher<R>,
@@ -404,7 +418,6 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     effects: Option<EffectRunner<R, S, E>>,
     /// What the surface last said of its effects, which the root publishes.
     statuses: Rc<RefCell<Vec<EffectStatus>>>,
-    surface: S,
 }
 
 /// The scenario a surface stages on its next sync: outer `None` is nothing

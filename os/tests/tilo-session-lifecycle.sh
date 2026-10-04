@@ -32,9 +32,13 @@ for socket in \
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
 grep -Fqx 'ulimit -c 0' "$wrapper"
-grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
-grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
-grep -Fqx '(allow xdm_t home_root_t (dir (read)))' "$selinux_policy"
+# The session runs in the user's SELinux domain (pam_selinux in
+# os/etc/pam.d/greetd), never greetd's xdm_t, so the policy grants the display
+# manager nothing a user session needs.
+if grep -Eq '\(allow xdm_t (tilo_session_unit_file_t|home_root_t)' "$selinux_policy"; then
+  echo 'the policy lets the display manager domain run the user session' >&2
+  exit 1
+fi
 # The compositor verifies and repairs an existing identity on every start;
 # there is no separate pre-session identity unit to order anything after.
 if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then

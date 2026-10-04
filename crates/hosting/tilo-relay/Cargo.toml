@@ -158,10 +158,6 @@ bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
-# Relay environment sessions are `ush` guests, requested over its serve
-# protocol; the pty master arrives over `SCM_RIGHTS`.
-ush = { path = "../../runtime/ush" }
-runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 # The environment record a relay session is opened from.
 tilo-environment = { path = "../../runtime/environment" }
 # Members' tool builds: built as the member, signed here.
@@ -192,6 +188,12 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only the local Linux guest backend needs namespaces, Landlock and vsock.
+# Portable relay routing and remote environment sessions do not link it.
+ush = { path = "../../runtime/ush" }
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }

@@ -1494,7 +1494,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1526,12 +1525,14 @@ jobs:
           # caches, since a cached layer keeps the file times of the build
           # that made it and any older than this commit escape
           # rewrite-timestamp's clamp (run 48898). Only main writes the layer
-          # caches, and only from a cold builder: a pull request reads main's,
-          # and a builder the runner slot seeded from main's previous dev
-          # build already holds these layers; exporting them cost every run
-          # about two to three minutes.
+          # caches: a pull request reads main's. Main writes the toolchain
+          # even from a seeded builder: after an RPM snapshot change neither
+          # this cache nor the slots' seeded state picked up the new stage,
+          # and every large slot re-ran its dnf install (45-120 s) on each
+          # build. Exporting it is cheap: the stage is a few layers, and
+          # blobs the cache already has are not uploaded again.
           cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build / OS dev: the dev binaries compile on the Fedora bootc base
       # (os/Containerfile.dev's dev-builder), which needs nothing from this
@@ -1625,7 +1626,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1690,7 +1690,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1751,7 +1750,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -1825,7 +1823,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -1916,7 +1913,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -2079,7 +2075,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -2365,7 +2360,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -2733,6 +2727,11 @@ jobs:
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The greetd login left the display manager's SELinux domain: the
+          # compositor and the apps it launched run as the user, in the
+          # session's logind scope and their own app scopes, and nothing of
+          # the session was denied home access in its first minute.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
@@ -3440,6 +3439,17 @@ jobs:
             echo "BASE_CHILD_DIGEST=$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
               | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
           } >> "$GITHUB_ENV"
+
+      # The Lenovo's sound card needs its topology, DSP firmware and UCM
+      # profile in the image; booting it on the laptop is the only test of the
+      # sound itself (DEVELOPMENT.md, "Board dev images on real hardware").
+      - name: Check the board image's audio stack
+        if: matrix.board == 'lenovo-83ed'
+        run: |
+          set -euo pipefail
+          podman run --rm --network none --entrypoint bash \
+            -v "$PWD/os/tests/board_audio_contract.sh:/run/board_audio_contract.sh:ro,z" \
+            "$BOARD_IMAGE" /run/board_audio_contract.sh --root /
 
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
       # does. The lane sealed the UKI with the digest install computes
