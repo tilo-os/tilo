@@ -249,8 +249,13 @@ function defaultCancelFrame(handle) {
  * Bind the legacy-window layer to a mounted desktop surface.
  *
  * - `live()`: the room's live layer (`peer.mjs`), or undefined.
- * - `windows()`: `[{key, rect: [x0, y0, x1, y1]}]`, where the desktop shows
- *   each stream's window (`desktop_peer_windows`), or undefined.
+ * - `windows()`: `[{key, rect: [x0, y0, x1, y1], focused}]`, where the
+ *   desktop shows each stream's window and whether it is the focused one
+ *   (`desktop_peer_windows`), or undefined. A window the desktop focuses
+ *   (opening it, or its tab chosen) takes the keyboard; one it stops
+ *   focusing gives it back to `focusDesktop()`.
+ * - `focusWindow(key)`: the person clicked into the window; the desktop
+ *   focuses it too (`desktop_focus_peer_window`).
  * - `setWindows(list)`: show exactly `[{key, app, title}]` as windows
  *   (`desktop_set_peer_windows`).
  * - `sendInput(publisher, surface, events)`: resolves whether the host took
@@ -266,6 +271,8 @@ export function createLegacyWindows({
   setWindows,
   sendInput,
   dismissed = () => [],
+  focusWindow = () => {},
+  focusDesktop = () => {},
   mac = /Mac/.test(globalThis.navigator?.platform ?? ''),
   document: doc = globalThis.document,
   VideoDecoder = globalThis.VideoDecoder,
@@ -404,6 +411,11 @@ export function createLegacyWindows({
     entry.pasteKey = false;
     if (!entry.flushing) void flushInput(entry);
   }
+  /** Keys typed on the page go to `entry`'s window. */
+  function takeKeyboard(entry) {
+    entry.canvas.focus?.({preventScroll: true});
+    if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: 0, focused: true}}); }
+  }
   function bindInput(entry) {
     const {canvas} = entry;
     entry.input = [];
@@ -426,8 +438,8 @@ export function createLegacyWindows({
     on('pointerdown', event => {
       if (!entry.control) return;
       event.preventDefault();
-      canvas.focus?.({preventScroll: true});
-      if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: target, focused: true}}); }
+      takeKeyboard(entry);
+      try { focusWindow(canvas.dataset.key); } catch (error) { report(error); }
       if (motion(event) && BUTTONS[event.button] !== undefined) {
         const button = BUTTONS[event.button];
         entry.buttons.add(button);
@@ -560,11 +572,12 @@ export function createLegacyWindows({
   function layout() {
     let placed = [];
     try { placed = windows() ?? []; } catch (error) { report(error); }
-    const rects = new Map(placed.map(window => [window.key, window.rect]));
+    const byKey = new Map(placed.map(window => [window.key, window]));
     stats.placed = 0;
     for (const [key, entry] of streams) {
-      const rect = rects.get(key);
+      const rect = byKey.get(key)?.rect;
       if (!rect) {
+        followDesktopFocus(entry, false);
         if (entry.visible) { releaseInput(entry); entry.canvas.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
         continue;
       }
@@ -580,7 +593,16 @@ export function createLegacyWindows({
       const events = entry.control ? 'auto' : 'none';
       if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
       if (!entry.visible) { entry.canvas.style.display = 'block'; entry.visible = true; }
+      followDesktopFocus(entry, Boolean(byKey.get(key).focused && entry.control));
     }
+  }
+  /** The desktop's focus moving onto a window (opened, or its tab chosen)
+   * hands it the keyboard; moving off, back to the desktop. */
+  function followDesktopFocus(entry, focus) {
+    if (focus === Boolean(entry.desktopFocus)) return;
+    entry.desktopFocus = focus;
+    if (focus) takeKeyboard(entry);
+    else if (doc.activeElement === entry.canvas) { try { focusDesktop(); } catch (error) { report(error); } }
   }
   /** Ask the source of each window the person closed to close it. */
   function closeDismissed() {

@@ -333,6 +333,18 @@ if [ "$mode" = runtime ]; then
   [ -S "$user_runtime/tilo/services/tilo-fs.sock" ] || die "recipient service socket is absent"
   [ -d "$HOME/.cache/tilo/received-files" ] || die "recipient state root is absent"
 
+  # A listening socket proves nothing about identity: the recipient idles
+  # when its sandbox cannot read the device key. Start it and require that it
+  # loaded the certified identity the chain above verified.
+  systemctl --user start tilo-fs-recipient.service \
+    || die "recipient service does not start"
+  await_user_active tilo-fs-recipient.service
+  sleep 2
+  if journalctl --user -b -u tilo-fs-recipient.service --no-pager -q \
+    | grep -F 'no certified mount identity'; then
+    die "recipient service cannot load the device identity"
+  fi
+
   # SSH does not inherit the graphical user's display variables. Import only
   # the display and bus values from that same user's systemd manager. The
   # runtime directory is derived from the authenticated SSH uid above.

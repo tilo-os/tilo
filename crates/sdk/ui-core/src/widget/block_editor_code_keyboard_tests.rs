@@ -118,6 +118,74 @@ fn escape_releases_tab_to_host_focus_navigation_until_editing_resumes() {
 }
 
 #[test]
+fn escape_clears_retained_batch_and_releases_shift_tab() {
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&[
+        BlockContent::paragraph("a", "A"),
+        BlockContent::paragraph("b", ""),
+    ]);
+    editor.retain_block_selection(vec!["a".into(), "b".into()], false);
+    let mut doc = AutoCommit::new();
+    send(
+        &mut editor,
+        &mut doc,
+        NamedKey::Escape,
+        ModifiersState::empty(),
+    );
+    assert!(editor.retained_block_selection.is_none());
+    assert!(editor.document_selection().is_none());
+    assert!(!Widget::wants_tab_input(&editor));
+    dispatch_key(
+        &mut editor,
+        &mut doc,
+        &Key::Named(NamedKey::Shift),
+        ModifiersState::SHIFT,
+    );
+    assert!(!dispatch_key(
+        &mut editor,
+        &mut doc,
+        &Key::Named(NamedKey::Tab),
+        ModifiersState::SHIFT
+    ));
+}
+
+#[test]
+fn local_caret_and_typing_gestures_clear_a_refused_batch() {
+    for key in [
+        Key::Named(NamedKey::ArrowLeft),
+        Key::Character("x".into()),
+        Key::Named(NamedKey::Space),
+    ] {
+        let rows = [
+            BlockContent::paragraph("a", "A"),
+            BlockContent::paragraph("b", "B"),
+            BlockContent::paragraph("c", "C"),
+        ];
+        let mut editor = BlockEditor::new();
+        editor.present_blocks(&rows);
+        editor.retain_block_selection(vec!["a".into(), "b".into()], false);
+        editor.present_blocks(&[
+            rows[0].clone(),
+            BlockContent::paragraph("peer", "Peer"),
+            rows[1].clone(),
+            rows[2].clone(),
+        ]);
+        assert_eq!(editor.selected_block_range(), None);
+        assert!(
+            editor
+                .blocks()
+                .iter()
+                .all(|block| block.line.selection_range().is_none())
+        );
+        let mut doc = AutoCommit::new();
+        dispatch_key(&mut editor, &mut doc, &key, ModifiersState::empty());
+        assert!(editor.retained_block_selection.is_none());
+        assert_eq!(editor.selected_block_move(false), Some((2..3, 4)));
+        assert_eq!(editor.blocks()[1].text(), "Peer");
+    }
+}
+
+#[test]
 fn code_select_all_copy_and_paste_respect_the_code_run() {
     fn select_all_first_selects_code_then_the_whole_document() {
         let mut editor = BlockEditor::new();
