@@ -29,6 +29,7 @@ on:
       - crates/runtime/legacy-vm/**
       - crates/system/libvirt-domain/**
       - scripts/legacy-vm-e2e.py
+      - os/dev/legacy-vm-e2e.sh
       - .forgejo/workflows/build-legacy-guest.yml
   pull_request:
     branches: [main]
@@ -44,6 +45,7 @@ on:
       - crates/runtime/legacy-vm/**
       - crates/system/libvirt-domain/**
       - scripts/legacy-vm-e2e.py
+      - os/dev/legacy-vm-e2e.sh
       - .forgejo/workflows/build-legacy-guest.yml
 
 concurrency:
@@ -188,6 +190,8 @@ jobs:
         timeout-minutes: 15
         run: |
           set -euo pipefail
+          echo "kernel $(uname -r)"
+          sudo -n modprobe vhost_vsock || echo "::warning::vhost_vsock is not available on this runner"
           if ! python3 os/dev/probe-kvm.py x86_64; then
             echo "::error::this runner has no KVM; an unbooted guest is never published"
             exit 1
@@ -267,25 +271,17 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: os/dev/legacy-guest-snapshot.sh promote
 
-  # The fresh disk, a debug headless shell and `tilo-legacy`, all on one KVM
-  # runner. Privilege applies inside the disposable Kata guest only: the
-  # kernel's device nodes for KVM and vhost-vsock. The VM itself runs in an
-  # ordinary user's libvirt session, exactly as on a desktop.
-  e2e:
-    needs: [builder, build]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: runner-disk-100g
-    timeout-minutes: 120
+  # The shell under test and `tilo-legacy`, built where every Rust build is.
+  e2e-binaries:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 90
     container:
       image: ${{ needs.builder.outputs.image }}
-      options: --privileged
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_TERM_COLOR: never
-      WGPU_BACKEND: vulkan
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-      WGPU_ADAPTER_NAME: llvmpipe
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -293,54 +289,70 @@ jobs:
           fetch-depth: 1
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
-      - name: Expose the kernel's KVM and vsock devices
+      # Debug: the shell's test-control socket exists only in debug builds.
+      - name: Build the shell and tilo-legacy
         run: |
           set -euo pipefail
-          modprobe vhost_vsock 2>/dev/null || true
+          bash scripts/ci-run.sh "cargo build (legacy VM E2E)" -- \
+            cargo build --locked -p shell --bin shell -p legacy-vm --bin tilo-legacy
+          install -D -m 0755 target/debug/shell out/shell
+          install -D -m 0755 target/debug/tilo-legacy out/tilo-legacy
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: legacy-vm-e2e-binaries
+          path: out
+          if-no-files-found: error
+          retention-days: 1
+
+  # The fresh disk, the headless shell and `tilo-legacy` on one KVM runner.
+  # The runner's own kernel provides KVM and vhost-vsock (only it can load
+  # the module); the test runs in the CI builder image with those devices,
+  # as an ordinary user whose libvirt session owns the VM, exactly as on a
+  # desktop.
+  e2e:
+    needs: [builder, build, e2e-binaries]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.e2e-binaries.result == 'success' }}
+    runs-on: runner-disk-100g
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Load KVM and vhost-vsock
+        run: |
+          set -euo pipefail
+          echo "kernel $(uname -r)"
+          sudo -n modprobe vhost_vsock
+          # Kata's job container has a static /dev; the kernel's own nodes
+          # appear once devtmpfs is mounted.
           if [[ ! -c /dev/kvm || ! -c /dev/vhost-vsock ]]; then
-            mount -t devtmpfs devtmpfs /dev
-            mkdir -p /dev/pts /dev/shm
-            [ "$(stat -f -c %T /dev/pts)" = devpts ] || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
-            mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+            sudo -n mount -t devtmpfs devtmpfs /dev
+            sudo -n mkdir -p /dev/pts /dev/shm
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
+          sudo -n chmod 0666 /dev/kvm /dev/vhost-vsock
           python3 os/dev/probe-kvm.py x86_64
           test -c /dev/vhost-vsock
-          chmod 0666 /dev/kvm /dev/vhost-vsock
-      - name: Install the host side of a legacy VM
-        run: |
-          set -euo pipefail
-          dnf install -y --setopt=install_weak_deps=False \
-            libvirt-client libvirt-daemon-driver-qemu libvirt-daemon-common \
-            qemu-kvm-core qemu-img edk2-ovmf passt virtiofsd waypipe skopeo
-          command -v virsh virtqemud qemu-system-x86_64 passt waypipe >/dev/null
-          test -x /usr/libexec/virtiofsd
-      - name: Build the shell and tilo-legacy
-        run: >-
-          bash scripts/ci-run.sh "cargo build (legacy VM E2E)" --
-          cargo build --locked -p shell --bin shell -p legacy-vm --bin tilo-legacy
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           name: legacy-guest-disk-x86_64
-          path: /var/tmp/legacy-guest
+          path: e2e/disk
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: legacy-vm-e2e-binaries
+          path: e2e/bin
       - name: Boot, launch, type, share, relay, suspend and resume
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: |
           set -euo pipefail
-          useradd --create-home legacy-e2e
-          install -d -o legacy-e2e target/legacy-vm-e2e
-          chmod a+rx /var/tmp/legacy-guest
-          chmod a+r /var/tmp/legacy-guest/disk.qcow2
-          runuser -u legacy-e2e -- env PATH="$PATH" \
-            WGPU_BACKEND="$WGPU_BACKEND" VK_DRIVER_FILES="$VK_DRIVER_FILES" \
-            WGPU_ADAPTER_NAME="$WGPU_ADAPTER_NAME" \
-            python3 scripts/legacy-vm-e2e.py \
-              --shell "$PWD/target/debug/shell" \
-              --tilo-legacy "$PWD/target/debug/tilo-legacy" \
-              --image /var/tmp/legacy-guest/disk.qcow2 \
-              --artifacts "$PWD/target/legacy-vm-e2e"
+          mkdir -p e2e/artifacts
+          chmod -R a+rwX e2e
+          sudo -n podman run --rm --privileged --network host \
+            -v "$PWD:/w" -w /w "$BUILDER_IMAGE" bash os/dev/legacy-vm-e2e.sh
       - name: Upload screenshots and logs
         if: always()
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: legacy-vm-e2e-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/legacy-vm-e2e
+          path: e2e/artifacts
           if-no-files-found: ignore
