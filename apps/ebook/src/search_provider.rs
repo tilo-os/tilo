@@ -108,10 +108,7 @@ impl SearchBodySource for ChapterBody {
                 format!("Match in {chapter_title}"),
                 BookSearchProvider::location_address(&self.book.id, self.chapter, segment),
             )
-            .with_subtitle(format!(
-                "{} · {chapter_title}",
-                BookSearchProvider::book_title(&self.book)
-            ))
+            .with_subtitle(BookSearchProvider::book_title(&self.book))
             .with_icon(Icon::FileText),
         )
     }
@@ -329,7 +326,7 @@ impl BookSearchProvider {
                     chapter_title.clone(),
                     Self::chapter_address(&book.id, chapter_index),
                 )
-                .with_subtitle(format!("{} · Chapter {}", title, chapter_index + 1))
+                .with_subtitle(title.clone())
                 .with_icon(Icon::List);
                 if !add(
                     result,
@@ -399,7 +396,7 @@ impl BookSearchProvider {
                 Self::annotation_address(annotation, comment),
             )
             .with_subtitle(format!(
-                "{title} · {} · Chapter {}",
+                "{} in chapter {} of {title}",
                 annotation.kind.label(),
                 annotation.chapter + 1
             ))
@@ -631,7 +628,7 @@ impl BookSearchProvider {
         let resource = Resource::new(
             &address.resource,
             "ebook.location",
-            format!("{} · {chapter_title}", Self::book_title(book)),
+            format!("{chapter_title} in {}", Self::book_title(book)),
         )
         .with_action(
             ActionSpec::operation(
@@ -1012,7 +1009,7 @@ impl SearchProvider for BookActionSearchProvider {
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         self.search_page(
-            query,
+            &ui::search::SearchQuery::from(query),
             None,
             ui::search::DEFAULT_SEARCH_CANDIDATE_LIMIT,
             limit,
@@ -1022,7 +1019,7 @@ impl SearchProvider for BookActionSearchProvider {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &ui::search::SearchQuery,
         cursor: Option<&SearchCursor>,
         work_budget: usize,
         result_limit: usize,
@@ -1031,7 +1028,7 @@ impl SearchProvider for BookActionSearchProvider {
             return SearchPage::empty();
         }
         self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+            .query_page(query.text(), cursor, work_budget, result_limit)
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -1278,7 +1275,7 @@ mod tests {
             let mut cursor = None;
             let mut found = false;
             loop {
-                let page = provider.search_page("tail-needle", cursor.as_ref(), 32, 8);
+                let page = provider.search_page(&"tail-needle".into(), cursor.as_ref(), 32, 8);
                 found |= page.results.iter().any(|hit| hit.kind == LOCATION_KIND);
                 let Some(next) = page.next else { break };
                 cursor = Some(next);
@@ -1319,7 +1316,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let provider = BookSearchProvider::new(&books, &[]);
-            let page = provider.search_page("volume 2999", None, 4, 4);
+            let page = provider.search_page(&"volume 2999".into(), None, 4, 4);
             assert_eq!(page.inspected, 1);
             assert_eq!(page.results.len(), 1);
             assert_eq!(page.results[0].title, "Library volume 2999");
@@ -1342,7 +1339,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let provider = BookSearchProvider::new(&books, &[]);
-            let first = provider.search_page("absent", None, 3, 3);
+            let first = provider.search_page(&"absent".into(), None, 3, 3);
             assert!(first.results.is_empty());
             assert_eq!(first.inspected, 0);
             assert!(first.next.is_none(), "no chapter holds the query's grams");
@@ -1367,7 +1364,7 @@ mod tests {
             let mut cursor = None;
             let mut inspected = 0;
             loop {
-                let page = provider.search_page("dog cat", cursor.as_ref(), 7, 7);
+                let page = provider.search_page(&"dog cat".into(), cursor.as_ref(), 7, 7);
                 assert!(page.results.is_empty());
                 assert!(page.inspected <= 7);
                 inspected += page.inspected;
@@ -1517,7 +1514,7 @@ mod tests {
             let mut cursor = None;
             let mut seen = 0;
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(&"common".into(), cursor.as_ref(), 17, 5);
                 assert!(page.inspected <= 17);
                 assert!(page.results.len() <= 5);
                 seen += page.results.len();
@@ -1545,7 +1542,7 @@ mod tests {
                 ..Book::default()
             }];
             let provider = BookSearchProvider::new(&books, &[]);
-            let page = provider.search_page("needle-at-the-end", None, 1, 1);
+            let page = provider.search_page(&"needle-at-the-end".into(), None, 1, 1);
             assert_eq!(page.inspected, 1);
             assert_eq!(page.results.len(), 1, "the index finds the tail directly");
         }
@@ -1567,7 +1564,7 @@ mod tests {
                 ..Book::default()
             }];
             let provider = BookSearchProvider::new(&books, &[]);
-            let page = provider.search_page("tail-needle", None, 1, 1);
+            let page = provider.search_page(&"tail-needle".into(), None, 1, 1);
             assert_eq!(page.inspected, 1);
             assert!(
                 page.results
@@ -1591,7 +1588,7 @@ mod tests {
                 1,
             );
             let cursor = first
-                .search_page("the", None, 1, 1)
+                .search_page(&"the".into(), None, 1, 1)
                 .next
                 .expect("a broad query continues");
             assert!(first.action_directory_cursor_is_current(&cursor));
