@@ -3641,6 +3641,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-app-package",
+ "tilo-egress",
  "tilo-environment",
  "tilo-user-identity",
  "tracing",
