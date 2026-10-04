@@ -6,6 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use legacy_agent_protocol::link::AgentLink;
 use serde::{Deserialize, Serialize};
 use wire_frame::Framing;
 
@@ -24,7 +25,7 @@ pub enum ControlRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlReply {
-    Ready { cid: u32, waypipe_port: u32 },
+    Ready { link: AgentLink, waypipe_port: u32 },
     Suspending,
     Status(StatusReport),
     Error(String),
@@ -33,7 +34,8 @@ pub enum ControlReply {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StatusReport {
     pub phase: String,
-    pub cid: Option<u32>,
+    pub transport: String,
+    pub link: Option<AgentLink>,
     pub shares: Vec<String>,
     pub memory_mib: Option<u64>,
     pub running: Option<u32>,

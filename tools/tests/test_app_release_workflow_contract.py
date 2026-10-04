@@ -10,6 +10,7 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
+PUBLISH_SCRIPT = ROOT / 'tools/apps/publish-collections.sh'
 
 
 def bash_path(path: Path) -> str:
@@ -122,7 +123,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
             self.assertNotIn('SOURCE_TOKEN', history_helper)
             self.assertNotIn('extraheader', history_helper)
-            publish = source.split('\n  publish:\n', 1)[1]
+            publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
             self.assertIn('needs: [plan, authorize-publish, build]', publish)
             self.assertIn('persist-credentials: false', publish)
             self.assertNotIn('TAG_AUDIENCE', publish)
@@ -314,6 +315,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             contract = Path(directory) / 'contract.sh'
             contract.write_text(
                 'set -euo pipefail\napps=' + shlex.quote(bash_path(path)) + '\n'
+                'apps_publish=' + shlex.quote(bash_path(PUBLISH_SCRIPT)) + '\n'
                 'ok() { :; }\nbad() { exit 1; }\n' + script[start:end],
                 newline='\n',
             )
@@ -357,7 +359,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
         with self.subTest(phase='persisted collection urls use the configured public origin'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-            publish = source.split('\n  publish:\n', 1)[1]
+            publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
             self.assertIn('TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}', publish)
             self.assertIn('package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}', publish)
             self.assertIn('bundle_url="$package_public_api/tilo-app-collections/', publish)
@@ -369,6 +371,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         with self.subTest(phase='published tapps are submitted to the signed registry'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             build, publish = source.split('\n  publish:\n', 1)
+            publish += PUBLISH_SCRIPT.read_text()
             self.assertIn('install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package', build)
             self.assertIn('dist/app-release/tilo-app-package', build)
             self.assertIn(

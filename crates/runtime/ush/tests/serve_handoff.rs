@@ -78,6 +78,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             term: None,
             command: Vec::new(),
             requested_by: ush::host::RequestedBy::Person,
+            relay_session: None,
         })
         .expect_err("the host target was served");
         assert!(err.starts_with("not available"), "{err}");
@@ -257,6 +258,7 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         term: Some("xterm-256color".into()),
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
+        relay_session: None,
     })
     .unwrap();
     request.push(b'\n');
@@ -272,7 +274,9 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         ServeResponse::Denied { reason } | ServeResponse::HostNotAllowed { reason } => {
             panic!("the service refused the session: {reason}")
         }
-        ServeResponse::Environments { .. } | ServeResponse::Allowed => {
+        ServeResponse::Environments { .. }
+        | ServeResponse::Allowed
+        | ServeResponse::Relays { .. } => {
             panic!("a session request answered with something else")
         }
     }
