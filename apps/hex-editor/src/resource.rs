@@ -64,7 +64,9 @@ impl ResourceApp for HexEditorShell {
     const ID: &'static str = "so.tilo.hex-editor";
     const TITLE: &'static str = "Hex Editor";
     const ICON: Option<&'static str> = Some("hex-editor");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
+    }
 
     fn view(cx: &mut ViewCx<HexEditor>) -> Element {
         cx.surface(HexView::empty())

@@ -6,7 +6,9 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{
+    Doc, ModelError, PlainText, Resource, SearchEntry, child_resource_id, publish_child,
+};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -53,8 +55,23 @@ impl Resource for DbClient {
         document_bound_actions(state)
     }
 
+    /// A new workspace starts with the containers every replica writes into,
+    /// the SQL buffer among them, so two people who open it before syncing
+    /// type into the same text.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        crate::doc::adopt_shared_schema(doc);
+        Ok(())
+    }
+
     fn children(state: &DbState) -> Vec<PublishedResource> {
-        document_children(state)
+        let mut children = document_children(state);
+        children.push(publish_child::<PlainText, Self>(
+            &sql_resource_id(),
+            "SQL",
+            Some(&state.editor_sql),
+            DbAction::EditSql,
+        ));
+        children
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -71,14 +88,29 @@ impl Resource for DbClient {
             anchor: Some(format!("connection:{}", profile.id)),
             title: profile.name.clone(),
             text: format!("{} {}", profile.engine.as_key(), profile.host),
+            action: None,
         });
         let queries = state.saved_queries.iter().map(|query| SearchEntry {
             anchor: Some(format!("saved-query:{}", query.id)),
             title: query.name.clone(),
             text: query.sql.clone(),
+            action: None,
         });
         connections.chain(queries).collect()
     }
+}
+
+/// The id the SQL buffer is published under, as a plain-text child of the
+/// workspace.
+pub(crate) fn sql_resource_id() -> String {
+    child_resource_id::<DbClient>("sql")
+}
+
+/// Edits of the SQL buffer through the workspace's dispatcher: each one a
+/// [`DbAction::EditSql`], addressed to the child [`DbClient::children`]
+/// publishes.
+pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<PlainText> {
+    dispatcher.child::<PlainText>(&sql_resource_id(), DbAction::EditSql)
 }
 
 /// Hosted-only extras that are not document state: an in-flight job and the
@@ -106,7 +138,9 @@ impl ResourceApp for DbClientShell {
     const ID: &'static str = "so.tilo.db-client";
     const TITLE: &'static str = "Database Client";
     const ICON: Option<&'static str> = Some("db-client");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<DbClient>) -> Element {
         cx.surface(DbClientApp::new())

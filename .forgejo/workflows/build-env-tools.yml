@@ -123,6 +123,8 @@ jobs:
 
   tools:
     needs: [plan, builder]
+    # A skipped reusable-workflow job still reports success.
+    if: needs.plan.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:

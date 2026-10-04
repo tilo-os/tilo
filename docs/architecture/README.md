@@ -34,10 +34,20 @@ private `AutoCommit` the widget mutates, no app-local action vocabulary that is 
 
 ### Nested resources
 
-A resource can contain another resource. A rich-text body inside Notes, Chat or Mail is a
-child resource (start with rich text), not a hand-rolled map that calls document mutations
-directly. `children()` and `publish()` expose the child so it has the same actions,
-permissions and history as a root resource.
+A resource can contain another resource. A rich-text body inside Notes, Chat or Mail, a
+draft's SQL in a database client, a report's note: each is a child resource, not a
+hand-rolled map that calls document mutations directly and not a text field splicing the
+document. The child is a resource type of its own (`RichText`, `PlainText`) stored at a
+place in the parent's document; the parent has one action that carries a child action and
+names where it applies (`EditBody { page, edit }`).
+
+`children()` publishes the child with `publish_child`, so it has its own actions, typed
+edits and views, each building the parent's action. Views and surfaces edit it through a
+child dispatcher (`cx.child::<RichText>(id, wrap)`) that does the same wrapping. So the child
+is addressed, permissioned, undone a word at a time and named in history like a root
+resource, while what syncs and replays is the parent's action. Text controls bind through
+the dispatcher (`RichTextField`, `TextControl` over a `TextInput` or `CodeEditor`): every
+keystroke is a splice action, never a direct document write.
 
 ### Three action surfaces (kept separate)
 
@@ -106,6 +116,17 @@ spelling). Views and surfaces get settings, the app's files and its secrets
 from their context; a secret of one document item is keyed by the item's id,
 so the document names it and the secret stays on the device. See
 `storage.md` §13.6.
+### One published tree
+
+The palette, agents and scripts see one tree per resource, built by `publish`. Edits bound
+to where a person is (the selection, the caret, the playhead, the folder shown) are typed
+builders of the resource's `Action` published on it, from the surface or view that knows
+where they are. Live external entities a view shows — processes, devices, containers,
+journal entries, fetched catalogue rows, running jobs — are rows merged by id into the
+resource's children; they carry only `Effect` and `View` operations, because they are not
+document state. A resource or surface too large to publish whole publishes a bounded page
+and resolves the rest by id. A content widget's own publication can add live entities
+beside the resource, never a `Document` operation: the framework drops it.
 
 ### Views
 
@@ -117,8 +138,24 @@ UI is a suggestion for presenting resources and actions, not the interface itsel
 can open a resource it never defined and it opens in the right application: URLs or
 intents for everything, above and below file granularity.
 
+Opening something is a record and actions, not a second launcher. A launch that names a
+path, a URL or a handed file asks the `ResourceApp` which record that is (the file's own
+record, one derived from it) and which of its resource's actions the launch takes there;
+those go through the dispatcher like any control. `definition()` of every app is the
+framework's, so the browser desktop and agent hosts mount the same app the native
+launcher runs.
+
 Displaying a resource is not destructive. Taking an action needs a permission, confirmed
 by the user by default.
+
+A view is built for a live window, a past version (History builds the same view again for
+every version it previews) or a screenshot. Only a live view starts work that reaches
+outside the process — a mail engine, a socket, a journal reader, a hardware probe. A
+screenshot scenario is the same view, never a second widget tree: what the resource does
+not hold is the scenario's fixture (typed stand-ins for live sources, files, blobs, other
+people's versions and presence), prepared before the view is built; the resource is staged
+with its actions; view state is staged by the views and surfaces that own it; and the
+capture waits until they report nothing left to draw.
 
 Code: `crates/sdk/tilo-resource` (`Resource`, `publish`), `crates/collab/actions`
 (protocol), `crates/sdk/tilo-app` (`ResourceApp`, `ViewCx`). Apps register; `shell` serves
