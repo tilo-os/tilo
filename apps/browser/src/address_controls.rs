@@ -1,9 +1,10 @@
-//! Local-only address editor; no collaborative actions or password fields.
+//! Editor of the person's address book; no collaborative actions or password
+//! fields.
 use crate::{
-    autofill::{AddressProfile, AutofillStore},
+    autofill::{AddressBook, AddressProfile, AutofillStore},
     browsing_mode::BrowsingMode,
 };
-use std::path::PathBuf;
+use ui::framework::PersonRecord;
 use ui::{
     LocalState,
     webview::AddressFields,
@@ -23,7 +24,7 @@ enum Action {
 }
 pub(crate) struct AddressControls {
     private: bool,
-    path: Option<PathBuf>,
+    book: Option<PersonRecord<AddressBook>>,
     enabled: bool,
     profiles: Vec<AddressProfile>,
     selected: Option<String>,
@@ -34,10 +35,10 @@ pub(crate) struct AddressControls {
     notice: String,
 }
 impl AddressControls {
-    pub fn new(private: bool, path: Option<PathBuf>) -> Self {
+    pub fn new(private: bool) -> Self {
         Self {
             private,
-            path: if private { None } else { path },
+            book: None,
             enabled: false,
             profiles: vec![],
             selected: None,
@@ -48,16 +49,18 @@ impl AddressControls {
             notice: String::new(),
         }
     }
+    /// Edit the person's address book.
+    pub fn attach(&mut self, book: PersonRecord<AddressBook>) {
+        if !self.private {
+            self.book = Some(book);
+        }
+    }
     fn store(&self) -> Result<AutofillStore, String> {
         if self.private {
             return Err("Address autofill is unavailable in private windows.".into());
         }
-        AutofillStore::open(
-            BrowsingMode::Normal,
-            self.path
-                .as_deref()
-                .ok_or("Address storage is unavailable.")?,
-        )
+        let book = self.book.clone().ok_or("Address storage is unavailable.")?;
+        Ok(AutofillStore::open(BrowsingMode::Normal, Some(book)))
     }
     pub fn clear(&mut self) {
         self.profiles.clear();
@@ -371,9 +374,9 @@ mod tests {
     fn address_editor_requires_opt_in_and_isolates_tabs_and_private_mode() {
         // Phase `editor_requires_opt_in_saves_edits_and_confirms_deletion`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("addresses.json");
-            let mut editor = AddressControls::new(false, Some(path));
+            let (_app, book) = crate::autofill::tests::address_book();
+            let mut editor = AddressControls::new(false);
+            editor.attach(book);
             editor.refresh();
             assert!(editor.profiles.is_empty());
             editor.act(Action::New);
@@ -404,36 +407,31 @@ mod tests {
 
         // Phase `another_tab_disabling_profiles_prevents_fill_from_cached_selection`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("addresses.json");
-            let mut editor = AddressControls::new(false, Some(path.clone()));
+            let (_app, book) = crate::autofill::tests::address_book();
+            let mut editor = AddressControls::new(false);
+            editor.attach(book.clone());
             editor.act(Action::Enable(true));
             editor.act(Action::New);
             editor.fields[0].set("Home".into());
             editor.act(Action::Save);
             assert!(editor.selected_fields().is_some());
-            AutofillStore::open(BrowsingMode::Normal, &path)
-                .unwrap()
+            AutofillStore::open(BrowsingMode::Normal, Some(book))
                 .set_enabled(false)
                 .unwrap();
             assert!(editor.selected_fields().is_none());
         }
 
-        // Phase `private_editor_never_reads_or_writes_profile_path`.
+        // Phase `private_editor_never_reads_or_writes_the_persons_book`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("addresses.json");
-            std::fs::write(&path, "invalid normal data").unwrap();
-            let mut editor = AddressControls::new(true, Some(path.clone()));
+            let (_app, book) = crate::autofill::tests::address_book();
+            let mut editor = AddressControls::new(true);
+            editor.attach(book.clone());
             editor.refresh();
             editor.act(Action::Enable(true));
             editor.act(Action::New);
             assert!(editor.profiles.is_empty());
             assert!(editor.editing.is_none());
-            assert_eq!(
-                std::fs::read_to_string(path).unwrap(),
-                "invalid normal data"
-            );
+            assert!(book.with(|saved| *saved == crate::autofill::SavedProfiles::default()));
         }
     }
 }
