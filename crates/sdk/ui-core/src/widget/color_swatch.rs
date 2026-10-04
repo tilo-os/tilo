@@ -263,11 +263,12 @@ impl ColorSwatchFace {
 pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
 
 /// A swatch fill's edge on `ground`: the edge derived from the fill, made to
-/// part the fill from the ground where the two are close.
+/// part the fill from the ground where the two are close. The derived edge
+/// is a translucent hairline, so it is measured as painted over the fill.
 fn swatch_edge(theme: &Theme, fill: Color, ground: Color) -> Color {
     theme.tokens.colors.ink_on_any(
         &[fill, ground],
-        crate::surface::edge_on(fill),
+        crate::tokens::colors::composite(crate::surface::edge_on(fill), fill),
         SWATCH_EDGE_CONTRAST,
     )
 }
