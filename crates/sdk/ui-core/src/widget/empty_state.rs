@@ -25,14 +25,15 @@
 //! [`super::TriStateControl`].
 
 use crate::widget::{AppModel, ModelPath};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::icons::Icon;
@@ -41,8 +42,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
-use crate::widget::{ActionEmitter, Scrollable, TaffyTreeExt, Widget};
+use crate::widget::{Scrollable, TaffyTreeExt, Widget};
 
 /// Which elements a caller asked for.
 #[derive(Clone, Copy, Debug)]
@@ -58,7 +58,6 @@ struct Metrics {
     title_h: f64,
     msg_h: f64,
     action_w: f64,
-    action_h: f64,
     inner_width: f32,
     pad_x: f64,
     gap: f64,
@@ -142,24 +141,30 @@ struct StackStyle {
 }
 
 impl StackStyle {
-    /// The theme's roles, as the retained widget lays out.
-    fn layout(theme: &Theme) -> Self {
+    /// The theme's roles, as the retained widget lays out. An inline empty
+    /// state is a section's: a `Heading` title and a smaller hero.
+    fn layout(theme: &Theme, inline: bool) -> Self {
         let wrapped = |role| theme.text(role).with_wrap_mode(TextWrapMode::WordOrGlyph);
+        let glyph = f64::from(theme.tokens.metrics.icon_lg);
         Self {
-            title: wrapped(TextRole::Title),
+            title: wrapped(if inline {
+                TextRole::Heading
+            } else {
+                TextRole::Title
+            }),
             message: wrapped(TextRole::Body),
             action: wrapped(TextRole::Label),
             gap: f64::from(theme.tokens.spacing.s4),
             text_gap: f64::from(theme.tokens.spacing.s3),
             pad_y: f64::from(theme.tokens.spacing.s2),
             min_button: f64::from(theme.tokens.metrics.min_pointer_target),
-            glyph: f64::from(theme.tokens.metrics.icon_lg) * 2.0,
+            glyph: if inline { glyph } else { glyph * 2.0 },
         }
     }
 
     /// The same roles centred, for painting.
-    fn resolved(theme: &Theme) -> Self {
-        let layout = Self::layout(theme);
+    fn resolved(theme: &Theme, inline: bool) -> Self {
+        let layout = Self::layout(theme, inline);
         let centered = |style: TextStyle| style.with_align(ParagraphAlign::Center);
         Self {
             title: centered(layout.title),
@@ -199,7 +204,7 @@ impl StackStyle {
             title_h: f64::from(title_h),
             msg_h: f64::from(msg_h),
             action_w: f64::from(action_w),
-            action_h: f64::from(action_h),
+
             inner_width,
             pad_x,
             gap,
@@ -254,46 +259,55 @@ impl Fit {
     }
 }
 
-/// Shared layout + paint for the empty state, centered inside `rect`. Used by
-/// both [`EmptyState`]'s [`Widget::draw`] and the public immediate-mode
-/// [`EmptyState::paint`] entry point. Returns the action pill's rect (for
-/// hit-testing) when `action_label` is `Some`, else `None`. `hover` is the
-/// pointer position for the pill hover state (pass an off-screen point to
-/// suppress hover).
-#[allow(
-    clippy::too_many_lines,
-    reason = "one immediate-mode pass must keep adaptive layout, painting, focus treatment and returned hit geometry in lockstep"
-)]
-fn paint_empty_state(
-    ctx: &mut PaintCtx<'_>,
+/// Where everything in an empty state goes inside a rect: what
+/// [`EmptyState::paint`] draws, and what [`EmptyState::layout`] hands back
+/// without painting.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmptyStateLayout {
+    /// The height the stack needs at this width with everything shown.
+    pub natural_height: f64,
+    /// The hero slot (icon, illustration or spinner), when it fits.
+    pub hero: Option<Rect>,
+    /// The action button, when there is one and it is on screen.
+    pub action: Option<Rect>,
+}
+
+/// The resolved stack: styles, measurements and positions.
+struct Placed {
+    style: StackStyle,
+    metrics: Metrics,
+    hero: Option<Rect>,
+    title_y: f64,
+    message_y: Option<f64>,
+    action: Option<Rect>,
+    natural: f64,
+}
+
+/// Lay the stack out centred in `rect`, shedding the hero and then the
+/// message rather than overflow.
+fn place(
+    text: &mut TextRenderer,
+    theme: &Theme,
     rect: Rect,
     content: &EmptyStateContent<'_>,
-    hover: Point,
-    action_focused: bool,
-) -> Option<Rect> {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return None;
-    }
-    let theme = ctx.theme;
-    let transform = ctx.transform;
-    let mut style = StackStyle::resolved(theme);
-    let mut metrics = style.measure(ctx.text, rect.width(), content);
-    let gap = metrics.gap;
-
+    inline: bool,
+) -> Placed {
+    let mut style = StackStyle::resolved(theme, inline);
+    let mut metrics = style.measure(text, rect.width(), content);
+    let natural = Fit::choose(f64::INFINITY, content.parts(), metrics).total;
     let mut fit = Fit::choose(rect.height(), content.parts(), metrics);
     // On a phone at a high text scale a three-line headline can crowd out
     // the recovery explanation even after the decorative icon is shed.
     // Preserve the action *and* the explanation by compacting only the
     // display size of the heading, while keeping its heading semantics and
-    // full accessible name intact. The final fallback still prefers the
-    // action if a parent offers too little vertical space.
+    // full accessible name intact.
     if content.message.is_some() && !fit.message {
         let original = style.title.clone();
         for factor in [0.82_f32, 0.72, 0.60] {
             let mut candidate = style.clone();
             candidate.title = original.clone();
             candidate.title.size *= factor;
-            let candidate_metrics = candidate.measure(ctx.text, rect.width(), content);
+            let candidate_metrics = candidate.measure(text, rect.width(), content);
             let candidate_fit = Fit::choose(
                 rect.height(),
                 Parts {
@@ -310,23 +324,89 @@ fn paint_empty_state(
             }
         }
     }
-    let show_hero = fit.icon;
-    let message = if fit.message { content.message } else { None };
+    let gap = metrics.gap;
     let total = fit.total;
-
     let cx = rect.center().x;
     let mut y = if total > rect.height() {
         rect.y0
     } else {
         rect.center().y - total / 2.0
     };
-
-    if show_hero {
+    let hero = fit.icon.then(|| {
         let slot = Rect::from_center_size(
             Point::new(cx, y + metrics.hero / 2.0),
             (metrics.hero, metrics.hero),
         );
-        if let Some(illustration) = content.illustration {
+        y += metrics.hero + gap;
+        slot
+    });
+    let title_y = y;
+    y += metrics.title_h;
+    let message_y = (fit.message && content.message.is_some()).then(|| {
+        y += metrics.text_gap;
+        let at = y;
+        y += metrics.msg_h;
+        at
+    });
+    let action = content.action_label.and_then(|_| {
+        y += gap;
+        let bw = (metrics.action_w + metrics.pad_x * 2.0).min(rect.width());
+        let x0 = cx - bw / 2.0;
+        let action_rect = Rect::new(x0, y, x0 + bw, y + metrics.btn_h);
+        (action_rect.y1 > rect.y0 && action_rect.y0 < rect.y1).then_some(action_rect)
+    });
+    Placed {
+        style,
+        metrics,
+        hero,
+        title_y,
+        message_y,
+        action,
+        natural,
+    }
+}
+
+/// Shared paint for the empty state, centered inside `rect`. Used by both
+/// [`EmptyState`]'s [`Widget::draw`] and the immediate-mode
+/// [`EmptyState::paint`]. Returns the action's rect (for hit-testing) when
+/// `action_label` is `Some` and the action is on screen. `hover` is the
+/// pointer position for the action's hover state.
+fn paint_empty_state(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    content: &EmptyStateContent<'_>,
+    hover: Point,
+    action_focused: bool,
+    inline: bool,
+    spinner: Option<&mut crate::widget::Spinner>,
+) -> Option<Rect> {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let theme = ctx.theme;
+    let transform = ctx.transform;
+    let placed = place(ctx.text, theme, rect, content, inline);
+    let Placed {
+        style,
+        metrics,
+        hero,
+        title_y,
+        message_y,
+        action,
+        ..
+    } = placed;
+
+    if let Some(slot) = hero {
+        if let Some(spinner) = spinner {
+            spinner.set_rect(slot);
+            spinner.draw(
+                ctx.scene,
+                transform,
+                ctx.text,
+                theme,
+                &PresenceCtx::default(),
+            );
+        } else if let Some(illustration) = content.illustration {
             illustration(ctx, slot);
         } else if let Some(icon) = content.icon {
             let ink = if content.error {
@@ -336,21 +416,18 @@ fn paint_empty_state(
             };
             icon.draw(ctx.scene, transform, slot, ink);
         }
-        y += metrics.hero + gap;
     }
 
-    let text_x = cx - f64::from(metrics.inner_width) / 2.0;
+    let text_x = rect.center().x - f64::from(metrics.inner_width) / 2.0;
     ctx.text(
         content.title,
         &style.title,
         theme.text_primary,
-        Point::new(text_x, y),
+        Point::new(text_x, title_y),
         Some(metrics.inner_width),
     );
-    y += metrics.title_h;
 
-    if let Some(msg) = message {
-        y += metrics.text_gap;
+    if let (Some(msg), Some(y)) = (content.message, message_y) {
         if content.error {
             let line = ctx
                 .text
@@ -371,46 +448,35 @@ fn paint_empty_state(
                 Some(metrics.inner_width),
             );
         }
-        y += metrics.msg_h;
     }
 
-    if let Some(label) = content.action_label {
-        y += gap;
-        let bw = (metrics.action_w + metrics.pad_x * 2.0).min(rect.width());
-        let x0 = cx - bw / 2.0;
-        let action_rect = Rect::new(x0, y, x0 + bw, y + metrics.btn_h);
-        let hovered = action_rect.contains(hover);
-        let bg = if hovered {
-            theme.tokens.colors.intent.inverted_hover
-        } else {
-            theme.tokens.colors.intent.inverted
-        };
-        let radius = f64::from(theme.tokens.radii.control);
-        let pill = RoundedRect::from_rect(action_rect, radius);
-        ctx.scene.fill(Fill::NonZero, transform, bg, None, &pill);
+    if let (Some(label), Some(action_rect)) = (content.action_label, action) {
+        let face = crate::widget::ButtonFace::new(action_rect, label)
+            .role(crate::widget::ButtonRole::Primary)
+            .hovered(action_rect.contains(hover))
+            .focused(action_focused);
+        crate::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &face);
         // An empty-state action is often the only route out of a first-use
-        // screen. Keep the normal, high-visibility focus treatment even
-        // though this compact state is painted as one immediate-mode widget.
+        // screen: keep the normal, high-visibility focus treatment.
         if action_focused {
-            crate::widget::paint_focus_ring(ctx.scene, transform, action_rect, radius, theme);
+            crate::widget::paint_focus_ring(
+                ctx.scene,
+                transform,
+                action_rect,
+                f64::from(theme.tokens.radii.control),
+                theme,
+            );
         }
-        let ty = action_rect.y0 + (metrics.btn_h - metrics.action_h) / 2.0;
-        ctx.text(
-            label,
-            &style.action,
-            // Ink chosen against the inverted fill (rest and hover).
-            theme.tokens.colors.ink_on_any(
-                &[bg, theme.tokens.colors.intent.inverted],
-                theme.tokens.colors.intent.on_inverted,
-                ON_FILL_MIN_CONTRAST,
-            ),
-            Point::new(text_x, ty),
-            Some(metrics.inner_width),
-        );
-        (action_rect.y1 > rect.y0 && action_rect.y0 < rect.y1).then_some(action_rect)
-    } else {
-        None
     }
+    action
+}
+
+/// What the action does when it is activated.
+#[derive(Clone)]
+enum Handler {
+    Binding(tilo_actions::ActionBinding<()>),
+    View(Rc<RefCell<Box<dyn FnMut()>>>),
+    Effect(Rc<RefCell<Box<dyn FnMut()>>>),
 }
 
 /// A centered empty-state placeholder: hero icon + title + message + action.
@@ -422,15 +488,16 @@ pub struct EmptyState {
     message: Option<String>,
     action_label: Option<String>,
     action_id: Option<String>,
-    /// Canonical resource action emitted by every activation path. When set,
-    /// this replaces the legacy document-key/drain channels just like
-    /// [`super::Button::on_action`].
-    action: Option<ActionEmitter<()>>,
+    /// What the action is bound to. When set, the action is a published
+    /// [`Button`](crate::widget::Button) (`engine`) and every activation path
+    /// goes through it, like [`super::Button::on_action`].
+    handler: Option<Handler>,
+    engine: Option<crate::widget::Button>,
     /// Optional CRDT action key, matching [`super::Button`]'s action-path
     /// contract. The drain channel remains available for immediate-mode
     /// parents; a retained shell can instead observe this semantic key.
     action_path: Option<String>,
-    /// Drained flag set when the action pill is clicked.
+    /// Drained flag set when the action is clicked.
     action_fired: bool,
     rect: Rect,
     action_rect: Rect,
@@ -440,14 +507,24 @@ pub struct EmptyState {
     action_focused: bool,
     layout_style: StackStyle,
     scroll_content: bool,
+    /// An empty section inside a page: hugs its content.
+    inline: bool,
+    /// Something is on its way: a spinner in the hero slot.
+    spinner: Option<crate::widget::Spinner>,
+    /// The title, message and action label through the i18n layer.
+    resolved: (String, Option<String>, Option<String>),
+    i18n_revision: u64,
+    layout_dirty: bool,
 }
 
 impl EmptyState {
     /// Construct with just a title (the minimal case). Chain
     /// [`with_icon`](Self::with_icon) / [`with_message`](Self::with_message) /
-    /// [`with_action`](Self::with_action) for the fuller treatment.
+    /// [`with_action`](Self::with_action) for the fuller treatment. The title,
+    /// message and action label are resolved through the i18n layer, like
+    /// [`Text`](crate::widget::Text).
     pub fn new(title: impl Into<String>) -> Self {
-        Self {
+        let mut state = Self {
             icon: None,
             illustration: None,
             error: false,
@@ -455,16 +532,24 @@ impl EmptyState {
             message: None,
             action_label: None,
             action_id: None,
-            action: None,
+            handler: None,
+            engine: None,
             action_path: None,
             action_fired: false,
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             action_focused: false,
-            layout_style: StackStyle::layout(&Theme::default()),
+            layout_style: StackStyle::layout(&Theme::default(), false),
             scroll_content: false,
-        }
+            inline: false,
+            spinner: None,
+            resolved: (String::new(), None, None),
+            i18n_revision: crate::i18n::I18nManager::revision(),
+            layout_dirty: true,
+        };
+        state.resolve();
+        state
     }
 
     /// Something failed to load or open: `title` says what, `detail` says
@@ -474,6 +559,33 @@ impl EmptyState {
         let mut state = Self::new(title).with_message(detail);
         state.error = true;
         state
+    }
+
+    /// An empty section inside a page ("No servers yet" under a heading):
+    /// the title is a `Heading`, the stack hugs its content and claims no
+    /// full-pane height.
+    #[must_use]
+    pub fn inline(mut self) -> Self {
+        self.inline = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// Something is on its way ("Scanning your disk"): a spinner in the hero
+    /// slot that keeps itself moving.
+    #[must_use]
+    pub fn busy(mut self) -> Self {
+        self.spinner = Some(crate::widget::Spinner::new());
+        self.layout_dirty = true;
+        self
+    }
+
+    /// Show or hide the spinner.
+    pub fn set_busy(&mut self, busy: bool) {
+        if busy != self.spinner.is_some() {
+            self.spinner = busy.then(crate::widget::Spinner::new);
+            self.layout_dirty = true;
+        }
     }
 
     /// A large icon in tertiary ink above the title.
@@ -496,14 +608,16 @@ impl EmptyState {
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
+        self.resolve();
         self
     }
 
-    /// Add the one primary action under the message. The label is a
-    /// pre-resolved display string (callers do the `i18n!` lookup).
+    /// Add the one primary action under the message.
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
         self.action_label = Some(label.into());
+        self.resolve();
+        self.rebuild_engine();
         self
     }
 
@@ -512,6 +626,7 @@ impl EmptyState {
     #[must_use]
     pub fn with_action_id(mut self, id: impl Into<String>) -> Self {
         self.action_id = Some(id.into());
+        self.rebuild_engine();
         self
     }
 
@@ -521,9 +636,30 @@ impl EmptyState {
     /// follow the same policy/history path as ordinary buttons.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.handler = Some(Handler::Binding(binding));
         self.action_path = None;
         self.action_fired = false;
+        self.rebuild_engine();
+        self
+    }
+
+    /// Publish the action as a transient presentation action that runs `f`,
+    /// like [`super::Button::on_view`].
+    #[must_use]
+    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
+        self.handler = Some(Handler::View(Rc::new(RefCell::new(Box::new(f)))));
+        self.action_path = None;
+        self.rebuild_engine();
+        self
+    }
+
+    /// Publish the action as an effect that runs `f`, like
+    /// [`super::Button::on_effect`].
+    #[must_use]
+    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
+        self.handler = Some(Handler::Effect(Rc::new(RefCell::new(Box::new(f)))));
+        self.action_path = None;
+        self.rebuild_engine();
         self
     }
 
@@ -532,16 +668,52 @@ impl EmptyState {
     /// same pointer, keyboard and accessibility route as a normal button.
     #[must_use]
     pub fn with_action_path(mut self, path: impl Into<String>) -> Self {
-        self.action = None;
+        self.handler = None;
+        self.engine = None;
         self.action_path = Some(path.into());
         self
     }
 
+    /// The control id the action is published, addressed and tested by:
+    /// [`Self::with_action_id`], or one derived from the title.
+    pub fn action_control_id(&self) -> String {
+        self.action_id
+            .clone()
+            .unwrap_or_else(|| format!("empty-state:{}", self.title))
+    }
+
+    /// Build the published button the action runs through.
+    fn rebuild_engine(&mut self) {
+        let (Some(handler), Some(label)) = (self.handler.clone(), self.action_label.clone()) else {
+            self.engine = None;
+            return;
+        };
+        let id = self.action_control_id();
+        let button =
+            crate::widget::Button::new(&id, &label, None).role(crate::widget::ButtonRole::Primary);
+        self.engine = Some(match handler {
+            Handler::Binding(binding) => button.on_action(binding),
+            Handler::View(f) => button.on_view(move || (f.borrow_mut())()),
+            Handler::Effect(f) => button.on_effect(move || (f.borrow_mut())()),
+        });
+    }
+
+    /// Re-read the title, message and action label through the i18n layer.
+    fn resolve(&mut self) {
+        let resolved = (
+            crate::i18n!(&self.title),
+            self.message.as_deref().map(|m| crate::i18n!(m)),
+            self.action_label.as_deref().map(|a| crate::i18n!(a)),
+        );
+        if resolved != self.resolved {
+            self.resolved = resolved;
+            self.layout_dirty = true;
+        }
+    }
+
     fn fire_action(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(action) = &mut self.action {
-            if let Err(error) = action.emit(()) {
-                tracing::warn!(%error, empty_state = %self.title, "action-bound empty state refused its arguments");
-            }
+        if let Some(engine) = &mut self.engine {
+            let _ = engine.perform_action(&crate::a11y::Action::Activate, state, path);
             return;
         }
         self.action_fired = true;
@@ -551,13 +723,13 @@ impl EmptyState {
         }
     }
 
-    /// Drain the "action pill was clicked" signal (fires once per click). The
+    /// Drain the "action was clicked" signal (fires once per click). The
     /// host reacts by mutating its own model — e.g. opening a compose sheet.
     pub fn take_action(&mut self) -> bool {
         std::mem::take(&mut self.action_fired)
     }
 
-    /// The resolved bounds of the action pill (empty until laid out + drawn).
+    /// The resolved bounds of the action (empty until laid out + drawn).
     /// Exposed so tests can assert the hit target without rendering to pixels.
     pub fn action_rect(&self) -> Rect {
         self.action_rect
@@ -588,8 +760,24 @@ impl EmptyState {
             action_label,
             ..EmptyStateContent::new(title)
         };
-        let metrics = StackStyle::resolved(theme).measure(text_renderer, width, &content);
+        let metrics = StackStyle::resolved(theme, false).measure(text_renderer, width, &content);
         metrics.title_h + action_label.map_or(0.0, |_| metrics.gap + metrics.btn_h)
+    }
+
+    /// Where [`Self::paint`] puts the stack in `rect`, without painting: its
+    /// natural height at this width, the hero slot and the action's rect.
+    pub fn layout(
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        content: &EmptyStateContent<'_>,
+    ) -> EmptyStateLayout {
+        let placed = place(text_renderer, theme, rect, content, false);
+        EmptyStateLayout {
+            natural_height: placed.natural,
+            hero: placed.hero,
+            action: placed.action,
+        }
     }
 
     /// Place the empty state inside a rect computed by an immediate-mode
@@ -605,9 +793,9 @@ impl EmptyState {
 
     /// Immediate-mode paint of an empty state centered inside `rect`, for the
     /// many apps that render straight to a `Scene` instead of building a
-    /// widget tree. Returns the action pill's rect when `action_label` is
-    /// visible so the caller can hit-test it against its own pointer state
-    /// (pass `hover` for the hover tint, or an off-screen point to suppress).
+    /// widget tree. Returns the action's rect when `action_label` is visible
+    /// so the caller can hit-test it against its own pointer state (pass
+    /// `hover` for the hover state, or an off-screen point to suppress).
     /// Call [`Self::minimum_essential_height`] first when the supplied pane can
     /// be physically shorter than the title and action; that parent must own
     /// scrolling, and a wholly offscreen action produces no false hit target.
@@ -617,26 +805,43 @@ impl EmptyState {
         content: &EmptyStateContent<'_>,
         hover: Point,
     ) -> Option<Rect> {
-        paint_empty_state(ctx, rect, content, hover, false)
+        paint_empty_state(ctx, rect, content, hover, false, false, None)
     }
 
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
-            icon: self.icon,
+            icon: if self.spinner.is_some() {
+                // The spinner takes the hero slot; the slot is still sized.
+                self.icon.or(Some(Icon::Info))
+            } else {
+                self.icon
+            },
             illustration: self
                 .illustration
                 .as_deref()
+                .filter(|_| self.spinner.is_none())
                 .map(|paint| paint as Illustration<'_>),
-            title: &self.title,
-            message: self.message.as_deref(),
-            action_label: self.action_label.as_deref(),
+            title: &self.resolved.0,
+            message: self.resolved.1.as_deref(),
+            action_label: self.resolved.2.as_deref(),
             error: self.error,
         }
     }
 }
 
 impl Widget for EmptyState {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
+
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        let revision = crate::i18n::I18nManager::revision();
+        if revision != self.i18n_revision {
+            self.i18n_revision = revision;
+            self.resolve();
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -644,18 +849,24 @@ impl Widget for EmptyState {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_style = StackStyle::layout(theme);
+        self.layout_style = StackStyle::layout(theme, self.inline);
         // Auto height contributes wrapped content to a Scrollable's extent;
         // the percentage minimum still fills a normal definite-height pane.
+        // An inline empty state hugs its content.
         let node = taffy.leaf_node(Style {
-            flex_grow: 1.0,
+            flex_grow: if self.inline { 0.0 } else { 1.0 },
+            flex_shrink: if self.inline { 0.0 } else { 1.0 },
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: taffy::Dimension::auto(),
             },
             min_size: taffy::Size {
                 width: percent(0.0_f32),
-                height: percent(1.0_f32),
+                height: if self.inline {
+                    taffy::Dimension::auto()
+                } else {
+                    percent(1.0_f32)
+                },
             },
             ..Default::default()
         });
@@ -682,12 +893,13 @@ impl Widget for EmptyState {
                 .action_label
                 .as_ref()
                 .map_or(0.0, |_| metrics.gap + metrics.btn_h);
-        let intrinsic_height = if self.scroll_content {
+        let natural = Fit::choose(f64::INFINITY, self.content().parts(), metrics).total;
+        let intrinsic_height = if self.inline {
+            natural
+        } else if self.scroll_content {
             essential_height
         } else {
-            Fit::choose(f64::INFINITY, self.content().parts(), metrics)
-                .total
-                .max(220.0)
+            natural.max(220.0)
         };
         #[allow(
             clippy::cast_possible_truncation,
@@ -708,6 +920,17 @@ impl Widget for EmptyState {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        self.layout_dirty = false;
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.spinner
+            .as_ref()
+            .is_some_and(Widget::needs_animation_frame)
     }
 
     fn draw(
@@ -718,14 +941,25 @@ impl Widget for EmptyState {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        let rect = self.rect;
+        let hover = self.last_cursor;
+        let focused = self.action_focused;
+        let inline = self.inline;
+        let mut spinner = self.spinner.take();
         self.action_rect = paint_empty_state(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
+            rect,
             &self.content(),
-            self.last_cursor,
-            self.action_focused,
+            hover,
+            focused,
+            inline,
+            spinner.as_mut(),
         )
         .unwrap_or(Rect::ZERO);
+        self.spinner = spinner;
+        if let Some(engine) = &mut self.engine {
+            engine.apply_layout_external(self.action_rect);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -762,7 +996,7 @@ impl Widget for EmptyState {
     }
 
     fn is_enabled(&self) -> bool {
-        self.action.as_ref().is_none_or(ActionEmitter::is_available)
+        self.engine.as_ref().is_none_or(Widget::is_enabled)
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -798,11 +1032,38 @@ impl Widget for EmptyState {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.action_id.as_deref() == Some(target) && self.perform_action(action, state, path)
+        self.action_label.is_some()
+            && self.action_control_id() == target
+            && self.perform_action(action, state, path)
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        match &mut self.engine {
+            Some(engine) => engine.start_operation(op, doc, path),
+            None => Ok(None),
+        }
+    }
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.engine
+            .as_ref()
+            .map(Widget::resource_operation_handlers)
+            .unwrap_or_default()
     }
 
     fn name(&self) -> &'static str {
         "EmptyState"
+    }
+
+    /// The action's id, when it has one: the empty state is addressed by
+    /// the control it holds.
+    fn test_id(&self) -> Option<&str> {
+        self.action_label.as_ref().and(self.action_id.as_deref())
     }
 
     fn get_rect(&self) -> Rect {
@@ -814,31 +1075,35 @@ impl Widget for EmptyState {
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
-        let mut node = AccessNode::new(Role::Group).with_name(self.title.clone());
-        if let Some(msg) = &self.message {
+        let mut node = AccessNode::new(Role::Group).with_name(self.resolved.0.clone());
+        if let Some(msg) = &self.resolved.1 {
             node = node.with_description(msg.clone());
         }
-        if let Some(action) = &self.action_label {
+        if self.spinner.is_some() {
+            node = node.with_state(AccessState {
+                busy: true,
+                ..Default::default()
+            });
+        }
+        if let Some(action) = &self.resolved.2 {
             node = node
                 .with_state(AccessState {
                     focusable: true,
                     focused: self.action_focused,
+                    busy: self.spinner.is_some(),
                     ..Default::default()
                 })
-                .with_children(vec![{
-                    let mut action_node = AccessNode::new(Role::Button)
+                .with_children(vec![
+                    AccessNode::new(Role::Button)
                         .with_name(action.clone())
                         .with_state(AccessState {
                             focusable: true,
                             focused: self.action_focused,
                             disabled: !self.is_enabled(),
                             ..Default::default()
-                        });
-                    if let Some(id) = &self.action_id {
-                        action_node = action_node.with_action_target(id.clone());
-                    }
-                    action_node
-                }]);
+                        })
+                        .with_action_target(self.action_control_id()),
+                ]);
         }
         Some(node)
     }
@@ -857,54 +1122,57 @@ impl Widget for EmptyState {
     }
 }
 
+impl crate::resources::PublishesResources for EmptyState {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.engine
+            .as_ref()
+            .map(|engine| crate::resources::PublishesResources::resources(engine, doc))
+            .unwrap_or_default()
+    }
+}
+
 impl crate::widget::controls::ActionControls for EmptyState {
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
         attachment: crate::control_custody::CustodyAttachment,
     ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+        if let Some(engine) = &mut self.engine {
+            crate::widget::controls::ActionControls::install_control_custody(
+                engine, domain, attachment,
+            );
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
+        self.engine.as_mut().and_then(|engine| {
+            crate::widget::controls::ActionControls::take_control_invocation(engine)
+        })
     }
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        if let Some(action) = &self.action {
-            return vec![
-                action.metadata(
-                    self.action_id
-                        .clone()
-                        .unwrap_or_else(|| format!("empty-state:{}", self.title)),
-                ),
-            ];
+        if self.action_label.is_none() {
+            return Vec::new();
         }
-        self.action_path.as_ref().map_or_else(
-            || {
-                self.action_id
-                    .clone()
-                    .map(crate::widget::ControlBindingMetadata::semantic)
-                    .into_iter()
-                    .collect()
-            },
-            |path| {
-                vec![crate::widget::ControlBindingMetadata {
-                    control_id: self
-                        .action_id
-                        .clone()
-                        .unwrap_or_else(|| format!("empty-state:{}", self.title)),
-                    kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
-                }]
-            },
-        )
+        if let Some(engine) = &self.engine {
+            return crate::widget::controls::ActionControls::control_action_bindings(engine);
+        }
+        match &self.action_path {
+            Some(path) => vec![crate::widget::ControlBindingMetadata {
+                control_id: self.action_control_id(),
+                kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
+            }],
+            None => vec![crate::widget::ControlBindingMetadata::semantic(
+                self.action_control_id(),
+            )],
+        }
     }
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
+        if let Some(engine) = &mut self.engine {
+            crate::widget::controls::ActionControls::refresh_control_action_availability(
+                engine, allowed,
+            );
         }
     }
 }
@@ -992,7 +1260,7 @@ mod tests {
             title_h: 24.0,
             msg_h: 18.0,
             action_w: 0.0,
-            action_h: 0.0,
+
             inner_width: 0.0,
             pad_x: 0.0,
             gap: 16.0,
@@ -1649,7 +1917,7 @@ mod tests {
             error: true,
             ..EmptyStateContent::new("Can't open this document")
         };
-        let style = StackStyle::resolved(&theme);
+        let style = StackStyle::resolved(&theme, false);
         let error = style.measure(&mut text, 360.0, &content);
         let plain = style.measure(
             &mut text,
@@ -1682,6 +1950,8 @@ mod tests {
             &content,
             Point::new(-1.0, -1.0),
             false,
+            false,
+            None,
         );
         let danger = theme.tokens.colors.semantic.danger.to_rgba8();
         let encoded = scene.encoding();
@@ -1713,6 +1983,8 @@ mod tests {
             &content,
             Point::new(-1.0, -1.0),
             false,
+            false,
+            None,
         );
         let slot = painted.take().expect("illustration painted");
         assert!((slot.width() - f64::from(theme.tokens.metrics.icon_lg) * 4.0).abs() < 0.5);
@@ -1723,10 +1995,74 @@ mod tests {
             &content,
             Point::new(-1.0, -1.0),
             false,
+            false,
+            None,
         );
         assert!(
             painted.take().is_none(),
             "a short pane sheds the illustration"
         );
+    }
+
+    #[test]
+    fn a_handler_publishes_the_action_as_a_certified_bound_button() {
+        let opened = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = opened.clone();
+        let root = EmptyState::new("No places yet")
+            .with_action("Add a place")
+            .with_action_id("weather.empty.add")
+            .on_view(move || seen.set(seen.get() + 1));
+        let mut driver =
+            crate::headless::Driver::new(crate::state::State::new(), Box::new(root), (480, 360));
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:#?}");
+        driver
+            .perform_named("weather.empty.add", &crate::a11y::Action::Activate)
+            .expect("the action is addressable by its id");
+        assert_eq!(opened.get(), 1, "the view handler ran once");
+    }
+
+    #[test]
+    fn an_inline_empty_state_hugs_its_content_and_a_busy_one_keeps_moving() {
+        let mut inline = EmptyState::new("No servers yet")
+            .with_message("Add one to start.")
+            .inline();
+        let mut full = EmptyState::new("No servers yet").with_message("Add one to start.");
+        lay_out(&mut inline, 600.0, 600.0);
+        lay_out(&mut full, 600.0, 600.0);
+        assert!(
+            inline.get_rect().height() < 120.0,
+            "inline hugs its content: {:?}",
+            inline.get_rect()
+        );
+        assert!(full.get_rect().height() >= 220.0);
+
+        let busy = EmptyState::new("Scanning your disk").busy();
+        assert!(busy.needs_animation_frame(), "a busy state keeps moving");
+        let node = Widget::accessibility(&busy).unwrap();
+        assert!(node.state.busy);
+    }
+
+    #[test]
+    fn layout_reports_the_action_where_paint_puts_it() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rect = Rect::new(0.0, 0.0, 480.0, 400.0);
+        let content = EmptyStateContent {
+            icon: Some(Icon::Inbox),
+            message: Some("Your inbox is empty"),
+            action_label: Some("Compose"),
+            ..EmptyStateContent::new("No messages")
+        };
+        let layout = EmptyState::layout(&mut text, &theme, rect, &content);
+        let mut scene = Scene::new();
+        let painted = EmptyState::paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            rect,
+            &content,
+            Point::new(-1.0, -1.0),
+        );
+        assert_eq!(layout.action, painted);
+        assert!(layout.natural_height > 0.0 && layout.natural_height < rect.height());
     }
 }
