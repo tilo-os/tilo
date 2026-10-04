@@ -834,17 +834,18 @@ Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
 Tilo apps before installing the update.
 
-Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
-Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup
-restores that state; screenshot scenarios never save or consume shell commands.
+Clocks keeps alarms, timers, cities and the stopwatch in its synced resource
+record; which clocks float and which deadlines this device has already rung stay
+in the app's device-local settings. Screenshot scenarios never ring, schedule or
+consume shell commands.
 The installer registers `so.tilo.clocks` on the Start menu shortcut and in the
 current user's notification display-name registry. The SDK's `notifications`
 feature provides Windows toast submission and app-scoped history inspection.
 Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
 deadlines to Windows, so timers continue to notify after the app closes. Pausing
-or deleting a timer cancels its pending Windows alert. A saved receipt records
+or deleting a timer cancels its pending Windows alert. A device-local receipt records
 the accepted deadline so reopening after delivery does not submit it again.
-Each state profile durably records the timer schedules it owns before submitting
+Each profile durably records the timer schedules it owns before submitting
 them to Windows. Opening another profile cannot cancel those schedules; deleted
 timers retain ownership until cancellation succeeds, including across restarts.
 Alarms still require the app to be running; closed-app alarm scheduling remains

@@ -26,7 +26,6 @@
 "apps/calendar/src/resource.rs" = 1
 "apps/camera/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
-"apps/clocks/src/resource.rs" = 1
 "apps/code-editor/src/resource.rs" = 2
 "apps/contacts/src/resource.rs" = 2
 "apps/containers/src/resource.rs" = 2
@@ -80,8 +79,6 @@
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
 "apps/chat/src/main.rs" = 1
-"apps/clocks/src/lib.rs" = 2
-"apps/clocks/src/main.rs" = 2
 "apps/code-editor/src/main.rs" = 1
 "apps/contacts/src/lib.rs" = 2
 "apps/contacts/src/main.rs" = 1
@@ -139,7 +136,6 @@
 
 [ratchets.empty_action_vocabulary]
 "apps/agent/src/resource.rs" = 1
-"apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
 "apps/print-centre/src/resource.rs" = 1
