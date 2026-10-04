@@ -104,6 +104,35 @@ pub struct MailSidebar {
     shared: Shared,
     shown: Vec<NavSection>,
     selected: Option<String>,
+    /// The list has been placed in a layout tree at least once.
+    laid_out: bool,
+}
+
+/// The toolkit list of `sections`, reporting choices into `shared`.
+fn build_list(shared: &Shared, sections: Vec<NavSection>, selected: Option<&str>) -> NavList {
+    let on_select = shared.clone();
+    let on_section = shared.clone();
+    let mut list = NavList::new(sections)
+        .with_id("mail-mailboxes")
+        .with_accessible_name("Mailboxes")
+        .on_select(move |id| {
+            if let Some((account, folder)) = parse_folder_row(&id) {
+                on_select
+                    .borrow_mut()
+                    .push_command(Command::OpenFolder(account, folder));
+            }
+        })
+        .on_section_action(move |section, action| {
+            if action == ACCOUNT_SETTINGS
+                && let Some(account) = parse_section(section)
+            {
+                on_section
+                    .borrow_mut()
+                    .push_command(Command::AccountSettings(Some(account)));
+            }
+        });
+    list.set_selected(selected);
+    list
 }
 
 impl MailSidebar {
@@ -112,33 +141,12 @@ impl MailSidebar {
             let state = shared.borrow();
             (sections(&state), selected_row(&state))
         };
-        let on_select = shared.clone();
-        let on_section = shared.clone();
-        let mut list = NavList::new(shown.clone())
-            .with_id("mail-mailboxes")
-            .with_accessible_name("Mailboxes")
-            .on_select(move |id| {
-                if let Some((account, folder)) = parse_folder_row(&id) {
-                    on_select
-                        .borrow_mut()
-                        .push_command(Command::OpenFolder(account, folder));
-                }
-            })
-            .on_section_action(move |section, action| {
-                if action == ACCOUNT_SETTINGS
-                    && let Some(account) = parse_section(section)
-                {
-                    on_section
-                        .borrow_mut()
-                        .push_command(Command::AccountSettings(Some(account)));
-                }
-            });
-        list.set_selected(selected.as_deref());
         Self {
-            list,
+            list: build_list(&shared, shown.clone(), selected.as_deref()),
             shared,
             shown,
             selected,
+            laid_out: false,
         }
     }
 
@@ -150,7 +158,15 @@ impl MailSidebar {
             (sections(&state), selected_row(&state))
         };
         if next != self.shown {
-            self.list.set_sections(next.clone());
+            if self.laid_out {
+                self.list.set_sections(next.clone());
+            } else {
+                // A list that has never been laid out has no rows to move
+                // from: it starts over from the new sections. Handing them
+                // to it instead animates its rows from the size they had
+                // before layout, and they stay at that size.
+                self.list = build_list(&self.shared, next.clone(), selected.as_deref());
+            }
             self.shown = next;
         }
         if selected != self.selected || self.list.selected_id() != selected {
@@ -174,6 +190,18 @@ impl ui::widget::Decorator for MailSidebar {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.refresh();
         ui::widget::Widget::sync(&mut self.list, state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &ui::theme::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> taffy::NodeId {
+        // From here on the layout tree may point at this list, so it is
+        // only ever updated in place.
+        self.laid_out = true;
+        ui::widget::Widget::build_layout(&mut self.list, taffy, theme, node_map)
     }
 
     fn name(&self) -> &'static str {

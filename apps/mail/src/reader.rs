@@ -246,6 +246,8 @@ pub struct MessageReader {
     html_engine_live: bool,
     html_view: Option<WebView>,
     html_key: Option<(MessageId, bool)>,
+    /// The style the loaded HTML body was set in.
+    html_style: Option<crate::html_mail::DocumentStyle>,
     /// The message the HTML view shows, so remote content is blocked again
     /// for each message.
     html_shown_id: Option<MessageId>,
@@ -272,6 +274,7 @@ impl MessageReader {
             html_engine_live: false,
             html_view: None,
             html_key: None,
+            html_style: None,
             html_shown_id: None,
             html_load_remote: false,
             html_view_rect: None,
@@ -295,19 +298,21 @@ impl MessageReader {
 
     /// Load `html` for message `id` into the sandboxed view (the
     /// remote-blocked `data:` document and its content filter) unless that
-    /// exact `(message, block state)` is loaded already.
-    fn load_html_body(&mut self, id: MessageId, html: &str) {
+    /// exact `(message, block state)` is loaded already in this theme.
+    fn load_html_body(&mut self, id: MessageId, html: &str, theme: &Theme) {
         let block_remote = !self.html_load_remote;
         let key = (id, block_remote);
-        if self.html_key == Some(key) {
+        let style = crate::html_mail::DocumentStyle::from_theme(theme);
+        if self.html_key == Some(key) && self.html_style.as_ref() == Some(&style) {
             return;
         }
-        let url = crate::html_mail::data_url(html, block_remote);
+        let url = crate::html_mail::data_url(html, block_remote, &style);
         let filter = std::sync::Arc::new(crate::html_mail::content_filter_json(block_remote));
         let engine = self.ensure_html_view().engine().clone();
         engine.send(WebViewCommand::SetContentFilter(Some(filter)));
         engine.send(WebViewCommand::Navigate(url));
         self.html_key = Some(key);
+        self.html_style = Some(style);
     }
 
     /// Inject the HTML-body engine (tests observe the commands the reader
@@ -586,7 +591,7 @@ impl MessageReader {
                     self.html_load_remote = false;
                     self.html_shown_id = Some(head_id);
                 }
-                self.load_html_body(head_id, &html);
+                self.load_html_body(head_id, &html, theme);
                 let view = self.ensure_html_view();
                 view.set_viewport(rect, 1.0);
                 view.draw(scene, t, tr, theme, presence);

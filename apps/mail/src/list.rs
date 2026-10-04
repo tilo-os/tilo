@@ -19,8 +19,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowAction, RowLeading,
-    ScrollMetrics, Scrollbar, SwipeAction, TaffyTreeExt, Widget,
+    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, PressOutcome, RowAction,
+    RowLeading, ScrollMetrics, Scrollbar, SwipeAction, TaffyTreeExt, Widget,
 };
 
 use crate::model::{Folder, MessageId};
@@ -92,9 +92,72 @@ const SWIPE_ARCHIVE: SwipeAction<'static> = SwipeAction {
 #[derive(Clone, Debug)]
 struct Slot {
     id: MessageId,
+    /// The row's whole band, gaps included: the height a press lands on.
+    band: Rect,
+    /// The painted row inside it.
     rect: Rect,
     starred: bool,
     actions: Vec<Rect>,
+}
+
+/// How the rows sit in the list: inset from the column's edges (and clear
+/// of the scroll bar while the list scrolls), the first a step below the
+/// header, each a little apart from the next so two selected rows read as
+/// two.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowFrame {
+    x0: f64,
+    x1: f64,
+    /// The top of the first row's band, before scrolling.
+    top: f64,
+    /// The distance from one row's band to the next.
+    pitch: f64,
+    /// The space between a band's edge and its painted row.
+    gap: f64,
+}
+
+impl RowFrame {
+    /// The frame of rows `row_h` tall in `list`.
+    pub(crate) fn new(list: Rect, row_h: f64, scrolls: bool, theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        let edge = f64::from(spacing.s2);
+        let x1 = if scrolls {
+            list.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter) - f64::from(spacing.s1)
+        } else {
+            list.x1 - edge
+        };
+        Self {
+            x0: list.x0 + edge,
+            x1,
+            top: list.y0 + edge,
+            pitch: row_h + f64::from(spacing.s1),
+            gap: f64::from(spacing.s1) / 2.0,
+        }
+    }
+
+    /// The height every row and the space around them take.
+    pub(crate) fn content_height(&self, rows: usize, theme: &Theme) -> f64 {
+        self.pitch * rows as f64 + 2.0 * f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// Row `index`'s band, scrolled by `scroll`.
+    pub(crate) fn band(&self, index: usize, scroll: f64) -> Rect {
+        let y0 = self.top + index as f64 * self.pitch - scroll;
+        Rect::new(self.x0, y0, self.x1, y0 + self.pitch)
+    }
+
+    /// Row `index` as painted, scrolled by `scroll`.
+    pub(crate) fn row(&self, index: usize, scroll: f64) -> Rect {
+        self.band(index, scroll).inset((0.0, -self.gap))
+    }
+}
+
+/// The track the scroll bar's thumb runs in: the middle of the gutter on the
+/// list's trailing edge.
+fn scroll_track(list: Rect, theme: &Theme) -> Rect {
+    let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+    let margin = (gutter - f64::from(theme.tokens.spacing.s2)) / 2.0;
+    Rect::new(list.x1 - gutter, list.y0, list.x1, list.y1).inset(-margin)
 }
 
 /// A press on a row that may still become a swipe.
@@ -175,6 +238,8 @@ pub struct MessageList {
     pointer: Option<Point>,
     press: Option<Press>,
     scrollbar: Scrollbar,
+    /// Where the scroll bar runs, while the list scrolls.
+    track: Option<Rect>,
     /// The selection the list last scrolled into view.
     revealed: Option<MessageId>,
     dirty: bool,
@@ -192,6 +257,7 @@ impl MessageList {
             pointer: None,
             press: None,
             scrollbar: Scrollbar::vertical(),
+            track: None,
             revealed: None,
             dirty: true,
         }
@@ -201,7 +267,11 @@ impl MessageList {
         if !self.rect.contains(point) {
             return None;
         }
-        self.slots.iter().find(|slot| slot.rect.contains(point))
+        // A row answers across the list's whole width, its side insets
+        // included.
+        self.slots
+            .iter()
+            .find(|slot| slot.band.y0 <= point.y && point.y < slot.band.y1)
     }
 
     /// The hover action under `point` in `slot`, as painted.
@@ -216,6 +286,53 @@ impl MessageList {
             })
     }
 
+    /// Drag the scroll bar's thumb, or page by pressing its track. `true`
+    /// when the bar took the event.
+    fn scrollbar_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
+        let Some(track) = self.track else {
+            return false;
+        };
+        let metrics = self.scroll_metrics();
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = Point::new(position.x / scale, position.y / scale);
+                let Some(offset) = self.scrollbar.drag_to(track, metrics, point) else {
+                    return false;
+                };
+                self.pointer = Some(point);
+                self.scroll = offset;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(point) = self.pointer.filter(|point| track.contains(*point)) else {
+                    return false;
+                };
+                match self.scrollbar.press(track, metrics, point) {
+                    PressOutcome::Miss => false,
+                    PressOutcome::Thumb => true,
+                    PressOutcome::Page(offset) => {
+                        self.scroll = offset;
+                        true
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.scrollbar.release(),
+            _ => false,
+        }
+    }
+
+    fn scroll_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_h, self.rect.height(), self.scroll)
+    }
+
     fn clamp_scroll(&mut self) {
         let max = (self.content_h - self.rect.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
@@ -223,7 +340,12 @@ impl MessageList {
 
     /// Keep the selected conversation in view when the selection moves
     /// (arrow keys, a search hit, an agent opening a message).
-    fn reveal(&mut self, rows: &[(MessageId, usize)], selected: Option<MessageId>) {
+    fn reveal(
+        &mut self,
+        rows: &[(MessageId, usize)],
+        selected: Option<MessageId>,
+        frame: RowFrame,
+    ) {
         if selected == self.revealed || self.row_h <= 0.0 {
             return;
         }
@@ -232,8 +354,8 @@ impl MessageList {
         else {
             return;
         };
-        let top = index as f64 * self.row_h;
-        let bottom = top + self.row_h;
+        let band = frame.band(index, 0.0);
+        let (top, bottom) = (band.y0 - self.rect.y0, band.y1 - self.rect.y0);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + self.rect.height() {
@@ -418,21 +540,19 @@ impl Widget for MessageList {
             .secondary("Ag")
             .two_line_secondary()
             .height(ctx.text, theme);
-        self.content_h = self.row_h * rows.len() as f64;
-        self.clamp_scroll();
-        self.reveal(&rows, state.selected);
-        // Rows stop short of the scroll bar when the list overflows.
+        let unscrolled = RowFrame::new(r, self.row_h, false, theme);
+        self.content_h = unscrolled.content_height(rows.len(), theme);
         let metrics = ScrollMetrics::new(self.content_h, r.height(), self.scroll);
-        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let rows_x1 = if metrics.overflows() {
-            r.x1 - gutter
-        } else {
-            r.x1
-        };
+        // Rows stop short of the scroll bar when the list overflows.
+        let frame = RowFrame::new(r, self.row_h, metrics.overflows(), theme);
+        self.clamp_scroll();
+        self.reveal(&rows, state.selected, frame);
+        self.clamp_scroll();
+        let metrics = ScrollMetrics::new(self.content_h, r.height(), self.scroll);
         // The row's text column: its insets, the avatar and the gap after it.
         let spacing = &theme.tokens.spacing;
-        let subject_w = rows_x1
-            - r.x0
+        let subject_w = frame.x1
+            - frame.x0
             - 3.0 * f64::from(spacing.s3)
             - f64::from(theme.tokens.metrics.min_pointer_target);
 
@@ -450,16 +570,17 @@ impl Widget for MessageList {
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
         let mut slots = Vec::with_capacity(rows.len());
         for (index, (id, _len)) in rows.iter().enumerate() {
-            let y0 = r.y0 + index as f64 * self.row_h - self.scroll;
-            let rect = Rect::new(r.x0, y0, rows_x1, y0 + self.row_h);
+            let band = frame.band(index, self.scroll);
+            let rect = frame.row(index, self.scroll);
             let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
             let slot = Slot {
                 id: *id,
+                band,
                 rect,
                 starred,
                 actions: action_rects(starred, rect, theme),
             };
-            if rect.y1 >= r.y0 && rect.y0 <= r.y1 {
+            if band.y1 >= r.y0 && band.y0 <= r.y1 {
                 self.paint_row(
                     &mut ctx,
                     &state,
@@ -474,8 +595,11 @@ impl Widget for MessageList {
             slots.push(slot);
         }
         ctx.scene.pop_layer();
-        if metrics.overflows() {
-            let track = Rect::new(r.x1 - gutter, r.y0, r.x1, r.y1);
+        // The bar shows while the person is in the list, as an overlay bar
+        // does; an idle list is only its rows.
+        self.track = metrics.overflows().then(|| scroll_track(r, theme));
+        let present = self.scrollbar.is_dragging() || self.pointer.is_some_and(|p| r.contains(p));
+        if let Some(track) = self.track.filter(|_| present) {
             self.scrollbar
                 .draw(ctx.scene, t, track, metrics, theme, false);
         }
@@ -486,11 +610,20 @@ impl Widget for MessageList {
         if *ctx.handled {
             return;
         }
+        if self.scrollbar_event(event, ctx.scale_factor) {
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.pointer = Some(point);
+                if let Some(track) = self.track {
+                    self.scrollbar
+                        .update_hover(track, self.scroll_metrics(), point);
+                }
                 if let Some(press) = self.press.as_mut() {
                     press.offset = (press.at.x - point.x).max(0.0);
                 }
@@ -498,6 +631,7 @@ impl Widget for MessageList {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.pointer = None;
+                self.scrollbar.set_hover(false);
                 self.dirty = true;
             }
             WindowEvent::MouseInput {

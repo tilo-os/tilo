@@ -249,6 +249,9 @@ struct ComposeMetrics {
 /// The format switch's segments.
 const FORMAT_LABELS: [&str; 2] = ["Rich text", "Plain text"];
 
+/// The title of a window writing a fresh message.
+const NEW_MESSAGE: &str = "New message";
+
 impl ComposeMetrics {
     fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
@@ -459,8 +462,10 @@ pub struct ComposeWindow {
     last_mouse: Point,
     hits: Vec<(Rect, ComposeHit)>,
     dirty: bool,
-    /// The reply target subject line, shown in the title when replying.
-    title_hint: String,
+    /// What the window is writing ("New message", "Reply", …), its title.
+    /// The subject stands in its own field just below, so it is not
+    /// repeated here.
+    heading: &'static str,
     /// Sizes the window is laid out with, measured on paint (the authored
     /// 1× rules until then).
     metrics: ComposeMetrics,
@@ -515,7 +520,7 @@ impl ComposeWindow {
             last_mouse: Point::ZERO,
             hits: Vec::new(),
             dirty: true,
-            title_hint: String::new(),
+            heading: NEW_MESSAGE,
             metrics: ComposeMetrics::default(),
             chips_band: Rect::ZERO,
             prompt_band: Rect::ZERO,
@@ -834,7 +839,7 @@ impl ComposeWindow {
         self.prompt = None;
         self.start_body(DraftBodySeed::default());
         self.plain_body.set_text("");
-        self.title_hint.clear();
+        self.heading = NEW_MESSAGE;
         self.set_focus(Field::To);
         self.dirty = true;
     }
@@ -844,7 +849,7 @@ impl ComposeWindow {
         self.open_blank();
         self.to.set_text(to);
         self.subject.set_text(subject);
-        self.title_hint = subject.to_string();
+        self.heading = "Reply";
         match self.format {
             ComposeFormat::Html => self.start_body(DraftBodySeed::text(quote)),
             ComposeFormat::Text => {
@@ -858,10 +863,18 @@ impl ComposeWindow {
     /// `Cc` (revealed), the subject, and a quoted body.
     pub fn open_reply_all(&mut self, to: &str, cc: &str, subject: &str, quote: &str) {
         self.open_reply(to, subject, quote);
+        self.heading = "Reply all";
         if !cc.trim().is_empty() {
             self.cc.set_text(cc);
             self.show_cc_bcc = true;
         }
+    }
+
+    /// Seed the window to pass a message on: the subject and the forwarded
+    /// message as the body, with no recipient yet.
+    pub fn open_forward(&mut self, subject: &str, quoted: &str) {
+        self.open_reply("", subject, quoted);
+        self.heading = "Forward";
     }
 
     /// Reopen an existing draft for editing (from the Drafts folder).
@@ -877,9 +890,7 @@ impl ComposeWindow {
             ComposeFormat::Html => self.start_body(DraftBodySeed::of_draft(draft)),
             ComposeFormat::Text => self.plain_body.set_text(&draft.body),
         }
-        if !draft.subject.is_empty() {
-            self.title_hint.clone_from(&draft.subject);
-        }
+        self.heading = "Draft";
         self.set_focus(Field::Body);
     }
 
@@ -890,7 +901,7 @@ impl ComposeWindow {
         self.format = ComposeFormat::Html;
         self.to.set_text("Maya Chen <maya@northwind.example>");
         self.subject.set_text("Re: Spring launch plan");
-        self.title_hint = "Re: Spring launch plan".to_string();
+        self.heading = "Reply";
         let text = "Launch order\n\
             Thanks both. The new order works for me: website first, then the press kit, then the email campaign.\n\
             Website copy final by Wednesday\n\
@@ -2104,11 +2115,7 @@ impl ComposeWindow {
         let m = self.metrics;
         let r = self.rect;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
-        let heading = if self.title_hint.is_empty() {
-            "New message"
-        } else {
-            self.title_hint.as_str()
-        };
+        let heading = self.heading;
         let popout = self.hit_rect(ComposeHit::PopOut).unwrap_or(Rect::ZERO);
         let style = theme.text(TextRole::Subheading);
         let width = (popout.x0 - m.gap - (r.x0 + m.pad)).max(0.0);

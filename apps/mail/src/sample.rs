@@ -344,14 +344,14 @@ me anything in your first weeks.",
 pub fn sample_account_store() -> AccountStore {
     let work = AccountConfig {
         display_name: OWNER_NAME.into(),
-        email: "sam.rivera@northwind.example".into(),
+        email: "sam@northwind.example".into(),
         imap_host: "imap.northwind.example".into(),
         imap_port: 993,
         imap_tls: true,
         smtp_host: "smtp.northwind.example".into(),
         smtp_port: 587,
         smtp_tls: true,
-        username: "sam.rivera@northwind.example".into(),
+        username: "sam@northwind.example".into(),
         auth: crate::model::AuthMethod::Password,
         password: "correct-horse-battery".into(),
     };
