@@ -183,8 +183,13 @@ impl App {
         history_handled
     }
 
-    pub(super) fn refresh_history_controls(&mut self) {
-        let allowed = self
+    /// Refresh the window's own History controls against the History door,
+    /// returning the door's addresses: a History control in the app's tree
+    /// (its header row) is bound to the same door.
+    pub(super) fn refresh_history_controls(
+        &mut self,
+    ) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        let allowed: std::collections::HashSet<_> = self
             .history_local_resources()
             .into_iter()
             .flat_map(|resource| {
@@ -199,6 +204,10 @@ impl App {
         if let Some(pane) = self.document_history.pane_mut() {
             crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
+        allowed
+            .into_iter()
+            .filter(|address| address.resource == crate::standalone_history_host::HISTORY_RESOURCE)
+            .collect()
     }
 
     pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::Resource> {
@@ -886,26 +895,17 @@ impl App {
     /// A registered framework History serves the same History door as the
     /// standalone one, without selecting a change: it has no session rows.
     fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
-        let history = self.history.as_ref()?;
-        Some(crate::standalone_history_host::history_resource(
-            true,
-            history.is_open(),
-        ))
+        Some(self.history.as_ref()?.door_resource())
     }
 
     fn invoke_framework_history(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        let history = self.history.as_mut().ok_or("History is unavailable")?;
-        match serde_json::from_slice(&encoded.payload) {
-            Ok(HistoryCommand::Open) if history.request_open() => {}
-            Ok(HistoryCommand::OpenAt { entry })
-                if crate::standalone_history_host::decode_entry(&entry)
-                    .is_ok_and(|entry| history.request_open_at(entry)) => {}
-            Ok(HistoryCommand::Hide) => history.request_close(),
-            _ => return Err("Unsupported History operation".into()),
-        }
+        self.history
+            .as_mut()
+            .ok_or("History is unavailable")?
+            .invoke_door(encoded)?;
         self.needs_sync = true;
         self.layout.layout_dirty = true;
         Ok(())
