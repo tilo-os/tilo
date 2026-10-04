@@ -24,7 +24,7 @@ const MAX_PLOT_POINTS: usize = 48;
 const MAX_SERIES: usize = 6;
 /// The rows a grid keeps visible above the dock; a window too short for them
 /// shows no dock rather than a sliver of sheet.
-const MIN_GRID_ROWS: f64 = 6.0;
+const MIN_GRID_ROWS: u32 = 6;
 /// How many lines of a comment the card shows.
 const COMMENT_LINES: usize = 2;
 
@@ -172,7 +172,7 @@ impl SheetsApp {
             .fold(0.0, f64::max);
         let dock_h = card_h + 2.0 * pad;
         let min_grid = m.grid.col_header_h()
-            + MIN_GRID_ROWS * m.grid.default_row_h()
+            + f64::from(MIN_GRID_ROWS) * m.grid.default_row_h()
             + self.grid.scrollbar_thickness();
         if cards.is_empty() || area.height() - dock_h < min_grid {
             return (0.0, Vec::new());
