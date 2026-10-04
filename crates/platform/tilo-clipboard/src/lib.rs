@@ -52,6 +52,43 @@ pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
 #[doc(hidden)]
 pub use wayland::WaylandClipboard;
 
+/// Largest HTML payload accepted from a clipboard offer.
+pub const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
+
+/// Largest plain-text fallback captured with a rich clipboard offer.
+pub const MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES: usize = 1024 * 1024;
+
+/// HTML and its optional plain fallback captured from the same clipboard offer.
+/// Adapters must bound payloads before copying them into this value. Decoders
+/// may use this fallback after rejecting HTML, without rereading the clipboard.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RichTextOffer {
+    pub html: String,
+    pub plain: Option<String>,
+}
+
+impl RichTextOffer {
+    /// Whether this offer fits the shared transport limits and contains HTML.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.html.is_empty()
+            && self.html.len() <= MAX_CLIPBOARD_HTML_BYTES
+            && self
+                .plain
+                .as_ref()
+                .is_none_or(|plain| plain.len() <= MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES)
+    }
+}
+
+impl std::fmt::Debug for RichTextOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RichTextOffer")
+            .field("html_bytes", &self.html.len())
+            .field("plain_bytes", &self.plain.as_ref().map(String::len))
+            .finish()
+    }
+}
+
 /// Largest PNG a clipboard image may encode to.
 pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -120,6 +157,15 @@ pub trait ClipboardBackend: Send + Sync {
     /// Read `target` as UTF-8. `None` when it is empty, unavailable, or holds
     /// something that is not text.
     fn text(&self, target: ClipboardTarget) -> Option<String>;
+
+    /// Read HTML and its plain fallback from one Ctrl+V clipboard offer.
+    /// Optional: unsupported backends return `None` without reading plain text.
+    /// A successful read consumes event-scoped offers; use the captured plain
+    /// fallback if decoding refuses the HTML. Never reread to recover a stale
+    /// selection, a permission refusal, or an active composition.
+    fn rich_text(&self) -> Option<RichTextOffer> {
+        None
+    }
 
     /// Offer an RGBA8 image on the clipboard. Optional: the default refuses,
     /// which is appropriate for backends that only carry text.
