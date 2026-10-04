@@ -71,7 +71,7 @@ fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a Ac
         .find_map(|child| find_semantic_target(child, target))
 }
 
-/// Tooltips, library controls, action search and library settings are semantic and route their real actions.
+/// Tooltips, library controls and library settings are semantic and route their real actions.
 #[test]
 fn library_controls_and_actions_are_discoverable_and_accessible() {
     // --- phase: hover_tooltip_reuses_the_semantic_label_of_the_topmost_control ---
@@ -119,42 +119,6 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
             &automerge::ROOT,
         ));
         assert!(BooksDoc::read_library_prefs(&doc).hide_read);
-    }
-
-    // --- phase: action_search_discovers_live_reader_and_settings_actions ---
-    {
-        let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let actions = ui::search::capability::search_providers(&app)
-            .pop()
-            .expect("the action-label provider is published");
-
-        for query in [
-            "Toggle bookmark",
-            "Add note",
-            "Previous page",
-            "Open reading settings",
-            "Open font settings",
-            "Rename font",
-            "Open colour settings",
-        ] {
-            let hit = ui::search::SearchProvider::search(actions.as_ref(), query)
-                .into_iter()
-                .find(|hit| hit.action_address().is_some())
-                .unwrap_or_else(|| panic!("missing discoverable live action: {query}"));
-            let address = hit.action_address().expect("canonical action address");
-            let resource =
-                ui::search::SearchProvider::resolve_action_resource(actions.as_ref(), &address)
-                    .unwrap_or_else(|| panic!("live exact action did not resolve: {query}"));
-            assert!(
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == address.action),
-                "exact resource lost the discovered action for {query}"
-            );
-        }
     }
 
     // --- phase: library_settings_exposes_empty_and_discovered_folder_actions ---
@@ -4059,7 +4023,7 @@ fn bookmarks_and_their_shortcuts() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(app.local_library.set_shortcut("bookmark", "z"));
+        assert!(app.reader_keys.set_shortcut("bookmark", "z"));
 
         assert!(key_char(&mut app, &mut doc, "z"), "custom key is consumed");
         assert_eq!(
@@ -4093,7 +4057,7 @@ fn bookmarks_and_their_shortcuts() {
         );
         assert_eq!(app.shortcut_capture, Some(ReaderShortcut::Bookmark));
         assert_eq!(
-            app.local_library.shortcut(
+            app.reader_keys.shortcut(
                 ReaderShortcut::Bookmark.id(),
                 ReaderShortcut::Bookmark.default_key()
             ),

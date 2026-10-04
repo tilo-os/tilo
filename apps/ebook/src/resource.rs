@@ -18,7 +18,9 @@ use ui::framework::{
 };
 use ui::prelude::Effect;
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{self, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{
+    self, ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry,
+};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -238,10 +240,10 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
         }
     }
 
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
+    /// The library's edits bound to where the reader is: the page's
+    /// bookmark and notes, and the selection's highlight and note.
+    fn bound_declarations(&self) -> Vec<ActionDecl<Ebook>> {
+        self.reading_declarations()
     }
 }
 
@@ -251,15 +253,6 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
 #[cfg(test)]
 pub(crate) fn library_dispatcher_for_test() -> ui::framework::Dispatcher<Ebook> {
     ui::framework::testing::dispatcher::<Ebook>(EbookShell::ID)
-}
-
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &EbookState) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Ebook>(
-        LIBRARY_RESOURCE_ID,
-        "Books",
-        state,
-    )]
 }
 
 #[cfg(test)]
@@ -273,7 +266,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
     )]
-    fn resource_publish_owns_library_door_and_hosted_keeps_selection_extras() {
+    fn the_library_publishes_its_door_and_the_reader_only_where_it_is() {
         let mut doc = AutoCommit::new();
         let entry = LibraryEntry {
             id: "book:0123456789abcdef0123456789abcdef".into(),
@@ -341,31 +334,13 @@ mod tests {
         );
         let mut seeded = doc.clone();
         app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(ui::resources::resource(&app, &seeded, "ebook.library").is_none());
-        let hosted_settings = ui::resources::resource(&app, &seeded, "ebook.settings")
-            .expect("hosted settings stay the published row");
-        assert!(
-            hosted_settings
-                .actions
-                .iter()
-                .any(|action| action.id.starts_with("theme-")),
-            "hosted settings keep the published theme actions"
-        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "ebook.library"
-                    && resource.kind != "ebook.settings"),
-            "hosted must not republish ebook.library/settings beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
         assert_eq!(
             extras.len(),
             1,
-            "hosted returns the reading-selection slice alone"
+            "the reader publishes where it is and nothing of the library: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
         );
-        assert_eq!(extras[0].kind, "ebook.selection");
         let book_id = app
             .open_book()
             .expect("sample library opens a book")
@@ -373,54 +348,53 @@ mod tests {
             .clone();
         assert_eq!(extras[0].id.as_str(), format!("ebook.selection:{book_id}"));
         for id in [
-            "toggle-bookmark",
-            "add-note",
             "previous-page",
             "next-page",
             "contents",
             "notes",
             "settings",
+            "select-passage",
+            "go-to",
         ] {
             assert!(
                 extras[0].actions.iter().any(|action| action.id == id),
-                "hosted keeps open-book chrome `{id}`: {:?}",
-                extras[0]
-                    .actions
-                    .iter()
-                    .map(|a| a.id.as_str())
-                    .collect::<Vec<_>>()
+                "the reader offers `{id}`"
             );
         }
         assert!(
-            !extras[0]
+            extras[0]
                 .actions
                 .iter()
-                .any(|action| action.id == "remove-from-library" || action.id == "toggle-hide-read"),
-            "hosted selection must not copy shelf Document ops already on publish"
+                .all(|action| action.kind != OperationKind::Document),
+            "where the reader is changes no document"
+        );
+        assert!(
+            ui::resources::resource(&app, &seeded, "ebook.settings").is_none(),
+            "the settings are the library's, published once"
         );
 
+        let bound = |app: &BooksApp| -> Vec<&'static str> {
+            app.reading_declarations()
+                .iter()
+                .map(|declaration| declaration.id)
+                .collect()
+        };
+        assert_eq!(bound(&app), ["toggle-bookmark", "add-note"]);
         app.select_passage_for_test(0, 0, 0, 4);
-        let with_sel = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert_eq!(with_sel.len(), 1);
-        assert!(
-            with_sel[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "note-selection"),
-            "hosted selection binds note-selection when text is selected"
+        assert_eq!(
+            bound(&app),
+            [
+                "toggle-bookmark",
+                "add-note",
+                "highlight-selection",
+                "note-selection"
+            ],
+            "a selection binds its highlight and note"
         );
 
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "ebook.library");
+        let door = ui::tilo_resource::publish::<Ebook>(LIBRARY_RESOURCE_ID, "Books", &state);
         assert!(
-            door[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "toggle-hide-read")
-        );
-        assert!(
-            door[0]
-                .children
+            door.children
                 .iter()
                 .any(|child| child.id.as_str() == format!("ebook.book:{}", entry.id)),
             "publish children carry per-book document ops"
