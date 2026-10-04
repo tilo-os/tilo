@@ -3,6 +3,9 @@
   "id": "lenovo-83ed",
   "architecture": "aarch64",
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
+  "kernel_args": [
+    "systemd.tpm2_wait=0"
+  ],
   "system_firmware": [
     "qcom/a740_sqe.fw",
     "qcom/gen70500_sqe.fw",
