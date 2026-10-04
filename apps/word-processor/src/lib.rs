@@ -41,6 +41,7 @@ mod find_bar;
 pub mod framework;
 pub mod history_panel;
 pub mod i18n;
+mod invocation_anchor;
 mod outline_pane;
 mod paint_context;
 mod recovery_banner;

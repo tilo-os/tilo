@@ -1774,11 +1774,19 @@ impl App {
         // A terminal must follow the document commands it covers: queue every
         // changed owned record first, or retire the transport as uncertain.
         if update.is_terminal() && !self.queue_documents_before_terminal() {
+            if let Some(scope) = &authorization {
+                scope.note_terminal_handoff(false);
+            }
             return;
         }
-        self.collaboration
+        let succeeded = matches!(&update, tilo_actions::InvocationUpdate::Succeeded { .. });
+        let handed_off = self
+            .collaboration
             .manager
             .send(CollabRequest::UpdateInvocation { id, update });
+        if let Some(scope) = authorization {
+            scope.note_terminal_handoff(succeeded && handed_off);
+        }
     }
 
     fn resolve_resource_invocation<'a>(

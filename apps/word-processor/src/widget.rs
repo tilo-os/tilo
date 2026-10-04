@@ -11556,6 +11556,12 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
+    fn invocation_anchor_projectors(
+        &self,
+    ) -> &'static [ui::invocation_anchor::RegisteredInvocationAnchor] {
+        &crate::invocation_anchor::PROJECTORS
+    }
+
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`PublishesResources`](ui::resources::PublishesResources) impl in
     /// [`crate::actions`]).
