@@ -52,6 +52,8 @@ mod slash_menu_focus;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_order.rs"]
+mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]
