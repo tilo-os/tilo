@@ -2238,8 +2238,15 @@ mod tests {
                         rect.x0 >= -0.5 && rect.x1 <= 1440.5,
                         "{id} escaped the viewport at {text_scale}x text: {rect:?}"
                     );
+                    // A section header's action is a small control: its
+                    // hit area grows to the pointer target past its face.
+                    let target = if id == "print-centre.refresh" {
+                        f64::from(Theme::dark().tokens.metrics.bar_control_height)
+                    } else {
+                        pointer_target()
+                    };
                     assert!(
-                        rect.width() >= pointer_target() && rect.height() >= pointer_target(),
+                        rect.width() >= target && rect.height() >= target,
                         "{id} lost its touch target at {text_scale}x text: {rect:?}"
                     );
                     rect
