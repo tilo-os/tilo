@@ -877,7 +877,7 @@ fn stage_personal_enrollment(
         hex::encode(payload.cert.device_public_key)
     );
     let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
-    std::fs::create_dir_all(&stage_dir)?;
+    private_stage_dir(&stage_dir)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
     tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "record.json"),
@@ -952,7 +952,10 @@ fn person_owner(identity_dir: Option<&std::path::Path>) -> u32 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        if let Some(metadata) = identity_dir.and_then(|dir| std::fs::metadata(dir).ok()) {
+        if let Some(metadata) = identity_dir
+            .and_then(|dir| std::fs::symlink_metadata(dir).ok())
+            .filter(std::fs::Metadata::is_dir)
+        {
             return metadata.uid();
         }
     }
@@ -1121,15 +1124,32 @@ fn recover_personal_enrollments(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let owner = person_owner(Some(identity_dir));
     for entry in entries {
         let entry = entry?;
-        if !entry.file_type()?.is_file() {
+        // The commit directory is shared by everyone on the device: only a
+        // marker this person (or root for them) wrote is theirs to finish.
+        if !written_by(&entry.path(), owner, false) {
             continue;
         }
-        let marker: PersonalEnrollmentMarker =
-            serde_json::from_slice(&std::fs::read(entry.path())?)
-                .context("personal enrollment recovery marker is invalid")?;
-        if marker.identity_dir == identity_dir && marker.commit_ready {
+        let Ok(marker) =
+            serde_json::from_slice::<PersonalEnrollmentMarker>(&std::fs::read(entry.path())?)
+        else {
+            eprintln!(
+                "warning: skipping an unreadable enrollment marker {}",
+                entry.path().display()
+            );
+            continue;
+        };
+        if marker.identity_dir == identity_dir
+            && marker.commit_ready
+            && !marker.stage_name.contains(['/', '\\'])
+            && written_by(
+                &enrollment_stage_dir(identity_root).join(&marker.stage_name),
+                owner,
+                true,
+            )
+        {
             commit_staged_personal_enrollment(
                 identity_root,
                 paths,
@@ -1138,6 +1158,55 @@ fn recover_personal_enrollments(
                 &mut checkpoint,
             )?;
         }
+    }
+    Ok(())
+}
+
+/// Whether `path` is a regular file (or, with `directory`, a directory) that
+/// `owner` or root wrote and nobody else may change. Symlinks are not.
+fn written_by(path: &std::path::Path, owner: u32, directory: bool) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            let kind = if directory {
+                metadata.is_dir()
+            } else {
+                metadata.is_file()
+            };
+            kind && (metadata.uid() == owner || metadata.uid() == 0) && metadata.mode() & 0o022 == 0
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (owner, directory);
+        std::fs::symlink_metadata(path)
+            .is_ok_and(|metadata| metadata.is_dir() == directory && !metadata.is_symlink())
+    }
+}
+
+/// Create the stage directory of one enrollment as this process's own and
+/// private: the staging directory is shared, so a directory someone else
+/// already made under the name is refused rather than written into.
+fn private_stage_dir(directory: &std::path::Path) -> anyhow::Result<()> {
+    if let Some(parent) = directory.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::create_dir(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let metadata = std::fs::symlink_metadata(directory)?;
+        if !metadata.is_dir()
+            || metadata.uid() != tilo_relay_protocol::personal_devices::current_uid()
+        {
+            bail!("{} belongs to another account", directory.display());
+        }
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
@@ -3082,6 +3151,47 @@ fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_finishes_only_markers_and_stages_the_person_wrote() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let me = tilo_relay_protocol::personal_devices::current_uid();
+        let marker = dir.path().join("marker.json");
+        std::fs::write(&marker, b"{}").unwrap();
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(written_by(&marker, me, false));
+        assert!(!written_by(&marker, me, true));
+        // Anyone may rewrite it: not the person's.
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(!written_by(&marker, me, false));
+        // A symlink to the person's own file is not theirs either.
+        let own = dir.path().join("own.json");
+        std::fs::write(&own, b"{}").unwrap();
+        std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&own, &link).unwrap();
+        assert!(!written_by(&link, me, false));
+
+        // A stage directory is private to whoever stages, and one someone
+        // else already made under the name is refused.
+        let stage = dir.path().join("staging").join("personal-1");
+        private_stage_dir(&stage).unwrap();
+        assert_eq!(
+            std::fs::metadata(&stage).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert!(written_by(&stage, me, true));
+        if me == 0 {
+            let squatted = dir.path().join("staging").join("personal-2");
+            std::fs::create_dir(&squatted).unwrap();
+            let path = std::ffi::CString::new(squatted.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::lchown(path.as_ptr(), 4002, 4002) }, 0);
+            assert!(private_stage_dir(&squatted).is_err());
+            assert!(!written_by(&squatted, 4001, true));
+        }
+    }
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
     };

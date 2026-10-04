@@ -70,12 +70,8 @@ pub const MAX_REVOCATIONS: usize = 1024;
 /// Bound on directory entries a revocation read looks at, valid or not.
 pub const MAX_REVOCATION_DIR_ENTRIES: usize = 4096;
 
-/// Bound on entries of the shared peers directory looked at while searching
-/// for a person's directory under a suffixed name.
-pub const MAX_PEERS_DIR_ENTRIES: usize = 16 * 1024;
-
-/// Bound on person directories of one identity a relay reads revocations
-/// from.
+/// Bound on accounts whose directory of one identity a relay reads
+/// revocations from (one directory per account).
 const MAX_PERSON_DIRS_PER_IDENTITY: usize = 1024;
 
 /// Bound on one revocation file.
@@ -142,10 +138,28 @@ fn trusted_by(metadata: &std::fs::Metadata, owner: u32) -> bool {
 
 /// Whether `path` is a real directory (not a symlink) trusted by `owner`.
 fn trusted_dir(path: &Path, owner: u32) -> io::Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.file_type().is_dir() && trusted_by(&metadata, owner)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
+    Ok(private_dir_owner(path)?.is_some_and(|uid| uid == owner || uid == 0))
+}
+
+/// The account owning `path` when it is a real directory (not a symlink)
+/// that nobody else may write.
+fn private_dir_owner(path: &Path) -> io::Result<Option<u32>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_dir() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok((metadata.mode() & 0o022 == 0).then(|| metadata.uid()))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Some(0))
     }
 }
 
@@ -257,7 +271,15 @@ fn lock_list(path: &Path, owner: u32) -> io::Result<advisory_lock::FileLock> {
     if !trusted_by(&metadata, owner) {
         return Err(refused("device list lock belongs to another account"));
     }
-    give_to(&lock, owner)?;
+    #[cfg(unix)]
+    if current_uid() == 0 && owner != 0 {
+        use std::os::fd::AsRawFd as _;
+        // SAFETY: the descriptor is open for the call; a gid of -1 leaves
+        // the group.
+        if unsafe { libc::fchown(file.as_raw_fd(), owner, libc::gid_t::MAX) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
     advisory_lock::FileLock::exclusive(file)
 }
 
@@ -350,23 +372,33 @@ fn person_dir_suffix(name: &str, identity: &str) -> bool {
         })
 }
 
-/// Names in `peers` that may be person directories of `identity`: the
-/// canonical name first, then suffixed ones in name order.
-fn person_dir_candidates(peers: &Path, identity: &[u8; 32]) -> Vec<PathBuf> {
+/// The person directories of `identity` in `peers`, at most one per owning
+/// account: the canonical name when it is private, else the account's
+/// suffixed directory first in name order. Every name in `peers` is looked
+/// at, so no number of other entries pushes a person's directory out of
+/// sight, and any number of directories one account makes counts once.
+fn person_dirs(peers: &Path, identity: &[u8; 32]) -> std::collections::BTreeMap<u32, PathBuf> {
     let id = hex::encode(identity);
+    let mut found = std::collections::BTreeMap::new();
+    let canonical = peers.join(&id);
+    if let Ok(Some(uid)) = private_dir_owner(&canonical) {
+        found.insert(uid, canonical);
+    }
     let mut suffixed: Vec<String> = std::fs::read_dir(peers)
         .into_iter()
         .flatten()
         .flatten()
-        .take(MAX_PEERS_DIR_ENTRIES)
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| person_dir_suffix(name, &id))
         .collect();
     suffixed.sort();
-    std::iter::once(id)
-        .chain(suffixed)
-        .map(|name| peers.join(name))
-        .collect()
+    for name in suffixed {
+        let dir = peers.join(name);
+        if let Ok(Some(uid)) = private_dir_owner(&dir) {
+            found.entry(uid).or_insert(dir);
+        }
+    }
+    found
 }
 
 fn fresh_suffix(identity: &[u8; 32], attempt: u32) -> String {
@@ -399,22 +431,31 @@ impl PersonPeers {
     ///
     /// When a candidate cannot be inspected.
     pub fn find(peers: &Path, identity: &[u8; 32], owner: u32) -> io::Result<Option<Self>> {
-        let canonical = peers.join(hex::encode(identity));
-        let candidates = if trusted_dir(&canonical, owner)? {
-            vec![canonical]
-        } else {
-            person_dir_candidates(peers, identity)
+        Self::locate(peers, identity, owner, true)
+    }
+
+    /// The directory of `identity` in `peers` for `owner`: one `owner` owns,
+    /// or else, when `or_root`, one root made for it.
+    fn locate(
+        peers: &Path,
+        identity: &[u8; 32],
+        owner: u32,
+        or_root: bool,
+    ) -> io::Result<Option<Self>> {
+        let person = |dir| Self {
+            dir,
+            identity: *identity,
+            owner,
         };
-        for dir in candidates {
-            if trusted_dir(&dir, owner)? {
-                return Ok(Some(Self {
-                    dir,
-                    identity: *identity,
-                    owner,
-                }));
-            }
+        let canonical = peers.join(hex::encode(identity));
+        if private_dir_owner(&canonical)? == Some(owner) {
+            return Ok(Some(person(canonical)));
         }
-        Ok(None)
+        let mut dirs = person_dirs(peers, identity);
+        Ok(dirs
+            .remove(&owner)
+            .or_else(|| or_root.then(|| dirs.remove(&0)).flatten())
+            .map(person))
     }
 
     /// [`Self::find`] for the account this process runs as.
@@ -435,7 +476,10 @@ impl PersonPeers {
     ///
     /// When `peers` cannot be read or no directory can be created.
     pub fn open_or_create(peers: &Path, identity: &[u8; 32], owner: u32) -> io::Result<Self> {
-        if let Some(found) = Self::find(peers, identity, owner)? {
+        // Only the account's own directory is written: a root-owned one
+        // (such as one seeded before the account existed) is read, never
+        // changed, by anyone else.
+        if let Some(found) = Self::locate(peers, identity, owner, false)? {
             return Ok(found);
         }
         std::fs::create_dir_all(peers)?;
@@ -787,27 +831,10 @@ pub fn recorded_revocations(
     identity: &[u8; 32],
 ) -> tilo_user_identity::RevocationList {
     let mut list = tilo_user_identity::RevocationList::new();
-    for dir in person_dir_candidates(peers, identity)
+    for (owner, dir) in person_dirs(peers, identity)
         .into_iter()
         .take(MAX_PERSON_DIRS_PER_IDENTITY)
     {
-        let Ok(metadata) = std::fs::symlink_metadata(&dir) else {
-            continue;
-        };
-        let owner = {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                metadata.uid()
-            }
-            #[cfg(not(unix))]
-            {
-                0
-            }
-        };
-        if !metadata.file_type().is_dir() || !trusted_by(&metadata, owner) {
-            continue;
-        }
         if let Ok(found) = read_revocations_in(&dir.join(REVOCATIONS_DIR), identity, owner) {
             for entry in found.iter() {
                 let _ = list.insert(entry.clone());
@@ -946,6 +973,7 @@ fn scan_revocations(
 ) -> io::Result<tilo_user_identity::RevocationList> {
     let mut list = tilo_user_identity::RevocationList::new();
     let mut valid = 0usize;
+    let prefix = format!("{}-", hex::encode(identity));
     for file in std::fs::read_dir(directory)?
         .flatten()
         .take(MAX_REVOCATION_DIR_ENTRIES)
@@ -957,9 +985,14 @@ fn scan_revocations(
         let Some(name) = name.to_str() else {
             continue;
         };
-        // Recorded names are exactly lowercase `.json`; skip anything else
-        // before opening it.
-        if !name.as_bytes().ends_with(b".json") {
+        // Recorded names are `<identity>-<device>[.<suffix>].json` in
+        // lowercase; skip anything else before opening and verifying it.
+        let named_for_identity = name.as_bytes().ends_with(b".json")
+            && name
+                .strip_prefix(prefix.as_str())
+                .and_then(|rest| rest.get(..64))
+                .is_some_and(|device| decode_key(device).is_some());
+        if !named_for_identity {
             continue;
         }
         let Some(entry) = read_revocation_file(&file.path(), owner) else {
@@ -1394,6 +1427,35 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_root_made_is_read_but_never_written_for_a_person() {
+        if current_uid() != 0 {
+            // Only root can make the directory this is about.
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (a, _) = accounts();
+        let canonical = dir.path().join(hex::encode([9; 32]));
+        create_person_dir(&canonical, 0).unwrap();
+        std::fs::write(
+            canonical.join(DIRECT_PEERS_FILE),
+            encode_direct_peers(&[peer(9, 1)]).unwrap(),
+        )
+        .unwrap();
+        // Readers take it while the person has none of their own.
+        let seeded = PersonPeers::find(dir.path(), &[9; 32], a).unwrap().unwrap();
+        assert_eq!(seeded.dir(), canonical);
+        assert_eq!(seeded.read_direct_peers().unwrap(), vec![peer(9, 1)]);
+        // Writing for the person makes their own, which readers then prefer.
+        let own = person(dir.path(), &[9; 32]);
+        assert_ne!(own.dir(), canonical);
+        own.remember_direct_peers(&[peer(9, 2)]).unwrap();
+        let found = PersonPeers::find(dir.path(), &[9; 32], a).unwrap().unwrap();
+        assert_eq!(found, own);
+        assert_eq!(found.read_direct_peers().unwrap(), vec![peer(9, 2)]);
+    }
+
     fn revocation(
         root: &ed25519_dalek::SigningKey,
         device: [u8; 32],
@@ -1582,38 +1644,45 @@ mod tests {
     fn a_relay_keeps_every_recorded_revocation_of_its_identity() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        let (a, b) = accounts();
         let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let user = root.verifying_key().to_bytes();
         let ours = person(dir.path(), &user);
         ours.record_revocation(&revocation(&root, [1; 32])).unwrap();
-        // A second directory of the identity (another account of the person,
-        // or one someone created): its true revocations count too.
-        let second = dir
-            .path()
-            .join(format!("{}.{}", hex::encode(user), "a".repeat(16)));
-        create_person_dir(&second, accounts().0).unwrap();
-        let second = PersonPeers {
-            dir: second,
-            identity: user,
-            owner: accounts().0,
-        };
-        second
-            .record_revocation(&revocation(&root, [2; 32]))
-            .unwrap();
+        // Directories someone else made for the identity, named to sort
+        // first: their true revocations count, and however many there are,
+        // they hide nothing of the person's.
+        for index in 0..40_u32 {
+            let path = dir
+                .path()
+                .join(format!("{}.{index:016x}", hex::encode(user)));
+            create_person_dir(&path, b).unwrap();
+            if current_uid() == 0 {
+                give_to(&path, b).unwrap();
+            }
+            if index == 0 {
+                PersonPeers {
+                    dir: path,
+                    identity: user,
+                    owner: if current_uid() == 0 { b } else { a },
+                }
+                .record_revocation(&revocation(&root, [2; 32]))
+                .unwrap();
+            }
+        }
         // A directory anyone may write is skipped.
         let shared = dir
             .path()
-            .join(format!("{}.{}", hex::encode(user), "b".repeat(16)));
-        create_person_dir(&shared, accounts().0).unwrap();
-        let shared_person = PersonPeers {
+            .join(format!("{}.{}", hex::encode(user), "f".repeat(16)));
+        create_person_dir(&shared, a).unwrap();
+        PersonPeers {
             dir: shared.clone(),
             identity: user,
-            owner: accounts().0,
-        };
-        shared_person
-            .record_revocation(&revocation(&root, [3; 32]))
-            .unwrap();
+            owner: a,
+        }
+        .record_revocation(&revocation(&root, [3; 32]))
+        .unwrap();
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
         // Another identity's directory holds nothing of ours.
         person(dir.path(), &stranger.verifying_key().to_bytes())
@@ -1622,9 +1691,19 @@ mod tests {
 
         let list = recorded_revocations(dir.path(), &user);
         assert!(list.revocation_of(&user, &[1; 32]).is_some());
-        assert!(list.revocation_of(&user, &[2; 32]).is_some());
         assert!(list.revocation_of(&user, &[3; 32]).is_none());
-        assert_eq!(list.iter().count(), 2);
+        assert!(list.iter().all(|entry| entry.user_public_key == user));
+        if current_uid() == 0 {
+            assert!(list.revocation_of(&user, &[2; 32]).is_some());
+        }
+        // The person still finds their own directory among them all.
+        assert_eq!(
+            PersonPeers::find(dir.path(), &user, a)
+                .unwrap()
+                .unwrap()
+                .dir(),
+            ours.dir()
+        );
     }
 
     #[test]

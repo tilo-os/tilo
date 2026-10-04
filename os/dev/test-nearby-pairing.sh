@@ -179,12 +179,10 @@ note "VM A holds identity $identity"
 # --- the image owns the enrollment layout --------------------------------------
 layout="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/enrollment-staging /var/lib/tilo/enrollment-commits /var/lib/tilo/peers')"
 printf '%s\n' "$layout" > "$out/b-enrollment-layout.txt"
-for dir in enrollment-staging enrollment-commits; do
-  grep -qx "/var/lib/tilo/$dir 2770 root tilo-identity" <<<"$layout" \
-    || die "/var/lib/tilo/$dir is not 2770 root:tilo-identity on a fresh install: $layout"
+for dir in enrollment-staging enrollment-commits peers; do
+  grep -qx "/var/lib/tilo/$dir 3770 root tilo-identity" <<<"$layout" \
+    || die "/var/lib/tilo/$dir is not 3770 root:tilo-identity on a fresh install: $layout"
 done
-grep -qx "/var/lib/tilo/peers 3770 root tilo-identity" <<<"$layout" \
-  || die "/var/lib/tilo/peers is not 3770 root:tilo-identity on a fresh install: $layout"
 vm_b ssh "id -nG | tr ' ' '\n' | grep -qx tilo-identity" \
   || die "the installed account is not in the device-trust group"
 # The device key belongs to the image's first boot; joining must not touch it.

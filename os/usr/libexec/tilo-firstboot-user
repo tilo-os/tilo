@@ -134,13 +134,15 @@ else
     if [ -d /etc/skel ]; then
       cp -an /etc/skel/. "$seeded_home/" || true
     fi
+    seeded_by="$(stat -c '%u' -- "$seeded_home")"
     chown -R "$user:$user" "$seeded_home"
     # The handoff seeded this person's directory of direct peers and shared
-    # rooms too, before the account existed. On a fresh install it is the
-    # only one there, and it is theirs.
+    # rooms too, before the account existed, as whoever wrote the home. Only
+    # a directory written that way (or by root) is theirs.
     for person in /var/lib/tilo/peers/*; do
       if [ -d "$person" ] && [ ! -L "$person" ] \
-        && [[ "$(basename -- "$person")" =~ ^[0-9a-f]{64}(\.[0-9a-f]{16})?$ ]]; then
+        && [[ "$(basename -- "$person")" =~ ^[0-9a-f]{64}(\.[0-9a-f]{16})?$ ]] \
+        && { owner="$(stat -c '%u' -- "$person")"; [ "$owner" = 0 ] || [ "$owner" = "$seeded_by" ]; }; then
         chown -R --no-dereference "$user:tilo-identity" -- "$person"
         chmod 2750 -- "$person"
       fi
