@@ -10,10 +10,11 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
-use ui::{TextRenderer, Theme, paint::PaintCtx};
+use ui::widget::{Interaction, PropertyListFace, PropertyRow};
+use ui::{TextKind, TextRenderer, TextRole, Theme, paint::PaintCtx};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
 
@@ -21,7 +22,7 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.weather",
     scopes: &[HistoryScopeDefinition {
         key: "saved-places",
-        title: "Saved places (forecasts are not recorded)",
+        title: "Saved places",
         presentation: HistoryPresentation::Domain { create: preview },
         content_schema: Some(&SCHEMA),
     }],
@@ -190,7 +191,10 @@ pub(crate) fn validate(d: &AutoCommit) -> Result<(), String> {
     }
     Ok(())
 }
-const NOTICE: &str = "Historical weather observations are unavailable. Forecasts and air quality are external data, not recorded versions.";
+/// What History holds for Weather, said once in the preview.
+const NOTICE: &str = "History keeps your saved places, not past forecasts.";
+/// The detail's line when the version holds no saved place.
+const EMPTY: &str = "No saved places in this version";
 fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let d = AutoCommit::load(input.snapshot.bytes()).map_err(|e| e.to_string())?;
     validate(&d)?;
@@ -224,50 +228,77 @@ struct PlacesPreview {
     row_rects: Vec<Rect>,
     detail: Rect,
 }
+/// The facts the preview lists for the selected place.
+struct PlaceFacts {
+    region: String,
+    coordinates: String,
+}
+impl PlaceFacts {
+    fn of(place: &SavedLocation) -> Self {
+        Self {
+            region: place.subtitle(),
+            coordinates: format!("{:.5}°, {:.5}°", place.latitude, place.longitude),
+        }
+    }
+    fn rows(&self) -> [PropertyRow<'_>; 2] {
+        [
+            PropertyRow::new("Region", &self.region),
+            PropertyRow::new("Coordinates", &self.coordinates).with_kind(TextKind::Numeric),
+        ]
+    }
+}
 impl PlacesPreview {
-    fn geometry(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let wide = self.bounds.width() >= 760. * f64::from(theme.text_scale.max(1.));
-        let detail_w = if wide {
-            self.bounds.width() - 340.
-        } else {
-            self.bounds.width()
+    fn selected(&self) -> Option<&SavedLocation> {
+        self.places
+            .iter()
+            .find(|l| self.view.page.as_ref() == Some(&l.id.to_string()))
+    }
+    /// The detail's height at `width`: the place's name, its facts and the
+    /// notice, a `section` apart; or the empty line and the notice.
+    fn detail_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        let w = Some(width as f32);
+        let notice = f64::from(tr.measure_style(NOTICE, w, &theme.text(TextRole::Body)).1);
+        let head = match self.selected() {
+            Some(place) => {
+                let facts = PlaceFacts::of(place);
+                let rows = facts.rows();
+                f64::from(
+                    tr.measure_style(&place.name, w, &theme.text(TextRole::Title))
+                        .1,
+                ) + gap
+                    + PropertyListFace::new(&rows).height(tr, theme, width)
+            }
+            None => f64::from(tr.measure_style(EMPTY, w, &theme.text(TextRole::Heading)).1),
         };
-        let notice_h = f64::from(
-            tr.measure(NOTICE, 14., Some((detail_w - 40.).max(20.) as f32))
-                .1,
-        );
-        let detail_h = 150. * f64::from(theme.text_scale.max(1.)) + notice_h;
-        let m = crate::core::ChipMetrics::new(&theme.tokens.spacing, tr.text_scale());
-        let list_top = if wide { 20. } else { detail_h + 20. };
-        let height = (list_top + self.places.len() as f64 * m.pitch() + 20.).max(detail_h);
+        head + gap + notice
+    }
+    fn geometry(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let sp = &theme.tokens.spacing;
+        let m = &theme.tokens.metrics;
+        let gutter = f64::from(sp.rhythm.group);
+        let list_w = f64::from(m.overview_width);
+        let wide = self.bounds.width() >= list_w + f64::from(m.detail_min_width);
+        let (list_x0, list_x1) = if wide {
+            (self.bounds.x0, self.bounds.x0 + list_w)
+        } else {
+            (self.bounds.x0, self.bounds.x1)
+        };
+        let detail_x0 = if wide { list_x1 } else { self.bounds.x0 } + gutter;
+        let detail_w = (self.bounds.x1 - gutter - detail_x0).max(1.);
+        let detail_h = self.detail_height(tr, theme, detail_w) + 2. * gutter;
+        let row_h = crate::presentation::row_height(tr, theme);
+        let inset = f64::from(sp.s2);
+        let list_top = if wide { inset } else { detail_h };
+        let height = (list_top + self.places.len() as f64 * row_h + inset).max(detail_h);
         self.max_scroll = (height - self.bounds.height()).max(0.);
         self.view.scroll.1 = self.view.scroll.1.clamp(0., self.max_scroll);
         let y = self.bounds.y0 - self.view.scroll.1;
-        self.detail = Rect::new(
-            if wide {
-                self.bounds.x0 + 340.
-            } else {
-                self.bounds.x0
-            },
-            y,
-            self.bounds.x1,
-            y + detail_h,
-        );
-        self.row_rects = self
-            .places
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                Rect::new(
-                    self.bounds.x0 + 16.,
-                    y + list_top + i as f64 * m.pitch(),
-                    if wide {
-                        self.bounds.x0 + 324.
-                    } else {
-                        self.bounds.x1 - 16.
-                    },
-                    y + list_top + i as f64 * m.pitch() + m.chip_h,
-                )
+        self.detail = Rect::new(detail_x0, y + gutter, detail_x0 + detail_w, y + detail_h);
+        self.row_rects = (0..self.places.len())
+            .map(|i| {
+                let top = y + list_top + i as f64 * row_h;
+                Rect::new(list_x0 + inset, top, list_x1 - inset, top + row_h)
             })
             .collect();
     }
@@ -278,73 +309,58 @@ impl HistoryPreview for PlacesPreview {
         self.geometry(tr, theme);
         Ok(())
     }
-    fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.geometry(tr, theme);
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
-        // Legacy Weather text helpers paint in absolute canvas coordinates. The
-        // supplied transform is applied to their complete scene as one unit.
-        let mut content = Scene::new();
-        for (l, r) in self.places.iter().zip(&self.row_rects) {
-            crate::presentation::draw_saved_place(
-                &mut PaintCtx::new(&mut content, Affine::IDENTITY, tr, theme),
-                &crate::presentation::SavedPlaceFace {
-                    chip: *r,
-                    loc: l,
-                    snapshot: None,
-                    units: self.units,
-                    selected: self.view.page.as_ref() == Some(&l.id.to_string()),
-                    hovered: false,
-                    accent: theme.tokens.colors.accent[5],
-                },
-            );
-        }
-        let mut y = self.detail.y0 + 20.;
-        let x = self.detail.x0 + 20.;
-        let w = (self.detail.width() - 40.).max(20.);
-        if let Some(l) = self
-            .places
-            .iter()
-            .find(|l| self.view.page.as_ref() == Some(&l.id.to_string()))
-        {
-            y = crate::presentation::draw_identity(&mut content, tr, theme, l, x, y, w)
-                + f64::from(tr.measure("Ag", 13., None).1)
-                + 16.;
-            let coordinates = format!("{:.5}°, {:.5}°", l.latitude, l.longitude);
-            tr.draw_text(
-                &mut content,
-                &coordinates,
-                14.,
-                theme.text_dim,
-                Affine::translate((x, y)),
-                Some(w as f32),
-            );
-            y += f64::from(tr.measure(&coordinates, 14., Some(w as f32)).1) + 16.;
-        } else {
-            tr.draw_text(
-                &mut content,
-                "No saved places in this version",
-                18.,
-                theme.text_primary,
-                Affine::translate((x, y)),
-                Some(w as f32),
-            );
-            y += f64::from(
-                tr.measure("No saved places in this version", 18., Some(w as f32))
-                    .1,
-            ) + 16.;
-        }
-        tr.draw_text(
-            &mut content,
-            NOTICE,
-            14.,
-            theme.text_dim,
-            Affine::translate((x, y)),
-            Some(w as f32),
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.,
+            transform,
+            &self.bounds,
         );
-        scene.append(&content, Some(t));
-        scene.pop_layer();
+        let colors = &theme.tokens.colors;
+        let gap = f64::from(theme.tokens.spacing.rhythm.section);
+        let selected = self.selected().map(|place| place.id);
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+        for (index, (place, row)) in self.places.iter().zip(&self.row_rects).enumerate() {
+            let text = crate::presentation::PlaceRowText::of(place, None, self.units);
+            let face = text.face(place, selected == Some(place.id), Interaction::default());
+            let face = match self.places.get(index + 1) {
+                Some(next) => face.separator(selected == Some(next.id)),
+                None => face,
+            };
+            face.paint(&mut ctx, *row);
+        }
+        let left = self.detail.x0;
+        let width = self.detail.width();
+        let wrap = Some(width as f32);
+        let mut top = self.detail.y0;
+        if let Some(place) = self.selected() {
+            let name = &place.name;
+            ctx.text_role(
+                name,
+                TextRole::Title,
+                colors.text_primary,
+                Point::new(left, top),
+                wrap,
+            );
+            top += ctx.measure_role(name, TextRole::Title, wrap).height + gap;
+            let facts = PlaceFacts::of(place);
+            let rows = facts.rows();
+            let list = PropertyListFace::new(&rows);
+            let height = list.height(ctx.text, ctx.theme, width);
+            list.paint(&mut ctx, Rect::new(left, top, left + width, top + height));
+            top += height + gap;
+        } else {
+            let at = Point::new(left, top);
+            ctx.text_role(EMPTY, TextRole::Heading, colors.text_primary, at, wrap);
+            top += ctx.measure_role(EMPTY, TextRole::Heading, wrap).height + gap;
+        }
+        let at = Point::new(left, top);
+        ctx.text_role(NOTICE, TextRole::Body, colors.text_dim, at, wrap);
+        ctx.scene.pop_layer();
     }
+
     fn navigate(&mut self, c: PreviewNavigation) -> bool {
         let pages = self.accessibility().pages;
         ui::history_mode::adapter::navigate_pages(&mut self.view, c, &pages)
@@ -353,15 +369,11 @@ impl HistoryPreview for PlacesPreview {
         self.view.clone()
     }
     fn accessibility(&self) -> PreviewAccessibility {
-        let selected = self
-            .places
-            .iter()
-            .find(|l| self.view.page.as_ref() == Some(&l.id.to_string()));
-        let description = selected.map_or_else(
-            || "No saved places in this version".into(),
+        let description = self.selected().map_or_else(
+            || EMPTY.into(),
             |l| {
                 format!(
-                    "{} — {}\n{:.5}°, {:.5}°",
+                    "{}, {}\n{:.5}°, {:.5}°",
                     l.name,
                     l.subtitle(),
                     l.latitude,
@@ -456,11 +468,7 @@ mod painting_tests {
                         .map(|g| (g.id, g.x, g.y))
                         .collect::<Vec<_>>()
                 );
-                assert!(
-                    p.accessibility()
-                        .description
-                        .contains("Historical weather observations are unavailable")
-                );
+                assert!(p.accessibility().description.contains(NOTICE));
             }
         }
     }
