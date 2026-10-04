@@ -812,6 +812,36 @@ def prepare_typing(address: str, app_name: str, create: str, state: Path) -> Non
     print(f"{app_name}: a new document has keyboard focus; type into it now")
 
 
+MEDIA_UNREACHABLE = "document media service is"
+
+
+def check_present(address: str, state: Path, app_name: str, name: str) -> None:
+    """APP_NAME's document opened by `prepare_typing` gained a node named NAME (an
+    image block is named after its alt text), and the app's launch reached
+    the document media service that keeps such content with the document."""
+    bus_name, pid_text = state.read_text().split()
+    pid = int(pid_text)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + TYPING_TIMEOUT_SECONDS
+    try:
+        while time.monotonic() < deadline:
+            try:
+                if client.named(client.tree(TYPING_TREE_NODE_LIMIT), name):
+                    break
+            except GateError:
+                pass
+            time.sleep(POLL_SECONDS * 4)
+        else:
+            raise GateError(f"the document never showed a node named {name!r}")
+        log = app_log(app_name)
+        if MEDIA_UNREACHABLE in log:
+            raise GateError(f"the app could not reach the document media service: {log}")
+        print(f"the document shows {name!r}, kept by the document media service")
+    finally:
+        close_app(pid)
+        state.unlink(missing_ok=True)
+
+
 def check_typed(address: str, state: Path, expected: str, status: str | None = None) -> None:
     """The document opened by `prepare_typing` holds exactly EXPECTED and,
     with STATUS, the app names its save state STATUS and no other."""
@@ -934,6 +964,13 @@ def main() -> int:
     described.add_argument("name")
     described.add_argument("description")
     described.add_argument("--state", type=Path, required=True)
+    present = sub.add_parser(
+        "present",
+        help="check APP_NAME's document `type-into` opened shows a node named NAME, its media service reached",
+    )
+    present.add_argument("app_name")
+    present.add_argument("name")
+    present.add_argument("--state", type=Path, required=True)
     card = sub.add_parser(
         "card", help="activate a launchpad card on the empty workspace; require that it opens its app",
     )
@@ -982,6 +1019,9 @@ def main() -> int:
             return 0
         if args.command == "described":
             check_described(address, args.state, args.name, args.description)
+            return 0
+        if args.command == "present":
+            check_present(address, args.state, args.app_name, args.name)
             return 0
         if args.command == "card":
             _bus_name, pid = open_from_launchpad_card(

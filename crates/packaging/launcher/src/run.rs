@@ -1731,20 +1731,7 @@ fn splice_sandbox_shim(
     let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
     argv.push("--ro".to_string());
     argv.push(payload_mount.display().to_string());
-    if let Some((rt_root, ver)) = ctx.runtime_arg {
-        let rt = crate::sandbox::runtime_mount_for(ver);
-        argv.push("--ro".to_string());
-        argv.push(rt.display().to_string());
-        // Also allow the canonical loader paths re-bound out of the bundle —
-        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
-        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
-            let no_slash = canonical.trim_start_matches('/');
-            if rt_root.join("lib").join(no_slash).exists() {
-                argv.push("--ro".to_string());
-                argv.push((*canonical).to_string());
-            }
-        }
-    }
+    push_runtime_landlock_rules(argv, ctx.runtime_arg);
     for p in ctx.extra_ro_paths {
         argv.push("--ro".to_string());
         argv.push(p.clone());
@@ -1783,20 +1770,8 @@ fn splice_sandbox_shim(
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
     }
-    // GPU selection is only real if Landlock agrees: loader manifests need
-    // read, the render node needs read+write (opened O_RDWR) — read-only
-    // looks like no GPU present.
     if let Some(sel) = ctx.gpu {
-        for file in sel.manifest_files() {
-            argv.push("--ro".to_string());
-            argv.push(file.display().to_string());
-        }
-        argv.push("--rw".to_string());
-        argv.push(sel.node.display().to_string());
-        if sel.pipeline_seed.is_some() {
-            argv.push("--ro".to_string());
-            argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
-        }
+        crate::sandbox::push_gpu_landlock_rules(argv, sel);
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
@@ -1827,6 +1802,23 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
+    if let Some((rt_root, ver)) = runtime {
+        let rt = crate::sandbox::runtime_mount_for(ver);
+        argv.push("--ro".to_string());
+        argv.push(rt.display().to_string());
+        // Also allow the canonical loader paths re-bound out of the bundle —
+        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
+        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+            let no_slash = canonical.trim_start_matches('/');
+            if rt_root.join("lib").join(no_slash).exists() {
+                argv.push("--ro".to_string());
+                argv.push((*canonical).to_string());
+            }
+        }
+    }
 }
 
 fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {

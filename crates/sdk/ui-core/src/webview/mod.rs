@@ -25,6 +25,7 @@ pub use credentials::{
     CredentialRequest,
 };
 pub mod page;
+pub mod paint;
 pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
@@ -279,6 +280,18 @@ pub enum WebViewCommand {
         request_id: u32,
         request: PageRequest,
     },
+    /// Capture the page's layout for the paint stream: every box and text
+    /// line the engine laid out (see `tilo_paint_stream::snapshot`). Exactly
+    /// one [`WebViewEvent::PaintSnapshot`] with the same id answers it.
+    PaintCapture {
+        request_id: u32,
+    },
+    /// The bytes of a resource the page already loaded, read from the
+    /// engine's cache. One [`WebViewEvent::PaintResource`] answers it.
+    PaintResource {
+        request_id: u32,
+        url: String,
+    },
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
@@ -433,6 +446,16 @@ pub enum WebViewEvent {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     },
+    /// The raw layout snapshot (JSON), or `None` when the engine could not
+    /// take one.
+    PaintSnapshot {
+        request_id: u32,
+        snapshot: Option<String>,
+    },
+    PaintResource {
+        request_id: u32,
+        bytes: Option<Vec<u8>>,
+    },
     /// `WebKit` received response metadata and is waiting for the host's file
     /// portal to grant an explicit destination.
     DownloadRequested {
@@ -520,6 +543,22 @@ pub trait WebViewEngine: Send + Sync {
     /// typically wired to the winit event loop proxy so idle apps repaint
     /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
+
+    /// The engine this one wraps, for what only a backend can answer.
+    fn wrapped(&self) -> Option<&SharedEngine> {
+        None
+    }
+
+    /// The page as a display list. An engine that has one is drawn from it
+    /// instead of [`frames`](Self::frames) (see [`paint`]).
+    fn paint_frame(&self) -> Option<Arc<tilo_paint_stream::Frame>> {
+        None
+    }
+
+    /// Encoded bytes of an image a [`paint_frame`](Self::paint_frame) references.
+    fn paint_blob(&self, _hash: &[u8; 32]) -> Option<Arc<Vec<u8>>> {
+        None
+    }
 }
 
 /// Shared engine handle, as stored by the widget and the host app.

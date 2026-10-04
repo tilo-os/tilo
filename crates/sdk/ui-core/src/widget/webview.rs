@@ -93,6 +93,8 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
+    /// Draws the engine's display list when it has one (the paint stream).
+    page: crate::webview::paint::PageRenderer,
     test_id: String,
     accessible_name: String,
 }
@@ -111,6 +113,7 @@ impl WebView {
             cached_image: None,
             cached_trace_id: None,
             cached_key: (0, 0, 0),
+            page: crate::webview::paint::PageRenderer::new(),
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
         }
@@ -311,7 +314,7 @@ impl Widget for WebView {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
@@ -335,6 +338,22 @@ impl Widget for WebView {
             None,
             &self.rect,
         );
+
+        // A display list replaces pixels: draw it like any other widget
+        // content, in this toolkit's own text and Vello.
+        if let Some(page) = self.engine.paint_frame() {
+            let engine = Arc::clone(&self.engine);
+            let blobs = move |hash: &[u8; 32]| engine.paint_blob(hash);
+            let mut canvas = crate::webview::paint::PageCanvas {
+                scene,
+                transform: transform * Affine::translate((self.rect.x0, self.rect.y0)),
+                text: text_renderer,
+                blobs: &blobs,
+            };
+            self.page.draw(&mut canvas, &page);
+            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+            return;
+        }
 
         let latest = {
             let slot = self.engine.frames();

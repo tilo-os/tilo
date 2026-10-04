@@ -288,6 +288,23 @@ pub fn push_gpu_selection(
     }
 }
 
+/// The Landlock rules that make [`push_gpu_selection`]'s binds usable: the
+/// selection is only real if Landlock agrees. Loader manifests and the
+/// pipeline seed need read; the render node needs read+write (it is opened
+/// `O_RDWR`), and read-only looks like no GPU present.
+pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::GpuSelection) {
+    for file in selection.manifest_files() {
+        argv.push("--ro".to_string());
+        argv.push(file.display().to_string());
+    }
+    argv.push("--rw".to_string());
+    argv.push(selection.node.display().to_string());
+    if selection.pipeline_seed.is_some() {
+        argv.push("--ro".to_string());
+        argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+    }
+}
+
 /// Whether this launch exposes `/dev/dri` at all — consults both
 /// sources rather than a constant, since [`push_gpu_selection`]'s
 /// narrowing needs something actually mounted regardless of a future
