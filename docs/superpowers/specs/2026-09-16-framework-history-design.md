@@ -53,4 +53,4 @@ Restore preserves record identity and runtime metadata. It targets application c
 
 ## Coordination
 
-The runtime task owns text layout/performance work. The action task owns shell action integration and recent `record.rs`/`bound_dispatch.rs` changes. Respect their source freeze for the Photos-to-Writer native proof and coordinate shared-file changes. Preserve all unrelated uncommitted edits in the shared isolated worktree.
+The runtime task owns text layout/performance work. The action task owns shell action integration and recent `record.rs`/`bound_dispatch.rs` changes. Respect their source freeze for the Photos-to-Writer native proof and coordinate shared-file changes.

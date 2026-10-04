@@ -84,10 +84,3 @@ physical trackpad/mouse delivery or full OS-image boot acceptance.
 
 Final Linux workspace build, all-target check, example harnesses, and targeted
 regressions are recorded below after completion.
-
-## Local evidence
-
-Host logs: `/tmp/tilo-regression-20260915/`.
-VM logs: `/home/parallels/tilo-regression-20260915/`.
-Copied VM logs and immutable source manifest:
-`/Users/xaver/.cache/tilo-regression-20260915/`.
