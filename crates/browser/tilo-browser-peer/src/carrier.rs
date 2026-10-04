@@ -214,6 +214,18 @@ pub async fn rooms(
     call(client, "/rooms", Some(session), encode(request)?).await
 }
 
+/// What the node runs beside the host (`/node`).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or is no node.
+pub async fn node(
+    client: &dyn HttpClient,
+    session: &str,
+) -> Result<tilo_relay_protocol::web::NodeInfo, LinkError> {
+    call(client, "/node", Some(session), Vec::new()).await
+}
+
 /// One step of joining a room with no session (`/join`).
 ///
 /// # Errors

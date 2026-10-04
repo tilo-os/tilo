@@ -69,11 +69,16 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
       CARGO_PROFILE_RELEASE_OPT_LEVEL CARGO_PROFILE_RELEASE_PANIC \
       CARGO_PROFILE_RELEASE_STRIP CARGO_PROFILE_RELEASE_DEBUG
+#
+# The size wrapper and the crates it applies to are Cargo configuration on the
+# command line rather than environment, so they reach rustc through any Cargo
+# front end, including one that builds on another machine and forwards only
+# its own allowlist of variables.
 cd "$REPO"
-TILO_THIN_BIN_CRATES="$thin_crates" \
-RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 cargo build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
+    --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
+    --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol
@@ -94,6 +99,14 @@ for index in "${!binaries[@]}"; do
     readelf -dW "$TARGET_DIR/$PROFILE/$binary" | grep -Fq '[libruntime_dylib.so]' || {
         echo "thin app does not link libruntime_dylib.so: $binary" >&2
         echo "its <package>/thin feature was not applied; a dependency keyed by the package's own name claims it" >&2
+        exit 1
+    }
+    # Only rustc-thin-app-wrapper.sh asks for packed relative relocations, so
+    # their absence means the tapp crate compiled at the profile's speed
+    # settings instead, megabytes larger and caught otherwise only at the tapp
+    # size limit.
+    readelf -dW "$TARGET_DIR/$PROFILE/$binary" | grep -Fq '(RELR)' || {
+        echo "thin app was not compiled through rustc-thin-app-wrapper.sh: $binary" >&2
         exit 1
     }
     set +e

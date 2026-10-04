@@ -111,6 +111,8 @@ pub mod a11y_tree;
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 pub mod action_host;
+mod action_locus;
+pub use action_locus::ActionUiRoute;
 pub mod action_palette;
 pub mod animation;
 #[cfg(test)]
@@ -196,6 +198,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
+pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
@@ -224,6 +227,7 @@ pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
 pub mod search;
+pub mod secret_paint;
 pub mod selection;
 mod standalone_history;
 mod standalone_history_host;
@@ -281,7 +285,7 @@ pub use vello::{kurbo, peniko};
 pub use winit;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use app::{ActionUiRoute, App, local_surface_id};
+pub use app::{App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,

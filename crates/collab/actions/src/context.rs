@@ -34,26 +34,44 @@ pub struct ActionContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invoker: Option<ActionInvoker>,
     /// What the change is to the people sharing the document, declared by
-    /// the action ([`crate::Action::change_kind`]). Omitted for content, so
-    /// existing history bytes are unchanged.
+    /// the action ([`crate::Action::change_kind`]) or, for a change that is
+    /// nobody's step whatever it does (what a brand-new record starts with),
+    /// by the context it is applied with. Omitted for content, so existing
+    /// history bytes are unchanged.
     #[serde(skip_serializing_if = "ChangeKind::is_content")]
     pub change: ChangeKind,
 }
 
-/// Whether a change is to a document's content or only housekeeping about
-/// it. Housekeeping (a read marker, a reading position) is durable and
-/// shared like any change, and stays in the document's own history, but a
-/// feed of what people did to the workspace leaves it out.
+/// What a change is to the people sharing a document. Every kind is durable,
+/// shared and kept in the document's own history; they differ in whether a
+/// person takes the change back and whether a feed of what people did to the
+/// workspace shows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChangeKind {
+    /// Something a person did to the content: an undo step of its author's,
+    /// shown in workspace activity.
     #[default]
     Content,
+    /// Housekeeping about the content (a read marker, a reading position):
+    /// no undo step, and workspace activity leaves it out.
     Housekeeping,
+    /// Content that came from outside rather than from anyone's edit:
+    /// articles a refresh fetched, a process's output, what a brand-new
+    /// record starts with from state that already existed. Collaborators
+    /// see it like any content, but it is nobody's undo step, and workspace
+    /// activity leaves it out.
+    External,
 }
 
 impl ChangeKind {
     pub const fn is_content(&self) -> bool {
         matches!(self, Self::Content)
+    }
+
+    /// Whether a change of this kind is an undo step of its author's. Only
+    /// a person's own edits of the content are.
+    pub const fn is_step(&self) -> bool {
+        self.is_content()
     }
 }
 

@@ -24,11 +24,20 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 /// The longest room name a relay accepts.
 const ROOM_NAME_CHARS: usize = 80;
 
+/// Set where the session holds every workspace that a configured host of
+/// its person governs (a company node's own session, which nobody sits at):
+/// it joins each one, as one of the person's devices, once it appears.
+pub const FOLLOW_HOST_ROOMS_ENV: &str = "TILO_SHELL_FOLLOW_HOST_ROOMS";
+/// How often the session asks its hosts for rooms it does not hold yet.
+const FOLLOW_INTERVAL: Duration = Duration::from_secs(3);
+
 #[derive(Default)]
 pub(super) struct State {
     /// Enrollments of this device into the rooms it shared, installed as
     /// they complete.
     shared: Mutex<Vec<u64>>,
+    /// Host rooms this device is enrolling into, by enrollment.
+    joining: Mutex<std::collections::HashMap<RoomId, u64>>,
 }
 
 /// A room this device's person administers on the relay governing it.
@@ -264,6 +273,146 @@ impl ShellNetwork {
                 .push(id);
         }
         Ok(Some(target))
+    }
+
+    /// With [`FOLLOW_HOST_ROOMS_ENV`] set, keep joining the rooms the
+    /// configured hosts of this person govern, as they appear.
+    pub(crate) fn follow_host_rooms(self: &std::sync::Arc<Self>) {
+        if std::env::var_os(FOLLOW_HOST_ROOMS_ENV).is_none() {
+            return;
+        }
+        let net = std::sync::Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-host-rooms".into())
+            .spawn(move || {
+                while let Some(net) = net.upgrade() {
+                    net.join_host_rooms();
+                    drop(net);
+                    std::thread::sleep(FOLLOW_INTERVAL);
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "host rooms are not followed");
+        }
+    }
+
+    /// Join every room a configured host of this person governs that no
+    /// workspace here holds yet.
+    pub(super) fn join_host_rooms(&self) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let certificate = match identity.current_native_material(0) {
+            Ok((certificate, _)) => certificate,
+            Err(error) => {
+                tracing::debug!(%error, "host rooms: no device certificate");
+                return;
+            }
+        };
+        for relay in super::configured_host_addrs() {
+            let rooms = match self.room_admin(relay.clone(), certificate.clone(), RoomCommand::List)
+            {
+                Ok(RoomReply::Rooms(rooms)) => rooms,
+                Ok(_) => continue,
+                Err(error) => {
+                    tracing::debug!(%error, "host rooms unavailable");
+                    continue;
+                }
+            };
+            for summary in rooms {
+                if let Err(error) = self.join_host_room(&relay, &certificate, &summary) {
+                    tracing::warn!(room = %summary.room, %error, "host room not joined");
+                }
+            }
+        }
+    }
+
+    /// Enter `summary`'s room at `relay` as this person's device and enroll
+    /// a workspace into it: the active one when it is the first room this
+    /// session holds that way, else a new one under the room's name.
+    fn join_host_room(
+        &self,
+        relay: &iroh::EndpointAddr,
+        certificate: &DeviceCert,
+        summary: &tilo_relay::rooms::RoomSummary,
+    ) -> Result<(), String> {
+        let room = RoomId::parse(&summary.room).ok_or("the host named an invalid room")?;
+        let tree = self
+            .replica
+            .lock()
+            .map_err(|_| "native replica unavailable")?
+            .tree
+            .clone();
+        let (held, first, active) = {
+            let tree = tree.read();
+            let workspaces = &tree.desktop.workspaces;
+            (
+                workspaces.iter().any(|workspace| workspace.room == room),
+                !workspaces
+                    .iter()
+                    .any(|workspace| tree.requires_native_owner(workspace.room)),
+                tree.desktop.active,
+            )
+        };
+        if held {
+            return Ok(());
+        }
+        {
+            let mut joining = self
+                .relay_rooms
+                .joining
+                .lock()
+                .map_err(|_| "host room enrollments are unavailable")?;
+            let attempts = self
+                .native_enrollment
+                .attempts
+                .lock()
+                .map_err(|_| "native enrollment registry unavailable")?;
+            joining.retain(|_, id| attempts.contains_key(id));
+            if joining.contains_key(&room) {
+                return Ok(());
+            }
+        }
+        self.room_admin(
+            relay.clone(),
+            certificate.clone(),
+            RoomCommand::Enter {
+                room: summary.room.clone(),
+            },
+        )?;
+        let target = AdministeredRoom {
+            relay: relay.clone(),
+            room: summary.room.clone(),
+            certificate: certificate.clone(),
+        };
+        let (own, _, _) = self.invite_to_relay_room(
+            &target,
+            InviteRole::Editor,
+            Some(certificate.user_public_key),
+            None,
+            OWN_INVITATION_SECONDS,
+        )?;
+        let local = if first {
+            active
+        } else {
+            tree.write().append_empty_workspace(&summary.name)
+        };
+        if let PeerSyncResponse::EnrollmentPending { id } =
+            self.accept_peer_invitation(local, &own)?
+        {
+            self.relay_rooms
+                .joining
+                .lock()
+                .map_err(|_| "host room enrollments are unavailable")?
+                .insert(room, id);
+            self.relay_rooms
+                .shared
+                .lock()
+                .map_err(|_| "shared room enrollments are unavailable")?
+                .push(id);
+        }
+        tracing::info!(room = %summary.room, name = %summary.name, "joining a host room");
+        Ok(())
     }
 
     /// Install every shared room whose enrollment completed.

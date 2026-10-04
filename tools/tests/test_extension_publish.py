@@ -93,7 +93,7 @@ FAKE_COSIGN = textwrap.dedent("""\
         assert "--tlog-upload=false" in args and "--yes" in args, args
         Path(value("--output-signature")).write_text(expected)
     elif args[0] == "verify-blob":
-        assert value("--key").endswith("keys/cosign.pub"), args
+        assert value("--key").endswith("keys/extensions.pub"), args
         sys.exit(0 if Path(value("--signature")).read_text() == expected else 1)
     else:
         sys.exit(2)
@@ -221,6 +221,20 @@ class Publish(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.stored("manifest.json").exists())
 
+
+
+class SigningAuthority(unittest.TestCase):
+    """The extension-manifest role trusts tilo/tilo main with one OIDC audience;
+    AWS cannot tell workflows apart, so only this workflow may request it."""
+
+    def test_only_the_manifest_workflow_requests_the_extension_audience(self):
+        workflows = REPO / ".forgejo/workflows"
+        users = sorted(p.name for p in workflows.glob("*.y*ml") if "tilo-extension-manifests" in p.read_text())
+        self.assertEqual(users, ["extension-manifests.yml"])
+        text = (workflows / "extension-manifests.yml").read_text()
+        self.assertIn("TILO_SIGNING_AUDIENCE: tilo-extension-manifests", text)
+        self.assertNotIn("secrets.COSIGN_KEY_REF", text, "the OS release key never signs a manifest")
+        self.assertNotIn("secrets.AWS_SIGNING_ROLE_ARN", text)
 
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,7 @@ env:
 
 jobs:
   validate:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
@@ -161,6 +161,32 @@ jobs:
           fallback-keys: |
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
             github-assets-all-v1-
+      # The tilo-session-apps RPM ships the published env-runtime environment
+      # image, so a first environment opens offline. It is resolved and
+      # Cosign-verified here on the host; the Fedora container's source copy
+      # carries it to dist/rpm/build-rpm.sh.
+      - name: Fetch the env-runtime environment image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends skopeo
+            else
+              sudo -n dnf install -y skopeo
+            fi
+          fi
+          ./os/dev/install-cached-cosign.sh
+          export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
+          rm -rf dist/rpm/build/env-runtime
+          status=0
+          ./os/dev/fetch-env-runtime.sh dist/rpm/build/env-runtime || status=$?
+          case $status in
+            0) ;;
+            1) echo "::warning::no env-runtime is published for os/Containerfile.env-runtime yet; the RPM ships none" ;;
+            *) exit "$status" ;;
+          esac
       - name: Build and install-test all five target userspaces
         env:
           # The compiler cache never enters pull-request code here, and a
@@ -325,7 +351,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
       - name: Require this exact commit to be checked on main
@@ -339,8 +364,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release

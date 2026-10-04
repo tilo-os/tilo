@@ -17,6 +17,7 @@ on:
       - os/base-snapshot.env
       - os/Containerfile.rpms
       - os/dev/verify-rpm-snapshot-signatures.sh
+      - os/scripts/verify-no-cisco-openh264.sh
       - os/dev/layer-rpm-snapshot.py
       - os/dev/rpm-snapshot-fingerprint.py
       - os/dev/resolve-rpm-snapshot.sh
@@ -35,6 +36,7 @@ on:
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
+      - os/Containerfile.env-runtime
       - .forgejo/workflows/build-rpms.yml
 
 concurrency:
@@ -55,8 +57,6 @@ jobs:
       exists: ${{ steps.fp.outputs.exists }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install registry tools
         run: |
           if ! command -v skopeo >/dev/null; then
@@ -90,7 +90,7 @@ jobs:
     if: >-
       needs.fingerprint.outputs.exists != 'true'
       && github.ref == 'refs/heads/main'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -127,8 +127,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -244,7 +242,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
 
@@ -409,8 +406,6 @@ jobs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install verification tools
         run: |
           ./os/dev/install-cached-cosign.sh

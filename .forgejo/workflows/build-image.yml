@@ -118,7 +118,8 @@ env:
 
 jobs:
   plan:
-    runs-on: runner
+    # Orchestration only: it must not queue behind the test lanes.
+    runs-on: runner-quality
     timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
@@ -330,7 +331,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -354,9 +355,10 @@ jobs:
     if: needs.plan.outputs.skip != 'true'
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
     # build-rpms.yml owns all signing as a standalone main workflow. Resolve
-    # only its exact content fingerprint here; never fall back to a stale tag.
+    # only its exact content fingerprint here, waiting while a build-rpms.yml
+    # main run builds it; never fall back to a stale tag.
     runs-on: runner-quality
-    timeout-minutes: 10
+    timeout-minutes: 180
     container:
       image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
@@ -383,8 +385,8 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          ./os/dev/resolve-rpm-snapshot.sh || {
-            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone build-rpms.yml main run, then retry this release.'
+          ./os/dev/await-rpm-snapshot.sh || {
+            echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
             exit 1
           }
 
@@ -838,6 +840,29 @@ jobs:
           set -euo pipefail
           RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
+
+      # The env-runtime environment image the system app store ships, resolved
+      # by the fingerprint of os/Containerfile.env-runtime and Cosign-verified.
+      # Until build-env-runtime.yml has published that definition the image
+      # ships no runtime and environments fetch one on first use.
+      - name: Resolve ENV_RUNTIME_REF (env-runtime image)
+        run: |
+          set -euo pipefail
+          status=0
+          ENV_RUNTIME_REF="$(./os/dev/resolve-env-runtime.sh)" || status=$?
+          case $status in
+            0) ;;
+            1)
+              if ./os/dev/resolve-env-runtime.sh --exists; then
+                echo "::error::the published env-runtime does not verify"
+                exit 1
+              fi
+              echo "::warning::no env-runtime is published for os/Containerfile.env-runtime yet; this image ships none"
+              ENV_RUNTIME_REF=scratch
+              ;;
+            *) exit "$status" ;;
+          esac
+          echo "ENV_RUNTIME_REF=$ENV_RUNTIME_REF" >> "$GITHUB_ENV"
 
       # Branch/PR runs validate the OS integration boundary. Browser engine
       # compilation has its own signed snapshot workflow and is exercised by
@@ -1469,6 +1494,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1500,12 +1526,14 @@ jobs:
           # caches, since a cached layer keeps the file times of the build
           # that made it and any older than this commit escape
           # rewrite-timestamp's clamp (run 48898). Only main writes the layer
-          # caches, and only from a cold builder: a pull request reads main's,
-          # and a builder the runner slot seeded from main's previous dev
-          # build already holds these layers; exporting them cost every run
-          # about two to three minutes.
+          # caches: a pull request reads main's. Main writes the toolchain
+          # even from a seeded builder: after an RPM snapshot change neither
+          # this cache nor the slots' seeded state picked up the new stage,
+          # and every large slot re-ran its dnf install (45-120 s) on each
+          # build. Exporting it is cheap: the stage is a few layers, and
+          # blobs the cache already has are not uploaded again.
           cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build / OS dev: the dev binaries compile on the Fedora bootc base
       # (os/Containerfile.dev's dev-builder), which needs nothing from this
@@ -1598,6 +1626,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1661,6 +1690,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1721,6 +1751,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1793,6 +1824,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1882,6 +1914,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1961,6 +1994,41 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "::notice::pushed dev-trust integration image $ref ($digest)"
 
+      # A real boot of this image's own UKI: from an ESP beside an encrypted
+      # Tilo root, on a virtual panel larger than the firmware's mode, filmed
+      # through the disk unlock. The UKI splash and Plymouth must cover the
+      # whole panel in every phase (os/dev/check-boot-splash.py).
+      - name: Film the boot splash on a high-resolution panel
+        if: steps.dev-image.outputs.digest != ''
+        timeout-minutes: 45
+        env:
+          IMAGE_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          SPLASH_FRAMES: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            if [[ '${{ matrix.arch }}' == x86_64 ]]; then firmware='ovmf qemu-system-x86'; else firmware='qemu-efi-aarch64 qemu-system-arm'; fi
+            sudo -n apt-get update -qq
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+              cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
+          else
+            if [[ '${{ matrix.arch }}' == x86_64 ]]; then firmware='edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga'; else firmware='edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci'; fi
+            sudo -n dnf -y -q install cryptsetup dosfstools mtools skopeo util-linux zstd \
+              qemu-device-display-virtio-gpu $firmware >/dev/null
+          fi
+          rm -rf -- "$SPLASH_FRAMES"
+          python3 os/dev/check-boot-splash.py --arch '${{ matrix.arch }}' --out "$SPLASH_FRAMES" \
+            "docker://registry.tilo.so/tilo/tilo-ci@$IMAGE_DIGEST"
+      - name: Retain the boot splash frames
+        if: always() && steps.dev-image.outputs.digest != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-boot-splash-${{ matrix.arch }}
+          path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 7
+
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
@@ -2008,6 +2076,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -2292,6 +2361,7 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -2552,6 +2622,11 @@ jobs:
             ./os/tests/validation_drive_qemu.sh
           fi
           if [[ $HARDWARE_PROFILE == generic ]]; then
+          # A device joined to an identity from a nearby device holds only a
+          # public identity record and a member certificate. On its own
+          # throwaway overlay of the still-unbooted disk, it signs in straight
+          # to the desktop, without identity setup or recovery.
+          ./os/dev/test-joined-device-startup.sh "$TILO_DISK" --out "$TILO_RUN/joined-device"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
@@ -2615,6 +2690,18 @@ jobs:
           # the release gate that proves the compositor-owned first-use UI is
           # visible to an external AT-SPI consumer on the installed
           # graphical session.
+          # Password fields refuse Copy and Cut. Typed and copied with the
+          # real keyboard, ordinary chrome text reaches the session clipboard
+          # while the backup passphrase leaves it holding what it held.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-plain
+          ./os/dev/vm.sh type tiloplainprobe
+          ./os/dev/vm.sh keys ctrl-a ctrl-c
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh clipboard-is tiloplainprobe
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-secret
+          ./os/dev/vm.sh type tilosecretprobe42
+          ./os/dev/vm.sh keys ctrl-a ctrl-c ctrl-x
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh \
+            clipboard-keeps tilo-clipboard-sentinel tilosecretprobe42
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
@@ -2647,7 +2734,23 @@ jobs:
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          # The empty workspace's cards perform what they name: the Notes card
+          # opens Notes itself rather than a launcher pre-filled with "Notes".
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The greetd login left the display manager's SELinux domain: the
+          # compositor and the apps it launched run as the user, in the
+          # session's logind scope and their own app scopes, and nothing of
+          # the session was denied home access in its first minute.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
+
+          # Typing in a note is a keyboard's job, so the sentence reaches Notes
+          # through QEMU's keyboard as key presses, never an app API. The
+          # document must read back exactly what was typed, in order.
+          typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
+          ./os/dev/vm.sh type "$typed_sentence"
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing"
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
@@ -2702,6 +2805,7 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/serial.log
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/joined-device/
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
           if-no-files-found: ignore
 
@@ -3354,6 +3458,17 @@ jobs:
               | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
           } >> "$GITHUB_ENV"
 
+      # The Lenovo's sound card needs its topology, DSP firmware and UCM
+      # profile in the image; booting it on the laptop is the only test of the
+      # sound itself (DEVELOPMENT.md, "Board dev images on real hardware").
+      - name: Check the board image's audio stack
+        if: matrix.board == 'lenovo-83ed'
+        run: |
+          set -euo pipefail
+          podman run --rm --network none --entrypoint bash \
+            -v "$PWD/os/tests/board_audio_contract.sh:/run/board_audio_contract.sh:ro,z" \
+            "$BOARD_IMAGE" /run/board_audio_contract.sh --root /
+
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
       # does. The lane sealed the UKI with the digest install computes
       # (os/dev/build-board-image.sh) and moved the board's -ci tag to it.
@@ -3502,7 +3617,9 @@ jobs:
   # Integration images remain unsigned and outside the production tilo
   # repository. Publish a multi-architecture index once both native lanes
   # complete. Nothing waits on it: each lane has already published its own
-  # tilo-ci child and dev disk.
+  # tilo-ci child and dev disk. Main builds x86_64 in Build / OS dev and
+  # aarch64 in Build / OS dev (aarch64), newest commit only, so whichever of
+  # the two finishes second promotes; a commit aarch64 skipped has none.
   promote-integration:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
@@ -3529,7 +3646,22 @@ jobs:
           registry: registry.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Each lane publishes its dev image last, so both being in the commit's
+      # dev index means both lanes are done.
+      - name: Check that both native lanes published this commit
+        id: lanes
+        run: |
+          set -euo pipefail
+          source="registry.tilo.so/tilo/tilo-vm:main-${GITHUB_SHA:0:7}-ci"
+          if skopeo inspect --raw "docker://$source" 2>/dev/null \
+              | jq -e '[.manifests[]?.platform.architecture] | sort == ["amd64","arm64"]' >/dev/null; then
+            echo "both=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$source does not hold both native dev images yet; the other lane promotes, or aarch64 skipped this commit"
+            echo "both=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Verify native children and publish unsigned integration index
+        if: steps.lanes.outputs.both == 'true'
         run: |
           set -euo pipefail
           repository=registry.tilo.so/tilo/tilo-ci
@@ -3580,20 +3712,26 @@ jobs:
             exit 1
           }
           durable="$repository:main-${GITHUB_SHA:0:7}"
-          existing=""
+          children_of() { jq -ce '
+            [.manifests[] | {
+              architecture: (if .platform.architecture == "amd64" then "x86_64"
+                             elif .platform.architecture == "arm64" then "aarch64"
+                             else error("unsupported index architecture") end),
+              digest: .digest
+            }] | sort_by(.architecture)'; }
+          # Both lanes may finish together and both promote: an index of the
+          # same children is the same publication.
           if existing_raw="$(skopeo inspect --raw "docker://$durable" 2>/dev/null)"; then
-            existing="sha256:$(printf '%s' "$existing_raw" | sha256sum | awk '{print $1}')"
-          fi
-          [[ -z "$existing" || "$existing" == "$index_digest" ]] || {
-            echo "::error::$durable already binds $existing"
-            exit 1
-          }
-          if [[ -z "$existing" ]]; then
+            [[ "$(children_of <<< "$existing_raw")" == "$expected" ]] || {
+              echo "::error::$durable already binds other children"
+              exit 1
+            }
+          else
             # Only the index: its children are already in the repository.
             skopeo copy --multi-arch index-only --preserve-digests "docker://$image" "docker://$durable"
           fi
-          [[ "$(skopeo inspect --raw "docker://$durable" | sha256sum | awk '{print "sha256:" $1}')" == "$index_digest" ]] || {
-            echo "::error::registry did not persist $durable as $index_digest"
+          [[ "$(skopeo inspect --raw "docker://$durable" | children_of)" == "$expected" ]] || {
+            echo "::error::registry did not persist $durable with the verified native children"
             exit 1
           }
           jq -n --arg image "$image" --arg source "$GITHUB_SHA" \
@@ -3603,6 +3741,7 @@ jobs:
       # origin a machine installed from a dev-disk.yml disk of tag main-ci
       # upgrades from. It only moves forward along main.
       - name: Move tilo-vm:main-ci to this commit's dev images
+        if: steps.lanes.outputs.both == 'true'
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -3626,24 +3765,8 @@ jobs:
           fi
           skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
           echo "::notice::$moving -> $source ($digest)"
-      # A dev VM of this commit downloads its media codecs only through a
-      # signed manifest resolved for exactly its base (extension-manifests.yml).
-      - name: Request the system extension manifests for this commit's dev images
-        continue-on-error: true
-        env:
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          source="registry.tilo.so/tilo/tilo-vm:main-${GITHUB_SHA:0:7}-ci"
-          digest="sha256:$(skopeo inspect --raw "docker://$source" | sha256sum | awk '{print $1}')"
-          image="registry.tilo.so/tilo/tilo-vm@$digest"
-          curl --fail-with-body --silent --show-error -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/extension-manifests.yml/dispatches" \
-            --data "$(jq -cn --arg images "$image" '{ref:"main",inputs:{images:$images}}')"
-          echo "::notice::requested extension manifests for $image ($source)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: steps.lanes.outputs.both == 'true'
         with:
           name: tilo-os-integration-index
           path: tilo-os-integration-index.json

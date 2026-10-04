@@ -2453,15 +2453,32 @@ impl RecordReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
+        self.initialize_seeded(initialize, |_| Ok(()))
+    }
+
+    /// [`Self::initialize`], then `seed` the record on this device: what it
+    /// starts with that depends on who creates it or where (the creator as
+    /// owner, settings that already exist). The seed is written after the
+    /// genesis, which stays the same on every device, and before the
+    /// record's undo history begins, so it is nobody's undo step.
+    ///
+    /// # Errors
+    /// As [`Self::initialize`]; a failing seed fails the initialization.
+    pub fn initialize_seeded(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
         if self.store.0.borrow().portable.is_some() {
-            return self.initialize_portable(initialize);
+            return self.initialize_portable(initialize, seed);
         }
-        self.initialize_with(initialize, app_state::DocWriter::start_new)
+        self.initialize_with(initialize, seed, app_state::DocWriter::start_new)
     }
 
     fn initialize_with(
         &self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         start: impl FnOnce(
             &Rc<app_state::DocOwner>,
             &mut AutoCommit,
@@ -2486,6 +2503,7 @@ impl RecordReservation {
         };
         let mut doc = owner.new_document()?;
         genesis(&mut doc, &self.checkout, &workspace, initialize)?;
+        seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         doc.commit();
@@ -3959,6 +3977,7 @@ mod tests {
                     put_text(doc, "discard", "private");
                     Ok(())
                 },
+                |_| Ok(()),
                 |_, _| {
                     Err(app_state::StoreError::Io {
                         context: "injected initial write refusal".into(),

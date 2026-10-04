@@ -218,6 +218,40 @@ fn read_import_record(source: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Identity of an identity directory's contents, as far as rename-based
+/// writers can change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirStamp {
+    dev: u64,
+    ino: u64,
+    modified: std::time::SystemTime,
+}
+
+impl DirStamp {
+    #[cfg(unix)]
+    fn of(dir: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(dir).ok()?;
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            modified: meta.modified().ok()?,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn of(_dir: &Path) -> Option<Self> {
+        None
+    }
+
+    /// Old enough that a later write cannot share its timestamp.
+    fn settled(self) -> bool {
+        std::time::SystemTime::now()
+            .duration_since(self.modified)
+            .is_ok_and(|age| age >= std::time::Duration::from_secs(2))
+    }
+}
+
 /// Disk owner for the registry.
 #[derive(Clone, Debug)]
 pub struct IdentityRegistryStore {
@@ -344,6 +378,41 @@ impl IdentityRegistryStore {
         Ok(registry)
     }
 
+    /// [`Self::load_reconciled`] for read-only queries that run on every
+    /// painted frame (which identity a room presents). Every writer in the
+    /// identity directory replaces files by rename, so an unchanged
+    /// directory (same inode and modification time) holds the registry the
+    /// last reconcile produced. A directory changed within the last two
+    /// seconds is reconciled again on each call: a coarse filesystem clock
+    /// can give a write that lands right after a reconcile the same time.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::load_reconciled`].
+    pub fn load_reconciled_cached(&self) -> io::Result<IdentityRegistry> {
+        static CACHE: std::sync::Mutex<Option<(PathBuf, DirStamp, IdentityRegistry)>> =
+            std::sync::Mutex::new(None);
+        let before = DirStamp::of(&self.identity_dir);
+        if let Some(stamp) = before
+            && let Ok(cache) = CACHE.lock()
+            && let Some((dir, cached_stamp, registry)) = cache.as_ref()
+            && *dir == self.identity_dir
+            && *cached_stamp == stamp
+        {
+            return Ok(registry.clone());
+        }
+        let registry = self.load_reconciled()?;
+        // A reconcile that saved changed the directory; the next call caches.
+        if let Some(stamp) = DirStamp::of(&self.identity_dir)
+            && before == Some(stamp)
+            && stamp.settled()
+            && let Ok(mut cache) = CACHE.lock()
+        {
+            *cache = Some((self.identity_dir.clone(), stamp, registry.clone()));
+        }
+        Ok(registry)
+    }
+
     /// Import a new identity record and return its profile.
     ///
     /// # Errors
@@ -409,7 +478,7 @@ impl IdentityRegistryStore {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled()?;
+    let registry = store.load_reconciled_cached()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(|profile| profile.record_path.clone()))
@@ -422,7 +491,7 @@ pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled()?;
+    let registry = store.load_reconciled_cached()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(IdentityProfile::principal_id))
@@ -435,7 +504,7 @@ pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled()?;
+    let registry = store.load_reconciled_cached()?;
     Ok(registry.selected_for_workspace(room).cloned())
 }
 

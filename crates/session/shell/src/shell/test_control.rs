@@ -46,6 +46,13 @@ pub enum Command {
         x_to: f64,
         y_to: f64,
         steps: Option<u32>,
+        /// Draw the drag with a pen rather than the mouse: the tip's
+        /// pressure (`0.0..=1.0`), one value for the whole stroke or several
+        /// spread evenly from its start to its end. The pen comes into range
+        /// at the start, touches down, moves, lifts and leaves range at the
+        /// end, so an app sees exactly what a tablet sends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pressure: Option<Vec<f64>>,
     },
     /// Per-surface frame counters for every tracked foreign toplevel. Read-only; lets a harness tell a painted app from one still showing the first-frame placeholder.
     ForeignFrames,
@@ -451,6 +458,16 @@ pub enum PlannedAction {
         x: f64,
         y: f64,
     },
+    /// One event of a virtual pen at `(x, y)` in compositor coordinates,
+    /// with the tip pressed at `pressure` (`0.0..=1.0`). Routed like a real
+    /// tablet's: a tablet-aware client gets the tool, anything else a
+    /// pointer.
+    Pen {
+        phase: crate::compositor::backend::TabletPhase,
+        x: f64,
+        y: f64,
+        pressure: f64,
+    },
     /// Inject a keyboard press or release for `key`. The transport maps `KeyTag` to `winit::keyboard::Key` and synthesises a `WindowEvent::KeyboardInput`.
     KeyboardKey { key: KeyTag, pressed: bool },
     /// Inject a discrete wheel scroll of `(dx, dy)` notches at the cursor. The transport synthesises a `WindowEvent::MouseWheel` carrying a `LineDelta`.
@@ -597,7 +614,16 @@ pub fn dispatch_command<S: ControlState>(
             x_to,
             y_to,
             steps,
+            pressure: None,
         } => drag(*x_from, *y_from, *x_to, *y_to, *steps),
+        Command::Drag {
+            x_from,
+            y_from,
+            x_to,
+            y_to,
+            steps,
+            pressure: Some(pressure),
+        } => pen_drag((*x_from, *y_from), (*x_to, *y_to), *steps, pressure),
         Command::Key { key } => key_press_release(key),
         Command::Scroll { dx, dy } => (
             Response::Ok { frame: 0 },
@@ -835,6 +861,73 @@ fn drag(
     }
     actions.push(PlannedAction::MouseLeftButton { pressed: false });
     (Response::Ok { frame: 0 }, actions)
+}
+
+/// Most pressures a pen drag may name, one per point at most.
+const MAX_PEN_PRESSURES: usize = 1024;
+
+/// [`Command::Drag`] with a pen: into range and down at `from`, `steps`
+/// motions to `to` with the pressure interpolated along `pressure`, then up
+/// and out of range.
+fn pen_drag(
+    from: (f64, f64),
+    to: (f64, f64),
+    steps: Option<u32>,
+    pressure: &[f64],
+) -> (Response, Vec<PlannedAction>) {
+    use crate::compositor::backend::TabletPhase;
+    if pressure.is_empty()
+        || pressure.len() > MAX_PEN_PRESSURES
+        || pressure.iter().any(|p| !(0.0..=1.0).contains(p))
+    {
+        return (
+            Response::Err {
+                code: "parse_error".into(),
+                message: format!("pressure is 1 to {MAX_PEN_PRESSURES} values, each from 0 to 1"),
+            },
+            Vec::new(),
+        );
+    }
+    let steps = steps.unwrap_or(8).clamp(1, MAX_GESTURE_STEPS);
+    let at = |t| pressure_at(pressure, t);
+    let pen = |phase, (x, y): (f64, f64), pressure| PlannedAction::Pen {
+        phase,
+        x,
+        y,
+        pressure,
+    };
+    let mut actions = Vec::with_capacity((steps as usize).saturating_add(4));
+    actions.push(pen(TabletPhase::ProximityIn, from, 0.0));
+    actions.push(pen(TabletPhase::TipDown, from, at(0.0)));
+    for s in 0..steps {
+        let t = if steps == 1 {
+            0.0
+        } else {
+            f64::from(s) / f64::from(steps.saturating_sub(1))
+        };
+        let point = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        actions.push(pen(TabletPhase::Motion, point, at(t)));
+    }
+    actions.push(pen(TabletPhase::TipUp, to, 0.0));
+    actions.push(pen(TabletPhase::ProximityOut, to, 0.0));
+    (Response::Ok { frame: 0 }, actions)
+}
+
+/// The pressure `t` (`0.0..=1.0`) of the way along a stroke whose
+/// `pressure` values (at least one) are spread evenly over it.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "indices are at most MAX_PEN_PRESSURES, exact as f64, and t is within 0..=1"
+)]
+fn pressure_at(pressure: &[f64], t: f64) -> f64 {
+    let last = pressure.len().saturating_sub(1);
+    let position = t.clamp(0.0, 1.0) * last as f64;
+    let below = (position.floor() as usize).min(last);
+    let value = |index: usize| pressure.get(index.min(last)).copied().unwrap_or(0.0);
+    let (start, end) = (value(below), value(below.saturating_add(1)));
+    start + (end - start) * (position - below as f64)
 }
 
 /// Most updates a synthetic gesture is split into: a 144 Hz touchpad
@@ -1888,6 +1981,7 @@ mod tests {
                         x_to: 100.0,
                         y_to: 100.0,
                         steps: Some(4),
+                        pressure: None,
                     },
                     &state,
                 );
@@ -1928,11 +2022,86 @@ mod tests {
                         x_to: 80.0,
                         y_to: 0.0,
                         steps: None,
+                        pressure: None,
                     },
                     &state,
                 );
                 assert_eq!(actions.len(), 11);
             }
+        }
+    }
+
+    #[test]
+    fn a_drag_with_pressure_is_a_pen_stroke_with_pressure_spread_along_it() {
+        use crate::compositor::backend::TabletPhase;
+        let state = StaticState::new(&[]);
+        let wire: Command = serde_json::from_value(serde_json::json!({
+            "op": "drag", "x_from": 0.0, "y_from": 10.0, "x_to": 30.0, "y_to": 10.0,
+            "steps": 4, "pressure": [0.2, 1.0]
+        }))
+        .unwrap();
+        let (response, actions) = dispatch_command(&wire, &state);
+        assert!(matches!(response, Response::Ok { .. }));
+        let planned: Vec<_> = actions
+            .iter()
+            .map(|action| match action {
+                PlannedAction::Pen {
+                    phase, x, pressure, ..
+                } => (*phase, x.round(), (pressure * 100.0).round()),
+                other => panic!("a pen drag plans only pen events: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            planned,
+            [
+                (TabletPhase::ProximityIn, 0.0, 0.0),
+                (TabletPhase::TipDown, 0.0, 20.0),
+                (TabletPhase::Motion, 0.0, 20.0),
+                (TabletPhase::Motion, 10.0, 47.0),
+                (TabletPhase::Motion, 20.0, 73.0),
+                (TabletPhase::Motion, 30.0, 100.0),
+                (TabletPhase::TipUp, 30.0, 0.0),
+                (TabletPhase::ProximityOut, 30.0, 0.0),
+            ]
+        );
+
+        let constant = Command::Drag {
+            x_from: 0.0,
+            y_from: 0.0,
+            x_to: 5.0,
+            y_to: 5.0,
+            steps: Some(2),
+            pressure: Some(vec![0.6]),
+        };
+        let (_, actions) = dispatch_command(&constant, &state);
+        assert!(actions.iter().all(|action| matches!(
+            action,
+            PlannedAction::Pen { phase: TabletPhase::Motion | TabletPhase::TipDown, pressure, .. }
+                if (pressure - 0.6).abs() < 1e-9
+        ) || matches!(
+            action,
+            PlannedAction::Pen {
+                phase: TabletPhase::ProximityIn | TabletPhase::TipUp | TabletPhase::ProximityOut,
+                ..
+            }
+        )));
+
+        for bad in [vec![], vec![1.5], vec![-0.1, 0.5]] {
+            let (response, actions) = dispatch_command(
+                &Command::Drag {
+                    x_from: 0.0,
+                    y_from: 0.0,
+                    x_to: 5.0,
+                    y_to: 5.0,
+                    steps: None,
+                    pressure: Some(bad.clone()),
+                },
+                &state,
+            );
+            assert!(
+                matches!(response, Response::Err { .. }) && actions.is_empty(),
+                "{bad:?} is refused"
+            );
         }
     }
 

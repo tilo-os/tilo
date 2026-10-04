@@ -467,9 +467,17 @@ pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
                 "enable Hyper-V (Windows Pro, Enterprise or Education), in an admin PowerShell: Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All, then reboot".into(),
             )),
         },
+        // A dev device needs nothing but the SSH client that reaches it.
+        "device" => facts
+            .first("ssh")
+            .map(|ssh| Choice {
+                adapter: "device",
+                tools: vec![ToolPath::new("ssh", ssh)],
+            })
+            .ok_or_else(|| missing("ssh not on PATH".into(), "install the OpenSSH client".into())),
         other => Err(missing(
             format!("unknown hypervisor '{other}'"),
-            "use libvirt, qemu, utm or hyperv".into(),
+            "use libvirt, qemu, utm, hyperv, whpx or device".into(),
         )),
     }
 }

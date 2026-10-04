@@ -220,6 +220,14 @@ plaintext path.
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
+- **Rooms a node governs** have no committed routes. A node is a relay whose
+  certificate lets it host and own workspaces; it stewards the channels of
+  the rooms it governs. A desktop session enrolled in such a room serves
+  each route as a channel: its apps ask for keys, seal and open, and its
+  sealed writes go to the relay as the device's own, never through the
+  governor. A company node's own session is such a member: a device of the
+  node's person with its own key and certificate, which joins every room
+  the node governs (`TILO_SHELL_FOLLOW_HOST_ROOMS`).
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and

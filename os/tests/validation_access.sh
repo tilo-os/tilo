@@ -76,6 +76,7 @@ if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq 'ExecStartPre=/usr/bin/env SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-sysext refresh' "$access" \
    && ! grep -Fq 'Environment=SYSTEMD_LOG_LEVEL=debug' "$access" \
    && grep -Fq 'ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt' "$access" \
+   && grep -Fxq 'After=systemd-update-done.service' "$access" \
    && grep -Fq 'TILO_VALIDATION_CERT_MISSING' "$access" \
    && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
    && grep -Fq -- '-device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$vm" \

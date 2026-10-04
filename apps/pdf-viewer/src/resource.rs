@@ -69,11 +69,13 @@ impl Resource for PdfViewer {
                 anchor: Some(format!("pdf.annotation:{}", anno.id)),
                 title: format!("Annotation on page {}", anno.page.saturating_add(1)),
                 text: anno.author.clone(),
+                action: None,
             })
             .chain(state.comments.iter().map(|comment| SearchEntry {
                 anchor: Some(format!("pdf.comment:{}", comment.id)),
                 title: "Comment".into(),
                 text: comment.author.clone(),
+                action: None,
             }))
             .collect()
     }
@@ -87,7 +89,9 @@ impl ResourceApp for PdfViewerShell {
     const ID: &'static str = "so.tilo.pdf-viewer";
     const TITLE: &'static str = "PDF Viewer";
     const ICON: Option<&'static str> = Some("pdf-viewer");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<PdfViewer>) -> Element {
         cx.surface(PdfApp::new())

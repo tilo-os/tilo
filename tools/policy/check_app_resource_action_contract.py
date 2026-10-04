@@ -51,8 +51,14 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 # and installs its replay decoder in the component registry.
 FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 # The framework's launch installs the resource's replay decoder
-# (`Resource::register`) into the component registry itself.
-FRAMEWORK_LAUNCH = re.compile(r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<")
+# (`Resource::register`) into the component registry itself, whether the
+# binary calls it or `ui::main!` expands to it.
+FRAMEWORK_LAUNCH = re.compile(
+    r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\b\w+\s*::\s*main\s*!\s*\("
+)
+# A framework app answers its effect and view operations as a typed
+# vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
+TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -123,7 +129,66 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
+    "surface_document_actions": (
+        re.compile(r"\bfn\s+publishes_document_actions\s*\("),
+        "a surface publishing document actions of its own; bind edits to its view state with "
+        "ResourceSurface::bound_declarations and publish live rows with ResourceSurface::live_rows",
+    ),
 }
+
+# The one resource/action/view model (docs/architecture/README.md): an app's
+# edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
+# its durable state is the resource's document, and nothing beside
+# `Action::apply` writes that document. These count production code only (test
+# files and the trailing `#[cfg(test)]` module are exempt) and may only go down.
+MODEL_RATCHETS = {
+    "app_action_host": (
+        re.compile(r"\bActionHost\b"),
+        "app-owned ActionHost; submit edits through the framework Dispatcher",
+    ),
+    "standalone_launch": (
+        re.compile(
+            r"\bLaunchSpec\s*::\s*new\b|\bLegacyLaunchInputs\b|\bLegacyRecordPolicy\b"
+            r"|\.\s*as_definition\s*\(|\.\s*shot_root\s*\("
+        ),
+        "standalone widget launch; launch the ResourceApp and stage shots with ResourceApp::scenario",
+    ),
+    "direct_document_api": (
+        re.compile(r"\bDocMut\b"),
+        "direct document write; change the document through the resource's Action",
+    ),
+    "empty_action_vocabulary": (
+        re.compile(r"\benum\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>{}]*>)?\s*\{\s*\}"),
+        "empty action vocabulary; the app's durable state belongs in its resource document",
+    ),
+    "widget_owned_document": (
+        re.compile(r"\bAutoCommit\s*::\s*(?:new|load|load_with\w*)\s*\("),
+        "app-owned document; the framework owns the resource document",
+    ),
+}
+RATCHET_REASONS = {
+    **{rule: reason for rule, (_, reason) in RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
+}
+TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
+
+
+def is_test_source(relative: str) -> bool:
+    name = relative.rsplit("/", 1)[-1]
+    return (
+        "/tests/" in relative
+        or name in {"tests.rs", "test_support.rs", "testing.rs"}
+        or name.endswith("_tests.rs")
+        or name.startswith("test_")
+    )
+
+
+def production_code(text: str) -> str:
+    """Code up to the conventional trailing test module, without comments or literals."""
+    found = TEST_MODULE_START.search(text)
+    if found:
+        text = text[: found.start()]
+    return rust_code_only(text)
 
 
 @dataclass(frozen=True)
@@ -215,7 +280,16 @@ def audit_ratchets(
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = rust_code_only(source_text)
-        for rule, (pattern, reason) in RATCHETS.items():
+        rules = [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        # A Tilo workspace invariant, like the app host check in `audit`; the
+        # miniature SDK apps the policy tests build are not held to it.
+        if root.resolve() == ROOT.resolve():
+            production = "" if is_test_source(relative) else production_code(source_text)
+            rules += [
+                (rule, pattern, reason, production)
+                for rule, (pattern, reason) in MODEL_RATCHETS.items()
+            ]
+        for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
             limit = baseline.get(rule, {}).get(relative, 0)
             if len(matches) <= limit:
@@ -613,7 +687,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     ratchet_baseline = load_ratchet_baseline(root)
     baseline_path = root / BASELINE
     for rule, entries in ratchet_baseline.items():
-        if rule not in RATCHETS:
+        if rule not in RATCHET_REASONS:
             violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
         for relative in entries:
             if not (root / relative).is_file():
@@ -667,6 +741,13 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             sources.append((source, source.read_text(encoding="utf-8")))
         combined_raw = "\n".join(text for _, text in sources)
         combined = rust_code_only(combined_raw)
+        # Hand-built effect/view specs are judged by what ships: a test may
+        # assert the kind of an operation the framework publishes.
+        shipped = "\n".join(
+            production_code(text)
+            for source, text in sources
+            if not is_test_source(source.relative_to(root).as_posix())
+        )
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
         main_code = rust_code_only(live_launch_registration_code(main_raw))
@@ -751,9 +832,11 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app builds no runtime Resource value (an empty provider is not a protocol)",
                     )
                 )
+            typed_effects = framework_host and TYPED_EFFECT_HANDLER.search(combined) is not None
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(combined)
+                and not typed_effects
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER.search(combined)
             ):
                 violations.append(
@@ -765,7 +848,8 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(combined)
+                and not typed_effects
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER_REGISTRY.search(combined)
             ):
                 violations.append(
@@ -775,7 +859,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "effect/view actions require an explicit runtime handler registry",
                     )
                 )
-            if not toolkit_host and OPERATION_KIND.search(combined):
+            if not toolkit_host and OPERATION_KIND.search(shipped):
                 for entry in unattached_handler_entries(combined_raw):
                     violations.append(
                         Violation(

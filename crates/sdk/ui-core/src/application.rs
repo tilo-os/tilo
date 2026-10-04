@@ -33,10 +33,15 @@ pub struct ApplicationDefinition {
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host
-    /// hands it a file ([`HostContext::take_open_file`]).
+    /// hands it a file ([`HostContext::take_open_file`]); [`ANY_MEDIA_TYPE`]
+    /// for a component that opens every file (a hex editor).
     pub opens: &'static [&'static str],
     pub create: ComponentFactory,
 }
+
+/// The entry of [`ApplicationDefinition::opens`] that opens files of every
+/// type.
+pub const ANY_MEDIA_TYPE: &str = "*/*";
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
@@ -90,7 +95,32 @@ pub struct HostContext {
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
+    capture: Option<Capture>,
+    settings: crate::storage::SettingsDocument,
+    launch_arguments: Vec<String>,
 }
+
+/// What a host prepares an instance for when it renders a screenshot
+/// (`--shots`, `--shots-dir`, `--responsive-matrix`) rather than a window
+/// someone uses: the app shows a deterministic scene from fixtures and
+/// starts nothing that reaches outside the process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    scenario: Option<String>,
+}
+
+impl Capture {
+    /// A capture of the named scenario; `None` is a plain `--shots`.
+    pub fn new(scenario: Option<String>) -> Self {
+        Self { scenario }
+    }
+
+    /// The scenario captured; `None` for a plain `--shots`.
+    pub fn scenario(&self) -> Option<&str> {
+        self.scenario.as_deref()
+    }
+}
+
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
     /// Effective snapshot, with scale metadata describing its baked values, as when
@@ -260,6 +290,9 @@ impl HostContext {
             retirement: None,
             content: None,
             open_file: None,
+            capture: None,
+            settings: crate::storage::SettingsDocument::Session,
+            launch_arguments: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -290,6 +323,25 @@ impl HostContext {
     /// The file the host handed over to open, once.
     pub fn take_open_file(&mut self) -> Option<OpenFile> {
         self.open_file.take()
+    }
+    /// Prepare the instance for a screenshot of `capture` instead of a
+    /// window someone uses.
+    pub fn provide_capture(&mut self, capture: Capture) {
+        self.capture = Some(capture);
+    }
+    /// The screenshot this instance is prepared for, if it is one.
+    pub fn capture(&self) -> Option<&Capture> {
+        self.capture.as_ref()
+    }
+    /// Hand the component what its launch named besides a file: the
+    /// arguments of a command line or an "open with" (paths, URLs), in order.
+    /// The host has already checked how many the component accepts.
+    pub fn provide_launch_arguments(&mut self, arguments: Vec<String>) {
+        self.launch_arguments = arguments;
+    }
+    /// The launch arguments the host handed over, once.
+    pub fn take_launch_arguments(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.launch_arguments)
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
@@ -349,10 +401,21 @@ impl HostContext {
     pub fn files(&self) -> crate::storage::AppFiles {
         crate::storage::AppFiles::for_app(&self.app_id)
     }
-    /// This app's preferences: its own section of the desktop settings
-    /// document, named by the app id.
-    pub fn settings(&self) -> crate::storage::Settings {
-        crate::storage::Settings::for_app(&self.app_id)
+    /// This app's typed settings of type `T`, in the settings document the
+    /// host gave it ([`Self::provide_settings`]); `T` declares how far they
+    /// travel.
+    pub fn settings<T: crate::storage::SettingsSchema>(&self) -> crate::storage::Settings<T> {
+        self.storage().settings()
+    }
+    /// This app's files, secrets and settings in one handle, as framework
+    /// views and surfaces receive them.
+    pub fn storage(&self) -> crate::storage::AppStorage {
+        crate::storage::AppStorage::new(&self.app_id, self.secrets(), self.settings.clone())
+    }
+    /// Give the component this settings document instead of the person's
+    /// session document: a test or capture profile's own.
+    pub fn provide_settings(&mut self, document: crate::storage::SettingsDocument) {
+        self.settings = document;
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -365,6 +428,15 @@ impl HostContext {
             .read(&self.record.id, read)
             .ok_or(RecordOpenError::MissingRecord)
     }
+    /// Merge another participant's copy of the record, as their changes
+    /// arriving over sync are merged: validated first, attributed to them in
+    /// history, and never on this participant's undo stack. Returns whether
+    /// anything changed.
+    /// # Errors
+    /// The document is not a valid copy of this record, or it is not open.
+    pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
+        self.records.merge_peer_document(&self.record, document)
+    }
     /// The unique owner transition from Reserved to Ready. Existing is never initialized.
     /// # Errors
     /// Refuses repeated initialization and preserves the reservation on schema/storage failure.
@@ -374,6 +446,23 @@ impl HostContext {
     ) -> Result<(), RecordOpenError> {
         let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
         reservation.initialize(initialize)?;
+        self.reservation = None;
+        Ok(())
+    }
+    /// [`Self::initialize_new_record`], then `seed` the record as this
+    /// author on this device. The genesis `initialize` writes is the same on
+    /// every device; the seed is what depends on who creates the record or
+    /// where, and is nobody's undo step. See
+    /// [`RecordReservation::initialize_seeded`].
+    /// # Errors
+    /// As [`Self::initialize_new_record`]; a failing seed fails it too.
+    pub fn initialize_new_record_seeded(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
+        let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
+        reservation.initialize_seeded(initialize, seed)?;
         self.reservation = None;
         Ok(())
     }
@@ -462,9 +551,13 @@ impl ApplicationDefinition {
     }
 
     /// Whether the component opens files of `media_type` (parameters and case ignored).
+    /// [`ANY_MEDIA_TYPE`] among [`Self::opens`] opens every file.
     pub fn opens_media_type(&self, media_type: &str) -> bool {
-        open_file::media_type_essence(media_type)
-            .is_some_and(|essence| self.opens.contains(&essence.as_str()))
+        open_file::media_type_essence(media_type).is_some_and(|essence| {
+            self.opens
+                .iter()
+                .any(|opens| *opens == ANY_MEDIA_TYPE || *opens == essence.as_str())
+        })
     }
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
     /// The factory projects through `HostContext::read_record`; no mutable `Widget::sync`
@@ -575,7 +668,7 @@ impl ApplicationDefinition {
 
 /// How the window hosting a component treats its tree. Part of the
 /// component, so every host that runs it applies the same behaviour.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComponentBehaviour {
     /// After a structural rebuild, focus the first focusable field again so a
     /// filter that rebuilds the tree keeps its caret.
@@ -583,6 +676,26 @@ pub struct ComponentBehaviour {
     /// Apply the tree's [`crate::widget::Widget::appearance_intent`] live:
     /// scale, theme, contrast and motion follow it each tick.
     pub appearance_reconcile: bool,
+    /// Withhold the window from screenshots, recordings, screen sharing and
+    /// remote viewers, as [`crate::App::set_capture_protected`] does: for
+    /// apps that show secrets, such as a password manager.
+    pub capture_protected: bool,
+}
+
+impl ComponentBehaviour {
+    /// Every behaviour off; a component spells out only what it turns on,
+    /// `ComponentBehaviour { capture_protected: true, ..ComponentBehaviour::DEFAULT }`.
+    pub const DEFAULT: Self = Self {
+        autofocus_on_structure_change: false,
+        appearance_reconcile: false,
+        capture_protected: false,
+    };
+}
+
+impl Default for ComponentBehaviour {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// Real app content and its lifetime; hosts cannot extract an unbound root.

@@ -6,7 +6,8 @@
 //! library the OS ships, which must be built with the OS's feature set, and
 //! that set links the media stack, `gstreamer-1.0`. Without its development
 //! files Cargo fails deep in a `-sys` build script; this names the packages
-//! first.
+//! when it does. Only then: `cargo` may be a drop-in that compiles on
+//! another machine, so what this one lacks must not stop a build that works.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -91,23 +92,25 @@ pub fn install_hint(missing: &[Library]) -> String {
     )
 }
 
-/// Fails with the packages to install when a thin build for this machine
-/// would stop in a build script.
-///
-/// # Errors
-///
-/// Returns an error naming each missing library and its package.
-pub fn require_thin_runtime() -> Result<()> {
+/// What to say after a thin build for this machine failed: the packages to
+/// install, when pkg-config here does not find the media stack; `None` when
+/// it does, so the failure lies elsewhere.
+#[must_use]
+pub fn thin_build_failure_hint() -> Option<String> {
     let pkg_config = std::env::var_os("PKG_CONFIG").unwrap_or_else(|| OsString::from("pkg-config"));
-    let missing = missing(&pkg_config, &THIN_RUNTIME);
-    if missing.is_empty() {
-        return Ok(());
-    }
-    bail!(
-        "a Tilo OS build links the toolkit library the OS ships, which links GStreamer; {}\n\
-         a desktop package (`--platform linux`) needs none of them",
-        install_hint(&missing)
-    )
+    thin_build_failure_hint_from(&pkg_config)
+}
+
+fn thin_build_failure_hint_from(pkg_config: &OsStr) -> Option<String> {
+    let missing = missing(pkg_config, &THIN_RUNTIME);
+    (!missing.is_empty()).then(|| {
+        format!(
+            "if it stopped in a GStreamer build script: a Tilo OS build links the toolkit library \
+             the OS ships, which links GStreamer; {}\n\
+             a desktop package (`--platform linux`) needs none of them",
+            install_hint(&missing)
+        )
+    })
 }
 
 /// Whether a thin build for this machine can find its libraries. Asked once
@@ -189,6 +192,16 @@ mod tests {
         let found = missing(OsStr::new("/nonexistent/pkg-config"), &THIN_RUNTIME);
         assert_eq!(found[0], PKG_CONFIG);
         assert_eq!(&found[1..], &THIN_RUNTIME);
+    }
+
+    #[test]
+    fn a_failed_thin_build_names_packages_only_when_they_are_missing() {
+        let hint = thin_build_failure_hint_from(OsStr::new("/nonexistent/pkg-config"))
+            .expect("nothing found without pkg-config");
+        assert!(hint.contains("links GStreamer; missing pkg-config, gstreamer-1.0"));
+        assert!(hint.ends_with("a desktop package (`--platform linux`) needs none of them"));
+        // `true` answers every `--exists`: the libraries are there.
+        assert_eq!(thin_build_failure_hint_from(OsStr::new("true")), None);
     }
 
     #[test]

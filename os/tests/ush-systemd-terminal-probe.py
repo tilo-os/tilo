@@ -25,7 +25,7 @@ client.settimeout(10)
 client.connect(socket_path)
 request = {
     "op": "open-session",
-    "profile": "ush",
+    "target": {"kind": "environment"},
     "cols": 100,
     "rows": 30,
     "term": "xterm-256color",

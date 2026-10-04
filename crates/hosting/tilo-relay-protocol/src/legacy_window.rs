@@ -118,6 +118,9 @@ pub enum InputEvent {
         /// At most [`MAX_CLIPBOARD_BYTES`].
         text: String,
     },
+    /// The viewer closed the window: the session asks it to close, as a
+    /// person's close of its tab does.
+    Close,
 }
 
 impl InputEvent {
@@ -157,17 +160,6 @@ pub struct InputRequest {
 }
 
 impl InputRequest {
-    /// Whether the current native peer decodes every event. Wheel and clipboard
-    /// variants are reserved until the native input endpoint implements them.
-    pub fn supported(&self) -> bool {
-        self.events.iter().all(|event| {
-            !matches!(
-                event,
-                InputEvent::PointerAxis { .. } | InputEvent::ClipboardText { .. }
-            )
-        })
-    }
-
     /// Whether every event and request bound holds.
     pub fn valid(&self) -> bool {
         self.events.len() <= MAX_INPUT_EVENTS && self.events.iter().all(InputEvent::valid)

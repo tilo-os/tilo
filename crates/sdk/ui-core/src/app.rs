@@ -491,19 +491,7 @@ pub struct ControlBindingCoverage {
     pub status: ControlBindingStatus,
 }
 
-/// One visible expression of a domain action in the retained UI. The action
-/// address remains the execution identity; this route is presentation
-/// metadata for focus, presence, animation, and “show me where” behavior.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ActionUiRoute {
-    pub address: tilo_actions::ActionAddress,
-    pub control_id: String,
-    /// Root-to-control semantic path. Fewer nodes is the cheaper UI route.
-    pub path: Vec<crate::a11y_tree::SemanticId>,
-    pub bounds: Option<vello::kurbo::Rect>,
-    pub focused: bool,
-    pub disabled: bool,
-}
+pub use crate::action_locus::ActionUiRoute;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -943,6 +931,7 @@ impl App {
         let mut app = retirement_assembly::assemble(root_custody);
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
+        app.set_capture_protected(behaviour.capture_protected);
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {

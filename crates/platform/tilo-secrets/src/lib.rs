@@ -413,6 +413,108 @@ impl SecretStore {
     }
 }
 
+impl SecretStore {
+    /// The secret one item of a document needs for `purpose`: a database
+    /// profile's password, a connection's SSH passphrase, an account's
+    /// one-time-password seed. The document names the item by its id and
+    /// never holds the secret; the secret stays in this store on this
+    /// device.
+    ///
+    /// `purpose` is one of the app's own fixed names and contains no `/`;
+    /// `item` is the item's id in the document.
+    #[must_use]
+    pub fn item(&self, purpose: &'static str, item: &str) -> ItemSecret {
+        debug_assert!(
+            !purpose.is_empty() && !purpose.contains('/'),
+            "an item secret's purpose is a plain name: {purpose:?}"
+        );
+        ItemSecret {
+            store: self.clone(),
+            key: format!("{purpose}/{item}"),
+            label: format!("{} {purpose} for {item}", self.app),
+        }
+    }
+}
+
+/// The secret of one document item in an app's [`SecretStore`]; see
+/// [`SecretStore::item`].
+#[derive(Clone, Debug)]
+pub struct ItemSecret {
+    store: SecretStore,
+    key: String,
+    label: String,
+}
+
+impl ItemSecret {
+    /// The store key: `<purpose>/<item id>`.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The secret, or `None` when this device has none for the item.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    pub async fn get(&self) -> Result<Option<Secret>, SecretError> {
+        self.store.get(&self.key).await
+    }
+
+    /// Keep `value` as the item's secret, replacing any earlier one.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    pub async fn put(&self, value: &[u8]) -> Result<(), SecretError> {
+        let options = PutOptions {
+            label: Some(self.label.clone()),
+        };
+        self.store.put(&self.key, value, options).await
+    }
+
+    /// Forget the item's secret, as when the item is deleted.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    pub async fn delete(&self) -> Result<(), SecretError> {
+        self.store.delete(&self.key).await
+    }
+
+    /// [`get`](Self::get), blocking the calling thread. Desktop code only.
+    ///
+    /// # Errors
+    /// As `get`, and [`Feature::Blocking`] unsupported on the web.
+    pub fn get_blocking(&self) -> Result<Option<Secret>, SecretError> {
+        self.store.get_blocking(&self.key)
+    }
+
+    /// [`put`](Self::put), blocking the calling thread. Desktop code only.
+    ///
+    /// # Errors
+    /// As `put`, and [`Feature::Blocking`] unsupported on the web.
+    pub fn put_blocking(&self, value: &[u8]) -> Result<(), SecretError> {
+        let options = PutOptions {
+            label: Some(self.label.clone()),
+        };
+        self.store.put_blocking(&self.key, value, options)
+    }
+
+    /// [`delete`](Self::delete), blocking the calling thread. Desktop code
+    /// only.
+    ///
+    /// # Errors
+    /// As `delete`, and [`Feature::Blocking`] unsupported on the web.
+    pub fn delete_blocking(&self) -> Result<(), SecretError> {
+        self.store.delete_blocking(&self.key)
+    }
+
+    /// Whether this device holds the item's secret, for availability such
+    /// as "secret present here". An unavailable store holds none.
+    #[must_use]
+    pub fn present_blocking(&self) -> bool {
+        matches!(self.get_blocking(), Ok(Some(_)))
+    }
+}
+
 /// Whether what this build puts in the system store stays readable by later
 /// builds of the same program. On macOS only a Developer ID signature does
 /// (see the `macos` backend): an ad-hoc or dev build's Keychain items belong
@@ -684,6 +786,30 @@ mod tests {
             .unwrap();
         assert_eq!(b.get_blocking("token").unwrap(), None);
         assert_eq!(a.get_blocking("token").unwrap().unwrap().expose(), b"a's");
+    }
+
+    #[test]
+    fn item_secrets_are_kept_per_purpose_and_item() {
+        let store = SecretStore::memory("so.tilo.db-client");
+        let alpha = store.item("password", "profile-alpha");
+        let beta = store.item("password", "profile-beta");
+        let alpha_key = store.item("key-passphrase", "profile-alpha");
+        assert!(!alpha.present_blocking());
+        alpha.put_blocking(b"hunter2").unwrap();
+        assert!(alpha.present_blocking());
+        assert!(!beta.present_blocking());
+        assert!(!alpha_key.present_blocking());
+        assert_eq!(alpha.key(), "password/profile-alpha");
+        assert_eq!(
+            store
+                .get_blocking("password/profile-alpha")
+                .unwrap()
+                .unwrap()
+                .expose(),
+            b"hunter2"
+        );
+        alpha.delete_blocking().unwrap();
+        assert_eq!(alpha.get_blocking().unwrap(), None);
     }
 
     /// Secret Service item attributes, as `secret-tool` wrote them.

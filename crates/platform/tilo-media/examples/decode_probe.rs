@@ -36,7 +36,7 @@ fn main() {
         println!("  {:<24} {:<10} rank {}", d.name, d.kind.as_str(), d.rank);
     }
 
-    let mut config = tilo_media::EngineConfig::default().silent();
+    let mut config = tilo_media::EngineConfig::default().frames_only();
     if native {
         config.acceptance = tilo_media::FrameAcceptance::Native;
     }

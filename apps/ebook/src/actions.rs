@@ -1244,6 +1244,35 @@ pub fn edit_note_text_action(id: Uuid, edit: tilo_document::RichTextAction) -> E
     }
 }
 
+/// Where the rich text of note (or comment) `id` is published, beneath the
+/// note: a rich-text resource of its own whose every edit is
+/// [`EbookAction::EditNoteText`].
+pub(crate) fn note_text_resource_id(id: Uuid) -> String {
+    ui::tilo_resource::child_resource_id::<crate::resource::Ebook>(&format!("note:{id}"))
+}
+
+/// The note's rich text as published in the library's tree.
+fn note_text_resource(id: Uuid, label: &str) -> Resource {
+    ui::tilo_resource::publish_child::<tilo_document::RichText, crate::resource::Ebook>(
+        &note_text_resource_id(id),
+        label,
+        None,
+        move |edit| edit_note_text_action(id, edit),
+    )
+}
+
+/// The dispatcher the note's editor writes through: each edit applies as
+/// the library's [`EbookAction::EditNoteText`], at the id the library
+/// publishes the note's text under.
+pub(crate) fn note_text_dispatcher(
+    library: &ui::framework::Dispatcher<crate::resource::Ebook>,
+    id: Uuid,
+) -> ui::framework::Dispatcher<tilo_document::RichText> {
+    library.child::<tilo_document::RichText>(&note_text_resource_id(id), move |edit| {
+        edit_note_text_action(id, edit)
+    })
+}
+
 /// Build the replayable draft-finalisation action used by both note and
 /// comment editors. `created` is minted at the user-visible completion point,
 /// never inside action application.
@@ -1748,6 +1777,10 @@ fn with_annotation_document_actions(
                 delete_id,
                 delete_label,
                 &delete_annotation_action(id),
+            ));
+            resource.children.push(note_text_resource(
+                id,
+                if comment { "Comment text" } else { "Note text" },
             ));
         }
     }

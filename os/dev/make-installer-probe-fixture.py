@@ -9,7 +9,7 @@ import re
 import tarfile
 
 
-def create(root, output, digest):
+def create(root, output, digest, promotion=None):
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
         raise ValueError('a pinned OCI digest is required')
     files = {}
@@ -23,8 +23,16 @@ def create(root, output, digest):
         raise ValueError('fixture exceeds file/total size bound')
     manifest = {'schema':'tilo.installer-code-boot-fixture.v1','physical_admission':False,
                 'source_kind':'operator-supplied-original-ci-inputs','target_digest':digest,'files':files}
+    if promotion is not None:
+        if type(promotion) is not dict or not re.fullmatch('[0-9a-f]{128}', promotion.get('composefs_digest', '')) or not all(
+                type(promotion.get(key)) is str and 0 < len(promotion[key]) <= 16384
+                for key in ('origin', 'loader', 'update_origin')):
+            raise ValueError('invalid promotion fixture')
+        manifest['promotion']=promotion
+    raw=json.dumps(manifest,sort_keys=True).encode()
+    if len(raw)>16384: raise ValueError('fixture manifest exceeds metadata bound')
     with output.open('xb') as stream, tarfile.open(fileobj=stream,mode='w') as archive:
-        raw=json.dumps(manifest,sort_keys=True).encode(); entry=tarfile.TarInfo('fixture.json'); entry.size=len(raw)
+        entry=tarfile.TarInfo('fixture.json'); entry.size=len(raw)
         archive.addfile(entry,io.BytesIO(raw))
         for name in files: archive.add(root/name,arcname=name,recursive=False)
     return manifest
@@ -35,5 +43,18 @@ if __name__ == '__main__':
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--target-digest',required=True)
+    parser.add_argument('--promotion-origin',type=Path)
+    parser.add_argument('--promotion-loader',type=Path)
+    parser.add_argument('--composefs-digest')
+    parser.add_argument('--update-origin')
     args=parser.parse_args()
-    print(json.dumps(create(args.root,args.output,args.target_digest),sort_keys=True))
+    values=(args.promotion_origin,args.promotion_loader,args.composefs_digest,args.update_origin)
+    promotion=None
+    if any(values):
+        if not all(values) or not re.fullmatch('[0-9a-f]{128}',args.composefs_digest):
+            parser.error('promotion requires origin, loader, composefs digest and update origin')
+        if any(path.stat().st_size>16384 or path.is_symlink() for path in values[:2]):
+            parser.error('unsafe promotion fixture metadata')
+        promotion={'origin':args.promotion_origin.read_text(),'loader':args.promotion_loader.read_text(),
+                   'composefs_digest':args.composefs_digest,'update_origin':args.update_origin}
+    print(json.dumps(create(args.root,args.output,args.target_digest,promotion),sort_keys=True))

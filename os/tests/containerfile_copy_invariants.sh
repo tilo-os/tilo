@@ -76,6 +76,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -85,7 +87,11 @@ containerfile="$repo/os/Containerfile"
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
 # The extension overlay replaces the codec-specific resolver: no repository
 # definitions or upstream keys ship, only the generic helper and its units.
-expected_contract=59d815025b2c0dcab6845d6073e7e4f65dfcacebca68b46add8f9db7b8fd39a3
+# The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
+# The extension-manifest public key ships beside the helper.
+# The release gate's greetd session-context check ships beside the other
+# booted-guest checks in /usr/libexec/tilo.
+expected_contract=c3175072d78ebd8d6064309461374ef3a636cf8185a9aad34cbc55229df01d7d
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -127,8 +133,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
 # Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
 # kernel image identity into that layer's cache key adds one ARG (153).
-[ "$instructions" -le 153 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 153)" >&2
+# Redeclaring RPMS_REF before the first snapshot install, for the same reason,
+# adds one more (154).
+[ "$instructions" -le 154 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
   exit 1
 }
 

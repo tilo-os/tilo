@@ -296,13 +296,16 @@ def process_command(pid: int) -> str:
 
 
 def app_log(app_name: str) -> str:
-    """The session journal's recent lines about the launch, for a failed open."""
-    lines = command(
-        "journalctl", "--user", "-b", "--no-pager", "-o", "cat", "-n", "400", check=False,
-    ).splitlines()
-    needles = ("launch", "launcher", "file-explorer", app_name.lower(), "accesskit", "at-spi", "atspi")
+    """Why a launch failed, for a failed open. The compositor records each
+    launch and the app's own output in its session log, not the journal."""
+    session_log = Path.home() / ".local/state/tilo/session-logs/latest.log"
+    try:
+        lines = session_log.read_text(errors="replace").splitlines()[-2000:]
+    except OSError as error:
+        return f"(no session log: {error})"
+    needles = ("tilo::app_launch", "[app so.tilo.", app_name.lower())
     relevant = [line for line in lines if any(n in line.lower() for n in needles)]
-    return " | ".join(relevant[-25:]) or "(nothing)"
+    return " | ".join(line[:300] for line in relevant[-12:]) or "(nothing)"
 
 
 def is_app_connection(client: AtspiClient) -> bool:
@@ -352,15 +355,20 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
             continue
         # One accepted activation launches the app; wait for it rather than
         # launching a second copy from another row.
-        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            for bus, pid in bus_pids(address).items():
-                if bus in before:
-                    continue
-                if is_app_connection(AtspiClient(address, bus)):
-                    return bus, app_process(pid)
-            time.sleep(POLL_SECONDS * 4)
-        break
+        return wait_for_new_app(address, before, app_name)
+    raise GateError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
+
+
+def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str, int]:
+    """The app connection that joined the bus after BEFORE was taken."""
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        for bus, pid in bus_pids(address).items():
+            if bus in before:
+                continue
+            if is_app_connection(AtspiClient(address, bus)):
+                return bus, app_process(pid)
+        time.sleep(POLL_SECONDS * 4)
     seen = []
     for bus, pid in sorted(bus_pids(address).items()):
         if bus in before:
@@ -374,8 +382,31 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
     raise GateError(
         f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
         f"new connections: {'; '.join(seen) or 'none'}; "
-        f"its session log: {app_log(app_name)}"
+        f"session log: {app_log(app_name)}"
     )
+
+
+def open_from_launchpad_card(address: str, card: str, app_name: str) -> tuple[str, int]:
+    """Activate the empty workspace's CARD and require that it opens APP_NAME
+    itself. A card that only pre-fills the app launcher starts nothing, so
+    no app joins the bus and this fails."""
+    shell = shell_client(address)
+    before = set(bus_pids(address))
+    _, node = wait_for_shell_node(shell, card)
+    result = shell.call(node, "org.a11y.atspi.Action.DoAction", "0")
+    if "true" not in result:
+        raise GateError(f"AT-SPI launchpad card {card!r} was rejected: {result.strip()}")
+    bus, pid = wait_for_new_app(address, before, app_name)
+    # The application node is named after the executable; a sandboxed one is
+    # behind its proxy, so its command line names it too.
+    root_name = AtspiClient(address, bus).property(ROOT_PATH, "Name")
+    if app_name.lower() not in f"{root_name} {process_command(pid)}".lower():
+        close_app(pid)
+        raise GateError(
+            f"launchpad card {card!r} opened {root_name.strip()} "
+            f"({process_command(pid)}), not {app_name}"
+        )
+    return bus, pid
 
 
 def close_app(pid: int) -> None:
@@ -430,6 +461,101 @@ def exercise(scenario: Scenario, address: str) -> None:
     print(f"AT-SPI external client passed: {scenario.app_id} ({scenario.action} action round trip)")
 
 
+FOCUSED_STATE_BIT = 1 << 12
+TYPING_TIMEOUT_SECONDS = 30
+TYPING_TREE_NODE_LIMIT = 512
+
+
+def text_reply(reply: str) -> str | None:
+    """The string in a gdbus `Text.GetText` reply such as `('hi',)`."""
+    match = re.match(r"\('(.*)',\)\s*$", reply.strip(), re.S)
+    if not match:
+        return None
+    return match.group(1).replace("\\'", "'").replace("\\\\", "\\")
+
+
+def text_nodes(client: AtspiClient) -> dict[str, str]:
+    """Every node exposing AT-SPI Text, with its whole current text."""
+    texts: dict[str, str] = {}
+    for path in client.tree(TYPING_TREE_NODE_LIMIT):
+        if "org.a11y.atspi.Text" not in client.interfaces(path):
+            continue
+        reply = client.call(path, "org.a11y.atspi.Text.GetText", "--", "0", "-1", check=False)
+        text = text_reply(reply)
+        if text is not None:
+            texts[path] = text
+    return texts
+
+
+def prepare_typing(address: str, app_name: str, create: str, state: Path) -> None:
+    """Open APP_NAME, activate CREATE (its new-document action) and give the
+    document keyboard focus, so the next real key presses type into it. The
+    app's bus, pid and document node are written to STATE for `typed`."""
+    bus_name, pid = open_in_session(address, app_name)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        try:
+            tree = client.tree(TYPING_TREE_NODE_LIMIT)
+            client.click(tree, create)
+            break
+        except GateError:
+            if time.monotonic() >= deadline:
+                close_app(pid)
+                raise
+            time.sleep(POLL_SECONDS * 4)
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    document = None
+    while document is None:
+        for path in client.tree(TYPING_TREE_NODE_LIMIT):
+            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+            if "document" in role and "Component" in client.interfaces(path):
+                document = path
+                break
+        else:
+            if time.monotonic() >= deadline:
+                close_app(pid)
+                raise GateError(f"{app_name}: {create!r} opened no document to type into")
+            time.sleep(POLL_SECONDS * 4)
+    client.call(document, "org.a11y.atspi.Component.GrabFocus")
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        reply = client.call(document, "org.a11y.atspi.Accessible.GetState", check=False)
+        word = re.search(r"uint32\s+(\d+)", reply)
+        if word and int(word.group(1)) & FOCUSED_STATE_BIT:
+            break
+        if time.monotonic() >= deadline:
+            close_app(pid)
+            raise GateError(f"{app_name}: the document never took keyboard focus")
+        time.sleep(POLL_SECONDS)
+    state.write_text(f"{bus_name} {pid}\n")
+    print(f"{app_name}: a new document has keyboard focus; type into it now")
+
+
+def check_typed(address: str, state: Path, expected: str) -> None:
+    """The document opened by `prepare_typing` holds exactly EXPECTED."""
+    bus_name, pid_text = state.read_text().split()
+    pid = int(pid_text)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + TYPING_TIMEOUT_SECONDS
+    texts: dict[str, str] = {}
+    try:
+        while time.monotonic() < deadline:
+            try:
+                texts = text_nodes(client)
+            except GateError:
+                texts = {}
+            if expected in texts.values():
+                print(f"typed text reads back exactly: {expected!r}")
+                return
+            time.sleep(POLL_SECONDS * 4)
+        seen = sorted({text for text in texts.values() if text})
+        raise GateError(f"typed {expected!r}, but the document's text nodes hold {seen!r}")
+    finally:
+        close_app(pid)
+        state.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -439,6 +565,21 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command")
     opener = sub.add_parser("open", help="open an installed app in the session; print its AT-SPI bus and pid")
     opener.add_argument("app_name")
+    typing = sub.add_parser(
+        "type-into",
+        help="open an installed app, start a new document and focus it for real keyboard input",
+    )
+    typing.add_argument("app_name")
+    typing.add_argument("create", help="the accessible name of the app's new-document action")
+    typing.add_argument("--state", type=Path, required=True)
+    typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
+    typed.add_argument("text")
+    typed.add_argument("--state", type=Path, required=True)
+    card = sub.add_parser(
+        "card", help="activate a launchpad card on the empty workspace; require that it opens its app",
+    )
+    card.add_argument("card_name")
+    card.add_argument("app_name")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -449,6 +590,17 @@ def main() -> int:
         if args.command == "open":
             bus_name, pid = open_in_session(address, args.app_name)
             print(f"{bus_name} {pid}")
+            return 0
+        if args.command == "type-into":
+            prepare_typing(address, args.app_name, args.create, args.state)
+            return 0
+        if args.command == "typed":
+            check_typed(address, args.state, args.text)
+            return 0
+        if args.command == "card":
+            _bus_name, pid = open_from_launchpad_card(address, args.card_name, args.app_name)
+            close_app(pid)
+            print(f"AT-SPI external client passed: launchpad card {args.card_name!r} opened {args.app_name}")
             return 0
         for scenario, _binary in installed_scenarios(args.payload_root):
             exercise(scenario, address)

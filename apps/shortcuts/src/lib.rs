@@ -63,7 +63,9 @@ impl ResourceApp for App {
     type Resource = Workbench;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1180, 760);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1180, 760)
+    }
 
     fn view(cx: &mut ViewCx<Workbench>) -> Element {
         install_catalog();

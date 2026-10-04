@@ -67,6 +67,10 @@ pub mod collab_capnp {
 
 pub mod committed_document;
 pub mod native_media;
+#[cfg(feature = "client")]
+pub mod settings;
+#[cfg(feature = "client")]
+pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
 
 /// Opaque capability naming MLS state held by the shell's vault provider.
 /// Bytes are useful only while registered in that provider; this type carries
@@ -1051,6 +1055,21 @@ impl ChannelHandle {
             .await?;
         Ok(RealtimeStream {
             inner: Rc::new(reply.get()?.get_stream()?),
+        })
+    }
+
+    /// This application's settings: its own entries in the session's
+    /// records and the shared sections every app reads. The broker binds
+    /// the capability to this channel's certified app.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker has no settings to give or
+    /// is unavailable.
+    pub async fn settings(&self) -> Result<AppSettingsHandle, NotAvailable> {
+        let reply = self.inner.settings_request().send().promise.await?;
+        Ok(AppSettingsHandle {
+            inner: Rc::new(reply.get()?.get_settings()?),
         })
     }
 

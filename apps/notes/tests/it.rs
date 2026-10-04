@@ -14,6 +14,10 @@
 mod click_link_navigates;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
+#[path = "framework_body.rs"]
+mod framework_body;
+#[path = "framework_new_note.rs"]
+mod framework_new_note;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
@@ -50,6 +54,8 @@ mod slash_menu_focus;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_order.rs"]
+mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]

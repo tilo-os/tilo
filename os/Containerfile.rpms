@@ -31,6 +31,14 @@ RUN sed -i \
       /etc/yum.repos.d/fedora-updates.repo \
  && printf '[main]\nmax_parallel_downloads=20\n' > /etc/dnf/dnf.conf
 
+# Tilo never distributes Cisco's OpenH264 binary: Cisco's patent licence covers
+# only binaries the user downloads from Cisco. With the base's
+# fedora-cisco-openh264 repository enabled, its `openh264` (which obsoletes
+# Fedora's `noopenh264` stub) satisfies libopenh264.so.8 for libavcodec-free,
+# libheif and freerdp-libs and so would enter every image. Without it the stub
+# does; Cisco's build reaches a device only through the media-codecs extension.
+RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo
+
 # Repository tooling must never change the RPM database used for resolution.
 FROM configured-base AS metadata-tools
 RUN dnf install -y createrepo_c dnf5-plugins \
@@ -92,9 +100,11 @@ RUN test -n "${PACKAGES}" \
 FROM metadata-tools AS repository
 COPY --from=resolve /repo /repo
 COPY os/dev/verify-rpm-snapshot-signatures.sh /tilo-verify-signatures.sh
+COPY os/scripts/verify-no-cisco-openh264.sh /tilo-verify-no-cisco-openh264.sh
 COPY os/external-assets/github-assets.tsv /tilo-assets.tsv
 COPY --from=configured-base /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary /tilo-fedora44-primary.key
-RUN bash /tilo-verify-signatures.sh /repo /tilo-assets.tsv /tilo-fedora44-primary.key > /repo/tilo-rpm-signatures.txt \
+RUN bash /tilo-verify-no-cisco-openh264.sh --repo /repo \
+ && bash /tilo-verify-signatures.sh /repo /tilo-assets.tsv /tilo-fedora44-primary.key > /repo/tilo-rpm-signatures.txt \
  && sha256sum /repo/*.rpm > /repo/tilo-rpm-sha256.txt \
  && createrepo_c --quiet /repo \
  && printf '[frozen]\nname=Tilo frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \

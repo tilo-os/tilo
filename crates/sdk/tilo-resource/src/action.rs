@@ -28,6 +28,14 @@ pub struct ActionCx {
     seed: [u8; 32],
     minted: u64,
     now_ms: i64,
+    author: Option<String>,
+}
+
+/// Who invoked the action applying now, as its envelope pinned it.
+fn invoking_author() -> Option<String> {
+    tilo_actions::invoking_context()
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.actor)
 }
 
 impl ActionCx {
@@ -43,6 +51,7 @@ impl ActionCx {
             seed: seed(doc, b"tilo-resource/action-seed/v1", payload),
             minted: 0,
             now_ms,
+            author: invoking_author(),
         }
     }
 
@@ -71,6 +80,7 @@ impl ActionCx {
             seed: *hasher.finalize().as_bytes(),
             minted: 0,
             now_ms: 0,
+            author: invoking_author(),
         }
     }
 
@@ -89,6 +99,15 @@ impl ActionCx {
     /// read once on the origin.
     pub fn now_ms(&self) -> i64 {
         self.now_ms
+    }
+
+    /// Who the action is by: the person or agent that invoked it, the same
+    /// id that participant's own views read as `me`. Pinned with the action
+    /// like its time, so every replica reads the same author; the payload
+    /// need not carry it. `None` for an action applied with no invoker
+    /// (an edit written straight into a document outside the host).
+    pub fn author(&self) -> Option<&str> {
+        self.author.as_deref()
     }
 }
 
@@ -189,8 +208,10 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         RiskLevel::Low
     }
 
-    /// Whether the operation changes the record's content or is housekeeping
-    /// about it. `#[resource]` generates it from `#[action(housekeeping)]`.
+    /// What the operation is to the people sharing the record: content,
+    /// housekeeping about it, or content from outside that is nobody's undo
+    /// step. `#[resource]` generates it from `#[action(housekeeping)]` and
+    /// `#[action(external)]`.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         tilo_actions::ChangeKind::Content
     }
@@ -290,6 +311,7 @@ impl<R, A: Serialize> ActionRef<R, A> {
         Invoke {
             id: self.id,
             arguments: self.arguments(&input),
+            effect: false,
             marker: PhantomData,
         }
     }
@@ -348,15 +370,18 @@ impl<R> ActionRef<R, ()> {
         Invoke {
             id: self.id,
             arguments: serde_json::Map::new(),
+            effect: false,
             marker: PhantomData,
         }
     }
 }
 
-/// One fully specified invocation of a declared action.
+/// One fully specified invocation of a declared action, or of one of the
+/// app's effects ([`Invoke::effect`]).
 pub struct Invoke<R> {
     pub id: &'static str,
     pub arguments: serde_json::Map<String, serde_json::Value>,
+    effect: bool,
     marker: PhantomData<fn() -> R>,
 }
 
@@ -365,6 +390,7 @@ impl<R> Clone for Invoke<R> {
         Self {
             id: self.id,
             arguments: self.arguments.clone(),
+            effect: self.effect,
             marker: PhantomData,
         }
     }
@@ -375,7 +401,29 @@ impl<R> std::fmt::Debug for Invoke<R> {
         f.debug_struct("Invoke")
             .field("id", &self.id)
             .field("arguments", &self.arguments)
+            .field("effect", &self.effect)
             .finish()
+    }
+}
+
+impl<R> Invoke<R> {
+    /// An invocation of one of the app's effects — show an item, refresh a
+    /// list — through the same door as its actions: what a launch asks of
+    /// an app beside editing its resource (`tilo-store:app/<id>` showing that
+    /// app). It changes no document, so it never builds an action.
+    pub fn effect<E: crate::Effect>(effect: &E) -> Self {
+        Self {
+            id: effect.id(),
+            arguments: effect.arguments(),
+            effect: true,
+            marker: PhantomData,
+        }
+    }
+
+    /// Whether this invokes an effect ([`Self::effect`]) rather than one of
+    /// the resource's actions.
+    pub fn is_effect(&self) -> bool {
+        self.effect
     }
 }
 
@@ -392,6 +440,7 @@ impl<R: Resource> Invoke<R> {
                 crate::APPLY_PARAM.to_owned(),
                 serde_json::to_value(action)?,
             )]),
+            effect: false,
             marker: PhantomData,
         })
     }
@@ -420,6 +469,7 @@ impl<R: Resource> Invoke<R> {
                 crate::GROUP_PARAM.to_owned(),
                 serde_json::Value::Array(actions),
             )]),
+            effect: false,
             marker: PhantomData,
         }
     }
