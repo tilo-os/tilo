@@ -356,6 +356,31 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
+      # The shard's visual goldens, run after its suite has drained so the
+      # software renderer is idle, as nightly does. They compare only on the
+      # image they were rendered on; once the builder has moved on they wait
+      # for a refresh (nightly fails until then) instead of failing every pull
+      # request that touches a rendering package.
+      - name: Visual goldens of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          TILO_REQUIRE_GPU: "1"
+        run: |
+          # The packages with goldens (.config/nextest-filters.toml).
+          case " ${{ matrix.test_packages }} " in
+            *" -p shell "*|*" -p tilo-ui "*|*" -p ebook "*) ;;
+            *) exit 0 ;;
+          esac
+          if ! bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" 2>goldens-image.txt; then
+            echo "::warning::$(tr '\n' ' ' < goldens-image.txt)"
+            exit 0
+          fi
+          bash tools/ci/measure.sh "visual goldens shard ${{ matrix.shard }}" -- \
+            bash scripts/ci-run.sh "cargo nextest visual goldens (shard ${{ matrix.shard }})" -- \
+            bash tools/test-env.sh cargo nextest run --locked --profile ci --tests \
+            ${{ matrix.test_packages }} --no-tests=pass -E "$GOLDEN_FILTER"
+
       # The shard's affected graphical apps through the same production-root
       # native audit the nightly runs for every app, so a change that breaks
       # an app's Tilo-native contract fails here, not overnight.

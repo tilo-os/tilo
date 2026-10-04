@@ -61,6 +61,7 @@ jobs:
         run: cargo fmt --check
 
   complete:
+    needs: builder
     strategy:
       fail-fast: false
       matrix:
@@ -74,10 +75,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
-      # Visual goldens are meaningful only when fonts, Mesa and the software
-      # renderer are byte-for-byte identical to the reviewed refresh job.
-      # Advance this digest together with dev-visual-baselines.yml.
-      image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+      # The goldens' step checks this is the image they were rendered on
+      # (.config/visual-goldens-image).
+      image: ${{ needs.builder.outputs.image }}
     env:
       # Both disk-class slots have the memory for four compiler processes;
       # one left the aarch64 workspace build alone at 130 minutes.
@@ -121,13 +121,13 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
 
-      # This golden-pinned image predates the audio fixture. Install only new
+      # A builder that predates the audio fixture gets it here. Install only new
       # packages or replace the audio daemon: never update fonts, Mesa or libraries.
       # A dependency requiring an existing package upgrade must fail the job.
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
 
-      # The same image predates the private session bus tests (tilo-os-search)
+      # Likewise for the private session bus tests (tilo-os-search)
       # and the launcher's bus-filter tests (xdg-dbus-proxy).
       - name: Ensure session-bus test tools
         run: bash tools/ci/ensure-session-bus-tools.sh
@@ -191,7 +191,10 @@ jobs:
       # so every nightly reports each suite's own result.
       - name: Verify visual goldens on an idle renderer
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: >-
+          bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" &&
           bash tools/ci/measure.sh "nightly isolated visual goldens" --
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
           bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
