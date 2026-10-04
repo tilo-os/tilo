@@ -2,8 +2,9 @@
 //!
 //! The window is one [`ui::widget::NavShell`]: the journal table with its
 //! filters is the content, the selected entry is the inspector, and the
-//! content header holds the journal's commands. [`JournalPane`] owns the
-//! filter field, the facet dropdowns and the table; [`crate::app::LogsApp`]
+//! content header holds the journal's commands. The shell holds the
+//! window's filter field; [`JournalPane`] is what it filters and owns the
+//! facet dropdowns and the table; [`crate::app::LogsApp`]
 //! owns the journal and the shared view state. The two meet in a
 //! [`Bridge`]: the app publishes what the pane shows, the pane queues what
 //! the person asked for, and the app turns each request into a document
@@ -17,8 +18,7 @@ use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::Key;
+use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
@@ -27,7 +27,7 @@ use ui::tilo_actions::ActionBinding;
 use ui::tokens::Spacing;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
-    AppModel, ChipStyle, Dropdown, Element, EmptyState, FilterCount, ModelPath, SearchField,
+    AppModel, ChipStyle, Dropdown, Element, EmptyState, FilterCount, Filterable, ModelPath,
     TaffyTreeExt, Widget,
 };
 use ui::{LocalState, TextRole};
@@ -170,7 +170,6 @@ fn journal_table() -> DataTable<JournalRow> {
 /// Child node ids of the last layout.
 #[derive(Default)]
 struct Nodes {
-    field: Option<NodeId>,
     unit: Option<NodeId>,
     boot: Option<NodeId>,
     severity: Option<NodeId>,
@@ -178,17 +177,17 @@ struct Nodes {
     body_child: Option<NodeId>,
 }
 
-/// The journal: the filter field and the facet dropdowns over the entry
-/// table, or one empty state when there is nothing to list.
+/// The journal: the facet dropdowns over the entry table, or one empty state
+/// when there is nothing to list. The shell's filter field narrows it
+/// ([`Filterable`]).
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent layout, structure and arrangement flags"
+    reason = "independent layout, structure and selection flags"
 )]
 pub(crate) struct JournalPane {
     shared: Shared,
     seen: Option<u64>,
     seen_rows: Option<u64>,
-    field: SearchField,
     unit: Dropdown,
     boot: Dropdown,
     severity: Dropdown,
@@ -198,8 +197,6 @@ pub(crate) struct JournalPane {
     row_height: f64,
     placeholder: Option<(Placeholder, EmptyState)>,
     has_entries: bool,
-    /// The field and the dropdowns share one band.
-    wide: bool,
     /// The row index the table's selection was last synchronised to.
     shown_selection: Option<usize>,
     /// The selection the app last published, and whether the table still
@@ -232,9 +229,6 @@ impl JournalPane {
             shared,
             seen: None,
             seen_rows: None,
-            field: SearchField::filter()
-                .with_id("logs.filter")
-                .with_placeholder("Filter messages and units"),
             unit,
             boot,
             severity,
@@ -243,7 +237,6 @@ impl JournalPane {
             row_height: 0.0,
             placeholder: None,
             has_entries: false,
-            wide: true,
             shown_selection: None,
             adopted_selection: None,
             reveal_selection: false,
@@ -298,14 +291,6 @@ impl JournalPane {
         self.severity
             .set_selected(bridge.filter.min_priority.clamp(0, 7).to_string());
 
-        if self.field.value() != bridge.filter.search {
-            self.field.set_query(&bridge.filter.search);
-        }
-        // "12 of 96" while any filter narrows the journal.
-        self.field.set_count(
-            (!bridge.filter.is_clear()).then(|| FilterCount::new(bridge.rows.len(), bridge.total)),
-        );
-
         let placeholder = bridge.placeholder;
         if self.placeholder.as_ref().map(|(kind, _)| *kind) != placeholder {
             self.placeholder = placeholder.map(|kind| (kind, empty_state(kind, &bridge)));
@@ -351,8 +336,7 @@ impl JournalPane {
         }
     }
 
-    /// The filter field and the facet dropdowns: one band on a wide pane,
-    /// the field over the dropdowns on a narrow one.
+    /// The facet dropdowns, in one band under the shell's filter field.
     fn build_filters(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -362,50 +346,40 @@ impl JournalPane {
         let tokens = &theme.tokens;
         let gutter = tokens.spacing.s3;
         let gap = tokens.spacing.s2;
-        let band = |bottom: f32| Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Row,
-            flex_shrink: 0.0,
-            align_items: Some(taffy::AlignItems::FlexEnd),
-            gap: Size {
-                width: length(gap),
-                height: length(gap),
-            },
-            padding: taffy::Rect {
-                left: length(gutter),
-                right: length(gutter),
-                top: length(gap),
-                bottom: length(bottom),
-            },
-            size: Size {
-                width: percent(1.0_f32),
-                height: Dimension::auto(),
-            },
-            ..Default::default()
-        };
-
-        let field = self.field.build_layout(taffy, theme, node_map);
         let unit = self.unit.build_layout(taffy, theme, node_map);
         let boot = self.boot.build_layout(taffy, theme, node_map);
         let severity = self.severity.build_layout(taffy, theme, node_map);
         for facet in [unit, boot, severity] {
             flexed(taffy, facet, 1.0);
         }
-        let bands = if self.wide {
-            flexed(taffy, field, 2.0);
-            vec![taffy.parent_node(band(gap), &[field, unit, boot, severity])]
-        } else {
-            flexed(taffy, field, 1.0);
-            vec![
-                taffy.parent_node(band(0.0), &[field]),
-                taffy.parent_node(band(gap), &[unit, boot, severity]),
-            ]
-        };
-        self.nodes.field = Some(field);
+        let band = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                flex_shrink: 0.0,
+                align_items: Some(taffy::AlignItems::FlexEnd),
+                gap: Size {
+                    width: length(gap),
+                    height: length(gap),
+                },
+                padding: taffy::Rect {
+                    left: length(gutter),
+                    right: length(gutter),
+                    top: length(0.0_f32),
+                    bottom: length(gap),
+                },
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &[unit, boot, severity],
+        );
         self.nodes.unit = Some(unit);
         self.nodes.boot = Some(boot);
         self.nodes.severity = Some(severity);
-        bands
+        vec![band]
     }
 
     /// Scroll the table so the selected row is in view, centred when it was
@@ -493,7 +467,25 @@ fn origin_of(taffy: &TaffyTree<()>, node: NodeId, parent: Point) -> Point {
     })
 }
 
+impl Filterable for JournalPane {
+    /// The shell's filter field edited the query: ask the app for it.
+    fn set_filter(&mut self, query: &str) {
+        let mut bridge = self.shared.borrow_mut();
+        if bridge.filter.search != query {
+            bridge.push(Request::Search(query.to_owned()));
+        }
+    }
+
+    /// "12 of 96" while any filter narrows the journal.
+    fn filter_count(&self) -> Option<FilterCount> {
+        let bridge = self.shared.borrow();
+        (!bridge.filter.is_clear()).then(|| FilterCount::new(bridge.rows.len(), bridge.total))
+    }
+}
+
 impl Widget for JournalPane {
+    ui::provides!(dyn Filterable);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.adopt();
         for child in self.children_mut() {
@@ -514,9 +506,6 @@ impl Widget for JournalPane {
         self.adopt();
         let tokens = &theme.tokens;
         let metrics = tokens.metrics;
-        let growth = theme.text_growth();
-        self.wide = self.rect.width() <= 0.0
-            || self.rect.width() >= 2.0 * f64::from(metrics.content_min_width * growth);
         self.row_height = f64::from(metrics.min_pointer_target);
         self.layout_dirty = false;
 
@@ -601,9 +590,6 @@ impl Widget for JournalPane {
                 .and_then(|c| taffy.parent(c))
                 .map_or(inner, |band| origin_of(taffy, band, inner))
         };
-        if let Some(field) = self.nodes.field {
-            self.field.apply_layout(taffy, field, band_of(Some(field)));
-        }
         if let Some(unit) = self.nodes.unit {
             self.unit.apply_layout(taffy, unit, band_of(Some(unit)));
         }
@@ -656,8 +642,6 @@ impl Widget for JournalPane {
         presence: &PresenceCtx,
     ) {
         if self.shows_filters() {
-            self.field
-                .draw(scene, transform, text_renderer, theme, presence);
             self.unit
                 .draw(scene, transform, text_renderer, theme, presence);
             self.boot
@@ -670,32 +654,6 @@ impl Widget for JournalPane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.shows_filters()
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Character(c),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-            && c.eq_ignore_ascii_case("f")
-            && ctx.modifiers.state().control_key()
-            && !ctx.modifiers.state().shift_key()
-            && let Some(field) = self.nodes.field
-        {
-            let input = ctx
-                .taffy
-                .children(field)
-                .unwrap_or_default()
-                .first()
-                .copied();
-            *ctx.focus_target = Some(input.unwrap_or(field));
-            self.field.select_all();
-            *ctx.handled = true;
-            return;
-        }
         if self.shows_filters() {
             // An open list floats over the table: the dropdowns go first.
             for (dropdown, node) in [
@@ -708,16 +666,6 @@ impl Widget for JournalPane {
                     if *ctx.handled {
                         return;
                     }
-                }
-            }
-            if let Some(field) = self.nodes.field {
-                self.field
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, field));
-                if let Some(query) = self.field.take_dirty() {
-                    self.shared.borrow_mut().push(Request::Search(query));
-                }
-                if *ctx.handled {
-                    return;
                 }
             }
         }
@@ -738,12 +686,7 @@ impl Widget for JournalPane {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::new();
         if self.shows_filters() {
-            children.extend([
-                &self.field as &dyn Widget,
-                &self.unit,
-                &self.boot,
-                &self.severity,
-            ]);
+            children.extend([&self.unit as &dyn Widget, &self.boot, &self.severity]);
         }
         children.push(self.body());
         children
@@ -763,7 +706,6 @@ impl Widget for JournalPane {
         };
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         if shows_filters {
-            children.push(&mut self.field);
             children.push(&mut self.unit);
             children.push(&mut self.boot);
             children.push(&mut self.severity);
