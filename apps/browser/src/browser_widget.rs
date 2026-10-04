@@ -4891,7 +4891,7 @@ fn unavailable_engine(mode: BrowsingMode, problem: EngineProblem) -> SharedEngin
     if mode.is_private()
         && let Some(root) = crate::storage::explicit_root()
     {
-        ui::webview::chromium::release_private_root(&root);
+        ui::webview::chromium::release_private_root(root);
     }
     ui::webview::chromium::UnavailableEngine::new(user_message(problem))
 }
@@ -9970,9 +9970,6 @@ mod tests {
 
         // Phase `the_page_surface_is_named_after_the_page_title`.
         {
-            let mut w = BrowserWidget::new_headless();
-            layout_at(&mut w, 900.0, 600.0);
-            layout_at(&mut w, 900.0, 600.0);
             fn surface_name(widget: &dyn Widget) -> Option<String> {
                 if widget.test_id() == Some("browser.surface") {
                     return widget.accessibility().and_then(|node| node.name);
@@ -9982,6 +9979,9 @@ mod tests {
                     .iter()
                     .find_map(|child| surface_name(*child))
             }
+            let mut w = BrowserWidget::new_headless();
+            layout_at(&mut w, 900.0, 600.0);
+            layout_at(&mut w, 900.0, 600.0);
             let composed = w.composed.as_ref().expect("composed browser");
             assert_eq!(
                 surface_name(composed.as_ref()).as_deref(),

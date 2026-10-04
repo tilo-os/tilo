@@ -482,48 +482,7 @@ pub fn build_bundle_with(
         written.push((rel_in_bundle, dst));
     }
 
-    // Extra libs (libstd, libruntime_dylib.so) copy verbatim to the TOP
-    // of lib/ by file name for soname resolution via LD_LIBRARY_PATH —
-    // unlike the loader/libc set, these are explicit absolute paths, not
-    // resolved against host_root. A directory (an engine with its resources)
-    // keeps its tree under lib/<name>/.
-    for extra in opts.extra_libs {
-        if extra.is_dir() {
-            let name = extra
-                .file_name()
-                .ok_or_else(|| BundleError::IncludeUnnamed {
-                    path: extra.clone(),
-                })?
-                .to_string_lossy()
-                .to_string();
-            copy_tree(
-                extra,
-                &out.join("lib").join(&name),
-                &format!("lib/{name}"),
-                &mut written,
-            )?;
-            continue;
-        }
-        if !extra.exists() {
-            return Err(BundleError::IncludeMissing {
-                path: extra.clone(),
-            });
-        }
-        let name = extra
-            .file_name()
-            .ok_or_else(|| BundleError::IncludeUnnamed {
-                path: extra.clone(),
-            })?
-            .to_string_lossy()
-            .to_string();
-        let rel_in_bundle = format!("lib/{name}");
-        let dst = out.join(&rel_in_bundle);
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        copy_file(extra, &dst)?;
-        written.push((rel_in_bundle, dst));
-    }
+    copy_includes(out, opts.extra_libs, &mut written)?;
 
     // Optional ld.so.cache.
     let cache_src = resolve_from(host_root, HOST_LD_SO_CACHE);
@@ -884,7 +843,50 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
     Ok((hasher.finalize().to_hex().to_string(), total))
 }
 
-/// Copy the tree at `src` to `dst`, recording each file as `rel`/<path>.
+/// Extra libs (libstd, `libruntime_dylib.so`) copy verbatim to the top of
+/// `lib/` by file name for soname resolution via `LD_LIBRARY_PATH` — unlike
+/// the loader/libc set, these are explicit absolute paths, not resolved
+/// against the host root. A directory (an engine with its resources) keeps
+/// its tree under `lib/<name>/`.
+fn copy_includes(
+    out: &Path,
+    includes: &[PathBuf],
+    written: &mut Vec<(String, PathBuf)>,
+) -> Result<(), BundleError> {
+    for extra in includes {
+        let name = extra
+            .file_name()
+            .ok_or_else(|| BundleError::IncludeUnnamed {
+                path: extra.clone(),
+            })?
+            .to_string_lossy()
+            .to_string();
+        if extra.is_dir() {
+            copy_tree(
+                extra,
+                &out.join("lib").join(&name),
+                &format!("lib/{name}"),
+                written,
+            )?;
+            continue;
+        }
+        if !extra.exists() {
+            return Err(BundleError::IncludeMissing {
+                path: extra.clone(),
+            });
+        }
+        let rel_in_bundle = format!("lib/{name}");
+        let dst = out.join(&rel_in_bundle);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        copy_file(extra, &dst)?;
+        written.push((rel_in_bundle, dst));
+    }
+    Ok(())
+}
+
+/// Copy the tree at `src` to `dst`, recording each file as `rel/<path>`.
 /// Links and special files are refused: a bundle is plain bytes.
 fn copy_tree(
     src: &Path,
