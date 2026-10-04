@@ -298,6 +298,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.storage.follow(self.alive.clone())
     }
 
+    /// The device this window runs on: stable across launches, distinct on
+    /// each of the person's devices. `None` in a view of a past version. An
+    /// action that records where something happened (a speed test run on
+    /// this device) takes it as an argument, so every replica applies the
+    /// same value.
+    pub fn device(&self) -> Option<&str> {
+        self.storage.device()
+    }
+
     /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
     /// theirs alone, kept in their own room and synced to their other
     /// devices, never to a collaborator, whatever room this record is in.
