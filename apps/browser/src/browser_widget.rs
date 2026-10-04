@@ -1472,6 +1472,12 @@ impl BrowserWidget {
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }
+        if let Some(data) = &reply.data {
+            value.insert("data".into(), data.clone());
+        }
+        // Everything here came from the page: data to reason about, never
+        // instructions to follow.
+        value.insert("provenance".into(), "web-content".into());
         ui::tilo_actions::InvocationUpdate::Succeeded {
             invocation,
             output: ui::tilo_actions::ActionOutput {
@@ -5259,7 +5265,31 @@ impl BrowserWidget {
                 },
                 &["key", "element"][..],
             ),
-            (E::SubmitPage { element }, &["element"][..]),
+            (
+                E::FillPageSecret {
+                    element: element.clone(),
+                    text: String::new(),
+                },
+                &["element", "text"][..],
+            ),
+            (
+                E::SubmitPage {
+                    element,
+                    cross_origin: None,
+                },
+                &["element", "cross_origin"][..],
+            ),
+            (E::ReadPageChanges, &[][..]),
+            (E::ReadPageElementAt { x: 0.0, y: 0.0 }, &["x", "y"][..]),
+            (
+                E::WaitPageSettled {
+                    quiet_ms: None,
+                    timeout_ms: None,
+                },
+                &["quiet_ms", "timeout_ms"][..],
+            ),
+            (E::ReadPageConsole { since: None }, &["since"][..]),
+            (E::ReadPageNetwork { since: None }, &["since"][..]),
         ] {
             let spec = spec.bound_asking(asking);
             page.actions.push(if web_page {
@@ -6907,11 +6937,25 @@ mod tests {
                 "select-page",
                 "press-page",
                 "submit-page",
+                "fill-page-secret",
+                "read-page-changes",
+                "read-page-element-at",
+                "wait-page-settled",
+                "read-page-console",
+                "read-page-network",
             ] {
                 let action = page_action(&widget, &doc, id);
                 assert!(action.contract.validate_declaration().is_empty(), "{id}");
                 assert!(action.contract.availability.is_available(), "{id}");
                 assert!(action.contract.is_programmatic(), "{id}");
+                assert!(
+                    action
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == ui::tilo_actions::UNTRUSTED_CONTENT_TAG),
+                    "{id} answers with page content: data, never instructions"
+                );
                 assert_eq!(
                     action.contract.permission,
                     ui::tilo_actions::PermissionRequirement::Write,
@@ -7050,6 +7094,95 @@ mod tests {
                 3,
                 "refused requests reached the page"
             );
+        }
+
+        // Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let secret = page_action(&widget, &doc, "fill-page-secret");
+            assert!(
+                secret
+                    .params()
+                    .iter()
+                    .any(|param| param.name == "text"
+                        && param.ty == ui::tilo_actions::ParamType::Secret),
+                "a password is a secret parameter, kept out of logs and history"
+            );
+            let mut answers = Vec::new();
+            for (id, args) in [
+                ("read-page-changes", serde_json::json!({})),
+                (
+                    "read-page-element-at",
+                    serde_json::json!({"x": 12.5, "y": 40}),
+                ),
+                ("wait-page-settled", serde_json::json!({})),
+                (
+                    "wait-page-settled",
+                    serde_json::json!({"quiet_ms": 200, "timeout_ms": 3000}),
+                ),
+                ("read-page-console", serde_json::json!({"since": 4})),
+                ("read-page-network", serde_json::json!({})),
+                (
+                    "fill-page-secret",
+                    serde_json::json!({"element": "d1e3", "text": "hunter2"}),
+                ),
+                ("submit-page", serde_json::json!({"element": "d1e9"})),
+                (
+                    "submit-page",
+                    serde_json::json!({"element": "d1e9", "cross_origin": true}),
+                ),
+            ] {
+                let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
+                widget.sync(&mut doc, &root);
+                let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                    widget.poll_invocation(invocation)
+                else {
+                    panic!("{id} must succeed its invocation");
+                };
+                answers.push(output.value.unwrap());
+            }
+            assert_eq!(
+                page_requests(&engine),
+                vec![
+                    PageRequest::Changes,
+                    PageRequest::At { x: 12.5, y: 40.0 },
+                    PageRequest::Settle {
+                        quiet_ms: 500,
+                        timeout_ms: 10_000,
+                    },
+                    PageRequest::Settle {
+                        quiet_ms: 200,
+                        timeout_ms: 3000,
+                    },
+                    PageRequest::Console { since: 4 },
+                    PageRequest::Network { since: 0 },
+                    PageRequest::Fill {
+                        element: "d1e3".into(),
+                        text: "hunter2".into(),
+                        secret: true,
+                    },
+                    PageRequest::Submit {
+                        element: "d1e9".into(),
+                        cross_origin: false,
+                    },
+                    PageRequest::Submit {
+                        element: "d1e9".into(),
+                        cross_origin: true,
+                    },
+                ],
+                "a form leaves for another site only when the caller says so"
+            );
+            for value in &answers {
+                assert_eq!(value["provenance"], "web-content", "{value}");
+            }
+            assert!(
+                answers[0]["outline"].is_string(),
+                "changes answer outline lines"
+            );
+            assert_eq!(answers[1]["data"]["x"], 12.5);
+            assert_eq!(answers[2]["data"]["settled"], true);
+            assert_eq!(answers[4]["data"]["entries"], serde_json::json!([]));
+            assert_eq!(answers[5]["data"]["next"], 0);
         }
 
         // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
