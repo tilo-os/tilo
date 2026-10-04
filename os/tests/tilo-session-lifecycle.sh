@@ -225,6 +225,34 @@ tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* sta
 [ "$(stat -c %a "$flight_dir/latest.log")" = 600 ]
 [ "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600 ]
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A recorder that starts slowly must still record a compositor that exits at
+# once: the drain timeout covers only output already handed to the recorder.
+slow_recorder="$tmp/slow-flight-recorder"
+cat >"$slow_recorder" <<SH
+#!/bin/bash
+sleep 3
+exec python3 "$repo/dist/session/tilo-flight-recorder.py" "\$@"
+SH
+chmod 0755 "$slow_recorder"
+slow_wrapper="$tmp/tilo-session-slow-recorder"
+tilo_stage_script "$wrapper" "$slow_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell" \
+  FLIGHT_RECORDER="$slow_recorder"
+slow_dir="$tmp/slow-state/tilo/session-logs"
+set +e
+XDG_STATE_HOME="$tmp/slow-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/slow-log" TILO_SESSION_DESKTOP_STATUS=5 \
+  timeout 20 "$slow_wrapper" --backend drm >"$tmp/slow-stdout"
+status=$?
+set -e
+[ "$status" = 5 ]
+grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/slow-stdout"
+head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
+tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no$'
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A process that inherited the compositor's output must not keep the wrapper,
 # and so the session unit, alive after the compositor exits. Its own state
 # directory keeps this from rotating the record the checks below read.
