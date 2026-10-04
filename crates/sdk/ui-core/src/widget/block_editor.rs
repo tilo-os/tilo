@@ -675,6 +675,10 @@ pub struct BlockEditor {
     find_field: SearchField,
     replace_field: TextInput,
     replace_button: Button,
+    replace_all_button: Button,
+    replace_all_node: Option<NodeId>,
+    replace_all_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    find_snapshot: Vec<BlockContent>,
     replace_node: Option<NodeId>,
     replace_button_node: Option<NodeId>,
     replace_enabled: bool,
@@ -713,6 +717,14 @@ pub struct FindReplaceTarget {
     pub end_byte: usize,
 }
 
+/// One search snapshot, with byte ranges into its blocks.
+#[derive(Clone, Debug)]
+pub struct FindReplaceBatch {
+    pub blocks: Vec<BlockContent>,
+    pub matches: Vec<(usize, std::ops::Range<usize>)>,
+    pub replacement: String,
+}
+
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link, ![[ to embed";
 const CODE_HEADER_HEIGHT: f64 = 28.0;
 const FORMULA_BLOCK_MIN_HEIGHT: f32 = 164.0;
@@ -729,6 +741,8 @@ impl BlockEditor {
         crate::i18n::I18nManager::register_widget_messages();
         let replace_requested = std::rc::Rc::new(std::cell::Cell::new(false));
         let requested = replace_requested.clone();
+        let replace_all_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        let all_requested = replace_all_requested.clone();
         let mut s = Self {
             blocks: Vec::new(),
             focused: None,
@@ -817,6 +831,17 @@ impl BlockEditor {
             replace_button: Button::new("block-editor-replace", "block-editor-replace", None)
                 .with_size(96.0, 36.0)
                 .on_click(move || requested.set(true)),
+            replace_all_button: Button::new(
+                "block-editor-replace-all",
+                "block-editor-replace-all",
+                None,
+            )
+            .with_size(120.0, 36.0)
+            .tooltip("block-editor-replace-all-help")
+            .on_click(move || all_requested.set(true)),
+            replace_all_node: None,
+            replace_all_requested,
+            find_snapshot: Vec::new(),
             replace_node: None,
             replace_button_node: None,
             replace_enabled: false,
@@ -1933,6 +1958,8 @@ impl BlockEditor {
         self.find_visible = false;
         self.replace_field.set_focus(false);
         self.replace_requested.set(false);
+        self.replace_all_requested.set(false);
+        self.find_snapshot.clear();
         self.find_field.set_focused(false);
         if let Some(index) = self.focused
             && let Some(block) = self.blocks.get_mut(index)
@@ -1947,8 +1974,12 @@ impl BlockEditor {
         self.find_matches.clear();
         self.find_active = None;
         self.find_target = None;
+        self.find_snapshot.clear();
         if query.is_empty() {
             return;
+        }
+        if self.replace_enabled {
+            self.find_snapshot = self.blocks.iter().map(Block::content).collect();
         }
         self.clear_find_document_selection();
         for (block, item) in self.blocks.iter().enumerate() {
@@ -2068,6 +2099,47 @@ impl BlockEditor {
         Some((target.clone(), replacement.to_owned()))
     }
 
+    pub fn take_find_replace_all_request(&mut self) -> bool {
+        self.replace_all_requested.replace(false)
+    }
+
+    pub fn can_replace_all(&self) -> bool {
+        self.replace_enabled
+            && self.find_visible
+            && !self.read_only
+            && !self.is_composing()
+            && !self.find_matches.is_empty()
+            && self.find_matches.len() <= 10_000
+            // Match the canonical action's aggregate text budget before enabling
+            // a control whose payload the host would necessarily refuse.
+            && self.replace_field.value().chars().count().checked_mul(self.find_matches.len())
+                .is_some_and(|total| total <= 1_000_000)
+            && !self
+                .replace_field
+                .value()
+                .chars()
+                .any(|c| c.is_control() && c != '\t')
+    }
+
+    /// Clone the snapshot only when a canonical host consumes the action.
+    pub fn find_replace_all_request(&self) -> Option<FindReplaceBatch> {
+        self.can_replace_all().then(|| FindReplaceBatch {
+            blocks: self.find_snapshot.clone(),
+            matches: self
+                .find_matches
+                .iter()
+                .map(|item| (item.block, item.start..item.end))
+                .collect(),
+            replacement: self.replace_field.value().to_owned(),
+        })
+    }
+
+    pub fn finish_find_replace_all(&mut self) {
+        let replacement_focus = self.replace_field.is_focused();
+        self.refresh_find_matches(true);
+        self.focus_find_input(replacement_focus);
+    }
+
     /// Move beyond inserted text, refresh matches, and retain overlay focus.
     pub fn finish_find_replace(&mut self, target: &FindReplaceTarget, replacement_len: usize) {
         let replacement_focus = self.replace_field.is_focused();
@@ -2134,7 +2206,16 @@ impl BlockEditor {
                         && self.replace_field.is_focused()
                         && !self.is_composing() =>
                 {
-                    self.replace_requested.set(true);
+                    if ctx.modifiers.state().shift_key()
+                        || ctx.modifiers.state().control_key()
+                        || ctx.modifiers.state().super_key()
+                    {
+                        if self.can_replace_all() {
+                            self.replace_all_requested.set(true);
+                        }
+                    } else {
+                        self.replace_requested.set(true);
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -2186,7 +2267,11 @@ impl BlockEditor {
             }
             if self.replace_enabled
                 && (self.replace_field.get_rect().contains(self.last_mouse_pos)
-                    || self.replace_button.get_rect().contains(self.last_mouse_pos))
+                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
+                    || self
+                        .replace_all_button
+                        .get_rect()
+                        .contains(self.last_mouse_pos))
             {
                 self.focus_find_input(true);
             } else if self.find_field.get_rect().contains(self.last_mouse_pos) {
@@ -2195,7 +2280,11 @@ impl BlockEditor {
             let controls = self.find_previous_rect.union(self.find_close_rect);
             if !(self.replace_enabled
                 && (self.replace_field.get_rect().contains(self.last_mouse_pos)
-                    || self.replace_button.get_rect().contains(self.last_mouse_pos)))
+                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
+                    || self
+                        .replace_all_button
+                        .get_rect()
+                        .contains(self.last_mouse_pos)))
                 && !self.find_field.get_rect().contains(self.last_mouse_pos)
                 && !controls.contains(self.last_mouse_pos)
             {
@@ -2209,6 +2298,11 @@ impl BlockEditor {
                 .set_enabled(self.find_replace_request().is_some());
             if let Some(node) = self.replace_button_node {
                 self.replace_button
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            self.replace_all_button.set_enabled(self.can_replace_all());
+            if let Some(node) = self.replace_all_node {
+                self.replace_all_button
                     .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             }
             if self.replace_field.is_focused() {
@@ -2254,6 +2348,8 @@ impl BlockEditor {
             self.replace_field
                 .draw(scene, transform, text_renderer, theme, presence);
             self.replace_button
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.replace_all_button
                 .draw(scene, transform, text_renderer, theme, presence);
         }
 
@@ -7698,11 +7794,16 @@ impl Widget for BlockEditor {
                 .set_enabled(self.find_replace_request().is_some());
             let field = self.replace_field.build_layout(taffy, theme, node_map);
             let button = self.replace_button.build_layout(taffy, theme, node_map);
-            for (node, right, width) in [(field, 108.0_f32, 248.0_f32), (button, 8.0_f32, 96.0_f32)]
-            {
+            self.replace_all_button.set_enabled(self.can_replace_all());
+            let all = self.replace_all_button.build_layout(taffy, theme, node_map);
+            for (node, top, right, width) in [
+                (field, 48.0_f32, 108.0_f32, 248.0_f32),
+                (button, 48.0_f32, 8.0_f32, 96.0_f32),
+                (all, 88.0_f32, 8.0_f32, 120.0_f32),
+            ] {
                 let mut style = taffy.style(node).cloned().unwrap_or_default();
                 style.position = taffy::Position::Absolute;
-                style.inset.top = length(48.0_f32 * theme.text_scale);
+                style.inset.top = length(top * theme.text_scale);
                 style.inset.right = length(right * theme.text_scale);
                 style.size.width = length(width * theme.text_scale);
                 style.size.height = length(36.0_f32 * theme.text_scale);
@@ -7711,6 +7812,7 @@ impl Widget for BlockEditor {
             }
             self.replace_node = Some(field);
             self.replace_button_node = Some(button);
+            self.replace_all_node = Some(all);
         }
         let node = taffy.parent_node(
             Style {
@@ -7899,6 +8001,10 @@ impl Widget for BlockEditor {
             }
             if let Some(node) = self.replace_button_node {
                 self.replace_button.apply_layout(taffy, node, find_origin);
+            }
+            if let Some(node) = self.replace_all_node {
+                self.replace_all_button
+                    .apply_layout(taffy, node, find_origin);
             }
             let field = self.find_field.get_rect();
             let size = 30.0 * self.text_scale;
@@ -8494,6 +8600,7 @@ impl Widget for BlockEditor {
             if self.replace_enabled {
                 children.push(&self.replace_field);
                 children.push(&self.replace_button);
+                children.push(&self.replace_all_button);
             }
         }
         children
@@ -8510,6 +8617,7 @@ impl Widget for BlockEditor {
             if self.replace_enabled {
                 children.push(&mut self.replace_field);
                 children.push(&mut self.replace_button);
+                children.push(&mut self.replace_all_button);
             }
         }
         children
@@ -8880,6 +8988,17 @@ impl Widget for BlockEditor {
                             .with_action_target("notes.find:replacement"),
                     );
                 }
+                if let Some(button) = self.replace_all_button.accessibility() {
+                    children.push(
+                        button
+                            .with_action_target("notes.find:replace-all")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(!self.can_replace_all()),
+                            ),
+                    );
+                }
                 if let Some(button) = self.replace_button.accessibility() {
                     children.push(
                         button.with_action_target("notes.find:replace").with_state(
@@ -9241,6 +9360,12 @@ impl Widget for BlockEditor {
                     if self.replace_enabled && !self.is_composing() =>
                 {
                     self.focus_find_input(true);
+                    return true;
+                }
+                ("notes.find:replace-all", crate::a11y::Action::Activate)
+                    if self.can_replace_all() =>
+                {
+                    self.replace_all_requested.set(true);
                     return true;
                 }
                 ("notes.find:replace", crate::a11y::Action::Activate)

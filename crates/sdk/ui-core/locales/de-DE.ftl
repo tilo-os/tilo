@@ -423,3 +423,6 @@ widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
 
 block-editor-replace-placeholder = Ersetzen durch
 block-editor-replace = Ersetzen
+
+block-editor-replace-all = Alle ersetzen
+block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld

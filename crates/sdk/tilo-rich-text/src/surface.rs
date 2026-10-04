@@ -345,7 +345,78 @@ impl<S: RichTextSource> RichTextSurface<S> {
         true
     }
 
+    fn replace_all_find_matches(&mut self, doc: &mut AutoCommit) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        let Some(batch) = self.editor.find_replace_all_request() else {
+            return false;
+        };
+        self.source.sync(doc);
+        let action = self
+            .source
+            .with_state(|state| {
+                if state.body().len() != batch.blocks.len() {
+                    return None;
+                }
+                for (index, captured) in batch.blocks.iter().enumerate() {
+                    if state.body().id_at(index)? != captured.id
+                        || content_of(state.block(&captured.id)?) != *captured
+                    {
+                        return None;
+                    }
+                }
+                let mut previous = None;
+                let mut byte = 0;
+                let mut character = 0usize;
+                let spans = batch
+                    .matches
+                    .iter()
+                    .map(|(index, range)| {
+                        let block = batch.blocks.get(*index)?;
+                        if previous != Some(*index) {
+                            previous = Some(*index);
+                            byte = 0;
+                            character = 0;
+                        }
+                        // Search ranges are ordered. Count each source character
+                        // once even when a long paragraph has many matches.
+                        let gap = block.text.get(byte..range.start)?.chars().count();
+                        let matched = block.text.get(range.clone())?.chars().count();
+                        let start = character.saturating_add(gap);
+                        character = start.saturating_add(matched);
+                        byte = range.end;
+                        Some(tilo_document::action::Span {
+                            block: block.id.clone(),
+                            start,
+                            end: character,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(RichTextAction::ReplaceMatches {
+                    region: tilo_document::action::RegionKind::Body,
+                    spans,
+                    ins: batch.replacement,
+                })
+            })
+            .flatten();
+        let Some(action) = action else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(doc, &action) {
+            tracing::debug!(%error, "find replace all refused");
+            return false;
+        }
+        self.source.sync(doc);
+        self.present_state(None);
+        self.editor.finish_find_replace_all();
+        true
+    }
+
     fn drain_find_replace(&mut self, doc: &mut AutoCommit) {
+        if self.editor.take_find_replace_all_request() {
+            self.replace_all_find_matches(doc);
+        }
         if self.editor.take_find_replace_request() {
             self.replace_find_match(doc);
         }
@@ -928,6 +999,13 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if target == "notes.find:replace-all" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_all_find_matches(state);
+        }
         if target == "notes.find:replace" {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
