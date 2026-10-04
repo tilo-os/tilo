@@ -15,6 +15,10 @@
 //!   shortcut toggles it in every app (`HostShortcut::Sidebar`), and the
 //!   button publishes the action ("Show sidebar" / "Hide sidebar") to the
 //!   palette and to agents.
+//! - **History** is the window's: where the app has History, the host puts
+//!   its control (`Icon::History`, a Plain icon button named "History") at
+//!   the trailing edge of the row, and it reads as on while History shows.
+//!   The app adds no History button of its own.
 //! - **Responsive:** below the width where the content would be squeezed
 //!   the sidebar collapses into a floating drawer over the content (or, in
 //!   [`NavMode::Push`], becomes the first screen of a push stack); the
@@ -55,6 +59,7 @@ use crate::time::Instant;
 use crate::tokens::TextRole;
 use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint};
+use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
     AppModel, Button, Element, ModelPath, TaffyTreeExt, Widget, WidgetLayoutError,
 };
@@ -148,6 +153,9 @@ enum Part {
     Toggle,
     Back,
     InspectorToggle,
+    /// The window's History control; `true` is the one shown while History
+    /// is open.
+    History(bool),
 }
 
 /// A column's header: a title the shell paints and actions the app owns.
@@ -228,6 +236,8 @@ struct Inputs {
     has_overview: bool,
     has_inspector: bool,
     has_filter: bool,
+    /// The window's History control, where the host gave the shell one.
+    history: Option<HistoryControl>,
     titled: [bool; 4],
     with_actions: [bool; 4],
     /// The docked sidebar width a person dragged to, authored at 1×.
@@ -253,6 +263,7 @@ impl Default for Inputs {
             has_overview: false,
             has_inspector: false,
             has_filter: false,
+            history: None,
             titled: [false; 4],
             with_actions: [false; 4],
             user_sidebar: None,
@@ -311,10 +322,13 @@ pub struct NavGeometry {
     pub toggle: Rect,
     pub back: Rect,
     pub inspector_toggle: Rect,
+    /// The window's History control, at the trailing edge of the row.
+    pub history: Rect,
     /// The column whose header holds the sidebar toggle and the Back button.
     toggle_column: Option<Column>,
     back_column: Option<Column>,
     inspector_toggle_column: Option<Column>,
+    history_column: Option<Column>,
     pub scrim: Rect,
     pub scrim_strength: f32,
     pub resize_handle: Rect,
@@ -357,6 +371,7 @@ impl NavGeometry {
             toggle: t(self.toggle),
             back: t(self.back),
             inspector_toggle: t(self.inspector_toggle),
+            history: t(self.history),
             scrim: t(self.scrim),
             resize_handle: t(self.resize_handle),
             ..self.clone()
@@ -406,6 +421,12 @@ impl NavGeometry {
         if shows(self.inspector_toggle) && (!self.modal() || self.inspector_modal()) {
             parts.push(Part::InspectorToggle);
         }
+        if let Some(control) = inputs.history
+            && shows(self.history)
+            && !self.modal()
+        {
+            parts.push(Part::History(control.is_open()));
+        }
         if shows(self.toggle) && (!self.modal() || self.sidebar_modal()) {
             parts.push(Part::Toggle);
         }
@@ -451,21 +472,26 @@ impl NavGeometry {
             Part::Toggle => Placement::Exact(self.toggle),
             Part::Back => Placement::Exact(self.back),
             Part::InspectorToggle => Placement::Exact(self.inspector_toggle),
+            Part::History(_) => Placement::Exact(self.history),
         }
     }
 
     /// The run of a header the app's actions may take: from after the title
-    /// lead to before a trailing shell button.
+    /// lead to before the trailing shell buttons.
     fn actions_band(&self, column: Column) -> Rect {
         let header = self.header(column);
         if header == Rect::ZERO {
             return Rect::ZERO;
         }
-        let x1 = if self.inspector_toggle_column == Some(column) {
-            self.inspector_toggle.x0
-        } else {
-            header.x1
-        };
+        let mut x1 = header.x1;
+        for (button, home) in [
+            (self.inspector_toggle, self.inspector_toggle_column),
+            (self.history, self.history_column),
+        ] {
+            if home == Some(column) && button.width() > 0.0 {
+                x1 = x1.min(button.x0);
+            }
+        }
         Rect::new(header.x0, header.y0, x1, header.y1)
     }
 }
@@ -574,6 +600,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     // 5. The header row.
     let needs_header = inputs.has_sidebar
         || inputs.has_inspector
+        || inputs.history.is_some()
         || inputs.titled.iter().any(|t| *t)
         || inputs.with_actions.iter().any(|a| *a)
         || stack.len() > 1;
@@ -769,6 +796,27 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         g.toggle_column = Some(column);
         g.toggle = chip_in(g.column(column), g.header(column), true);
     }
+    // History stands in the window's top-trailing corner: the trailing edge
+    // of the column that reaches the window's trailing edge (never a drawer).
+    if inputs.history.is_some()
+        && let Some(column) = [
+            Column::Inspector,
+            Column::Content,
+            Column::Overview,
+            Column::Sidebar,
+        ]
+        .into_iter()
+        .find(|column| {
+            let header = g.header(*column);
+            !g.in_drawer(*column)
+                && g.column(*column).width() > 0.0
+                && header.x0 < w - 0.5
+                && header.x1 >= w - 0.5
+        })
+    {
+        g.history_column = Some(column);
+        g.history = chip_in(g.column(column), g.header(column), false);
+    }
     if inputs.has_inspector {
         let column = match g.inspector {
             InspectorPlacement::Docked | InspectorPlacement::Drawer if inspector_open => {
@@ -780,6 +828,9 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         if header != Rect::ZERO && g.column(column).width() > 0.0 {
             g.inspector_toggle_column = Some(column);
             g.inspector_toggle = chip_in(g.column(column), header, false);
+            if g.history_column == Some(column) && !g.inspector_modal() {
+                g.inspector_toggle = g.inspector_toggle - Vec2::new(m.chip + m.gap, 0.0);
+            }
         }
     }
     // Content is fully hidden by a pushed screen: no buttons on it.
@@ -885,6 +936,10 @@ pub struct NavShell {
     toggle: Button,
     back: Button,
     inspector_toggle: Button,
+    /// The window's History control: the one that opens History and the
+    /// one, on, that closes it.
+    history_open: Button,
+    history_close: Button,
     requests: Rc<Requests>,
     pane_binding: Option<LocalBinding<NavPane>>,
     /// The content pane the person last worked in; a collapse to narrow
@@ -956,6 +1011,14 @@ impl NavShell {
             toggle,
             back,
             inspector_toggle,
+            history_open: crate::standalone_history_host::history_control_button(
+                "nav-shell-history",
+                HistoryControl::Closed,
+            ),
+            history_close: crate::standalone_history_host::history_control_button(
+                "nav-shell-history",
+                HistoryControl::Open,
+            ),
             requests,
             pane_binding: None,
             active_hint: None,
@@ -1391,6 +1454,8 @@ impl NavShell {
             Part::Toggle => Some(&self.toggle),
             Part::Back => Some(&self.back),
             Part::InspectorToggle => Some(&self.inspector_toggle),
+            Part::History(false) => Some(&self.history_open),
+            Part::History(true) => Some(&self.history_close),
         }
     }
 
@@ -1408,12 +1473,14 @@ impl NavShell {
             Part::Toggle => Some(&mut self.toggle),
             Part::Back => Some(&mut self.back),
             Part::InspectorToggle => Some(&mut self.inspector_toggle),
+            Part::History(false) => Some(&mut self.history_open),
+            Part::History(true) => Some(&mut self.history_close),
         }
     }
 
     /// Every element the shell owns, shown or not: sync, update and wake
     /// reach parts a modal drawer hides from input.
-    const ALL_PARTS: [Part; 12] = [
+    const ALL_PARTS: [Part; 14] = [
         Part::Body(Column::Overview),
         Part::Body(Column::Content),
         Part::Body(Column::Inspector),
@@ -1426,6 +1493,8 @@ impl NavShell {
         Part::Toggle,
         Part::Back,
         Part::InspectorToggle,
+        Part::History(false),
+        Part::History(true),
     ];
 
     fn for_each_owned(&self, mut visit: impl FnMut(&dyn Widget)) {
@@ -1457,6 +1526,12 @@ impl NavShell {
                 .filter(|part| !matches!(part, Part::Toggle) || self.has_sidebar())
                 .filter(|part| !matches!(part, Part::InspectorToggle) || self.inspector.is_some())
                 .filter(|part| !matches!(part, Part::Back))
+                .filter(|part| match part {
+                    Part::History(open) => {
+                        self.inputs.borrow().history.map(HistoryControl::is_open) == Some(*open)
+                    }
+                    _ => true,
+                })
                 .collect()
         }
     }
@@ -1469,6 +1544,7 @@ impl NavShell {
             Part::Toggle => self.geometry.toggle_column,
             Part::Back => self.geometry.back_column,
             Part::InspectorToggle => self.geometry.inspector_toggle_column,
+            Part::History(_) => self.geometry.history_column,
         }
     }
 
@@ -1708,7 +1784,15 @@ impl NavShell {
             }
         }
         self.paint_rules(f.scene, f.transform, f.theme, &g);
-        for part in [Part::Back, Part::InspectorToggle, Part::Toggle] {
+        let history = self
+            .inputs
+            .borrow()
+            .history
+            .map(|control| Part::History(control.is_open()));
+        for part in [Part::Back, Part::InspectorToggle, Part::Toggle]
+            .into_iter()
+            .chain(history)
+        {
             if !self.part_column(part).is_some_and(floating) {
                 self.paint_part(f, part);
             }
@@ -1781,6 +1865,7 @@ impl NavShell {
             Part::Toggle => self.geometry.toggle,
             Part::Back => self.geometry.back,
             Part::InspectorToggle => self.geometry.inspector_toggle,
+            Part::History(_) => self.geometry.history,
             _ => return,
         };
         if rect.width() <= 0.0 {
@@ -1957,7 +2042,10 @@ fn place_parts(
 }
 
 impl Widget for NavShell {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn WindowHeader
+    );
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.conventions = conventions;
@@ -2166,6 +2254,8 @@ impl Widget for NavShell {
             toggle,
             back,
             inspector_toggle,
+            history_open,
+            history_close,
             ..
         } = self;
         let [h_sidebar, h_overview, h_content, h_inspector] = headers;
@@ -2183,6 +2273,8 @@ impl Widget for NavShell {
         let mut toggle = Some(toggle as &mut dyn Widget);
         let mut back = Some(back as &mut dyn Widget);
         let mut inspector_toggle = Some(inspector_toggle as &mut dyn Widget);
+        let mut history_open = Some(history_open as &mut dyn Widget);
+        let mut history_close = Some(history_close as &mut dyn Widget);
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(parts.len());
         for part in parts {
             let next = match part {
@@ -2195,6 +2287,8 @@ impl Widget for NavShell {
                 Part::Toggle => toggle.take(),
                 Part::Back => back.take(),
                 Part::InspectorToggle => inspector_toggle.take(),
+                Part::History(false) => history_open.take(),
+                Part::History(true) => history_close.take(),
             };
             if let Some(widget) = next {
                 out.push(widget);
@@ -2282,6 +2376,17 @@ impl Widget for NavShell {
 /// Controls in a column the shell is not showing (a hidden sidebar, a
 /// closed drawer, a screen pushed away) still belong to the window: custody,
 /// invocations and availability reach every part the shell owns.
+impl WindowHeader for NavShell {
+    fn set_history_control(&mut self, control: Option<HistoryControl>) {
+        if self.inputs.borrow().history == control {
+            return;
+        }
+        self.inputs.borrow_mut().history = control;
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+}
+
 impl crate::widget::controls::ActionControls for NavShell {
     fn install_control_custody(
         &mut self,
@@ -2452,7 +2557,7 @@ impl NavShell {
         if g.scrim.width() > 0.0 && g.scrim.contains(p) {
             let in_sidebar = g.sidebar_modal() && g.sidebar_column.contains(p);
             let in_inspector = g.inspector_modal() && g.inspector_column.contains(p);
-            let on_button = [g.toggle, g.inspector_toggle, g.back]
+            let on_button = [g.toggle, g.inspector_toggle, g.back, g.history]
                 .iter()
                 .any(|r| r.contains(p));
             if !in_sidebar && !in_inspector && !on_button {
@@ -2529,6 +2634,7 @@ impl NavShell {
                     Part::Toggle => self.geometry.toggle,
                     Part::Back => self.geometry.back,
                     Part::InspectorToggle => self.geometry.inspector_toggle,
+                    Part::History(_) => self.geometry.history,
                     Part::Filter => self.geometry.filter,
                     Part::Actions(column) => self.geometry.header(*column),
                     Part::Body(column) => self.geometry.column(*column),

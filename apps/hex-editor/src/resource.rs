@@ -64,10 +64,27 @@ impl ResourceApp for HexEditorShell {
     const ID: &'static str = "so.tilo.hex-editor";
     const TITLE: &'static str = "Hex Editor";
     const ICON: Option<&'static str> = Some("hex-editor");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<HexEditor>) -> Element {
         cx.surface(HexView::empty())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "empty",
+            "find",
+            "goto",
+            "edited",
+            "saved",
+            "error",
+            "narrow",
+            "narrow-inspector",
+        ]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.starts_with("narrow").then_some((640, 720))
     }
 }
 
@@ -78,6 +95,12 @@ impl ResourceSurface<HexEditor> for HexView {
 
     fn attach(&mut self, cx: SurfaceCx<HexEditor>) {
         self.actions.attach(cx.dispatcher());
+    }
+
+    /// A capture shows the bundled sample, not an empty window; a scenario
+    /// then stages its view state.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 

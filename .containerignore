@@ -7,9 +7,6 @@
 target/
 **/target/
 
-# Font sources build with their own Python toolchain; no image stage reads them.
-vendor/fonts/
-
 # VCS + tooling
 .git/
 **/.git

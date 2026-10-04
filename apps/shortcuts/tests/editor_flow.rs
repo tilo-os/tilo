@@ -77,6 +77,8 @@ fn row(
 /// every invocation and answers each at once.
 struct FakeHost {
     rows: Vec<CatalogueRow>,
+    /// What `shortcuts#list` answers: the saved shortcuts.
+    saved: Vec<Value>,
     invoked: Mutex<Vec<InvokeRequest>>,
     callers: Mutex<Vec<Caller>>,
 }
@@ -141,6 +143,7 @@ impl FakeHost {
                     vec![ActionParam::required("id", ParamType::Text, "Id")],
                 ),
             ],
+            saved: Vec::new(),
             invoked: Mutex::new(Vec::new()),
             callers: Mutex::new(Vec::new()),
         }
@@ -185,6 +188,9 @@ impl ActionHost for FakeHost {
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let value = match request.target.address.action.as_str() {
+            "list" if request.target.address.resource == "shortcuts" => {
+                Some(Value::Array(self.saved.clone()))
+            }
             "list" => Some(json!([])),
             "freeform" => Some(json!({
                 "name": "Note the inbox",
@@ -277,7 +283,15 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
     );
     assert_eq!(host.library_calls("list").len(), 1, "the library is read");
     let audit = app.harness().native_app_audit();
-    assert!(audit.is_certified(), "{audit:#?}");
+    // The History button belongs to the window: this harness hosts no
+    // History, so its action cannot resolve here. Everything else must.
+    assert!(
+        audit
+            .issues
+            .iter()
+            .all(|issue| issue.control == "history-button"),
+        "{audit:#?}"
+    );
 }
 
 #[test]
@@ -318,7 +332,6 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
     let (host, _guard, mut app) = open();
     app.invoke(Workbench::NEW_DRAFT.with("Tidy".into()))
         .expect("a new draft");
-    let draft = app.state().drafts.ids().next().cloned().unwrap();
     let shortcut_id = app
         .state()
         .drafts
@@ -328,7 +341,10 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .shortcut_id
         .clone();
 
-    act(&mut app, &format!("open-draft-{draft}"), &Action::Activate);
+    // A new draft is the page that opens.
+    app.harness()
+        .wait_for_named("draft-name", tilo_test_env::hang_bound())
+        .expect("the new draft opens in the editor");
 
     // An input the steps can use.
     act(&mut app, "new-input-name", &Action::SetValue("who".into()));
@@ -348,20 +364,20 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         &Action::Activate,
     );
 
-    // The checker's verdict on the unbound create step shows on it.
+    // The checker's verdict on the unbound create step shows in the summary.
     app.harness()
         .expect(
-            &SemanticExpectation::named("step-problems-1")
-                .name_contains("title")
+            &SemanticExpectation::named("draft-problems")
+                .name("2 problems to fix before saving")
                 .within(tilo_test_env::hang_bound()),
         )
-        .expect("the missing argument is reported on the step");
+        .expect("the missing argument is reported");
 
     // `title` is offered the text input, not the list's array.
     act(
         &mut app,
         "arg-1-title",
-        &Action::SetValue("input who · text".into()),
+        &Action::SetValue("input who".into()),
     );
     // `pinned` gets a typed value.
     act(
@@ -382,9 +398,10 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
     // Review what it may do, then save.
     act(&mut app, "review-save", &Action::Activate);
     app.harness()
-        .wait_for_named("grant-so.tilo.notes-create", tilo_test_env::hang_bound())
-        .expect("the sheet lists the permissions");
-    act(&mut app, "grant-save", &Action::Activate);
+        .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
+        .expect("the sheet shows");
+    // Enter is the sheet's default action: it saves.
+    app.harness().key("Enter");
 
     let created = host.library_calls("create");
     assert_eq!(created.len(), 1, "saved once through shortcuts#create");
@@ -501,4 +518,80 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
         host.library_calls("create").is_empty() && host.library_calls("update").is_empty(),
         "nothing is saved without the grant review"
     );
+}
+
+/// The workspace holds one saved shortcut that asks for a title.
+fn with_saved_note() -> FakeHost {
+    let mut host = FakeHost::new();
+    host.rows.push(row(
+        "workspace:room",
+        APP_ID,
+        &tilo_automation::shortcut_resource_id("quick-note"),
+        "shortcuts.shortcut",
+        tilo_automation::SHORTCUT_RUN_ACTION,
+        Vec::new(),
+        PermissionRequirement::Write,
+        ResultSpec::None,
+    ));
+    host.saved.push(json!({
+        "id": "quick-note",
+        "name": "Quick note",
+        "inputs": [{
+            "name": "title", "ty": "text", "required": true,
+            "description": "Note title", "nullable": false
+        }],
+        "steps": [
+            {"id": "create", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": INBOX}, "action": "create",
+             "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
+        ]
+    }));
+    host
+}
+
+#[test]
+fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
+    let (host, _guard, mut app) = open_with(with_saved_note());
+    // The library lists the saved shortcut under the overview: one step
+    // down the list opens its page.
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    let list = app.harness().targets()["shortcuts-library"];
+    // A click in the first row (the overview) puts focus in the list.
+    app.harness().click_at(list.x0 + 40.0, list.y0 + 16.0);
+    // The section header is a stop of its own; the next one is the shortcut.
+    app.harness().key("Down");
+    app.harness().key("Down");
+    act(
+        &mut app,
+        "run-quick-note-input-title",
+        &Action::SetValue("Call Sam".into()),
+    );
+    act(&mut app, "run-quick-note", &Action::Activate);
+
+    let _ = app
+        .harness()
+        .wait_until(Duration::from_millis(300), |_| false);
+    let runs: Vec<_> = host
+        .invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request.target.address.action == "run")
+        .cloned()
+        .collect();
+    assert_eq!(runs.len(), 1, "run once");
+    let InvokeArgument::Json(inputs) = &runs[0].argument else {
+        panic!("typed inputs")
+    };
+    assert_eq!(inputs["title"], "Call Sam");
+
+    // Back on the overview, the run is listed and leads to the shortcut.
+    app.harness().key("Up");
+    app.harness().key("Up");
+    act(&mut app, "run-record-1", &Action::Activate);
+    app.harness()
+        .wait_for_named("run-quick-note", tilo_test_env::hang_bound())
+        .expect("the run opens the shortcut it started");
 }
