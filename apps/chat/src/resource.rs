@@ -11,7 +11,8 @@ use automerge::{ObjType, ROOT, ReadDoc, Value};
 use tilo_content::ContentStore;
 use tilo_document::RichText;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, ResourceApp, ResourceSurface, SeedCx, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, ResourceApp, ResourceSurface, RunMode, SeedCx, SurfaceCx,
+    ViewCx,
 };
 use ui::tilo_actions::{ActionAddress, Resource as PublishedResource};
 use ui::tilo_resource::{
@@ -305,7 +306,9 @@ impl ResourceApp for ChatShell {
                 ContentStore::memory()
             }
         });
-        let runtime = if native {
+        // A capture shows the app as a device with its services draws it;
+        // nothing it stages reaches them.
+        let runtime = if native || cx.mode() == RunMode::Capture {
             ChatRuntime::Native
         } else {
             ChatRuntime::Unavailable
