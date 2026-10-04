@@ -136,6 +136,38 @@ class LaunchpadCardTests(unittest.TestCase):
             with self.assertRaisesRegex(CLIENT.GateError, "not Notes"):
                 self.run_card("calendar")
 
+    def run_action_card(self, app_tree: dict[str, str], closed: list[int]) -> tuple[str, int]:
+        from unittest import mock
+
+        shell = mock.Mock()
+        shell.call.return_value = "(true,)"
+        with mock.patch.object(CLIENT, "shell_client", return_value=shell), \
+                mock.patch.object(CLIENT, "bus_pids", return_value={":1.1": 10}), \
+                mock.patch.object(CLIENT, "wait_for_shell_node", return_value=({}, "/card")), \
+                mock.patch.object(CLIENT, "wait_for_new_app", return_value=(":1.9", 99)), \
+                mock.patch.object(CLIENT.AtspiClient, "property", return_value="(<'calendar'>,)"), \
+                mock.patch.object(CLIENT.AtspiClient, "tree", return_value=app_tree), \
+                mock.patch.object(CLIENT, "process_command", return_value="/usr/bin/tilo-launcher"), \
+                mock.patch.object(CLIENT, "START_TIMEOUT_SECONDS", 0.05), \
+                mock.patch.object(CLIENT, "POLL_SECONDS", 0.01), \
+                mock.patch.object(CLIENT, "close_app", side_effect=closed.append):
+            return CLIENT.open_from_launchpad_card(
+                "unix:path=/bus", "Tasks", "Calendar", ("Task list",),
+            )
+
+    def test_a_card_must_do_what_it_names_in_its_app(self):
+        with self.subTest(phase="the app shows what the card's action opened"):
+            closed: list[int] = []
+            self.assertEqual(
+                self.run_action_card({"/a": "(<'Task list'>,)"}, closed), (":1.9", 99),
+            )
+            self.assertEqual(closed, [])
+        with self.subTest(phase="opening the app alone is not enough"):
+            closed = []
+            with self.assertRaisesRegex(CLIENT.GateError, "not what it names.*Task list"):
+                self.run_action_card({"/a": "(<'Month'>,)"}, closed)
+            self.assertEqual(closed, [99], "the app is closed for the next card")
+
 
 class AppDrivingTests(unittest.TestCase):
     def test_names_are_read_from_gdbus_variants(self):

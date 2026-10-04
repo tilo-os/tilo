@@ -31,6 +31,7 @@ HACK = "workspace-hack"
 ROOTS = (
     ("tilo-web-desktop", ()),
     ("tilo-browser-runtime", ()),
+    ("tilo-browser-compute", ()),
     ("registry-web-bindgen", ()),
 )
 

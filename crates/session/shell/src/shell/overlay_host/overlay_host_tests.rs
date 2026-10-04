@@ -893,6 +893,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
@@ -1634,7 +1635,11 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         });
         assert!(h.host.pump_file_picker());
         assert!(h.host.file_picker().is_some());
-        assert!(pump(&mut h, &typed("x"), Modifiers::default()));
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("x".into())),
+            Modifiers::default()
+        ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
             Some("beforex"),
@@ -1660,7 +1665,11 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             Modifiers::default()
         ));
         assert!(!h.host.capture_studio.is_open());
-        assert!(pump(&mut h, &typed("y"), Modifiers::default()));
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("y".into())),
+            Modifiers::default()
+        ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
             Some("beforexy"),
@@ -1828,15 +1837,6 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
 /// `KeyEventExtra` is `pub(crate)`, so a struct literal isn't possible.
 /// Only the pub fields the host reads (`logical_key`, `state`) are
 /// overwritten.
-/// A character key as a keyboard sends it: with the text it types.
-fn typed(text: &str) -> WindowEvent {
-    let mut event = key_press(Key::Character(text.into()));
-    if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-        event.text = Some(text.into());
-    }
-    event
-}
-
 fn key_press(logical_key: Key) -> WindowEvent {
     // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
     // bit pattern (`logical_key` is overwritten below, `text` is
@@ -1844,12 +1844,18 @@ fn key_press(logical_key: Key) -> WindowEvent {
     // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
     // inspected by winit-internal code that the host never reaches).
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    // A character key carries its text, as a real keyboard's does; text
+    // fields type from it.
+    let text = match &logical_key {
+        Key::Character(text) => Some(text.clone()),
+        _ => None,
+    };
     ev.logical_key = logical_key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = None;
+    ev.text = text;
     WindowEvent::KeyboardInput {
         device_id: unsafe { std::mem::zeroed() },
         event: ev,

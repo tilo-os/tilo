@@ -626,6 +626,29 @@ console_qemu_args() {
     "$TILO_CONSOLE"
 }
 
+# Optional second NIC: a point-to-point Ethernet segment to one other VM on this
+# host, carried as UDP between two loopback ports. It is a real shared L2 link —
+# broadcasts and ARP cross it — which user-mode networking (one private NAT per
+# VM) cannot give two guests. Set all three to attach it:
+#   TILO_VM_LAN_PORT=23901 TILO_VM_LAN_PEER=23902 TILO_VM_LAN_MAC=52:54:00:23:83:0a
+# and the mirror image on the peer VM.
+TILO_VM_LAN_PORT="${TILO_VM_LAN_PORT:-}"
+TILO_VM_LAN_PEER="${TILO_VM_LAN_PEER:-}"
+TILO_VM_LAN_MAC="${TILO_VM_LAN_MAC:-}"
+# Validated here, at load time: a refusal inside the command substitution that
+# builds QEMU's arguments would only end that subshell and boot without the NIC.
+if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
+  [[ "$TILO_VM_LAN_PORT" =~ ^[0-9]{4,5}$ && "$TILO_VM_LAN_PEER" =~ ^[0-9]{4,5}$ ]] \
+    || die "TILO_VM_LAN_PORT and TILO_VM_LAN_PEER must both be loopback UDP ports"
+  [[ "$TILO_VM_LAN_MAC" =~ ^52:54:00(:[0-9a-f]{2}){3}$ ]] \
+    || die "TILO_VM_LAN_MAC must be a lowercase 52:54:00:xx:xx:xx address"
+fi
+lan_qemu_args() {
+  [ -n "$TILO_VM_LAN_PORT" ] || return 0
+  printf -- '-netdev socket,id=tilolan,udp=127.0.0.1:%s,localaddr=127.0.0.1:%s -device virtio-net-pci,netdev=tilolan,mac=%s' \
+    "$TILO_VM_LAN_PEER" "$TILO_VM_LAN_PORT" "$TILO_VM_LAN_MAC"
+}
+
 input_qemu_args() {
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
     # ARM virt has no implicit PC keyboard; monitor sendkey needs a guest device.
