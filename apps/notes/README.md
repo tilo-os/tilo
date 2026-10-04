@@ -144,6 +144,5 @@ Inline marks inside non-code blocks:
 - `app.rs`: the notebook surface, published resources/actions and local
   presentation state.
 - `markdown.rs`: block-list and Markdown conversion.
-- `model.rs` / `storage.rs`: the in-memory page tree, and the standalone disk
-  format test fixtures still use.
+- `model.rs`: the in-memory page tree the notebook projects into.
 - `scenario.rs`: the screenshot scenarios, staged with notebook actions.

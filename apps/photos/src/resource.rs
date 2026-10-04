@@ -7,7 +7,9 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use tilo_content::ContentStore;
-use ui::framework::{Dispatcher, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
@@ -15,7 +17,7 @@ use ui::widget::Element;
 use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, register};
 use crate::app::PhotosApp;
 use crate::doc::PhotosDoc;
-use crate::model::{Edits, OpenImage, PhotoLibrary};
+use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
 
 /// Shared photograph library plus the open image (if any).
 #[derive(Clone, Debug, Default)]
@@ -101,12 +103,47 @@ impl ResourceApp for PhotosShell {
     fn view(cx: &mut ViewCx<Photos>) -> Element {
         let content = cx.content().unwrap_or_else(ContentStore::for_app);
         let app = if cx.mode().is_live() {
-            PhotosApp::new_persistent(content)
-                .launched_on(cx.launch_arguments().first().map(PathBuf::from))
+            PhotosApp::new_persistent(content).launched_on(
+                cx.launch_arguments()
+                    .first()
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_dir()),
+            )
         } else {
             PhotosApp::with_content(content)
         };
         cx.surface(app)
+    }
+
+    /// A photograph handed to the launch is kept in the content store and
+    /// imported into the library; a folder is imported by the window
+    /// ([`PhotosApp::launched_on`]).
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Photos>> {
+        let (Some(file), Some(content)) = (input.file(), input.content()) else {
+            return Vec::new();
+        };
+        let Some(image) = crate::pixels::decode(file.bytes()) else {
+            tracing::warn!(
+                name = file.name(),
+                "photos: the launched file is not an image"
+            );
+            return Vec::new();
+        };
+        let hash = match content.put(file.bytes()) {
+            Ok(hash) => hash,
+            Err(error) => {
+                tracing::warn!(%error, "photos: could not keep the launched photograph");
+                return Vec::new();
+            }
+        };
+        let open = OpenImage::from_path(file.name(), image.w, image.h)
+            .with_content(hash)
+            .portable();
+        Invoke::apply(&PhotosAction::ImportPhoto {
+            photo: LibraryPhoto::from_image(open),
+        })
+        .into_iter()
+        .collect()
     }
 
     fn label(state: &PhotosState) -> String {
@@ -206,5 +243,69 @@ impl ActionSink {
 
     pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.local.take_committed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ui::framework::testing::TestApp;
+
+    use super::*;
+
+    fn surface<T>(app: &mut TestApp<PhotosShell>, read: impl FnOnce(&mut PhotosApp) -> T) -> T {
+        app.surface(read)
+            .expect("the window hosts the photos surface")
+    }
+
+    #[test]
+    fn every_scenario_stages_through_the_library_and_settles() {
+        for &name in crate::sample::SCENARIOS {
+            let mut app = TestApp::<PhotosShell>::capture(Some(name))
+                .unwrap_or_else(|error| panic!("{name} does not capture: {error}"));
+            let state = app.state();
+            let library = crate::sample::shows_library(name);
+            match name {
+                "empty" => assert!(state.library.photos.is_empty()),
+                "loading" | "error" | "opened" | "cropping" | "edited" => {
+                    assert_eq!(state.library.photos.len(), 1, "{name}");
+                    assert!(state.open.is_some(), "{name} opens its photograph");
+                }
+                _ => assert!(state.library.photos.len() > 1, "{name} shows a library"),
+            }
+            if matches!(name, "cropping" | "edited") {
+                assert!(!state.edits.is_identity(), "{name} shows an edit");
+            }
+            let (in_library, has_image) = surface(&mut app, |photos| {
+                (photos.shows_library(), photos.has_image())
+            });
+            assert_eq!(in_library, library, "{name} poses the library view");
+            assert_eq!(
+                has_image,
+                !matches!(name, "empty" | "loading" | "error"),
+                "{name} draws its photograph only when its bytes are an image here"
+            );
+        }
+    }
+
+    #[test]
+    fn a_launched_photograph_is_imported_into_the_library_and_opened() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lake.png");
+        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.harness().relayout();
+        let state = app.state();
+        assert_eq!(state.library.photos.len(), 1);
+        let hash = tilo_content::hash_bytes(&png);
+        assert_eq!(
+            state.library.photos[0].image.content.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(
+            state.open.map(|open| open.name).as_deref(),
+            Some("lake.png")
+        );
+        assert!(surface(&mut app, |photos| photos.has_image()));
     }
 }

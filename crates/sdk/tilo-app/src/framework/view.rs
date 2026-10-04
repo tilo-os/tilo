@@ -280,6 +280,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         super::launch::flag(&self.run.launched.options, name)
     }
 
+    /// Whether the window is private ([`ResourceApp::PRIVATE_WINDOWS`](super::ResourceApp::PRIVATE_WINDOWS)):
+    /// its record, settings and files are thrown away with the process. A
+    /// view keeps what it would otherwise remember on the device (visits,
+    /// a session to restore) to itself.
+    pub fn is_private(&self) -> bool {
+        self.run.private
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
@@ -288,6 +296,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
     {
         self.storage.follow(self.alive.clone())
+    }
+
+    /// The device this window runs on: stable across launches, distinct on
+    /// each of the person's devices. `None` in a view of a past version. An
+    /// action that records where something happened (a speed test run on
+    /// this device) takes it as an argument, so every replica applies the
+    /// same value.
+    pub fn device(&self) -> Option<&str> {
+        self.storage.device()
     }
 
     /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):

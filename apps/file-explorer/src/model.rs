@@ -1258,7 +1258,7 @@ pub fn is_workspace_path(path: &Path) -> bool {
 
 /// Whether `path` is one of `roots` or nested under one. Pure over an explicit
 /// root list so the containment logic is testable without the environment.
-fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+pub(crate) fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| path == r || path.starts_with(r))
 }
 

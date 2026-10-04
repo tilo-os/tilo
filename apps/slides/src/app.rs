@@ -8,12 +8,14 @@
 //! collaboration work without extra plumbing. View state — current slide,
 //! selection, mode — is per-peer and stays local.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -23,6 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::ColorCompat;
+use ui::framework::{Dispatcher, TextControl, ViewCx};
 use ui::icons::{Icon, draw_icon};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
@@ -38,7 +41,7 @@ use ui::widget::{
     NumberInput, PageSidebar, PageSidebarEvent, Scrollable, SplitLayout, TextInput, Widget,
 };
 
-use crate::actions;
+use crate::actions::{self, SlidesDeck};
 use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
@@ -691,8 +694,7 @@ struct RoutedEvent<'a> {
 /// The words of one text box being edited on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
 /// the element's rich-text body as the deck's child resource, each edit a
-/// `SlidesAction::EditElementText`. Until the deck's dispatcher is attached
-/// it shows the words without editing them.
+/// `SlidesAction::EditElementText`.
 struct TextBoxEditor {
     slide_id: String,
     element_id: String,
@@ -704,7 +706,7 @@ impl TextBoxEditor {
         doc: &AutoCommit,
         slide_id: &str,
         element: &Element,
-        deck: Option<&ui::framework::Dispatcher<actions::SlidesDeck>>,
+        deck: &Dispatcher<SlidesDeck>,
     ) -> Self {
         let (locate_slide, locate_element) = (slide_id.to_owned(), element.id.clone());
         let field = RichTextField::view_only(move |doc| {
@@ -718,9 +720,7 @@ impl TextBoxEditor {
             element_id: element.id.clone(),
             host: Embedded::new(surface),
         };
-        if let Some(deck) = deck {
-            editor.attach(deck);
-        }
+        editor.attach(deck);
         let surface = editor.host.widget_mut();
         surface.present_from(doc);
         surface.set_focus(true);
@@ -730,8 +730,8 @@ impl TextBoxEditor {
         editor
     }
 
-    /// Edit through the deck's dispatcher from now on.
-    fn attach(&mut self, deck: &ui::framework::Dispatcher<actions::SlidesDeck>) {
+    /// Edit through the deck's dispatcher.
+    fn attach(&mut self, deck: &Dispatcher<SlidesDeck>) {
         let (id, wrap) = actions::element_text_child(&self.slide_id, &self.element_id);
         self.host
             .widget_mut()
@@ -814,17 +814,21 @@ struct PanelGeometry {
     reason = "the bools split across several unrelated concerns (document lifecycle, editor mode/selection state, the presentation flow, and --shots-only demo staging); grouping them would need a real design pass (e.g. per-concern sub-structs), left for a follow-up rather than forced here"
 )]
 pub struct SlidesApp {
+    /// The deck as last presented, with any gesture in flight previewed on
+    /// it (a drag moves its element here until the drop dispatches).
     deck: Deck,
+    /// The slides' order keys, in deck order, as last presented.
+    ranks: Vec<i64>,
+    /// The slide to show once the deck holds it: one this editor just added
+    /// or moved.
+    focus_slide: Option<Id>,
+    /// A deck presented while a gesture was in flight, shown once it ends.
+    deferred: Option<std::rc::Rc<crate::actions::SlidesResourceCtx>>,
     rect: Rect,
     node: Option<NodeId>,
-    seeded: bool,
-    /// Mounted on a record another participant created: its deck is theirs
-    /// to seed, so an uninitialized document is left untouched.
-    joined: bool,
     bootstrapped: bool,
 
     mode: Mode,
-    canonical_deck: Option<(ObjId, Deck)>,
     cur_slide: usize,
     sel: Option<Id>,
     editing_text: bool,
@@ -870,19 +874,10 @@ pub struct SlidesApp {
     text_edit_select_all: bool,
     /// Where the text box being edited is drawn, in window coordinates.
     text_edit_box: Rect,
-    needs_commit: bool,
 
-    /// Framework-owned action dispatch (undo boundary + executor + last-action
-    /// record). Every structural / geometric / stylistic deck mutation goes
-    /// through it as a [`SlidesAction`](crate::actions::SlidesAction); flowing
-    /// text edits stay on the native CRDT splice path (see [`crate::actions`]).
-    actions: ui::ActionHost,
-    /// Hosted by [`crate::resource::SlidesShell`]: edits go through the
-    /// framework dispatcher. Standalone / shots keep [`Self::actions`].
-    framework: Option<ui::framework::Dispatcher<crate::actions::SlidesDeck>>,
-    /// Test / attach override so [`PublishesResources`] can keep only the live
-    /// selection beside the published deck without constructing a dispatcher.
-    framework_hosted: bool,
+    /// Every edit of the deck goes through the resource's dispatcher as a
+    /// [`SlidesAction`](crate::actions::SlidesAction).
+    dispatch: Dispatcher<SlidesDeck>,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
@@ -993,10 +988,16 @@ pub struct SlidesApp {
     /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
     /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
     title_input: TextInput,
-    /// Directly bound to the current slide's Automerge notes text while open.
-    /// The shared editor owns multiline layout, selection, clipboard, scrolling
-    /// and IME; `editing_notes` only owns the inspector's open state.
-    notes_input: TextInput,
+    /// The current slide's speaker notes, edited as the deck's child text
+    /// (each edit a [`SlidesAction::EditNotes`](crate::actions::SlidesAction::EditNotes)).
+    /// The shared editor owns multiline layout, selection, clipboard,
+    /// scrolling and IME; `editing_notes` only owns the inspector's open
+    /// state.
+    notes: TextControl<TextInput>,
+    /// The slide whose notes [`Self::notes`] edits.
+    notes_slide: Rc<RefCell<String>>,
+    /// Put the notes caret at their end when the editor next shows them.
+    notes_caret_to_end: bool,
     /// Set when the popover opens so the next `draw` (which has the theme, hence
     /// can resolve a colour *role* to a concrete colour) seeds the picker with
     /// the selected element's current fill.
@@ -1023,33 +1024,51 @@ enum DemoMenu {
 }
 
 impl SlidesApp {
-    /// The editor over the deck its resource presents, keeping pictures in
-    /// `content`. It shows a blank starter slide until the deck arrives.
-    pub fn new(content: ContentStore) -> Self {
-        Self::build(starter_deck(), content)
+    /// The editor of the deck the view `cx` shows: its edits go through the
+    /// view's dispatcher, its pictures are in the view's content store, and
+    /// presentation files are read and written only in a window someone
+    /// uses.
+    pub fn new(cx: &ViewCx<SlidesDeck>) -> Self {
+        let content = cx.content().unwrap_or_else(crate::assets::app_content);
+        let state = cx.live().get();
+        let mut app = Self::build(cx.dispatcher(), content, cx.mode().is_live());
+        app.adopt_resource_state(&state);
+        app
     }
 
-    /// The editor over the sample deck, for tests.
-    #[cfg(test)]
-    pub(crate) fn sample() -> Self {
-        Self::build(crate::model::seed_deck(), crate::assets::app_content())
-    }
-
-    fn build(deck: Deck, content: ContentStore) -> Self {
+    fn build(dispatch: Dispatcher<SlidesDeck>, content: ContentStore, live: bool) -> Self {
+        let deck = starter_deck();
         let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
-        let (document_worker, document_worker_error) = match DocumentWorker::new(content.clone()) {
-            Ok(worker) => (Some(worker), None),
-            Err(error) => (None, Some(error)),
+        let (document_worker, document_worker_error) = if live {
+            match DocumentWorker::new(content.clone()) {
+                Ok(worker) => (Some(worker), None),
+                Err(error) => (None, Some(error)),
+            }
+        } else {
+            (
+                None,
+                Some("presentation files open only in a live window".into()),
+            )
         };
+        let notes_slide = Rc::new(RefCell::new(String::new()));
+        let located = Rc::clone(&notes_slide);
+        let notes = TextControl::view_only(
+            TextInput::local()
+                .multiline(true)
+                .with_plain_chrome()
+                .with_font_size(12.5)
+                .with_id("slides-speaker-notes"),
+            move |doc| SlidesDoc::notes_text(doc, &located.borrow()),
+        );
         SlidesApp {
+            ranks: Vec::new(),
+            focus_slide: None,
+            deferred: None,
             deck,
             rect: Rect::ZERO,
             node: None,
-            seeded: false,
-            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             bootstrapped: false,
             mode: Mode::Edit,
-            canonical_deck: None,
             cur_slide: 1,
             sel: None,
             editing_text: false,
@@ -1067,10 +1086,7 @@ impl SlidesApp {
             text_editor: None,
             text_edit_select_all: false,
             text_edit_box: Rect::ZERO,
-            needs_commit: false,
-            actions: ui::ActionHost::new(),
-            framework: None,
-            framework_hosted: false,
+            dispatch,
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
@@ -1114,11 +1130,9 @@ impl SlidesApp {
                 .with_plain_chrome()
                 .with_font_size(17.0)
                 .with_id("slides-title"),
-            notes_input: TextInput::local()
-                .multiline(true)
-                .with_plain_chrome()
-                .with_font_size(12.5)
-                .with_id("slides-speaker-notes"),
+            notes,
+            notes_slide,
+            notes_caret_to_end: false,
             demo_menu: None,
             demo_reorder: false,
             demo_delete_zone: false,
@@ -1385,85 +1399,37 @@ impl SlidesApp {
         rail
     }
 
-    // --- CRDT mirror --------------------------------------------------------
+    // --- the presented deck -------------------------------------------------
 
-    fn canonical_matches(&self, doc: &AutoCommit) -> bool {
-        self.canonical_deck
-            == doc
-                .get(automerge::ROOT, "deck")
-                .ok()
-                .flatten()
-                .and_then(|(_, id)| SlidesDoc::load(doc).map(|deck| (id, deck)))
-    }
-
-    /// Reconcile before any cached interaction or delayed file result gets authority.
-    /// Local edits acknowledge their own projection through reload/dispatch.
-    fn reconcile_canonical(&mut self, doc: &AutoCommit) {
-        let incoming = doc
-            .get(automerge::ROOT, "deck")
-            .ok()
-            .flatten()
-            .and_then(|(_, id)| SlidesDoc::load(doc).map(|deck| (id, deck)));
-        if self.canonical_deck.is_some() && incoming != self.canonical_deck {
-            let selected_slide = self.slide().map(|s| s.id.clone());
-            let draft = self.title_input.take_dirty();
-            self.drag = Drag::None;
-            self.page_sidebar.on_escape();
-            self.active_guides.clear();
-            self.text_drag = false;
-            self.ctx_menu.close();
-            self.ctx_hits.clear();
-            self.fill_picker_open = false;
-            self.editing_text = false;
-            self.editing_title = false;
-            self.active_document_generation = None;
-            self.portal_rx = None;
-            self.doc_portal_rx = None;
-            self.resource_file = None;
-            if self.resource_invocation.is_some() {
-                self.finish_resource_file(
-                    false,
-                    Some("Presentation changed while file operation was pending".into()),
-                );
+    /// Show the deck the resource holds now: an edit of this participant's,
+    /// a collaborator's, an undo or a restore. While a gesture is in flight
+    /// its preview stays on screen, and the deck is shown once it ends.
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::actions::SlidesResourceCtx>) {
+        if self.gesture_in_flight() {
+            self.deferred = Some(Rc::clone(state));
+            return;
+        }
+        self.deferred = None;
+        self.ranks.clone_from(&state.ranks);
+        let deck = state.deck();
+        if deck != self.deck {
+            if !actions::deck_within_aggregate_limits(&deck) {
+                self.io_toast = Some((tr("slides-toast-shared-limit"), ToastKind::Error));
+                return;
             }
-            self.reload(doc);
-            if let Some(index) = selected_slide.and_then(|id| self.deck.index_of(&id)) {
+            // The slide shown stays shown wherever the change moved it; a
+            // slide this editor just added or moved is shown once it lands.
+            let shown = self
+                .focus_slide
+                .clone()
+                .or_else(|| self.slide().map(|slide| slide.id.clone()));
+            self.deck = deck;
+            if let Some(index) = shown.and_then(|id| self.deck.index_of(&id)) {
                 self.cur_slide = index;
-            } else {
-                self.editing_notes = false;
+                self.focus_slide = None;
             }
-            self.title_input.set_text(&self.deck.title);
-            if let Some(draft) = draft.filter(|draft| draft != &self.deck.title) {
-                self.io_toast = Some((
-                    format!("Presentation changed. Unapplied title draft: {draft}"),
-                    ToastKind::Error,
-                ));
-            }
-        }
-        self.reload(doc);
-    }
-
-    fn reload(&mut self, doc: &AutoCommit) {
-        if self.drag.active() {
-            return; // cache is authoritative mid-drag
-        }
-        if let Some(deck) = SlidesDoc::load(doc) {
-            if let Ok(Some((_, id))) = doc.get(automerge::ROOT, "deck") {
-                self.canonical_deck = Some((id, deck.clone()));
-            }
-            if deck != self.deck {
-                if !actions::deck_within_aggregate_limits(&deck) {
-                    self.io_toast = Some((tr("slides-toast-shared-limit"), ToastKind::Error));
-                    return;
-                }
-                self.deck = deck;
-                self.search_provider.refresh(&self.deck);
-                // Bump only for an actual local/remote/undo deck change. `sync`
-                // runs per frame, so equality here keeps both the settled-slide
-                // cache and the complete search catalogue cold while a talk is
-                // simply being presented.
-                self.bump_deck_revision();
-            }
+            self.search_provider.refresh(&self.deck);
+            self.bump_deck_revision();
         }
         if self.deck.slides.is_empty() {
             self.cur_slide = 0;
@@ -1473,7 +1439,16 @@ impl SlidesApp {
         if self.cur_slide >= self.deck.slides.len() {
             self.cur_slide = self.deck.slides.len() - 1;
         }
-        // Drop selection if the element vanished (e.g. remote delete / undo).
+        // Notes whose slide went away are no longer being edited: the next
+        // keystroke must not land in another slide's notes.
+        if self.editing_notes {
+            let slide = self.notes_slide.borrow().clone();
+            if !slide.is_empty() && self.deck.index_of(&slide).is_none() {
+                self.end_notes_edit();
+            }
+        }
+        // Drop the selection when its element went away (a collaborator
+        // deleted it, an undo).
         if let Some(id) = self.sel.clone() {
             let alive = self
                 .deck
@@ -1484,6 +1459,20 @@ impl SlidesApp {
                 self.sel = None;
                 self.editing_text = false;
             }
+        }
+    }
+
+    /// Whether a drag the deck previews is under way.
+    fn gesture_in_flight(&self) -> bool {
+        self.drag.active() || self.page_sidebar.is_dragging()
+    }
+
+    /// Show a deck presented during a gesture, once the gesture is over.
+    fn adopt_deferred(&mut self) {
+        if !self.gesture_in_flight()
+            && let Some(state) = self.deferred.take()
+        {
+            self.adopt_resource_state(&state);
         }
     }
 
@@ -1500,120 +1489,21 @@ impl SlidesApp {
         Palette::resolve(self.deck.palette, theme)
     }
 
-    fn mark(&mut self) {
-        self.needs_commit = true;
-    }
-
     // --- action dispatch ----------------------------------------------------
 
-    /// Dispatch one [`SlidesAction`](crate::actions::SlidesAction) — the single
-    /// CRDT-mutation path shared with the Ctrl+K palette. Delegates to the
-    /// framework's [`ActionHost`](ui::ActionHost), which brackets the undo
-    /// boundary and applies the action through the executor (a pinned actor + a
-    /// committed change, so it replays byte-identically on peers), exactly as the
-    /// palette does. The in-memory deck mirror is reconciled from the document on
-    /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
-    /// would double-record the undo boundary the host already records.
-    /// Take part in the framework: submit deck edits through its dispatcher.
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::actions::SlidesDeck>,
-    ) {
-        if let Some(editor) = self.text_editor.as_mut() {
-            editor.attach(&dispatcher);
-        }
-        self.framework = Some(dispatcher);
-        self.framework_hosted = true;
-    }
-
-    /// Mark this surface as framework-hosted so
-    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
-    /// selection live extras beside the published deck door.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.framework_hosted = hosted;
-    }
-
-    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
-    /// publishing only selection live extras beside the framework door.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.framework_hosted || self.framework.is_some()
-    }
-
-    /// Test-only: plant a local deck that has not been published through the
-    /// framework resource yet.
-    #[cfg(test)]
-    pub(crate) fn seed_unpublished_deck_for_test(&mut self, deck: crate::model::Deck) {
-        self.deck = deck;
-        self.cur_slide = self.cur_slide.min(self.deck.slides.len().saturating_sub(1));
-    }
-
-    /// Test-only: slide ids currently held on the local deck surface.
-    #[cfg(test)]
-    pub(crate) fn local_slide_ids_for_test(&self) -> Vec<String> {
-        self.deck
-            .slides
-            .iter()
-            .map(|slide| slide.id.clone())
-            .collect()
-    }
-
-    /// Test-only: select an element on the current slide so hosted extras bind.
-    #[cfg(test)]
-    pub(crate) fn select_element_for_test(&mut self, element_id: crate::model::Id) {
-        self.sel = Some(element_id);
-    }
-
-    /// Show the deck the framework resource holds.
-    /// An empty projection does not wipe a deck that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::actions::SlidesResourceCtx) {
-        if state.slides.is_empty() && !self.deck.slides.is_empty() {
-            return;
-        }
-        if state.slides.is_empty() {
-            return;
-        }
-        let slides: Vec<_> = state
-            .slides
-            .iter()
-            .map(|slide| slide.data.to_slide())
-            .collect();
-        if self.deck.title == state.deck_title && self.deck.slides == slides {
-            return;
-        }
-        self.deck.title.clone_from(&state.deck_title);
-        self.deck.slides = slides;
-        self.search_provider.refresh(&self.deck);
-        self.bump_deck_revision();
-    }
-
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::SlidesAction) {
-        let context = tilo_actions::ActionContext::for_action("so.tilo.slides", "Slides", action);
-        if let Some(dispatcher) = &self.framework {
-            let _ = dispatcher.apply_now_with(doc, action, context);
-        } else {
-            self.actions.dispatch_with_context(
-                doc,
-                crate::actions::SLIDES_ACTION_TYPE,
-                action,
-                context,
-            );
-        }
-        self.canonical_deck = doc
-            .get(automerge::ROOT, "deck")
-            .ok()
-            .flatten()
-            .and_then(|(_, id)| SlidesDoc::load(doc).map(|deck| (id, deck)));
+    /// Submit one edit of the deck through the resource's dispatcher, as
+    /// every control, the palette and an agent do: it is checked against
+    /// the participant's permission, applied, recorded as one undo step and
+    /// shared. The deck shows it when it is presented back.
+    fn submit(&self, action: &crate::actions::SlidesAction) {
+        self.dispatch.apply(action);
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
     /// title, each slide (with its elements), and this peer's live selection.
-    /// Deck rows come from the in-memory mirror; selection is local.
     pub(crate) fn slides_resource_ctx(&self) -> crate::actions::SlidesResourceCtx {
         let mut ctx = crate::actions::SlidesResourceCtx::from_deck(&self.deck);
+        ctx.ranks.clone_from(&self.ranks);
         if let Some(slide) = ctx.slides.get(self.cur_slide) {
             ctx.selection = Some(crate::actions::selection_ctx_for(
                 slide,
@@ -1735,9 +1625,9 @@ impl SlidesApp {
 
     /// Apply one event emitted by the shared page rail to the deck (and CRDT).
     /// The single mapping used by both the live event path and the tests.
-    fn apply_rail_event(&mut self, doc: &mut AutoCommit, ev: PageSidebarEvent) {
+    fn apply_rail_event(&mut self, ev: PageSidebarEvent) {
         match ev {
-            PageSidebarEvent::Select(i) => self.apply_hit(doc, Hit::SelectSlide(i)),
+            PageSidebarEvent::Select(i) => self.apply_hit(Hit::SelectSlide(i)),
             PageSidebarEvent::Reorder { from, to } => {
                 let Some(id) = self.deck.slides.get(from).map(|slide| slide.id.clone()) else {
                     return;
@@ -1746,30 +1636,30 @@ impl SlidesApp {
                 // receiver-relative destination index. This keeps the same
                 // encoded action deterministic if remote inserts land before
                 // it is replayed elsewhere.
-                let Some(rank) = SlidesDoc::rank_for_move(doc, from, to) else {
+                let Some(rank) = crate::doc::rank_for_move(&self.ranks, from, to) else {
                     return;
                 };
-                self.perform_action(doc, &actions::set_slide_order_action(id, rank));
+                self.submit(&actions::set_slide_order_action(id.clone(), rank));
+                self.focus_slide = Some(id);
                 self.cur_slide = to;
-                self.reload(doc);
                 self.scroll_rail_to_current();
             }
             PageSidebarEvent::Duplicate(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
-                self.duplicate_slide(doc);
+                self.duplicate_slide();
             }
             PageSidebarEvent::Delete(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
-                self.delete_slide(doc);
+                self.delete_slide();
             }
-            PageSidebarEvent::Add => self.new_slide(doc),
+            PageSidebarEvent::Add => self.new_slide(),
         }
     }
 
     /// Drain and apply every event the shared page rail produced this gesture.
-    fn apply_rail_events(&mut self, doc: &mut AutoCommit) {
+    fn apply_rail_events(&mut self) {
         for ev in self.page_sidebar.take_events() {
-            self.apply_rail_event(doc, ev);
+            self.apply_rail_event(ev);
         }
     }
 
@@ -3101,7 +2991,7 @@ impl SlidesApp {
 
     // --- actions ------------------------------------------------------------
 
-    fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
+    fn apply_hit(&mut self, hit: Hit) {
         // Any action other than toggling the overflow menu itself dismisses it
         // (picking a tool from it, or any other toolbar action).
         if !matches!(hit, Hit::ToggleToolbarMenu) {
@@ -3109,9 +2999,9 @@ impl SlidesApp {
         }
         match hit {
             Hit::ToggleToolbarMenu => self.toolbar_tools.toggle(),
-            Hit::NewSlide => self.new_slide(doc),
-            Hit::DuplicateSlide => self.duplicate_slide(doc),
-            Hit::DeleteSlide => self.delete_slide(doc),
+            Hit::NewSlide => self.new_slide(),
+            Hit::DuplicateSlide => self.duplicate_slide(),
+            Hit::DeleteSlide => self.delete_slide(),
             Hit::Present => self.enter_present(),
             Hit::Overview => {
                 self.mode = if self.mode == Mode::Overview {
@@ -3128,15 +3018,12 @@ impl SlidesApp {
                 self.mode = Mode::Edit;
             }
             Hit::CyclePalette => {
-                self.perform_action(
-                    doc,
-                    &actions::set_deck_palette_action(self.deck.palette.next()),
-                );
+                self.submit(&actions::set_deck_palette_action(self.deck.palette.next()));
             }
             // Images can't be conjured from nothing — the tool opens the host
             // portal file chooser; the chosen file is inserted when it resolves.
             Hit::Insert(ElementKind::Image) => self.request_image_open(),
-            Hit::Insert(kind) => self.insert_element(doc, kind),
+            Hit::Insert(kind) => self.insert_element(kind),
             Hit::SelectSlide(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
                 self.sel = None;
@@ -3144,7 +3031,7 @@ impl SlidesApp {
                 self.editing_notes = false;
                 self.scroll_rail_to_current();
             }
-            Hit::SetFill(role) => self.set_sel_str(doc, "fill", &role),
+            Hit::SetFill(role) => self.set_sel_str("fill", &role),
             Hit::OpenFillPicker => {
                 // Only meaningful with an element selected. The next `draw`
                 // seeds the picker with the element's current fill (it has the
@@ -3155,58 +3042,49 @@ impl SlidesApp {
                 }
             }
             Hit::SetStroke(role) => {
-                self.set_sel_str(doc, "stroke", &role);
+                self.set_sel_str("stroke", &role);
                 // Give a freshly-stroked shape a sensible default width.
                 if let Some(el) = self.selected_element()
                     && role != "none"
                     && el.stroke_width < 1.0
                 {
-                    self.set_sel_f64(doc, "stroke_width", 4.0);
+                    self.set_sel_f64("stroke_width", 4.0);
                 }
             }
             Hit::ToggleBold => {
                 if let Some(el) = self.selected_element() {
                     let v = !el.bold;
-                    self.set_sel_bool(doc, "bold", v);
+                    self.set_sel_bool("bold", v);
                 }
             }
             Hit::ToggleItalic => {
                 if let Some(el) = self.selected_element() {
                     let v = !el.italic;
-                    self.set_sel_bool(doc, "italic", v);
+                    self.set_sel_bool("italic", v);
                 }
             }
-            Hit::SetAlign(a) => self.set_sel_str(doc, "align", a.as_str()),
-            Hit::BringFront => self.restack(doc, true),
-            Hit::SendBack => self.restack(doc, false),
-            Hit::DuplicateElement => self.duplicate_element(doc),
-            Hit::DeleteElement => self.delete_element(doc),
+            Hit::SetAlign(a) => self.set_sel_str("align", a.as_str()),
+            Hit::BringFront => self.restack(true),
+            Hit::SendBack => self.restack(false),
+            Hit::DuplicateElement => self.duplicate_element(),
+            Hit::DeleteElement => self.delete_element(),
             Hit::SetLayout(l) => {
                 if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
-                    self.perform_action(
-                        doc,
-                        &actions::set_slide_layout_action(self.cur_slide, id, l),
-                    );
+                    self.submit(&actions::set_slide_layout_action(self.cur_slide, id, l));
                 }
             }
             Hit::SetBackground(b) => {
                 if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
-                    self.perform_action(
-                        doc,
-                        &actions::set_slide_background_action(self.cur_slide, id, b),
-                    );
+                    self.submit(&actions::set_slide_background_action(self.cur_slide, id, b));
                 }
             }
             Hit::SetPalette(p) => {
-                self.perform_action(doc, &actions::set_deck_palette_action(p));
+                self.submit(&actions::set_deck_palette_action(p));
             }
-            Hit::EditNotes => {
-                self.begin_notes_edit(doc);
-            }
+            Hit::EditNotes => self.begin_notes_edit(),
             Hit::ToggleRail => self.toggle_rail_flap(),
             Hit::ToggleInspector => self.toggle_inspector_flap(),
         }
-        self.reload(doc);
     }
 
     /// Compact editing exposes one drawer at a time. Opening the slide rail
@@ -3237,54 +3115,46 @@ impl SlidesApp {
         self.inspector_flap.toggle(layout);
     }
 
-    fn set_sel_str(&mut self, doc: &mut AutoCommit, key: &str, v: &str) {
+    fn set_sel_str(&self, key: &str, v: &str) {
         if let Some(id) = self.sel.clone() {
-            self.perform_action(
-                doc,
-                &actions::restyle_str_action(self.cur_slide, id, key, v),
-            );
+            self.submit(&actions::restyle_str_action(self.cur_slide, id, key, v));
         }
     }
-    fn set_sel_f64(&mut self, doc: &mut AutoCommit, key: &str, v: f64) {
+    fn set_sel_f64(&self, key: &str, v: f64) {
         if let Some(id) = self.sel.clone() {
-            self.perform_action(
-                doc,
-                &actions::restyle_f64_action(self.cur_slide, id, key, v),
-            );
+            self.submit(&actions::restyle_f64_action(self.cur_slide, id, key, v));
         }
     }
-    fn set_sel_bool(&mut self, doc: &mut AutoCommit, key: &str, v: bool) {
+    fn set_sel_bool(&self, key: &str, v: bool) {
         if let Some(id) = self.sel.clone() {
-            self.perform_action(
-                doc,
-                &actions::restyle_bool_action(self.cur_slide, id, key, v),
-            );
+            self.submit(&actions::restyle_bool_action(self.cur_slide, id, key, v));
         }
     }
 
-    fn restack(&mut self, doc: &mut AutoCommit, front: bool) {
+    fn restack(&self, front: bool) {
         let Some(id) = self.sel.clone() else { return };
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        let Some(rank) = actions::restack_z_for_author(doc, &slide_id, &id, front) else {
+        let Some(rank) = actions::restack_z_for_author(&self.deck, &slide_id, &id, front) else {
             return;
         };
-        self.perform_action(doc, &actions::set_element_z_action(slide_id, id, rank));
+        self.submit(&actions::set_element_z_action(slide_id, id, rank));
     }
 
-    fn new_slide(&mut self, doc: &mut AutoCommit) {
+    fn new_slide(&mut self) {
         let s = actions::new_slide_template();
         let at = self.cur_slide + 1;
-        let rank = SlidesDoc::rank_for_insert(doc, at);
-        self.perform_action(doc, &actions::insert_slide_with_order_action(&s, rank));
+        let rank = crate::doc::rank_for_insert(&self.ranks, at);
+        self.submit(&actions::insert_slide_with_order_action(&s, rank));
+        self.focus_slide = Some(s.id);
         self.cur_slide = at;
         self.sel = None;
         self.editing_text = false;
         self.scroll_rail_to_current();
     }
 
-    fn duplicate_slide(&mut self, doc: &mut AutoCommit) {
+    fn duplicate_slide(&mut self) {
         let Some(slide) = self.deck.slides.get(self.cur_slide).cloned() else {
             return;
         };
@@ -3294,37 +3164,35 @@ impl SlidesApp {
             e.id = new_id();
         }
         let at = self.cur_slide + 1;
-        let rank = SlidesDoc::rank_for_insert(doc, at);
-        self.perform_action(doc, &actions::insert_slide_with_order_action(&copy, rank));
+        let rank = crate::doc::rank_for_insert(&self.ranks, at);
+        self.submit(&actions::insert_slide_with_order_action(&copy, rank));
+        self.focus_slide = Some(copy.id);
         self.cur_slide = at;
         self.sel = None;
         self.scroll_rail_to_current();
     }
 
-    fn delete_slide(&mut self, doc: &mut AutoCommit) {
+    fn delete_slide(&mut self) {
         if self.deck.slides.len() <= 1 {
             return; // keep at least one slide
         }
         let Some(id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.perform_action(doc, &actions::delete_slide_action(self.cur_slide, id));
+        self.submit(&actions::delete_slide_action(self.cur_slide, id));
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
         }
         self.sel = None;
     }
 
-    fn insert_element(&mut self, doc: &mut AutoCommit, kind: ElementKind) {
+    fn insert_element(&mut self, kind: ElementKind) {
         let el = actions::inserted_element_template(kind);
         let id = el.id.clone();
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.perform_action(
-            doc,
-            &actions::add_element_action(self.cur_slide, slide_id, &el),
-        );
+        self.submit(&actions::add_element_action(self.cur_slide, slide_id, &el));
         self.sel = Some(id);
         self.editing_text = false;
     }
@@ -3363,7 +3231,7 @@ impl SlidesApp {
 
     /// Drain a completed `.odp` open/save request, loading or writing the deck.
     /// Called once per frame from [`Widget::sync`].
-    fn drain_doc_portal(&mut self, _doc: &mut AutoCommit) {
+    fn drain_doc_portal(&mut self) {
         let Some(rx) = self.doc_portal_rx.as_ref() else {
             return;
         };
@@ -3534,25 +3402,18 @@ impl SlidesApp {
         }
     }
 
-    fn apply_loaded_deck(&mut self, doc: &mut AutoCommit, deck: Deck) {
-        // Direct document write, not a deck action. Opening a file replaces
-        // the title, palette, and every slide, including ids the current deck
-        // already holds. `InsertSlide` rejects those ids, `DeleteSlide` refuses
-        // the last slide, and imported geometry can fall outside action
-        // validators. `SlideData` already carries blocks as `ClipBlock`.
-        SlidesDoc::seed(doc, &deck);
-        self.deck = deck;
-        self.bump_deck_revision();
+    /// Open a presentation file's deck in place of this one: one edit, so
+    /// one undo puts the previous deck back.
+    fn apply_loaded_deck(&mut self, deck: &Deck) {
+        self.submit(&actions::replace_deck_action(deck));
         self.cur_slide = 0;
         self.sel = None;
         self.editing_text = false;
         self.editing_notes = false;
         self.presentation.invalidate_cache();
-        self.mark();
-        self.reload(doc);
     }
 
-    fn drain_document_worker(&mut self, doc: &mut AutoCommit) {
+    fn drain_document_worker(&mut self) {
         let Some(received) = self
             .document_worker
             .as_ref()
@@ -3611,7 +3472,7 @@ impl SlidesApp {
         self.active_document_generation = None;
         match result {
             Ok(deck) => {
-                self.apply_loaded_deck(doc, deck);
+                self.apply_loaded_deck(&deck);
                 self.io_toast = Some((tr("slides-toast-opened"), ToastKind::Success));
                 self.finish_resource_file(true, None);
             }
@@ -3620,30 +3481,6 @@ impl SlidesApp {
                 self.finish_resource_file(false, Some(error));
             }
         }
-    }
-
-    /// Load a `.odp` from disk, replacing the deck in the shared document so
-    /// undo/redo and collaboration see the whole swap as one change.
-    #[cfg(test)]
-    fn load_odp(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
-        self.load_presentation(doc, path)
-    }
-
-    #[cfg(test)]
-    fn load_presentation(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
-        let Ok(bytes) = read_presentation_file(path) else {
-            return false;
-        };
-        let deck = if is_pptx(path) {
-            crate::pptx::read_pptx(&bytes, &self.content)
-        } else {
-            crate::odp::read_odp(&bytes, &self.content)
-        };
-        let Ok(deck) = deck else {
-            return false;
-        };
-        self.apply_loaded_deck(doc, deck);
-        true
     }
 
     /// Advance the render-cache generation without letting a wrapping integer
@@ -3659,33 +3496,11 @@ impl SlidesApp {
         }
     }
 
-    /// Serialise the current deck to a `.odp` at `path` (adding the extension
-    /// if the host didn't).
-    #[cfg(test)]
-    fn save_odp(&self, path: &std::path::Path) -> bool {
-        self.save_presentation(path)
-    }
-
-    #[cfg(test)]
-    fn save_presentation(&self, path: &std::path::Path) -> bool {
-        if is_pptx(path) {
-            return match crate::pptx::write_pptx(&self.deck, &self.content) {
-                Ok(bytes) => std::fs::write(path, bytes).is_ok(),
-                Err(_) => false,
-            };
-        }
-        let path = ensure_odp_ext(path);
-        match crate::odp::write_odp(&self.deck, &self.content) {
-            Ok(bytes) => std::fs::write(&path, bytes).is_ok(),
-            Err(_) => false,
-        }
-    }
-
     /// Drain a completed portal request, if any. Called once per frame from
     /// [`Widget::sync`]; inserts the chosen image and clears the in-flight
     /// channel. Never blocks — a still-pending picker simply leaves the channel
     /// installed for the next frame.
-    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+    fn drain_portal(&mut self) {
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
@@ -3693,7 +3508,7 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
+                    PortalOutcome::Opened(path) => self.insert_image_from_path(&path),
                     // A cancel or a portal failure is not a bug — leave the deck
                     // untouched (we never fabricate a placeholder element).
                     PortalOutcome::Cancelled => {}
@@ -3714,7 +3529,7 @@ impl SlidesApp {
 
     /// Place the picked image on the current slide and kick off its background
     /// decode so the picture is ready by the time it paints.
-    fn insert_image_from_path(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+    fn insert_image_from_path(&mut self, path: &std::path::Path) {
         let Some(src) = crate::assets::import_asset_file(&self.content, path) else {
             self.io_toast = Some((tr("slides-toast-image-import-failed"), ToastKind::Error));
             return;
@@ -3728,16 +3543,12 @@ impl SlidesApp {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.perform_action(
-            doc,
-            &actions::add_element_action(self.cur_slide, slide_id, &el),
-        );
+        self.submit(&actions::add_element_action(self.cur_slide, slide_id, &el));
         self.sel = Some(id);
         self.editing_text = false;
-        self.reload(doc);
     }
 
-    fn duplicate_element(&mut self, doc: &mut AutoCommit) {
+    fn duplicate_element(&mut self) {
         let Some(el) = self.selected_element().cloned() else {
             return;
         };
@@ -3749,29 +3560,27 @@ impl SlidesApp {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.perform_action(
-            doc,
-            &actions::add_element_action(self.cur_slide, slide_id, &copy),
-        );
+        self.submit(&actions::add_element_action(
+            self.cur_slide,
+            slide_id,
+            &copy,
+        ));
         self.sel = Some(id);
     }
 
-    fn delete_element(&mut self, doc: &mut AutoCommit) {
+    fn delete_element(&mut self) {
         if let Some(id) = self.sel.clone() {
-            self.perform_action(doc, &actions::delete_element_action(self.cur_slide, id));
+            self.submit(&actions::delete_element_action(self.cur_slide, id));
             self.sel = None;
             self.editing_text = false;
         }
     }
 
-    fn nudge(&mut self, doc: &mut AutoCommit, dx: f64, dy: f64) {
+    fn nudge(&self, dx: f64, dy: f64) {
         if let Some(el) = self.selected_element().cloned() {
             let nx = (el.x + dx).clamp(-el.w + 20.0, SLIDE_W - 20.0);
             let ny = (el.y + dy).clamp(-el.h + 20.0, SLIDE_H - 20.0);
-            self.perform_action(
-                doc,
-                &actions::move_element_action(self.cur_slide, el.id, nx, ny),
-            );
+            self.submit(&actions::move_element_action(self.cur_slide, el.id, nx, ny));
         }
     }
 
@@ -3888,46 +3697,51 @@ impl SlidesApp {
 
     /// Commit the inline title rename: flush any pending edit to the CRDT and
     /// blur the field.
-    fn commit_title_edit(&mut self, doc: &mut AutoCommit) {
+    fn commit_title_edit(&mut self) {
         if let Some(t) = self.title_input.take_dirty() {
-            self.perform_action(doc, &crate::actions::set_deck_title_action(t));
+            self.submit(&crate::actions::set_deck_title_action(t));
         }
         self.editing_title = false;
         Widget::set_focus(&mut self.title_input, false);
-        self.reload(doc);
     }
 
-    /// Bind the shared multiline editor to the current slide's real Automerge
-    /// text. Rebinding is needed only when navigation changes slides; ordinary
-    /// sync preserves the live caret/selection while folding in peer edits.
-    fn sync_notes_input(&mut self, doc: &mut AutoCommit, place_at_end: bool) {
-        let Some(obj) = SlidesDoc::notes_text_obj(doc, self.cur_slide) else {
+    /// Show the current slide's speaker notes in the notes editor, edited
+    /// through the deck's dispatcher as that slide's notes. Moving to
+    /// another slide rebinds it; otherwise a collaborator's edit folds in
+    /// under the live caret.
+    fn sync_notes(&mut self, doc: &mut AutoCommit) {
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             self.end_notes_edit();
             return;
         };
-        let rebound = self.notes_input.bound_obj() != Some(&obj);
+        let rebound = *self.notes_slide.borrow() != slide_id;
         if rebound {
-            self.notes_input.bind_text(obj);
+            let (id, wrap) = actions::notes_child(&slide_id);
+            *self.notes_slide.borrow_mut() = slide_id;
+            self.notes.attach(
+                self.dispatch
+                    .child::<ui::tilo_resource::PlainText>(&id, wrap),
+            );
         }
-        Widget::sync(&mut self.notes_input, doc, &automerge::ROOT);
-        if rebound || place_at_end {
-            let end = self.notes_input.value().len();
-            self.notes_input.set_cursor_pos(end);
+        self.notes.pull(doc);
+        if std::mem::take(&mut self.notes_caret_to_end) || rebound {
+            let control = self.notes.control_mut();
+            let end = control.value().len();
+            control.set_cursor_pos(end);
         }
-        Widget::set_focus(&mut self.notes_input, true);
+        Widget::set_focus(self.notes.control_mut(), true);
     }
 
-    fn begin_notes_edit(&mut self, doc: &mut AutoCommit) {
+    fn begin_notes_edit(&mut self) {
         self.editing_notes = true;
         self.editing_text = false;
         self.sel = None;
-        self.sync_notes_input(doc, true);
+        self.notes_caret_to_end = true;
     }
 
     fn end_notes_edit(&mut self) {
         self.editing_notes = false;
-        Widget::set_focus(&mut self.notes_input, false);
-        self.mark();
+        Widget::set_focus(self.notes.control_mut(), false);
     }
 
     /// The rect the inline title editor occupies in the toolbar.
@@ -3976,7 +3790,7 @@ impl SlidesApp {
                     },
                 ..
             } => {
-                self.commit_title_edit(routed.state);
+                self.commit_title_edit();
                 return true;
             }
             WindowEvent::MouseInput {
@@ -3985,7 +3799,7 @@ impl SlidesApp {
                 ..
             } if !rect.inflate(4.0, 8.0).contains(self.last_mouse) => {
                 // Click away commits, then falls through so the click still acts.
-                self.commit_title_edit(routed.state);
+                self.commit_title_edit();
                 return false;
             }
             _ => {}
@@ -4004,22 +3818,14 @@ impl SlidesApp {
                 taffy: routed.taffy,
             },
         );
-        // Live-splice each edit into the CRDT title (the mirror is refreshed on
-        // commit; while editing, the field is the source of truth).
-        if let Some(t) = self.title_input.take_dirty() {
-            self.perform_action(
-                routed.state,
-                &crate::actions::SlidesAction::SetDeckTitle { title: t },
-            );
-            self.mark();
-            self.reload(routed.state);
-        }
+        // The rename is one edit, submitted when it is committed.
         true
     }
 
-    /// Route the inspector notes box through its directly-bound multiline
-    /// [`TextInput`]. Escape or a press outside ends editing; all editor events
-    /// otherwise stay in the shared caret/selection/IME path.
+    /// Route the inspector notes box through its notes editor, whose every
+    /// edit is a splice of the slide's notes through the deck's dispatcher.
+    /// Escape or a press outside ends editing; all editor events otherwise
+    /// stay in the shared caret/selection/IME path.
     fn route_notes_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.editing_notes {
             return false;
@@ -4028,7 +3834,7 @@ impl SlidesApp {
             self.end_notes_edit();
             return false;
         };
-        self.notes_input.apply_layout_external(rect);
+        self.notes.control_mut().apply_layout_external(rect);
         match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(
@@ -4059,7 +3865,7 @@ impl SlidesApp {
             _ => {}
         }
         let mut input_handled = false;
-        self.notes_input.handle_event(
+        self.notes.handle_event(
             routed.event,
             &mut ui::widget::EventCtx {
                 scale_factor: routed.scale_factor,
@@ -4072,10 +3878,6 @@ impl SlidesApp {
                 taffy: routed.taffy,
             },
         );
-        if self.notes_input.take_dirty().is_some() {
-            self.mark();
-            self.reload(routed.state);
-        }
         input_handled
     }
 
@@ -5112,8 +4914,8 @@ impl SlidesApp {
             );
         }
         if self.editing_notes {
-            self.notes_input.apply_layout_external(nb);
-            if self.notes_input.value().is_empty() {
+            self.notes.control_mut().apply_layout_external(nb);
+            if self.notes.control().value().is_empty() {
                 tr.draw_text_weighted(
                     scene,
                     &crate::strings::tr("slides-notes-placeholder"),
@@ -5124,7 +4926,8 @@ impl SlidesApp {
                     TextWeight::Regular,
                 );
             }
-            self.notes_input
+            self.notes
+                .control_mut()
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
         } else {
             let placeholder = crate::strings::tr("slides-notes-placeholder");
@@ -5563,10 +5366,8 @@ impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,
-        dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
-        dyn ui::undo::UndoPoints
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5636,10 +5437,7 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
-        if self.joined && SlidesDoc::is_uninitialized(state) {
-            return;
-        }
-        self.reconcile_canonical(state);
+        self.adopt_deferred();
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
                 self.queue_document_save(file)
@@ -5653,24 +5451,11 @@ impl Widget for SlidesApp {
                 );
             }
         }
-        if !self.seeded {
-            if SlidesDoc::is_uninitialized(state) {
-                // Direct document write, not a deck action. Every `SlidesAction`
-                // loads an existing deck and refuses while that key is missing,
-                // which is the only time this runs. `Resource::initialize`
-                // already seeded its own `starter_deck()` ids; writing this
-                // widget's `starter_deck()` over that deck would replace them.
-                // Shots that set `self.deck` before sync depend on this write.
-                SlidesDoc::seed(state, &self.deck);
-            }
-            self.seeded = true;
-        }
         // Fold in a completed host image-open, if the portal worker finished.
-        self.drain_portal(state);
+        self.drain_portal();
         // Fold in a completed `.odp` open/save.
-        self.drain_doc_portal(state);
-        self.drain_document_worker(state);
-        self.reload(state);
+        self.drain_doc_portal();
+        self.drain_document_worker();
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
         // inspector immediately (also what `--shots` captures).
@@ -5686,9 +5471,8 @@ impl Widget for SlidesApp {
             self.bootstrapped = true;
         }
         if self.editing_notes {
-            self.sync_notes_input(state, false);
+            self.sync_notes(state);
         }
-        self.upgrade_text(state);
         self.ensure_text_editor(state);
     }
 
@@ -5867,10 +5651,10 @@ impl Widget for SlidesApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.reconcile_canonical(ctx.state);
-        // Restore replaces Text object identities; the first event may precede sync.
+        // A restore replaces the notes' text object; the first event may
+        // precede the sync that follows it.
         if self.editing_notes {
-            self.sync_notes_input(ctx.state, false);
+            self.sync_notes(ctx.state);
         }
         if matches!(
             event,
@@ -5909,7 +5693,7 @@ impl Widget for SlidesApp {
             ..
         } = routed.event
         {
-            self.on_right_press(routed.state, self.last_mouse, ctx.handled);
+            self.on_right_press(self.last_mouse, ctx.handled);
             return;
         }
         // While a context menu is open it is modal: every other event goes to it.
@@ -5936,13 +5720,16 @@ impl Widget for SlidesApp {
             routed.event,
             routed.scale_factor,
             routed.modifiers,
-            routed.state,
             ctx.handled,
         );
     }
 
     fn name(&self) -> &'static str {
         "SlidesApp"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("slides-editor")
     }
 
     /// Slides paints a single retained canvas, so every visible control and
@@ -6166,11 +5953,9 @@ impl Widget for SlidesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
-        self.reconcile_canonical(state);
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -6203,7 +5988,7 @@ impl Widget for SlidesApp {
                 .iter()
                 .position(|slide| slide.id == slide_id)
             {
-                self.apply_hit(state, Hit::SelectSlide(index));
+                self.apply_hit(Hit::SelectSlide(index));
                 return true;
             }
             return false;
@@ -6230,7 +6015,7 @@ impl Widget for SlidesApp {
             .find(|button| self.semantic_target(&button.hit) == target)
             .map(|button| button.hit.clone());
         if let Some(hit) = hit {
-            self.apply_hit(state, hit);
+            self.apply_hit(hit);
             true
         } else {
             false
@@ -6243,7 +6028,7 @@ impl Widget for SlidesApp {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.editing_notes {
-            return self.notes_input.cursor_shape(point);
+            return self.notes.control().cursor_shape(point);
         }
         None
     }
@@ -6259,13 +6044,13 @@ impl Widget for SlidesApp {
             return editor.host.ime_cursor_rect();
         }
         self.editing_notes
-            .then(|| self.notes_input.ime_cursor_rect())
+            .then(|| self.notes.control().ime_cursor_rect())
             .flatten()
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.editing_notes
-            .then(|| self.notes_input.ime_purpose())
+            .then(|| self.notes.control().ime_purpose())
             .flatten()
     }
 
@@ -6273,15 +6058,6 @@ impl Widget for SlidesApp {
     /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_pending_drag()
-    }
-}
-
-impl ui::undo::UndoPoints for SlidesApp {
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
-    }
-    fn on_commit(&mut self) {
-        self.needs_commit = false;
     }
 }
 
@@ -6295,23 +6071,13 @@ impl ui::search::capability::SearchSource for SlidesApp {
 }
 
 impl ui::resources::PublishesResources for SlidesApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
-    /// deck door — keep only the live selection extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.framework_hosted || self.framework.is_some() {
-            return crate::actions::live_presentation_resources(&self.slides_resource_ctx());
-        }
-        if !self.canonical_matches(doc) {
-            return Vec::new();
-        }
-        Self::publish_resources(self, doc)
+    /// [`tilo_resource::publish`] owns the deck door; the surface adds its
+    /// live selection.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::actions::live_presentation_resources(&self.slides_resource_ctx())
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if !self.canonical_matches(doc) {
-            return None;
-        }
-        if (self.framework_hosted || self.framework.is_some()) && id == "slides.deck" {
+        if id == "slides.deck" {
             return None;
         }
         Self::publish_resource(self, doc, id)
@@ -6332,26 +6098,16 @@ impl ui::resources::PublishesResources for SlidesApp {
     }
 }
 
-impl ui::undo::CommittedActions for SlidesApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its slides action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
 impl SlidesApp {
     fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
+        _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         use crate::actions::SlidesOperation;
-        self.reconcile_canonical(doc);
 
         if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
@@ -6451,7 +6207,6 @@ impl SlidesApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.reconcile_canonical(doc);
         if type_id != crate::actions::SLIDES_OPERATION_TYPE {
             return Ok(None);
         }
@@ -6513,7 +6268,6 @@ impl SlidesApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
         handled: &mut bool,
     ) {
         match event {
@@ -6537,8 +6291,8 @@ impl SlidesApp {
                 button: MouseButton::Left,
                 ..
             } => match btn_state {
-                ElementState::Pressed => self.on_press(state, self.last_mouse, handled),
-                ElementState::Released => self.on_release(state, handled),
+                ElementState::Pressed => self.on_press(self.last_mouse, handled),
+                ElementState::Released => self.on_release(handled),
             },
             WindowEvent::MouseWheel { delta, .. } => {
                 self.on_wheel(*delta, scale_factor, handled);
@@ -6554,7 +6308,6 @@ impl SlidesApp {
                 ..
             } => {
                 self.on_key(
-                    state,
                     logical_key,
                     text.as_ref().map(winit::keyboard::SmolStr::as_str),
                     modifiers,
@@ -6835,7 +6588,7 @@ impl SlidesApp {
         }
     }
 
-    fn on_press(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
+    fn on_press(&mut self, p: Point, handled: &mut bool) {
         // The help overlay swallows the next click (to dismiss).
         if self.help_overlay.on_pointer_press(p, self.rect) {
             *handled = true;
@@ -6865,31 +6618,30 @@ impl SlidesApp {
                 return;
             }
             if let Some(index) = self.overview.slide_at(self.rect, self.deck.slides.len(), p) {
-                self.apply_hit(doc, Hit::OpenSlide(index));
+                self.apply_hit(Hit::OpenSlide(index));
                 *handled = true;
                 return;
             }
             *handled = true;
             return;
         }
-        self.on_press_editor(doc, p, handled);
+        self.on_press_editor(p, handled);
     }
 
     /// `on_press` in `Mode::Edit`: the shared rail's own context menu and the
     /// toolbar overflow menu are modal while open (handled first, ahead of
     /// all other chrome); otherwise buttons, the title, the overlay scrim,
     /// the thumbnail rail and the canvas are tried in pointer-priority order.
-    fn on_press_editor(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
+    fn on_press_editor(&mut self, p: Point, handled: &mut bool) {
         let chrome = self.compute_chrome();
 
-        if self.on_press_editor_menus(doc, &chrome, p, handled) {
+        if self.on_press_editor_menus(&chrome, p, handled) {
             return;
         }
 
         // A click anywhere but the title itself commits an in-flight rename.
         if self.editing_title && !chrome.title_rect.contains(p) {
             self.editing_title = false;
-            self.mark();
         }
 
         // Buttons first (the hamburger toggle lives here, so it wins over the
@@ -6897,7 +6649,7 @@ impl SlidesApp {
         for b in &chrome.buttons {
             if b.rect.contains(p) {
                 let hit = b.hit.clone();
-                self.apply_hit(doc, hit);
+                self.apply_hit(hit);
                 *handled = true;
                 return;
             }
@@ -6937,7 +6689,7 @@ impl SlidesApp {
         if chrome.rail_viewport.contains(p) {
             self.sync_page_rail();
             self.page_sidebar.on_press(p);
-            self.apply_rail_events(doc);
+            self.apply_rail_events();
             self.rail_scroll = self.page_sidebar.scroll();
             *handled = true;
             return;
@@ -6960,19 +6712,13 @@ impl SlidesApp {
     /// own context menu, and the toolbar overflow dropdown. Returns `true`
     /// (and sets `*handled` as appropriate) when the press was consumed by
     /// either, so [`Self::on_press_editor`] should stop.
-    fn on_press_editor_menus(
-        &mut self,
-        doc: &mut AutoCommit,
-        chrome: &Chrome,
-        p: Point,
-        handled: &mut bool,
-    ) -> bool {
+    fn on_press_editor_menus(&mut self, chrome: &Chrome, p: Point, handled: &mut bool) -> bool {
         // The shared rail's own context menu is modal while open: the press
         // picks one of its rows or dismisses it, ahead of all other chrome.
         if self.page_sidebar.menu_open() {
             self.sync_page_rail();
             self.page_sidebar.on_press(p);
-            self.apply_rail_events(doc);
+            self.apply_rail_events();
             self.rail_scroll = self.page_sidebar.scroll();
             *handled = true;
             return true;
@@ -6988,7 +6734,7 @@ impl SlidesApp {
                 return true;
             }
             MenuPress::Action(hit) => {
-                self.apply_hit(doc, hit);
+                self.apply_hit(hit);
                 *handled = true;
                 return true;
             }
@@ -7104,7 +6850,7 @@ impl SlidesApp {
     /// duplicate / delete) or a slide thumbnail (new / duplicate / move /
     /// delete). The target is selected first so the menu's actions (which act
     /// on the current selection / slide) hit the intended object.
-    fn on_right_press(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
+    fn on_right_press(&mut self, p: Point, handled: &mut bool) {
         *handled = true;
         self.ctx_menu.close();
         self.ctx_hits.clear();
@@ -7119,7 +6865,7 @@ impl SlidesApp {
         if chrome.rail_viewport.contains(p) {
             self.sync_page_rail();
             if self.page_sidebar.on_right_press(p) {
-                self.apply_rail_events(doc);
+                self.apply_rail_events();
                 self.rail_scroll = self.page_sidebar.scroll();
                 return;
             }
@@ -7203,7 +6949,7 @@ impl SlidesApp {
         if let Some(idx) = self.ctx_menu.take_selection()
             && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
         {
-            self.apply_hit(routed.state, hit);
+            self.apply_hit(hit);
         }
         true
     }
@@ -7283,7 +7029,7 @@ impl SlidesApp {
             Widget::set_focus(&mut self.fill_picker, true);
         }
         if let Some(col) = self.fill_picker.take_changed() {
-            self.set_sel_str(routed.state, "fill", &ui::color::to_hex(col));
+            self.set_sel_str("fill", &ui::color::to_hex(col));
         }
         true
     }
@@ -7314,7 +7060,7 @@ impl SlidesApp {
                     },
                 );
                 if let Some(v) = self.font_input.take_changed() {
-                    self.set_sel_f64(routed.state, "font_size", v);
+                    self.set_sel_f64("font_size", v);
                 }
                 // Don't consume — canvas hover still wants the move.
                 false
@@ -7341,7 +7087,7 @@ impl SlidesApp {
                     );
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
-                        self.set_sel_f64(routed.state, "font_size", v);
+                        self.set_sel_f64("font_size", v);
                     }
                     true
                 } else if self.font_input.is_focused() {
@@ -7349,7 +7095,7 @@ impl SlidesApp {
                     // press can still hit whatever it landed on.
                     Widget::set_focus(&mut self.font_input, false);
                     if let Some(v) = self.font_input.take_changed() {
-                        self.set_sel_f64(routed.state, "font_size", v);
+                        self.set_sel_f64("font_size", v);
                     }
                     false
                 } else {
@@ -7378,7 +7124,7 @@ impl SlidesApp {
         {
             Widget::set_focus(&mut self.font_input, false);
             if let Some(v) = self.font_input.take_changed() {
-                self.set_sel_f64(routed.state, "font_size", v);
+                self.set_sel_f64("font_size", v);
             }
             return true;
         }
@@ -7397,12 +7143,12 @@ impl SlidesApp {
             },
         );
         if let Some(v) = self.font_input.take_changed() {
-            self.set_sel_f64(routed.state, "font_size", v);
+            self.set_sel_f64("font_size", v);
         }
         true
     }
 
-    fn on_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+    fn on_release(&mut self, handled: &mut bool) {
         // A thumbnail drag-to-reorder: the shared rail commits the move (emitting
         // a Reorder we apply to the CRDT) or — if the press never crossed the
         // threshold into a real drag — nothing, in which case it stays a plain
@@ -7420,13 +7166,13 @@ impl SlidesApp {
                 self.page_sidebar.on_escape(); // cancel the reorder cleanly
                 self.page_sidebar.take_events();
                 self.rail_scroll = self.page_sidebar.scroll();
-                self.apply_rail_event(doc, PageSidebarEvent::Delete(from));
+                self.apply_rail_event(PageSidebarEvent::Delete(from));
                 *handled = true;
                 return;
             }
             let was_click = !self.page_sidebar.is_dragging();
             self.page_sidebar.on_release();
-            self.apply_rail_events(doc);
+            self.apply_rail_events();
             self.rail_scroll = self.page_sidebar.scroll();
             if was_click && self.rail_layout() == SplitLayout::Overlay {
                 self.rail_flap.close();
@@ -7450,23 +7196,25 @@ impl SlidesApp {
             // Scroll drags were already resolved above; `None` writes nothing.
             _ => None,
         };
-        if let Some(id) = id {
-            if let Some(el) = self
+        if let Some(id) = id
+            && let Some(el) = self
                 .deck
                 .slides
                 .get(self.cur_slide)
                 .and_then(|s| s.element(&id))
                 .cloned()
-            {
-                // The drag preview lived only in the in-memory deck; commit the
-                // element's FINAL rect once, on drop — never a write per frame.
-                self.perform_action(
-                    doc,
-                    &actions::resize_element_action(self.cur_slide, id, el.x, el.y, el.w, el.h),
-                );
-                *handled = true;
-            }
-            self.reload(doc);
+        {
+            // The drag preview lived only in the in-memory deck; submit the
+            // element's final rect once, on drop — never an edit per frame.
+            self.submit(&actions::resize_element_action(
+                self.cur_slide,
+                id,
+                el.x,
+                el.y,
+                el.w,
+                el.h,
+            ));
+            *handled = true;
         }
     }
 
@@ -7513,14 +7261,7 @@ impl SlidesApp {
         }
     }
 
-    fn on_key(
-        &mut self,
-        doc: &mut AutoCommit,
-        key: &Key,
-        _text: Option<&str>,
-        modifiers: Modifiers,
-        handled: &mut bool,
-    ) {
+    fn on_key(&mut self, key: &Key, _text: Option<&str>, modifiers: Modifiers, handled: &mut bool) {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
@@ -7587,7 +7328,7 @@ impl SlidesApp {
         }
 
         // Editor command keys.
-        self.on_key_editor_commands(doc, key, mods, ctrl, handled);
+        self.on_key_editor_commands(key, mods, ctrl, handled);
     }
 
     /// Overview (slide-sorter) key navigation.
@@ -7661,7 +7402,6 @@ impl SlidesApp {
             self.end_text_edit();
             self.editing_notes = false;
             self.editing_title = false;
-            self.mark();
             *handled = true;
         }
     }
@@ -7670,17 +7410,16 @@ impl SlidesApp {
     /// nudge, and letter shortcuts.
     fn on_key_editor_commands(
         &mut self,
-        doc: &mut AutoCommit,
         key: &Key,
         mods: winit::keyboard::ModifiersState,
         ctrl: bool,
         handled: &mut bool,
     ) {
-        if self.on_key_editor_nav(doc, key, mods, handled) {
+        if self.on_key_editor_nav(key, mods, handled) {
             return;
         }
         if let Key::Character(c) = key {
-            self.on_key_editor_shortcut(doc, c, ctrl, handled);
+            self.on_key_editor_shortcut(c, ctrl, handled);
         }
     }
 
@@ -7689,7 +7428,6 @@ impl SlidesApp {
     /// should stop rather than also trying the letter shortcuts).
     fn on_key_editor_nav(
         &mut self,
-        doc: &mut AutoCommit,
         key: &Key,
         mods: winit::keyboard::ModifiersState,
         handled: &mut bool,
@@ -7703,8 +7441,7 @@ impl SlidesApp {
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if self.sel.is_some() {
-                    self.delete_element(doc);
-                    self.reload(doc);
+                    self.delete_element();
                     *handled = true;
                 }
             }
@@ -7722,23 +7459,19 @@ impl SlidesApp {
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.nudge(doc, if mods.shift_key() { -1.0 } else { -12.0 }, 0.0);
-                self.reload(doc);
+                self.nudge(if mods.shift_key() { -1.0 } else { -12.0 }, 0.0);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.nudge(doc, if mods.shift_key() { 1.0 } else { 12.0 }, 0.0);
-                self.reload(doc);
+                self.nudge(if mods.shift_key() { 1.0 } else { 12.0 }, 0.0);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.nudge(doc, 0.0, if mods.shift_key() { -1.0 } else { -12.0 });
-                self.reload(doc);
+                self.nudge(0.0, if mods.shift_key() { -1.0 } else { -12.0 });
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {
-                self.nudge(doc, 0.0, if mods.shift_key() { 1.0 } else { 12.0 });
-                self.reload(doc);
+                self.nudge(0.0, if mods.shift_key() { 1.0 } else { 12.0 });
                 *handled = true;
             }
             _ => return false,
@@ -7751,7 +7484,6 @@ impl SlidesApp {
     /// open/save.
     fn on_key_editor_shortcut(
         &mut self,
-        doc: &mut AutoCommit,
         c: &winit::keyboard::SmolStr,
         ctrl: bool,
         handled: &mut bool,
@@ -7770,15 +7502,13 @@ impl SlidesApp {
             return;
         }
         if ctrl && lc == "d" {
-            self.duplicate_element(doc);
-            self.reload(doc);
+            self.duplicate_element();
             *handled = true;
             return;
         }
         match lc.as_str() {
             "n" => {
-                self.new_slide(doc);
-                self.reload(doc);
+                self.new_slide();
                 *handled = true;
             }
             "p" => {
@@ -7792,38 +7522,31 @@ impl SlidesApp {
                 *handled = true;
             }
             "t" => {
-                self.insert_element(doc, ElementKind::Text);
-                self.reload(doc);
+                self.insert_element(ElementKind::Text);
                 *handled = true;
             }
             "r" => {
-                self.insert_element(doc, ElementKind::Rect);
-                self.reload(doc);
+                self.insert_element(ElementKind::Rect);
                 *handled = true;
             }
             "o" => {
-                self.insert_element(doc, ElementKind::Ellipse);
-                self.reload(doc);
+                self.insert_element(ElementKind::Ellipse);
                 *handled = true;
             }
             "l" => {
-                self.insert_element(doc, ElementKind::Line);
-                self.reload(doc);
+                self.insert_element(ElementKind::Line);
                 *handled = true;
             }
             "d" => {
-                self.duplicate_element(doc);
-                self.reload(doc);
+                self.duplicate_element();
                 *handled = true;
             }
             "]" => {
-                self.restack(doc, true);
-                self.reload(doc);
+                self.restack(true);
                 *handled = true;
             }
             "[" => {
-                self.restack(doc, false);
-                self.reload(doc);
+                self.restack(false);
                 *handled = true;
             }
             _ => {}
@@ -7895,7 +7618,7 @@ impl SlidesApp {
                 doc,
                 &slide_id,
                 &element,
-                self.framework.as_ref(),
+                &self.dispatch,
             ));
         }
         let select_all = std::mem::take(&mut self.text_edit_select_all);
@@ -7972,7 +7695,6 @@ impl SlidesApp {
             self.end_text_edit();
             consumed = true;
         }
-        self.reload(routed.state);
         if keyboard || pointer {
             // Keys the editor left alone (global undo) fall through to the host.
             *handled |= consumed || pointer;
@@ -8022,17 +7744,6 @@ impl SlidesApp {
         editor.host.draw(scene, t, tr, theme, &PresenceCtx::empty());
         self.text_edit_box = render::element_dest(chrome.slide_dest, chrome.scale, &element);
     }
-
-    /// Rewrite a first-format deck's text as rich text, once, as an action
-    /// that is not an undo step of its own.
-    fn upgrade_text(&mut self, doc: &mut AutoCommit) {
-        if !SlidesDoc::needs_upgrade(doc) {
-            return;
-        }
-        self.perform_action(doc, &actions::SlidesAction::UpgradeText);
-        let _ = self.actions.take_committed();
-        self.reload(doc);
-    }
 }
 
 /// The inspector's "Custom · #rrggbb" fill button face.
@@ -8041,3607 +7752,29 @@ fn custom_colour_hex(hex: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "app/r2_inspector_scroll.rs"]
-mod r2_inspector_scroll;
+#[path = "app/bench.rs"]
+mod bench;
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
-mod tests {
-    use super::*;
-    use crate::model::{Deck, ElementKind, Layout, PaletteKind, Slide};
-
-    fn wait_for_document_job(app: &mut SlidesApp, doc: &mut AutoCommit) {
-        for _ in 0..100 {
-            app.drain_document_worker(doc);
-            if app.active_document_generation.is_none() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        panic!("background presentation operation did not settle");
-    }
-
-    fn app_with(slide: Slide) -> SlidesApp {
-        let mut a = SlidesApp::new(crate::assets::app_content());
-        a.deck = Deck {
-            title: "t".into(),
-            palette: PaletteKind::Indigo,
-            slides: vec![slide],
-        };
-        a.cur_slide = 0;
-        a.bootstrapped = true;
-        a
-    }
-
-    /// Centre snapping inside/outside its threshold and the presenter clock format.
-    #[test]
-    fn element_snapping_and_present_clock() {
-        // Case `snaps_element_center_to_slide_center`.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 200.0, 100.0));
-            let app = app_with(s);
-            let (w, h) = (200.0, 100.0);
-            // Drag so the element's center-x lands 4u shy of the slide center.
-            let nx = SLIDE_W / 2.0 - w / 2.0 + 4.0;
-            let (sx, _sy, guides) = app.snapped_move(&id, nx, 100.0, w, h, 8.0);
-            assert!(
-                (sx - (SLIDE_W / 2.0 - w / 2.0)).abs() < 1e-6,
-                "center should snap to slide center, got left={sx}"
-            );
-            assert!(guides.iter().any(|g| matches!(g, Guide::Vertical(_))));
-        }
-
-        // Case `no_snap_when_outside_threshold`.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 50.0, 50.0));
-            let app = app_with(s);
-            let (sx, sy, guides) = app.snapped_move(&id, 300.0, 300.0, 50.0, 50.0, 4.0);
-            assert_eq!((sx, sy), (300.0, 300.0));
-            assert!(guides.is_empty());
-        }
-
-        // Case `present_clock_formats_minutes_seconds`.
-        {
-            let app = SlidesApp::new(crate::assets::app_content());
-            // No presentation started → 0:00.
-            assert_eq!(app.presentation.clock(), "0:00");
-        }
-    }
-
-    // --- present-mode navigation (driven through the real key handler) -----
-
-    /// A presenting app over a 5-slide deck, starting on slide 0.
-    fn presenting_app() -> SlidesApp {
-        let mut a = SlidesApp::new(crate::assets::app_content());
-        a.deck = crate::model::seed_deck();
-        a.bootstrapped = true;
-        a.cur_slide = 0;
-        a.enter_present();
-        a
-    }
-
-    /// Press a `NamedKey` through the production `on_key` dispatcher.
-    fn press_named(app: &mut SlidesApp, key: NamedKey) -> bool {
-        let mut doc = AutoCommit::new();
-        let mods = Modifiers::default();
-        let mut handled = false;
-        app.on_key(&mut doc, &Key::Named(key), None, mods, &mut handled);
-        handled
-    }
-
-    /// Press a character key through the production `on_key` dispatcher.
-    fn press_char(app: &mut SlidesApp, ch: &str) -> bool {
-        let mut doc = AutoCommit::new();
-        let mods = Modifiers::default();
-        let mut handled = false;
-        app.on_key(
-            &mut doc,
-            &Key::Character(ch.into()),
-            Some(ch),
-            mods,
-            &mut handled,
-        );
-        handled
-    }
-
-    /// Shape/menu inserts and inspector property edits write through to the deck CRDT.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn insert_tools_and_inspector_edits_write_through_to_the_crdt() {
-        // Case `inserting_a_shape_writes_through_to_the_crdt_deck`.
-        {
-            // The primary edit path: a keypress mutates the shared Automerge doc and
-            // the in-memory mirror reflects it — not a local-only cache.
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.reload(&doc);
-            let before = app.slide().map_or(0, |s| s.elements.len());
-
-            let mut handled = false;
-            app.on_key(
-                &mut doc,
-                &Key::Character("r".into()),
-                Some("r"),
-                Modifiers::default(),
-                &mut handled,
-            );
-            assert!(handled, "'r' is handled as insert-rectangle");
-            // Reload a *fresh* mirror straight from the document to prove the write
-            // landed in the CRDT, not just the widget's cache.
-            let reloaded =
-                crate::doc::SlidesDoc::load(&doc).expect("deck round-trips from the doc");
-            assert_eq!(
-                reloaded.slides[app.cur_slide].elements.len(),
-                before + 1,
-                "the inserted shape is persisted in the document"
-            );
-            assert!(
-                app.sel.is_some(),
-                "the freshly inserted element is selected"
-            );
-        }
-
-        // Case `clicking_an_overflow_menu_row_inserts_that_element`.
-        {
-            let mut app = app_sized(560.0);
-            let mut doc = seeded_doc(&app);
-            app.reload(&doc);
-            app.toolbar_tools.set_open(true);
-            let before = app.slide().unwrap().elements.len();
-
-            let chrome = app.compute_chrome();
-            let row = chrome
-                .toolbar_tools
-                .menu_buttons
-                .iter()
-                .find(|b| matches!(b.hit, Hit::Insert(ElementKind::Rect)))
-                .expect("the Rectangle tool is in the overflow menu at 560px");
-            let p = row.rect.center();
-            let mut handled = false;
-            app.last_mouse = p;
-            app.on_press(&mut doc, p, &mut handled);
-            assert!(handled, "clicking a menu row is handled");
-            assert!(
-                !app.toolbar_tools.is_open(),
-                "picking a tool closes the menu"
-            );
-            assert_eq!(
-                app.slide().unwrap().elements.len(),
-                before + 1,
-                "the chosen shape was actually inserted"
-            );
-        }
-
-        // Case `font_size_number_input_steps_and_writes_through`.
-        // The font-size `NumberInput`'s + stepper raises the size through the real
-        // event path (item: adopt the shared `NumberInput` for font size).
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 140.0, 40.0));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            app.sel = Some(id.clone());
-
-            let chrome = app.compute_chrome();
-            app.position_inspector_widgets(&chrome);
-            let fr = chrome
-                .font_input_rect
-                .expect("a text selection shows the font-size field");
-            let h = fr.height();
-            let plus = Point::new(fr.x1 - h / 2.0, fr.center().y);
-            app_dispatch(&mut app, &mut doc, &cursor_ev(plus));
-            app_dispatch(&mut app, &mut doc, &left_press_ev());
-            let fs = loaded(&doc).slides[0].element(&id).unwrap().font_size;
-            assert_eq!(
-                fs, 42.0,
-                "the + stepper raised the font size by the step (2)"
-            );
-        }
-
-        // Case `fill_color_picker_writes_a_hex_fill`.
-        // The embeddable `ColorPicker` writes a concrete hex fill through the real
-        // event path (item: integrate the `ColorPicker` for the inspector fill).
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::shape(
-                ElementKind::Rect,
-                100.0,
-                100.0,
-                300.0,
-                200.0,
-            ));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            app.sel = Some(id.clone());
-
-            app.apply_hit(&mut doc, Hit::OpenFillPicker);
-            assert!(
-                app.fill_picker_open,
-                "the Custom colour button opens the picker"
-            );
-            let chrome = app.compute_chrome();
-            app.position_inspector_widgets(&chrome);
-            // Type a hex into the picker; one forwarded event flushes it through.
-            app.fill_picker.set_hex_text_for_test("#FF8800");
-            let c = app.fill_picker.get_rect().center();
-            app_dispatch(&mut app, &mut doc, &cursor_ev(c));
-            let fill = loaded(&doc).slides[0].element(&id).unwrap().fill.clone();
-            assert_eq!(fill, "#FF8800", "the picker wrote a concrete hex fill");
-        }
-
-        // Case `every_inspector_property_edit_writes_through_to_the_crdt`.
-        {
-            let (mut app, mut doc, id) = selected_text_app();
-            let el0 = app.selected_element().unwrap().clone();
-
-            app.apply_hit(&mut doc, Hit::SetFill("accent".into()));
-            assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().fill, "accent");
-
-            app.apply_hit(&mut doc, Hit::SetStroke("text".into()));
-            let after_stroke = loaded(&doc).slides[0].element(&id).unwrap().clone();
-            assert_eq!(after_stroke.stroke, "text");
-            assert!(
-                after_stroke.stroke_width >= 1.0,
-                "a freshly stroked element gets a default width"
-            );
-
-            // Font size now writes through the NumberInput's commit path
-            // (`set_sel_f64`), exercised directly here.
-            app.set_sel_f64(&mut doc, "font_size", el0.font_size + 6.0);
-            assert!(
-                (loaded(&doc).slides[0].element(&id).unwrap().font_size - (el0.font_size + 6.0))
-                    .abs()
-                    < 0.001
-            );
-
-            app.apply_hit(&mut doc, Hit::ToggleBold);
-            assert!(loaded(&doc).slides[0].element(&id).unwrap().bold);
-            app.apply_hit(&mut doc, Hit::ToggleItalic);
-            assert!(loaded(&doc).slides[0].element(&id).unwrap().italic);
-
-            app.apply_hit(&mut doc, Hit::SetAlign(TextAlign::Center));
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().align,
-                TextAlign::Center
-            );
-            app.apply_hit(&mut doc, Hit::SetAlign(TextAlign::Justify));
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().align,
-                TextAlign::Justify
-            );
-
-            app.apply_hit(&mut doc, Hit::BringFront);
-            let zf = loaded(&doc).slides[0].element(&id).unwrap().z;
-            app.apply_hit(&mut doc, Hit::SendBack);
-            let zb = loaded(&doc).slides[0].element(&id).unwrap().z;
-            assert!(zb < zf, "SendBack lowers z below BringFront ({zf} → {zb})");
-
-            app.apply_hit(&mut doc, Hit::SetLayout(Layout::Blank));
-            assert_eq!(loaded(&doc).slides[0].layout, Layout::Blank);
-            app.apply_hit(&mut doc, Hit::SetBackground(Background::Accent));
-            assert_eq!(loaded(&doc).slides[0].background, Background::Accent);
-            app.apply_hit(&mut doc, Hit::SetPalette(PaletteKind::Amber));
-            assert_eq!(loaded(&doc).palette, PaletteKind::Amber);
-
-            let n = loaded(&doc).slides[0].elements.len();
-            app.apply_hit(&mut doc, Hit::DuplicateElement);
-            assert_eq!(
-                loaded(&doc).slides[0].elements.len(),
-                n + 1,
-                "duplicate adds an element"
-            );
-            app.apply_hit(&mut doc, Hit::DeleteElement);
-            assert_eq!(
-                loaded(&doc).slides[0].elements.len(),
-                n,
-                "delete removes one"
-            );
-        }
-    }
-
-    /// Present-mode navigation, clamping, Home/End, number keys, Escape and black/white-out.
-    #[test]
-    fn present_mode_navigation_keys_and_blanking() {
-        // Case `present_advances_and_reverses_via_real_handler`.
-        {
-            let mut app = presenting_app();
-            assert_eq!(app.mode, Mode::Present);
-            assert_eq!(app.cur_slide, 0);
-
-            // Right advances.
-            assert!(press_named(&mut app, NamedKey::ArrowRight));
-            assert_eq!(app.cur_slide, 1, "ArrowRight advances one slide");
-            // Space advances.
-            assert!(press_named(&mut app, NamedKey::Space));
-            assert_eq!(app.cur_slide, 2, "Space advances one slide");
-            // Left reverses.
-            assert!(press_named(&mut app, NamedKey::ArrowLeft));
-            assert_eq!(app.cur_slide, 1, "ArrowLeft goes back one slide");
-        }
-
-        // Case `present_clamps_at_both_ends`.
-        {
-            let mut app = presenting_app();
-            // Can't reverse past the first slide.
-            press_named(&mut app, NamedKey::ArrowLeft);
-            assert_eq!(app.cur_slide, 0, "clamped at the first slide");
-            // Walk to the very end and try to overrun.
-            for _ in 0..20 {
-                press_named(&mut app, NamedKey::ArrowRight);
-            }
-            assert_eq!(
-                app.cur_slide,
-                app.deck.slides.len() - 1,
-                "clamped at the last slide"
-            );
-        }
-
-        // Case `present_home_and_end_jump_to_first_and_last`.
-        {
-            let mut app = presenting_app();
-            app.cur_slide = 2;
-            assert!(press_named(&mut app, NamedKey::End));
-            assert_eq!(app.cur_slide, app.deck.slides.len() - 1, "End → last slide");
-            assert!(press_named(&mut app, NamedKey::Home));
-            assert_eq!(app.cur_slide, 0, "Home → first slide");
-        }
-
-        // Case `present_number_key_jumps_to_slide`.
-        {
-            let mut app = presenting_app();
-            assert!(press_char(&mut app, "3"));
-            assert_eq!(app.cur_slide, 2, "'3' jumps to slide index 2");
-            assert!(press_char(&mut app, "1"));
-            assert_eq!(app.cur_slide, 0, "'1' jumps to slide index 0");
-        }
-
-        // Case `present_escape_exits_to_editor`.
-        {
-            let mut app = presenting_app();
-            app.cur_slide = 2;
-            assert!(press_named(&mut app, NamedKey::Escape));
-            assert_eq!(app.mode, Mode::Edit, "Esc leaves present mode");
-            // Position is preserved on exit (editor opens where you stopped).
-            assert_eq!(app.cur_slide, 2);
-        }
-
-        // Case `blackout_and_whiteout_toggle_and_navigation_resumes`.
-        {
-            let mut app = presenting_app();
-            // B blacks out; B again resumes.
-            assert!(press_char(&mut app, "b"));
-            assert_eq!(app.presentation.blank(), Blank::Black);
-            assert!(press_char(&mut app, "b"));
-            assert_eq!(app.presentation.blank(), Blank::None);
-            // W whites out; pressing B switches to black (mutually exclusive).
-            assert!(press_char(&mut app, "w"));
-            assert_eq!(app.presentation.blank(), Blank::White);
-            assert!(press_char(&mut app, "b"));
-            assert_eq!(app.presentation.blank(), Blank::Black);
-            // A navigation key resumes the slide *without* advancing.
-            let before = app.cur_slide;
-            assert!(press_named(&mut app, NamedKey::ArrowRight));
-            assert_eq!(
-                app.presentation.blank(),
-                Blank::None,
-                "navigation resumes a blanked screen"
-            );
-            assert_eq!(
-                app.cur_slide, before,
-                "the resuming keypress does not also advance"
-            );
-        }
-    }
-
-    /// Fullscreen intent, output targeting, audience lifecycle and compositor exits.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
-        // Case `fullscreen_intent_tracks_present_mode`.
-        {
-            // `Widget` is in scope via `use super::*`.
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            // Editor: no fullscreen request.
-            assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
-            // Present: request true fullscreen.
-            app.enter_present();
-            assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(true));
-            // Back to editor via Esc: request windowed again.
-            app.exit_present();
-            assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
-        }
-
-        // Case `present_uses_the_shared_mechanism_targeting_the_largest_output`.
-        {
-            use ui::fullscreen::{FullscreenTarget, FullscreenView};
-            let app = presenting_app();
-            // Present routes through the ONE shared fullscreen mechanism the video
-            // player also uses: a distinct presentation view on the largest monitor
-            // (the projector / big screen), which the App enumerates + selects.
-            let params = FullscreenProvider::fullscreen_params(&app);
-            assert_eq!(
-                params.target,
-                FullscreenTarget::Largest,
-                "Present targets the big screen"
-            );
-            assert_eq!(
-                params.view,
-                FullscreenView::Distinct,
-                "Present shows the slideshow, not the editor"
-            );
-            assert_eq!(
-                FullscreenProvider::fullscreen_intent(&app),
-                Some(true),
-                "and it drives the shared reconcile"
-            );
-        }
-
-        // Case `audience_lifecycle_keeps_dashboard_local_and_preserves_single_output_fallback`.
-        {
-            use ui::fullscreen::{AudiencePresentationRequest, FullscreenTarget};
-
-            let mut app = presenting_app();
-            assert_eq!(
-                AudiencePresentationProvider::audience_presentation_request(&app),
-                Some(AudiencePresentationRequest::new(FullscreenTarget::Largest))
-            );
-            AudiencePresentationProvider::on_audience_presentation_changed(&mut app, true);
-            assert!(app.presentation.has_external_audience());
-            assert_eq!(
-                FullscreenProvider::fullscreen_intent(&app),
-                Some(false),
-                "the original local window must not become the audience surface"
-            );
-            FullscreenProvider::on_fullscreen_changed(&mut app, false);
-            assert_eq!(
-                app.mode,
-                Mode::Present,
-                "the host's intentional presenter unfullscreen must not end the talk"
-            );
-            AudiencePresentationProvider::on_audience_presentation_changed(&mut app, false);
-            assert_eq!(
-                FullscreenProvider::fullscreen_intent(&app),
-                Some(true),
-                "loss of the external output returns to the established one-output slideshow"
-            );
-        }
-
-        // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            let payload =
-                serde_json::to_vec(&crate::actions::SlidesOperation::StartPresentationOn {
-                    output: crate::actions::PresentationOutput::PrimaryExternal,
-                })
-                .expect("presentation output operation serializes");
-            assert!(matches!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::SLIDES_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .expect("presentation output operation is accepted"),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(app.mode, Mode::Present);
-            assert_eq!(
-                app.presentation_target,
-                ui::fullscreen::FullscreenTarget::PrimaryExternal,
-                "the external-display policy must not collapse to the first output, often the laptop"
-            );
-        }
-
-        // Case `compositor_exit_of_fullscreen_leaves_present_mode`.
-        {
-            let mut app = presenting_app();
-            assert_eq!(app.mode, Mode::Present);
-            // A compositor-driven fullscreen exit (e.g. a global un-fullscreen
-            // keybind) must drop us out of present mode so the editor chrome
-            // returns rather than painting a windowed borderless slideshow.
-            FullscreenProvider::on_fullscreen_changed(&mut app, false);
-            assert_eq!(
-                app.mode,
-                Mode::Edit,
-                "losing fullscreen leaves present mode"
-            );
-            // Idempotent + safe when not presenting: a redundant notification is a
-            // no-op, and gaining fullscreen never forces present mode on.
-            FullscreenProvider::on_fullscreen_changed(&mut app, false);
-            assert_eq!(app.mode, Mode::Edit);
-            FullscreenProvider::on_fullscreen_changed(&mut app, true);
-            assert_eq!(
-                app.mode,
-                Mode::Edit,
-                "a fullscreen grant alone doesn't start a talk"
-            );
-        }
-
-        // Case `present_output_plan_pairs_audience_with_presenter`.
-        {
-            // The documented multi-monitor seam: the plan always pairs the clean
-            // audience surface with the presenter dashboard.
-            let app = presenting_app();
-            assert_eq!(
-                app.present_output_plan(),
-                (PresentSurface::Audience, PresentSurface::Presenter)
-            );
-            // And present mode signals a desire for true OS fullscreen.
-            assert!(app.wants_fullscreen());
-        }
-
-        // Case `entering_present_does_not_request_fullscreen_until_presenting`.
-        {
-            let app = SlidesApp::new(crate::assets::app_content());
-            assert!(!app.wants_fullscreen(), "editor mode is not fullscreen");
-        }
-    }
-
-    /// The presenter dashboard, speaker timer, idle rest and reduced motion.
-    #[test]
-    fn presenter_dashboard_timer_and_idle_frames() {
-        // Case `presenter_dashboard_toggles_with_p`.
-        {
-            let mut app = presenting_app();
-            assert!(!app.presentation.is_presenter_view());
-            assert!(press_char(&mut app, "p"));
-            assert!(
-                app.presentation.is_presenter_view(),
-                "P shows the presenter dashboard"
-            );
-            assert!(press_char(&mut app, "p"));
-            assert!(!app.presentation.is_presenter_view(), "P hides it again");
-            // Toggling the dashboard never leaves present mode.
-            assert_eq!(app.mode, Mode::Present);
-        }
-
-        // Case `speaker_timer_pause_and_reset`.
-        {
-            let mut app = presenting_app();
-            assert!(!app.presentation.is_paused());
-            // K pauses, K resumes.
-            assert!(press_char(&mut app, "k"));
-            assert!(app.presentation.is_paused(), "K pauses the timer");
-            // Elapsed is frozen while paused.
-            let frozen = app.presentation.elapsed();
-            std::thread::sleep(std::time::Duration::from_millis(15));
-            assert_eq!(
-                app.presentation.elapsed(),
-                frozen,
-                "elapsed is frozen while paused"
-            );
-            assert!(press_char(&mut app, "k"));
-            assert!(!app.presentation.is_paused(), "K resumes the timer");
-            // 0 resets to zero.
-            assert!(press_char(&mut app, "0"));
-            assert!(
-                app.presentation.elapsed().as_millis() < 50,
-                "0 resets the clock"
-            );
-        }
-
-        // Case `present_mode_rests_when_idle_and_wakes_for_a_transition`.
-        {
-            let mut app = presenting_app();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            // Settle the flaps so nothing is mid-animation.
-            for _ in 0..3 {
-                app.sync_flaps(1.0, false);
-            }
-            assert!(
-                !app.needs_animation_frame(),
-                "a settled present mode does not request frames at vsync"
-            );
-            // A navigation kicks off a bounded cross-fade → frames pump again.
-            app.next_slide(1);
-            assert!(
-                app.needs_animation_frame(),
-                "a live cross-fade pumps frames"
-            );
-        }
-
-        // Case `reduced_motion_settles_presentation_navigation_in_one_pass`.
-        {
-            let mut app = presenting_app();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            app.next_slide(1);
-            assert!(app.presentation.needs_animation_frame());
-
-            Widget::set_motion_reduced(&mut app, true);
-
-            assert!(!app.presentation.needs_animation_frame());
-            assert_eq!(app.presentation.transition_alpha(true), 1.0);
-            assert!(!app.needs_animation_frame());
-        }
-    }
-
-    // --- responsive slide rail ---------------------------------------------
-
-    /// Build an app at a fixed allocated width and run one frame's flap sync
-    /// (the real per-frame path) so `compute_chrome` resolves the rail layout
-    /// and eased reveal exactly as it would live.
-    pub(super) fn app_sized(w: f64) -> SlidesApp {
-        let mut s = Slide::new(Layout::TitleContent);
-        s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
-        let mut a = app_with(s);
-        a.rect = Rect::new(0.0, 0.0, w, 800.0);
-        a.sync_flaps(0.0, false);
-        a
-    }
-
-    /// An app whose chrome metrics were resolved against a renderer at
-    /// `text_scale`, exactly as the first draw of a frame does.
-    pub(super) fn measured_app(w: f64, text_scale: f32) -> (SlidesApp, TextRenderer) {
-        let mut app = app_sized(w);
-        let theme = Theme::dark().with_text_scale(text_scale);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        app.refresh_chrome_metrics(&mut tr, &theme);
-        (app, tr)
-    }
-
-    /// Toolbar controls other than the rail hamburger, left to right.
-    fn toolbar_controls(chrome: &Chrome) -> Vec<&UiButton> {
-        let mut controls: Vec<&UiButton> = chrome
-            .buttons
-            .iter()
-            .filter(|b| {
-                !matches!(b.kind, ButtonKind::Hamburger) && b.rect.center().y < chrome.toolbar.y1
-            })
-            .collect();
-        controls.sort_by(|a, b| a.rect.x0.total_cmp(&b.rect.x0));
-        controls
-    }
-
-    /// Toolbar/rail/inspector chrome density at 1x and 2x, narrow titles, large text and fitting pills/segments.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn chrome_density_follows_measured_text_at_every_width() {
-        // Case `title_yields_to_the_leftmost_placed_toolbar_control_at_480`.
-        // At 480 px the insert tools all move behind the overflow button, which
-        // is then pulled left of the nominal tool slot. The title must yield to
-        // that placed control, not to the slot — otherwise the ellipsis paints
-        // under the "⋯" button.
-        {
-            let (app, _tr) = measured_app(480.0, 1.0);
-            let chrome = app.compute_chrome();
-            let first = toolbar_controls(&chrome)
-                .first()
-                .map(|b| b.rect.x0)
-                .expect("toolbar controls");
-            assert!(
-                chrome.title_rect.x1 <= first + 0.01,
-                "title slot ends at {:.1} but a control starts at {first:.1}",
-                chrome.title_rect.x1
-            );
-            let title = chrome
-                .labels
-                .iter()
-                .find(|l| l.pos == chrome.title_pos)
-                .expect("title label");
-            let max_w = title.max_w.expect("title is elided at paint time");
-            assert!(max_w > 0.0, "480 px still shows a title fragment");
-            assert!(chrome.title_pos.x + max_w <= first - app.chrome_metrics.s3 + 0.01);
-        }
-
-        // Case `one_x_chrome_density_is_unchanged`.
-        // At 1× the measured chrome reproduces the classic density exactly:
-        // 56 px toolbar, 34 px pills, 30 px rail controls, 28 px inspector pills.
-        {
-            let (app, _tr) = measured_app(NARROW_BREAKPOINT + 400.0, 1.0);
-            let chrome = app.compute_chrome();
-            assert!((chrome.toolbar.height() - 56.0).abs() < 0.01, "toolbar");
-            let present = chrome
-                .buttons
-                .iter()
-                .find(|b| matches!(b.hit, Hit::Present))
-                .expect("Present");
-            assert!((present.rect.height() - 34.0).abs() < 0.01, "toolbar pill");
-            let add = chrome
-                .buttons
-                .iter()
-                .find(|b| matches!(b.hit, Hit::NewSlide) && chrome.rail.contains(b.rect.center()))
-                .expect("rail Add");
-            assert!((add.rect.height() - 30.0).abs() < 0.01, "rail control");
-            let layout_pill = chrome
-                .buttons
-                .iter()
-                .find(|b| matches!(b.hit, Hit::SetLayout(_)))
-                .expect("layout pill");
-            assert!(
-                (layout_pill.rect.height() - 28.0).abs() < 0.01,
-                "inspector pill"
-            );
-        }
-
-        // Case `two_x_chrome_rows_follow_measured_text`.
-        // At 2× every toolbar pill, rail control and inspector row follows the
-        // measured text: labels fit their slots, pills share one centre line,
-        // and no section caption is painted under the control below it.
-        {
-            let (mut app, mut tr) = measured_app(NARROW_BREAKPOINT + 400.0, 2.0);
-            // Select the text element so the inspector shows every section.
-            app.sel = app
-                .slide()
-                .and_then(|s| s.elements.first().map(|e| e.id.clone()));
-            let chrome = app.compute_chrome();
-            let m = app.chrome_metrics.clone();
-            assert!(m.lh_control > 30.0, "2x control line box {}", m.lh_control);
-            assert!(
-                chrome.toolbar.height() >= m.title_block_h() + 2.0 * m.s2 - 0.01
-                    && chrome.toolbar.height() > 56.0,
-                "toolbar grew to its two-line title block"
-            );
-
-            let controls = toolbar_controls(&chrome);
-            let centre = controls[0].rect.center().y;
-            for b in &controls {
-                assert!((b.rect.center().y - centre).abs() < 0.01, "one centre line");
-                assert!(
-                    b.rect.height() >= m.lh_control + m.s4 - 0.01,
-                    "pill fits its line box"
-                );
-                if let ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } = &b.kind
-                {
-                    let (w, _) =
-                        tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
-                    assert!(
-                        b.rect.width() >= f64::from(w) + 2.0 * m.s3 - 0.01,
-                        "'{label}' needs {w:.1} + padding, pill is {:.1}",
-                        b.rect.width()
-                    );
-                }
-            }
-            for pair in controls.windows(2) {
-                assert!(
-                    pair[0].rect.x1 <= pair[1].rect.x0 + 0.01,
-                    "toolbar controls never overlap"
-                );
-            }
-
-            // Inspector: captions keep clear of the control that follows them,
-            // and every text control is at least its line box tall.
-            let in_inspector = |r: Rect| chrome.inspector.contains(r.center());
-            for l in chrome.labels.iter().filter(|l| {
-                (l.font - FONT_CAPTION).abs() < 0.01 && chrome.inspector.contains(l.pos)
-            }) {
-                let caption = Rect::new(l.pos.x, l.pos.y, l.pos.x + 1.0, l.pos.y + m.lh_caption);
-                for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
-                    assert!(
-                        b.rect.y0 >= caption.y1 - 0.01 || b.rect.y1 <= caption.y0 + 0.01,
-                        "'{}' caption at y {:.1}..{:.1} collides with a control at {:.1}..{:.1}",
-                        l.text,
-                        caption.y0,
-                        caption.y1,
-                        b.rect.y0,
-                        b.rect.y1
-                    );
-                }
-            }
-            for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
-                match &b.kind {
-                    ButtonKind::Text { label, .. } if !label.is_empty() => {
-                        assert!(
-                            b.rect.height() >= m.lh_control - 0.01,
-                            "'{label}' row fits its text"
-                        );
-                    }
-                    // Alignment segments wrap to two rows rather than clip their
-                    // labels once a quarter-width cell is too narrow for them.
-                    ButtonKind::Segment { label, .. } => {
-                        let (w, _) =
-                            tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
-                        assert!(
-                            b.rect.width() >= f64::from(w) + 2.0 * m.s2 - 0.01,
-                            "segment '{label}' needs {w:.1}, cell is {:.1}",
-                            b.rect.width()
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            // The font-size input reserve fits two square steppers plus a
-            // three-digit value at the scaled control size, and the B/I toggles
-            // never paint over it (they wrap below when the row is too narrow).
-            let font_input = chrome
-                .font_input_rect
-                .expect("text element shows the TYPE row");
-            let (w, _) = tr.measure_weighted("999 pt", FONT_CONTROL, None, TextWeight::Semibold);
-            assert!(font_input.width() >= 2.0 * m.control_h() + f64::from(w) + 2.0 * m.s2 - 0.01);
-            // The speaker-notes box never inverts or folds back over the sections:
-            // it is at least one control tall and starts below the last control.
-            let notes = chrome.notes_box.expect("notes box");
-            assert!(
-                notes.height() >= m.control_h() - 0.01,
-                "notes box {notes:?}"
-            );
-            let sections_bottom = chrome
-                .buttons
-                .iter()
-                .filter(|b| in_inspector(b.rect) && !matches!(b.hit, Hit::EditNotes))
-                .map(|b| b.rect.y1)
-                .fold(0.0_f64, f64::max);
-            assert!(
-                notes.y0 >= sections_bottom - 0.01,
-                "notes box starts under the sections"
-            );
-            let inspector_controls: Vec<Rect> = chrome
-                .buttons
-                .iter()
-                .filter(|b| in_inspector(b.rect))
-                .map(|b| b.rect)
-                .chain([font_input, notes])
-                .collect();
-            for (i, a) in inspector_controls.iter().enumerate() {
-                for b in inspector_controls.iter().skip(i + 1) {
-                    let overlap = a.intersect(*b);
-                    assert!(
-                        overlap.width() <= 0.01 || overlap.height() <= 0.01,
-                        "inspector controls overlap: {a:?} vs {b:?}"
-                    );
-                }
-            }
-            // Rail: the pinned action row grew with its labels.
-            for b in chrome
-                .buttons
-                .iter()
-                .filter(|b| chrome.rail.contains(b.rect.center()))
-            {
-                if let ButtonKind::Text { label, .. } = &b.kind {
-                    assert!(
-                        b.rect.height() >= m.lh_control - 0.01,
-                        "rail '{label}' fits"
-                    );
-                }
-            }
-        }
-
-        // Case `phone_toolbar_elides_title_before_compact_controls`.
-        {
-            let app = app_sized(390.0);
-            let chrome = app.compute_chrome();
-            let first_right_control = chrome
-                .buttons
-                .iter()
-                .filter(|button| {
-                    !matches!(button.kind, ButtonKind::Hamburger)
-                        && button.rect.center().y < chrome.toolbar.y1
-                })
-                .map(|button| button.rect.x0)
-                .min_by(f64::total_cmp)
-                .unwrap();
-            assert!(
-                chrome.title_rect.x1 <= first_right_control,
-                "the two-line title must not paint under compact toolbar controls"
-            );
-        }
-
-        // Case `large_text_chrome_keeps_hidden_tools_on_discoverable_routes`.
-        {
-            let mut app = SlidesApp::sample();
-            sized(&mut app, 1440.0, 960.0);
-            app.text_scale = 2.0;
-            let chrome = app.compute_chrome();
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleToolbarMenu))
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleInspector))
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::Present))
-            );
-            assert!(
-                chrome.slide_dest.width() > 600.0,
-                "large type keeps a practical authored-slide canvas"
-            );
-        }
-
-        // Case `deck_theme_pills_fit_their_full_labels_and_never_overlap`.
-        {
-            // Docked inspector, nothing selected → the slide-level inspector shows
-            // the five deck-theme pills. Each must be wide enough that its full name
-            // fits (drawn from `dot.x1 + 6`), and pills on a row must not overlap —
-            // this is the exact geometry `draw_button` paints, so the assertion is
-            // on the real path.
-            let mut app = app_sized(1280.0);
-            app.sel = None;
-            let chrome = app.compute_chrome();
-            let pills: Vec<&UiButton> = chrome
-                .buttons
-                .iter()
-                .filter(|b| {
-                    matches!(b.kind, ButtonKind::Palette { .. })
-                        && chrome.inspector.contains(b.rect.center())
-                })
-                .collect();
-            assert_eq!(
-                pills.len(),
-                PaletteKind::ALL.len(),
-                "all five theme pills are present"
-            );
-            for b in &pills {
-                if let ButtonKind::Palette { kind, .. } = &b.kind {
-                    let label_right = b.rect.x0 + 26.0 + chrome::est_width(kind.label(), 12.0);
-                    assert!(
-                        label_right <= b.rect.x1 + 0.5,
-                        "'{}' pill is wide enough for its full label (label right {:.1} <= pill right {:.1})",
-                        kind.label(),
-                        label_right,
-                        b.rect.x1
-                    );
-                }
-            }
-            for (i, a) in pills.iter().enumerate() {
-                for b in &pills[i + 1..] {
-                    let same_row = (a.rect.y0 - b.rect.y0).abs() < 1.0;
-                    if same_row {
-                        assert!(
-                            a.rect.x1 <= b.rect.x0 + 0.5 || b.rect.x1 <= a.rect.x0 + 0.5,
-                            "deck-theme pills on the same row must not overlap"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Case `text_alignment_segments_fill_the_shared_inspector_columns`.
-        {
-            let (mut app, _doc, _id) = selected_text_app();
-            sized(&mut app, 1280.0, 800.0);
-            let chrome = app.compute_chrome();
-            let segments: Vec<Rect> = chrome
-                .buttons
-                .iter()
-                .filter_map(|button| {
-                    matches!(button.kind, ButtonKind::Segment { .. }).then_some(button.rect)
-                })
-                .collect();
-
-            assert_eq!(segments.len(), TextAlign::ALL.len());
-            let left = chrome.inspector.x0 + 16.0;
-            let right = chrome.inspector.x1 - 16.0;
-            assert_eq!(segments[0].x0, left);
-            assert_eq!(segments.last().unwrap().x1, right);
-            let width = segments[0].width();
-            for pair in segments.windows(2) {
-                if (pair[0].y0 - pair[1].y0).abs() < 0.5 {
-                    assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
-                } else {
-                    assert_eq!(pair[0].x1, right, "each wrapped row fills the right edge");
-                    assert_eq!(pair[1].x0, left, "each wrapped row starts at the left edge");
-                }
-                assert_eq!(pair[1].width(), width, "segments divide the row evenly");
-            }
-        }
-    }
-
-    /// The thumbnail rail docks when wide and becomes a toggled overlay flap when narrow.
-    #[test]
-    fn rail_docks_wide_and_overlays_narrow() {
-        // Case `wide_window_docks_the_rail_beside_the_canvas`.
-        {
-            let app = app_sized(NARROW_BREAKPOINT + 200.0);
-            assert_eq!(app.rail_layout(), SplitLayout::Docked);
-            assert!(app.rail_open(), "docked rail is open by default");
-            let chrome = app.compute_chrome();
-            assert_eq!(chrome.layout, SplitLayout::Docked);
-            // The rail occupies the full left column and the canvas starts past it.
-            assert!((chrome.rail.x0 - app.rect.x0).abs() < 1e-6);
-            assert!(
-                chrome.rail.width() > RAIL_W - 1.0,
-                "docked rail is full width"
-            );
-            assert!(
-                chrome.slide_dest.x0 > chrome.rail.x1 - 1.0,
-                "canvas sits to the right of the docked rail"
-            );
-            assert_eq!(chrome.scrim.width(), 0.0, "no scrim while docked");
-            // No hamburger when the rail is docked + fully open.
-            assert!(
-                !chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
-                "no hamburger needed when the rail is docked open"
-            );
-        }
-
-        // Case `narrow_window_collapses_rail_to_a_closed_overlay`.
-        {
-            let app = app_sized(NARROW_BREAKPOINT - 200.0);
-            assert_eq!(app.rail_layout(), SplitLayout::Overlay);
-            assert!(!app.rail_open(), "overlay rail is closed by default");
-            let chrome = app.compute_chrome();
-            assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // Canvas spans the full width (rail no longer insets it).
-            assert!(
-                (chrome.slide_dest.x0 - app.rect.x0) < (RAIL_W * 0.5),
-                "narrow canvas reclaims the rail's column"
-            );
-            // The closed flap is fully off the left edge, and no scrim shows.
-            assert!(
-                chrome.rail.x1 <= app.rect.x0 + 1.0,
-                "closed flap is off-screen left"
-            );
-            assert_eq!(
-                chrome.scrim.width(),
-                0.0,
-                "no scrim while the flap is closed"
-            );
-            // A hamburger is offered to summon it.
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
-                "narrow layout offers a hamburger to summon the rail"
-            );
-        }
-
-        // Case `opening_the_overlay_flap_reveals_the_rail_over_a_scrim`.
-        {
-            let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
-            // Summon via the production toggle path, then settle the animation.
-            app.rail_flap.toggle(app.rail_layout());
-            app.rail_flap.snap(true);
-            assert!(app.rail_open());
-            let chrome = app.compute_chrome();
-            assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // Fully revealed: the flap is flush with the left edge over a scrim.
-            assert!(
-                (chrome.rail.x0 - app.rect.x0).abs() < 1.0,
-                "open flap is flush left"
-            );
-            assert!(
-                chrome.scrim.width() > 0.0,
-                "an open overlay flap dims the body"
-            );
-            assert!(
-                chrome.buttons.iter().any(|button| {
-                    matches!(&button.kind, ButtonKind::Text { label, .. } if label == "Close")
-                        && matches!(button.hit, Hit::ToggleRail)
-                }),
-                "the open overlay has a named Close control in its own header"
-            );
-        }
-
-        // Case `hamburger_hit_toggles_the_overlay_flap`.
-        {
-            let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
-            let mut doc = AutoCommit::new();
-            assert!(!app.rail_open());
-            // Drive the real action dispatcher, not a private setter.
-            app.apply_hit(&mut doc, Hit::ToggleRail);
-            assert!(app.rail_open(), "ToggleRail opens the collapsed flap");
-            app.apply_hit(&mut doc, Hit::ToggleRail);
-            assert!(!app.rail_open(), "ToggleRail closes it again");
-        }
-    }
-
-    /// The inspector docks when wide and becomes a toggled overlay flap when narrow.
-    #[test]
-    fn inspector_docks_wide_and_overlays_narrow() {
-        // Case `wide_window_docks_the_inspector`.
-        {
-            let app = app_sized(NARROW_BREAKPOINT + 200.0);
-            assert_eq!(app.inspector_layout(), SplitLayout::Docked);
-            assert!(app.inspector_open(), "docked inspector is open by default");
-            let chrome = app.compute_chrome();
-            assert_eq!(chrome.inspector_layout, SplitLayout::Docked);
-            // Docked inspector is a full-width right column and the canvas ends at
-            // its left edge.
-            assert!(
-                chrome.inspector.width() > INSPECTOR_W - 1.0,
-                "docked inspector is full width"
-            );
-            assert!(
-                chrome.slide_dest.x1 < chrome.inspector.x0 + 1.0,
-                "canvas sits to the left of the docked inspector"
-            );
-        }
-
-        // Case `narrow_window_collapses_inspector_to_a_closed_overlay`.
-        {
-            // Below the inspector breakpoint the inspector becomes a closed flap and
-            // the canvas reclaims its column (spanning to the right edge).
-            let app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
-            assert_eq!(app.inspector_layout(), SplitLayout::Overlay);
-            assert!(
-                !app.inspector_open(),
-                "overlay inspector is closed by default"
-            );
-            let chrome = app.compute_chrome();
-            assert!(
-                chrome.inspector.x0 >= app.rect.x1 - 1.0,
-                "closed inspector is off-screen right"
-            );
-            // A toggle is offered to summon it.
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.hit, Hit::ToggleInspector)),
-                "narrow layout offers an inspector toggle"
-            );
-        }
-
-        // Case `inspector_toggle_hit_opens_the_overlay_flap`.
-        {
-            let mut app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
-            let mut doc = AutoCommit::new();
-            assert!(!app.inspector_open());
-            // Drive the real action dispatcher, not a private setter.
-            app.apply_hit(&mut doc, Hit::ToggleInspector);
-            assert!(
-                app.inspector_open(),
-                "ToggleInspector opens the collapsed flap"
-            );
-            app.apply_hit(&mut doc, Hit::ToggleInspector);
-            assert!(!app.inspector_open(), "ToggleInspector closes it again");
-        }
-    }
-
-    /// Compact drawers, their exclusivity, and reflow across the breakpoint.
-    #[test]
-    fn compact_editor_drawers_and_breakpoint_reflow() {
-        // Case `compact_editor_keeps_the_canvas_wide_with_both_panels_as_drawers`.
-        {
-            let app = app_sized(820.0);
-            let chrome = app.compute_chrome();
-            assert_eq!(chrome.layout, SplitLayout::Overlay);
-            assert_eq!(chrome.inspector_layout, SplitLayout::Overlay);
-            assert!(
-                chrome.slide_dest.width() > 700.0,
-                "closed drawers leave a useful slide canvas at compact laptop widths"
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleRail))
-                    && chrome
-                        .buttons
-                        .iter()
-                        .any(|button| matches!(button.hit, Hit::ToggleInspector)),
-                "both drawers retain explicit toolbar controls"
-            );
-        }
-
-        // Case `compact_drawers_are_mutually_exclusive`.
-        {
-            let mut app = app_sized(820.0);
-            let mut doc = AutoCommit::new();
-            app.apply_hit(&mut doc, Hit::ToggleRail);
-            assert!(app.rail_open());
-            assert!(!app.inspector_open());
-            app.apply_hit(&mut doc, Hit::ToggleInspector);
-            assert!(app.inspector_open(), "properties drawer opens");
-            assert!(
-                !app.rail_open(),
-                "opening properties closes the slide drawer immediately"
-            );
-        }
-
-        // Case `resizing_across_the_breakpoint_returns_to_the_layout_default`.
-        {
-            let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
-            // User opens the flap while narrow.
-            app.rail_flap.reconcile(app.rail_layout());
-            app.apply_hit(&mut AutoCommit::new(), Hit::ToggleRail);
-            assert!(app.rail_open());
-            // Widen past the breakpoint: the stale preference drops and the rail
-            // adopts the docked default (open). Then narrow again → closed default.
-            app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT + 200.0, 800.0);
-            app.rail_flap.reconcile(app.rail_layout());
-            assert_eq!(app.rail_layout(), SplitLayout::Docked);
-            assert!(app.rail_open(), "docked default is open");
-            app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT - 200.0, 800.0);
-            app.rail_flap.reconcile(app.rail_layout());
-            assert!(
-                !app.rail_open(),
-                "overlay default is closed after re-narrowing"
-            );
-        }
-
-        // Case `same_instance_reflows_both_panels_wide_then_narrow`.
-        {
-            // The breakpoint MUST be re-derived from the *current* width every
-            // frame, not cached at construction — resize a single instance wide,
-            // then narrow, and confirm both panels flip layout.
-            let mut app = app_sized(1280.0);
-            assert_eq!(app.rail_layout(), SplitLayout::Docked);
-            assert_eq!(app.inspector_layout(), SplitLayout::Docked);
-            let wide = app.compute_chrome();
-            assert_eq!(wide.layout, SplitLayout::Docked);
-            assert_eq!(wide.inspector_layout, SplitLayout::Docked);
-
-            // Simulate a resize down to a phone-ish width and run the per-frame
-            // flap sync (the real path) — both panels must become overlay flaps and
-            // the canvas must span the full width.
-            app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-            app.sync_flaps(0.0, false);
-            assert_eq!(
-                app.rail_layout(),
-                SplitLayout::Overlay,
-                "rail reflows to overlay"
-            );
-            assert_eq!(
-                app.inspector_layout(),
-                SplitLayout::Overlay,
-                "inspector reflows to overlay"
-            );
-            let narrow = app.compute_chrome();
-            assert_eq!(narrow.layout, SplitLayout::Overlay);
-            assert_eq!(narrow.inspector_layout, SplitLayout::Overlay);
-            assert!(
-                narrow.slide_dest.x1 > 560.0 - RAIL_W,
-                "canvas reclaims the collapsed panels' width when narrow"
-            );
-        }
-    }
-
-    // --- scrolling ----------------------------------------------------------
-
-    /// An edit-mode app over a deck long enough to overflow the rail.
-    fn tall_editor(slide_count: usize, h: f64) -> SlidesApp {
-        let mut slides = Vec::new();
-        for _ in 0..slide_count {
-            let mut s = Slide::new(Layout::TitleContent);
-            s.add(Element::text("slide", 96.0, 90.0, 1000.0, 100.0, 40.0));
-            slides.push(s);
-        }
-        let mut a = SlidesApp::new(crate::assets::app_content());
-        a.deck = Deck {
-            title: "t".into(),
-            palette: PaletteKind::Indigo,
-            slides,
-        };
-        a.cur_slide = 0;
-        a.bootstrapped = true;
-        a.rect = Rect::new(0.0, 0.0, 1280.0, h);
-        a.sync_flaps(0.0, false);
-        a
-    }
-
-    /// Wheel scrolling of rail and overview, and the overview scrollbar drag.
-    #[test]
-    fn wheel_and_scrollbar_scroll_rail_and_overview() {
-        // Case `wheel_scrolls_the_thumbnail_rail_only_over_the_rail`.
-        {
-            let mut app = tall_editor(16, 560.0);
-            // The shared rail is the scroll authority: sync it to this frame, then
-            // read the overflow it computed.
-            app.sync_page_rail();
-            let max_scroll = app.page_sidebar.max_scroll();
-            assert!(max_scroll > 0.0, "a 16-slide rail overflows a 560px window");
-
-            // Pointer over the rail → wheel scrolls it (down).
-            let rail = app.rail_rect();
-            app.last_mouse = Point::new(rail.center().x, rail.center().y);
-            let mut handled = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
-            assert!(handled, "wheel over the rail is handled");
-            assert!(app.rail_scroll > 0.0, "wheel over the rail scrolls it");
-
-            // Overscroll clamps to the maximum, so every thumbnail stays reachable.
-            for _ in 0..40 {
-                let mut h = false;
-                app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
-            }
-            assert!(
-                (app.rail_scroll - max_scroll).abs() < 1.0,
-                "rail scroll clamps to max"
-            );
-
-            // Pointer over the canvas → the rail does not move.
-            app.rail_scroll = 0.0;
-            app.last_mouse = Point::new(app.rect.x1 - 80.0, app.rect.center().y);
-            let mut h2 = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut h2);
-            assert_eq!(
-                app.rail_scroll, 0.0,
-                "wheel over the canvas leaves the rail alone"
-            );
-        }
-
-        // Case `wheel_scrolls_overview_and_last_slide_becomes_reachable`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            app.bootstrapped = true;
-            app.mode = Mode::Overview;
-            // 800x600 is exactly the size the prior review reported cutting off slide 5.
-            app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-            let (_, _, max_scroll) = app.compute_overview();
-            assert!(
-                max_scroll > 0.0,
-                "the 5-slide deck overflows the 800x600 overview"
-            );
-
-            let mut handled = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
-            assert!(
-                handled && app.overview.scroll() > 0.0,
-                "wheel scrolls the overview"
-            );
-
-            // Scroll to the very end and confirm the last slide's card is on-screen.
-            for _ in 0..60 {
-                let mut h = false;
-                app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
-            }
-            assert!(
-                (app.overview.scroll() - max_scroll).abs() < 1.0,
-                "overview scroll clamps to max"
-            );
-            let (area, thumbs, _) = app.compute_overview();
-            let last = thumbs.last().expect("a slide").1;
-            assert!(
-                last.y0 < area.y1 && last.y1 > area.y0,
-                "the last slide is inside the viewport once scrolled to the end"
-            );
-        }
-
-        // Case `overview_scrollbar_thumb_drag_scrolls_the_grid`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            app.bootstrapped = true;
-            app.mode = Mode::Overview;
-            app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-            let (area, _, max_scroll) = app.compute_overview();
-            let (_, thumb) = scrollbar_rects(area, 0.0, max_scroll).expect("overflow ⇒ scrollbar");
-            // Start a thumb drag (the real on_press path constructs this), then move.
-            app.drag = Drag::ScrollOverview {
-                start_y: thumb.center().y,
-                orig_scroll: 0.0,
-            };
-            app.drag_move(Point::new(thumb.center().x, thumb.center().y + 120.0));
-            assert!(
-                app.overview.scroll() > 0.0,
-                "dragging the thumb down scrolls the grid"
-            );
-        }
-    }
-
-    // --- present mode rests -------------------------------------------------
-
-    // --- toolbar overflow menu ---------------------------------------------
-
-    fn seeded_doc(app: &SlidesApp) -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-        doc
-    }
-
-    // --- deck-theme palette pills ------------------------------------------
-
-    // --- selection handles clear content -----------------------------------
-
-    /// Selection handles, first-grab drags, edit-entry clicks, moves, resizes and caret placement.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn element_pointer_gestures_select_move_resize_and_edit() {
-        // Case `selection_handles_never_cover_the_element_content`.
-        {
-            // A left-anchored text box: every resize handle's visible pip must sit
-            // outside the content rect, so it can't cover the first glyph (the 'G'
-            // of a left-aligned title was the reported bug).
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::text(
-                "Goals for this phase",
-                100.0,
-                100.0,
-                600.0,
-                90.0,
-                40.0,
-            ));
-            let mut app = app_with(s);
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.sel = Some(id);
-            app.sync_flaps(0.0, false);
-            let chrome = app.compute_chrome();
-            let el = app.selected_element().expect("a selected element").clone();
-            let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
-            for (h, hr) in app.handles_of(chrome.slide_dest, chrome.scale, &el) {
-                // The painted pip is the grab rect inset by 4 (see `draw_editor`).
-                let vis = hr.inflate(-4.0, -4.0);
-                let overlaps = vis.x0 < er.x1 && vis.x1 > er.x0 && vis.y0 < er.y1 && vis.y1 > er.y0;
-                assert!(
-                    !overlaps,
-                    "handle {h:?} pip {vis:?} must not overlap the content rect {er:?}"
-                );
-            }
-        }
-
-        // Case `selected_element_drags_on_first_grab`.
-        // Regression for the "move-on-first-click" bug: an already-selected element
-        // must arm a move on the very first press (not swallow it into text-edit),
-        // and dragging must actually move it.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            app.sel = Some(id.clone());
-
-            let p = sel_center(&app);
-            let mut handled = false;
-            app.last_mouse = p;
-            app.on_press(&mut doc, p, &mut handled);
-            assert!(handled, "the press on the selected element is handled");
-            assert!(
-                app.drag.active(),
-                "a single grab of a selected element arms a move"
-            );
-            assert!(!app.editing_text, "a single grab must NOT enter text edit");
-
-            // Drag right and release — the element actually moves.
-            app.drag_move(Point::new(p.x + 60.0, p.y));
-            let mut h2 = false;
-            app.on_release(&mut doc, &mut h2);
-            let x = loaded(&doc).slides[0].element(&id).unwrap().x;
-            assert!(x > 100.5, "the element moved right on first grab (x = {x})");
-        }
-
-        // Case `double_click_text_box_enters_edit`.
-        // A deliberate double-click on a selected text box enters edit mode (the
-        // opt-in gesture, now that a single grab moves it).
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            app.sel = Some(id);
-            let p = sel_center(&app);
-
-            // First click + release: selects, arms then releases a (zero-length) move.
-            let mut h = false;
-            app.last_mouse = p;
-            app.on_press(&mut doc, p, &mut h);
-            app.on_release(&mut doc, &mut h);
-            assert!(!app.editing_text, "one click selects, does not edit");
-
-            // Second click at the same spot, immediately after → double-click → edit.
-            app.on_press(&mut doc, p, &mut h);
-            assert!(
-                app.editing_text,
-                "double-click opens the text box for editing"
-            );
-            assert!(!app.drag.active(), "entering edit does not arm a drag");
-        }
-
-        // Case `second_click_on_a_selected_text_box_enters_edit_mode`.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 120.0, 40.0));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            let chrome = app.compute_chrome();
-            let el = app.slide().unwrap().element(&id).unwrap().clone();
-            let p = render::element_dest(chrome.slide_dest, chrome.scale, &el).center();
-            // First click selects.
-            let mut h = false;
-            app.last_mouse = p;
-            app.on_press(&mut doc, p, &mut h);
-            assert_eq!(app.sel.as_deref(), Some(id.as_str()));
-            assert!(!app.editing_text);
-            app.on_release(&mut doc, &mut h);
-            // Second click on the already-selected box enters edit.
-            let mut h2 = false;
-            app.on_press(&mut doc, p, &mut h2);
-            assert!(
-                app.editing_text,
-                "a second click on a selected text box edits it"
-            );
-        }
-
-        // Case `dragging_an_element_persists_the_move_to_the_crdt`.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::shape(ElementKind::Rect, 300.0, 300.0, 160.0, 90.0));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            let chrome = app.compute_chrome();
-            let el = app.slide().unwrap().element(&id).unwrap().clone();
-            let start = render::element_dest(chrome.slide_dest, chrome.scale, &el).center();
-
-            let mut h = false;
-            app.last_mouse = start;
-            app.on_press(&mut doc, start, &mut h);
-            assert!(
-                matches!(app.drag, Drag::Move { .. }),
-                "pressing an element starts a move drag"
-            );
-            // Move a good distance so no guide snaps it back to the origin.
-            app.drag_move(Point::new(start.x - 130.0, start.y + 70.0));
-            let mut h2 = false;
-            app.on_release(&mut doc, &mut h2);
-            assert!(!app.drag.active(), "release ends the drag");
-
-            let persisted = loaded(&doc).slides[0].element(&id).unwrap().clone();
-            let mirror = app.slide().unwrap().element(&id).unwrap().clone();
-            assert!(
-                (persisted.x - mirror.x).abs() < 0.001,
-                "the CRDT matches the mirror after release"
-            );
-            assert!(
-                (persisted.x - 300.0).abs() > 5.0,
-                "the move actually changed x and persisted (x={})",
-                persisted.x
-            );
-            assert!(
-                (persisted.y - 300.0).abs() > 5.0,
-                "the move actually changed y and persisted (y={})",
-                persisted.y
-            );
-        }
-
-        // Case `resizing_via_a_selection_handle_persists_to_the_crdt`.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::shape(
-                ElementKind::Rect,
-                300.0,
-                300.0,
-                200.0,
-                120.0,
-            ));
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            app.sel = Some(id.clone());
-            let chrome = app.compute_chrome();
-            let el = app.slide().unwrap().element(&id).unwrap().clone();
-            let (_, hr) = app
-                .handles_of(chrome.slide_dest, chrome.scale, &el)
-                .into_iter()
-                .find(|(h, _)| matches!(h, Handle::Br))
-                .expect("a bottom-right resize handle");
-            let start = hr.center();
-
-            let mut h = false;
-            app.last_mouse = start;
-            app.on_press(&mut doc, start, &mut h);
-            assert!(
-                matches!(app.drag, Drag::Resize { .. }),
-                "pressing a handle starts a resize"
-            );
-            app.drag_move(Point::new(start.x + 120.0, start.y + 90.0));
-            let mut h2 = false;
-            app.on_release(&mut doc, &mut h2);
-
-            let persisted = loaded(&doc).slides[0].element(&id).unwrap().clone();
-            let mirror = app.slide().unwrap().element(&id).unwrap().clone();
-            assert!(
-                (persisted.w - mirror.w).abs() < 0.001 && (persisted.h - mirror.h).abs() < 0.001,
-                "CRDT matches mirror"
-            );
-            assert!(
-                persisted.w > el.w + 1.0,
-                "Br drag grew width and persisted ({} → {})",
-                el.w,
-                persisted.w
-            );
-            assert!(
-                persisted.h > el.h + 1.0,
-                "Br drag grew height and persisted ({} → {})",
-                el.h,
-                persisted.h
-            );
-        }
-
-        // Case `clicking_inside_the_editing_text_arms_caret_placement_not_a_box_move`.
-        // A press inside the box currently being edited places the caret (and arms
-        // a selection drag) rather than starting a box move.
-        {
-            let (mut app, mut doc, _id) = selected_text_app();
-            edit_frame(&mut app, &mut doc);
-            let chrome = app.compute_chrome();
-            let er = render::element_dest(
-                chrome.slide_dest,
-                chrome.scale,
-                app.selected_element().unwrap(),
-            );
-            app_dispatch(&mut app, &mut doc, &cursor_ev(er.center()));
-            assert!(
-                app_dispatch(&mut app, &mut doc, &left_press_ev()),
-                "the press is handled"
-            );
-            assert!(
-                app.text_drag,
-                "a press inside the editing box starts a selection drag"
-            );
-            assert!(!app.drag.active(), "the box is not being moved");
-            app_dispatch(&mut app, &mut doc, &release_ev());
-            assert!(!app.text_drag);
-            assert!(app.editing_text, "the box is still being edited");
-        }
-    }
-
-    // --- image insertion (real decode + real portal seam) -------------------
-
-    fn write_png(name: &str, w: u32, h: u32) -> std::path::PathBuf {
-        use image::{Rgb, RgbImage};
-        let mut img = RgbImage::new(w, h);
-        for (x, _y, px) in img.enumerate_pixels_mut() {
-            *px = Rgb([(x % 256) as u8, 90, 140]);
-        }
-        let path = std::env::temp_dir().join(name);
-        img.save(&path).expect("write test png");
-        path
-    }
-
-    /// The image store decodes PNGs; the image tool uses the host portal and a cancel inserts nothing.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
-        // Case `image_store_decodes_a_real_png_and_fails_gracefully`.
-        {
-            use crate::assets::{ImageState, ImageStore};
-            let path = write_png("slides-unit-decode.png", 8, 6);
-            let content = ContentStore::memory();
-            let key = crate::assets::import_asset_file(&content, &path)
-                .expect("fixture imports as an asset");
-            let store = ImageStore::new(content);
-            store.load_blocking(&key);
-            match store.get(&key) {
-                ImageState::Ready(img) => {
-                    assert_eq!(
-                        (img.width, img.height),
-                        (8, 6),
-                        "decoded dimensions match the file"
-                    );
-                }
-                _ => panic!("a real PNG must decode to Ready"),
-            }
-            store.load_blocking(
-                "asset:blake3:0000000000000000000000000000000000000000000000000000000000000000",
-            );
-            assert!(
-                matches!(
-                store.get(
-                    "asset:blake3:0000000000000000000000000000000000000000000000000000000000000000"
-                ),
-                ImageState::Failed
-            ),
-                "a missing asset resolves to Failed, not a panic"
-            );
-            assert!(
-                matches!(store.get(&path.to_string_lossy()), ImageState::Failed),
-                "a peer-supplied local path is never opened"
-            );
-        }
-
-        // Case `image_tool_requests_the_host_portal_then_a_pick_inserts_a_real_image`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.reload(&doc);
-            let before = app.slide().map_or(0, |s| s.elements.len());
-
-            // The recording host answers the chooser with a chosen file.
-            let path = write_png("slides-unit-insert.png", 12, 8);
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-
-            // The Image tool asks the host portal for a file WITHOUT fabricating an
-            // element and WITHOUT drawing any in-app picker (HIG §5).
-            ui::host::scoped(&services, || {
-                app.apply_hit(&mut doc, Hit::Insert(ElementKind::Image));
-            });
-            assert!(
-                app.portal_rx.is_some(),
-                "the Image tool opens the host portal chooser (a real request is in flight)"
-            );
-            assert_eq!(
-                recorder.pick_requests().len(),
-                1,
-                "exactly one host chooser request"
-            );
-            assert_eq!(
-                app.slide().unwrap().elements.len(),
-                before,
-                "no element is inserted until the portal returns a chosen file"
-            );
-
-            // The exact per-frame drain path takes the chosen-file outcome and
-            // lands a real image element (with its src) in the CRDT.
-            app.drain_portal(&mut doc);
-            assert!(
-                app.portal_rx.is_none(),
-                "a resolved portal request clears the channel"
-            );
-
-            let reloaded = crate::doc::SlidesDoc::load(&doc).expect("deck round-trips");
-            let el = reloaded.slides[app.cur_slide]
-                .elements
-                .last()
-                .expect("an element was inserted");
-            assert_eq!(
-                el.kind,
-                ElementKind::Image,
-                "the inserted element is an image"
-            );
-            assert!(
-                crate::assets::is_asset_id(&el.src),
-                "only a portable asset id enters the CRDT"
-            );
-            assert_eq!(
-                crate::assets::read_asset(&app.content, &el.src).as_deref(),
-                Some(&std::fs::read(&path).unwrap()[..])
-            );
-            assert_eq!(
-                app.sel.as_deref(),
-                Some(el.id.as_str()),
-                "the new image is selected"
-            );
-        }
-
-        // Case `a_cancelled_portal_pick_inserts_nothing`.
-        {
-            // Dismissing the host chooser must not fabricate a placeholder element.
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.reload(&doc);
-            let before = app.slide().map_or(0, |s| s.elements.len());
-
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Cancelled);
-            ui::host::scoped(&services, || {
-                app.apply_hit(&mut doc, Hit::Insert(ElementKind::Image));
-            });
-            assert!(app.portal_rx.is_some(), "the Image tool asked the host");
-            app.drain_portal(&mut doc);
-            assert!(
-                app.portal_rx.is_none(),
-                "a cancel clears the in-flight channel"
-            );
-            app.reload(&doc);
-            assert_eq!(
-                app.slide().unwrap().elements.len(),
-                before,
-                "a cancelled pick leaves the slide untouched"
-            );
-        }
-    }
-
-    // === selection drag + double-click-to-edit ============================
-
-    /// The screen-space centre of the (single) selected element.
-    fn sel_center(app: &SlidesApp) -> Point {
-        let chrome = app.compute_chrome();
-        let el = app.selected_element().unwrap().clone();
-        crate::render::element_dest(chrome.slide_dest, chrome.scale, &el).center()
-    }
-
-    // === thumbnail drag-to-reorder (shared PageSidebar) ==================
-
-    /// A 5-slide editor seeded into a doc, sized so the whole rail fits.
-    fn reorder_app() -> (SlidesApp, AutoCommit) {
-        let mut app = SlidesApp::new(crate::assets::app_content());
-        app.deck = crate::model::seed_deck();
-        let mut doc = AutoCommit::new();
-        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-        app.bootstrapped = true;
-        app.reload(&doc);
-        sized(&mut app, 1280.0, 900.0);
-        (app, doc)
-    }
-
-    /// Thumbnail drags reorder with a ghost/gap, plain clicks select, and the delete zone removes only while dragging.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn thumbnail_drag_reorders_selects_and_deletes() {
-        // Case `dragging_a_thumbnail_reorders_the_deck_in_the_crdt`.
-        // Dragging a thumbnail down the rail past the threshold reorders the deck
-        // and persists the move to the CRDT — the whole gesture on the real
-        // `on_press` → `CursorMoved` → `on_release` path.
-        {
-            let (mut app, mut doc) = reorder_app();
-            let first_id = loaded(&doc).slides[0].id.clone();
-
-            // Source click coordinates from the shared rail's own slot rects (after
-            // it syncs this frame's geometry).
-            let thumbs = app.rail_thumb_rects();
-            let start = thumbs[0].1.center();
-            let target = thumbs[3].1.center();
-
-            app.last_mouse = start;
-            let mut h = false;
-            app.on_press(&mut doc, start, &mut h);
-            assert!(
-                app.page_sidebar.is_pending_drag(),
-                "pressing a thumbnail arms a reorder drag"
-            );
-
-            // Move the cursor onto slide 4's row through the live event path.
-            app_dispatch(&mut app, &mut doc, &cursor_ev(target));
-            assert!(
-                app.page_sidebar.is_dragging(),
-                "moving past the threshold promotes to a live reorder"
-            );
-            assert_eq!(
-                app.page_sidebar.drag_insertion(),
-                Some(3),
-                "the gap tracks to the drop row"
-            );
-
-            let mut h2 = false;
-            app.on_release(&mut doc, &mut h2);
-            assert!(
-                h2 && !app.page_sidebar.is_pending_drag(),
-                "release commits and clears the drag"
-            );
-
-            let after = loaded(&doc);
-            let new_pos = after
-                .slides
-                .iter()
-                .position(|s| s.id == first_id)
-                .expect("slide survived");
-            assert_eq!(
-                new_pos, 3,
-                "the dragged slide landed where the gap showed, persisted to the CRDT"
-            );
-            assert_eq!(
-                app.cur_slide, 3,
-                "the dragged slide stays current at its new index"
-            );
-        }
-
-        // Case `a_plain_thumbnail_click_selects_without_reordering`.
-        // A press that never crosses the threshold is a plain click: it selects
-        // the slide and leaves the deck order untouched (the model is only mutated
-        // on a committed drag).
-        {
-            let (mut app, mut doc) = reorder_app();
-            let order0: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
-
-            let (idx, rect) = app.rail_thumb_rects()[2];
-            let p = rect.center();
-            app.last_mouse = p;
-            let mut h = false;
-            app.on_press(&mut doc, p, &mut h);
-            let mut h2 = false;
-            app.on_release(&mut doc, &mut h2);
-
-            assert_eq!(app.cur_slide, idx, "a plain click selects that slide");
-            let order1: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
-            assert_eq!(
-                order0, order1,
-                "a plain click leaves the deck order unchanged"
-            );
-        }
-
-        // Case `a_live_thumbnail_drag_lifts_a_ghost_and_opens_a_reflow_gap`.
-        // While a reorder drag is live the grabbed slide lifts out (its original
-        // index) and the reflow opens a gap at the drop row — the state the shared
-        // rail paints live feedback from. (The ghost-rect / per-item-shift geometry
-        // itself is now owned + unit-tested inside `ui`'s `PageSidebar`.)
-        {
-            let (mut app, mut doc) = reorder_app();
-            let thumbs = app.rail_thumb_rects();
-            let start = thumbs[0].1.center();
-            let target = thumbs[2].1.center();
-
-            app.last_mouse = start;
-            let mut h = false;
-            app.on_press(&mut doc, start, &mut h);
-            app_dispatch(&mut app, &mut doc, &cursor_ev(target));
-
-            assert!(
-                app.page_sidebar.is_dragging(),
-                "the drag is live once past the threshold"
-            );
-            assert_eq!(
-                app.page_sidebar.drag_from(),
-                Some(0),
-                "the grabbed slide is the one lifted out"
-            );
-            assert_eq!(
-                app.page_sidebar.drag_insertion(),
-                Some(2),
-                "the reflow gap opens at the drop row"
-            );
-            // Escape aborts without mutating the deck.
-            let order0: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
-            assert!(keyn(&mut app, &mut doc, NamedKey::Escape));
-            assert!(
-                !app.page_sidebar.is_pending_drag(),
-                "Escape cancels the in-flight drag"
-            );
-            let order1: Vec<Id> = loaded(&doc).slides.iter().map(|s| s.id.clone()).collect();
-            assert_eq!(
-                order0, order1,
-                "a cancelled drag never touched the deck order"
-            );
-        }
-
-        // Case `dropping_a_slide_on_the_delete_zone_removes_it_from_the_crdt`.
-        // Dropping a dragged slide thumbnail on the red dashed delete zone removes
-        // that slide from the CRDT (the whole `on_press` → drag → `on_release` path).
-        {
-            let (mut app, mut doc) = reorder_app();
-            let victim_id = loaded(&doc).slides[1].id.clone();
-            let before = loaded(&doc).slides.len();
-
-            let start = app.rail_thumb_rects()[1].1.center();
-            app.last_mouse = start;
-            let mut h = false;
-            app.on_press(&mut doc, start, &mut h);
-
-            // Drag down into the delete zone pinned at the bottom of the rail.
-            let drop = app.slide_delete_zone(app.rail_rect()).center();
-            app_dispatch(&mut app, &mut doc, &cursor_ev(drop));
-            assert!(
-                app.page_sidebar.is_dragging(),
-                "the drag is live past the threshold"
-            );
-            assert!(
-                app.over_delete_zone(),
-                "the pointer is over the delete drop-zone"
-            );
-
-            let mut h2 = false;
-            app.on_release(&mut doc, &mut h2);
-            assert!(h2, "the drop is handled");
-
-            let after = loaded(&doc);
-            assert_eq!(
-                after.slides.len(),
-                before - 1,
-                "the dropped slide was deleted"
-            );
-            assert!(
-                !after.slides.iter().any(|s| s.id == victim_id),
-                "the exact dragged slide is gone from the CRDT"
-            );
-            assert!(
-                !app.page_sidebar.is_pending_drag(),
-                "the drag is cleared after the drop"
-            );
-        }
-
-        // Case `delete_zone_is_inert_when_not_dragging`.
-        // The delete zone is only active while a slide is being dragged.
-        {
-            let (mut app, _doc) = reorder_app();
-            let zone = app.slide_delete_zone(app.rail_rect());
-            app.last_mouse = zone.center();
-            assert!(
-                !app.over_delete_zone(),
-                "no drag in progress → the zone is inert"
-            );
-        }
-    }
-
-    // === .odp open / save through the app =================================
-
-    /// ODP save/load, `PowerPoint` routing, open outcomes, failures, cancellation and worker disconnects.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn document_open_save_and_worker_outcomes() {
-        // Case `app_saves_and_reloads_an_odp`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            let path = std::env::temp_dir().join("slides-app-odp-roundtrip.odp");
-            assert!(app.save_odp(&path), "deck saves to .odp");
-
-            let mut app2 = SlidesApp::new(crate::assets::app_content());
-            let mut doc2 = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc2, &app2.deck);
-            app2.reload(&doc2);
-            assert!(app2.load_odp(&mut doc2, &path), "the saved .odp loads back");
-            assert_eq!(app2.deck, app.deck, "open(save(deck)) is the same deck");
-            assert_eq!(
-                loaded(&doc2).slides.len(),
-                app.deck.slides.len(),
-                "the load landed in the CRDT"
-            );
-        }
-
-        // Case `app_routes_powerpoint_and_explains_its_fidelity_boundary`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            let path = std::env::temp_dir().join("slides-app-pptx-roundtrip.pptx");
-            assert!(app.save_presentation(&path), "deck saves to .pptx");
-
-            let mut opened = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &opened.deck);
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-            ui::host::scoped(&services, || opened.request_odp_open());
-            opened.drain_doc_portal(&mut doc);
-            wait_for_document_job(&mut opened, &mut doc);
-            assert_eq!(opened.deck.title, app.deck.title);
-            assert_eq!(opened.deck.slides.len(), app.deck.slides.len());
-            assert!(matches!(
-                opened.io_toast.as_ref(),
-                Some((message, ToastKind::Success)) if message.contains("Presentation opened")
-            ));
-            let _ = std::fs::remove_file(path);
-        }
-
-        // Case `draining_an_open_outcome_loads_the_deck`.
-        {
-            let deck = crate::model::seed_deck();
-            let bytes = crate::odp::write_odp(&deck, &ContentStore::memory()).unwrap();
-            let path = std::env::temp_dir().join("slides-drain-open.odp");
-            std::fs::write(&path, &bytes).unwrap();
-
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.reload(&doc);
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(path));
-            ui::host::scoped(&services, || app.request_odp_open());
-            assert_eq!(recorder.pick_requests()[0].title(), tr("slides-open-title"));
-            app.drain_doc_portal(&mut doc);
-            wait_for_document_job(&mut app, &mut doc);
-            assert!(
-                app.doc_portal_rx.is_none(),
-                "a resolved request clears the channel"
-            );
-            assert_eq!(
-                app.deck.slides.len(),
-                deck.slides.len(),
-                "the opened deck replaced the starter"
-            );
-            assert!(matches!(
-                app.io_toast.as_ref(),
-                Some((_, ToastKind::Success))
-            ));
-        }
-
-        // Case `failed_open_is_visible_instead_of_silent`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir().join(format!(
-                "missing-tilo-slides-deck-{}.odp",
-                std::process::id()
-            ))));
-            ui::host::scoped(&services, || app.request_odp_open());
-            app.drain_doc_portal(&mut doc);
-            wait_for_document_job(&mut app, &mut doc);
-            assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
-        }
-
-        // Case `cancelled_document_job_cannot_apply_a_stale_open_result`.
-        {
-            let mut imported = crate::model::seed_deck();
-            imported.title = "stale import".into();
-            let path =
-                std::env::temp_dir().join(format!("slides-stale-{}.odp", uuid::Uuid::new_v4()));
-            std::fs::write(
-                &path,
-                crate::odp::write_odp(&imported, &ContentStore::memory()).unwrap(),
-            )
-            .unwrap();
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let original = app.deck.title.clone();
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            assert!(app.queue_document_open(path.clone()));
-            // This is the same state transition `poll_resource_operation` performs
-            // when a caller cancels the accepted invocation.
-            app.active_document_generation = None;
-            for _ in 0..100 {
-                app.drain_document_worker(&mut doc);
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert_eq!(app.deck.title, original, "stale parser completion is inert");
-            let _ = std::fs::remove_file(path);
-        }
-
-        // Case `disconnected_document_worker_settles_the_accepted_resource_operation`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            // Keep a sender for future queue attempts, but give the app a result
-            // channel whose producing worker has already gone away.
-            let (tx, _jobs) = std::sync::mpsc::sync_channel(1);
-            let (results, rx) = std::sync::mpsc::sync_channel(1);
-            drop(results);
-            app.document_worker = Some(DocumentWorker { tx, rx });
-            app.resource_invocation = Some(tilo_actions::InvocationId::new());
-            app.active_document_generation = Some(7);
-
-            app.drain_document_worker(&mut doc);
-
-            assert!(app.document_worker.is_none());
-            assert!(app.active_document_generation.is_none());
-            assert!(app.resource_invocation.is_none());
-            assert!(matches!(
-                app.completed_resource_invocation,
-                Some(tilo_actions::InvocationUpdate::Failed { .. })
-            ));
-            assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
-        }
-
-        // Case `a_finished_save_wakes_its_idle_host`: an idle host syncs only
-        // when woken, so a save nobody wakes for stays Accepted forever.
-        {
-            let mut scope = ui::wake::WakeScope::new();
-            let _entry = scope.enter();
-            let (sender, wakes) = std::sync::mpsc::channel();
-            scope
-                .bind(move |event| {
-                    let _ = sender.send(event);
-                })
-                .unwrap();
-            let path = std::env::temp_dir()
-                .join(format!("slides-idle-save-{}.pptx", uuid::Uuid::new_v4()));
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.resource_invocation = Some(tilo_actions::InvocationId::new());
-            assert!(app.queue_document_save(path.clone()));
-            tilo_test_env::recv("the finished save's wake", &wakes);
-            app.drain_document_worker(&mut doc);
-            assert!(
-                app.dispatched_save.is_none(),
-                "the woken sync settles the save"
-            );
-            assert!(matches!(
-                app.io_toast.as_ref(),
-                Some((_, ToastKind::Success))
-            ));
-            let _ = std::fs::remove_file(path);
-        }
-
-        // Case `ensure_odp_ext_appends_when_missing`.
-        {
-            assert_eq!(
-                super::ensure_odp_ext(std::path::Path::new("/x/talk"))
-                    .to_str()
-                    .unwrap(),
-                "/x/talk.odp"
-            );
-            assert_eq!(
-                super::ensure_odp_ext(std::path::Path::new("/x/talk.odp"))
-                    .to_str()
-                    .unwrap(),
-                "/x/talk.odp"
-            );
-        }
-    }
-
-    // === right-click context menus ========================================
-
-    /// Right-click menus for canvas elements and slide thumbnails.
-    #[test]
-    fn context_menus_act_on_elements_and_slides() {
-        // Case `right_click_element_opens_menu_and_actions_apply`.
-        // Right-clicking a canvas element selects it and opens the element menu
-        // whose rows map to the reorder / duplicate / delete actions.
-        {
-            let mut slide = Slide::new(Layout::Blank);
-            let a = slide.add(Element::shape(
-                ElementKind::Rect,
-                100.0,
-                100.0,
-                300.0,
-                200.0,
-            ));
-            let b = slide.add(Element::shape(
-                ElementKind::Ellipse,
-                500.0,
-                300.0,
-                200.0,
-                200.0,
-            ));
-            let (mut app, mut doc) = app_doc(slide);
-            sized(&mut app, 1280.0, 800.0);
-
-            // Right-click element `a`.
-            let chrome = app.compute_chrome();
-            let ea = app.slide().unwrap().element(&a).unwrap().clone();
-            let pt = crate::render::element_dest(chrome.slide_dest, chrome.scale, &ea).center();
-            let mut h = false;
-            app.last_mouse = pt;
-            app.on_right_press(&mut doc, pt, &mut h);
-            assert!(app.ctx_menu.is_open(), "right-click opens the element menu");
-            assert_eq!(
-                app.sel.as_deref(),
-                Some(a.as_str()),
-                "the clicked element is selected"
-            );
-
-            // Row 0 = Bring to front. Choosing it raises `a` above `b`.
-            app.ctx_menu.click_item(0);
-            if let Some(idx) = app.ctx_menu.take_selection()
-                && let Some(Some(hit)) = app.ctx_hits.get(idx).cloned()
-            {
-                app.apply_hit(&mut doc, hit);
-            }
-            let za = loaded(&doc).slides[0].element(&a).unwrap().z;
-            let zb = loaded(&doc).slides[0].element(&b).unwrap().z;
-            assert!(za > zb, "Bring to front raised the element ({za} vs {zb})");
-            assert!(!app.ctx_menu.is_open(), "choosing a row closes the menu");
-        }
-
-        // Case `right_click_thumbnail_opens_slide_menu`.
-        // Right-clicking a slide thumbnail selects that slide and opens the shared
-        // rail's own duplicate / move / delete menu; choosing Delete removes it.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.reload(&doc);
-            sized(&mut app, 1280.0, 800.0);
-
-            let (idx, rect) = app.rail_thumb_rects()[2];
-            let p = rect.center();
-            let mut h = false;
-            app.last_mouse = p;
-            app.on_right_press(&mut doc, p, &mut h);
-            assert!(
-                app.page_sidebar.menu_open(),
-                "right-click on a thumbnail opens the rail menu"
-            );
-            assert_eq!(
-                app.cur_slide, idx,
-                "the right-clicked slide becomes current"
-            );
-
-            // The menu's Delete action (mapped from the widget's Delete row, unit
-            // tested in `ui`) removes the slide via the production apply path.
-            let before = loaded(&doc).slides.len();
-            app.apply_rail_event(&mut doc, PageSidebarEvent::Delete(idx));
-            assert_eq!(
-                loaded(&doc).slides.len(),
-                before - 1,
-                "Delete slide removed one"
-            );
-        }
-    }
-
-    // === embedded inspector widgets (NumberInput / ColorPicker) ===========
-
-    fn app_dispatch(app: &mut SlidesApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
-        app_dispatch_mods(app, doc, Modifiers::default(), ev)
-    }
-
-    fn app_dispatch_mods(
-        app: &mut SlidesApp,
-        doc: &mut AutoCommit,
-        modifiers: Modifiers,
-        ev: &WindowEvent,
-    ) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus = None;
-        let root = automerge::ROOT;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
-    fn cursor_ev(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
-    }
-    fn left_press_ev() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn release_ev() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-    fn key_event(logical: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(winit::keyboard::SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn char_ev(s: &str) -> WindowEvent {
-        key_event(Key::Character(s.into()), Some(s))
-    }
-    fn named_ev(k: NamedKey) -> WindowEvent {
-        key_event(Key::Named(k), None)
-    }
-
-    // === write-through + interaction coverage =============================
-
-    /// A one-slide deck seeded into a shared doc; `slide` becomes slide 0 and
-    /// the mirror is reloaded from the document.
-    /// Restore the deck as it was at `selected`, as History's restore
-    /// writes it: the past deck over the live one.
-    pub(super) fn restore_deck(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
-        let past = doc.fork_at(selected).unwrap();
-        let deck = SlidesDoc::load(&past).unwrap();
-        tilo_actions::Action::apply(&crate::actions::replace_deck_action(&deck), doc).unwrap();
-    }
-
-    fn app_doc(slide: Slide) -> (SlidesApp, AutoCommit) {
-        let mut app = app_with(slide);
-        let mut doc = AutoCommit::new();
-        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-        app.reload(&doc);
-        (app, doc)
-    }
-
-    /// A one-slide deck with a single text element, selected, seeded to a doc.
-    fn selected_text_app() -> (SlidesApp, AutoCommit, Id) {
-        let mut s = Slide::new(Layout::TitleContent);
-        let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 100.0, 40.0));
-        let (mut app, doc) = app_doc(s);
-        app.sel = Some(id.clone());
-        (app, doc, id)
-    }
-
-    fn keyn(app: &mut SlidesApp, doc: &mut AutoCommit, key: NamedKey) -> bool {
-        let mut h = false;
-        app.on_key(doc, &Key::Named(key), None, Modifiers::default(), &mut h);
-        h
-    }
-    fn loaded(doc: &AutoCommit) -> Deck {
-        crate::doc::SlidesDoc::load(doc).expect("deck round-trips from the document")
-    }
-
-    /// Open the selected text box for editing and draw one canvas frame, so
-    /// its editor is open and laid out where the box is.
-    fn edit_frame(app: &mut SlidesApp, doc: &mut AutoCommit) {
-        if app.rect.width() <= 0.0 {
-            sized(app, 1280.0, 800.0);
-        }
-        app.editing_text = true;
-        Widget::sync(app, doc, &automerge::ROOT);
-        text_frame(app);
-    }
-
-    /// Draw the text box being edited, as the canvas does each frame.
-    fn text_frame(app: &mut SlidesApp) {
-        let chrome = app.compute_chrome();
-        let theme = Theme::dark();
-        let pal = app.palette(&theme);
-        let mut tr = TextRenderer::new();
-        app.draw_text_editor(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &chrome,
-            &pal,
-        );
-    }
-
-    /// The text box editor's block editor.
-    fn text_box(app: &SlidesApp) -> &ui::widget::BlockEditor {
-        app.text_editor
-            .as_ref()
-            .expect("the text box is being edited")
-            .host
-            .widget()
-            .editor()
-    }
-
-    /// The text selected in the text box being edited.
-    fn edit_selection(app: &SlidesApp) -> String {
-        let editor = text_box(app);
-        if let Some(text) = editor.selected_text() {
-            return text;
-        }
-        editor
-            .blocks()
-            .iter()
-            .find(|block| block.line.is_focused())
-            .and_then(|block| {
-                let (start, end) = block.line.selection_range()?;
-                block.text().get(start..end).map(str::to_owned)
-            })
-            .unwrap_or_default()
-    }
-
-    /// The caret's byte offset in the text box's focused paragraph.
-    fn edit_caret(app: &SlidesApp) -> usize {
-        text_box(app)
-            .blocks()
-            .iter()
-            .find(|block| block.line.is_focused())
-            .map_or(0, |block| block.line.cursor_pos())
-    }
-
-    /// Type `text` into the focused field through the app's event path.
-    fn type_text(app: &mut SlidesApp, doc: &mut AutoCommit, text: &str) {
-        for ch in text.chars() {
-            app_dispatch(app, doc, &char_ev(&ch.to_string()));
-        }
-    }
-    fn sized(app: &mut SlidesApp, w: f64, h: f64) {
-        app.rect = Rect::new(0.0, 0.0, w, h);
-        app.sync_flaps(0.0, false);
-    }
-
-    // --- deck title rename (was display-only: set_title had no caller) ------
-
-    /// The inline title editor starts, selects/replaces and commits to the CRDT.
-    #[test]
-    fn title_rename_edits_and_commits_to_the_crdt() {
-        // Case `clicking_the_toolbar_title_starts_a_rename_and_typing_writes_through`.
-        {
-            let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-            sized(&mut app, 1280.0, 800.0);
-            let title0 = app.deck.title.clone();
-            let chrome = app.compute_chrome();
-            let p = chrome.title_rect.center();
-            assert!(
-                app.rect.contains(p),
-                "the title click target is inside the window"
-            );
-
-            let mut handled = false;
-            app.last_mouse = p;
-            app.on_press(&mut doc, p, &mut handled);
-            assert!(
-                handled && app.editing_title,
-                "clicking the title enters inline rename"
-            );
-
-            // Typing routes through the shared TextInput (the live handle_event
-            // path) and splices into the CRDT title.
-            app_dispatch(&mut app, &mut doc, &char_ev("!"));
-            app_dispatch(&mut app, &mut doc, &char_ev("?"));
-            assert!(
-                !app.help_overlay.is_visible(),
-                "'?' while renaming types into the title, not the help overlay"
-            );
-            // Enter commits the rename.
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
-            assert!(!app.editing_title, "Enter commits the rename");
-            assert_eq!(
-                loaded(&doc).title,
-                format!("{title0}!?"),
-                "the rename persisted to the CRDT"
-            );
-        }
-
-        // Case `title_input_supports_select_all_and_replace`.
-        // The inline title editor is the shared `TextInput`, so it supports real
-        // selection — Ctrl+A selects the whole title, then typing replaces it.
-        {
-            let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-            sized(&mut app, 1280.0, 800.0);
-            app.begin_title_edit();
-            // Select all + confirm the field reports a full-span selection.
-            app.title_input.select_all();
-            let sel = app.title_input.selection_range_public();
-            assert!(
-                sel.is_some(),
-                "Ctrl+A selects the whole title in the TextInput"
-            );
-            // Typing over the selection replaces the entire title.
-            app_dispatch(&mut app, &mut doc, &char_ev("X"));
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
-            assert_eq!(
-                loaded(&doc).title,
-                "X",
-                "typing over the selection replaced the title"
-            );
-        }
-
-        // Case `title_backspace_and_click_away_commit_persist_to_the_crdt`.
-        {
-            let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-            sized(&mut app, 1280.0, 800.0);
-            app.begin_title_edit();
-            // Backspace deletes the last title char through the TextInput → CRDT.
-            let title0 = app.deck.title.clone();
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
-            let mut expect: String = title0;
-            expect.pop();
-            assert_eq!(
-                loaded(&doc).title,
-                expect,
-                "backspace spliced one char out of the title"
-            );
-
-            // Add a char, then click away from the title → commits (leaves editing).
-            app_dispatch(&mut app, &mut doc, &char_ev("Z"));
-            let chrome = app.compute_chrome();
-            let away = Point::new(chrome.slide_dest.center().x, chrome.slide_dest.center().y);
-            assert!(!chrome.title_rect.contains(away));
-            app_dispatch(&mut app, &mut doc, &cursor_ev(away));
-            app_dispatch(&mut app, &mut doc, &left_press_ev());
-            assert!(!app.editing_title, "a click away commits the rename");
-            assert_eq!(
-                loaded(&doc).title,
-                format!("{expect}Z"),
-                "the edit persisted"
-            );
-        }
-    }
-
-    // --- '?' help in Present mode (was a no-op that soft-locked nav) --------
-
-    /// Help overlay in present mode and the deck's accessibility tree and activation.
-    #[test]
-    fn help_overlay_and_accessibility_expose_the_deck() {
-        // Case `help_overlay_is_visible_and_dismissable_in_present_mode`.
-        {
-            let mut app = presenting_app();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            assert!(!app.help_overlay.is_visible());
-            // '?' opens the overlay even while presenting.
-            assert!(press_char(&mut app, "?"));
-            assert!(
-                app.help_overlay.is_visible(),
-                "the help overlay is shown in Present mode (the exact gate `draw` uses)"
-            );
-            // And it actually paints over the present surface without panicking.
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            let palette = app.palette(&theme);
-            app.help_overlay.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                app.rect,
-                &palette,
-            );
-
-            // While open it is modal (a nav key is swallowed, does not advance).
-            let before = app.cur_slide;
-            assert!(press_named(&mut app, NamedKey::ArrowRight));
-            assert_eq!(
-                app.cur_slide, before,
-                "help is modal: nav is captured, not applied"
-            );
-            // Dismiss with '?', and navigation resumes — no soft-lock.
-            assert!(press_char(&mut app, "?"));
-            assert!(!app.help_overlay.is_visible(), "'?' dismisses the overlay");
-            assert!(press_named(&mut app, NamedKey::ArrowRight));
-            assert_eq!(
-                app.cur_slide,
-                before + 1,
-                "navigation resumes once help is closed"
-            );
-        }
-
-        // Case `accessibility_exposes_deck_and_current_slide`.
-        {
-            use ui::widget::Widget as _;
-
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            let tree = app.accessibility().expect("presentation semantics");
-            assert_eq!(tree.role, ui::a11y::Role::Document);
-            let slides = tree
-                .children
-                .iter()
-                .find(|node| node.role == ui::a11y::Role::List)
-                .expect("semantic slide list");
-            assert_eq!(slides.role, ui::a11y::Role::List);
-            assert_eq!(slides.children.len(), app.deck.slides.len());
-            assert!(slides.children.iter().any(|slide| slide.state.selected));
-            assert!(
-                slides
-                    .children
-                    .iter()
-                    .all(|slide| slide.action_target.is_some())
-            );
-        }
-
-        // Case `accessibility_activation_uses_stable_slide_identity_and_modal_help_owns_tree`.
-        {
-            use ui::widget::Widget as _;
-
-            let mut app = SlidesApp::sample();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            let target_id = app.deck.slides[3].id.clone();
-            assert!(Widget::perform_semantic_action(
-                &mut app,
-                &format!("slides.slide:{target_id}"),
-                &ui::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(
-                app.slide().map(|slide| slide.id.as_str()),
-                Some(target_id.as_str())
-            );
-
-            app.help_overlay.show();
-            let tree = app.accessibility().expect("modal help semantics");
-            assert_eq!(tree.role, ui::a11y::Role::Dialog);
-            assert!(tree.state.modal);
-            assert!(Widget::perform_semantic_action(
-                &mut app,
-                "slides.help.close",
-                &ui::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert!(!app.help_overlay.is_visible());
-        }
-    }
-
-    // --- text caret alignment (was hard-coded to the left edge) -------------
-
-    /// Caret placement under alignment and word-wise moves.
-    #[test]
-    fn caret_navigation_tracks_alignment_and_lines() {
-        // Case `caret_tracks_center_and_right_alignment_not_just_left`.
-        // The box's alignment is the editor's: the caret at the end of a short
-        // word sits further right as the box goes from left to centre to right.
-        {
-            let caret_x = |align: TextAlign| {
-                let mut s = Slide::new(Layout::Blank);
-                let id = s.add(
-                    Element::text("Hello", 100.0, 100.0, 600.0, 120.0, 40.0)
-                        .with(|e| e.align = align),
-                );
-                let (mut app, mut doc) = app_doc(s);
-                app.sel = Some(id);
-                edit_frame(&mut app, &mut doc);
-                assert_eq!(text_box(&app).text_align(), render::text_align(align));
-                app.ime_cursor_rect().expect("the caret is shown").x0
-            };
-            let (left, center, right) = (
-                caret_x(TextAlign::Left),
-                caret_x(TextAlign::Center),
-                caret_x(TextAlign::Right),
-            );
-            assert!(
-                left < center && center < right,
-                "l={left} c={center} r={right}"
-            );
-        }
-
-        // Case `ctrl_arrow_moves_word_wise`.
-        // Ctrl+Arrow moves word-wise via the shared word-boundary walker.
-        {
-            use winit::keyboard::ModifiersState;
-            let mut s = Slide::new(Layout::Blank);
-            let id = s.add(Element::text(
-                "Hello world",
-                100.0,
-                100.0,
-                600.0,
-                120.0,
-                40.0,
-            ));
-            let (mut app, mut doc) = app_doc(s);
-            app.sel = Some(id);
-            edit_frame(&mut app, &mut doc);
-            app_dispatch_mods(
-                &mut app,
-                &mut doc,
-                Modifiers::from(ModifiersState::CONTROL),
-                &named_ev(NamedKey::ArrowLeft),
-            );
-            assert_eq!(
-                edit_caret(&app),
-                6,
-                "ctrl+left jumps to the start of the last word"
-            );
-            assert!(
-                edit_selection(&app).is_empty(),
-                "a plain word move collapses the selection"
-            );
-        }
-    }
-
-    // --- caret line navigation (ArrowUp/Down did nothing) -------------------
-
-    // --- shared multiline speaker-notes editor ------------------------------
-
-    #[test]
-    fn the_notes_box_reads_out_the_slides_notes() {
-        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
-            if node.name.as_deref() == Some("Edit speaker notes") {
-                return Some(node);
-            }
-            node.children.iter().find_map(find)
-        }
-        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-        sized(&mut app, 1280.0, 800.0);
-        crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "thank the hosts");
-        app.reload(&doc);
-        let tree = app.accessibility().expect("editor semantics");
-        let notes = find(&tree).expect("the notes box is exposed");
-        assert_eq!(notes.value.as_deref(), Some("thank the hosts"));
-    }
-
-    #[test]
-    fn notes_typing_writes_through_and_up_down_move_the_caret() {
-        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-        sized(&mut app, 1280.0, 800.0);
-        // Seed two lines of notes on slide 0.
-        crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "line one\nsecond");
-        app.reload(&doc);
-        app.apply_hit(&mut doc, Hit::EditNotes);
-        assert!(app.editing_notes, "clicking notes enters the notes editor");
-        let len = "line one\nsecond".len();
-        assert_eq!(
-            app.notes_input.cursor_pos(),
-            len,
-            "caret opens at the end of the notes"
-        );
-
-        // The shared multiline editor resolves vertical movement from the same
-        // wrapped layout it paints, so build one deterministic inspector frame.
-        let nb = app.compute_chrome().notes_box.expect("notes box");
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        app.draw_notes(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            nb,
-            "line one\nsecond",
-        );
-
-        // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
-        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowUp));
-        assert!(
-            app.notes_input.cursor_pos() < "line one".len(),
-            "ArrowUp moved the notes caret onto the first shaped line"
-        );
-        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowDown));
-        assert_eq!(
-            app.notes_input.cursor_pos(),
-            len,
-            "ArrowDown returns to the second line"
-        );
-
-        // Typing splices into the CRDT notes at the caret.
-        app_dispatch(&mut app, &mut doc, &char_ev("!"));
-        assert_eq!(
-            loaded(&doc).slides[0].notes,
-            "line one\nsecond!",
-            "notes edit persisted to the CRDT"
-        );
-    }
-
-    // --- element text editing -----------------------------------------------
-
-    /// The text box editor opens, navigates and selects on the widget's own
-    /// event path, and without the deck's dispatcher it shows the words and
-    /// refuses every edit. Notes selection/IME/multiline edit the bound notes
-    /// text.
-    #[test]
-    fn text_box_keys_and_notes_editing() {
-        // Case `enter_opens_the_box_and_escape_ends_editing_keeping_it_selected`.
-        {
-            let (mut app, mut doc, id) = selected_text_app();
-            sized(&mut app, 1280.0, 800.0);
-            // Enter opens the text editor on the selected box, caret at the end.
-            assert!(keyn(&mut app, &mut doc, NamedKey::Enter));
-            assert!(app.editing_text);
-            edit_frame(&mut app, &mut doc);
-            assert_eq!(edit_caret(&app), "Hi".len());
-            // Without the deck's dispatcher the box is shown, never edited.
-            let heads = doc.get_heads();
-            type_text(&mut app, &mut doc, "!");
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
-            assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi");
-            assert_eq!(doc.get_heads(), heads, "nothing was written");
-            // Escape ends editing, box still selected.
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Escape));
-            assert!(!app.editing_text);
-            assert_eq!(app.sel.as_deref(), Some(id.as_str()));
-        }
-
-        // Case `shift_arrow_extends_a_selection_over_the_crdt_text`.
-        {
-            use winit::keyboard::ModifiersState;
-            let (mut app, mut doc, _id) = selected_text_app();
-            edit_frame(&mut app, &mut doc);
-            assert!(edit_selection(&app).is_empty(), "starts with no selection");
-            for _ in 0..2 {
-                app_dispatch_mods(
-                    &mut app,
-                    &mut doc,
-                    Modifiers::from(ModifiersState::SHIFT),
-                    &named_ev(NamedKey::ArrowLeft),
-                );
-            }
-            assert_eq!(edit_selection(&app), "Hi", "the selection spans both chars");
-        }
-
-        // Case `ctrl_a_selects_the_whole_box`.
-        {
-            use winit::keyboard::ModifiersState;
-            let (mut app, mut doc, _id) = selected_text_app();
-            edit_frame(&mut app, &mut doc);
-            app_dispatch_mods(
-                &mut app,
-                &mut doc,
-                Modifiers::from(ModifiersState::CONTROL),
-                &char_ev("a"),
-            );
-            assert_eq!(edit_selection(&app), "Hi", "Ctrl+A selects the whole text");
-        }
-
-        // Case `notes_selection_ime_and_multiline_edit_the_bound_crdt_text`.
-        // Selection replacement, IME and multiline insertion all travel through
-        // the real root-widget event path into the directly-bound notes text.
-        {
-            use winit::keyboard::ModifiersState;
-            let mut s = Slide::new(Layout::TitleContent);
-            s.notes = "abc".into();
-            let (mut app, mut doc) = app_doc(s);
-            sized(&mut app, 1280.0, 800.0);
-            app.apply_hit(&mut doc, Hit::EditNotes);
-
-            app_dispatch_mods(
-                &mut app,
-                &mut doc,
-                Modifiers::from(ModifiersState::CONTROL),
-                &char_ev("a"),
-            );
-            assert_eq!(
-                app.notes_input.selection_range_public(),
-                Some((0, 3)),
-                "Ctrl+A selects the notes in the shared editor"
-            );
-
-            app_dispatch(
-                &mut app,
-                &mut doc,
-                &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-            );
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
-            app_dispatch(&mut app, &mut doc, &char_ev("agenda"));
-            assert_eq!(
-                loaded(&doc).slides[0].notes,
-                "東京\nagenda",
-                "IME replacement and newline insertion persist to the CRDT"
-            );
-
-            let handled = app_dispatch_mods(
-                &mut app,
-                &mut doc,
-                Modifiers::from(ModifiersState::CONTROL),
-                &char_ev("z"),
-            );
-            assert!(
-                !handled,
-                "Ctrl+Z falls through to the toolkit's global undo handler"
-            );
-        }
-    }
-
-    /// The slides app as it runs, on its starter deck, with its text box
-    /// that reads `words` opened for editing by a double-click, the caret at
-    /// its end.
-    fn editing_starter_box(
-        words: &str,
-        role: ui::permissions::Role,
-    ) -> (ui::framework::testing::TestApp<crate::SlidesShell>, String) {
-        ui::i18n::I18nManager::init("en-US");
-        let mut app =
-            ui::framework::testing::TestApp::<crate::SlidesShell>::with_role(role).unwrap();
-        let deck = app.read_document(|doc| crate::doc::SlidesDoc::load(doc).unwrap());
-        let id = deck.slides[0]
-            .elements
-            .iter()
-            .find(|element| element.text == words)
-            .unwrap()
-            .id
-            .clone();
-        // Where the box is drawn: the deck's surface below the host's bar.
-        let mut geometry = SlidesApp::new(crate::assets::app_content());
-        geometry.deck = deck;
-        geometry.bootstrapped = true;
-        geometry.rect = app.harness().targets()["BoundComponent"];
-        geometry.sync_flaps(0.0, false);
-        let chrome = geometry.compute_chrome();
-        let element = geometry.deck.slides[0].element(&id).unwrap();
-        let at = render::element_dest(chrome.slide_dest, chrome.scale, element).center();
-        app.harness().double_click_at(at.x, at.y);
-        (app, id)
-    }
-
-    fn element_text(
-        app: &ui::framework::testing::TestApp<crate::SlidesShell>,
-        id: &str,
-    ) -> Element {
-        app.read_document(|doc| {
-            crate::doc::SlidesDoc::load(doc).unwrap().slides[0]
-                .element(id)
-                .unwrap()
-                .clone()
-        })
-    }
-
-    /// Typing in a text box edits the deck's child rich text: each edit is a
-    /// deck action, undo takes back a word, a mark is a mark, and a viewer
-    /// cannot type.
-    #[test]
-    fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
-        use ui::permissions::Role;
-        // Case `typing_edits_the_box_through_the_deck`.
-        {
-            let (mut app, id) = editing_starter_box("Title", Role::Owner);
-            app.harness().type_text(" Hi!");
-            assert_eq!(element_text(&app, &id).text, "Title Hi!");
-            app.harness().key("Backspace");
-            assert_eq!(element_text(&app, &id).text, "Title Hi");
-            app.harness().key("Enter");
-            app.harness().type_text("yo");
-            assert_eq!(element_text(&app, &id).text, "Title Hi\nyo");
-            assert!(app.undo(), "the last word is one step");
-            assert_eq!(element_text(&app, &id).text, "Title Hi\n");
-        }
-
-        // Case `bold_typed_in_a_box_is_a_mark`.
-        {
-            let (mut app, id) = editing_starter_box("Subtitle", Role::Owner);
-            app.harness().type_text(" ");
-            app.harness().set_modifiers(&["ctrl".to_owned()]);
-            app.harness().key("b");
-            app.harness().set_modifiers(&[]);
-            app.harness().type_text("bold");
-            let element = element_text(&app, &id);
-            assert_eq!(element.text, "Subtitle bold");
-            assert!(
-                element.blocks[0]
-                    .marks
-                    .iter()
-                    .any(|span| span.mark == ui::widget::marks::Mark::Bold && span.range == (9..13)),
-                "{:?}",
-                element.blocks[0].marks
-            );
-        }
-
-        // Case `a_viewer_cannot_type_in_a_box`.
-        {
-            let (mut app, id) = editing_starter_box("Title", Role::Viewer);
-            let before = app.versions().len();
-            app.harness().type_text("nope");
-            assert_eq!(element_text(&app, &id).text, "Title");
-            assert_eq!(app.versions().len(), before);
-        }
-    }
-
-    /// A text box's words are a rich-text resource of their own beneath their
-    /// element, which an agent edits as the deck's action.
-    #[test]
-    fn an_agent_edits_a_text_box_as_a_rich_text_resource() {
-        use ui::tilo_resource::Resource as _;
-        ui::i18n::I18nManager::init("en-US");
-        let mut app = ui::framework::testing::TestApp::<crate::SlidesShell>::new().unwrap();
-        let id = app.read_document(|doc| {
-            crate::doc::SlidesDoc::load(doc).unwrap().slides[0]
-                .elements
-                .iter()
-                .find(|element| element.text == "Subtitle")
-                .unwrap()
-                .id
-                .clone()
-        });
-        let child = crate::actions::text_resource_id(&id);
-        let declared = app.agent_surface();
-        assert!(
-            declared.as_array().unwrap().iter().any(|row| {
-                row["resource"] == child.as_str()
-                    && row["resource_kind"] == tilo_document::RichText::KIND
-            }),
-            "the words are published as rich text: {declared}"
-        );
-        app.invoke_child::<tilo_document::RichText>(
-            &child,
-            ui::tilo_resource::Invoke::<tilo_document::RichText>::apply(
-                &tilo_document::RichTextAction::ReplaceBody {
-                    markdown: "from an agent".into(),
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(element_text(&app, &id).text, "from an agent");
-        assert!(app.undo());
-        assert_eq!(element_text(&app, &id).text, "Subtitle");
-    }
-
-    // --- canvas move / resize persistence -----------------------------------
-
-    // --- inspector property edits (every writer, on the real hit path) ------
-
-    // --- slide ops via the app handlers -------------------------------------
-
-    /// Slide operations, the last-slide guard, keyboard nudges/delete and overview card opening.
-    #[test]
-    fn slide_ops_and_keyboard_edits_update_the_deck() {
-        // Case `slide_ops_via_hit_handlers_update_the_deck_and_current_slide`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.bootstrapped = true;
-            app.cur_slide = 1;
-            app.reload(&doc);
-            let n0 = loaded(&doc).slides.len();
-
-            // New slide inserts after the current one and follows it.
-            app.apply_hit(&mut doc, Hit::NewSlide);
-            assert_eq!(loaded(&doc).slides.len(), n0 + 1);
-            assert_eq!(app.cur_slide, 2, "the new slide becomes current");
-
-            // Duplicate inserts a copy after current.
-            app.apply_hit(&mut doc, Hit::DuplicateSlide);
-            assert_eq!(loaded(&doc).slides.len(), n0 + 2);
-            assert_eq!(app.cur_slide, 3);
-
-            // Move up / down (the rail menu's Reorder events) reorders and tracks
-            // cur_slide, on the production apply path.
-            let moved_id = loaded(&doc).slides[3].id.clone();
-            app.apply_rail_event(&mut doc, PageSidebarEvent::Reorder { from: 3, to: 2 });
-            assert_eq!(app.cur_slide, 2);
-            assert_eq!(
-                loaded(&doc).slides[2].id,
-                moved_id,
-                "move up reordered the deck"
-            );
-            app.apply_rail_event(&mut doc, PageSidebarEvent::Reorder { from: 2, to: 3 });
-            assert_eq!(app.cur_slide, 3);
-            assert_eq!(
-                loaded(&doc).slides[3].id,
-                moved_id,
-                "move down reordered it back"
-            );
-
-            // Delete removes the current slide.
-            app.apply_hit(&mut doc, Hit::DeleteSlide);
-            assert_eq!(loaded(&doc).slides.len(), n0 + 1);
-        }
-
-        // Case `delete_slide_keeps_at_least_one_slide`.
-        {
-            let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-            assert_eq!(loaded(&doc).slides.len(), 1);
-            app.apply_hit(&mut doc, Hit::DeleteSlide);
-            assert_eq!(
-                loaded(&doc).slides.len(),
-                1,
-                "the last slide can't be deleted"
-            );
-        }
-
-        // Case `arrow_nudge_tab_cycle_and_delete_key_edit_the_crdt`.
-        {
-            let mut s = Slide::new(Layout::Blank);
-            let a = s.add(Element::shape(
-                ElementKind::Rect,
-                200.0,
-                200.0,
-                100.0,
-                100.0,
-            ));
-            let b = s.add(Element::shape(
-                ElementKind::Ellipse,
-                500.0,
-                400.0,
-                100.0,
-                100.0,
-            ));
-            let (mut app, mut doc) = app_doc(s);
-            app.sel = Some(a.clone());
-
-            // Arrow nudges the selected element's position (persisted).
-            let x0 = loaded(&doc).slides[0].element(&a).unwrap().x;
-            assert!(keyn(&mut app, &mut doc, NamedKey::ArrowRight));
-            let x1 = loaded(&doc).slides[0].element(&a).unwrap().x;
-            assert!(
-                x1 > x0 + 1.0,
-                "ArrowRight nudged and persisted x ({x0} → {x1})"
-            );
-
-            // Tab cycles selection to the next element (by z order).
-            assert!(keyn(&mut app, &mut doc, NamedKey::Tab));
-            assert_eq!(app.sel.as_deref(), Some(b.as_str()), "Tab cycles selection");
-
-            // Delete removes the selected element from the CRDT.
-            let n = loaded(&doc).slides[0].elements.len();
-            assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
-            assert_eq!(
-                loaded(&doc).slides[0].elements.len(),
-                n - 1,
-                "Delete removed the element"
-            );
-            assert!(app.sel.is_none(), "selection clears after delete");
-        }
-
-        // Case `clicking_an_overview_card_opens_that_slide_in_the_editor`.
-        {
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.deck = crate::model::seed_deck();
-            app.bootstrapped = true;
-            app.mode = Mode::Overview;
-            app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-            let mut doc = AutoCommit::new();
-            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-            app.reload(&doc);
-
-            let (_, thumbs, _) = app.compute_overview();
-            let (idx, rect) = thumbs.get(2).copied().expect("a third overview card");
-            let mut handled = false;
-            app.last_mouse = rect.center();
-            app.on_press(&mut doc, rect.center(), &mut handled);
-            assert!(handled, "clicking an overview card is handled");
-            assert_eq!(app.mode, Mode::Edit, "opening a card returns to the editor");
-            assert_eq!(
-                app.cur_slide, idx,
-                "the clicked card's slide is now current"
-            );
-        }
-    }
-
-    // --- edit-mode keyboard: nudge, Tab cycle, Delete -----------------------
-
-    // --- overview click opens the slide -------------------------------------
-
-    // === shared caret / selection core (HIG §3) ===========================
-
-    // === drag-to-delete zone ==============================================
-
-    /// Brokered text reveal and history restore rebinding notes.
-    #[test]
-    fn brokered_reveal_and_history_restore_rebind_state() {
-        // Case `brokered_text_reveal_restores_exact_slide_element_and_selection`.
-        {
-            use ui::widget::Widget as _;
-
-            let mut app = SlidesApp::sample();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            let slide_index = 2;
-            let slide = &app.deck.slides[slide_index];
-            let slide_id = slide.id.clone();
-            let element = slide
-                .elements
-                .iter()
-                .find(|element| element.kind == ElementKind::Text && !element.text.is_empty())
-                .unwrap();
-            let element_id = element.id.clone();
-            let text_len = element.text.chars().count();
-            let payload = serde_json::to_vec(&crate::actions::SlidesOperation::RevealElement {
-                slide: slide_id,
-                element: element_id.clone(),
-                edit_text: true,
-            })
-            .unwrap();
-
-            assert!(matches!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::SLIDES_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(app.cur_slide, slide_index);
-            assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
-            assert!(app.editing_text);
-            let mut doc = doc;
-            edit_frame(&mut app, &mut doc);
-            assert_eq!(
-                edit_selection(&app).chars().count(),
-                text_len,
-                "the revealed text is selected in full"
-            );
-            assert_eq!(app.mode, Mode::Edit);
-        }
-
-        // Case `history_restore_rebinds_notes_before_first_input_without_intervening_sync`.
-        {
-            let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
-            sized(&mut app, 1280., 800.);
-            SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "Selected notes");
-            let selected = doc.get_heads();
-            SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "LIVE ");
-            app.reload(&doc);
-            app.begin_notes_edit(&mut doc);
-            let old_obj = app.notes_input.bound_obj().unwrap().clone();
-            restore_deck(&mut doc, &selected);
-            app_dispatch(&mut app, &mut doc, &char_ev("!"));
-            assert_eq!(
-                SlidesDoc::load(&doc).unwrap().slides[0].notes,
-                "Selected notes!"
-            );
-            assert_eq!(doc.text(old_obj).unwrap(), "LIVE Selected notes");
-        }
-    }
-}
+#[path = "app/tests_ops.rs"]
+mod tests_ops;
 
 #[cfg(test)]
-mod history_reconcile_tests {
-    use super::*;
-    #[test]
-    fn canonical_update_interrupts_drag_before_sync_can_write_stale_cache() {
-        let mut app = SlidesApp::new(crate::assets::app_content());
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        doc.get_heads();
-        let id = app.deck.slides[0].elements[0].id.clone();
-        app.drag = Drag::Move {
-            id,
-            start: Point::ZERO,
-            orig_x: 0.,
-            orig_y: 0.,
-        };
-        SlidesDoc::set_title(&mut doc, "Restored canonical deck");
-        let heads = doc.get_heads();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.deck.title, "Restored canonical deck");
-        assert!(!app.drag.active());
-        assert_eq!(doc.get_heads(), heads);
-    }
-}
+#[path = "app/tests_present.rs"]
+mod tests_present;
 
 #[cfg(test)]
-mod history_interruption_tests {
-    use super::*;
-    use crate::model::seed_deck;
+#[path = "app/tests_layout.rs"]
+mod tests_layout;
 
-    fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
-        super::tests::restore_deck(doc, selected);
-    }
-    fn assert_save_settlement(
-        app: &mut SlidesApp,
-        doc: &AutoCommit,
-        invocation: tilo_actions::InvocationId,
-        succeeds: bool,
-        actual_error: Option<&str>,
-    ) {
-        let update = app
-            .poll_resource_operation(invocation, false, doc, &automerge::ROOT)
-            .unwrap();
-        match update {
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation: settled,
-                ..
-            } if succeeds => {
-                assert_eq!(settled, invocation);
-            }
-            tilo_actions::InvocationUpdate::Failed {
-                invocation: settled,
-                error,
-            } if !succeeds => {
-                assert_eq!(settled, invocation);
-                assert_eq!(Some(error.message.as_str()), actual_error);
-            }
-            other => panic!("unexpected export settlement: {other:?}"),
-        }
-        assert!(
-            app.poll_resource_operation(invocation, false, doc, &automerge::ROOT)
-                .is_none()
-        );
-    }
+#[cfg(test)]
+#[path = "app/tests_pointer.rs"]
+mod tests_pointer;
 
-    fn assert_export_snapshot(path: &std::path::Path, succeeds: bool) -> Option<Vec<u8>> {
-        if succeeds {
-            let bytes = std::fs::read(path).unwrap();
-            assert_eq!(
-                crate::odp::read_odp(&bytes, &ContentStore::memory())
-                    .unwrap()
-                    .title,
-                "Authorized export snapshot"
-            );
-            Some(bytes)
-        } else {
-            assert!(!path.exists());
-            None
-        }
-    }
+#[cfg(test)]
+#[path = "app/tests_text.rs"]
+mod tests_text;
 
-    fn dispatched_save_after_restore(succeeds: bool) {
-        let directory =
-            std::env::temp_dir().join(format!("slides-save-restore-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let path = if succeeds {
-            directory.join("export.odp")
-        } else {
-            directory.join("missing-parent/export.odp")
-        };
-        let mut deck = seed_deck();
-        deck.title = "Selected restored deck".into();
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &deck);
-        let selected = doc.get_heads();
-        SlidesDoc::set_title(&mut doc, "Authorized export snapshot");
-        let mut app = SlidesApp::new(crate::assets::app_content());
-        app.sync(&mut doc, &automerge::ROOT);
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::SlidesOperation::SaveAs {
-            path: Some(path.to_string_lossy().into_owned()),
-        })
-        .unwrap();
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::SLIDES_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        // Dispatch the accepted operation without draining its completion in the same sync.
-        let (save, export_path) = app.resource_file.take().unwrap();
-        assert!(save);
-        assert!(app.queue_document_save(export_path));
-        // The actual worker performs the real export. Hold only its result at the
-        // channel boundary so restoration deterministically precedes settlement.
-        let completed = app
-            .document_worker
-            .as_ref()
-            .unwrap()
-            .rx
-            .recv_timeout(tilo_test_env::hang_bound())
-            .unwrap();
-        let DocumentJobResult::Save { result, .. } = &completed else {
-            panic!("expected a save completion");
-        };
-        assert_eq!(result.is_ok(), succeeds);
-        let actual_error = result.as_ref().err().cloned();
-        let exported_bytes = assert_export_snapshot(&path, succeeds);
-        restore(&mut doc, &selected);
-        let restored_heads = doc.get_heads();
-        app.reconcile_canonical(&doc);
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
-            "canonical invalidation must not fabricate export settlement"
-        );
-        // Cancellation cannot undo a dispatched write or truthfully settle it
-        // before the worker outcome. A later invocation cannot take its slot.
-        assert!(
-            app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT)
-                .is_none()
-        );
-        let other_invocation = tilo_actions::InvocationId::new();
-        assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    other_invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::SLIDES_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        let (results, rx) = std::sync::mpsc::sync_channel(1);
-        results.send(completed).unwrap();
-        app.document_worker.as_mut().unwrap().rx = rx;
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            app.poll_resource_operation(other_invocation, false, &doc, &automerge::ROOT)
-                .is_none()
-        );
-        assert_save_settlement(
-            &mut app,
-            &doc,
-            invocation,
-            succeeds,
-            actual_error.as_deref(),
-        );
-        assert_eq!(app.deck.title, "Selected restored deck");
-        assert_eq!(doc.get_heads(), restored_heads);
-        if let Some(bytes) = exported_bytes {
-            assert_eq!(
-                std::fs::read(&path).unwrap(),
-                bytes,
-                "restore must not rerun the export"
-            );
-        }
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    /// Dispatched saves settle after restore, stale work is cancelled and stale targets are fenced.
-    #[test]
-    fn history_interruption_settles_saves_and_fences_stale_work() {
-        // Case `successful_dispatched_save_settles_after_history_restore`.
-        {
-            dispatched_save_after_restore(true);
-        }
-
-        // Case `failed_dispatched_save_reports_actual_error_after_history_restore`.
-        {
-            dispatched_save_after_restore(false);
-        }
-
-        // Case `restore_rebinds_notes_by_slide_identity_and_cancels_stale_file_and_title_work`.
-        {
-            let mut deck = seed_deck();
-            deck.slides[0].notes = "Selected notes".into();
-            let mut doc = AutoCommit::new();
-            SlidesDoc::seed(&mut doc, &deck);
-            let selected = doc.get_heads();
-            SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "LIVE ");
-            doc.get_heads();
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.sync(&mut doc, &automerge::ROOT);
-            app.cur_slide = 0;
-            app.begin_notes_edit(&mut doc);
-            let old_obj = app.notes_input.bound_obj().unwrap().clone();
-            app.active_document_generation = Some(77);
-            let (jobs, _job_receiver) = std::sync::mpsc::sync_channel(1);
-            let (results, result_receiver) = std::sync::mpsc::sync_channel(1);
-            let mut obsolete = seed_deck();
-            obsolete.title = "Obsolete worker completion".into();
-            results
-                .send(DocumentJobResult::Open {
-                    generation: 77,
-                    result: Ok(obsolete),
-                })
-                .unwrap();
-            app.document_worker = Some(DocumentWorker {
-                tx: jobs,
-                rx: result_receiver,
-            });
-            app.resource_file = Some((false, "/never/open/stale.odp".into()));
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.portal_rx = Some(rx);
-            drop(tx);
-            restore(&mut doc, &selected);
-            let heads = doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.notes_input.value(), "Selected notes");
-            assert_ne!(app.notes_input.bound_obj(), Some(&old_obj));
-            assert!(app.editing_notes);
-            assert!(app.active_document_generation.is_none());
-            assert!(app.resource_file.is_none());
-            assert!(app.portal_rx.is_none());
-            assert_eq!(doc.get_heads(), heads);
-            // Ordinary subsequent native notes/title edits stay usable across sync.
-            SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "ONE ");
-            app.reload(&doc);
-            doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
-            SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "TWO ");
-            app.reload(&doc);
-            doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.notes_input.value(), "TWO ONE Selected notes");
-            app.begin_title_edit();
-            for typed in [" one", " two"] {
-                let end = app.deck.title.chars().count();
-                SlidesDoc::splice_title(&mut doc, end, 0, typed);
-                app.reload(&doc);
-                doc.get_heads();
-                app.sync(&mut doc, &automerge::ROOT);
-            }
-            assert!(app.editing_title);
-            assert!(app.deck.title.ends_with(" one two"));
-        }
-
-        // Case `deleted_edit_target_and_stale_resource_descriptors_are_fenced_before_sync`.
-        {
-            let mut doc = AutoCommit::new();
-            let mut deck = seed_deck();
-            deck.slides.truncate(1);
-            SlidesDoc::seed(&mut doc, &deck);
-            let selected = doc.get_heads();
-            let extra = seed_deck().slides.remove(0);
-            let id = extra.id.clone();
-            deck.slides.push(extra);
-            SlidesDoc::seed(&mut doc, &deck);
-            doc.get_heads();
-            let mut app = SlidesApp::new(crate::assets::app_content());
-            app.sync(&mut doc, &automerge::ROOT);
-            app.cur_slide = 1;
-            app.begin_notes_edit(&mut doc);
-            assert!(
-                ui::resources::resources(&app, &doc)
-                    .iter()
-                    .any(|r| r.id.as_str().contains("slides"))
-            );
-            restore(&mut doc, &selected);
-            let heads = doc.get_heads();
-            assert!(
-                ui::resources::resources(&app, &doc).is_empty(),
-                "unreconciled resources cannot retain old action payloads"
-            );
-            app.sync(&mut doc, &automerge::ROOT);
-            assert!(!app.editing_notes);
-            assert!(app.deck.index_of(&id).is_none());
-            assert_eq!(doc.get_heads(), heads);
-            assert!(!ui::resources::resources(&app, &doc).is_empty());
-        }
-    }
-}
+#[cfg(test)]
+#[path = "app/tests_files.rs"]
+mod tests_files;

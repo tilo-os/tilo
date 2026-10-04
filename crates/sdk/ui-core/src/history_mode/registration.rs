@@ -251,6 +251,14 @@ impl HistoryRegistration {
         self.assets.insert(scope, source);
         Ok(self)
     }
+    /// Whether every source is a checked file of the mounted filesystem: a
+    /// root's witness of the files it names, owning no document.
+    #[must_use]
+    pub fn is_checked_files_only(&self) -> bool {
+        self.sources
+            .iter()
+            .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }))
+    }
     /// Validate the declared scope and source correspondence.
     ///
     /// # Errors

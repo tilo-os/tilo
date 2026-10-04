@@ -1,5 +1,4 @@
 use super::*;
-use automerge::transaction::Transactable;
 use std::fmt::Write as _;
 use ui::headless::Framed;
 use ui::permissions::PermissionContext;
@@ -92,8 +91,8 @@ fn images_and_comment_threads_stay_inside_their_frames() {
 fn native_edits_keep_views_provenance_and_the_real_caret_text() {
     // Phase: native_input_snapshot_reads_real_caret_text_without_mutation.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "fixture é");
         wp.scroll_y = 144.0;
@@ -124,8 +123,8 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
 
     // Phase: plain_body_edits_retain_untouched_views_and_fall_back_for_other_changes.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.inner.insert_str(&mut state.doc, "Untouched paragraph");
         wp.inner.enter(&mut state.doc);
@@ -223,7 +222,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
     // Phase: plain_body_edit_refreshes_a_shifted_virtual_window.
     {
         let mut state = large_body();
-        let mut wp = WordProcessorWidget::new();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         let old_start = wp.body_window_start;
         // The caret is still cached, but the requested scroll window has moved.
@@ -252,26 +251,6 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
             )
         );
     }
-
-    // Phase: native_document_edit_has_writer_provenance.
-    {
-        let mut wp = WordProcessorWidget::new();
-        wp.lifecycle.needs_commit = true;
-
-        let context = ui::undo::take_commit_context(&mut wp).expect("native edit provenance");
-        assert_eq!(context.action_label, "Edit document");
-        assert_eq!(
-            context.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.tilo.Writer")
-        );
-        assert_eq!(
-            context
-                .resource
-                .as_ref()
-                .map(|resource| resource.kind.as_str()),
-            Some("tilo.rich-text")
-        );
-    }
 }
 
 /// Resource navigation uses stable ranges and refuses stale ones, and each open file is its own record.
@@ -279,8 +258,8 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
 fn resources_navigate_by_stable_ranges_and_files_are_records() {
     // Phase: resource_navigation_uses_stable_ranges_and_refuses_stale_ones.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "findable text");
         wp.sync(&mut state.doc, &state.root);
@@ -296,36 +275,6 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
             wp.model().caret(),
             &before,
             "stale navigation changes nothing"
-        );
-    }
-
-    // Phase: each_open_file_is_its_own_record.
-    // Two windows on two files are two records, each identified by its file's
-    // path — what the broker routes on, and what stops two people editing
-    // unrelated documents in one room from merging.
-    {
-        let mut report = WordProcessorWidget::new();
-        assert!(
-            ui::record::capability::record_intent(&report).is_none(),
-            "an untitled document names no record"
-        );
-        let report_path = std::env::temp_dir().join("report.odt");
-        let minutes_path = std::env::temp_dir().join("minutes.odt");
-        report.set_file(report_path.clone(), WpFormat::Markdown);
-
-        let mut minutes = WordProcessorWidget::new();
-        minutes.set_file(minutes_path, WpFormat::Markdown);
-
-        let a =
-            ui::record::capability::record_intent(&report).expect("an open file names its record");
-        let b = ui::record::capability::record_intent(&minutes).expect("and so does the other");
-        assert_eq!(a.id, ui::RecordId::for_file(&report_path));
-        assert_eq!(a.kind, ui::RecordKind::new(crate::RECORD_KIND));
-        assert_ne!(a.id, b.id, "two files are never one record");
-        assert_eq!(
-            a.id.file_path().as_deref(),
-            Some(report_path.as_path()),
-            "a file record's identity is the path itself, not a handle to it"
         );
     }
 }
@@ -382,8 +331,8 @@ pub(super) fn pipeline_draw_themed(
 /// Build a small populated doc (heading + paragraph) so a draw exercises the
 /// toolbar, panels, page, body ink, selection, and bars in one pass.
 fn populated() -> (ui::State, WordProcessorWidget) {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "Title");
     wp.model_mut().enter(&mut state.doc);
@@ -571,8 +520,8 @@ fn chrome_follows_the_theme_while_paper_stays_readable() {
 fn drawing_lays_out_every_block_within_a_bounded_viewport() {
     // Phase: draw_lays_out_all_blocks.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Hello");
         wp.model_mut().enter(&mut state.doc);
@@ -585,7 +534,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
     // Phase: large_body_uses_a_bounded_viewport_cache_while_find_remains_complete.
     {
         let state = large_body();
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         let mut framed = mount(state, wp, 1000, 700);
         let (wp, state) = Framed::split(&mut framed);
 
@@ -617,7 +566,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
     // Phase: scrolling_retains_overlap_but_discards_transient_block_previews.
     {
         let mut state = large_body();
-        let mut wp = WordProcessorWidget::new();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         let retained_id = wp.blocks[100].id.clone();
         let retained_text = wp.blocks[100].text.as_ptr();
@@ -674,7 +623,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
 #[test]
 fn deep_scrolling_keeps_visible_text_loaded() {
     let state = large_body();
-    let mut wp = WordProcessorWidget::new();
+    let mut wp = WordProcessorWidget::detached();
     wp.view.auto_fit_page = false;
     let mut framed = mount(state, wp, 1000, 700);
     for zoom in [0.5, 1.0, 2.0] {
@@ -701,7 +650,7 @@ fn deep_scrolling_keeps_visible_text_loaded() {
 #[test]
 fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     let state = large_body();
-    let wp = WordProcessorWidget::new();
+    let wp = WordProcessorWidget::detached();
     let mut framed = mount(state, wp, 1000, 700);
     let (wp, _) = Framed::split(&mut framed);
     let first = wp.body_order.id_at(0).unwrap().to_owned();
@@ -748,7 +697,7 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
 #[test]
 fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
     let state = large_body();
-    let wp = WordProcessorWidget::new();
+    let wp = WordProcessorWidget::detached();
     let mut framed = mount(state, wp, 1000, 700);
     let (wp, _) = Framed::split(&mut framed);
     let first = wp.body_order.id_at(0).unwrap().to_owned();
@@ -818,8 +767,7 @@ fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::Encoded
     }
 }
 
-/// The toolbar's insert-table matches the palette spec; panel align dispatches the action and arms one
-/// undo boundary; find and replace all works; the styles panel toggles off; the link button requests the
+/// The toolbar's insert-table matches the palette spec; panel align dispatches the action; find and replace all works; the styles panel toggles off; the link button requests the
 /// canonical argument flow; the compact toolbar and More cover the full toolbar.
 #[test]
 #[allow(
@@ -832,8 +780,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // button dispatches the byte-identical `EncodedAction` the Ctrl+K palette's
     // `insert-table` spec builds for the same document.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Intro");
         wp.refresh_blocks(&mut state.doc);
@@ -867,8 +815,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // The styles panel's paragraph-align affordance dispatches an action, arms
     // exactly one undo boundary for the host, and matches the palette spec.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Body text");
         wp.refresh_blocks(&mut state.doc);
@@ -880,21 +828,10 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             .cloned()
             .expect("the panel dispatched an action");
 
-        // The affordance mutated the document and armed one undo bracket at the
-        // pre-affordance heads (what the host records as a single undo boundary).
         assert_ne!(
             state.doc.get_heads(),
             before,
             "the affordance mutated the document"
-        );
-        let bracket = ui::undo::take_committed_action(&mut wp).expect("an undo bracket was armed");
-        assert_eq!(
-            bracket, before,
-            "the boundary brackets the pre-affordance heads"
-        );
-        assert!(
-            ui::undo::take_committed_action(&mut wp).is_none(),
-            "the bracket is rising-edge (cleared on read)"
         );
 
         // It is the same EncodedAction the palette's align-center spec builds.
@@ -915,8 +852,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
 
     // Phase: find_and_replace_all_works.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "hello world hello there");
@@ -941,8 +878,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
 
     // Phase: styles_panel_toggles_off.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         assert!(
             !wp.view.styles_panel_visible,
             "the first-launch writing surface is uncluttered"
@@ -961,8 +898,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
 
     // Phase: selected_text_link_button_requests_the_canonical_argument_flow.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Read this");
         wp.sync(&mut state.doc, &state.root);
@@ -985,7 +922,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         assert_eq!(
             Widget::take_action_palette_request(&mut wp),
             Some(tilo_actions::ActionAddress::new(
-                "word-processor.document",
+                "word-processor.caret",
                 "set-hyperlink"
             ))
         );
@@ -1000,8 +937,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // the visible compact row plus its More menu covers every action exposed by
     // the full desktop toolbar.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "coverage");
 
@@ -1037,8 +974,8 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
 fn character_marks_shape_their_spans() {
     // Phase: highlight_mark_yields_background_span.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hello world");
         select_range(&mut wp, 0, 5);
@@ -1068,8 +1005,8 @@ fn character_marks_shape_their_spans() {
 
     // Phase: super_mark_yields_super_baseline.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "x2");
         select_range(&mut wp, 1, 2); // the "2"
@@ -1100,8 +1037,8 @@ fn character_marks_shape_their_spans() {
         // A wrapped multi-line paragraph: single vs double spacing on the SAME
         // production path (`block_line_spacing` → `RichTextLayout::shape`'s
         // line_height_mult). Double spacing must produce a strictly taller layout.
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         let long = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua";
         wp.model_mut().insert_str(&mut state.doc, long);
@@ -1149,8 +1086,8 @@ fn character_marks_shape_their_spans() {
 fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
     // Phase: layout_cache_reuses_unchanged_blocks_and_reshapes_after_edit.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "First paragraph here");
@@ -1208,7 +1145,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
     // Phase: draw_renders_headings_and_bold.
     {
         use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         let c = tilo_doc::model::init(&mut state.doc, &state.root);
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
@@ -1225,7 +1162,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
                 )
                 .unwrap();
         }
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         let mut framed = mount(state, wp, 1000, 700);
         let (wp, _) = Framed::split(&mut framed);
         assert!(wp.laid.len() >= 2);
@@ -1244,8 +1181,8 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
 fn the_styles_panel_picks_edits_and_commits_styles() {
     // Phase: styles_panel_renders_hits_and_picks_a_style.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "A paragraph");
         wp.view.styles_panel_visible = true;
@@ -1272,8 +1209,8 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
 
     // Phase: editing_a_style_updates_every_instance.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "first");
         wp.model_mut().enter(&mut state.doc);
@@ -1302,8 +1239,8 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
 
     // Phase: typing_into_a_numeric_field_commits.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "x");
         let mut framed = mount(state, wp, 1000, 700);
@@ -1331,8 +1268,8 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
 fn custom_styles_are_created_deleted_and_sized_in_one_place() {
     // Phase: new_style_from_this_duplicates_and_applies.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
         wp.set_styles_panel_open(true);
@@ -1459,8 +1396,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     // Asserted on `ToolAction` variants — those variants no longer exist, so a
     // regression re-adding them fails to compile against the allowed-set below.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
         // Use a desktop width at which the complete command set is genuinely
@@ -1527,7 +1464,6 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
                     | ToolAction::ToggleStyles
                     | ToolAction::ToggleRuler
                     | ToolAction::ToggleOutline
-                    | ToolAction::ToggleHistory
                     | ToolAction::InsertToc
                     | ToolAction::NewMenu
                     | ToolAction::More
@@ -1545,8 +1481,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     // Compact mode keeps More concise: two labelled entries open the shared
     // visual swatch grid, whose selections still use canonical actions.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "colour me");
         let mut framed = mount(state, wp, 1280, 760);
@@ -1581,8 +1517,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     // The compact palette's clear footer is a real, localized semantic button
     // with the same typed action route for pointer, keyboard, and AT input.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "colour me");
         let mut framed = mount(state, wp, 760, 800);
@@ -1707,8 +1643,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
     // "This paragraph" section — an instance `align` attr on the caret block,
     // read back on the production layout path — and does NOT edit the style.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "centre me");
         let mut framed = mount(state, wp, 1000, 700);
@@ -1738,8 +1674,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
     // Line spacing likewise cycles the current paragraph from the panel (1.0 →
     // 1.15), on the same `caret_line_spacing` path the layout pass reads.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "spaced");
         let mut framed = mount(state, wp, 1000, 700);
@@ -1762,8 +1698,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
     // clearly-labelled halves ("this paragraph" vs "this style"), so alignment
     // is not duplicated between the toolbar and the panel.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
         wp.set_styles_panel_open(true);
@@ -1806,8 +1742,8 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     // paragraph. Runs the production `apply_panel_hit` → `Pick` dispatch,
     // asserting on the materialized block kind, not a helper.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "make me a heading");
@@ -1873,8 +1809,8 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     // A+ writes a per-run `size` mark, distinct from (and leaving untouched) the
     // style's default size in the panel.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Hello");
         let mut framed = mount(state, wp, 1000, 700);
@@ -1902,8 +1838,8 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     // Character formatting from the toolbar still applies to the selection
     // (Bold over a select-all range), unchanged by the reorganization.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "bold me");
         wp.model_mut().select_all(&state.doc);
@@ -1952,7 +1888,7 @@ fn large_body() -> ui::State {
 /// How the large-body fixture is made: the same edits a person's typing
 /// would produce, block by block.
 fn build_large_body() -> ui::State {
-    let mut state = ui::State::new();
+    let mut state = crate::initialized_state();
     with_doc(&mut state, |dm| {
         let mut after = None;
         for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
@@ -1975,7 +1911,7 @@ fn large_body_fixture_holds_the_paragraphs_its_tests_expect() {
         return;
     }
     let mut state = large_body();
-    let mut wp = WordProcessorWidget::new();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     let blocks = wp.search_blocks(&state.doc);
     assert_eq!(blocks.len(), VIEWPORT_BLOCK_WINDOW * 4);
@@ -1991,7 +1927,7 @@ fn large_body_fixture_holds_the_paragraphs_its_tests_expect() {
 fn list_markers_indent_number_and_grow_by_level() {
     // Phase: nested_list_items_indent_and_pick_glyph_by_level.
     {
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         with_doc(&mut state, |dm| {
             let a = dm.insert_block(None, "list_item");
             dm.splice_text(&a, 0, 0, "a");
@@ -2002,7 +1938,7 @@ fn list_markers_indent_number_and_grow_by_level() {
             dm.splice_text(&cc, 0, 0, "c");
             dm.set_attr(&cc, "level", 2_i64);
         });
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, _) = Framed::split(&mut framed);
 
@@ -2021,7 +1957,7 @@ fn list_markers_indent_number_and_grow_by_level() {
 
     // Phase: ordered_list_items_number_per_level.
     {
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         with_doc(&mut state, |dm| {
             let mut prev: Option<String> = None;
             for (txt, lvl) in [
@@ -2040,7 +1976,7 @@ fn list_markers_indent_number_and_grow_by_level() {
                 prev = Some(id);
             }
         });
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, _) = Framed::split(&mut framed);
         let num = |t: &str| {
@@ -2088,8 +2024,8 @@ fn long_documents_paginate_across_discrete_pages() {
         let letter_h = MAX_PAGE_W * LETTER_RATIO;
         let page_pitch = letter_h + PAGE_GAP;
 
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // Enough paragraphs to overflow a single US-Letter page.
         for i in 0..120 {
@@ -2161,8 +2097,8 @@ fn long_documents_paginate_across_discrete_pages() {
         let letter_h = MAX_PAGE_W * LETTER_RATIO;
         let page_pitch = letter_h + PAGE_GAP;
 
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // ONE paragraph with enough words to wrap to well over a page of lines.
         let mut para = String::new();
@@ -2246,8 +2182,8 @@ fn long_documents_paginate_across_discrete_pages() {
         let letter_h = MAX_PAGE_W * LETTER_RATIO;
         let page_pitch = letter_h + PAGE_GAP;
 
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // Two short paragraphs that both fit on page 1, then force a break so the
         // third starts on a fresh page even though it would otherwise fit.
@@ -2314,8 +2250,8 @@ fn long_documents_paginate_across_discrete_pages() {
 /// the production `caret_from_pointer` path, asserts on its result.
 #[test]
 fn caret_hit_on_a_carried_line_returns_the_right_offset() {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     let mut para = String::new();
     // 400 words can fit within the page with the host font metrics.
@@ -2394,8 +2330,8 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
     {
         // A footer "Page <field>" must render "Page 1" on page 1 and "Page 2" on
         // page 2 — the field placeholder substitutes the rendered page number.
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // Build a footer with a page-number field via the production model API.
         let c = wp.model().containers.clone().unwrap();
@@ -2462,8 +2398,8 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
 
     // Phase: page_margins_persist_across_reload.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // A document with no recorded page setup uses the default margins.
         assert!(
@@ -2483,7 +2419,7 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
 
         // A fresh widget bound to the *same document* reloads the persisted page
         // setup on sync — proving margins now live in the document, not the widget.
-        let mut wp2 = WordProcessorWidget::new();
+        let mut wp2 = WordProcessorWidget::detached();
         wp2.sync(&mut state.doc, &state.root);
         assert!(
             (wp2.margins.top - 33.0).abs() < 1e-6,
@@ -2700,7 +2636,6 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
         assert!((before - after).abs() < 1e-6);
         assert!(!wp.view.auto_fit_page);
         assert_eq!(state.doc.get_heads(), heads);
-        assert_ne!(wp.save_status, DocumentSaveStatus::Modified);
         assert!(pinch(wp, state, -0.05, TouchPhase::Moved));
         assert!(wp.zoom.factor() < 1.025);
     }
@@ -2752,12 +2687,14 @@ fn native_text_shortcuts_move_by_words_and_lines() {
             let (wp, state) = Framed::split(&mut framed);
             wp.lifecycle.focused = true;
             wp.open_template_picker();
+            let heads = state.doc.get_heads();
             press_named(wp, state, NamedKey::Escape);
             press_named_with_modifiers(wp, state, NamedKey::ArrowLeft, mods.into());
             assert_eq!(wp.inner.selection_text(&state.doc), expected);
             assert_eq!(wp.inner.current_text(&state.doc), "Hello café");
-            assert!(
-                !(wp.save_status == DocumentSaveStatus::Modified),
+            assert_eq!(
+                state.doc.get_heads(),
+                heads,
                 "selection must not modify the document"
             );
         }
@@ -2989,8 +2926,8 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
     // Inserting an image via the model and running the full draw pipeline lays
     // out an `image` block and does not panic (decode → layout → draw).
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "caption above");
         wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
@@ -3009,7 +2946,7 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
     // (the requested width, clamped to the content column) — not auto-fit to the
     // intrinsic decoded size. Asserts on the production `Laid` geometry.
     {
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         with_doc(&mut state, |dm| {
             let hash = tilo_content::hash_bytes(TEST_PNG);
             dm.reference_content(&hash, &tilo_content::sniff(TEST_PNG));
@@ -3021,7 +2958,7 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
             dm.set_attr(&img, "width", 200_i64);
             dm.set_attr(&img, "height", 120_i64);
         });
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         wp.model().content_store().put(TEST_PNG).unwrap();
         let mut framed = mount(state, wp, 1100, 900);
         let (wp, _) = Framed::split(&mut framed);
@@ -3056,7 +2993,7 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
     // the content column, and the paragraph that follows is laid at a reduced width
     // (beside the image) keeping its left x-origin. Asserts on production geometry.
     {
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         with_doc(&mut state, |dm| {
             // A reference full-width paragraph (above the float) to read the content
             // column geometry from, then the floated image, then the wrapped text.
@@ -3078,7 +3015,7 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
                 "this paragraph should flow beside the floated image to its left",
             );
         });
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         wp.model().content_store().put(TEST_PNG).unwrap();
         let mut framed = mount(state, wp, 1100, 900);
         let (wp, _) = Framed::split(&mut framed);
@@ -3139,7 +3076,7 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
     // A `wrap=left` floated image pins to the LEFT edge and pushes the following
     // paragraph's text origin to the RIGHT (beside the image), still narrowed.
     {
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         with_doc(&mut state, |dm| {
             let r = dm.insert_block(None, "paragraph");
             dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
@@ -3159,7 +3096,7 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
                 "this paragraph should flow to the right of the floated image",
             );
         });
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         wp.model().content_store().put(TEST_PNG).unwrap();
         let mut framed = mount(state, wp, 1100, 900);
         let (wp, _) = Framed::split(&mut framed);
@@ -3213,8 +3150,8 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
 fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
     // Phase: zoom_scales_the_content_transform_about_the_anchor.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "zoom me");
         let mut framed = mount(state, wp, 1000, 700);
@@ -3255,8 +3192,8 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
 
     // Phase: click_maps_to_the_same_caret_under_zoom.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "first paragraph");
         wp.model_mut().enter(&mut state.doc);
@@ -3308,7 +3245,7 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
 
     // Phase: zoom_clamps_and_resets.
     {
-        let mut wp = WordProcessorWidget::new();
+        let mut wp = WordProcessorWidget::detached();
         assert!(
             (wp.zoom.factor() - 1.0).abs() < 1e-9,
             "default zoom is 100%"
@@ -3349,8 +3286,8 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
     // through the real event handler must zoom out/in/reset, proving
     // the component's hit-testing fires correctly from the toolbar band.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         let mut framed = mount(state, wp, 1000, 700);
         let (wp, state) = Framed::split(&mut framed);
@@ -3457,8 +3394,8 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
 
     // Phase: zoom_in_grows_the_scrollable_range.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         for i in 0..40 {
             wp.model_mut().insert_str(
@@ -3531,8 +3468,8 @@ fn the_toolbar_packs_or_wraps_to_its_width() {
 
     // Phase: real_toolbar_wraps_on_a_narrow_window_and_sets_canvas_offset.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hi");
         // At narrow sizes we deliberately use the focused single-row toolbar
@@ -3622,8 +3559,8 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
 
     // Phase: two_x_phone_keeps_toolbar_to_two_rows_and_document_readable.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "A readable large-text document");
@@ -3711,8 +3648,8 @@ fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
 
     // Phase: narrow_first_open_fits_the_page_until_the_user_zooms.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "Readable narrow document");
@@ -3752,8 +3689,8 @@ fn chrome_never_crowds_the_document_canvas() {
     // last button (TOC) must not overlap the swatches — proving the
     // reservation works on the real draw path, not just in the width model.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hi");
         // At a full desktop width, buttons and swatches share one row. The
@@ -3842,8 +3779,8 @@ fn chrome_never_crowds_the_document_canvas() {
 fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
     // Phase: misspelled_word_yields_a_squiggle_span_at_its_x_range.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // "teh" is a classic misspelling flagged by the builtin dictionary; the
         // surrounding words are valid, so exactly one span is expected.
@@ -3894,8 +3831,8 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
 
     // Phase: spellcheck_toggle_off_suppresses_the_squiggle_pass.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "teh");
         assert!(wp.spellcheck_enabled(), "spell-check defaults ON");
@@ -3913,8 +3850,8 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
 
     // Phase: document_autocorrect_is_reversible_at_a_space_boundary.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "teh");
 
@@ -3937,7 +3874,7 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
         // The embedded list is English; a German session asks the system Hunspell
         // `de_DE` dictionary instead, and flags nothing when that dictionary is
         // absent. Either way a correct German word must never carry a squiggle.
-        let mut wp = WordProcessorWidget::new();
+        let mut wp = WordProcessorWidget::detached();
         let english = wp.block_spell_spans("b", "Straße Mädchen");
         assert!(
             !english.is_empty(),
@@ -3953,8 +3890,8 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
 
     // Phase: spell_cache_reuses_unchanged_blocks_and_rechecks_after_edit.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "wrold");
         let id = wp.blocks[0].id.clone();
@@ -4020,8 +3957,8 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
 
     // Phase: multi_block_typing_dispatches_one_replace_selection_action.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "alpha");
         wp.model_mut().enter(&mut state.doc);
@@ -4063,8 +4000,8 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         let services = ui::host::HostServices::null()
             .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
         let _host = ui::host::enter(&services);
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
 
         // Copy without a selection remains a no-op.
@@ -4177,8 +4114,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "move");
         wp.lifecycle.focused = true;
-        wp.save_status = DocumentSaveStatus::Clean;
-        wp.lifecycle.needs_commit = false;
+        let heads = state.doc.get_heads();
         let before = wp.model().caret().offset;
         let mut handled = false;
 
@@ -4193,13 +4129,10 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
 
         assert!(handled);
         assert_eq!(wp.model().caret().offset, before - 1);
-        assert!(
-            wp.save_status == DocumentSaveStatus::Clean,
+        assert_eq!(
+            state.doc.get_heads(),
+            heads,
             "caret motion is not a content edit"
-        );
-        assert!(
-            wp.lifecycle.needs_commit,
-            "caret presence still needs publishing"
         );
     }
 }
@@ -4317,10 +4250,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
     {
         for menu_kind in 0..3 {
             let (mut state, mut wp) = bound();
-            state.commit_action(None, None);
             wp.inner.insert_str(&mut state.doc, "Keep this edit");
-            state.commit_action(None, None);
-            let containers = wp.inner.containers.clone().unwrap();
             let mut framed = mount(state, wp, 1000, 700);
             match menu_kind {
                 0 => framed.open_template_picker(),
@@ -4329,23 +4259,16 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             }
             let driver = Framed::harness_mut(&mut framed);
             driver.relayout();
-            // Ctrl+Z is the host undo binding under these conventions; on a macOS
-            // build host the default conventions bind undo to Cmd instead.
-            driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
-            driver.set_modifiers(&["ctrl".into()]);
-            driver.key("z");
-            assert_eq!(
-                tilo_doc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
-                "Keep this edit",
+            let (wp, _) = Framed::split(&mut framed);
+            assert!(
+                ui::undo::handle_local_undo_request(wp, ui::undo::UndoRequest::Undo),
                 "host undo must be captured while a menu is open"
             );
-            driver.set_modifiers(&[]);
-            driver.key("Escape");
-            driver.set_modifiers(&["ctrl".into()]);
-            driver.key("z");
-            assert_eq!(
-                tilo_doc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
-                "",
+            wp.template_picker.close();
+            wp.context_menu.close();
+            wp.style_menu.close();
+            assert!(
+                !ui::undo::handle_local_undo_request(wp, ui::undo::UndoRequest::Undo),
                 "ordinary undo resumes after dismissal"
             );
         }
@@ -4384,8 +4307,8 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
         let userdict = tmp.join("userdict.txt");
 
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.proofing.user_dictionary = Some(userdict.clone());
         wp.sync(&mut state.doc, &state.root);
         // "qwordz" is not a real word → flagged. Followed by a valid word.
@@ -4443,7 +4366,7 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         );
 
         // A widget opened later starts with the persisted word already known.
-        let mut reopened = WordProcessorWidget::new();
+        let mut reopened = WordProcessorWidget::detached();
         reopened.proofing.user_dictionary = Some(userdict);
         assert!(
             reopened.block_spell_spans("b", "qwordz quick").is_empty(),
@@ -4454,8 +4377,8 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
 
     // Phase: right_click_suggestion_replaces_the_word.
     {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         // "teh" suggests "the".
         wp.model_mut().insert_str(&mut state.doc, "teh end");
@@ -4507,8 +4430,8 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         // the test doesn't depend on the host's `LANG` (nextest runs each test
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hello world");
         let mut framed = mount(state, wp, 1000, 700);
@@ -4553,7 +4476,7 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
 /// (placeholder + `note-ref` mark), whose content is `note_body`. Returns the
 /// constructed `ui::State`.
 fn author_doc_with_footnote(body: &str, ref_idx: usize, note_body: &str) -> ui::State {
-    let mut state = ui::State::new();
+    let mut state = crate::initialized_state();
     let c = tilo_doc::model::init(&mut state.doc, &state.root);
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
@@ -4583,7 +4506,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
     {
         // Body "Hello world" with a footnote reference after "Hello" (idx 5).
         let state = author_doc_with_footnote("Hello world", 5, "A clarifying footnote.");
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, _) = Framed::split(&mut framed);
 
@@ -4635,7 +4558,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
     {
         // Two footnote references in one paragraph; the FIRST reference (by source
         // position) must be number 1 regardless of the notes' id sort order.
-        let mut state = ui::State::new();
+        let mut state = crate::initialized_state();
         let c = tilo_doc::model::init(&mut state.doc, &state.root);
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         let (n_first, n_second);
@@ -4658,7 +4581,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         }
         state.doc.commit();
 
-        let wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::detached();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, _) = Framed::split(&mut framed);
 
@@ -4688,7 +4611,7 @@ fn doc_with_paragraph(
     tilo_doc::IdGen,
     String,
 ) {
-    let mut state = ui::State::new();
+    let mut state = crate::initialized_state();
     let c = tilo_doc::model::init(&mut state.doc, &state.root);
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     let bid;
@@ -4702,7 +4625,7 @@ fn doc_with_paragraph(
         dm.splice_text(&bid, 0, 0, text);
     }
     state.doc.commit();
-    let wp = WordProcessorWidget::new();
+    let wp = WordProcessorWidget::detached();
     (wp, state, c, ids, bid)
 }
 
@@ -5341,8 +5264,8 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 /// Build a document with several headings (some on later pages) interleaved
 /// with body paragraphs, returning `(wp, state)` already drawn at `w×h`.
 fn doc_with_headings(w: u32, h: u32) -> Framed<WordProcessorWidget> {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     let add_heading = |wp: &mut WordProcessorWidget, st: &mut ui::State, text: &str, level: i64| {
         wp.model_mut().insert_str(&mut st.doc, text);
@@ -5422,7 +5345,6 @@ fn the_outline_and_toc_follow_the_headings() {
             toc.iter().any(|b| b.text.contains("Conclusion")),
             "every heading is listed"
         );
-        assert!(wp.lifecycle.needs_commit, "TOC generation is an undo point");
     }
 }
 
@@ -5586,16 +5508,15 @@ fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView>
 
 /// A blank, bound widget over a fresh `ui::State`.
 fn bound() -> (ui::State, WordProcessorWidget) {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     (state, wp)
 }
 
 #[test]
 fn hosted_lookup_offers_caret_edits_not_a_second_document() {
-    let (state, mut wp) = bound();
-    wp.mark_resource_hosted_for_test();
+    let (state, wp) = bound();
     assert!(ui::resources::resource(&wp, &state.doc, "word-processor.document").is_none());
     let hosted = ui::resources::resources(&wp, &state.doc);
     assert!(
@@ -5633,14 +5554,6 @@ fn hosted_lookup_offers_caret_edits_not_a_second_document() {
 }
 
 #[test]
-fn hosted_hyperlink_opens_on_the_caret_not_the_document_root() {
-    let (_state, mut wp) = bound();
-    assert_eq!(wp.hyperlink_palette_resource(), "word-processor.document");
-    wp.mark_resource_hosted_for_test();
-    assert_eq!(wp.hyperlink_palette_resource(), "word-processor.caret");
-}
-
-#[test]
 fn hosted_selection_publishes_set_hyperlink_on_the_caret() {
     let (mut state, mut wp) = bound();
     wp.inner.insert_str(&mut state.doc, "hello");
@@ -5648,7 +5561,6 @@ fn hosted_selection_publishes_set_hyperlink_on_the_caret() {
     wp.inner.caret.offset = 0;
     wp.inner.set_anchor();
     wp.inner.caret.offset = 5;
-    wp.mark_resource_hosted_for_test();
     let hosted = ui::resources::resources(&wp, &state.doc);
     let caret = hosted
         .iter()
@@ -5830,7 +5742,6 @@ fn templates_replace_the_document_only_when_chosen() {
             "New must ask for a destination on its first Save"
         );
         assert_eq!(wp.format, Some(WpFormat::Markdown));
-        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert_eq!(
             std::fs::read_to_string(&old_path).unwrap(),
             "Original document"
@@ -5894,23 +5805,7 @@ fn templates_replace_the_document_only_when_chosen() {
             !all_text.contains("rough draft"),
             "the prior content was replaced, not appended"
         );
-        assert!(
-            wp.save_status == DocumentSaveStatus::Modified,
-            "a template swap marks the document modified"
-        );
     }
-}
-
-// ---- autosave / crash-recovery ----------------------------------------
-
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "editor-wp-recovery-{tag}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
 }
 
 /// Drive a real keypress (single typed character) through the production
@@ -5952,240 +5847,6 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
             taffy: &taffy,
         },
     );
-}
-
-/// Recovery reuses fresh complete views and falls back for stale ones, autosave writes recovery and save
-/// clears it, check-for-recovery surfaces the banner and restore loads it, discard removes the file and
-/// banner, and the recovery path is stable and per document.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn recovery_autosaves_restores_and_discards_per_document() {
-    // Phase: recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_views.
-    {
-        for case in ["fresh", "stale", "partial"] {
-            let dir = temp_dir(&format!("recovery-views-{case}"));
-            // A partial view needs a body longer than the viewport window.
-            let (mut state, mut wp) = if case == "partial" {
-                let mut state = large_body();
-                let mut wp = WordProcessorWidget::new();
-                wp.sync(&mut state.doc, &state.root);
-                (state, wp)
-            } else {
-                bound()
-            };
-            wp.set_recovery_dir(dir.clone());
-            wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
-            wp.refresh_blocks(&mut state.doc);
-            if case == "stale" {
-                wp.inner.insert_str(&mut state.doc, " latest pending edit");
-            } else if case == "partial" {
-                assert!(wp.blocks.len() < wp.body_order.len());
-            }
-            let c = wp.inner.containers.as_ref().unwrap();
-            let expected = WpFormat::Markdown
-                .export(
-                    tilo_doc::DocRef { doc: &state.doc, c },
-                    &tilo_content::NoContent,
-                )
-                .unwrap();
-            let scans = tilo_doc::model::ordered_keys_scan_count();
-            for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
-                wp.note_edit_for_autosave(&mut state.doc);
-            }
-            assert_eq!(
-                std::fs::read(wp.recovery_path()).unwrap(),
-                expected,
-                "{case}"
-            );
-            if case == "fresh" {
-                assert_eq!(
-                    tilo_doc::model::ordered_keys_scan_count(),
-                    scans,
-                    "fresh complete views must avoid full document materialization"
-                );
-            }
-            let _ = std::fs::remove_dir_all(dir);
-        }
-    }
-
-    // Phase: autosave_writes_recovery_then_save_clears_it.
-    // Autosave: typing past the edit threshold (through the production keyboard
-    // path) writes a recovery copy to the widget's recovery dir. A real save then
-    // clears it. Asserts on file existence (the production path), not pixels.
-    {
-        let dir = temp_dir("autosave");
-        let (mut state, mut wp) = bound();
-        wp.set_recovery_dir(dir.clone());
-        // Point the document at a real (temp) save target so `save` succeeds and
-        // `recovery_path` is keyed off a stable document path.
-        let doc_path = dir.join("doc.md");
-        wp.set_file(doc_path.clone(), WpFormat::Markdown);
-
-        let recovery_path = wp.recovery_path();
-        assert!(!recovery_path.exists(), "no recovery file before any edits");
-
-        // Type more than AUTOSAVE_EDIT_THRESHOLD characters through `handle_event`.
-        for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
-            type_char(&mut wp, &mut state, 'x');
-        }
-        let c = wp.inner.containers.as_ref().unwrap();
-        assert_eq!(
-            std::fs::read(&recovery_path).unwrap(),
-            WpFormat::Markdown
-                .export(
-                    tilo_doc::DocRef { doc: &state.doc, c },
-                    &tilo_content::NoContent
-                )
-                .unwrap(),
-            "the snapshot includes the edit that reached the threshold"
-        );
-        for _ in 0..2 {
-            type_char(&mut wp, &mut state, 'x');
-        }
-        assert!(
-            recovery_path.exists(),
-            "a recovery copy is written once the edit threshold is crossed ({})",
-            recovery_path.display()
-        );
-        // The recovery copy is a faithful Markdown snapshot (re-imports our text).
-        let recovered = std::fs::read(&recovery_path).expect("read recovery copy");
-        assert!(
-            String::from_utf8_lossy(&recovered).contains('x'),
-            "the recovery copy holds the typed content"
-        );
-
-        // A real save supersedes and removes the recovery copy.
-        wp.save(&state.doc);
-        assert!(doc_path.exists(), "the document saved to its real path");
-        assert!(
-            !recovery_path.exists(),
-            "a successful save clears the recovery copy"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // Phase: check_for_recovery_surfaces_banner_and_restore_loads_it.
-    // `check_for_recovery` surfaces the banner (Restore/Discard) when a recovery
-    // copy exists for the open document; Restore re-imports its content in place.
-    {
-        let dir = temp_dir("restore");
-        let (state, mut wp) = bound();
-        wp.set_recovery_dir(dir.clone());
-        let doc_path = dir.join("notes.md");
-        wp.set_file(doc_path, WpFormat::Markdown);
-
-        // Stage a recovery copy on disk (as a previous, crashed session would).
-        let rp = wp.recovery_path();
-        std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
-        std::fs::write(&rp, b"# Recovered Heading\n\nUnsaved work\n").unwrap();
-
-        assert!(
-            wp.check_for_recovery(),
-            "a present recovery copy stages an offer"
-        );
-        assert!(wp.recovery.is_active(), "the recovery banner is now active");
-
-        // Draw so the banner's Restore/Discard buttons are registered, then click
-        // Restore through the production handler.
-        let mut framed = mount(state, wp, 1200, 700);
-        let (wp, state) = Framed::split(&mut framed);
-        let rrect = wp
-            .recovery
-            .restore_button_rect()
-            .expect("Restore button is drawn");
-        left_click(
-            wp,
-            state,
-            Point::new(
-                f64::midpoint(rrect.x0, rrect.x1),
-                f64::midpoint(rrect.y0, rrect.y1),
-            ),
-        );
-
-        assert!(
-            !wp.recovery.is_active(),
-            "the banner is dismissed after Restore"
-        );
-        assert_eq!(
-            first_block(wp, state).map(|b| b.text),
-            Some("Recovered Heading".to_string()),
-            "Restore re-imported the recovery copy into the live document"
-        );
-        assert!(!rp.exists(), "the recovery file is consumed by Restore");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // Phase: discard_recovery_removes_the_file_and_banner.
-    // Discard dismisses the banner and deletes the recovery file without touching
-    // the document.
-    {
-        let dir = temp_dir("discard");
-        let (mut state, mut wp) = bound();
-        wp.set_recovery_dir(dir.clone());
-        wp.set_file(dir.join("d.md"), WpFormat::Markdown);
-        wp.model_mut().insert_str(&mut state.doc, "Keep me");
-        wp.refresh_blocks(&mut state.doc);
-
-        let rp = wp.recovery_path();
-        std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
-        std::fs::write(&rp, b"# Stale\n").unwrap();
-        assert!(wp.check_for_recovery());
-
-        let mut framed = mount(state, wp, 1200, 700);
-        let (wp, state) = Framed::split(&mut framed);
-        let drect = wp
-            .recovery
-            .discard_button_rect()
-            .expect("Discard button is drawn");
-        left_click(
-            wp,
-            state,
-            Point::new(
-                f64::midpoint(drect.x0, drect.x1),
-                f64::midpoint(drect.y0, drect.y1),
-            ),
-        );
-
-        assert!(!wp.recovery.is_active(), "Discard dismisses the banner");
-        assert!(!rp.exists(), "Discard deletes the recovery file");
-        assert_eq!(
-            first_block(wp, state).map(|b| b.text),
-            Some("Keep me".to_string()),
-            "Discard leaves the open document untouched"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // Phase: widget_recovery_path_is_stable_and_per_document.
-    // The recovery path is stable for a given document and distinct per document.
-    {
-        let dir = temp_dir("stable");
-        let mut a = WordProcessorWidget::new();
-        a.set_recovery_dir(dir.clone());
-        a.set_file(std::path::PathBuf::from("/docs/a.md"), WpFormat::Markdown);
-        let pa1 = a.recovery_path();
-        let pa2 = a.recovery_path();
-        assert_eq!(pa1, pa2, "stable across calls for the same document");
-        assert!(
-            pa1.starts_with(&dir),
-            "honours the widget's recovery dir override"
-        );
-
-        let mut b = WordProcessorWidget::new();
-        b.set_recovery_dir(dir);
-        b.set_file(std::path::PathBuf::from("/docs/b.md"), WpFormat::Markdown);
-        assert_ne!(
-            pa1,
-            b.recovery_path(),
-            "different documents get different recovery files"
-        );
-    }
 }
 
 // ---- horizontal ruler ----------------------------------------------------
@@ -6361,7 +6022,7 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
         // Release persists into the document (a fresh widget reloads the value).
         wp.ruler_drag_release(&mut state.doc);
         assert!(!wp.ruler.is_dragging(), "drag ended on release");
-        let mut wp2 = WordProcessorWidget::new();
+        let mut wp2 = WordProcessorWidget::detached();
         wp2.sync(&mut state.doc, &state.root);
         assert!(
             (wp2.margins.left - wp.margins.left).abs() < 1e-6,
@@ -6545,8 +6206,8 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     // The accessibility tree's root is a focusable, multiline [`Role::Document`].
     {
         use ui::a11y::Role;
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
 
         let tree = wp.accessibility_tree();
@@ -6584,8 +6245,8 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     // paragraph node carrying the paragraph text, under the document root.
     {
         use ui::a11y::Role;
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
 
         // First block: a level-1 heading "Title".
@@ -6672,8 +6333,8 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         );
 
         // And a genuinely-inserted image surfaces as an Image node in the full tree.
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "before");
         wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
@@ -6690,8 +6351,8 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     // [`Role::Table`] node (not as loose top-level blocks).
     {
         use ui::a11y::Role;
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_table(&mut state.doc, 2, 2);
         wp.sync(&mut state.doc, &state.root);
@@ -6840,7 +6501,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret(peer.into(), block_presence_key(false, &block_id), 3);
+        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
         presence.set_display_name(ui::permissions::UserId(peer.into()), "Xaver");
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
@@ -6862,7 +6523,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret(peer.into(), block_presence_key(false, &block_id), 3);
+        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1);
@@ -6887,7 +6548,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
 
         let mut presence = PresenceCtx::empty();
         // Place "alice"'s caret 3 bytes into the first block.
-        presence.set_remote_caret("alice".into(), block_presence_key(false, &block_id), 3);
+        presence.set_remote_caret("alice".into(), block_presence_key(&block_id), 3);
 
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1, "one remote caret resolved");
@@ -6931,7 +6592,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
 
         let mut presence = PresenceCtx::empty();
         // "bob" selects bytes [0, 4) of the first block.
-        presence.set_remote_selection("bob".into(), block_presence_key(false, &block_id), 0, 4);
+        presence.set_remote_selection("bob".into(), block_presence_key(&block_id), 0, 4);
 
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "a selection yields no bare caret");
@@ -6959,7 +6620,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
 
         let mut presence = PresenceCtx::empty();
         presence.selections.insert(
-            block_presence_key(false, &block_id),
+            block_presence_key(&block_id),
             vec![(UserId("bob".into()), SelectionRange { start: 2, end: 2 })],
         );
 
@@ -6988,8 +6649,8 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         let b1 = wp.laid[1].id.clone();
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("alice".into(), block_presence_key(false, &b0), 1);
-        presence.set_remote_caret("bob".into(), block_presence_key(false, &b1), 1);
+        presence.set_remote_caret("alice".into(), block_presence_key(&b0), 1);
+        presence.set_remote_caret("bob".into(), block_presence_key(&b1), 1);
 
         let (carets, _selections) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 2, "both peers' carets resolved");
@@ -7016,7 +6677,7 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         let block_id = first_block_id(&framed);
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("charlie".into(), block_presence_key(false, &block_id), 2);
+        presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
 
         // Run the REAL five-pass draw with the populated presence (the same call
         // the App makes each frame). It must paint without panicking.
@@ -7063,7 +6724,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
             Some((key, ui::PresencePayload::Caret { pos })) => {
                 assert_eq!(
                     key,
-                    block_presence_key(false, &block),
+                    block_presence_key(&block),
                     "keyed to the caret's block"
                 );
                 // The caret block text is ASCII here, so byte offset == char offset.
@@ -7089,7 +6750,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         let block = wp.model().caret().block.clone();
         match ui::presence::capability::presence_payload(wp) {
             Some((key, ui::PresencePayload::Selection { start, end })) => {
-                assert_eq!(key, block_presence_key(false, &block));
+                assert_eq!(key, block_presence_key(&block));
                 assert_eq!((start, end), (1, 4), "selection reported as a byte range");
             }
             other => panic!("expected a Selection payload, got {other:?}"),
@@ -7212,679 +6873,6 @@ fn the_image_portal_inserts_only_resolved_picks() {
             0,
             "a cancel inserts nothing"
         );
-    }
-}
-
-/// Save As writes a real round-tripping docx; failed Save As and open keep the destination and draft; new
-/// and open do not replace a modified draft without a decision; cancelled or failed saves keep the pending
-/// open; cancelling a resource open closes its prompt; save-then-open writes first; a failed save is
-/// visible; undo after open never takes back the file.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn file_ux_never_replaces_a_draft_without_a_decision() {
-    // Phase: save_as_writes_a_real_docx_that_round_trips.
-    // A docx opened → edited → **Save As** to a new `.docx` writes a *real* Word
-    // file (an OOXML ZIP, `PK` signature) that round-trips back through the
-    // opener with the edit intact — proving the portal Save-As path drives the
-    // qdoc docx codec at the user-chosen path.
-    {
-        let dir = std::env::temp_dir();
-        let pid = std::process::id();
-        let src = dir.join(format!("wp-src-{pid}.docx"));
-        let dest = dir.join(format!("wp-dest-{pid}.docx"));
-
-        // Author a real source .docx via the codec (a seeded doc → save_document).
-        {
-            let mut state = ui::State::new();
-            with_doc(&mut state, |dm| {
-                let b = dm.insert_block(None, "paragraph");
-                dm.splice_text(&b, 0, 0, "Hello docx");
-            });
-            crate::save_document(&state, &src, WpFormat::Docx, &tilo_content::NoContent)
-                .expect("write source docx");
-        }
-        assert!(
-            std::fs::read(&src).unwrap().starts_with(b"PK"),
-            "the source is a real docx (OOXML zip)"
-        );
-
-        // Open it into a running editor and confirm the text came through.
-        let (mut state, mut wp, fmt) =
-            crate::open_document(&src, tilo_content::ContentStore::memory())
-                .expect("open source docx");
-        assert_eq!(fmt, WpFormat::Docx);
-        wp.sync(&mut state.doc, &state.root);
-        assert!(
-            body_text(&wp, &state)
-                .iter()
-                .any(|t| t.contains("Hello docx")),
-            "opened body carries the source text"
-        );
-
-        // Edit, then Save As to a NEW .docx through the real portal drain path.
-        wp.model_mut().focus_body(&mut state.doc); // seat the caret on a real block
-        wp.model_mut().insert_str(&mut state.doc, "EDITED ");
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(dest.clone()));
-        wp.request_save_as();
-        wp.sync(&mut state.doc, &state.root);
-
-        // Save As adopted the chosen path/format and cleared the in-flight request.
-        assert!(wp.portal_rx.is_none(), "the Save-As request drained");
-        assert_eq!(
-            wp.path.as_deref(),
-            Some(dest.as_path()),
-            "path is now the Save-As target"
-        );
-        assert_eq!(
-            wp.format,
-            Some(WpFormat::Docx),
-            "format follows the chosen extension"
-        );
-        assert!(
-            matches!(wp.toast.as_ref(), Some((_, ToastKind::Success))),
-            "a completed save is visibly confirmed"
-        );
-
-        // The written file is a real docx (ZIP signature) — not markdown ...
-        let written = std::fs::read(&dest).expect("Save As wrote the destination");
-        assert!(
-            written.starts_with(b"PK"),
-            "Save As wrote a real docx zip, not a markdown fallback"
-        );
-        // ... and it round-trips back through the opener with both texts intact.
-        let (mut state2, mut wp2, fmt2) =
-            crate::open_document(&dest, tilo_content::ContentStore::memory())
-                .expect("reopen the saved docx");
-        assert_eq!(fmt2, WpFormat::Docx);
-        wp2.sync(&mut state2.doc, &state2.root); // bind containers before reading
-        let reopened = body_text(&wp2, &state2).join("\n");
-        assert!(
-            reopened.contains("Hello docx"),
-            "original text survives: {reopened:?}"
-        );
-        assert!(
-            reopened.contains("EDITED"),
-            "the edit survives: {reopened:?}"
-        );
-
-        let _ = std::fs::remove_file(&src);
-        let _ = std::fs::remove_file(&dest);
-    }
-
-    // Phase: file_ux_failed_save_as_keeps_the_original_destination.
-    {
-        let (mut state, mut wp) = bound();
-        wp.model_mut().insert_str(&mut state.doc, "My draft");
-        let dir = std::env::temp_dir().join(format!("wp-save-as-failure-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let original = dir.join("original.md");
-        std::fs::write(&original, "Original on disk").unwrap();
-        wp.set_file(original.clone(), WpFormat::Markdown);
-        wp.save_status = DocumentSaveStatus::Modified;
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(
-            dir.join("missing-parent").join("new.docx"),
-        ));
-        wp.request_save_as();
-        wp.sync(&mut state.doc, &state.root);
-        assert_eq!(wp.path, Some(original.clone()));
-        assert_eq!(wp.format, Some(WpFormat::Markdown));
-        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-        assert_eq!(
-            std::fs::read_to_string(&original).unwrap(),
-            "Original on disk"
-        );
-        assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    // Phase: file_ux_failed_open_reports_an_error_without_changing_the_draft.
-    {
-        let (mut state, mut wp) = bound();
-        wp.model_mut().insert_str(&mut state.doc, "My draft");
-        let missing = std::env::temp_dir().join(format!("wp-missing-{}.docx", std::process::id()));
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(missing));
-        wp.request_open_document();
-        wp.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
-            Some("My draft".into())
-        );
-        assert!(
-            matches!(wp.toast, Some((_, ToastKind::Error))),
-            "failed Open needs visible feedback"
-        );
-    }
-
-    // Phase: file_ux_new_does_not_replace_a_modified_draft_without_a_decision.
-    {
-        let (mut state, mut wp) = bound();
-        wp.inner.insert_str(&mut state.doc, "Unsaved work");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
-        wp.open_template_picker();
-        press_named(wp, state, NamedKey::ArrowDown);
-        press_named(wp, state, NamedKey::Enter);
-        assert_eq!(
-            first_block(wp, state).map(|b| b.text),
-            Some("Unsaved work".into())
-        );
-        press_named(wp, state, NamedKey::Escape);
-        assert_eq!(
-            first_block(wp, state).map(|b| b.text),
-            Some("Unsaved work".into())
-        );
-        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-    }
-
-    // Phase: file_ux_open_does_not_replace_a_modified_draft_without_a_decision.
-    {
-        let (mut state, mut wp) = bound();
-        wp.inner.insert_str(&mut state.doc, "Unsaved work");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let picked = std::env::temp_dir().join(format!("wp-guard-open-{}.md", std::process::id()));
-        std::fs::write(&picked, "Other file").unwrap();
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(picked.clone()));
-        wp.request_open_document();
-        wp.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
-            Some("Unsaved work".into())
-        );
-        assert!(wp.path.is_none());
-        let _ = std::fs::remove_file(picked);
-    }
-
-    // Phase: file_ux_cancelled_or_failed_save_keeps_the_pending_open_and_draft.
-    {
-        for failure in 0..3 {
-            let (mut state, mut wp) = bound();
-            wp.inner.insert_str(&mut state.doc, "Unsaved draft");
-            wp.save_status = DocumentSaveStatus::Modified;
-            let invocation = tilo_actions::InvocationId::new();
-            wp.resource_file_invocation = Some(invocation);
-            wp.stage_replacement(PendingReplacement::Open(PathBuf::from(
-                "never-open-this.md",
-            )));
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            match failure {
-                0 => recorder.respond_to_pick(portal::PortalOutcome::Cancelled),
-                1 => recorder.respond_to_pick(portal::PortalOutcome::Failed("test failure".into())),
-                _ => {
-                    // A chooser whose worker hung up without answering.
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    drop(sender);
-                    wp.portal_purpose = Some(PortalPurpose::SaveAs);
-                    wp.portal_rx = Some(receiver);
-                }
-            }
-            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
-            wp.sync(&mut state.doc, &state.root);
-            assert_eq!(
-                first_block(&wp, &state).map(|b| b.text),
-                Some("Unsaved draft".into())
-            );
-            assert!((wp.save_status == DocumentSaveStatus::Modified) && wp.path.is_none());
-            assert!(wp.unsaved_changes.is_open() && wp.pending_replacement.is_some());
-            assert!(
-                wp.poll_resource_operation(invocation, false, &state.doc, &state.root)
-                    .is_none()
-            );
-            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
-            assert!(matches!(
-                wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-        }
-    }
-
-    // Phase: file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt.
-    {
-        let (mut state, mut wp) = bound();
-        wp.inner.insert_str(&mut state.doc, "Keep this draft");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let invocation = tilo_actions::InvocationId::new();
-        wp.pending_resource_open = Some((invocation, PathBuf::from("never-open.md")));
-        wp.sync(&mut state.doc, &state.root);
-        assert!(wp.unsaved_changes.is_open());
-        assert!(matches!(
-            wp.poll_resource_operation(invocation, true, &state.doc, &state.root),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(!wp.unsaved_changes.is_open() && wp.pending_replacement.is_none());
-        assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
-            Some("Keep this draft".into())
-        );
-        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-    }
-
-    // Phase: file_ux_save_then_open_writes_the_draft_before_replacing_it.
-    {
-        for corrupt in [false, true] {
-            let (mut state, mut wp) = bound();
-            wp.inner.insert_str(&mut state.doc, "Unsaved draft");
-            wp.save_status = DocumentSaveStatus::Modified;
-            let dir = std::env::temp_dir().join(format!(
-                "wp-save-before-open-{}-{corrupt}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            let target = dir.join(if corrupt { "target.docx" } else { "target.md" });
-            std::fs::write(&target, "Other document").unwrap();
-            let saved = dir.join("saved-draft.md");
-            let invocation = tilo_actions::InvocationId::new();
-            wp.resource_file_invocation = Some(invocation);
-            wp.stage_replacement(PendingReplacement::Open(target.clone()));
-            let (_host, recorder) = host_answering(portal::PortalOutcome::Opened(saved.clone()));
-            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
-            assert_eq!(pick_titles(&recorder), ["Save as"]);
-            wp.sync(&mut state.doc, &state.root);
-            assert!(
-                std::fs::read_to_string(&saved)
-                    .unwrap()
-                    .contains("Unsaved draft")
-            );
-            assert_eq!(wp.path, Some(if corrupt { saved } else { target }));
-            assert_eq!(
-                first_block(&wp, &state).map(|b| b.text),
-                Some(
-                    if corrupt {
-                        "Unsaved draft"
-                    } else {
-                        "Other document"
-                    }
-                    .into()
-                )
-            );
-            let result = wp.poll_resource_operation(invocation, false, &state.doc, &state.root);
-            if corrupt {
-                assert!(matches!(
-                    result,
-                    Some(tilo_actions::InvocationUpdate::Failed { .. })
-                ));
-                assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
-            } else {
-                assert!(matches!(
-                    result,
-                    Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-                ));
-            }
-            assert!(
-                wp.poll_resource_operation(invocation, false, &state.doc, &state.root)
-                    .is_none()
-            );
-            assert!(!wp.unsaved_changes.is_open() && wp.pending_replacement.is_none());
-            let _ = std::fs::remove_dir_all(dir);
-        }
-    }
-
-    // Phase: failed_save_is_visible_and_keeps_the_document_modified.
-    {
-        let (mut state, mut wp) = bound();
-        wp.model_mut().insert_str(&mut state.doc, "unsaved work");
-        wp.save_status = DocumentSaveStatus::Modified;
-        // Writing bytes to a directory reliably fails without relying on file
-        // permissions (the test suite may run as a privileged user).
-        wp.set_file(std::env::temp_dir(), WpFormat::Markdown);
-        wp.write_to_current_path(&state.doc);
-
-        assert!(
-            wp.save_status == DocumentSaveStatus::Modified,
-            "a failed save never clears the dirty state"
-        );
-        assert!(
-            matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))),
-            "the user sees an error toast instead of an stderr-only failure"
-        );
-    }
-
-    // Phase: undo_after_opening_a_file_takes_back_the_edit_and_never_the_file.
-    {
-        let dir = temp_dir("open-then-undo");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.rtf");
-        std::fs::write(
-            &source,
-            br"{\rtf1\ansi Plain {\b bold} and {\i italic} words\par A {\ul second} paragraph\par}",
-        )
-        .unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        // Opening leaves nothing pending: the file is the document's committed starting point.
-        assert_eq!(state.doc.pending_ops(), 0);
-        let opened = body_content(&state.doc);
-        assert!(
-            opened
-                .iter()
-                .any(|(_, marks)| marks.iter().any(|m| m.name == "strong")),
-            "the file's formatting came through: {opened:?}"
-        );
-
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "edited ");
-        state.commit_action(None, None);
-        let edited = body_content(&state.doc);
-        assert_ne!(edited, opened);
-
-        assert!(state.undo(None, None).is_some(), "the edit is undoable");
-        assert_eq!(
-            body_content(&state.doc),
-            opened,
-            "undo restores the file as opened"
-        );
-        assert!(
-            state.undo(None, None).is_none(),
-            "there is nothing before the file to undo"
-        );
-        assert_eq!(body_content(&state.doc), opened);
-        assert!(state.redo(None, None).is_some());
-        assert_eq!(
-            body_content(&state.doc),
-            edited,
-            "redo brings the edit back"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-/// Each body block's text and marks, what a reader sees of the document.
-fn body_content(doc: &automerge::AutoCommit) -> Vec<(String, Vec<tilo_doc::MarkSpan>)> {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("qdoc schema");
-    tilo_doc::model::materialize(doc, &c)
-        .blocks
-        .into_iter()
-        .map(|b| (b.text, b.marks))
-        .collect()
-}
-
-/// Failed and export-only Save As preserve source identity and recovery; open-pick offers destination
-/// recovery and replaces in place; failed open preserves bytes, caret and identity; import does not reuse
-/// a deleted block id; a read-only destination preserves both files.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn save_and_open_preserve_identity_recovery_and_bytes() {
-    // Phase: failed_save_as_preserves_source_identity_and_recovery_for_picker_and_action.
-    {
-        let dir = temp_dir("failed-save-as");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        std::fs::write(&source, b"original source").unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "edited ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let recovery = wp.recovery_path();
-        std::fs::write(&recovery, b"unsaved recovery").unwrap();
-
-        for via_action in [false, true] {
-            // A directory cannot be replaced by a document, on every platform.
-            if via_action {
-                let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
-                    path: Some(dir.to_string_lossy().into_owned()),
-                })
-                .unwrap();
-                assert!(
-                    wp.start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            tilo_actions::InvocationId::new(),
-                            tilo_actions::OperationKind::Effect,
-                            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                            &payload
-                        ),
-                        &mut state.doc,
-                        &state.root
-                    )
-                    .is_err()
-                );
-            } else {
-                let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(dir.clone()));
-                wp.request_save_as();
-                wp.sync(&mut state.doc, &state.root);
-            }
-            assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-            assert_eq!(wp.format, Some(WpFormat::Markdown));
-            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-            assert_eq!(std::fs::read(&source).unwrap(), b"original source");
-            assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
-        }
-        // A subsequent ordinary Save still updates the original document.
-        wp.try_write_to_current_path(&state.doc).unwrap();
-        assert!(std::fs::read_to_string(&source).unwrap().contains("edited"));
-        assert!(!recovery.exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: export_only_save_as_preserves_editable_path_and_recovery.
-    {
-        let dir = temp_dir("export-only-save-as");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        std::fs::write(&source, b"original source").unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "edited ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let recovery = wp.recovery_path();
-        std::fs::write(&recovery, b"unsaved recovery").unwrap();
-        for extension in ["pdf", "epub"] {
-            let destination = dir.join(format!("export.{extension}"));
-            let (_host, _recorder) =
-                host_answering(portal::PortalOutcome::Opened(destination.clone()));
-            wp.request_save_as();
-            wp.sync(&mut state.doc, &state.root);
-            let bytes = std::fs::read(destination).unwrap();
-            assert!(bytes.starts_with(if extension == "pdf" { b"%PDF" } else { b"PK" }));
-            assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-            assert_eq!(wp.format, Some(WpFormat::Markdown));
-            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-            assert_eq!(std::fs::read(&source).unwrap(), b"original source");
-            assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: open_pick_offers_destination_recovery_and_preserves_previous_recovery.
-    {
-        let dir = temp_dir("open-recovery");
-        std::fs::create_dir_all(&dir).unwrap();
-        let (mut state, mut wp) = bound();
-        wp.set_recovery_dir(dir.clone());
-        wp.set_file(dir.join("previous.md"), WpFormat::Markdown);
-        let previous_recovery = wp.recovery_path();
-        std::fs::write(&previous_recovery, b"previous unsaved work").unwrap();
-        assert!(wp.check_for_recovery());
-        let destination = dir.join("next.md");
-        std::fs::write(&destination, b"saved destination").unwrap();
-        let destination_recovery = wp.recovery.path_for(Some(&destination));
-        std::fs::write(&destination_recovery, b"destination unsaved work").unwrap();
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(destination.clone()));
-        wp.request_open_document();
-        wp.sync(&mut state.doc, &state.root);
-        assert_eq!(wp.path.as_deref(), Some(destination.as_path()));
-        assert!(wp.recovery.is_active());
-        assert_eq!(
-            std::fs::read(&destination_recovery).unwrap(),
-            b"destination unsaved work"
-        );
-        assert_eq!(
-            std::fs::read(&previous_recovery).unwrap(),
-            b"previous unsaved work"
-        );
-        assert!(
-            body_text(&wp, &state)
-                .join("\n")
-                .contains("saved destination")
-        );
-
-        let clean = dir.join("clean.md");
-        std::fs::write(&clean, b"clean document").unwrap();
-        wp.try_open_document_in_place(&mut state.doc, &clean)
-            .unwrap();
-        assert!(
-            !wp.recovery.is_active(),
-            "the previous document's offer must not follow the next document"
-        );
-        assert!(destination_recovery.exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: failed_open_preserves_document_bytes_caret_and_file_identity.
-    {
-        let dir = temp_dir("failed-open");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        std::fs::write(&source, b"original source").unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "unsaved ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let pending = state.doc.pending_ops();
-        assert!(
-            pending > 0,
-            "the failed import must preserve uncommitted edits"
-        );
-        let before = state.doc.clone().save();
-        let caret = wp.model_mut().caret().clone();
-        for extension in ["docx", "odt", "pdf", "epub"] {
-            let corrupt = dir.join(format!("corrupt.{extension}"));
-            std::fs::write(&corrupt, b"not a valid document archive").unwrap();
-            assert!(
-                wp.try_open_document_in_place(&mut state.doc, &corrupt)
-                    .is_err()
-            );
-            assert_eq!(
-                state.doc.clone().save(),
-                before,
-                "failed {extension} import mutated the document"
-            );
-            assert_eq!(state.doc.pending_ops(), pending);
-            assert_eq!(wp.model_mut().caret(), &caret);
-            assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-            assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
-            assert_eq!(std::fs::read(&source).unwrap(), b"original source");
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: successful_import_does_not_reuse_deleted_highest_block_id.
-    {
-        let (mut state, mut wp) = bound();
-        wp.model_mut().insert_str(&mut state.doc, "keep");
-        wp.model_mut().enter(&mut state.doc);
-        let deleted_id = wp.model_mut().caret().block.clone();
-        wp.model_mut().backspace(&mut state.doc);
-        let containers = tilo_doc::model::open(&state.doc, &state.root).unwrap();
-        assert!(!tilo_doc::model::blocks_in_order(&state.doc, &containers).contains(&deleted_id));
-
-        assert!(wp.model_mut().replace_with_format(
-            &mut state.doc,
-            b"replacement document",
-            WpFormat::Markdown,
-        ));
-        let replacement_ids = tilo_doc::model::blocks_in_order(&state.doc, &containers);
-        assert!(!replacement_ids.is_empty());
-        assert!(
-            !replacement_ids.contains(&deleted_id),
-            "a deleted block's durable identity must not be resurrected by import"
-        );
-        assert!(
-            wp.model_mut()
-                .block_texts(&state.doc)
-                .join("\n")
-                .contains("replacement document")
-        );
-    }
-
-    // Phase: readonly_destination_save_as_preserves_source_and_destination.
-    {
-        let dir = temp_dir("readonly-save-as");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        let destination = dir.join("protected.md");
-        std::fs::write(&source, b"source bytes").unwrap();
-        std::fs::write(&destination, b"protected bytes").unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "edited ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let original_permissions = std::fs::metadata(&destination).unwrap().permissions();
-        let mut protected_permissions = original_permissions.clone();
-        protected_permissions.set_readonly(true);
-        std::fs::set_permissions(&destination, protected_permissions).unwrap();
-        let result = wp.try_write_to_path(&state.doc, &destination, WpFormat::Markdown);
-        // Restore the fixture attribute before asserting so failures leave no
-        // read-only temporary files behind.
-        std::fs::set_permissions(&destination, original_permissions).unwrap();
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
-        assert_eq!(std::fs::read(&destination).unwrap(), b"protected bytes");
-        assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-        assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: open_pick_replaces_the_document_in_place.
-    // A resolved **Open** pick replaces the running document in place: a blank
-    // editor, handed a chosen `.docx` on the drain path, adopts that file's text,
-    // path, and format — the Ctrl+O path, exercised without a live portal.
-    {
-        let dir = std::env::temp_dir();
-        let src = dir.join(format!("wp-open-{}.docx", std::process::id()));
-        {
-            let mut state = ui::State::new();
-            with_doc(&mut state, |dm| {
-                let b = dm.insert_block(None, "paragraph");
-                dm.splice_text(&b, 0, 0, "Opened via portal");
-            });
-            crate::save_document(&state, &src, WpFormat::Docx, &tilo_content::NoContent)
-                .expect("write source docx");
-        }
-
-        // Start from a blank, untitled editor.
-        let (mut state, mut wp) = bound();
-        wp.model_mut().insert_str(&mut state.doc, "stale content");
-        assert!(wp.path.is_none(), "untitled before opening");
-
-        // Ctrl+O's request, answered by the host chooser with the file.
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(src.clone()));
-        wp.request_open_document();
-        wp.sync(&mut state.doc, &state.root);
-
-        let body = body_text(&wp, &state).join("\n");
-        assert!(
-            body.contains("Opened via portal"),
-            "opened file's text is now shown: {body:?}"
-        );
-        assert!(
-            !body.contains("stale content"),
-            "the previous document was replaced"
-        );
-        assert_eq!(
-            wp.path.as_deref(),
-            Some(src.as_path()),
-            "opened path adopted"
-        );
-        assert_eq!(wp.format, Some(WpFormat::Docx), "opened format adopted");
-
-        let _ = std::fs::remove_file(&src);
     }
 }
 
@@ -8039,8 +7027,8 @@ fn dropped_and_selected_images_expose_their_controls() {
 /// so the panel builds its controls, then return the widget + state ready for
 /// the resize / flip tests.
 fn doc_with_selected_image() -> (Framed<WordProcessorWidget>, String) {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "caption");
     wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
@@ -8192,8 +7180,8 @@ fn image_controls_are_named_and_resize_and_flip() {
 
 /// A doc with one custom paragraph style applied to its (only) paragraph.
 fn doc_with_custom_style() -> (Framed<WordProcessorWidget>, String) {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut state.doc, "styled paragraph");
@@ -8608,20 +7596,9 @@ fn menu_ux_review_shots() {
         ("large", Theme::dark().with_text_scale(2.0), 480),
     ] {
         let (mut state, mut wp) = bound();
-        wp.inner.insert_str(&mut state.doc, "Keep my unsaved draft");
-        wp.save_status = DocumentSaveStatus::Modified;
-        wp.request_template(&mut state.doc, crate::Template::Report);
+        wp.inner.insert_str(&mut state.doc, "Keep my draft");
         let mut framed = mount_themed(state, wp, width, 600, &theme);
-        render_review_png_themed(
-            &mut framed,
-            width,
-            600,
-            dir,
-            &format!("unsaved-{name}"),
-            &theme,
-        );
         let (wp, state) = Framed::split(&mut framed);
-        wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
         let point = first_block_start_point(wp);
         wp.open_context_menu(&state.doc, point, [num::f32_of_u32(width) - 2.0, 598.0]);
         wp.context_menu.focus_first_action();
@@ -8748,8 +7725,8 @@ fn render_review_shots() {
 #[ignore = "writes review PNGs and asserts nothing; run with TILO_WP_REVIEW_SHOTS=<dir> and --ignored"]
 fn render_responsive_review_shots() {
     let dir = review_shot_dir();
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(
         &mut state.doc,
@@ -8789,271 +7766,6 @@ fn render_responsive_review_shots() {
         &dir,
         "responsive-760-highlight-palette",
     );
-}
-
-/// A canonical save preserves the symlink target and private permissions, an unsupported link Save As
-/// keeps the source, and the close requirement survives cancelled saves and detects host undo.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn canonical_saves_preserve_links_permissions_and_close_requirements() {
-    // Phase: canonical_save_preserves_symlink_target_and_private_permissions.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-        let dir = temp_dir("save-link-permissions");
-        std::fs::create_dir_all(&dir).unwrap();
-        let target = dir.join("private.md");
-        let link = dir.join("document.md");
-        std::fs::write(&target, b"original source").unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
-        symlink("private.md", &link).unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&link, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "edited ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let payload =
-            serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
-                .unwrap();
-        wp.start_operation(
-            &ui::widget::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut state.doc,
-            &state.root,
-        )
-        .unwrap();
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            std::fs::read_link(&link).unwrap(),
-            std::path::PathBuf::from("private.md")
-        );
-        assert!(
-            String::from_utf8(std::fs::read(&target).unwrap())
-                .unwrap()
-                .contains("edited")
-        );
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
-            0o600
-        );
-        assert_eq!(wp.path.as_deref(), Some(link.as_path()));
-        assert_eq!(wp.save_status, DocumentSaveStatus::Clean);
-        // The public export/save API has the same target and permission contract.
-        crate::save_document(&state, &link, WpFormat::Markdown, &tilo_content::NoContent).unwrap();
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
-            0o600
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: unsupported_link_save_as_keeps_source_identity_and_bytes.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        let dir = temp_dir("save-unsupported-link");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        let target = dir.join("target.md");
-        let linked = dir.join("hardlink.md");
-        let dangling = dir.join("dangling.md");
-        std::fs::write(&source, b"source bytes").unwrap();
-        std::fs::write(&target, b"target bytes").unwrap();
-        std::fs::hard_link(&target, &linked).unwrap();
-        symlink("missing.md", &dangling).unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "edited ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        for destination in [&linked, &dangling] {
-            let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
-                path: Some(destination.to_string_lossy().into_owned()),
-            })
-            .unwrap();
-            assert!(
-                wp.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut state.doc,
-                    &state.root
-                )
-                .is_err()
-            );
-            assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-            assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
-            assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
-            assert_eq!(std::fs::read(&linked).unwrap(), b"target bytes");
-            assert!(
-                std::fs::symlink_metadata(&dangling)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink()
-            );
-            assert!(!dir.join("missing.md").exists());
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: close_requirement_survives_cancelled_save_as_and_failed_canonical_save.
-    {
-        let dir = temp_dir("close-admission");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        std::fs::write(&source, "original source").unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
-        wp.model_mut().insert_str(&mut state.doc, "unsaved ");
-        wp.save_status = DocumentSaveStatus::Modified;
-        let before = ui::component_lifecycle::unsaved_documents(&wp, &state.doc);
-        assert_eq!(before.len(), 1);
-        let pending_ops = state.doc.pending_ops();
-        let invocation = tilo_actions::InvocationId::new();
-        wp.resource_file_invocation = Some(invocation);
-        let (_host, _recorder) = host_answering(portal::PortalOutcome::Cancelled);
-        wp.request_save_as();
-        wp.sync(&mut state.doc, &state.root);
-        assert!(matches!(
-            wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert_eq!(
-            ui::component_lifecycle::unsaved_documents(&wp, &state.doc),
-            before
-        );
-        assert_eq!(state.doc.pending_ops(), pending_ops);
-        let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
-            path: Some(dir.to_string_lossy().into_owned()),
-        })
-        .unwrap();
-        assert!(
-            wp.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut state.doc,
-                &state.root
-            )
-            .is_err()
-        );
-        assert_eq!(
-            ui::component_lifecycle::unsaved_documents(&wp, &state.doc),
-            before
-        );
-        assert_eq!(std::fs::read_to_string(&source).unwrap(), "original source");
-        let payload =
-            serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
-                .unwrap();
-        assert!(matches!(
-            wp.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut state.doc,
-                &state.root
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
-        assert!(
-            std::fs::read_to_string(&source)
-                .unwrap()
-                .contains("unsaved")
-        );
-        // The render cache also follows uncommitted edits and their rollback,
-        // without creating an undo boundary just to observe either state.
-        state.commit_action(None, None);
-        let saved_projection = wp.blocks.clone();
-        wp.model_mut().insert_str(&mut state.doc, "temporary ");
-        let pending = state.doc.pending_ops();
-        assert!(pending > 0);
-        wp.sync(&mut state.doc, &state.root);
-        assert_eq!(state.doc.pending_ops(), pending);
-        assert!(
-            wp.blocks
-                .iter()
-                .any(|block| block.text.contains("temporary"))
-        );
-        assert!(state.doc.rollback() > 0);
-        wp.sync(&mut state.doc, &state.root);
-        assert_eq!(state.doc.pending_ops(), 0);
-        assert_eq!(wp.blocks, saved_projection);
-        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // Phase: close_requirement_detects_host_undo_after_successful_save_without_widget_dirty_flag.
-    {
-        let dir = temp_dir("close-host-undo");
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.md");
-        std::fs::write(&source, "before editing").unwrap();
-        let (mut state, mut wp, _) =
-            crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
-        wp.set_recovery_dir(dir.clone());
-        wp.sync(&mut state.doc, &state.root);
-        state.commit_action(None, None);
-        wp.model_mut().insert_str(&mut state.doc, "saved edit ");
-        state.commit_action(None, None);
-        wp.try_write_to_current_path(&state.doc).unwrap();
-        let saved_bytes = std::fs::read(&source).unwrap();
-        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
-        assert!(
-            state.undo(None, None).is_some(),
-            "use the host State undo service"
-        );
-        assert!(
-            wp.save_status == DocumentSaveStatus::Clean,
-            "host undo bypasses widget event bookkeeping"
-        );
-        let before = state.doc.pending_ops();
-        assert_eq!(
-            ui::component_lifecycle::unsaved_documents(&wp, &state.doc).len(),
-            1
-        );
-        assert_eq!(
-            state.doc.pending_ops(),
-            before,
-            "close inspection must not commit the undo transaction"
-        );
-        assert_eq!(std::fs::read(&source).unwrap(), saved_bytes);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }
 
 /// Window groups offer an unclaimed event to each visible app in presentation
@@ -9199,7 +7911,7 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
 fn a_digest_addressed_remote_caret_resolves_to_its_block() {
     let wp = drawn_focused();
     let block_id = first_block_id(&wp);
-    let digest = block_presence_key(false, &block_id).digest_form().unwrap();
+    let digest = block_presence_key(&block_id).digest_form().unwrap();
     assert!(is_scope_digest_key(&digest));
     let peer = "agent-publisher";
     let mut presence = PresenceCtx::empty();
@@ -9220,269 +7932,4 @@ fn a_digest_addressed_remote_caret_resolves_to_its_block() {
         1,
     );
     assert!(wp.remote_presence_overlays(&stray).0.is_empty());
-}
-
-#[test]
-fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draft() {
-    let mut wp = WordProcessorWidget::new();
-    let invocation = tilo_actions::InvocationId::new();
-    let selected = PathBuf::from("selected.md");
-    wp.path = Some(selected.clone());
-    wp.save_status = DocumentSaveStatus::Modified;
-    wp.editing_field = Some(NumField::Size);
-    wp.pending_resource_open = Some((invocation, PathBuf::from("pending.md")));
-    wp.resource_file_invocation = Some(invocation);
-    assert!(ui::record::capability::release_record_scope(&mut wp).is_err());
-    assert!(wp.pending_resource_open.is_some());
-    assert_eq!(wp.resource_file_invocation, Some(invocation));
-    assert_eq!(wp.path, Some(selected.clone()));
-    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-
-    wp.editing_field = None;
-    wp.pending_replacement = Some(PendingReplacement::Open(PathBuf::from("replacement.md")));
-    wp.replace_after_save = true;
-    wp.unsaved_changes.open();
-    wp.resource_file_result = Some(tilo_actions::InvocationUpdate::Succeeded {
-        invocation,
-        output: tilo_actions::ActionOutput::default(),
-    });
-    ui::record::capability::release_record_scope(&mut wp).unwrap();
-    assert!(wp.pending_resource_open.is_none());
-    assert!(wp.pending_replacement.is_none());
-    assert!(!wp.replace_after_save);
-    assert!(!wp.unsaved_changes.is_open());
-    assert!(wp.resource_file_invocation.is_none());
-    assert!(wp.resource_file_result.is_none());
-    assert_eq!(wp.path, Some(selected));
-    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-}
-
-#[test]
-fn tile_host_preserves_completed_direct_open_result_across_record_intent_release() {
-    let directory = std::env::temp_dir().join(format!(
-        "tilo-owner-release-{}-{}",
-        std::process::id(),
-        ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
-    let target = directory.join("opened.md");
-    std::fs::write(&target, "Opened through the real direct path").unwrap();
-    let mut owners = ui::record::RecordOwners::new(directory.join("records"));
-    let store = owners.open("word-processor", "owner-release").unwrap();
-    let first =
-        ui::RecordCheckout::new(ui::RecordId::for_tab(9101), ui::RecordKind::new("document"));
-    let selected = ui::RecordCheckout::new(
-        ui::RecordId::for_file(&target),
-        ui::RecordKind::new("document"),
-    );
-    store
-        .reserve_record(&first)
-        .unwrap()
-        .initialize(|_| Ok(()))
-        .unwrap();
-    let mut word_processor = WordProcessorWidget::new();
-    word_processor
-        .recovery
-        .set_base_dir(directory.join("recovery"));
-    let mut tile =
-        ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(word_processor)));
-    tile.bind_record(store.clone(), first);
-    let mut outer = AutoCommit::new();
-    tile.sync(&mut outer, &automerge::ROOT);
-    store
-        .reserve_record(&selected)
-        .unwrap()
-        .initialize(|doc| {
-            let mut candidate = WordProcessorWidget::new();
-            candidate
-                .recovery
-                .set_base_dir(directory.join("candidate-recovery"));
-            candidate.sync(doc, &automerge::ROOT);
-            Ok(())
-        })
-        .unwrap();
-    let invocation = tilo_actions::InvocationId::new();
-    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
-        path: Some(target.to_string_lossy().into_owned()),
-    })
-    .unwrap();
-    assert!(matches!(
-        tile.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload
-            ),
-            &mut outer,
-            &automerge::ROOT
-        )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Accepted)
-    ));
-    tile.sync(&mut outer, &automerge::ROOT);
-    tile.sync(&mut outer, &automerge::ROOT);
-    assert!(tile.record_transition_error().is_none());
-    assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT),
-        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
-            if completed == invocation
-    ));
-    assert!(
-        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
-            .is_none()
-    );
-    // The records' writer commits in the background: every write lands and
-    // the writer stops before its directory goes.
-    drop(tile);
-    store.flush();
-    drop(store);
-    drop(owners);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the controlled Open, refusal, managed Escape event and one-shot result form one lifecycle proof"
-)]
-fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
-
-    let directory = std::env::temp_dir().join(format!(
-        "tilo-owner-recovery-{}-{}",
-        std::process::id(),
-        ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
-    let target = directory.join("opened.md");
-    std::fs::write(&target, "Opened after the draft is cancelled").unwrap();
-    let mut owners = ui::record::RecordOwners::new(directory.join("records"));
-    let store = owners.open("word-processor", "owner-recovery").unwrap();
-    let first =
-        ui::RecordCheckout::new(ui::RecordId::for_tab(9102), ui::RecordKind::new("document"));
-    let selected = ui::RecordCheckout::new(
-        ui::RecordId::for_file(&target),
-        ui::RecordKind::new("document"),
-    );
-    store
-        .reserve_record(&first)
-        .unwrap()
-        .initialize(|_| Ok(()))
-        .unwrap();
-    store
-        .reserve_record(&selected)
-        .unwrap()
-        .initialize(|doc| {
-            let mut candidate = WordProcessorWidget::new();
-            candidate
-                .recovery
-                .set_base_dir(directory.join("candidate-recovery"));
-            candidate.sync(doc, &automerge::ROOT);
-            Ok(())
-        })
-        .unwrap();
-
-    let mut word_processor = Box::new(WordProcessorWidget::new());
-    word_processor
-        .recovery
-        .set_base_dir(directory.join("recovery"));
-    word_processor.lifecycle.focused = true;
-    let word_processor_ptr = std::ptr::from_mut(word_processor.as_mut());
-    let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(word_processor));
-    tile.bind_record(store, first);
-    let mut state = ui::State::new();
-    tile.sync(&mut state.doc, &state.root);
-
-    let invocation = tilo_actions::InvocationId::new();
-    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
-        path: Some(target.to_string_lossy().into_owned()),
-    })
-    .unwrap();
-    assert!(matches!(
-        tile.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload
-            ),
-            &mut state.doc,
-            &state.root
-        )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Accepted)
-    ));
-    tile.sync(&mut state.doc, &state.root);
-    // SAFETY: the boxed Writer allocation remains owned by `tile` for the
-    // rest of this test; no reference survives a widget callback.
-    unsafe {
-        (*word_processor_ptr).editing_field = Some(NumField::Size);
-        (*word_processor_ptr).edit_buf = "24".into();
-    }
-    tile.sync(&mut state.doc, &state.root);
-    assert!(tile.record_transition_error().is_some());
-    let status = tile
-        .accessibility()
-        .expect("transition refusal is accessible");
-    assert_eq!(status.name.as_deref(), Some("Document switch blocked"));
-
-    let mut tile = Framed::new(state, tile, (1000, 700), ui::Theme::default());
-
-    let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-    key.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    key.logical_key = Key::Named(NamedKey::Escape);
-    key.text = None;
-    key.location = winit::keyboard::KeyLocation::Standard;
-    key.state = ElementState::Pressed;
-    key.repeat = false;
-    let handled = Framed::harness_mut(&mut tile).dispatch_to_root_with(
-        &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: key,
-            is_synthetic: false,
-        },
-        &Modifiers::default(),
-    );
-    assert!(handled);
-    // SAFETY: same stable boxed allocation as above.
-    assert!(unsafe { (*word_processor_ptr).editing_field.is_none() });
-
-    let (tile, state) = Framed::split(&mut tile);
-    tile.sync(&mut state.doc, &state.root);
-    assert!(tile.record_transition_error().is_none());
-    assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &state.doc, &state.root),
-        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
-            if completed == invocation
-    ));
-    assert!(
-        tile.poll_resource_operation(invocation, false, &state.doc, &state.root)
-            .is_none()
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn the_version_strip_is_the_only_history_control() {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
-    wp.sync(&mut state.doc, &state.root);
-    wp.model_mut().insert_str(&mut state.doc, "draft");
-    state.commit_action(None, None);
-    let mut harness = ui::headless::FrameHarness::new(state, Box::new(wp), (1200, 800));
-    harness.enable_document_history_chrome();
-    harness.relayout();
-    let targets = harness.targets();
-    assert!(
-        !targets.contains_key("standalone-history-open"),
-        "the shared History control must not sit beside the editor's own strip"
-    );
-    assert!(harness.local_history_resources().unwrap().is_empty());
 }

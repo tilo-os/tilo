@@ -39,8 +39,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut state = ui::State::new();
-            let mut wp = WordProcessorWidget::new();
+            let mut state = crate::initialized_state();
+            let mut wp = WordProcessorWidget::detached();
             wp.sync(&mut state.doc, &state.root);
             wp.model_mut().insert_str(&mut state.doc, "Panel rows");
             wp.set_styles_panel_open(true);
@@ -137,8 +137,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut state = ui::State::new();
-            let mut wp = WordProcessorWidget::new();
+            let mut state = crate::initialized_state();
+            let mut wp = WordProcessorWidget::detached();
             wp.sync(&mut state.doc, &state.root);
             wp.model_mut()
                 .insert_str(&mut state.doc, "A report about the report");
@@ -148,7 +148,7 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let rects = wp.find.button_rects();
             assert_eq!(rects.len(), 10, "find, 3 toggles, replace, 5 actions");
             let bar_h = wp.find.height();
-            let bar_top = wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + wp.recovery.height();
+            let bar_top = wp.rect.y0 + wp.toolbar_height(wp.rect.width());
             let mut tr = renderer(scale);
             let lh_action = f64::from(tr.measure("Ag", 13.0, None).1);
             assert!(
@@ -221,8 +221,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut state = ui::State::new();
-            let mut wp = WordProcessorWidget::new();
+            let mut state = crate::initialized_state();
+            let mut wp = WordProcessorWidget::detached();
             wp.sync(&mut state.doc, &state.root);
             wp.model_mut().insert_str(&mut state.doc, "chips");
             let mut framed = mount_themed(state, wp, 1000, 700, &theme);
@@ -283,8 +283,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
             69, 78, 68, 174, 66, 96, 130,
         ];
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Picture");
         wp.model_mut().enter(&mut state.doc);
@@ -410,8 +410,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
     // path (`--shots` geometry), and the page never starts under the toolbar.
     {
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Large text");
         wp.set_styles_panel_open(true);
@@ -433,8 +433,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
             "panel ends above the layout bar"
         );
         // And the same document at 1× draws the classic density.
-        let mut wp1 = WordProcessorWidget::new();
-        let mut state1 = ui::State::new();
+        let mut wp1 = WordProcessorWidget::detached();
+        let mut state1 = crate::initialized_state();
         wp1.sync(&mut state1.doc, &state1.root);
         let mut framed_wp1 = mount(state1, wp1, 800, 900);
         let (wp1, _) = Framed::split(&mut framed_wp1);

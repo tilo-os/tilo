@@ -35,7 +35,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod collab;
 mod kept;
 mod preferences;
 pub mod resource;

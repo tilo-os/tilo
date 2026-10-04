@@ -100,9 +100,13 @@ pub struct HostContext {
     /// Where the app keeps the person's own records on this device, when
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
+    /// The file areas the host gave it ([`Self::provide_files`]); the
+    /// person's own otherwise.
+    files: Option<crate::storage::AppFiles>,
     launch_arguments: Vec<String>,
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
+    private: bool,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -323,9 +327,11 @@ impl HostContext {
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
             person: None,
+            files: None,
             launch_arguments: Vec::new(),
             handoff: None,
             launch_options: Vec::new(),
+            private: false,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -395,6 +401,16 @@ impl HostContext {
     pub fn take_launch_options(&mut self) -> Vec<LaunchOption> {
         std::mem::take(&mut self.launch_options)
     }
+    /// Prepare the instance as a private window: its profile is thrown away
+    /// with the process, and nothing it shows reaches the person's other
+    /// windows, devices or collaborators.
+    pub fn provide_private(&mut self) {
+        self.private = true;
+    }
+    /// Whether the instance is a private window.
+    pub fn is_private(&self) -> bool {
+        self.private
+    }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
         self.control_domain
@@ -451,7 +467,9 @@ impl HostContext {
     /// per-user directories natively, the origin-private file system in a
     /// page. See [`crate::storage`] for what belongs where.
     pub fn files(&self) -> crate::storage::AppFiles {
-        crate::storage::AppFiles::for_app(&self.app_id)
+        self.files
+            .clone()
+            .unwrap_or_else(|| crate::storage::AppFiles::for_app(&self.app_id))
     }
     /// This app's typed settings of type `T`, in the settings document the
     /// host gave it ([`Self::provide_settings`]); `T` declares how far they
@@ -463,16 +481,27 @@ impl HostContext {
     /// views and surfaces receive them.
     pub fn storage(&self) -> crate::storage::AppStorage {
         crate::storage::AppStorage::new(&self.app_id, self.secrets(), self.settings.clone())
+            .with_files(self.files())
     }
     /// Give the component this settings document instead of the person's
     /// session document: a test or capture profile's own.
     pub fn provide_settings(&mut self, document: crate::storage::SettingsDocument) {
         self.settings = document;
     }
+    /// Give the component these file areas instead of the person's: a test
+    /// or capture profile's own, so nothing it writes lands in theirs.
+    pub fn provide_files(&mut self, files: crate::storage::AppFiles) {
+        self.files = Some(files);
+    }
     /// Give the component the person's own records of this app
     /// ([`crate::record::person`]), kept beside the record it shows.
     pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
         self.person = Some(records);
+    }
+    /// This device, as the host names it: stable across launches of the app
+    /// on it, distinct on each of the person's devices.
+    pub fn device_id(&self) -> &str {
+        &self.device_id
     }
     /// The person's own records of this app, when the host keeps them.
     pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
@@ -821,6 +850,26 @@ impl AppComponent {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, None)
+    }
+    /// Register presentation for this component's document, as
+    /// [`Self::register_document_history`], and for the files of the mounted
+    /// filesystem it shows: every checked-file scope reads the file `files`
+    /// names.
+    /// # Errors
+    /// As [`Self::register_document_history`].
+    pub fn register_document_and_file_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        files: crate::history_mode::checked_files::FileHistorySource,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, Some(files))
+    }
+    fn register_history_of(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        files: Option<crate::history_mode::checked_files::FileHistorySource>,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         use crate::history_mode::{
             HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration,
         };
@@ -839,9 +888,13 @@ impl AppComponent {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } => {
-                    Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner)
-                }
+                HistoryPresentation::CheckedFiles { .. } => match &files {
+                    Some(source) => Ok(HistorySourceRegistration::CheckedFiles {
+                        scope: scope.key,
+                        source: source.clone(),
+                    }),
+                    None => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
+                },
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.history = Some(HistoryRegistration::new(definition, sources)?);

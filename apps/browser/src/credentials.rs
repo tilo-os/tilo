@@ -53,21 +53,11 @@ pub(crate) struct Credentials {
 }
 impl Credentials {
     pub fn new(private: bool) -> Self {
-        Self::with_address_path(
-            private,
-            if private {
-                None
-            } else {
-                crate::storage::config_dir().map(|p| p.join("addresses.json"))
-            },
-        )
-    }
-    pub fn with_address_path(private: bool, path: Option<std::path::PathBuf>) -> Self {
         Self {
             open: false,
             private,
             address_mode: false,
-            addresses: crate::address_controls::AddressControls::new(private, path),
+            addresses: crate::address_controls::AddressControls::new(private),
             origin: None,
             document: String::new(),
             sequence: 0,
@@ -112,6 +102,14 @@ impl Credentials {
             action,
         }]
     }
+    /// Fill forms from, and edit, the person's address book.
+    pub fn attach_address_book(
+        &mut self,
+        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        self.addresses.attach(book);
+    }
+
     pub fn close(&mut self) -> Vec<CredentialRequest> {
         let requests = if self.open {
             self.request(CredentialAction::Cancel)
@@ -586,11 +584,9 @@ mod tests {
     fn credential_discovery_is_scoped_to_safe_current_documents() {
         // Phase `address_mode_discovers_forms_without_keychain_account_requests`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let mut model = Credentials::with_address_path(
-                false,
-                Some(directory.path().join("addresses.json")),
-            );
+            let (_app, book) = crate::autofill::tests::address_book();
+            let mut model = Credentials::new(false);
+            model.attach_address_book(book);
             model.navigation("https://example.com");
             let status = model.open_addresses(true).remove(0);
             let requests = model.apply(reply(&status, "1"));

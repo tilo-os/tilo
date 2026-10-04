@@ -15,8 +15,10 @@
 //! feed. The hermetic `--shots` / test path uses a self-contained sample
 //! source so screenshots and tests never touch the disk or a device.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc;
 use tilo_clock::unix_now_i64;
@@ -30,6 +32,7 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect};
 use vello::peniko::Color;
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_render::TextRenderer;
@@ -43,6 +46,7 @@ use ui::widget::{
 };
 use winit::event::WindowEvent;
 
+use crate::actions::CameraEffect;
 use crate::doc;
 use crate::frame::{self, FrameBuf};
 use crate::library;
@@ -51,6 +55,7 @@ use crate::model::{
     ScannedCode, Screen, Settings, Timer, classify,
 };
 use crate::paint as p;
+use crate::resource::Camera;
 
 /// Uniform inset for floating controls from the window edge. The camera is an
 /// immersive, full-bleed app: the viewfinder fills the window edge-to-edge and
@@ -406,8 +411,10 @@ pub struct CameraApp {
     document_popover: Popover,
     scanner_devices: Vec<tilo_capture::scanner::Scanner>,
     selected_scanner: Option<String>,
-    document_save_picker: Option<ui::portal::PortalChannel>,
-    scan_image_picker: Option<ui::portal::PortalChannel>,
+    /// Set while the file chooser for a document export is open.
+    document_export_pending: Rc<Cell<bool>>,
+    /// Set while the file chooser for an image to scan is open.
+    scan_import_pending: Rc<Cell<bool>>,
     document_crop_selection: ui::LocalState<CropSelection>,
     document_crop_editor: Option<ImageCropEditor>,
     document_crop_page: Option<usize>,
@@ -442,8 +449,10 @@ pub struct CameraApp {
     pending_video: Option<(tilo_actions::InvocationId, u64)>,
     pending_scan_import: Option<tilo_actions::InvocationId>,
     pending_document_job: Option<tilo_actions::InvocationId>,
-    pending_document_export: Option<tilo_actions::InvocationId>,
-    completed_operations: HashMap<tilo_actions::InvocationId, tilo_actions::InvocationUpdate>,
+    /// The answers owed to the effects whose work is still settling: a
+    /// photo or clip being saved, a chosen image being scanned, a document
+    /// page being scanned or read.
+    replies: HashMap<tilo_actions::InvocationId, EffectReply>,
     camera_issue: Option<CameraIssue>,
     selected_camera: Option<String>,
     camera_chooser_open: bool,
@@ -558,8 +567,8 @@ impl CameraApp {
             document_popover: Popover::new(),
             scanner_devices,
             selected_scanner,
-            document_save_picker: None,
-            scan_image_picker: None,
+            document_export_pending: Rc::default(),
+            scan_import_pending: Rc::default(),
             document_crop_selection: ui::LocalState::new(CropSelection::default()),
             document_crop_editor: None,
             document_crop_page: None,
@@ -581,8 +590,7 @@ impl CameraApp {
             pending_video: None,
             pending_scan_import: None,
             pending_document_job: None,
-            pending_document_export: None,
-            completed_operations: HashMap::new(),
+            replies: HashMap::new(),
             camera_issue: None,
             selected_camera: None,
             camera_chooser_open: false,
@@ -1066,7 +1074,7 @@ impl CameraApp {
                 "Choose an image to scan".into(),
                 AccessState::new()
                     .focusable(true)
-                    .disabled(self.scan_image_picker.is_some()),
+                    .disabled(self.scan_import_pending.get()),
             ),
             Action::CycleResolution => (
                 Role::Button,
@@ -1313,6 +1321,15 @@ impl CameraApp {
         ))
     }
 
+    /// Invoke `effect` as the row `row` offers it, through the same door as
+    /// the palette and agents: a button on screen runs exactly what they do.
+    fn invoke_on(&mut self, row: &str, effect: &CameraEffect) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.effect_on(row, effect),
+            None => self.toast = Some("Camera is not open on a record".into()),
+        }
+    }
+
     /// Edit the record through `dispatcher` from now on.
     pub(crate) fn attach_dispatcher(
         &mut self,
@@ -1430,7 +1447,7 @@ impl CameraApp {
             camera_devices,
             selected_camera: self.selected_camera.clone(),
             settings: self.settings,
-            scan_import_pending: self.scan_image_picker.is_some(),
+            scan_import_pending: self.scan_import_pending.get(),
             document_scanner_available: self.selected_scanner.as_ref().is_some_and(|selected| {
                 self.scanner_devices
                     .iter()
@@ -1462,7 +1479,9 @@ impl CameraApp {
             Action::CycleFacing => self.apply_cycle_facing(doc, root),
             Action::DismissScan => self.scan_dismissed = true,
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
-            Action::ImportScanImage => self.request_scan_image(),
+            Action::ImportScanImage => {
+                self.invoke_on(crate::actions::SCANNER_ROW, &CameraEffect::ImportImage);
+            }
             Action::RetryCamera => self.retry_camera(),
             Action::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
             Action::OpenCameraChooser => self.open_camera_chooser(),
@@ -1472,7 +1491,9 @@ impl CameraApp {
             Action::RotateDocument => self.rotate_document_page(),
             Action::RecognizeDocument => self.recognize_document_page(),
             Action::CopyDocumentText => self.copy_document_text(),
-            Action::ExportDocument => self.request_document_export(),
+            Action::ExportDocument => {
+                self.invoke_on(crate::actions::DOCUMENT_ROW, &CameraEffect::ExportPdf);
+            }
             Action::BeginDocumentCrop => self.begin_document_crop(),
             Action::ApplyDocumentCrop => self.apply_document_crop(),
             Action::CancelDocumentCrop => self.cancel_document_crop(),
@@ -1795,17 +1816,13 @@ impl CameraApp {
                 self.document_job_kind = None;
                 self.toast = Some("Document processing stopped unexpectedly".into());
                 if let Some(invocation) = self.pending_document_job.take() {
-                    self.completed_operations.insert(
+                    self.settle(
                         invocation,
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "camera.document_worker_stopped".into(),
-                                message: "Document processing stopped unexpectedly".into(),
-                                details: None,
-                                retryable: true,
-                            },
-                        },
+                        Err((
+                            "camera.document_worker_stopped",
+                            "Document processing stopped unexpectedly".into(),
+                            true,
+                        )),
                     );
                 }
                 return;
@@ -1850,34 +1867,14 @@ impl CameraApp {
             }
         }
         if let Some(invocation) = self.pending_document_job.take() {
-            let update = terminal_error.map_or_else(
-                || tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                |(code, message)| tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: code.into(),
-                        message,
-                        details: None,
-                        retryable: true,
-                    },
-                },
+            self.settle(
+                invocation,
+                terminal_error.map_or_else(
+                    || Ok(tilo_actions::ActionOutput::default()),
+                    |(code, message)| Err((code, message, true)),
+                ),
             );
-            self.completed_operations.insert(invocation, update);
         }
-    }
-
-    fn request_document_export(&mut self) {
-        if self.document_scan.pages.is_empty() || self.document_save_picker.is_some() {
-            return;
-        }
-        self.document_save_picker = Some(
-            ui::portal::PickRequest::save("Save scanned document", "Save", "Scanned document.pdf")
-                .thread_name("camera-document-save-picker")
-                .send(),
-        );
     }
 
     fn begin_document_crop(&mut self) {
@@ -1924,70 +1921,29 @@ impl CameraApp {
         self.document_crop_page = None;
     }
 
-    fn poll_document_export(&mut self) {
-        let Some(receiver) = self.document_save_picker.as_ref() else {
-            return;
-        };
-        let outcome = match receiver.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::PortalOutcome::Failed("The file picker stopped responding".into())
-            }
-        };
-        self.document_save_picker = None;
-        let mut terminal_error = None;
-        let mut cancelled = false;
-        match outcome {
-            ui::portal::PortalOutcome::Opened(mut path) => {
-                if path.extension().is_none() {
-                    path.set_extension("pdf");
-                }
-                self.toast = Some(
-                    match crate::files::save(&path, &self.document_scan.searchable_pdf()) {
-                        Ok(()) => format!(
-                            "Saved {}",
-                            path.file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("scanned document")
-                        ),
-                        Err(error) => {
-                            terminal_error = Some(error.to_string());
-                            format!("Could not save document: {error}")
-                        }
-                    },
-                );
-            }
-            ui::portal::PortalOutcome::Cancelled => cancelled = true,
-            ui::portal::PortalOutcome::Failed(error) => {
-                self.toast = Some(format!("Could not open save location: {error}"));
-                terminal_error = Some(error);
-            }
+    /// Ask where to save the scanned pages as one searchable PDF, as the
+    /// export effect does.
+    fn export_document(&self, cx: &mut EffectCx<Camera, Self>) -> EffectAnswer {
+        if self.document_scan.pages.is_empty() {
+            return Err("Capture a page before exporting".into());
         }
-        if let Some(invocation) = self.pending_document_export.take() {
-            let update = if cancelled {
-                tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("document export cancelled".into()),
+        let Some(open) = ChooserOpen::open(&self.document_export_pending) else {
+            return Err("The save location chooser is already open".into());
+        };
+        Ok(cx.save_file(
+            ui::portal::PickRequest::save("Save scanned document", "Save", "Scanned document.pdf"),
+            self.document_scan.searchable_pdf(),
+            move |app, saved, _| {
+                drop(open);
+                app.dirty = true;
+                if saved {
+                    app.toast = Some("Saved scanned document".into());
+                    Ok(Effected::done())
+                } else {
+                    Err("Document export cancelled".into())
                 }
-            } else if let Some(message) = terminal_error {
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "camera.document_export_failed".into(),
-                        message,
-                        details: None,
-                        retryable: true,
-                    },
-                }
-            } else {
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            };
-            self.completed_operations.insert(invocation, update);
-        }
+            },
+        ))
     }
 
     fn move_document_page(&mut self, later: bool) {
@@ -2238,36 +2194,135 @@ impl CameraApp {
         }
     }
 
-    fn perform_resource_operation(
+    /// Answer one [`CameraEffect`], invoked by a control, the palette, an
+    /// agent or a script. Work that settles later — a photo or clip being
+    /// saved, a chosen image being scanned, a document page being scanned or
+    /// read — answers its caller when it does.
+    pub(crate) fn answer_effect(
         &mut self,
-        operation: crate::actions::CameraOperation,
-    ) -> Result<(), String> {
-        use crate::actions::CameraOperation;
-        match operation {
-            CameraOperation::Reveal { screen } => self.screen = screen,
-            CameraOperation::Capture => self.capture(None)?,
-            CameraOperation::ToggleRecording => {
+        effect: CameraEffect,
+        cx: &mut EffectCx<Camera, Self>,
+    ) -> EffectAnswer {
+        self.dirty = true;
+        match effect {
+            CameraEffect::OpenCamera => self.screen = Screen::Camera,
+            CameraEffect::OpenScanner => self.screen = Screen::Scanner,
+            CameraEffect::OpenDocument => self.screen = Screen::Document,
+            CameraEffect::OpenSettings => self.screen = Screen::Settings,
+            CameraEffect::Capture => {
+                self.capture(cx.invocation())?;
+                if self.pending_capture.is_some() {
+                    return Ok(self.answer_later(cx));
+                }
+            }
+            CameraEffect::Record => {
                 if self.is_recording() {
-                    self.stop_recording(None)?;
+                    // Both live and sample recordings finalize through the
+                    // bounded worker, so the caller hears back only once the
+                    // clip is muxed, verified and registered.
+                    self.stop_recording(cx.invocation())?;
+                    if self.pending_video.is_some() {
+                        return Ok(self.answer_later(cx));
+                    }
                 } else {
                     self.start_recording();
                 }
             }
-            CameraOperation::RetryCamera => self.retry_camera(),
-            CameraOperation::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
-            CameraOperation::SelectCamera { device } => self.select_camera(&device),
-            CameraOperation::ImportCodeImage => self.request_scan_image(),
-            CameraOperation::CaptureDocumentPage => self.capture_document_page(),
-            CameraOperation::RotateDocumentPage => self.rotate_document_page(),
-            CameraOperation::RecognizeDocumentPage => self.recognize_document_page(),
-            CameraOperation::CopyDocumentText => self.copy_document_text(),
-            CameraOperation::ExportDocument => self.request_document_export(),
-            CameraOperation::BeginDocumentCrop => self.begin_document_crop(),
-            CameraOperation::MoveDocumentPageEarlier => self.move_document_page(false),
-            CameraOperation::MoveDocumentPageLater => self.move_document_page(true),
-            CameraOperation::RemoveDocumentPage => self.remove_document_page(),
+            CameraEffect::RetryCamera => self.retry_camera(),
+            CameraEffect::OpenCameraPrivacy => self.open_camera_privacy_settings(),
+            CameraEffect::UseCamera { device } => self.select_camera(&device),
+            CameraEffect::ImportImage => return self.import_scan_image(cx),
+            CameraEffect::CapturePage => {
+                let pages_before = self.document_scan.pages.len();
+                self.capture_document_page();
+                if self.document_job.is_some() {
+                    self.pending_document_job = cx.invocation();
+                    return Ok(self.answer_later(cx));
+                }
+                if self.document_scan.pages.len() == pages_before {
+                    return Err("No document scanner is available".into());
+                }
+            }
+            CameraEffect::RotatePage => self.rotate_document_page(),
+            CameraEffect::RecognizeText => {
+                self.recognize_document_page();
+                if self.document_job.is_none() {
+                    return Err("Text recognition could not start".into());
+                }
+                self.pending_document_job = cx.invocation();
+                return Ok(self.answer_later(cx));
+            }
+            CameraEffect::CopyText => self.copy_document_text(),
+            CameraEffect::ExportPdf => return self.export_document(cx),
+            CameraEffect::CropPage => self.begin_document_crop(),
+            CameraEffect::MovePageEarlier => self.move_document_page(false),
+            CameraEffect::MovePageLater => self.move_document_page(true),
+            CameraEffect::RemovePage => self.remove_document_page(),
         }
-        Ok(())
+        Ok(Effected::done())
+    }
+
+    /// Owe the caller of the effect `cx` answers its answer until the work
+    /// it started settles ([`Self::settle`]).
+    fn answer_later(&mut self, cx: &mut EffectCx<Camera, Self>) -> Effected {
+        if let Some(invocation) = cx.invocation() {
+            self.replies.insert(invocation, cx.reply());
+        }
+        Effected::Pending
+    }
+
+    /// Answer the caller waiting for `invocation`, if any still is.
+    fn settle(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        result: Result<tilo_actions::ActionOutput, Failure<'_>>,
+    ) {
+        if let Some(reply) = self.replies.remove(&invocation) {
+            reply.answer(result.map_err(|(code, message, retryable)| {
+                tilo_actions::ActionFailure {
+                    code: code.into(),
+                    message,
+                    details: None,
+                    retryable,
+                }
+            }));
+        }
+    }
+
+    /// Drop the work whose caller cancelled it: a photo or clip still being
+    /// saved is discarded when it arrives (with its local file), a scan or
+    /// a document task no longer answers anyone.
+    fn forget_cancelled(&mut self) {
+        let cancelled: Vec<_> = self
+            .replies
+            .iter()
+            .filter(|(_, reply)| reply.is_cancelled())
+            .map(|(invocation, _)| *invocation)
+            .collect();
+        for invocation in cancelled {
+            self.replies.remove(&invocation);
+            if self
+                .pending_capture
+                .is_some_and(|(pending, _)| pending == invocation)
+            {
+                self.pending_capture = None;
+            }
+            if self
+                .pending_video
+                .is_some_and(|(pending, _)| pending == invocation)
+            {
+                self.pending_video = None;
+            }
+            if self.pending_scan_import == Some(invocation) {
+                self.pending_scan_import = None;
+                self.pending_scan = None;
+            }
+            if self.pending_document_job == Some(invocation) {
+                self.pending_document_job = None;
+                self.document_job = None;
+                self.document_job_kind = None;
+            }
+        }
     }
 
     /// Revalidate the real device list and force the live pipeline to reopen
@@ -2330,92 +2385,56 @@ impl CameraApp {
         self.toast = Some(format!("Selected {device}"));
     }
 
-    fn request_scan_image(&mut self) {
-        if self.scan_image_picker.is_some() {
-            return;
-        }
-        self.scan_image_picker = Some(
-            ui::portal::PickRequest::open("Scan a code from an image", "Scan")
-                .thread_name("camera-portal-scan-image")
-                .filter(
-                    ui::portal::FileFilter::new("Images")
-                        .mimetype("image/png")
-                        .mimetype("image/jpeg")
-                        .mimetype("image/webp")
-                        .mimetype("image/gif"),
-                )
-                .send(),
-        );
+    /// Ask for an image with the file chooser and scan the code in it, as
+    /// the import effect does. The caller hears back once the scan settles.
+    fn import_scan_image(&mut self, cx: &mut EffectCx<Camera, Self>) -> EffectAnswer {
+        let Some(open) = ChooserOpen::open(&self.scan_import_pending) else {
+            return Err("An image picker is already open".into());
+        };
         self.toast = Some("Choose an image containing a QR code or barcode".into());
+        let request = ui::portal::PickRequest::open("Scan a code from an image", "Scan").filter(
+            ui::portal::FileFilter::new("Images")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .mimetype("image/webp")
+                .mimetype("image/gif"),
+        );
+        Ok(cx.choose_file(request, move |app, chosen, cx| {
+            drop(open);
+            app.dirty = true;
+            let Some(file) = chosen else {
+                app.toast = Some("Image scan cancelled".into());
+                return Err("Image scan cancelled".into());
+            };
+            app.scan_image_bytes(file.bytes)?;
+            app.pending_scan_import = cx.invocation();
+            Ok(app.answer_later(cx))
+        }))
     }
 
-    fn poll_scan_image_picker(&mut self) {
-        let Some(receiver) = self.scan_image_picker.as_ref() else {
-            return;
-        };
-        let outcome = match receiver.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::PortalOutcome::Failed("The file picker stopped responding".into())
-            }
-        };
-        self.scan_image_picker = None;
-        match outcome {
-            ui::portal::PortalOutcome::Opened(path) => self.scan_image_path(path),
-            ui::portal::PortalOutcome::Cancelled => {
-                self.toast = Some("Image scan cancelled".into());
-                if let Some(invocation) = self.pending_scan_import.take() {
-                    self.completed_operations.insert(
-                        invocation,
-                        tilo_actions::InvocationUpdate::Cancelled {
-                            invocation,
-                            message: Some("image scan cancelled".into()),
-                        },
-                    );
-                }
-            }
-            ui::portal::PortalOutcome::Failed(error) => {
-                self.toast = Some(format!("Could not choose an image: {error}"));
-                if let Some(invocation) = self.pending_scan_import.take() {
-                    self.completed_operations.insert(
-                        invocation,
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "camera.image_picker_failed".into(),
-                                message: error,
-                                details: None,
-                                retryable: true,
-                            },
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    /// Decode a code from one portal-selected image. The path is ephemeral and
-    /// never enters Camera's collaborative state or a private media index.
-    fn scan_image_path(&mut self, path: std::path::PathBuf) {
+    /// Decode a code from the bytes of one chosen image. The image never
+    /// enters Camera's collaborative state or a private media index.
+    fn scan_image_bytes(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         self.scan_dismissed = false;
         let Some(generation) = self.scan_generation.checked_add(1) else {
-            self.toast = Some("Code scan counter exhausted; restart Camera".into());
-            return;
+            let error = "Code scan counter exhausted; restart Camera".to_owned();
+            self.toast = Some(error.clone());
+            return Err(error);
         };
         let id = format!("portal:{generation}");
         if let Err(error) = self.worker.submit_scan(crate::worker::ScanJob {
             generation,
             id: id.clone(),
-            source: crate::worker::ScanSource::Path(path),
+            source: crate::worker::ScanSource::Bytes(bytes),
             record_history: true,
         }) {
-            self.toast = Some(error);
-            return;
+            self.toast = Some(error.clone());
+            return Err(error);
         }
         self.scan_generation = generation;
         self.pending_scan = Some((id, generation));
         self.toast = Some("Scanning image…".into());
+        Ok(())
     }
 
     /// Carry out the chosen action for a scanned code. Openable schemes are
@@ -2596,6 +2615,28 @@ fn valid_frame(frame: &FrameBuf) -> bool {
         && frame.rgba.len() == expected
 }
 
+/// A failure told to an effect's caller: a code for programs, a message for
+/// people, and whether trying again may help.
+type Failure<'a> = (&'a str, String, bool);
+
+/// A file chooser an effect opened, marked in `open` until it answers or
+/// its job ends without an answer (a failure, a cancelled effect), so the
+/// screen and the published effect show it is open meanwhile.
+struct ChooserOpen(Rc<Cell<bool>>);
+
+impl ChooserOpen {
+    /// Mark `open`, unless a chooser is open already.
+    fn open(open: &Rc<Cell<bool>>) -> Option<Self> {
+        (!open.replace(true)).then(|| Self(Rc::clone(open)))
+    }
+}
+
+impl Drop for ChooserOpen {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
 fn frame_image_fill(buf: FrameBuf) -> Image {
     let (w, h) = (buf.w, buf.h);
     Image::from_rgba(Arc::from(buf.rgba), w, h).with_fit(ImageFit::Fill)
@@ -2609,105 +2650,14 @@ fn frame_image_cover(buf: FrameBuf) -> Image {
 impl Widget for CameraApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::CAMERA_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = self.admit_resource_operation_with_document(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_capture
-                .is_some_and(|(pending, _)| pending == invocation)
-        {
-            self.pending_capture = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("photo save cancelled".into()),
-            });
-        }
-        if cancellation_requested
-            && self
-                .pending_video
-                .is_some_and(|(pending, _)| pending == invocation)
-        {
-            self.pending_video = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("video finalization cancelled".into()),
-            });
-        }
-        if cancellation_requested && self.pending_scan_import == Some(invocation) {
-            self.pending_scan_import = None;
-            self.scan_image_picker = None;
-            self.pending_scan = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("image scan cancelled".into()),
-            });
-        }
-        if cancellation_requested && self.pending_document_job == Some(invocation) {
-            self.pending_document_job = None;
-            self.document_job = None;
-            self.document_job_kind = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("document task cancelled".into()),
-            });
-        }
-        if cancellation_requested && self.pending_document_export == Some(invocation) {
-            self.pending_document_export = None;
-            self.document_save_picker = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("document export cancelled".into()),
-            });
-        }
-        self.completed_operations.remove(&invocation)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        self.forget_cancelled();
         self.poll_document_job();
-        self.poll_document_export();
-        self.poll_scan_image_picker();
         // An empty record already reads as Photo / Back / default settings.
         // Writing those defaults would be a phantom history entry.
         self.poll_countdown();
@@ -2749,18 +2699,7 @@ impl Widget for CameraApp {
                         }
                         self.toast = Some(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
-                            self.completed_operations.insert(
-                                invocation,
-                                tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "camera.register_refused".into(),
-                                        message: error,
-                                        details: None,
-                                        retryable: false,
-                                    },
-                                },
-                            );
+                            self.settle(invocation, Err(("camera.register_refused", error, false)));
                         }
                         continue;
                     }
@@ -2773,27 +2712,13 @@ impl Widget for CameraApp {
                     };
                     self.toast = Some("Photo saved".into());
                     if let Some(invocation) = terminal {
-                        self.completed_operations.insert(
-                            invocation,
-                            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
-                        );
+                        self.settle(invocation, Ok(output));
                     }
                 }
                 Err(error) => {
                     self.toast = Some(format!("Save failed: {error}"));
                     if let Some(invocation) = terminal {
-                        self.completed_operations.insert(
-                            invocation,
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "camera.save_failed".into(),
-                                    message: error,
-                                    details: None,
-                                    retryable: true,
-                                },
-                            },
-                        );
+                        self.settle(invocation, Err(("camera.save_failed", error, true)));
                     }
                 }
             }
@@ -2835,18 +2760,7 @@ impl Widget for CameraApp {
                         }
                         self.toast = Some(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
-                            self.completed_operations.insert(
-                                invocation,
-                                tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "camera.register_refused".into(),
-                                        message: error,
-                                        details: None,
-                                        retryable: false,
-                                    },
-                                },
-                            );
+                            self.settle(invocation, Err(("camera.register_refused", error, false)));
                         }
                         continue;
                     }
@@ -2859,27 +2773,13 @@ impl Widget for CameraApp {
                     };
                     self.toast = Some("Video saved".into());
                     if let Some(invocation) = terminal {
-                        self.completed_operations.insert(
-                            invocation,
-                            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
-                        );
+                        self.settle(invocation, Ok(output));
                     }
                 }
                 Err(error) => {
                     self.toast = Some(format!("Save failed: {error}"));
                     if let Some(invocation) = terminal {
-                        self.completed_operations.insert(
-                            invocation,
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "camera.video_failed".into(),
-                                    message: error,
-                                    details: None,
-                                    retryable: true,
-                                },
-                            },
-                        );
+                        self.settle(invocation, Err(("camera.video_failed", error, true)));
                     }
                 }
             }
@@ -2955,22 +2855,13 @@ impl Widget for CameraApp {
                 }
             }
             if let Some(invocation) = self.pending_scan_import.take() {
-                let update = terminal_error.map_or_else(
-                    || tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                    |(code, message, retryable)| tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: code.into(),
-                            message,
-                            details: None,
-                            retryable,
-                        },
-                    },
+                self.settle(
+                    invocation,
+                    terminal_error.map_or_else(
+                        || Ok(tilo_actions::ActionOutput::default()),
+                        |(code, message, retryable)| Err((code, message, retryable)),
+                    ),
                 );
-                self.completed_operations.insert(invocation, update);
             }
             self.dirty = true;
         }
@@ -3259,8 +3150,8 @@ impl Widget for CameraApp {
         self.rect
     }
     fn needs_idle_sync(&self) -> bool {
-        self.document_save_picker.is_some()
-            || self.scan_image_picker.is_some()
+        self.document_export_pending.get()
+            || self.scan_import_pending.get()
             || self.document_job.is_some()
     }
 
@@ -3419,97 +3310,6 @@ impl ui::widget::controls::ActionControls for CameraApp {
         if let Some(handoff) = self.video_handoff.as_mut() {
             handoff.refresh_availability(allowed);
         }
-    }
-}
-
-impl CameraApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation)?;
-        Ok(true)
-    }
-
-    fn admit_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        match operation {
-            crate::actions::CameraOperation::Capture => {
-                self.capture(Some(invocation))?;
-                if matches!(self.storage, Storage::Disk(_)) {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-            }
-            crate::actions::CameraOperation::ToggleRecording if self.is_recording() => {
-                self.stop_recording(Some(invocation))?;
-                // Both live and hermetic paths finalize through the bounded
-                // worker, so neither may report completion before the clip is
-                // muxed, verified, and canonically registered.
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::ImportCodeImage => {
-                self.request_scan_image();
-                if self.scan_image_picker.is_none() {
-                    return Err("The image picker could not be opened".into());
-                }
-                self.pending_scan_import = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::CaptureDocumentPage => {
-                let pages_before = self.document_scan.pages.len();
-                self.capture_document_page();
-                if self.document_job.is_some() {
-                    self.pending_document_job = Some(invocation);
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if self.document_scan.pages.len() == pages_before {
-                    return Err("No document scanner is available".into());
-                }
-            }
-            crate::actions::CameraOperation::RecognizeDocumentPage => {
-                self.recognize_document_page();
-                if self.document_job.is_none() {
-                    return Err("Text recognition could not start".into());
-                }
-                self.pending_document_job = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::ExportDocument => {
-                self.request_document_export();
-                if self.document_save_picker.is_none() {
-                    return Err("Document export could not start".into());
-                }
-                self.pending_document_export = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            operation => self.perform_resource_operation(operation)?,
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
     }
 }
 
@@ -5681,13 +5481,13 @@ impl CameraApp {
             cy + 96.0,
         );
         p::fill_round(scene, t, button, 14.0, theme.accent_primary);
-        let label = if self.scan_image_picker.is_some() {
+        let label = if self.scan_import_pending.get() {
             "Waiting for file picker…"
         } else {
             "Choose image"
         };
         p::text_center(scene, tr, cx, button.y0 + 16.0, label, 14.0, hud_ink(theme));
-        if self.scan_image_picker.is_none() {
+        if !self.scan_import_pending.get() {
             self.push_region(button, Action::ImportScanImage);
         }
 
@@ -7658,138 +7458,142 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn capture_invocations_publish_only_completed_results() {
-        // Phase `cancelled_capture_invocation_cannot_publish_or_leave_a_local_projection`.
-        {
-            let dir = std::env::temp_dir().join(format!(
-                "camera-cancel-capture-{}-{}",
-                std::process::id(),
-                unix_now_i64()
-            ));
-            std::fs::remove_dir_all(&dir).ok();
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            sync_until(&mut app, &mut doc, &root, |_| true);
-            assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
-            let invocation = tilo_actions::InvocationId::new();
-            let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
-            assert!(matches!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::CAMERA_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
-            ));
-            assert!(matches!(
-                Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-            for _ in 0..150 {
-                app.sync(&mut doc, &root);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert!(doc::read_recent_capture(&doc, &root).is_none());
-            assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
-                entries
-                    .flatten()
-                    .all(|entry| entry.path().extension().is_none_or(|ext| ext != "jpg"))
-            }));
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        // Phase `cancelled_video_invocation_cannot_publish_or_leave_a_local_projection`.
-        {
-            let dir = std::env::temp_dir().join(format!(
-                "camera-cancel-video-{}-{}",
-                std::process::id(),
-                unix_now_i64()
-            ));
-            std::fs::remove_dir_all(&dir).ok();
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            sync_until(&mut app, &mut doc, &root, |_| true);
-            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-            assert!(app.push_camera_frame(frame::viewfinder(1, 128, 96)));
-            app.apply(Action::Shutter, &mut doc, &root);
-            for seed in 2..8 {
-                assert!(app.push_camera_frame(frame::viewfinder(seed, 128, 96)));
-            }
+    thread_local! {
+        /// Where [`DiskCamera`] saves its captures.
+        static CAPTURE_DIR: std::cell::RefCell<Option<PathBuf>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
-            let invocation = tilo_actions::InvocationId::new();
-            let payload = serde_json::to_vec(&crate::actions::CameraOperation::ToggleRecording)
-                .expect("video operation payload");
-            assert!(matches!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::CAMERA_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .expect("accepted video finalization"),
-                Some(ui::widget::ResourceOperationStart::Accepted)
-            ));
-            assert!(matches!(
-                Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-            for _ in 0..200 {
-                app.sync(&mut doc, &root);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert!(doc::read_recent_capture(&doc, &root).is_none());
-            assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
-                entries
-                    .flatten()
-                    .all(|entry| entry.path().extension().is_none_or(|ext| ext != "avi"))
-            }));
+    /// A live window whose captures go to [`CAPTURE_DIR`], fed the frames a
+    /// test pushes instead of a camera's.
+    struct DiskCamera;
+
+    impl ui::framework::ResourceApp for DiskCamera {
+        type Resource = Camera;
+        const ID: &'static str = "so.tilo.camera";
+        const TITLE: &'static str = "Camera";
+
+        fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {
+            let dir = CAPTURE_DIR.with(|dir| dir.borrow().clone()).unwrap();
+            cx.surface(CameraApp::with(Storage::Disk(dir), Screen::Camera))
+        }
+    }
+
+    /// A live window over the sample camera and document scanner: effects
+    /// run, no device is touched.
+    struct SampleCamera;
+
+    impl ui::framework::ResourceApp for SampleCamera {
+        type Resource = Camera;
+        const ID: &'static str = "so.tilo.camera";
+        const TITLE: &'static str = "Camera";
+
+        fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {
+            cx.surface(CameraApp::sample())
+        }
+    }
+
+    /// A live [`DiskCamera`] saving into the fresh directory `name`.
+    fn disk_camera(name: &str) -> (ui::framework::testing::TestApp<DiskCamera>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "camera-{name}-{}-{}",
+            std::process::id(),
+            unix_now_i64()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        CAPTURE_DIR.with(|slot| *slot.borrow_mut() = Some(dir.clone()));
+        (
+            ui::framework::testing::TestApp::<DiskCamera>::new().unwrap(),
+            dir,
+        )
+    }
+
+    /// Feed `app` the viewfinder frame `seed`.
+    fn push_frame(app: &mut ui::framework::testing::TestApp<DiskCamera>, seed: u8) {
+        assert_eq!(
+            app.with_surface::<CameraApp, _>(|camera| {
+                camera.push_camera_frame(frame::viewfinder(seed, 128, 96))
+            }),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn capture_effects_answer_once_the_capture_is_registered() {
+        // Phase `a_photo_answers_with_the_registered_capture`.
+        {
+            let (mut app, dir) = disk_camera("photo-effect");
+            push_frame(&mut app, 1);
+            let output = app
+                .effect_on(crate::actions::CAPTURE_ROW, &CameraEffect::Capture)
+                .expect("the photo is saved");
+            let value = output.value.expect("the capture's identity");
+            let capture_id = value["capture_id"].as_str().unwrap().to_owned();
+            assert!(
+                value["media_id"]
+                    .as_str()
+                    .is_some_and(crate::media::is_media_id)
+            );
+            assert_eq!(output.resources, [format!("camera.photo:{capture_id}")]);
+            let recent = app.state().recent.expect("the photo is the recent capture");
+            assert_eq!((recent.id, recent.kind), (capture_id, CaptureKind::Photo));
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `sample_document_capture_reports_completion_only_after_adding_the_page`.
+        // Phase `a_clip_answers_once_it_is_saved_and_registered`.
         {
-            let mut app = CameraApp::with(Storage::Sample, Screen::Document);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            assert!(app.document_scan.pages.is_empty());
-            let invocation = tilo_actions::InvocationId::new();
-            let payload = serde_json::to_vec(&crate::actions::CameraOperation::CaptureDocumentPage)
-                .expect("document capture payload");
-            let result = Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CAMERA_OPERATION_TYPE,
-                    &payload,
-                ),
-                &mut doc,
-                &root,
+            let (mut app, dir) = disk_camera("video-effect");
+            app.invoke(
+                ui::tilo_resource::Invoke::apply(&crate::actions::CameraAction::SetMode {
+                    mode: CaptureMode::Video,
+                })
+                .unwrap(),
             )
-            .expect("sample capture succeeds");
-            assert!(matches!(
-                result,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(app.document_scan.pages.len(), 1);
+            .unwrap();
+            push_frame(&mut app, 1);
+            assert!(
+                app.effect_on(crate::actions::CAPTURE_ROW, &CameraEffect::Capture)
+                    .is_err(),
+                "a photo needs photo mode"
+            );
+            app.effect_on(crate::actions::CAPTURE_ROW, &CameraEffect::Record)
+                .expect("recording starts");
+            for seed in 2..8 {
+                push_frame(&mut app, seed);
+            }
+            let row = app
+                .harness()
+                .resources()
+                .iter()
+                .flat_map(|root| root.children.clone())
+                .find(|row| row.id.as_str() == crate::actions::CAPTURE_ROW)
+                .expect("the capture row");
+            assert!(
+                row.actions
+                    .iter()
+                    .any(|action| action.id == "record" && action.label == "Stop recording"),
+                "the recorder offers stopping while it records"
+            );
+            let output = app
+                .effect_on(crate::actions::CAPTURE_ROW, &CameraEffect::Record)
+                .expect("the clip is saved");
+            let capture_id = output.value.unwrap()["capture_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let recent = app.state().recent.expect("the clip is the recent capture");
+            assert_eq!((recent.id, recent.kind), (capture_id, CaptureKind::Video));
+            assert!(recent.dur_ms > 0);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `sample_document_capture_answers_after_adding_the_page`.
+        {
+            let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+            app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::CapturePage)
+                .expect("the sample scanner captures a page");
+            assert_eq!(
+                app.with_surface::<CameraApp, _>(|camera| camera.document_scan.pages.len()),
+                Some(1)
+            );
         }
     }
 
@@ -8179,76 +7983,172 @@ mod tests {
             app.apply(Action::Scan(0), &mut doc, &root); // "Connect"
             assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
         }
-        // Phase `portal_selected_image_decodes_a_real_qr_without_media_indexing`.
-        {
-            // Rasterize a real QR to a PNG on disk, then prove the scanner decodes
-            // it through the production code path — no camera involved.
-            let payload = "https://example.test/scanned-from-a-saved-photo";
-            let m = crate::scan::encode(payload).expect("encode");
-            let (scale, quiet) = (8usize, 4usize);
-            let dim = (m.size + quiet * 2) * scale;
-            let mut rgba = vec![255u8; dim * dim * 4];
-            for my in 0..m.size {
-                for mx in 0..m.size {
-                    if !m.is_dark(mx, my) {
-                        continue;
-                    }
-                    for dy in 0..scale {
-                        for dx in 0..scale {
-                            let px = (mx + quiet) * scale + dx;
-                            let py = (my + quiet) * scale + dy;
-                            let i = (py * dim + px) * 4;
-                            rgba[i] = 17;
-                            rgba[i + 1] = 17;
-                            rgba[i + 2] = 17;
-                        }
+    }
+
+    /// A real QR code rasterized losslessly as PNG bytes.
+    fn qr_png(payload: &str) -> Vec<u8> {
+        let m = crate::scan::encode(payload).expect("encode");
+        let (scale, quiet) = (8usize, 4usize);
+        let dim = (m.size + quiet * 2) * scale;
+        let mut rgba = vec![255u8; dim * dim * 4];
+        for my in 0..m.size {
+            for mx in 0..m.size {
+                if !m.is_dark(mx, my) {
+                    continue;
+                }
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let px = (mx + quiet) * scale + dx;
+                        let py = (my + quiet) * scale + dy;
+                        let i = (py * dim + px) * 4;
+                        rgba[i] = 17;
+                        rgba[i + 1] = 17;
+                        rgba[i + 2] = 17;
                     }
                 }
             }
-            let fb = FrameBuf {
-                rgba,
-                w: dim as u32,
-                h: dim as u32,
-            };
-
-            let dir = std::env::temp_dir().join(format!("camera-scan-lib-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            // Lossless PNG so the QR survives the write for a clean decode.
-            let name = library::write_photo(&dir, &fb, PhotoFormat::Png).unwrap();
-
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Scanner);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            assert!(!app.feed_active(), "no camera in the test env");
-            assert!(
-                app.captures.is_empty(),
-                "Camera does not index the directory"
-            );
-            app.scan_image_path(dir.join(name));
-            sync_until(&mut app, &mut doc, &root, |app| app.pending_scan.is_none());
-            let scanned = app.scanned.clone().expect("the saved QR decodes");
-            assert_eq!(scanned.raw, payload);
-            // The decode is recorded to history like a live scan.
-            assert_eq!(app.scans.len(), 1);
-            assert_eq!(app.scans[0].raw, payload);
-            std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `the_scanner_row_offers_scanning_an_existing_image`.
-        {
-            let (app, _doc, _root) = sample_app();
-            let scanner = ui::framework::ResourceSurface::<crate::resource::Camera>::live_row(
-                &app,
-                "camera.scanner",
-            )
-            .expect("the scanner is a live row")
-            .into_resource();
+        let fb = FrameBuf {
+            rgba,
+            w: dim as u32,
+            h: dim as u32,
+        };
+        library::encode_photo(&fb, PhotoFormat::Png).unwrap().1
+    }
+
+    /// Scanning an existing image and exporting scanned pages go through the
+    /// host's file chooser, from the palette, an agent or the screen alike.
+    #[test]
+    fn the_file_chooser_feeds_the_code_scanner_and_takes_the_document_export() {
+        let dir = std::env::temp_dir().join(format!(
+            "camera-chooser-{}-{}",
+            std::process::id(),
+            unix_now_i64()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+
+        // Phase `a_chosen_image_decodes_a_real_qr_into_the_history`.
+        let payload = "https://example.test/scanned-from-a-saved-photo";
+        let image = dir.join("code.png");
+        std::fs::write(&image, qr_png(payload)).unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
+        app.effect_on(crate::actions::SCANNER_ROW, &CameraEffect::ImportImage)
+            .expect("the chosen image decodes");
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Scan a code from an image"
+        );
+        let scanned = app
+            .with_surface::<CameraApp, _>(|camera| camera.scanned.clone())
+            .flatten()
+            .expect("the scanned code is shown");
+        assert_eq!(scanned.raw, payload);
+        // The decode is recorded to history like a live scan.
+        let scans = app.state().scans;
+        assert_eq!(scans.len(), 1);
+        assert_eq!(scans[0].raw, payload);
+
+        // Phase `a_cancelled_chooser_answers_and_closes`.
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+        let cancelled = app
+            .effect_on(crate::actions::SCANNER_ROW, &CameraEffect::ImportImage)
+            .unwrap_err();
+        assert!(cancelled.to_string().contains("cancelled"), "{cancelled}");
+        app.settle();
+        assert_eq!(
+            app.with_surface::<CameraApp, _>(|camera| camera.scan_import_pending.get()),
+            Some(false),
+            "the chooser is no longer shown as open"
+        );
+        assert_eq!(app.state().scans.len(), 1);
+
+        // Phase `scanned_pages_export_as_a_searchable_pdf`.
+        assert!(
+            app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::ExportPdf)
+                .is_err(),
+            "there is nothing to export before a page is captured"
+        );
+        app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::CapturePage)
+            .unwrap();
+        let pdf = dir.join("scan.pdf");
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(pdf.clone()));
+        app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::ExportPdf)
+            .expect("the document is saved");
+        assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The camera publishes its screens as views, and the capture pipeline,
+    /// the code scanner and the document scanner as rows offering only
+    /// effects bound to them.
+    #[test]
+    fn the_rows_offer_the_camera_effects_on_what_they_act_on() {
+        let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+        let resources = app.harness().resources();
+        let camera = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == crate::resource::CAMERA_RESOURCE_ID)
+            .expect("the camera");
+        let ids = |resource: &tilo_actions::Resource| {
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let camera_ids = ids(camera);
+        for id in [
+            "open-camera",
+            "open-scanner",
+            "open-document",
+            "open-settings",
+            "photo-mode",
+            "lens-front",
+        ] {
             assert!(
-                scanner
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "import-image")
+                camera_ids.contains(&id.to_owned()),
+                "{id} in {camera_ids:?}"
             );
         }
+        let row = |id: &str| {
+            camera
+                .children
+                .iter()
+                .find(|row| row.id.as_str() == id)
+                .unwrap_or_else(|| panic!("{id} is a row"))
+        };
+        assert_eq!(
+            ids(row(crate::actions::CAPTURE_ROW)),
+            ["open-photos", "capture", "record"]
+        );
+        assert_eq!(ids(row(crate::actions::SCANNER_ROW)), ["import-image"]);
+        assert_eq!(
+            ids(row(crate::actions::DOCUMENT_ROW)),
+            [
+                "capture-page",
+                "rotate-page",
+                "recognize-text",
+                "copy-text",
+                "export-pdf",
+                "crop-page",
+                "move-page-earlier",
+                "move-page-later",
+                "remove-page",
+            ]
+        );
+
+        app.effect(&CameraEffect::OpenSettings).unwrap();
+        assert_eq!(
+            app.with_surface::<CameraApp, _>(|camera| camera.screen),
+            Some(Screen::Settings)
+        );
+        assert!(
+            app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::RotatePage)
+                .is_err(),
+            "a page operation waits for a page"
+        );
     }
 }

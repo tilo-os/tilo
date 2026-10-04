@@ -2378,8 +2378,8 @@ mod command_path_tests {
         assert_eq!(w.current_path(), a, "forward re-visits");
     }
 
-    /// A hermetic widget whose favourites/zoom persist to a throwaway dir, so
-    /// tests never touch the user's real `~/.config`.
+    /// A hermetic widget whose recent files and previews live in a throwaway
+    /// dir, so tests never touch the user's real `~/.config`.
     fn hermetic() -> (FileExplorerWidget, tempfile::TempDir) {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
@@ -2511,43 +2511,22 @@ mod command_path_tests {
         );
     }
 
-    /// Each phase persists into its own throwaway config dir.
+    /// Favourite commands edit the sidebar, which follows the localized
+    /// user folders. (The stored places are the resource's: see
+    /// `resource::tests`.)
     #[test]
-    fn zoom_and_favourites_persist_and_follow_localized_user_dirs() {
-        zoom_level_persists_across_reconstruction();
-        favorite_commands_add_reorder_and_remove_and_persist();
+    fn favourites_edit_the_sidebar_and_follow_localized_user_dirs() {
+        favorite_commands_add_reorder_and_remove();
         favourites_follow_localized_xdg_user_dirs();
     }
 
-    fn zoom_level_persists_across_reconstruction() {
+    fn favorite_commands_add_reorder_and_remove() {
         let cfg = tempfile::tempdir().unwrap();
-        {
-            let mut w = FileExplorerWidget::with_persistence(
-                Some(cfg.path().to_path_buf()),
-                Some(PathBuf::from("/home/tester")),
-            );
-            w.apply_command(FileCommand::ZoomIn);
-            w.apply_command(FileCommand::ZoomIn);
-            assert_eq!(w.zoom_level(), 2);
-        }
-        // A fresh widget reads the persisted level back.
-        let w2 = FileExplorerWidget::with_persistence(
+        let mut w = FileExplorerWidget::with_persistence(
             Some(cfg.path().to_path_buf()),
             Some(PathBuf::from("/home/tester")),
         );
-        assert_eq!(w2.zoom_level(), 2, "zoom level survives a restart");
-    }
-
-    fn favorite_commands_add_reorder_and_remove_and_persist() {
-        let cfg = tempfile::tempdir().unwrap();
-        let make = || {
-            FileExplorerWidget::with_persistence(
-                Some(cfg.path().to_path_buf()),
-                Some(PathBuf::from("/home/tester")),
-            )
-        };
         let sub = PathBuf::from("/home/tester/Projects/tilo");
-        let mut w = make();
         let before = w.favorites().len();
         w.apply_command(FileCommand::AddFavorite(sub.clone()));
         assert_eq!(w.favorites().len(), before + 1, "added one favourite");
@@ -2558,19 +2537,8 @@ mod command_path_tests {
         w.apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
         assert_eq!(w.favorites()[1].path, sub, "reorder moved it to slot 1");
 
-        // The new order + membership persists to a fresh widget.
-        let w2 = make();
-        assert_eq!(w2.favorites()[1].path, sub, "reordered favourite persists");
-
-        // Remove drops it (and persists).
-        let mut w3 = make();
-        w3.apply_command(FileCommand::RemoveFavorite(sub.clone()));
-        assert!(!w3.favorites().iter().any(|f| f.path == sub));
-        let w4 = make();
-        assert!(
-            !w4.favorites().iter().any(|f| f.path == sub),
-            "removal persists"
-        );
+        w.apply_command(FileCommand::RemoveFavorite(sub.clone()));
+        assert!(!w.favorites().iter().any(|f| f.path == sub));
     }
 
     fn favourites_follow_localized_xdg_user_dirs() {
@@ -4134,8 +4102,8 @@ mod responsive_body_tests {
             Self::from_widget(w, width, height)
         }
 
-        /// Lay out a pre-built widget (e.g. one with persisted favourites, which
-        /// `new`'s home-less widget lacks).
+        /// Lay out a pre-built widget (e.g. one with a home and its standard
+        /// favourites, which `new`'s home-less widget lacks).
         fn from_widget(w: FileExplorerWidget, width: f32, height: f32) -> Self {
             let mut h = H {
                 w,

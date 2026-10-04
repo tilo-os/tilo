@@ -315,6 +315,7 @@ impl PdfApp {
             SidebarHit::SigClear => {
                 self.sig_strokes.clear();
                 self.sig_stroke = None;
+                self.keep_strokes();
             }
             SidebarHit::SigJump(i) => {
                 if let Some(s) = self.signatures.get(i) {
@@ -848,6 +849,7 @@ impl PdfApp {
         if let Some(stroke) = self.sig_stroke.take() {
             if stroke.len() >= 2 {
                 self.sig_strokes.push(stroke);
+                self.keep_strokes();
             }
             self.dirty = true;
             *handled = true;
@@ -1665,8 +1667,10 @@ mod event_tests {
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
-            ui::undo::take_committed_action(&mut app).is_some(),
-            "the recolour dispatched an action and stashed one undo boundary"
+            PdfDoc::list_annotations(&st.doc)
+                .iter()
+                .any(|a| a.id == hl.id && a.color == Swatch::Green),
+            "the recolour landed in the shared document"
         );
 
         // The first and last toolbar controls sit the same distance from their
@@ -2084,10 +2088,6 @@ mod event_tests {
             "a highlight drag through handle_event adds an annotation"
         );
         assert!(
-            ui::undo::take_committed_action(&mut rig.app).is_some(),
-            "the new highlight dispatched an action and stashed one undo boundary"
-        );
-        assert!(
             PdfDoc::list_annotations(&rig.st.doc).len() > before,
             "and it landed in the shared document"
         );
@@ -2419,9 +2419,13 @@ mod event_tests {
             .first()
             .expect("sample seeds annotations")
             .clone();
-        let resources = ui::resources::resources(&app, &st.doc);
+        let published = ui::tilo_resource::publish::<crate::PdfViewer>(
+            "pdf.document",
+            "PDF",
+            &<crate::PdfViewer as ui::tilo_resource::Resource>::read(&st.doc).unwrap(),
+        );
         let want_id = format!("pdf.annotation:{}", anno.id);
-        let res = resources[0]
+        let res = published
             .children
             .iter()
             .find(|r| r.id.as_str() == want_id.as_str())
@@ -2433,17 +2437,27 @@ mod event_tests {
                 panic!("delete is an immediate action")
             }
         };
-        // The real affordance path (Delete key / rail button / context menu).
+        // The palette's delete, applied to a replica of the same document…
+        let mut palette = st.doc.fork();
+        let decoded: crate::actions::PdfViewerAction =
+            serde_json::from_slice(&spec_encoded.payload).expect("the palette's delete decodes");
+        ui::tilo_actions::Action::apply(&decoded, &mut palette).expect("the palette deletes");
+        // …and the real affordance path (Delete key / rail button / context menu).
         app.delete_target(&DeleteTarget::Annotation(anno.id.clone()), &mut st.doc);
-        let dispatched = app
-            .actions
-            .last_dispatched()
-            .cloned()
-            .expect("the affordance dispatched an action");
-        assert_eq!(dispatched.type_id, spec_encoded.type_id);
+        let ids = |annotations: Vec<Annotation>| -> Vec<String> {
+            annotations.into_iter().map(|a| a.id).collect()
+        };
+        let comment_ids = |comments: Vec<Comment>| -> Vec<String> {
+            comments.into_iter().map(|c| c.id).collect()
+        };
         assert_eq!(
-            dispatched.payload, spec_encoded.payload,
+            ids(PdfDoc::list_annotations(&st.doc)),
+            ids(PdfDoc::list_annotations(&palette)),
             "one source of truth"
+        );
+        assert_eq!(
+            comment_ids(PdfDoc::list_comments(&st.doc)),
+            comment_ids(PdfDoc::list_comments(&palette))
         );
         assert!(
             app.annotations.iter().all(|a| a.id != anno.id),

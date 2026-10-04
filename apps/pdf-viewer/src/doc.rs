@@ -279,6 +279,14 @@ impl PdfDoc {
         let _ = doc.put(&meta, "page-plan-seeded", true);
     }
 
+    /// Whether the record's page plan has been created.
+    pub fn has_page_plan(doc: &AutoCommit) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return false;
+        };
+        read_bool(doc, &meta, "page-plan-seeded").unwrap_or(false)
+    }
+
     /// Return the canonical materialised plan. The CRDT list may contain
     /// duplicate physical maps after concurrent initialise/move operations;
     /// each durable occurrence id appears only once, chosen by Automerge's
@@ -319,24 +327,6 @@ impl PdfDoc {
         Self::list_page_plan(doc)
             .get(page.checked_sub(1)?)
             .map(|entry| entry.id.clone())
-    }
-
-    /// Upgrade ordinal-only anchors from records written before durable page
-    /// occurrences existed. This is schema hydration, not a user edit: it runs
-    /// once after the deterministic source plan is available and preserves the
-    /// page each legacy anchor originally denoted.
-    pub fn migrate_page_anchors(doc: &mut AutoCommit) {
-        for key in ["annotations", "comments", "signatures"] {
-            for entry in Self::entries(doc, key) {
-                if read_str(doc, &entry, "page-id").is_some() {
-                    continue;
-                }
-                let page = Self::get_i64(doc, &entry, "page").unwrap_or(1) as usize;
-                if let Some(page_id) = Self::page_id_for_number(doc, page) {
-                    let _ = doc.put(&entry, "page-id", page_id);
-                }
-            }
-        }
     }
 
     pub fn duplicate_page_plan(

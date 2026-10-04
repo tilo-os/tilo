@@ -13,10 +13,10 @@
 //!
 //! ## What is *not* an action
 //!
-//! Capturing a photo/video (the frame write is device I/O), media-library
-//! management (owned by Photos or Video Player), and the live preview are
-//! external effects. The one recent handoff, zoom, and an open chooser are
-//! presentation-only.
+//! Capturing a photo/video (the frame write is device I/O), scanning codes
+//! and documents, and switching screens are the [`CameraEffect`]
+//! vocabulary. Media-library management is owned by Photos or Video Player.
+//! The one recent handoff, zoom, and an open chooser are presentation-only.
 //!
 //! ## Determinism contract
 //!
@@ -32,65 +32,102 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind, Resource,
 };
+use ui::framework::LiveRow;
+// `#[derive(Effect)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, Effect};
 
 use crate::doc;
-use crate::model::{
-    CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, Screen, Settings, Timer,
-};
+use crate::model::{CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, Settings, Timer};
 
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
-pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
 pub const APPLICATION_LAUNCH_TYPE: &str = "tilo.application.launch";
 /// Device discovery is external and potentially hostile. Publishing a small,
 /// deterministic prefix keeps resource/search materialization bounded.
 pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CameraOperation {
-    /// Reveal a view locally. Navigation is presentation state and must not
-    /// create collaboration history or move a peer away from their work.
-    Reveal {
-        screen: Screen,
-    },
+/// What Camera does on this device and what it shows, which change no
+/// document: the screens, the shutter and recorder, the cameras it can open,
+/// scanning a code out of an existing image, and the document scanner's
+/// session. Everything reaches this device's cameras, scanners, files or
+/// clipboard, so only the person at it may invoke them. Work on the capture
+/// pipeline, the code scanner and the document scanner rides the row of the
+/// same name; choosing a camera rides that camera's row.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "camera.effect", device_only)]
+pub enum CameraEffect {
+    /// Open Camera
+    #[effect(view)]
+    OpenCamera,
+    /// Open Scan
+    #[effect(view)]
+    OpenScanner,
+    /// Open Documents
+    #[effect(view)]
+    OpenDocument,
+    /// Open Settings
+    #[effect(view)]
+    OpenSettings,
+    /// Capture photo
+    ///
+    /// Saves the current frame and answers once the photo is registered.
+    #[effect(row, job, cancellable)]
     Capture,
-    ToggleRecording,
-    /// Drop a stale device session and re-run real device discovery.
+    /// Start recording
+    ///
+    /// Starts a clip, or stops the one recording and answers once it is
+    /// saved and registered.
+    #[effect(row, job, cancellable)]
+    Record,
+    /// Refresh cameras
+    ///
+    /// Drops a stale camera session and looks for cameras again.
+    #[effect(row, idempotent)]
     RetryCamera,
-    /// Hand the system camera-privacy URI to the registered desktop handler.
-    OpenCameraPrivacySettings,
-    /// Select one device that was discovered in the current refresh.
-    SelectCamera {
+    /// Open camera privacy settings
+    #[effect(row)]
+    OpenCameraPrivacy,
+    /// Use camera
+    #[effect(row)]
+    UseCamera {
+        #[param("The camera's device node, as discovered on this device")]
         device: String,
     },
-    /// Choose an existing image through the system portal and scan it without
-    /// importing or browsing a Camera-owned media library.
-    ImportCodeImage,
-    CaptureDocumentPage,
-    RotateDocumentPage,
-    RecognizeDocumentPage,
-    CopyDocumentText,
-    ExportDocument,
-    BeginDocumentCrop,
-    MoveDocumentPageEarlier,
-    MoveDocumentPageLater,
-    RemoveDocumentPage,
-}
-
-/// Decode one Camera effect payload, declining operation types owned by other
-/// widgets.
-///
-/// # Errors
-///
-/// Returns an error when a payload claiming to be a Camera operation is not
-/// valid JSON for [`CameraOperation`].
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<CameraOperation>, String> {
-    if type_id != CAMERA_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
+    /// Scan existing image
+    ///
+    /// Asks for an image with the file chooser and decodes the QR code or
+    /// barcode in it, without importing the image.
+    #[effect(row, job)]
+    ImportImage,
+    /// Capture document page
+    #[effect(row, job, cancellable)]
+    CapturePage,
+    /// Rotate selected page
+    #[effect(row)]
+    RotatePage,
+    /// Recognize text on selected page
+    #[effect(row, job, cancellable)]
+    RecognizeText,
+    /// Copy recognized text
+    #[effect(row)]
+    CopyText,
+    /// Export searchable PDF
+    ///
+    /// Asks where to save the scanned pages as one searchable PDF.
+    #[effect(row, job)]
+    ExportPdf,
+    /// Crop selected page
+    #[effect(view, row)]
+    CropPage,
+    /// Move selected page earlier
+    #[effect(row)]
+    MovePageEarlier,
+    /// Move selected page later
+    #[effect(row)]
+    MovePageLater,
+    /// Remove selected page
+    #[effect(row)]
+    RemovePage,
 }
 
 /// Every collaborative operation Camera exports on its shared capture/scan
@@ -429,23 +466,6 @@ pub(crate) fn capture_item_from_shared(shared: &doc::SharedCapture) -> CaptureIt
     }
 }
 
-/// Screen reveal Views for [`crate::resource::Camera::local_operations`].
-pub(crate) fn screen_view_specs() -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for screen in Screen::ALL {
-        if let Ok(spec) = ActionSpec::operation(
-            format!("open-{}", screen.as_str()),
-            format!("Open {}", screen.label()),
-            OperationKind::View,
-            CAMERA_OPERATION_TYPE,
-            &CameraOperation::Reveal { screen },
-        ) {
-            specs.push(spec);
-        }
-    }
-    specs
-}
-
 /// Mode / lens Document actions bound from live capture state.
 pub(crate) fn bound_mode_facing_actions(facing: Facing, recording: bool) -> Vec<ActionSpec> {
     let mut specs = Vec::new();
@@ -619,217 +639,146 @@ pub(crate) fn publish_document_children(
     children
 }
 
-fn capture_effect_root(ctx: &CameraResourceCtx) -> Resource {
-    let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
-    root = root.with_action(open_photos_action());
-    if let Ok(spec) = ActionSpec::operation(
-        "capture",
-        "Capture photo",
-        OperationKind::Effect,
-        CAMERA_OPERATION_TYPE,
-        &CameraOperation::Capture,
-    ) {
-        root = root.with_action(if !ctx.feed_available {
-            spec.unavailable(
-                "camera_unavailable",
-                "Connect or allow a camera before capturing",
-            )
-        } else if ctx.mode == CaptureMode::Photo && !ctx.recording {
-            spec
-        } else {
-            spec.unavailable(
-                "photo_mode_required",
-                "Switch to photo mode before capturing",
-            )
-        });
+/// The row of the capture pipeline published by the surface.
+pub(crate) const CAPTURE_ROW: &str = "camera.capture";
+/// The row of the code scanner published by the surface.
+pub(crate) const SCANNER_ROW: &str = "camera.scanner";
+/// The row of the document scanner published by the surface.
+pub(crate) const DOCUMENT_ROW: &str = "camera.document-scanner";
+
+/// The published row of the camera at `device`.
+pub(crate) fn camera_device_row_id(device: &str) -> String {
+    format!("camera.device:{device}")
+}
+
+/// `effect` bound to its row, or unavailable for `why` (a code for
+/// programs, a reason for people).
+fn bound(effect: &CameraEffect, why: Option<(&str, &str)>) -> ActionSpec {
+    let spec = effect.bound();
+    match why {
+        Some((code, reason)) => spec.unavailable(code, reason),
+        None => spec,
     }
+}
+
+fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
+    let mut row = LiveRow::new(CAPTURE_ROW, "camera.capture", "Capture")
+        .operation(open_photos_action())
+        .operation(bound(
+            &CameraEffect::Capture,
+            if !ctx.feed_available {
+                Some((
+                    "camera_unavailable",
+                    "Connect or allow a camera before capturing",
+                ))
+            } else if ctx.mode == CaptureMode::Photo && !ctx.recording {
+                None
+            } else {
+                Some((
+                    "photo_mode_required",
+                    "Switch to photo mode before capturing",
+                ))
+            },
+        ));
     if !ctx.feed_available {
-        if let Ok(spec) = ActionSpec::operation(
-            "retry-camera",
-            "Refresh cameras",
-            OperationKind::Effect,
-            CAMERA_OPERATION_TYPE,
-            &CameraOperation::RetryCamera,
-        ) {
-            root = root.with_action(spec);
-        }
-        if ctx.camera_permission_denied
-            && let Ok(spec) = ActionSpec::operation(
-                "open-camera-privacy",
-                "Open camera privacy settings",
-                OperationKind::Effect,
-                CAMERA_OPERATION_TYPE,
-                &CameraOperation::OpenCameraPrivacySettings,
-            )
-        {
-            root = root.with_action(spec);
+        row = row.effect(&CameraEffect::RetryCamera);
+        if ctx.camera_permission_denied {
+            row = row.effect(&CameraEffect::OpenCameraPrivacy);
         }
         if ctx.camera_devices.len() > 1 {
             for device in ctx.camera_devices.iter().take(MAX_PUBLISHED_CAMERA_DEVICES) {
-                let label = if ctx.selected_camera.as_deref() == Some(device.as_str()) {
-                    format!("Use {device} (selected)")
-                } else {
-                    format!("Use {device}")
-                };
-                if let Ok(spec) = ActionSpec::operation(
-                    format!("camera-device-{device}"),
-                    label,
-                    OperationKind::Effect,
-                    CAMERA_OPERATION_TYPE,
-                    &CameraOperation::SelectCamera {
+                let selected = ctx.selected_camera.as_deref() == Some(device.as_str());
+                let mut spec = bound(
+                    &CameraEffect::UseCamera {
                         device: device.clone(),
                     },
-                ) {
-                    root = root.with_action(
-                        if ctx.selected_camera.as_deref() == Some(device.as_str()) {
-                            spec.unavailable("already_selected", "This camera is already selected")
-                        } else {
-                            spec
-                        },
-                    );
-                }
+                    selected.then_some(("already_selected", "This camera is already selected")),
+                );
+                spec.label = format!("Use {device}");
+                let label = if selected {
+                    format!("{device} (selected)")
+                } else {
+                    device.clone()
+                };
+                row = row.row(
+                    LiveRow::new(camera_device_row_id(device), "camera.device", label)
+                        .operation(spec),
+                );
             }
         }
     }
-    if let Ok(spec) = ActionSpec::operation(
-        "record",
-        if ctx.recording {
-            "Stop recording"
-        } else {
-            "Start recording"
-        },
-        OperationKind::Effect,
-        CAMERA_OPERATION_TYPE,
-        &CameraOperation::ToggleRecording,
-    ) {
-        root = root.with_action(if !ctx.feed_available {
-            spec.unavailable(
+    let mut record = bound(
+        &CameraEffect::Record,
+        if !ctx.feed_available {
+            Some((
                 "camera_unavailable",
                 "Connect or allow a camera before recording",
-            )
+            ))
         } else if ctx.mode == CaptureMode::Video {
-            spec
+            None
         } else {
-            spec.unavailable(
+            Some((
                 "video_mode_required",
                 "Switch to video mode before recording",
-            )
-        });
-    }
-    root
-}
-
-fn scanner_effect_root(ctx: &CameraResourceCtx) -> Resource {
-    let mut scanner = Resource::new("camera.scanner", "camera.scanner", "Code scanner");
-    if let Ok(spec) = ActionSpec::operation(
-        "import-image",
-        "Scan existing image",
-        OperationKind::Effect,
-        CAMERA_OPERATION_TYPE,
-        &CameraOperation::ImportCodeImage,
-    ) {
-        scanner = scanner.with_action(if ctx.scan_import_pending {
-            spec.unavailable("picker_open", "An image picker is already open")
-        } else {
-            spec
-        });
-    }
-    scanner
-}
-
-fn document_effect_root(ctx: &CameraResourceCtx) -> Resource {
-    let mut document = Resource::new(
-        "camera.document-scanner",
-        "camera.document-scanner",
-        "Document scanner",
+            ))
+        },
     );
-    let document_actions = [
-        (
-            "capture-page",
-            "Capture document page",
-            CameraOperation::CaptureDocumentPage,
-            ctx.document_scanner_available,
-        ),
-        (
-            "rotate-page",
-            "Rotate selected page",
-            CameraOperation::RotateDocumentPage,
-            ctx.document_pages > 0,
-        ),
-        (
-            "recognize-text",
-            "Recognize text on selected page",
-            CameraOperation::RecognizeDocumentPage,
-            ctx.document_pages > 0,
-        ),
-        (
-            "copy-text",
-            "Copy recognized text",
-            CameraOperation::CopyDocumentText,
-            ctx.document_has_text,
-        ),
-        (
-            "export-pdf",
-            "Export searchable PDF",
-            CameraOperation::ExportDocument,
-            ctx.document_pages > 0,
-        ),
-        (
-            "crop-page",
-            "Crop selected page",
-            CameraOperation::BeginDocumentCrop,
-            ctx.document_pages > 0,
-        ),
-        (
-            "move-page-earlier",
-            "Move selected page earlier",
-            CameraOperation::MoveDocumentPageEarlier,
-            ctx.document_pages > 0 && ctx.document_selected > 0,
-        ),
-        (
-            "move-page-later",
-            "Move selected page later",
-            CameraOperation::MoveDocumentPageLater,
-            ctx.document_pages > 0 && ctx.document_selected + 1 < ctx.document_pages,
-        ),
-        (
-            "remove-page",
-            "Remove selected page",
-            CameraOperation::RemoveDocumentPage,
-            ctx.document_pages > 0,
-        ),
-    ];
-    for (id, label, operation, available) in document_actions {
-        let kind = if operation == CameraOperation::BeginDocumentCrop {
-            OperationKind::View
-        } else {
-            OperationKind::Effect
-        };
-        if let Ok(spec) = ActionSpec::operation(id, label, kind, CAMERA_OPERATION_TYPE, &operation)
-        {
-            document = document.with_action(if ctx.document_busy {
-                spec.unavailable("document_busy", "Wait for the current document task")
-            } else if available {
-                spec
-            } else if operation == CameraOperation::CaptureDocumentPage {
-                spec.unavailable("no_scanner", "Connect or select a document scanner first")
-            } else {
-                spec.unavailable("no_selected_page", "Capture and select a page first")
-            });
-        }
+    if ctx.recording {
+        record.label = "Stop recording".into();
     }
-    document
+    row.operation(record)
 }
 
-/// Hosted-only extras that are not document state: shutter / record / device
-/// chooser, code-scanner import, and document-scanner Effects. Mode, lens and
-/// settings Document ops live on [`tilo_resource::publish`].
-pub(crate) fn live_effect_extras(ctx: &CameraResourceCtx) -> Vec<Resource> {
-    vec![
-        capture_effect_root(ctx),
-        scanner_effect_root(ctx),
-        document_effect_root(ctx),
-    ]
+fn scanner_row(ctx: &CameraResourceCtx) -> LiveRow {
+    LiveRow::new(SCANNER_ROW, "camera.scanner", "Code scanner").operation(bound(
+        &CameraEffect::ImportImage,
+        ctx.scan_import_pending
+            .then_some(("picker_open", "An image picker is already open")),
+    ))
+}
+
+fn document_row(ctx: &CameraResourceCtx) -> LiveRow {
+    let has_page = ctx.document_pages > 0;
+    let document_effects = [
+        (CameraEffect::CapturePage, ctx.document_scanner_available),
+        (CameraEffect::RotatePage, has_page),
+        (CameraEffect::RecognizeText, has_page),
+        (CameraEffect::CopyText, ctx.document_has_text),
+        (CameraEffect::ExportPdf, has_page),
+        (CameraEffect::CropPage, has_page),
+        (
+            CameraEffect::MovePageEarlier,
+            has_page && ctx.document_selected > 0,
+        ),
+        (
+            CameraEffect::MovePageLater,
+            has_page && ctx.document_selected + 1 < ctx.document_pages,
+        ),
+        (CameraEffect::RemovePage, has_page),
+    ];
+    document_effects.into_iter().fold(
+        LiveRow::new(DOCUMENT_ROW, "camera.document-scanner", "Document scanner"),
+        |row, (effect, available)| {
+            let why = if ctx.document_busy {
+                Some(("document_busy", "Wait for the current document task"))
+            } else if available {
+                None
+            } else if effect == CameraEffect::CapturePage {
+                Some(("no_scanner", "Connect or select a document scanner first"))
+            } else {
+                Some(("no_selected_page", "Capture and select a page first"))
+            };
+            row.operation(bound(&effect, why))
+        },
+    )
+}
+
+/// What the surface publishes beside the document: the capture pipeline
+/// with its cameras, the code scanner and the document scanner, each with
+/// the effects it offers now. Mode, lens and settings are the resource's
+/// own actions.
+pub(crate) fn live_rows(ctx: &CameraResourceCtx) -> Vec<LiveRow> {
+    vec![capture_row(ctx), scanner_row(ctx), document_row(ctx)]
 }
 
 #[cfg(test)]
@@ -863,7 +812,7 @@ mod tests {
             "Camera",
             state,
         )];
-        resources.extend(live_effect_extras(ctx));
+        resources.extend(live_rows(ctx).into_iter().map(LiveRow::into_resource));
         resources
     }
 
@@ -1109,20 +1058,21 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
-        // Phase `camera_root_is_a_local_reveal_operation_and_discoverable_resource`.
+        // Phase `screen_reveals_are_views_on_the_camera`.
         {
-            let resources = provide_resources(&CameraResourceCtx::default());
-            let camera = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "camera")
-                .expect("camera discovery resource");
-            assert!(camera.actions.iter().any(|spec| spec.id == "open-scanner"));
-            let scanner = camera
-                .actions
+            let specs = CameraEffect::specs();
+            let scanner = specs
                 .iter()
                 .find(|spec| spec.id == "open-scanner")
-                .expect("scanner reveal action");
+                .expect("scanner reveal effect");
             assert_eq!(scanner.kind, OperationKind::View);
+            assert!(
+                specs
+                    .iter()
+                    .all(|spec| spec.kind == OperationKind::View && spec.id.starts_with("open-")),
+                "only the screen reveals are offered unbound: {:?}",
+                specs.iter().map(|spec| &spec.id).collect::<Vec<_>>()
+            );
         }
         // Phase `ctrl_k_exposes_every_capture_preference`.
         {
@@ -1204,33 +1154,40 @@ mod tests {
                 camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
                 ..CameraResourceCtx::default()
             });
-            let actions = &resources
+            let capture = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "camera.capture")
-                .expect("capture effect root")
-                .actions;
-            let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
-            for id in [
-                "retry-camera",
-                "open-camera-privacy",
-                "camera-device-/dev/video0",
-                "camera-device-/dev/video2",
-            ] {
+                .expect("capture effect root");
+            let ids: Vec<&str> = capture
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for id in ["retry-camera", "open-camera-privacy"] {
                 assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
             }
-            assert!(
-                actions
+            for device in ["/dev/video0", "/dev/video2"] {
+                let row = capture
+                    .children
                     .iter()
-                    .filter(|action| {
-                        matches!(
-                            action.id.as_str(),
-                            "retry-camera"
-                                | "open-camera-privacy"
-                                | "camera-device-/dev/video0"
-                                | "camera-device-/dev/video2"
-                        )
-                    })
-                    .all(|action| action.kind == OperationKind::Effect)
+                    .find(|row| row.id.as_str() == camera_device_row_id(device))
+                    .unwrap_or_else(|| panic!("{device} is a row"));
+                let choose = row
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "use-camera")
+                    .expect("a camera row offers choosing it");
+                assert_eq!(choose.label, format!("Use {device}"));
+                assert!(choose.contract.availability.is_available());
+            }
+            assert!(
+                capture
+                    .actions
+                    .iter()
+                    .chain(capture.children.iter().flat_map(|row| row.actions.iter()))
+                    .filter(|action| action.id != "open-photos")
+                    .all(|action| action.kind == OperationKind::Effect
+                        && action.operation_type.as_deref() == Some(CameraEffect::OPERATION))
             );
         }
     }

@@ -49,9 +49,7 @@ use ui::animation::{Animated, Curve};
 use ui::chrome::SelectionState;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
-use ui::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
-};
+use ui::portal::{FileFilter, PickRequest};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
@@ -322,7 +320,6 @@ struct PendingShare {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResourceLifecycle {
-    Open,
     Share,
     Hydrate,
 }
@@ -929,11 +926,6 @@ pub struct BooksApp {
     shelving: std::collections::HashSet<String>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
-    portal_rx: Option<PortalChannel>,
-    /// A chooser delivering contents, where files have no path (the web).
-    portal_contents_rx: Option<ContentsChannel>,
-    /// A book chosen by contents, waiting for the document in `sync`.
-    pending_contents: Option<(String, Vec<u8>)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_lifecycle: Option<ResourceLifecycle>,
     completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
@@ -1261,9 +1253,6 @@ impl BooksApp {
             sample: None,
             hydrated: std::collections::HashSet::new(),
             shelving: std::collections::HashSet::new(),
-            portal_rx: None,
-            portal_contents_rx: None,
-            pending_contents: None,
             resource_invocation: None,
             resource_lifecycle: None,
             completed_resource_invocation: None,
@@ -1888,109 +1877,6 @@ impl BooksApp {
         self.notes_scroll_to_annotation = None;
     }
 
-    /// Ask the host to choose a book to open; the chosen path comes back over
-    /// a channel drained each frame in [`Self::drain_portal`]. A second
-    /// request while one is in flight is ignored.
-    fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() || self.portal_contents_rx.is_some() {
-            return;
-        }
-        if content::native_paths() {
-            self.portal_rx = Some(book_open_request().send());
-        } else {
-            self.portal_contents_rx = Some(book_open_request().send_contents());
-        }
-        self.load_error = None;
-        self.dirty = true;
-    }
-
-    /// Drain a completed picker request, if any. Never blocks — a
-    /// still-pending picker stays installed for the next frame.
-    fn drain_portal(&mut self) {
-        if let Some(rx) = self.portal_contents_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(ContentsOutcome::Picked(files)) => {
-                    self.portal_contents_rx = None;
-                    if let Some(file) = files.into_iter().next() {
-                        self.pending_contents = Some((file.name, file.bytes));
-                    }
-                }
-                Ok(ContentsOutcome::Cancelled)
-                | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.portal_contents_rx = None;
-                }
-                Ok(ContentsOutcome::Failed(reason)) => {
-                    self.portal_contents_rx = None;
-                    self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
-                    self.dirty = true;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        let Some(rx) = self.portal_rx.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.portal_rx = None;
-                match outcome {
-                    PortalOutcome::Opened(path) => {
-                        if let Err(error) = self.begin_import(path, ImportKind::Open) {
-                            self.settle_import_failure(error, "ebook.importer_unavailable");
-                        }
-                    }
-                    // A cancel is not an error — leave the current view intact.
-                    PortalOutcome::Cancelled => {
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.completed_resource_invocation =
-                                Some(tilo_actions::InvocationUpdate::Cancelled {
-                                    invocation,
-                                    message: Some("book selection cancelled".into()),
-                                });
-                        }
-                    }
-                    PortalOutcome::Failed(reason) => {
-                        self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
-                        self.dirty = true;
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.completed_resource_invocation =
-                                Some(tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "ebook.portal_failed".into(),
-                                        message: reason,
-                                        details: None,
-                                        retryable: false,
-                                    },
-                                });
-                        }
-                    }
-                }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                // A lifecycle operation must settle exactly once. Without
-                // this branch a failed host picker could leave an agent or
-                // palette invocation pending forever.
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.completed_resource_invocation =
-                        Some(tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "ebook.portal_disconnected".into(),
-                                message: "The book picker stopped before returning a selection."
-                                    .into(),
-                                details: None,
-                                retryable: true,
-                            },
-                        });
-                }
-                self.dirty = true;
-            }
-        }
-    }
-
     /// Put one EPUB on the latest-wins worker mailbox. This only changes local
     /// loading state; all document mutation happens in [`Self::drain_import_worker`].
     fn begin_import(&mut self, path: PathBuf, kind: ImportKind) -> Result<(), String> {
@@ -2060,34 +1946,14 @@ impl BooksApp {
     /// the shelf, reader, or CRDT.
     /// Open a book chosen by contents: parsed here (a page has no importer
     /// thread) and shelved as the importer would.
-    fn adopt_contents(&mut self, doc: &mut AutoCommit) {
-        let Some((name, bytes)) = self.pending_contents.take() else {
-            return;
-        };
-        match content::open_handed_book(&bytes, self.content.as_ref()) {
-            Ok(handed) => {
-                let entry = content::handed_book_entry(&handed);
-                self.edit(doc, &crate::actions::restore_library_book_action(&entry));
-                let index = self.shelve_handed(handed);
-                self.load_error = None;
-                self.open_book_at(doc, index);
-            }
-            Err(error) => self.load_error = Some(format!("Couldn’t open {name}: {error}")),
-        }
-        self.dirty = true;
-    }
-
-    /// Put a book opened by its contents on the shelf, read from the
-    /// content store from now on, and return where it is.
-    fn shelve_handed(&mut self, handed: content::HandedBook) -> usize {
-        let id = handed.book.id.clone();
+    /// Put a book on the shelf ahead of its row, read from `path` from now
+    /// on, and return where it is.
+    fn shelve(&mut self, book: Book, path: PathBuf) -> usize {
+        let id = book.id.clone();
         self.hydrated.insert(id.clone());
         self.shelving.insert(id.clone());
-        if let Some(hash) = &handed.content {
-            self.library_paths
-                .insert(id.clone(), content::content_path(hash));
-        }
-        let book = Arc::new(handed.book);
+        self.library_paths.insert(id.clone(), path);
+        let book = Arc::new(book);
         if let Some(index) = self.library.iter().position(|b| b.id == id) {
             if let Some(slot) = Arc::make_mut(&mut self.library).get_mut(index) {
                 *slot = book;
@@ -2097,6 +1963,50 @@ impl BooksApp {
             Arc::make_mut(&mut self.library).push(book);
             self.library.len() - 1
         }
+    }
+
+    /// Shelve and open a book an effect placed, through the library's
+    /// action, or say why it could not be opened.
+    fn finish_opening(
+        &mut self,
+        name: &str,
+        placed: Result<content::Placed, String>,
+        cx: &ui::framework::EffectCx<crate::resource::Ebook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.dirty = true;
+        match placed {
+            Ok(placed) => {
+                cx.apply(&crate::actions::restore_library_book_action(&placed.entry));
+                self.pending_open_book = Some(placed.entry.id);
+                self.shelve(placed.book, placed.path);
+                self.load_error = None;
+                Ok(ui::framework::Effected::done())
+            }
+            Err(error) => {
+                let message = format!("Couldn’t open {name}: {error}");
+                self.load_error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// Ask the person for a book with the host's chooser, then place it
+    /// where the library reads it again and open it. A cancelled choice
+    /// opens nothing.
+    pub(crate) fn choose_book(
+        cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>,
+    ) -> ui::framework::Effected {
+        cx.choose_file(book_open_request(), |app: &mut Self, chosen, cx| {
+            let Some(file) = chosen else {
+                return Ok(ui::framework::Effected::done());
+            };
+            let store = app.content.clone();
+            let name = file.name;
+            Ok(cx.thread(
+                move |_| content::place_chosen_book(&file.bytes, store.as_ref()),
+                move |app: &mut Self, placed, cx| app.finish_opening(&name, placed, cx),
+            ))
+        })
     }
 
     /// Open the book whose bytes the content store holds as `hash`: parsed
@@ -2119,26 +2029,10 @@ impl BooksApp {
                     .ok_or_else(|| "its contents are not on this device".to_string())?;
                 content::open_handed_book(&bytes, None).map(|mut handed| {
                     handed.content = Some(hash);
-                    handed
+                    content::placed(handed)
                 })
             },
-            move |app: &mut Self, opened: Result<content::HandedBook, String>, cx| match opened {
-                Ok(handed) => {
-                    let entry = content::handed_book_entry(&handed);
-                    cx.apply(&crate::actions::restore_library_book_action(&entry));
-                    app.pending_open_book = Some(entry.id);
-                    app.shelve_handed(handed);
-                    app.load_error = None;
-                    app.dirty = true;
-                    Ok(ui::framework::Effected::done())
-                }
-                Err(error) => {
-                    let message = format!("Couldn’t open {name}: {error}");
-                    app.load_error = Some(message.clone());
-                    app.dirty = true;
-                    Err(message)
-                }
-            },
+            move |app: &mut Self, placed, cx| app.finish_opening(&name, placed, cx),
         ))
     }
 
@@ -2355,7 +2249,9 @@ impl BooksApp {
             Action::AddComment(group) => self.on_add_comment(group, doc),
             Action::EditComment(id) => self.on_edit_comment(id),
             Action::DeleteComment(id) => self.on_delete_comment(id, doc),
-            Action::OpenViaPortal => self.request_open_via_portal(),
+            Action::OpenViaPortal => self
+                .dispatch
+                .effect(&crate::resource::BooksEffect::OpenBook),
             Action::ShareToWorkspace(id) => self.on_share_to_workspace(&id, doc),
             Action::RemoveFromLibrary(id) => self.on_remove_from_library(&id, doc),
             Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
@@ -4539,12 +4435,11 @@ impl Widget for BooksApp {
     ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
-            self.portal_rx = None;
             self.pending_share = None;
             let message = match self.resource_lifecycle.take() {
                 Some(ResourceLifecycle::Share) => "book sharing cancelled",
                 Some(ResourceLifecycle::Hydrate) => "shared book download cancelled",
-                Some(ResourceLifecycle::Open) | None => "book open cancelled",
+                None => "book open cancelled",
             };
             // Parsing cannot be safely interrupted mid-ZIP member, but its
             // eventual result is no longer authoritative and will be rejected
@@ -4579,8 +4474,6 @@ impl Widget for BooksApp {
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
-        self.drain_portal();
-        self.adopt_contents(doc);
         self.drain_import_worker(doc);
         self.commit_pending_share(doc);
         self.open_pending_book(doc);
@@ -5396,9 +5289,6 @@ impl BooksApp {
                 (start_block, start_char),
                 (end_block, end_char),
             )?,
-            EbookOperation::OpenBook => {
-                return Err("book open requires the lifecycle-capable operation host".into());
-            }
             EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
                 return Err("book sharing requires the lifecycle-capable operation host".into());
             }
@@ -5425,20 +5315,6 @@ impl BooksApp {
             ));
         }
         match operation {
-            crate::actions::EbookOperation::OpenBook => {
-                if self.resource_invocation.is_some() {
-                    return Err("another book open is in progress".into());
-                }
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Open);
-                self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    self.resource_lifecycle = None;
-                    return Err("book picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
             crate::actions::EbookOperation::ShareBook { book_id } => {
                 self.begin_share_book(&book_id)?;
                 self.resource_invocation = Some(invocation);

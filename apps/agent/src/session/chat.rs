@@ -337,7 +337,6 @@ impl Session {
             self.publish_chat(&::chat::actions::send_message_action(
                 &summons.channel,
                 &reply,
-                &self.cfg.agent_id,
                 now(),
                 "",
                 Some(summons.message.clone()),

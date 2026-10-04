@@ -297,10 +297,13 @@ impl SearchProvider for NoteSearchProvider {
             .iter()
             .find(|page| crate::actions::open_page_address(page.id) == *address)
         {
-            return Some(crate::actions::page_resource(
+            // The search hit opens the page: its tree actions and preview
+            // come from the notebook's own publication.
+            return Some(crate::actions::page_resource_in(
                 page,
                 &snapshot.pages,
-                &automerge::AutoCommit::new(),
+                None,
+                &crate::actions::Bodies::default(),
             ));
         }
         snapshot.blocks.iter().find_map(|(page, blocks)| {
