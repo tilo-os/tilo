@@ -7,16 +7,22 @@ files-time-unknown = unbekannter Zeitpunkt
 files-shortcuts-title = Tastaturkurzbefehle
 files-shortcuts-summary = Dateien-Steuerung mit der Tastaturkonvention des aktuellen Desktops
 files-shortcuts-primary = Primäre Modifikatortaste: Strg auf den meisten Desktops, Befehl unter macOS
-files-shortcuts-navigate = Auswahl bewegen: ↑ / ↓ · Bereich auswählen: Umschalt + ↑ / ↓
+files-shortcuts-navigate = Auswahl bewegen: ↑ und ↓
+files-shortcuts-range = Bereich auswählen: Umschalt + ↑ und ↓
 files-shortcuts-grid = Raster-Navigation: ← / → bewegen sich horizontal; ↑ / ↓ nach sichtbarer Zeile
-files-shortcuts-open = Auswahl öffnen: Eingabe · umbenennen: F2 · in Papierkorb verschieben: Entf
-files-shortcuts-location = Ort bearbeiten: Primär + L · aktualisieren: F5
+files-shortcuts-open = Auswahl öffnen: Eingabe
+files-shortcuts-rename = Umbenennen: F2
+files-shortcuts-trash = In den Papierkorb verschieben: Entf
+files-shortcuts-location = Ort bearbeiten: Primär + L
+files-shortcuts-refresh = Aktualisieren: F5
 files-shortcuts-new-folder = Neuer Ordner: Primär + Umschalt + N
 files-shortcuts-edit = Kopieren, ausschneiden, einfügen, Papierkorb rückgängig, alles auswählen: Primär + C / X / V / Z / A
 files-shortcuts-hidden = Versteckte Dateien zeigen oder ausblenden: Primär + H
-files-shortcuts-size = Elementgröße ändern: Primär + + / − · Größe zurücksetzen: Primär + 0
+files-shortcuts-size = Elementgröße ändern: Primär + + / −
+files-shortcuts-size-reset = Größe zurücksetzen: Primär + 0
 files-shortcuts-context = Kontextmenü: Menütaste oder Rechtsklick
-files-shortcuts-close = Diese Hilfe öffnen: ? oder F1 · Blätter und Menüs schließen: Esc
+files-shortcuts-close = Diese Hilfe öffnen: ? oder F1
+files-shortcuts-dismiss = Blätter und Menüs schließen: Esc
 
 ## Verfügbarkeit: Aktionen und Status
 files-opening-document = Dokument wird geöffnet…
@@ -121,10 +127,10 @@ files-transfer-verifying = wird verifiziert
 
 ## Freigaben
 files-search-collaborative-records = Kollaborative Dateien
-files-search-record-provenance = { $path } · Datensatz { $record }
+files-search-record-provenance = { $path }
 files-copy-one-time-link = Einmaligen Freigabelink kopieren
-files-share-composer-named = Für { $person } freigeben · { $permission } · { $expiry }
-files-share-composer-link = Link kopieren · { $permission } · { $expiry } · { $uses }
+files-share-composer-named = Für { $person } freigeben ({ $permission }, { $expiry })
+files-share-composer-link = Link kopieren ({ $permission }, { $expiry }, { $uses })
 files-share-choice-view = Ansehen
 files-share-choice-edit = Bearbeiten
 files-share-choice-day = läuft in 24 Stunden ab
@@ -160,10 +166,10 @@ files-grant-revoked = widerrufen
 files-grant-exhausted = aufgebraucht
 files-no-expiry = läuft nicht ab
 files-expires = läuft am { $time } ab
-files-share-grant-line = { $subject } · { $permission } · { $status } · { $expiry }
+files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
 files-sharing-title = Freigabe — { $name }
-files-certified-devices = { $person } · zertifizierte Geräte: { $devices }
-files-certified-device-detail = { $device } · Schlüssel { $fingerprint } · { $capabilities } · ausgestellt { $issued } · { $expiry }
+files-certified-devices = { $person }, zertifizierte Geräte: { $devices }
+files-certified-device-detail = { $device }, Schlüssel { $fingerprint }, { $capabilities }, ausgestellt { $issued }, { $expiry }
 files-device-cap-own = verwaltet Arbeitsbereiche
 files-device-cap-admit = lässt Geräte zu
 files-device-cap-host = vertrauenswürdiger Host
@@ -185,7 +191,7 @@ files-version-history = Versionsverlauf…
 files-restore-previous = Vorherige Version wiederherstellen
 files-resolve-keep-current = { $conflict } lösen — Aktuelle behalten
 files-resolve-use-other = { $conflict } lösen — Andere verwenden (Gerät { $device })
-files-history-version-line = { $action } · { $time } · von { $person } · Gerät { $device }
+files-history-version-line = { $action } { $time } von { $person } auf Gerät { $device }
 files-history-older = Ältere Versionen sind über den Verlaufsdienst verfügbar
 files-conflict-needs-review = Überprüfung erforderlich
 files-conflict-resolved-strategy = Gelöst: { $strategy }
@@ -194,10 +200,10 @@ files-strategy-keep-current = Aktuelle behalten
 files-strategy-use-other = Andere verwenden
 files-strategy-keep-both = Beide behalten
 files-strategy-merge = Zusammenführen
-files-conflict-line = Konflikt { $conflict } · { $count } { $count ->
+files-conflict-line = Konflikt { $conflict }: { $count } { $count ->
     [one] Version
    *[other] Versionen
-} · { $state }
+}, { $state }
 files-conflict-resolve-hint = Über das Kontextmenü lösen: Aktuelle behalten oder Andere verwenden
 files-conflict-unsupported-hint = Beide behalten und Zusammenführen sind nicht verfügbar, bis die signierten Abläufe unterstützt werden
 files-history-title = Versionsverlauf — { $name }
@@ -241,8 +247,8 @@ files-history-action-deleted = Gelöscht
 files-history-action-conflict-resolved = Konflikt gelöst
 files-history-action-restored = Wiederhergestellt
 files-history-action-changed = Geändert
-files-history-current-version = { $action } · Aktuelle Version
-files-history-timeline-detail = { $person } · { $time }
+files-history-current-version = { $action } (aktuelle Version)
+files-history-timeline-detail = { $person }, { $time }
 files-history-preview-title = Ausgewählte Version
 files-history-compare-title = Mit aktueller Version vergleichen
 files-history-selected-action = Aktion: { $action }
@@ -335,9 +341,8 @@ files-sort-by = Sortieren nach
 files-view-options = Ansichtsoptionen
 files-path-placeholder = Pfad eingeben, z. B. ~/Dokumente
 files-place-home = Persönlicher Ordner
-files-place-favourites = Favoriten
 files-place-favorites = Favoriten
-files-place-system = System
+files-place-system = Orte
 files-place-root = Wurzelverzeichnis
 files-place-trash = Papierkorb
 files-place-workspace = Arbeitsbereich
@@ -358,7 +363,7 @@ files-loading-title = Ordner wird geöffnet
 files-loading-detail = { $path } wird geladen
 files-directory-read-failed = Dieser Ordner konnte nicht geöffnet werden: { $error }
 files-load-error-title = Dieser Ordner konnte nicht geöffnet werden
-files-load-error-detail = { $error } · { $path }
+files-load-error-detail = { $path }: { $error }
 files-a11y-load-error = Ordner konnte nicht geladen werden: { $error }. Erneut versuchen ist verfügbar
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Zum Schließen Escape drücken
 files-a11y-dialog-close = { $summary }. Zum Schließen Escape drücken
@@ -377,7 +382,7 @@ files-item-count = { $count } { $count ->
     [one] Element
    *[other] Elemente
 }
-files-selected-count = { $base }  ·  { $count } ausgewählt
+files-selected-count = { $base }, { $count } ausgewählt
 files-a11y-list = Dateien
 files-a11y-folder = Ordner
 files-a11y-file = Datei, { $size }
@@ -568,3 +573,12 @@ files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
 files-recent-reveal = Enthaltenden Ordner öffnen
 files-recent-forget = Aus „Zuletzt verwendet“ entfernen
 files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
+
+## Cloud-Konten
+files-account-sign-in-title = Bei { $account } anmelden
+files-account-sign-in-needed = { $service } unter { $host } braucht eine neue Anmeldung, bevor dieser Ordner synchronisiert werden kann.
+files-account-sign-in-where = Das geht in den Einstellungen unter „Externe Konten“.
+files-account-service-at-host = { $service } unter { $host }
+files-account-folder = Ordner: { $path }
+files-account-check-again = Erneut prüfen
+files-account-check-again-detail = Liest den Zustand des Kontos neu und öffnet seinen Ordner, sobald er verfügbar ist.
