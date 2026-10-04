@@ -311,6 +311,24 @@ impl ChannelEncryption {
         }
     }
 
+    /// Observe a current key without opening a channel, requesting access or
+    /// changing a removed member's rejoin state.
+    fn existing_keys(&self, room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
+        if self.directory.governs(room) {
+            return self
+                .stewards
+                .get(&channel)
+                .filter(|entry| entry.room == room)
+                .and_then(|entry| entry.steward.content_keys().ok());
+        }
+        self.members
+            .get(&channel)
+            .filter(|entry| {
+                entry.room == room && matches!(entry.member.access(), Access::Ready { .. })
+            })
+            .and_then(|entry| entry.member.content_keys())
+    }
+
     /// Run the governance protocol once: apply what arrived, reconcile
     /// stewarded groups with the access policy, and (re)deliver what is
     /// due. `wall` is the Unix time the policy is evaluated at.
@@ -688,6 +706,36 @@ impl ChannelKeyAccess {
                 let access = service.access(room, channel, Instant::now());
                 (access, service.generation())
             })
+    }
+
+    /// Seal an ephemeral frame only with a key this device already holds for
+    /// this exact room and channel. Observation never requests channel access,
+    /// creates a group or rejoins a removed member. The caller must already
+    /// have validated the publisher's current room admission and record route.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing, waiting or removed channels, a mismatched room, an
+    /// unavailable service, or a sealing failure.
+    pub fn seal_existing_live(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        artifact: ArtifactId,
+        plaintext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let service = self
+            .inner
+            .lock()
+            .map_err(|_| "channel service unavailable")?;
+        let keys = service
+            .existing_keys(room, channel)
+            .ok_or("no current key for the admitted record")?;
+        let sealed = keys
+            .seal_content(artifact, ContentRetention::Delta, plaintext)
+            .map_err(|error| error.to_string());
+        drop(service);
+        sealed
     }
 
     /// Open `envelope`, a new sealed write to one of `room`'s channels, for
@@ -1090,6 +1138,105 @@ mod tests {
             .lock()
             .unwrap()
             .document_encryption_allowed(channel, None)
+    }
+
+    #[test]
+    fn observing_live_keys_never_opens_a_channel_or_rejoins_after_removal() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, member_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut member = device(&room, room_id, 1, (2, 1), &policy, member_dir.path());
+        for service in [&owner.service, &member.service] {
+            let generation = service.generation();
+            assert!(service.existing_keys(room_id, channel).is_none());
+            assert!(service.stewards.is_empty());
+            assert!(service.members.is_empty());
+            assert_eq!(service.generation(), generation);
+        }
+
+        // Only this explicit fixture admission creates or requests keys.
+        let mut now = Instant::now();
+        owner.service.access(room_id, channel, now);
+        member.service.access(room_id, channel, now);
+        run(&mut [&mut owner, &mut member], &mut now, 5);
+        assert!(member.service.existing_keys(room_id, channel).is_some());
+        assert!(
+            member
+                .service
+                .existing_keys(RoomId::new(), channel)
+                .is_none()
+        );
+        assert!(
+            owner
+                .service
+                .existing_keys(RoomId::new(), channel)
+                .is_none()
+        );
+
+        policy.allowed.lock().unwrap().clear();
+        run(&mut [&mut owner, &mut member], &mut now, 3);
+        let generation = member.service.generation();
+        let rejoin = member.service.members.get(&channel).unwrap().rejoin;
+        assert!(!rejoin);
+        assert!(member.service.existing_keys(room_id, channel).is_none());
+        assert_eq!(member.service.generation(), generation);
+        assert!(!member.service.members.get(&channel).unwrap().rejoin);
+        let access = ChannelKeyAccess::new(member.service);
+        assert!(
+            access
+                .seal_existing_live(room_id, channel, ArtifactId::new(), b"semantic event")
+                .is_err()
+        );
+        assert!(
+            !access
+                .inner
+                .lock()
+                .unwrap()
+                .members
+                .get(&channel)
+                .unwrap()
+                .rejoin
+        );
+    }
+
+    #[test]
+    fn live_sealing_requires_an_existing_key_for_the_exact_room() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let dir = tempfile::tempdir().unwrap();
+        let owner = device(&room, room_id, 0, (1, 1), &Policy::default(), dir.path());
+        let access = ChannelKeyAccess::new(owner.service);
+        let artifact = ArtifactId::new();
+        assert!(
+            access
+                .seal_existing_live(room_id, channel, artifact, b"event")
+                .is_err()
+        );
+        assert!(access.inner.lock().unwrap().stewards.is_empty());
+        let (ChannelAccess::Ready(keys), _) = access.access(room_id, channel) else {
+            panic!("explicit fixture admission must provide keys");
+        };
+        let generation = access.generation();
+        let (metadata, sealed) = access
+            .seal_existing_live(room_id, channel, artifact, b"event")
+            .unwrap();
+        assert_eq!(
+            keys.open_current_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"event"
+        );
+        assert_eq!(access.generation(), generation);
+        assert!(
+            access
+                .seal_existing_live(RoomId::new(), channel, artifact, b"event")
+                .is_err()
+        );
     }
 
     #[test]
