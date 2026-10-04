@@ -21,15 +21,26 @@ const SMOOTHNESS: f32 = 1e-3; // a colour variance, not a distance
 /// blurs fine strands together.
 const MOST_WINDOW: usize = 16; // pixels of the picture, not on-screen spacing
 
+/// How far apart, in squared colour, the subject's and the background's
+/// colours must be for the pixel's own colour to say how much of it is
+/// subject: below this the guided filter alone decides.
+const DISTINCT: f32 = 0.02; // a squared colour distance, not spacing
+/// How much the colours' own spread (fur's black and white, a busy
+/// background) weakens what a pixel's colour says.
+const SPREAD: f32 = 4.0; // a ratio of colour variances, not spacing
+
 /// `matte`'s edge refined to `picture` within `radius` pixels of it.
 ///
 /// Along the edge (where the matte is undecided, or within `radius` of
 /// where it changes) each pixel's coverage becomes what the colours around
-/// it say: a colour guided filter (He, Sun and Tang) fits coverage to
-/// colour in each window, so the edge follows the picture's own edges,
-/// strands of fur and hair keep their partial coverage, and a soft edge the
-/// model guessed a pixel out snaps in. Away from the edge the matte is kept
-/// whole or empty.
+/// it say. A colour guided filter (He, Sun and Tang) fits coverage to
+/// colour in each window, so the edge follows the picture's own edges and
+/// strands of fur and hair keep their partial coverage. Where the subject
+/// and the background nearby are distinct, even colours (an apple on a
+/// white table), the pixel's colour is also placed between theirs and can
+/// only take coverage away: an edge drawn a few pixels out into a plain
+/// background, which a filter cannot see past, comes back to the subject.
+/// Away from the edge the matte is kept whole or empty.
 ///
 /// # Errors
 /// Returns why the picture or matte cannot be worked on, or that they
@@ -51,12 +62,16 @@ pub fn refine_edge(picture: &Picture, matte: &Matte, radius: f32) -> Result<Matt
     let edge = edge_band(&hard, &matte.values, width, height, reach);
     let colours = picture.colours();
     let guided = guided_filter(&colours, &matte.values, width, height, window);
+    let placed = colour_line(&colours, &hard, (width, height), reach);
     let values = (0..count)
         .map(|at| {
             if edge[at] {
+                let (between, sure) = placed[at];
+                let guided = guided[at];
+                let coverage = guided.min(sure * between + (1.0 - sure) * guided);
                 // Stretch so a strand's faint tail goes to nothing and its
                 // core to whole, keeping the soft part between.
-                ((guided[at] - 0.1) / 0.8).clamp(0.0, 1.0)
+                ((coverage - 0.1) / 0.8).clamp(0.0, 1.0)
             } else if hard[at] {
                 1.0
             } else {
@@ -65,6 +80,79 @@ pub fn refine_edge(picture: &Picture, matte: &Matte, radius: f32) -> Result<Matt
         })
         .collect();
     Matte::new(width, height, values).ok_or(Error::Size)
+}
+
+/// For each pixel, where its colour lies between the subject's and the
+/// background's nearby (`0` the background's, `1` the subject's), and how
+/// sure that is (`0..=1`). Their colours are the means of the pixels
+/// surely in and surely out (further than `reach` from the edge) around it.
+fn colour_line(
+    colours: &[[f32; 3]],
+    hard: &[bool],
+    (width, height): (usize, usize),
+    reach: usize,
+) -> Vec<(f32, f32)> {
+    let outside: Vec<bool> = hard.iter().map(|&inside| !inside).collect();
+    let near_out = grow(&outside, width, height, reach);
+    let near_in = grow(hard, width, height, reach);
+    let sure_in: Vec<f32> = hard
+        .iter()
+        .zip(&near_out)
+        .map(|(&inside, &near)| f32::from(u8::from(inside && !near)))
+        .collect();
+    let sure_out: Vec<f32> = outside
+        .iter()
+        .zip(&near_in)
+        .map(|(&outside, &near)| f32::from(u8::from(outside && !near)))
+        .collect();
+    let around = (reach * 2).max(8);
+    let mean = |plane: Vec<f32>| box_mean(&plane, width, height, around);
+    let weight_in = mean(sure_in.clone());
+    let weight_out = mean(sure_out.clone());
+    // Per channel: the weighted mean colour and mean square, in and out.
+    let mut subject = vec![[0.0_f32; 3]; colours.len()];
+    let mut background = vec![[0.0_f32; 3]; colours.len()];
+    let mut spread = vec![0.0_f32; colours.len()];
+    for c in 0..3 {
+        for (weights, total, into) in [
+            (&sure_in, &weight_in, &mut subject),
+            (&sure_out, &weight_out, &mut background),
+        ] {
+            let sum = mean(
+                colours
+                    .iter()
+                    .zip(weights)
+                    .map(|(colour, w)| colour[c] * w)
+                    .collect(),
+            );
+            let squares = mean(
+                colours
+                    .iter()
+                    .zip(weights)
+                    .map(|(colour, w)| colour[c] * colour[c] * w)
+                    .collect(),
+            );
+            for at in 0..colours.len() {
+                let m = sum[at] / (total[at] + 1e-6);
+                into[at][c] = m;
+                spread[at] += (squares[at] / (total[at] + 1e-6) - m * m).max(0.0);
+            }
+        }
+    }
+    (0..colours.len())
+        .map(|at| {
+            if weight_in[at] < 1e-3 || weight_out[at] < 1e-3 {
+                return (0.0, 0.0);
+            }
+            let (f, b, i) = (subject[at], background[at], colours[at]);
+            let d = [f[0] - b[0], f[1] - b[1], f[2] - b[2]];
+            let distance = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            let along = (i[0] - b[0]) * d[0] + (i[1] - b[1]) * d[1] + (i[2] - b[2]) * d[2];
+            let between = (along / (distance + 1e-6)).clamp(0.0, 1.0);
+            let sure = distance / (distance + DISTINCT + SPREAD * spread[at]);
+            (between, sure)
+        })
+        .collect()
 }
 
 /// The pixels near the matte's edge: where it changes within `reach`, or
@@ -297,9 +385,9 @@ mod tests {
             width,
             height,
         };
-        // The guess fades out over columns 19..23: soft, and a pixel out.
+        // The guess fades out over columns 18..26: too soft and too far out.
         let values = (0..width * height)
-            .map(|at| ((23.0 - (at % width) as f32) / 4.0).clamp(0.0, 1.0))
+            .map(|at| ((26.0 - (at % width) as f32) / 8.0).clamp(0.0, 1.0))
             .collect();
         let matte = Matte::new(width, height, values).unwrap();
         let refined = refine_edge(&picture, &matte, 6.0).unwrap();
