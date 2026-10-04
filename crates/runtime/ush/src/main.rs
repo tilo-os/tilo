@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ush::broker::{Request, Response};
-use ush::images::{DirImages, Images, NoImages, SharedBuilds, StoreImages};
+use ush::images::{Images, SharedBuilds};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -107,7 +107,8 @@ Inside a guest:
   app update [APP]                  update apps (`store` is an alias)
   system update                     update the Tilo system image
   pkg install PKG…                 pkg remove PKG…    pkg list
-  perm trust-dir DIR               perm list          perm revoke ID
+  perm trust-dir DIR               perm allow-host HOST
+  perm list                        perm revoke ID
   scan PATH
   guard status
   quarantine list | add PATH | restore PATH
@@ -181,21 +182,15 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
 /// Where images come from on this device: the package store, or fixture
 /// trees under `TILO_USH_IMAGES` in tests.
 fn images() -> Arc<dyn Images> {
-    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
-        return Arc::new(DirImages::at(PathBuf::from(root)));
-    }
-    match package_store::Store::from_env() {
-        Ok(store) => Arc::new(StoreImages::new(env_tools::store::trusting_device_tools(
-            store,
-        ))),
-        Err(reason) => Arc::new(NoImages(format!(
-            "the package store cannot be opened: {reason}"
-        ))),
-    }
+    ush::images::on_this_device()
 }
 
-/// How `pkg install` builds tool images on this device.
+/// How `pkg install` builds tool images on this device: into the store
+/// [`images`] reads them from.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
+    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
+        return env_tools::store::dir_tool_builder(Path::new(&root));
+    }
     env_tools::store::device_tool_builder()
 }
 
@@ -290,7 +285,7 @@ mod guest {
     fn report(resp: Response) -> i32 {
         match resp {
             Response::Ok => 0,
-            Response::NeedsRestart { detail } => {
+            Response::NeedsRestart { detail } | Response::Applied { detail } => {
                 println!("{detail}");
                 0
             }
@@ -624,6 +619,15 @@ explain when the host does not offer them.\n";
                     path: PathBuf::from(dir),
                 })?))
             }
+            Some("allow-host") => {
+                let host = args.get(1).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "perm allow-host needs a host: example.com, *.example.com for a \
+                         domain and everything under it, or * for any host"
+                    )
+                })?;
+                Ok(report(ask(&Request::AllowHost { host: host.clone() })?))
+            }
             Some("revoke") => {
                 let id = args
                     .get(1)
@@ -638,7 +642,8 @@ explain when the host does not offer them.\n";
                     println!(
                         "nothing is granted. Your home directory in here is this \
                          environment's, not yours; `perm trust-dir DIR` is how a real \
-                         directory appears."
+                         directory appears, and `perm allow-host HOST` how a host \
+                         becomes reachable."
                     );
                 }
                 for e in &entries {
@@ -646,7 +651,9 @@ explain when the host does not offer them.\n";
                 }
                 Ok(0)
             }
-            Some(other) => anyhow::bail!("unknown `perm {other}`; try trust-dir, list, revoke"),
+            Some(other) => {
+                anyhow::bail!("unknown `perm {other}`; try trust-dir, allow-host, list, revoke")
+            }
         }
     }
 
@@ -719,6 +726,9 @@ explain when the host does not offer them.\n";
                 );
                 if !status.readable_dirs.is_empty() {
                     println!("readable    : {}", status.readable_dirs.join(", "));
+                }
+                for line in ush::guard::network_report(&status.network) {
+                    println!("{line}");
                 }
                 println!("audit       : {} records", status.audit_records);
                 Ok(0)
@@ -794,19 +804,35 @@ explain when the host does not offer them.\n";
     /// Tear the guest down so the supervisor can build it again. There is no
     /// way to remount a namespace from inside it, so a restart is literally a
     /// new guest: the broker records the request, this ends the current one,
-    /// and the supervisor loops — signalling PID 1 (the sandbox's own init
-    /// inside the guest's pid namespace) takes every process in it with it.
+    /// and the supervisor loops. Every process in the guest's pid namespace
+    /// is ended — hung up first, so shells save their history, then killed —
+    /// and the sandbox's init (pid 1, which the kernel shields from signals
+    /// sent inside its own namespace) exits with its last child.
     pub fn restart() -> anyhow::Result<i32> {
+        use std::io::Write as _;
         ask(&Request::Restart)?;
         println!("restarting the guest…");
-        // SAFETY: plain `kill(2)`. Inside the guest's pid namespace pid 1 is
-        // the sandbox's own init; outside one this fails with EPERM and the
-        // fallback below applies.
-        if unsafe { libc::kill(1, libc::SIGTERM) } == 0 {
+        let _ = std::io::stdout().flush();
+        // Only ever inside a guest: there pid 1 is the sandbox's init. On a
+        // host `kill(-1)` would end the whole login session.
+        let in_guest =
+            std::fs::read_to_string("/proc/1/comm").is_ok_and(|comm| comm.trim() == "bwrap");
+        if !in_guest {
+            // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
+            unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
             return Ok(0);
         }
-        // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
-        unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
+        // SAFETY: plain signal(2)/kill(2) calls. This process ignores the
+        // hangup it sends so it is still here to send the kill; `-1` reaches
+        // every process this one may signal, which inside the guest's pid
+        // namespace is the guest and nothing else.
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            libc::kill(-1, libc::SIGHUP);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // SAFETY: as above.
+        unsafe { libc::kill(-1, libc::SIGKILL) };
         Ok(0)
     }
 

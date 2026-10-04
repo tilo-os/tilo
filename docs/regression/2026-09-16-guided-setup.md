@@ -319,8 +319,8 @@ The subsequent package installation is recorded below; graphical-session proof
 remains required.
 
 Fresh native release builds of the launcher, unlock helper and Desktop shell
-completed, and RPM assembly produced `tilo-session-0.1.9-1.fc44.aarch64.rpm` in
-`/home/parallels/tilo-desktop-package.UhBqUX/RPMS/aarch64/` inside Fedora. Its SHA-256
+completed, and RPM assembly produced `tilo-session-0.1.9-1.fc44.aarch64.rpm` in a
+temporary `rpmbuild` tree inside Fedora. Its SHA-256
 is `39fdb1f7fd5baa646d4cd31b1f521f7cf66f44a9dbf814b91efbb4d015ed9a3a`.
 The shell build emitted one existing `restore_documents` dead-code warning.
 Extraction checks passed for the package layout, ARM64 executables, resolved

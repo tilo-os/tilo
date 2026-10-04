@@ -389,6 +389,97 @@ fn each_stdio_connection_is_its_own_attributed_agent_run() {
     assert!(groups.iter().all(|group| group.kind == "agent-run"));
 }
 
+/// A client that connects again names the run its first connection was
+/// answered with, and its edits stay that one run's: undo reaches them.
+#[test]
+fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    let endpoint = endpoint(host.clone(), None);
+    run(async {
+        let mut first = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+        let answer = first
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Painter","version":"1"}}}))
+            .await
+            .unwrap();
+        let run_id = answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["run"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(run_id.starts_with("mcp:"), "{answer}");
+        tool(
+            &mut first,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+        )
+        .await;
+        drop(first);
+
+        let mut again = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+        let answer = again
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["run"],
+            json!(run_id)
+        );
+        tool(
+            &mut again,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+        )
+        .await;
+
+        // An HTTP session continues a run the same way.
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}});
+        let response = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &HeaderMap::new(),
+                request.to_string().as_bytes(),
+            )
+            .await;
+        let session = response
+            .headers()
+            .get(SESSION_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        invoke(&endpoint, &session).await;
+
+        let mut bad = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+        let refused = bad
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":"two words"}}}}}))
+            .await
+            .unwrap();
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("run must be"),
+            "{refused}"
+        );
+    });
+    let groups: Vec<_> = invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.context.clone().unwrap().group.unwrap())
+        .collect();
+    assert_eq!(groups.len(), 3);
+    assert!(
+        groups.iter().all(|group| group.id == groups[0].id),
+        "{groups:?}"
+    );
+    assert!(
+        groups.iter().all(|group| group.label == "Painter"),
+        "{groups:?}"
+    );
+}
+
 #[test]
 fn a_contract_asking_for_confirmation_is_confirmed_by_the_admitted_call() {
     for (policy, expected) in [
