@@ -154,7 +154,9 @@ impl ResourceApp for WordProcessorApp {
     const ID: &'static str = "so.tilo.word-processor";
     const TITLE: &'static str = "Word Processor";
     const ICON: Option<&'static str> = Some("word-processor");
-    const SHOT_VIEWPORT: (u32, u32) = (1000, 700);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1000, 700)
+    }
 
     fn view(cx: &mut ViewCx<Document>) -> Element {
         cx.surface(WordProcessorWidget::new())
@@ -374,5 +376,11 @@ impl ResourceSurface<Document> for WordProcessorWidget {
 
     fn attach(&mut self, cx: SurfaceCx<Document>) {
         self.attach_framework(cx.live(), cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }

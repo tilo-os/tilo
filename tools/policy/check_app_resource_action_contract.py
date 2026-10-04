@@ -123,6 +123,11 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
+    "surface_document_actions": (
+        re.compile(r"\bfn\s+publishes_document_actions\s*\("),
+        "a surface publishing document actions of its own; bind edits to its view state with "
+        "ResourceSurface::bound_declarations and publish live rows with ResourceSurface::live_rows",
+    ),
 }
 
 # The one resource/action/view model (docs/architecture/README.md): an app's

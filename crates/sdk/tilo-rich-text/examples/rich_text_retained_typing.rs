@@ -13,8 +13,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use tilo_document::{RICH_TEXT_ACTION_TYPE, RichText, RichTextAction};
-use tilo_rich_text::{RichTextField, RichTextSurface};
+use tilo_document::{RichText, RichTextAction};
+use tilo_rich_text::{DirectField, RichTextSurface};
 use ui::automerge::{AutoCommit, ROOT};
 use ui::bound_dispatch::BoundNodeMap;
 use ui::kurbo::{Affine, Point, Rect};
@@ -259,9 +259,10 @@ fn rich_text(paragraphs: usize) -> Result<Retained, String> {
     .apply(&mut doc)
     .map_err(|error| error.to_string())?;
     doc.commit();
-    let field = RichTextField::new(RICH_TEXT_ACTION_TYPE, |_| Some(ROOT), |edit| edit);
-    let mut surface =
-        RichTextSurface::field(field).with_editor(BlockEditor::new().with_wrap_lines(true));
+    // The editor writing to the document itself: what the editor costs,
+    // without an app's action host around it.
+    let mut surface = RichTextSurface::over(DirectField::new(|_| Some(ROOT)))
+        .with_editor(BlockEditor::new().with_wrap_lines(true));
     // The first sync reads the document and shows it.
     Widget::sync(&mut surface, &mut doc, &ROOT);
     surface.set_focus(true);

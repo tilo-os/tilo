@@ -383,6 +383,24 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     std::process::ExitCode::SUCCESS
 }
 
+/// Make the person's and this device's settings records the session's
+/// settings document. Readers and writers in this process go through them;
+/// `settings.json` becomes the copy other processes read and write, which
+/// the session keeps current and takes their writes in from.
+fn install_session_settings() {
+    let Some(paths) = settings_store::SessionPaths::configured() else {
+        tracing::warn!("no config directory; settings are not kept this session");
+        return;
+    };
+    match settings_store::SessionSettings::open(paths) {
+        Ok(session) => settings_store::install_source(Some(std::sync::Arc::new(session))),
+        Err(error) => tracing::error!(
+            %error,
+            "cannot open the settings records; this session reads and writes settings.json itself"
+        ),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "startup decisions must remain in one ordered, single-threaded entry point before the compositor and its long-lived services start"
@@ -539,6 +557,10 @@ pub fn run() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+
+    // After first boot has written what it imports, so the records take it
+    // in, and before the compositor's first read.
+    install_session_settings();
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
     let enable_portals = compositor::parse_portals_from_args();

@@ -680,7 +680,9 @@ impl ResourceApp for TerminalShell {
     const ID: &'static str = "so.tilo.terminal";
     const TITLE: &'static str = "Terminal";
     const ICON: Option<&'static str> = Some("terminal");
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1200, 720)
+    }
 
     #[allow(
         clippy::expect_used,

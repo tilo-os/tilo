@@ -34,6 +34,7 @@ WPE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:([0-9a
 KERNEL_BUILDROOT_REF = re.compile(
     r"^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
 WPE_STAGE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:([0-9a-f]{64})$")
+LEGACY_GUEST_REF = re.compile(r"^registry\.tilo\.so/tilo/legacy-guest@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -162,6 +163,30 @@ def kernel_buildroot_snapshot(args, parser) -> tuple[str, dict]:
     }
 
 
+def legacy_guest_contents(x86_ref: str) -> str:
+    """Return the canonical os/legacy-guest-snapshot.env."""
+    return "\n".join((
+        "# The Linux legacy VM guest image, pinned by digest and signed with the",
+        "# release key. Written by .forgejo/workflows/build-legacy-guest.yml's promote",
+        "# job; `tilo-legacy` compiles it in and fetches nothing else.",
+        f"LEGACY_GUEST_X86_64_REF={x86_ref}",
+        "",
+    ))
+
+
+def legacy_guest_snapshot(args, parser) -> tuple[str, dict]:
+    if LEGACY_GUEST_REF.fullmatch(args.x86_ref) is None:
+        parser.error("legacy guest ref must be an immutable legacy-guest sha256 reference")
+    return legacy_guest_contents(args.x86_ref), {
+        "label": "Legacy guest",
+        "branch_prefix": "automation/legacy-guest-snapshot-",
+        "title": "build(os): pin the Linux legacy VM guest image",
+        "summary": ("Automated promotion of the signed Linux legacy VM guest disk, "
+                    "booted once in CI until its agent served vsock.\n\n"
+                    "After this merges, `tilo-legacy` creates new VMs from it."),
+    }
+
+
 def request(server: str, repository: str, token: str, path: str,
             method: str = "GET", payload: dict | None = None):
     url = f"{server.rstrip('/')}/api/v1/repos/{repository}{path}"
@@ -211,6 +236,10 @@ def add_kinds(parser) -> None:
         kind.add_argument("--x86-ref", required=True)
         kind.add_argument("--arm-ref", required=True)
         kind.set_defaults(snapshot=snapshot)
+    # The legacy VM guest is published for x86-64 only.
+    kind = kinds.add_parser("legacy-guest", help="the x86-64 Linux legacy VM guest disk")
+    kind.add_argument("--x86-ref", required=True)
+    kind.set_defaults(snapshot=legacy_guest_snapshot)
 
 
 def pins(argv: list[str]) -> int:

@@ -27,6 +27,13 @@
           "signedIdentity": { "type": "matchRepository" }
         }
       ],
+      "registry.tilo.so/tilo/legacy-guest": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/usr/share/tilo/cosign.pub",
+          "signedIdentity": { "type": "matchRepository" }
+        }
+      ],
       "registry.tilo.so/tilo/tilo-vm": [
         { "type": "reject" }
       ],

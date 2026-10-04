@@ -54,6 +54,7 @@ fn main() -> ExitCode {
         "restart" => guest::restart(),
         "tilo" | "app" | "store" | "system" => guest::host_cli(&prog_name, rest),
         "ush" => host(rest),
+        name if guest::is_legacy_shim(name) => guest::legacy_launch(name, rest),
         _ => dispatch(rest),
     };
 
@@ -318,6 +319,32 @@ Usage:\n  tilo app ...             App discovery and updates (`store` is an alia
 Examples:\n  tilo app u browser\n  tilo system status\n  tilo update\n\n\
 Unavailable providers are skipped by `tilo update`; explicit provider commands\n\
 explain when the host does not offer them.\n";
+
+    /// A legacy app's command inside a guest: a symlink in the guest's bin
+    /// directory that is none of the runtime's own names.
+    pub fn is_legacy_shim(name: &str) -> bool {
+        !name.is_empty()
+            && name != "tilo-ush"
+            && !ush::GUEST_COMMANDS.contains(&name)
+            && Path::new(ush::GUEST_BIN_DIR).join(name).is_symlink()
+            && Path::new(ush::GUEST_BROKER_SOCK).exists()
+    }
+
+    /// `code .` in an environment: the app runs in the legacy VM, in this
+    /// directory when it is shared, and its windows open in the current strip.
+    pub fn legacy_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
+        let cwd = std::env::current_dir()?;
+        let request = Request::LegacyLaunch {
+            app: app.to_string(),
+            args: args.to_vec(),
+            cwd,
+        };
+        match ask(&request)? {
+            Response::Command { code, .. } => Ok(code),
+            Response::Denied { reason } => anyhow::bail!("{reason}"),
+            other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
+        }
+    }
 
     pub fn host_cli(program: &str, args: &[String]) -> anyhow::Result<i32> {
         if let Some(help) = management_help(program, args) {

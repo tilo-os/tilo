@@ -85,7 +85,11 @@ root="${roots[0]}"
 install -d -m 0700 "$runtime/tilo-root" "$runtime/cryptsetup-keys.d"
 if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
   "$unlock_bin" "$root" root || true
-  "$cryptsetup_bin" attach root "$root" - 'tpm2-device=auto,fido2-device=auto' \
+  # Keep the graphical prompt available after a typo. Do not recycle a failed
+  # passphrase from the agent cache into the remaining attempts. TPM/FIDO
+  # enrollments and recovery keys remain available on functioning platforms.
+  "$cryptsetup_bin" attach root "$root" - \
+    'tpm2-device=auto,fido2-device=auto,tries=0,timeout=0,password-cache=no' \
     || die "encrypted Tilo root did not unlock"
   target="$devroot/mapper/root"
 else
