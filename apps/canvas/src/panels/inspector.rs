@@ -604,25 +604,8 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
     let summary = {
         let ids = ids.clone();
         cx.value(move |art: &Artwork| {
-            let marks: Vec<&Mark> = ids.iter().filter_map(|id| art.mark(id)).collect();
-            match marks.as_slice() {
-                [] => None,
-                [mark] => {
-                    let kind = ui::i18n::I18nManager::lookup_plain(&format!(
-                        "canvas-kind-{}",
-                        mark.shape.kind()
-                    ));
-                    Some(if mark.name.is_empty() {
-                        kind
-                    } else {
-                        format!("{kind} · {}", mark.name)
-                    })
-                }
-                marks => Some(ui::i18n::I18nManager::format(
-                    "canvas-marks-selected",
-                    &[("count", marks.len().into())],
-                )),
-            }
+            let marks: Vec<Mark> = ids.iter().filter_map(|id| art.mark(id).cloned()).collect();
+            (!marks.is_empty()).then(|| summary(&marks, marks.iter().all(Mark::erases)))
         })
     };
     let heading_row = cx.switch(&summary, |_, summary| {
@@ -668,6 +651,27 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
     spaced(vec![heading_row, picture_part, rest])
 }
 
+/// What is picked, in a word: the kind of one mark (an eraser named so)
+/// and its name, or how many marks.
+fn summary(marks: &[Mark], erasers: bool) -> String {
+    let [mark] = marks else {
+        return ui::i18n::I18nManager::format(
+            "canvas-marks-selected",
+            &[("count", marks.len().into())],
+        );
+    };
+    let kind = if erasers {
+        ui::i18n::I18nManager::lookup_plain("canvas-eraser")
+    } else {
+        ui::i18n::I18nManager::lookup_plain(&format!("canvas-kind-{}", mark.shape.kind()))
+    };
+    if mark.name.is_empty() {
+        kind
+    } else {
+        format!("{kind} · {}", mark.name)
+    }
+}
+
 fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) -> Element {
     let stop = &tools.stop;
     let Some(first) = marks.first() else {
@@ -675,6 +679,8 @@ fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) 
     };
     let ids: Vec<String> = marks.iter().map(|mark| mark.id.clone()).collect();
     let style = &first.style;
+    // An eraser has no colour to choose: it takes paint off.
+    let erasers = marks.iter().all(Mark::erases);
     let palette = cx.read(|art| {
         art.map(|art| crate::media::palette_for(art, &first.layer))
             .unwrap_or_default()
@@ -726,11 +732,18 @@ fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) 
             art.and_then(|art| art.layer(&first.layer))
                 .is_none_or(|layer| layer.medium.is_empty())
         });
-        parts.push(section(vec![
-            heading("canvas-stroke"),
-            paints(cx, &ids, style.stroke.as_deref(), &palette, &Paint::Stroke),
-            stroke_brush(cx, &ids, first, plain),
-        ]));
+        let mut stroke = vec![heading("canvas-stroke")];
+        if !erasers {
+            stroke.push(paints(
+                cx,
+                &ids,
+                style.stroke.as_deref(),
+                &palette,
+                &Paint::Stroke,
+            ));
+        }
+        stroke.push(stroke_brush(cx, &ids, first, plain));
+        parts.push(section(stroke));
     } else {
         parts.push(section(vec![
             heading("canvas-stroke"),

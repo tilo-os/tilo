@@ -18,6 +18,9 @@ tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
 tab-closed-undo-hint = Zum Rückgängigmachen auswählen oder später { $chord } drücken
 tab-closed-undo-hint-unbound = Zum Rückgängigmachen auswählen
+workspace-deleted-toast = { $name } gelöscht
+workspace-deleted-toast-hint = Zum Rückgängigmachen auswählen
+workspace-deleted-undo = Rückgängig
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige
@@ -1604,12 +1607,15 @@ search-continuity-call-decline = Übergabe für { $room } ablehnen
 search-continuity-call-consent-subtitle = Diese Freigabe zur Anrufübergabe beantworten
 
 # Identitätseinrichtung bei der ersten Anmeldung: was die Identität ist
-onboarding-intro-title = Deine lokale Tilo-Identität erstellen
-onboarding-intro-body = Tilo erstellt eine kryptografische Identität, die dir gehört, und zertifiziert dann einen eigenen Schlüssel für dieses Gerät. Tilo nutzt diese Kette für die Zusammenarbeit und für Einladungen an andere Geräte. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
-onboarding-intro-point-collaboration = Sie gibt dir eine beständige Identität für die Zusammenarbeit und zertifiziert dieses Gerät gegenüber anderen.
-onboarding-intro-point-local = Sie wird hier auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
-onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort – es gibt nichts, bei dem du dich anmelden müsstest.
-onboarding-intro-card-title = Wofür sie da ist
+onboarding-intro-title = Deine Tilo-Identität einrichten
+onboarding-intro-body = Tilo erstellt eine kryptografische Identität, die dir gehört, und zertifiziert dann einen eigenen Schlüssel für dieses Gerät. Zusammenarbeit und Einladungen an andere Geräte beruhen darauf. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
+onboarding-intro-point-collaboration = Wer mit dir zusammenarbeitet, sieht eine beständige Identität, und sie zertifiziert jedes deiner Geräte.
+onboarding-intro-point-local = Sie wird auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
+onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort. Es gibt nichts, bei dem du dich anmelden müsstest.
+onboarding-choice-create = Neue Identität erstellen
+onboarding-choice-create-detail = Auf diesem Rechner neu beginnen
+onboarding-choice-existing = Meine vorhandene Tilo-Identität verwenden
+onboarding-choice-existing-detail = Von einem anderen Gerät oder einer Sicherung übernehmen
 onboarding-host-intro-title = Deine Tilo-Identität einrichten
 onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevor sich der Tilo Desktop öffnet, braucht er eine lokale kryptografische Identität für die Zusammenarbeit und für Einladungen an andere Geräte. Sie ersetzt weder deine Linux-Anmeldung, noch erstellt sie ein Online-Konto. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
 
@@ -1626,10 +1632,11 @@ onboarding-create-failed-message = Es wurde nichts geschrieben, und der Desktop 
 
 # Identitätseinrichtung: Fortschrittsanzeige
 onboarding-progress-eyebrow = Einrichtung der Tilo-Identität
-onboarding-progress-stage = Schritt { $step } von { $total }  ·  { $stage }
+onboarding-progress-stage = Schritt { $step } von { $total }
 onboarding-progress-a11y = Identitätseinrichtung, Schritt { $step } von { $total }: { $stage }
 onboarding-stage-choose = Auswählen
 onboarding-stage-restore = Wiederherstellen
+onboarding-stage-connect = Verbinden
 onboarding-stage-protect = Schützen
 onboarding-stage-media = Medien
 onboarding-stage-ready = Fertig
@@ -1647,48 +1654,57 @@ onboarding-back = Zurück
 onboarding-cancel = Abbrechen
 onboarding-continue = Weiter
 onboarding-done = Fertig
-onboarding-use-existing = Vorhandene verwenden
-onboarding-create-identity = Identität erstellen
 onboarding-create-local-identity = Lokale Identität erstellen
-onboarding-restore-backup = Ausgewählte Sicherung wiederherstellen
+onboarding-restore-backup = Identität wiederherstellen
+onboarding-existing-title = Deine vorhandene Identität verwenden
+onboarding-existing-body = Wähle, wie die Identität, die du bereits nutzt, auf diesen Rechner kommt.
+onboarding-choice-nearby = Mit einem Gerät in der Nähe verbinden
+onboarding-choice-nearby-detail = Diesen Rechner auf einem Gerät mit deiner Identität freigeben
+onboarding-choice-restore = Aus einer Sicherung wiederherstellen
+onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
+onboarding-restore-title = Aus einer Sicherung wiederherstellen
+onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
+onboarding-restore-file-label = Sicherungsdatei
 
 # Identitätseinrichtung: vorhandene Identität verbinden
-onboarding-connect-title = Eine vorhandene Identität verbinden
 onboarding-connect-recovery-title = Deine vorhandene Identität muss wiederhergestellt werden
 onboarding-connect-recovery-message = Tilo konnte die Kette deiner vorhandenen Identität nicht prüfen. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Tilo ersetzt diese Identität nicht automatisch.
 onboarding-connect-failed = Diese Identität konnte nicht verbunden werden
-onboarding-connect-nearby = Mit einem Gerät in der Nähe verbinden
-onboarding-connect-nearby-instructions = Öffne auf dem anderen Gerät Einstellungen → Geräte & Synchronisierung → Persönliches Gerät hinzufügen und vergleiche dann den sechsstelligen Code auf beiden Bildschirmen.
 onboarding-connect-retry-keyring = Schlüsselbund erneut versuchen
-onboarding-connect-browse = Durchsuchen …
+onboarding-connect-browse = Durchsuchen
 onboarding-connect-file = Sicherungsdatei der Identität
 onboarding-connect-file-placeholder = Verschlüsselte Sicherung oder ältere Identitäts-JSON auswählen
 onboarding-connect-passphrase = Passphrase der Sicherung
 onboarding-connect-passphrase-placeholder = Passphrase (bei älterer JSON leer lassen)
-onboarding-connect-nearby-card = Vertrauenswürdiges Gerät in der Nähe
-onboarding-connect-backup-card = Verschlüsselte Sicherung
 onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
 onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
 onboarding-picker-import-title = Eine Tilo-Identität auswählen
 onboarding-picker-import-filter = Tilo-Identität
+onboarding-nearby-title = Mit einem Gerät in der Nähe verbinden
+onboarding-nearby-body = Dieser Rechner wartet darauf, dass dein anderes Gerät ihn freigibt. Halte beide Geräte nah beieinander.
+onboarding-nearby-step-open = Öffne auf deinem anderen Gerät die Einstellungen und dort Geräte & Synchronisierung.
+onboarding-nearby-step-add = Wähle unter „Persönliches Gerät hinzufügen“ die Option „Gerät hinzufügen“.
+onboarding-nearby-step-compare = Vergleiche den sechsstelligen Code auf beiden Bildschirmen und gib ihn auf deinem anderen Gerät frei.
+onboarding-nearby-waiting = Wartet auf dein anderes Gerät.
+onboarding-nearby-code-label = Bestätigungscode
+onboarding-nearby-try-again = Erneut versuchen
 
 # Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
-onboarding-nearby-searching = Suche nach einem vertrauenswürdigen Gerät in der Nähe …
 onboarding-nearby-start-failed = Die Einrichtung über ein Gerät in der Nähe konnte nicht gestartet werden: { $error }
 onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
-onboarding-nearby-cancelled = Einrichtung über ein Gerät in der Nähe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
-onboarding-nearby-code = Code { $code } · wartet auf Freigabe auf deinem vertrauenswürdigen Gerät
+onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
+onboarding-nearby-code = Prüfe, ob dein anderes Gerät denselben Code zeigt, und gib es dort frei.
 onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
-onboarding-nearby-invalid-identity = Das vertrauenswürdige Gerät hat eine ungültige Identität geliefert. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
-onboarding-nearby-failed = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
-onboarding-nearby-failed-detail = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: { $detail }. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
+onboarding-nearby-invalid-identity = Dein anderes Gerät hat eine ungültige Identität geliefert. Wähle „Erneut versuchen“.
+onboarding-nearby-failed = Die Kopplung wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
+onboarding-nearby-failed-detail = Die Kopplung wurde nicht abgeschlossen: { $detail }. Wähle „Erneut versuchen“.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
 onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
 onboarding-backup-explanation = Speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
 onboarding-backup-passphrase = Neue Passphrase für die Sicherung
-onboarding-backup-passphrase-placeholder = Lange, einzigartige Passphrase – mindestens 12 Zeichen
+onboarding-backup-passphrase-placeholder = Mindestens 12 Zeichen, lang und einzigartig
 onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
 onboarding-backup-confirmation-placeholder = Passphrase bestätigen
 onboarding-backup-save = Speicherort wählen und Sicherung speichern …
@@ -1753,8 +1769,8 @@ onboarding-codecs-retry = Erneut versuchen
 onboarding-codecs-install = Mediencodecs installieren
 
 # Desktop-Tour
-onboarding-tour-eyebrow = Tilo  •  DESKTOP-TOUR
-onboarding-tour-stage = { $stage }  ·  { $step } von 4
+onboarding-tour-eyebrow = Desktop-Tour
+onboarding-tour-stage = Schritt { $step } von 4
 onboarding-tour-progress-a11y = Desktop-Tour, Schritt { $step } von 4: { $stage }
 onboarding-tour-stage-move = Bewegen
 onboarding-tour-stage-arrange = Anordnen
@@ -1764,12 +1780,16 @@ onboarding-tour-skip = Tour überspringen
 onboarding-tour-enter = Tilo betreten
 onboarding-tour-navigate-title = Alles in Reichweite
 onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
-onboarding-tour-search-title = Suche  ·  Super+K oder Super+Leertaste
-onboarding-tour-search-title-mac = Suche  ·  Befehl+K oder Wahl+Leertaste
+onboarding-tour-search-title = Suche
+onboarding-tour-search-title-mac = Suche
+onboarding-tour-search-keys = Super+K oder Super+Leertaste
+onboarding-tour-search-keys-mac = Befehl+K oder Wahl+Leertaste
 onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
-onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Finger zusammenziehen
+onboarding-tour-overview-title = Übersicht
+onboarding-tour-overview-keys = Super+Tab oder Finger zusammenziehen
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
-onboarding-tour-move-title = Bewegen  ·  Super+Pfeiltasten oder Wischen mit drei Fingern
+onboarding-tour-move-title = Bewegen
+onboarding-tour-move-keys = Super+Pfeiltasten oder Wischen mit drei Fingern
 onboarding-tour-move-body = Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens. Auf und Ab wechseln zum Streifen darüber oder darunter; Super+Bild auf und Bild ab oder Wischen mit vier Fingern wechseln den Arbeitsbereich.
 onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
 onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
@@ -1791,13 +1811,13 @@ onboarding-tour-system-features-title = Rückgängig und Berechtigungen sind Sys
 onboarding-tour-system-features-body = Der Verlauf folgt der Urheberschaft, und Apps fragen Tilo nach Fähigkeiten, statt stillschweigend Zugriff zu erhalten.
 onboarding-tour-start-title = Deine ersten fünf Minuten
 onboarding-tour-start-intro = Beginne mit einem Ziel und lass den Arbeitsbereich dann mit dem Projekt wachsen. Du findest dies über die Suche unter „Desktop-Tour“ wieder.
-onboarding-tour-name-title = 1  Arbeitsbereich benennen
+onboarding-tour-name-title = Arbeitsbereich benennen
 onboarding-tour-name-body = Öffne die Arbeitsbereich-Einstellungen über den Titel und wähle einen gut erkennbaren Projektnamen.
-onboarding-tour-open-title = 2  Einen gemeinsamen Ausgangspunkt öffnen
+onboarding-tour-open-title = Einen gemeinsamen Ausgangspunkt öffnen
 onboarding-tour-open-body = Wähle Notizen, Kalender oder Chat und füge dann weitere Apps daneben hinzu.
-onboarding-tour-invite-title = 3  Die richtigen Personen einladen
+onboarding-tour-invite-title = Die richtigen Personen einladen
 onboarding-tour-invite-body = Wähle „Personen einladen“ in den Arbeitsbereich-Einstellungen und prüfe jede Rolle, bevor du teilst.
-onboarding-tour-check-title = 4  Arbeit prüfen und Fehler beheben
+onboarding-tour-check-title = Arbeit prüfen und Fehler beheben
 onboarding-tour-check-body = Öffne die Aktivität, um auf den neuesten Stand zu kommen, Versionen zu vergleichen oder nur die fehlerhafte Änderung rückgängig zu machen.
 
 # Einladungskarte für Arbeitsbereiche: jemanden einladen, mit einer Einladung beitreten, ausstehende Einladungen

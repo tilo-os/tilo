@@ -81,6 +81,14 @@ pub enum CliError {
         /// Whether the adapter passed the key as a credential at creation.
         credentials: bool,
     },
+    #[error("{user} on '{vm}' cannot run commands as root without a password (sudo -n: {detail})")]
+    SudoRefused {
+        vm: String,
+        /// `<user>@<host>[:<port>]`, as `vm add-device --ssh` takes it.
+        ssh: String,
+        user: String,
+        detail: String,
+    },
     #[error("tilo-vm speaks protocol {client} but the VM's tilo-vmd speaks {daemon}")]
     ProtocolMismatch {
         /// The VM's name; empty when not known where the mismatch surfaced.
@@ -282,6 +290,9 @@ impl CliError {
             Self::RootKeyRefused { install, .. } => format!(
                 "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (quickuser, tilo): {install}"
             ),
+            Self::SudoRefused { vm, ssh, user, .. } => format!(
+                "tilo-vm runs tilo-vmd and its own commands as root, through sudo when it logs in as {user}; allow that once, typing {user}'s password on this terminal: tilo-vm vm add {vm} --ssh {ssh} --grant-sudo   (or log in as root: --ssh root@<host>)"
+            ),
             Self::DaemonMissing { vm, bootc: Some(true) } => format!(
                 "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
             ),
@@ -466,6 +477,7 @@ impl CliError {
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. }
             | Self::RootKeyRefused { .. } => "platforms",
+            Self::SudoRefused { .. } => "devices",
             Self::NotInWorktree | Self::SlotName { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
@@ -599,6 +611,12 @@ mod tests {
                 key: "/cfg/keys/dev_ed25519".into(),
                 install: "ssh -t quickuser@vm '...'".into(),
                 credentials: false,
+            },
+            CliError::SudoRefused {
+                vm: "yoga".into(),
+                ssh: "me@10.0.0.2".into(),
+                user: "me".into(),
+                detail: "a password is required".into(),
             },
             CliError::ProtocolMismatch {
                 vm: "dev".into(),
@@ -853,6 +871,7 @@ mod tests {
                 | CliError::DaemonMissing { .. }
                 | CliError::NotBootc { .. }
                 | CliError::RootKeyRefused { .. }
+                | CliError::SudoRefused { .. }
                 | CliError::ProtocolMismatch { .. }
                 | CliError::Remote(_)
                 | CliError::ToolMissing { .. }

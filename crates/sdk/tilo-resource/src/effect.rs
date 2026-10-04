@@ -32,16 +32,32 @@
 //! runs where it was invoked, and what it changes in the document it changes
 //! through ordinary actions. `tilo-app` runs the handler.
 //!
-//! Variant options: `label = "…"` (else the first doc line), `job` (runs in
-//! the background and reports progress, then its result), `cancellable`
-//! (a job the caller may cancel), `returns` (answers with a JSON value),
-//! `destructive` (asks for confirmation) and `permission = "read"` (any
-//! participant may invoke it; the default needs write access). Field
+//! A variant that only changes what this participant sees — open a snippet,
+//! reveal a tag, show a result — is a `view`: published as a `View`
+//! operation (any reader may invoke it, a collaborator may not move someone
+//! else's view, repeating it is harmless), answered by the same handler.
+//!
+//! An effect that acts on one item — open *this* snippet, connect *this*
+//! connection — is offered on the item itself with its arguments bound
+//! ([`Effect::bound`]): a published child or a live row carries it, and
+//! invoking it there reaches the handler as that value. Such an effect is
+//! often `row`: offered only bound, never on the resource with an id for
+//! the caller to type.
+//!
+//! Variant options: `label = "…"` (else the first doc line), `view` (changes
+//! only what is shown; answers at once), `row` (offered only bound to the
+//! items it acts on), `job` (runs in the background and reports progress,
+//! then its result), `cancellable` (a job the caller may cancel), `returns`
+//! (answers with a JSON value), `destructive` (asks for confirmation),
+//! `privileged` (hands out or shows a credential, such as copying a one-time
+//! code: asks for confirmation too), `idempotent` (safe to repeat after an
+//! uncertain outcome) and `permission = "read"` (any participant may invoke
+//! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter.
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
-    OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
+    OperationKind, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -69,12 +85,46 @@ pub trait Effect: Sized + 'static {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, String>;
 
-    /// The published action of every effect.
+    /// The published action of every effect offered on the resource: all
+    /// but the `row` ones, which are offered only [bound](Self::bound).
     fn specs() -> Vec<ActionSpec> {
         Self::declarations()
             .into_iter()
+            .filter(|decl| !decl.row)
             .map(|decl| decl.spec(Self::OPERATION))
             .collect()
+    }
+
+    /// This effect with its arguments as one action that takes none: what a
+    /// published child or a live row offers (open *this* snippet, stop
+    /// *this* process), answered by the vocabulary's handler like any other
+    /// invocation of the effect, under the same contract as its
+    /// declaration.
+    fn bound(&self) -> ActionSpec {
+        let id = self.id();
+        let encoded = EncodedAction::encode_operation(
+            Self::OPERATION,
+            &Payload {
+                effect: id.to_owned(),
+                args: self.arguments(),
+            },
+        )
+        .unwrap_or_else(|_| EncodedAction {
+            type_id: Self::OPERATION.to_owned(),
+            payload: Vec::new(),
+        });
+        match Self::declarations().into_iter().find(|decl| decl.id == id) {
+            Some(decl) => decl.spec_with(Self::OPERATION, Vec::new(), move |_| encoded.clone()),
+            None => ActionSpec::typed_operation(
+                id,
+                id,
+                id,
+                OperationKind::Effect,
+                Self::OPERATION,
+                Vec::new(),
+                move |_| encoded.clone(),
+            ),
+        }
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
@@ -103,9 +153,18 @@ pub struct EffectDecl {
     pub label: &'static str,
     pub description: &'static str,
     pub params: Vec<ActionParam>,
+    /// `View` for an effect that only changes what its caller sees, else
+    /// `Effect`.
+    pub kind: OperationKind,
+    /// Offered only bound to the items it acts on, not on the resource.
+    pub row: bool,
     pub answers: Answers,
-    /// Asks for confirmation: deletes, overwrites, sends.
-    pub destructive: bool,
+    /// How much harm invoking it can do: `Destructive` (deletes,
+    /// overwrites, sends) and `Privileged` (hands out or shows a credential)
+    /// ask for confirmation; a view is `None`.
+    pub risk: RiskLevel,
+    /// Safe to repeat after an uncertain outcome.
+    pub idempotent: bool,
     pub permission: PermissionRequirement,
 }
 
@@ -124,38 +183,55 @@ impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
         let id = self.id;
+        self.spec_with(operation, self.params.clone(), move |args| {
+            EncodedAction::encode_operation(
+                operation,
+                &Payload {
+                    effect: id.to_owned(),
+                    args: args.to_json(),
+                },
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: operation.to_owned(),
+                payload: Vec::new(),
+            })
+        })
+    }
+
+    /// The published action of this effect, taking `params` and encoding
+    /// an invocation with `build`.
+    fn spec_with(
+        &self,
+        operation: &'static str,
+        params: Vec<ActionParam>,
+        build: impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> ActionSpec {
+        let view = self.kind == OperationKind::View;
         let mut spec = ActionSpec::typed_operation(
-            id,
+            self.id,
             self.label,
             self.label,
-            OperationKind::Effect,
-            operation,
-            self.params.clone(),
-            move |args| {
-                EncodedAction::encode_operation(
-                    operation,
-                    &Payload {
-                        effect: id.to_owned(),
-                        args: args.to_json(),
-                    },
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: operation.to_owned(),
-                    payload: Vec::new(),
-                })
+            if view {
+                OperationKind::View
+            } else {
+                OperationKind::Effect
             },
+            operation,
+            params,
+            build,
         );
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
         }
+        let base = if view {
+            ActionContract::view()
+        } else {
+            ActionContract::default()
+        };
         spec.contract = ActionContract {
             permission: self.permission,
-            risk: if self.destructive {
-                RiskLevel::Destructive
-            } else {
-                RiskLevel::Low
-            },
-            confirmation: if self.destructive {
+            risk: self.risk,
+            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
@@ -171,7 +247,12 @@ impl EffectDecl {
                 },
                 Answers::Nothing => ResultSpec::None,
             },
-            ..ActionContract::default()
+            retry: if view || self.idempotent {
+                RetryPolicy::Idempotent
+            } else {
+                base.retry
+            },
+            ..base
         };
         spec
     }
@@ -264,13 +345,16 @@ mod tests {
         },
         #[effect(label = "Wipe", job, cancellable, destructive)]
         Wipe { passes: u32 },
+        /// Copy a thing's key.
+        #[effect(privileged, permission = "read")]
+        CopyKey { thing: String },
     }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -312,7 +396,93 @@ mod tests {
             Sample::Reload
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
+
+        // Bound to its arguments, the effect takes none and keeps its
+        // declaration's contract.
+        let bound = Sample::Wipe { passes: 3 }.bound();
+        assert_eq!(bound.id, "wipe");
+        assert_eq!(bound.label, "Wipe");
+        assert!(bound.params().is_empty());
+        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(
+            Sample::from_payload(&encoded.payload).unwrap(),
+            Sample::Wipe { passes: 3 }
+        );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    /// A vocabulary with presentation-only effects and effects offered only
+    /// on the items they act on.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.rows")]
+    enum Rows {
+        /// Open an item.
+        #[effect(view, row)]
+        Open { item: String },
+        /// Connect to an item.
+        #[effect(row, job, idempotent)]
+        Connect { item: String },
+        /// Search.
+        #[effect(view)]
+        Search,
+    }
+
+    #[test]
+    fn views_publish_as_views_and_row_effects_only_bound_to_their_item() {
+        let specs = Rows::specs();
+        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["search"],
+            "a row effect is not offered on the resource"
+        );
+        let search = &specs[0];
+        assert_eq!(search.kind, OperationKind::View);
+        assert_eq!(search.contract.permission, PermissionRequirement::Read);
+        assert_eq!(search.contract.risk, RiskLevel::None);
+        assert_eq!(search.contract.retry, RetryPolicy::Idempotent);
+
+        let open = Rows::Open { item: "a".into() };
+        let bound = open.bound();
+        assert_eq!(
+            (bound.id.as_str(), bound.kind),
+            ("open", OperationKind::View)
+        );
+        assert!(bound.params().is_empty());
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.rows");
+        assert_eq!(Rows::from_payload(&encoded.payload).unwrap(), open);
+
+        let connect = Rows::Connect { item: "b".into() }.bound();
+        assert_eq!(connect.kind, OperationKind::Effect);
+        assert_eq!(connect.contract.permission, PermissionRequirement::Write);
+        assert_eq!(connect.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(
+            connect.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert_eq!(
+            Sample::specs()[0].contract.retry,
+            RetryPolicy::AtMostOnce,
+            "an effect is not repeated unless it says it may be"
+        );
+    }
+
+    #[test]
+    fn a_privileged_effect_asks_first_and_binds_to_the_entity_it_names() {
+        let copy = Sample::CopyKey { thing: "a".into() };
+        let bound = copy.bound();
+        assert_eq!(bound.id, "copy-key");
+        assert_eq!(bound.label, "Copy a thing's key");
+        assert_eq!(bound.kind, OperationKind::Effect);
+        assert!(bound.params().is_empty(), "the row names the thing already");
+        assert_eq!(bound.contract.risk, RiskLevel::Privileged);
+        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(bound.contract.permission, PermissionRequirement::Read);
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.effects");
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
     }
 
     #[test]

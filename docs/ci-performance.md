@@ -231,17 +231,6 @@ them to the slot's target tree.
   to compress and upload from every revision, and overlaps the compiler
   objects already handled by sccache. Within one job, later Cargo steps reuse
   the live target tree directly.
-- Each runner slot keeps `target/` and the Cargo downloads of check.yml's Rust
-  jobs in a Docker volume of its persistent store, bind-mounted at the ordinary
-  `<workspace>/target` (`tools/ci/slot_cache.py`), so links, build scripts and
-  proc-macros of unchanged crates are not redone and sccache keys do not
-  change. There is one volume per trust class: only a push to main reads and
-  writes the trusted one, so no build script a pull request ran writes a tree a
-  main build uses; publications never mount one. A tree is keyed by the
-  compiler and the builder image's package set, wiped weekly, above 60 GiB, or
-  when the store passes 75%. Checkout gives files new mtimes; the helper
-  restores them for blobs a sealed previous job built from, and an unsealed job
-  leaves nothing to restore.
 - `release-relay.yml` and `release-registry-server.yml` keep a persistent BuildKit
   builder per slot and trust class (`setup-buildx` `persistent`), so the
   compile step's `target/` cache mount and pulled layers survive the job.

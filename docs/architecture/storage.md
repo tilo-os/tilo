@@ -1626,6 +1626,24 @@ leaf that differs from the copy it last wrote. A copy written while no session
 ran (first boot) is taken in when the session opens. Replacing the fabric's
 settings channel with the person record's own sync is still to come.
 
+**Sandboxed apps reach the records through their channel.** A sandboxed app
+has no settings document: its sandbox holds neither the records nor the copy
+(only Settings, which owns the document, is given the copy). The collaboration
+channel the launcher hands every app carries an `AppSettings` capability
+instead (`ChannelHandle.settings`), bound to the channel's certified app. At
+launch the toolkit installs it as the app process's `SettingsSource`, so
+`Settings<T>`, `cx.settings::<T>()` and the toolkit's own readers go through
+it. The shell answers from its records with the app's view
+(`settings_store::app_scope`): the app's own `app_personal` and
+`app_device_local` entries, and the shared sections every app's toolkit reads
+(`locale`, `text_assistance`, `accessibility`, `appearance`). The app writes
+only its own two entries; a write naming another app's entry or any other
+section is refused, in the app and again in the shell. A write shows in the
+app at once, lands in the record its scope names (so a personal one roams),
+and is copied to `settings.json`; a change to the app's view, from another
+window or another of the person's devices, reaches the app within a fraction
+of a second and wakes it, so a view following a `Setting<T>` repaints.
+
 ### 13.7 Foreign apps
 
 Flatpaks, legacy binaries and Wine keep a private per-`(room, package)`

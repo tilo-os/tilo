@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use env_tools::network::NetworkChoice;
 use env_tools::{Builder, CacheKey, Catalog, Entry, NoCatalog, Origin, ToolStore, image, store};
 use package_store::{Admission, ImageTrust, PackageStore, Store};
 use tilo_app_package::{PackageId, SigningIdentity};
@@ -36,6 +37,28 @@ struct RuntimeArgs {
     /// on a filesystem overlayfs accepts as an upper (ordinary disk).
     #[arg(long)]
     state: PathBuf,
+    /// What builds may reach: the runtime's repositories (`gated`, the
+    /// default), nothing (`offline`), or this machine's whole network
+    /// (`host`, for a CI builder without `/dev/net/tun`).
+    #[arg(long, value_enum, default_value_t = NetworkArg::Gated)]
+    network: NetworkArg,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum NetworkArg {
+    Gated,
+    Offline,
+    Host,
+}
+
+impl From<NetworkArg> for NetworkChoice {
+    fn from(arg: NetworkArg) -> Self {
+        match arg {
+            NetworkArg::Gated => Self::Gated,
+            NetworkArg::Offline => Self::Offline,
+            NetworkArg::Host => Self::Host,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -69,6 +92,20 @@ enum Command {
     DeviceBuild {
         #[arg(long)]
         runtime: PackageId,
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+    /// Build a tool for `publisher`, whose key is elsewhere: the image is
+    /// written to `--out` with a placeholder signature for the key holder
+    /// to sign. What a relay's worker runs as a member, in their quota.
+    BuildFor {
+        /// The key holder's public key (hex).
+        #[arg(long)]
+        publisher: String,
+        #[arg(long)]
+        runtime: PackageId,
+        #[arg(long)]
+        out: PathBuf,
         #[arg(required = true)]
         packages: Vec<String>,
     },
@@ -119,7 +156,8 @@ fn main() -> anyhow::Result<()> {
                 DirStore::new(id, tree.clone(), None, None)?,
                 NoCatalog,
                 &runtime.state,
-            );
+            )
+            .with_network(runtime.network.into());
             let (key, resolution) = builder.resolve(&id, &tree, &packages)?;
             print(&Resolved {
                 digest: key.digest().to_hex(),
@@ -144,7 +182,8 @@ fn main() -> anyhow::Result<()> {
                 DirStore::new(id, tree, Some(identity), Some(out_dir))?,
                 NoCatalog,
                 &runtime.state,
-            );
+            )
+            .with_network(runtime.network.into());
             let built = builder.build_reporting(&id, &packages, &mut std::io::stderr())?;
             let tapp = builder
                 .store()
@@ -153,17 +192,7 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|_| anyhow::anyhow!("poisoned"))?
                 .clone();
             if let Some(path) = catalog {
-                let mut doc = if path.exists() {
-                    Catalog::load(&path)?
-                } else {
-                    Catalog::default()
-                };
-                doc.insert(Entry {
-                    tool: built.tool,
-                    key: built.key.clone(),
-                    requested: packages.clone(),
-                });
-                doc.save(&path)?;
+                add_to_catalog(&path, &built, &packages)?;
             }
             print(&report(built, packages, tapp))
         }
@@ -171,6 +200,29 @@ fn main() -> anyhow::Result<()> {
             let builder = store::device_builder()?;
             let built = builder.build_reporting(&runtime, &packages, &mut std::io::stderr())?;
             print(&report(built, packages, None))
+        }
+        Command::BuildFor {
+            publisher,
+            runtime,
+            out,
+            packages,
+        } => {
+            let publisher: [u8; 32] = hex::decode(&publisher)
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .context("--publisher is not 32 hex bytes")?;
+            let state = store::default_state_dir()
+                .ok_or_else(|| anyhow::anyhow!("no cache directory for the tool builder"))?;
+            let builder = Builder::new(
+                env_tools::delegated::UnsignedStore::new(Store::from_env()?, publisher, out)?,
+                NoCatalog,
+                state,
+            );
+            let built = builder.build_reporting(&runtime, &packages, &mut std::io::stderr())?;
+            print(&serde_json::json!({
+                "unsigned": built.tool.to_string(),
+                "key": built.key,
+            }))
         }
         Command::MergeCatalogs { out, inputs } => {
             let mut merged = Catalog::default();
@@ -181,6 +233,25 @@ fn main() -> anyhow::Result<()> {
             print(&serde_json::json!({ "tools": merged.tools.len() }))
         }
     }
+}
+
+/// Add `built` to the catalog document at `path`, creating it if missing.
+fn add_to_catalog(
+    path: &Path,
+    built: &env_tools::Built,
+    requested: &[String],
+) -> anyhow::Result<()> {
+    let mut doc = if path.exists() {
+        Catalog::load(path)?
+    } else {
+        Catalog::default()
+    };
+    doc.insert(Entry {
+        tool: built.tool,
+        key: built.key.clone(),
+        requested: requested.to_vec(),
+    });
+    doc.save(path)
 }
 
 fn report(built: env_tools::Built, requested: Vec<String>, tapp: Option<PathBuf>) -> BuiltTool {
