@@ -37,6 +37,7 @@
 
 pub mod actions;
 mod compact_swatch_palette;
+pub mod effects;
 mod find_bar;
 pub mod framework;
 pub mod i18n;

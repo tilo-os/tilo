@@ -2926,7 +2926,6 @@ mod tests {
             assert!(spec.contract.is_participant_view(), "{id}");
             assert!(spec.contract.requirements().is_empty(), "{id}");
             assert!(spec.contract.validate_declaration().is_empty(), "{id}");
-            assert!(spec.has_continuation_identity(), "{id}");
             assert!(
                 spec.params()
                     .iter()
@@ -2982,12 +2981,14 @@ mod tests {
                 apply(doc, &action);
                 *agent = next.settle(doc);
             } else {
-                let operation = crate::actions::view_ops::decode_view_operation(
-                    &encoded.type_id,
-                    &encoded.payload,
-                )
-                .unwrap()
-                .unwrap();
+                let Some(crate::effects::ViewMove::Operation(operation)) =
+                    crate::effects::decode(&encoded)
+                        .expect("a published effect")
+                        .view_operation()
+                        .unwrap()
+                else {
+                    panic!("{id} moves the caret");
+                };
                 *agent = crate::actions::view_ops::apply(agent, doc, &operation)
                     .unwrap()
                     .1;
@@ -3247,14 +3248,14 @@ mod tests {
             ),
         ] {
             let encoded = invoke(&base, doc, id, args);
-            assert_eq!(
-                encoded.type_id,
-                crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
-            );
-            let decoded =
-                crate::actions::view_ops::decode_view_operation(&encoded.type_id, &encoded.payload)
+            let Some(crate::effects::ViewMove::Operation(decoded)) =
+                crate::effects::decode(&encoded)
+                    .expect("a published effect")
+                    .view_operation()
                     .unwrap()
-                    .unwrap();
+            else {
+                panic!("{id} moves the view");
+            };
             assert_eq!(decoded, expected);
             assert!(
                 crate::actions::view_ops::apply(&base, doc, &decoded)
@@ -3266,9 +3267,12 @@ mod tests {
         let bad_point = spec(&root(&base, doc), op::MOVE_CARET)
             .build_json(serde_json::json!({"to": "point"}).as_object().unwrap())
             .unwrap();
-        assert_eq!(
-            bad_point.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+        assert!(
+            crate::effects::decode(&bad_point)
+                .expect("a published effect")
+                .view_operation()
+                .is_err(),
+            "a point without a block is refused"
         );
         assert_eq!(state.doc.clone().get_heads(), heads);
     }

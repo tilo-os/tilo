@@ -4,8 +4,6 @@
 //! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
 //! pointer + keyboard onto the editing model (selection, formatting, save).
 
-mod resource_file_jobs;
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use ui::widget::{AppModel, ModelPath};
@@ -43,6 +41,7 @@ use crate::WpFormat;
 use crate::compact_swatch_palette::{
     CompactSwatchPalette, PaletteChoice, PaletteKind, PaletteRequest,
 };
+use crate::effects::WordProcessorEffect;
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -64,6 +63,7 @@ use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::paint::with_alpha;
 use ui::portal;
+use ui::tilo_resource::Effect as _;
 
 mod block_layout;
 mod image_layout;
@@ -116,20 +116,6 @@ fn to_spans(ranges: Vec<(String, usize, usize)>) -> Vec<crate::actions::Span> {
         .into_iter()
         .map(|(block, start, end)| crate::actions::Span { block, start, end })
         .collect()
-}
-
-/// Why a portal file-dialog was opened: the drain path routes the chosen file to
-/// the matching action. One request is in flight at a time (`portal_rx`), so a
-/// single purpose is enough to disambiguate the outcome.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PortalPurpose {
-    /// Insert the chosen image at the caret (toolbar Image button).
-    InsertImage,
-    /// Open the chosen document in place, replacing the current one (Ctrl+O).
-    OpenDocument,
-    /// Save the current document to the chosen path (Save As / first save of an
-    /// untitled document).
-    SaveAs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1460,19 +1446,13 @@ pub struct WordProcessorWidget {
     panel_metrics: PanelMetrics,
     /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
     template_picker: TemplatePicker,
-    /// An in-flight host file request: `Some` means the XDG chooser is open on a
-    /// worker thread; the path is drained each frame in [`Self::drain_portal`].
-    /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
+    /// An in-flight request for an image to insert: `Some` while the host's
+    /// chooser is open; its answer is drained each frame in
+    /// [`Self::drain_image_choice`].
     portal_rx: Option<portal::PortalChannel>,
-    /// What the in-flight [`Self::portal_rx`] request is for (open a document,
-    /// save the current one, or insert an image). Set alongside `portal_rx`.
-    portal_purpose: Option<PortalPurpose>,
-    resource_file_invocation: Option<tilo_actions::InvocationId>,
-    resource_file_result: Option<tilo_actions::InvocationUpdate>,
-    file_job_scopes:
-        HashMap<tilo_actions::InvocationId, ui::invocation_scope::ResourceInvocationScope>,
-    scoped_file_results: HashMap<tilo_actions::InvocationId, tilo_actions::InvocationUpdate>,
-    pending_resource_open: Option<(tilo_actions::InvocationId, std::path::PathBuf)>,
+    /// A save whose destination the person chose, written on the next sync
+    /// with the document, and the caller it answers.
+    pending_save: Option<(PathBuf, ui::framework::EffectReply)>,
     // ---- paragraph-style context menu -------------------------------------
     /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
@@ -1505,14 +1485,54 @@ pub struct WordProcessorWidget {
     last_dispatched: Option<tilo_actions::EncodedAction>,
 }
 
-/// The edits bound to the views a window serves, resolved at its last sync.
+/// What one view offers beside the document: the edits bound to its caret
+/// and selection, and its Find results.
+#[derive(Default, Clone)]
+struct ViewOffer {
+    edits: Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
+    rows: Vec<ui::framework::LiveRow>,
+}
+
+/// What the views a window serves offer, resolved at its last sync.
 #[derive(Default)]
 struct BoundEdits {
-    local: Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
-    participants: HashMap<
-        tilo_actions::ParticipantId,
-        Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
-    >,
+    local: ViewOffer,
+    participants: HashMap<tilo_actions::ParticipantId, ViewOffer>,
+}
+
+/// The host chooser's request for a document to open.
+fn open_request() -> portal::PickRequest {
+    portal::PickRequest::open("Open document", "Open")
+        .filter(
+            portal::FileFilter::new("Documents")
+                .glob("*.docx")
+                .glob("*.odt")
+                .glob("*.md")
+                .glob("*.markdown")
+                .glob("*.txt")
+                .glob("*.html")
+                .glob("*.htm")
+                .glob("*.rtf"),
+        )
+        .thread_name("wp-portal-open")
+}
+
+/// The host chooser's request for where to save, suggesting `suggested`.
+/// The format follows the extension chosen.
+fn save_request(suggested: &str) -> portal::PickRequest {
+    portal::PickRequest::save("Save as", "Save", suggested)
+        .filter(portal::FileFilter::new("Word document").glob("*.docx"))
+        .filter(portal::FileFilter::new("OpenDocument text").glob("*.odt"))
+        .filter(
+            portal::FileFilter::new("Markdown")
+                .glob("*.md")
+                .glob("*.markdown"),
+        )
+        .filter(portal::FileFilter::new("Rich Text").glob("*.rtf"))
+        .filter(portal::FileFilter::new("HTML").glob("*.html").glob("*.htm"))
+        .filter(portal::FileFilter::new("PDF").glob("*.pdf"))
+        .filter(portal::FileFilter::new("EPUB").glob("*.epub"))
+        .thread_name("wp-portal-save")
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1648,12 +1668,7 @@ impl WordProcessorWidget {
             panel_metrics: PanelMetrics::fallback(),
             template_picker: TemplatePicker::default(),
             portal_rx: None,
-            portal_purpose: None,
-            resource_file_invocation: None,
-            resource_file_result: None,
-            file_job_scopes: HashMap::new(),
-            scoped_file_results: HashMap::new(),
-            pending_resource_open: None,
+            pending_save: None,
             style_menu: StyleMenu::default(),
             toast: None,
             ime_rect: None,
@@ -1728,12 +1743,11 @@ impl WordProcessorWidget {
             return;
         }
         let body = self.kept_body();
-        let edits = |ctx: &crate::actions::WpResourceCtx| {
-            crate::actions::bound::declarations(&crate::actions::live_presentation_resources(
-                ctx,
-                doc,
-                body.as_deref(),
-            ))
+        let edits = |ctx: &crate::actions::WpResourceCtx| ViewOffer {
+            edits: crate::actions::bound::declarations(
+                &crate::actions::live_presentation_resources(ctx, doc, body.as_deref()),
+            ),
+            rows: crate::actions::search_rows(ctx, doc),
         };
         let local = self
             .wp_resource_ctx(doc)
@@ -1758,12 +1772,10 @@ impl WordProcessorWidget {
         };
     }
 
-    /// The edits bound to the view of whoever is invoking: a participant's
-    /// own, else this window's.
-    pub(crate) fn bound_edits(
-        &self,
-    ) -> Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>> {
-        match ui::invocation_scope::current_participant() {
+    /// What the view of whoever is invoking, or is published for, offers:
+    /// a participant's own, else this window's.
+    fn offer(&self) -> ViewOffer {
+        match ui::invocation_scope::current_viewer() {
             Some(participant) => self
                 .bound
                 .participants
@@ -1772,6 +1784,18 @@ impl WordProcessorWidget {
                 .unwrap_or_default(),
             None => self.bound.local.clone(),
         }
+    }
+
+    /// The edits bound to the view of whoever is invoking.
+    pub(crate) fn bound_edits(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>> {
+        self.offer().edits
+    }
+
+    /// The Find results of the view of whoever is invoking, as rows.
+    pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.offer().rows
     }
 
     /// Bring the kept state up to date with `state`. Returns whether it
@@ -2038,11 +2062,19 @@ impl WordProcessorWidget {
     /// `find-text`) to this window: the same pure function a participant's
     /// invocation runs, adopted as the local caret/selection. `find-text`
     /// opens the Find bar on the query, as typing it there would.
-    fn apply_local_view_operation(
+    pub(crate) fn apply_local_view_operation(
         &mut self,
         state: &AutoCommit,
-        operation: &crate::actions::view_ops::ViewOperation,
+        movement: &crate::effects::ViewMove,
     ) -> Result<(), String> {
+        let operation = match movement {
+            crate::effects::ViewMove::Operation(operation) => operation,
+            crate::effects::ViewMove::NavigateTo { block, start, end } => {
+                self.navigate_to_range(state, block, *start, *end)?;
+                self.resolve_bound_edits(state);
+                return Ok(());
+            }
+        };
         if let crate::actions::view_ops::ViewOperation::FindText { query } = operation {
             if query.len() > crate::actions::editing::MAX_FIND_QUERY_BYTES {
                 return Err("the Find query is too long".into());
@@ -2060,40 +2092,28 @@ impl WordProcessorWidget {
         Ok(())
     }
 
-    /// Apply a view operation — a published `word-processor.view-operation`
-    /// payload, or the `search-hit#go-to` `NavigateTo` operation — for the
-    /// invoking participant, to that participant's view only. The invoker
-    /// must carry a participant; nothing is written into the document.
+    /// Move `participant`'s own view (its caret, selection or Find) as
+    /// `movement` says. Nothing is written into the document.
     ///
     /// # Errors
-    /// Refuses an invoker without a participant, a payload of another type,
-    /// and a refusal of the view primitive (stale range, no caret, …).
-    pub fn invoke_participant_view_operation(
+    /// Returns the view primitive's refusal (stale range, no caret, …).
+    pub(crate) fn move_participant_view(
         &mut self,
-        invoker: &tilo_actions::ActionInvoker,
-        type_id: &str,
-        payload: &[u8],
+        participant: &tilo_actions::ParticipantId,
+        movement: &crate::effects::ViewMove,
         doc: &AutoCommit,
     ) -> Result<(), String> {
-        let Some(participant) = invoker.participant.clone() else {
-            return Err("a participant view operation needs the invoking participant".into());
-        };
+        let participant = participant.clone();
         let view = self
             .participant_view_or_default(&participant, doc)
             .ok_or("the document has no body to place a caret in")?;
-        let outcome = if let Some(operation) =
-            crate::actions::view_ops::decode_view_operation(type_id, payload)?
-        {
-            crate::actions::view_ops::apply(&view, doc, &operation)
-        } else if let Some(crate::actions::WordProcessorOperation::NavigateTo {
-            block,
-            start,
-            end,
-        }) = crate::actions::decode_operation(type_id, payload)?
-        {
-            crate::actions::view_ops::navigate_to(&view, doc, &block, start, end)
-        } else {
-            return Err(format!("{type_id} is not a participant view operation"));
+        let outcome = match movement {
+            crate::effects::ViewMove::Operation(operation) => {
+                crate::actions::view_ops::apply(&view, doc, operation)
+            }
+            crate::effects::ViewMove::NavigateTo { block, start, end } => {
+                crate::actions::view_ops::navigate_to(&view, doc, block, *start, *end)
+            }
         };
         let (_, next) = outcome.map_err(|error| error.to_string())?;
         self.set_participant_view(&participant, &next, doc);
@@ -2608,28 +2628,27 @@ impl WordProcessorWidget {
         self.participants.remove(participant)
     }
 
-    /// The resource tree as `participant` sees it. `None` is this window
-    /// (the ordinary [`::resources`]); any
-    /// other participant gets the tree built from its own view only, so no
-    /// other participant's caret, selection or Find hits leak into it.
+    /// The Find results `participant` sees, as resources: this window's
+    /// for `None`, else built from that participant's own view only, so no
+    /// other participant's hits leak into it.
     pub fn participant_resources(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let Some(participant) = participant else {
-            return self.own_resources(doc);
+        let ctx = match participant {
+            None => self.wp_resource_ctx(doc),
+            Some(participant) => self
+                .participant_view_or_default(participant, doc)
+                .and_then(|view| view.ctx(doc)),
         };
-        let Some(mut ctx) = self
-            .participant_view_or_default(participant, doc)
-            .and_then(|view| view.ctx(doc))
-        else {
-            return Vec::new();
-        };
-        ctx.content = self.inner.content_store().clone();
-        crate::actions::bound::view_only(crate::actions::live_presentation_resources(
-            &ctx, doc, None,
-        ))
+        ctx.map(|ctx| {
+            crate::actions::search_rows(&ctx, doc)
+                .into_iter()
+                .map(ui::framework::LiveRow::into_resource)
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// Apply one participant's edit — the envelopes and next view an
@@ -3367,6 +3386,32 @@ impl WordProcessorWidget {
         }
     }
 
+    /// Insert the image the host's chooser answered with, if it answered.
+    /// A cancel or a chooser failure leaves the document as it was; a
+    /// chooser gone without answering frees the request.
+    fn drain_image_choice(&mut self, state: &mut AutoCommit) {
+        let Some(rx) = self.portal_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                match outcome {
+                    portal::PortalOutcome::Opened(path) => {
+                        self.insert_image_from_path(state, &path);
+                    }
+                    portal::PortalOutcome::Failed(reason) => {
+                        eprintln!("word-processor: portal error: {reason}");
+                        self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
+                    }
+                    portal::PortalOutcome::Cancelled => {}
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.portal_rx = None,
+        }
+    }
+
     /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
     /// portal** (per the Tilo HIG the app never draws its own picker): the D-Bus
     /// round-trip + host dialog run on a worker thread ([`portal::PickRequest`]);
@@ -3392,256 +3437,22 @@ impl WordProcessorWidget {
                 .thread_name("wp-portal-image")
                 .send(),
         );
-        self.portal_purpose = Some(PortalPurpose::InsertImage);
     }
 
-    /// **Open** a document through the host portal: pick a `.docx`/`.odt`/`.md`
-    /// (etc.) file; the chosen path is drained next frame and replaces the
-    /// current document in place. A request while one is already in flight is
-    /// ignored.
-    fn request_open_document(&mut self) {
-        if self.portal_rx.is_some() {
-            return;
-        }
-        self.portal_rx = Some(
-            portal::PickRequest::open("Open document", "Open")
-                .filter(
-                    portal::FileFilter::new("Documents")
-                        .glob("*.docx")
-                        .glob("*.odt")
-                        .glob("*.md")
-                        .glob("*.markdown")
-                        .glob("*.html")
-                        .glob("*.htm")
-                        .glob("*.rtf"),
-                )
-                .thread_name("wp-portal-open")
-                .send(),
-        );
-        self.portal_purpose = Some(PortalPurpose::OpenDocument);
-    }
-
-    /// **Save As**: pick a destination through the host portal. The format is
-    /// chosen from the extension the user types/selects (`.docx` → Word, `.odt`
-    /// → `OpenDocument`, …); the current document is written there on drain and
-    /// becomes the document's path. Also the fallback first-save path for an
-    /// untitled document (no more silent `~/Untitled.md`).
-    fn request_save_as(&mut self) {
-        let _ = self.request_save_as_for_job(None);
-    }
-
-    fn request_save_as_for_job(
-        &mut self,
-        scope: Option<&ui::invocation_scope::ResourceInvocationScope>,
-    ) -> Result<(), String> {
-        if self.portal_rx.is_some() {
-            return Ok(());
-        }
-        // Pre-fill the current file name, or a sensible untitled default.
-        let suggested = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
-            || "Untitled.md".to_string(),
-            |f| f.to_string_lossy().into_owned(),
-        );
-        let request = portal::PickRequest::save("Save as", "Save", &suggested)
-            .filter(portal::FileFilter::new("Word document").glob("*.docx"))
-            .filter(portal::FileFilter::new("OpenDocument text").glob("*.odt"))
-            .filter(
-                portal::FileFilter::new("Markdown")
-                    .glob("*.md")
-                    .glob("*.markdown"),
-            )
-            .filter(portal::FileFilter::new("Rich Text").glob("*.rtf"))
-            .filter(portal::FileFilter::new("HTML").glob("*.html").glob("*.htm"))
-            .filter(portal::FileFilter::new("PDF").glob("*.pdf"))
-            .filter(portal::FileFilter::new("EPUB").glob("*.epub"))
-            .thread_name("wp-portal-save");
-        self.portal_rx = Some(match scope {
-            Some(scope) => request.send_scoped(scope.effect_scope()?),
-            None => request.send(),
-        });
-        self.portal_purpose = Some(PortalPurpose::SaveAs);
-        Ok(())
-    }
-
-    /// Drain a completed portal request, if any, and route the chosen file by the
-    /// request's [`PortalPurpose`]: insert an image, open a document in place, or
-    /// save the current document there. A cancel or portal failure leaves the
-    /// document untouched. Called once per frame from `sync`; draining clears the
-    /// in-flight channel so another request can start.
-    fn drain_portal(&mut self, state: &mut AutoCommit) {
-        let Some(rx) = self.portal_rx.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(outcome) => {
-                let purpose = self.portal_purpose.take();
-                self.portal_rx = None;
-                // A single-select open/save reports `Opened`; anything else
-                // (cancelled, or a portal failure) leaves the document alone.
-                let result = if let ui::portal::PortalOutcome::Opened(path) = outcome {
-                    match purpose {
-                        Some(PortalPurpose::InsertImage) => {
-                            self.insert_image_from_path(state, &path);
-                            Ok(())
-                        }
-                        Some(PortalPurpose::OpenDocument) => {
-                            self.try_open_document_in_place(state, &path)
-                        }
-                        Some(PortalPurpose::SaveAs) => {
-                            let format = WpFormat::from_path(&path);
-                            let scope = self
-                                .resource_file_invocation
-                                .and_then(|id| self.file_job_scopes.get(&id))
-                                .cloned();
-                            self.try_write_to_path_for_job(state, &path, format, scope.as_ref())
-                        }
-                        None => Ok(()),
-                    }
-                } else if let portal::PortalOutcome::Failed(reason) = outcome {
-                    eprintln!("word-processor: portal error: {reason}");
-                    self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
-                    Err(reason)
-                } else {
-                    Err("file picker was cancelled".into())
-                };
-                if let Some(invocation) = self.resource_file_invocation.take() {
-                    let update = match result {
-                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                        Err(message) if message == "file picker was cancelled" => {
-                            tilo_actions::InvocationUpdate::Cancelled {
-                                invocation,
-                                message: Some(message),
-                            }
-                        }
-                        Err(message) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "word_processor.file_operation_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                    };
-                    self.finish_file_operation(update);
-                }
-            }
-            // Still open (Empty) — leave the channel in place; a hangup
-            // (worker gone without sending) clears it so we don't leak.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                self.portal_purpose = None;
-                if let Some(invocation) = self.resource_file_invocation.take() {
-                    let update = tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "word_processor.portal_worker_lost".into(),
-                            message: "file picker stopped without returning a result".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    };
-                    self.finish_file_operation(update);
-                }
-            }
-        }
-    }
-
-    /// Replace the current document in place with the file at `path` (format by
-    /// extension), re-seat the caret, and adopt the path/format. Returns whether
-    /// the document was replaced (a read or import failure leaves it untouched).
-    fn try_open_document_in_place(
-        &mut self,
-        state: &mut AutoCommit,
-        path: &std::path::Path,
-    ) -> Result<(), String> {
-        let bytes = match tilo_files::file_at(path)
-            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
-        {
-            Ok(b) => b,
-            Err(e) => {
-                self.toast = Some((t("toast-open-failed"), ToastKind::Error));
-                self.lifecycle.dirty = true;
-                return Err(format!("could not open {}: {e}", path.display()));
-            }
-        };
-        let format = WpFormat::from_path(path);
-        let opened = self
-            .inner
-            .stage_replacement(&bytes, format)
-            .is_some_and(|action| self.try_perform_action(state, &action));
-        if !opened {
-            self.toast = Some((t("toast-open-failed"), ToastKind::Error));
-            self.lifecycle.dirty = true;
-            return Err(format!("could not parse {}", path.display()));
-        }
-        self.inner.seat_after_replacement(state);
-        self.set_file(path.to_path_buf(), format);
-        self.refresh_blocks(state);
-        // The whole body changed; per-block caches keyed by id/text are stale.
-        self.layout_cache.clear();
-        self.recent_layout_cache.clear();
-        self.spell_cache.clear();
-        self.lifecycle.dirty = true;
-        Ok(())
-    }
-
-    /// Ctrl+S: save to the current path, or — for an untitled document — open the
-    /// **Save As** portal instead of silently inventing a path.
-    fn save(&mut self, state: &AutoCommit) {
-        if self.path.is_none() {
-            self.request_save_as();
-            return;
-        }
-        self.write_to_current_path(state);
-    }
-
-    /// Write the current document to its already-set path/format via the qdoc
-    /// codec. Assumes `path` + `format` are set (the Save-As drain sets them, and
-    /// a document opened with a path already has them).
-    fn write_to_current_path(&mut self, state: &AutoCommit) {
-        if let Err(error) = self.try_write_to_current_path(state) {
-            eprintln!("word-processor: {error}");
-        }
-    }
-
-    fn try_write_to_current_path(&mut self, state: &AutoCommit) -> Result<(), String> {
-        let (Some(path), Some(format)) = (self.path.clone(), self.format) else {
-            return Err("document has no writable path".into());
-        };
-        self.try_write_to_path(state, &path, format)
-    }
-
-    /// Adopt a Save-As destination only once the write succeeds. Export-only
-    /// formats leave the document's own destination as it was.
+    /// Write `state` to `path` as `format`. A Save As destination becomes
+    /// the document's own once the write succeeds; export-only formats leave
+    /// it as it was.
     fn try_write_to_path(
         &mut self,
         state: &AutoCommit,
         path: &std::path::Path,
         format: WpFormat,
     ) -> Result<(), String> {
-        self.try_write_to_path_for_job(state, path, format, None)
-    }
-
-    fn try_write_to_path_for_job(
-        &mut self,
-        state: &AutoCommit,
-        path: &std::path::Path,
-        format: WpFormat,
-        scope: Option<&ui::invocation_scope::ResourceInvocationScope>,
-    ) -> Result<(), String> {
         self.lifecycle.dirty = true;
         if let Some(c) = self.inner.containers.as_ref() {
             let dr = tilo_doc::DocRef { doc: state, c };
             match format.export(dr, self.inner.content_store()) {
                 Ok(bytes) => {
-                    if let Some(scope) = scope {
-                        scope.check()?;
-                    }
                     tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
                         |e| {
                             eprintln!("word-processor: could not write {}: {e}", path.display());
@@ -3662,9 +3473,6 @@ impl WordProcessorWidget {
             return Err("document has no writable path or initialized body".into());
         }
         if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
-            if let Some(scope) = scope {
-                scope.check()?;
-            }
             self.set_file(path.to_path_buf(), format);
         }
         Ok(())
@@ -10045,20 +9853,17 @@ impl WordProcessorWidget {
         // the current path (or, when untitled, prompts via the
         // same picker rather than inventing a path).
         if s.eq_ignore_ascii_case("s") {
-            if shift {
-                self.request_save_as();
+            self.invoke_effect(&if shift {
+                WordProcessorEffect::SaveAs { path: None }
             } else {
-                self.save(state);
-            }
-            self.lifecycle.dirty = true;
+                WordProcessorEffect::Save { path: None }
+            });
             *handled = true;
             return;
         }
-        // Ctrl+O opens a document through the host portal, in
-        // place of the current one.
+        // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
-            self.request_open_document();
-            self.lifecycle.dirty = true;
+            self.invoke_effect(&WordProcessorEffect::Open { path: None });
             *handled = true;
             return;
         }
@@ -10158,79 +9963,138 @@ impl WordProcessorWidget {
 impl WordProcessorWidget {
     /// Apply a synchronous command or view operation. Returns `Ok(false)`
     /// when `type_id` is not this widget's.
-    fn apply_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-    ) -> Result<bool, String> {
-        use crate::actions::WordProcessorOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        // Resource view openers (editor / compact) from RichText::local_operations.
-        // The editing surface is already this window; accept without further work.
-        if type_id == "tilo.rich-text.view" {
-            return Ok(true);
-        }
-        // A delivered invocation by a participant (an agent task) moves only
-        // that participant's view: its own `move-caret`/`select-*`/
-        // `find-text`, and `go-to` on its own search hits, cells or comments.
-        if let Some(invoker) = ui::invocation_scope::current_invoker()
-            && invoker.participant.is_some()
-            && (type_id == crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
-                || matches!(
-                    crate::actions::decode_operation(type_id, payload)?,
-                    Some(WordProcessorOperation::NavigateTo { .. })
-                ))
-        {
-            self.invoke_participant_view_operation(&invoker, type_id, payload, doc)?;
-            return Ok(true);
-        }
-        // Without a participant a view operation is this window's own
-        // (Ctrl+K, accessibility).
-        if let Some(operation) = crate::actions::view_ops::decode_view_operation(type_id, payload)?
-        {
-            self.apply_local_view_operation(doc, &operation)?;
-            self.lifecycle.dirty = true;
-            return Ok(true);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            WordProcessorOperation::Open { .. }
-            | WordProcessorOperation::Save { .. }
-            | WordProcessorOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
-            WordProcessorOperation::Find => self.open_find(doc),
-            WordProcessorOperation::ZoomIn => {
-                self.zoom_by(0.1);
-            }
-            WordProcessorOperation::ZoomOut => {
-                self.zoom_by(-0.1);
-            }
-            WordProcessorOperation::ZoomReset => {
-                self.set_zoom(1.0);
-            }
-            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
-            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
-            WordProcessorOperation::ToggleStyles => {
-                self.view.styles_panel_visible = !self.view.styles_panel_visible;
-            }
-            WordProcessorOperation::ToggleRuler => {
-                self.view.ruler_visible = !self.view.ruler_visible;
-            }
-            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
-            WordProcessorOperation::NavigateTo { block, start, end } => {
-                self.navigate_to_range(doc, &block, start, end)?;
-            }
+    /// Invoke `effect` through the document's door, as the palette or an
+    /// agent does: checked, and answered by [`Self::answer_effect`].
+    fn invoke_effect(&mut self, effect: &WordProcessorEffect) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.effect(effect);
         }
         self.lifecycle.dirty = true;
-        Ok(true)
+    }
+
+    /// Answer `effect`, however it was invoked.
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: WordProcessorEffect,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use ui::framework::Effected;
+        if let Some(movement) = effect.view_operation()? {
+            let doc = cx.document().ok_or("the document is not at hand")?.clone();
+            // A delivered invocation by a participant (an agent task) moves
+            // only that participant's view; without one it is this window's.
+            match ui::invocation_scope::current_participant() {
+                Some(participant) => self.move_participant_view(&participant, &movement, &doc)?,
+                None => self.apply_local_view_operation(&doc, &movement)?,
+            }
+            self.lifecycle.dirty = true;
+            return Ok(Effected::done());
+        }
+        match effect {
+            WordProcessorEffect::Open { path: Some(path) } => {
+                self.open_in_place(cx, std::path::Path::new(&path))?;
+            }
+            WordProcessorEffect::Open { path: None } => {
+                return Ok(
+                    cx.choose_path(open_request(), |editor, path, cx| match path {
+                        Some(path) => {
+                            editor.open_in_place(cx, &path)?;
+                            Ok(Effected::done())
+                        }
+                        None => Err("the file picker was cancelled".into()),
+                    }),
+                );
+            }
+            WordProcessorEffect::Save { path } => {
+                match path.map(PathBuf::from).or_else(|| self.path.clone()) {
+                    Some(path) => self.save_now(cx, &path)?,
+                    None => return Ok(self.choose_where_to_save(cx)),
+                }
+            }
+            WordProcessorEffect::SaveAs { path: Some(path) } => {
+                self.save_now(cx, std::path::Path::new(&path))?;
+            }
+            WordProcessorEffect::SaveAs { path: None } => {
+                return Ok(self.choose_where_to_save(cx));
+            }
+            WordProcessorEffect::Find => {
+                let doc = cx.document().ok_or("the document is not at hand")?.clone();
+                self.open_find(&doc);
+            }
+            WordProcessorEffect::ZoomIn => {
+                self.zoom_by(0.1);
+            }
+            WordProcessorEffect::ZoomOut => {
+                self.zoom_by(-0.1);
+            }
+            WordProcessorEffect::ZoomReset => {
+                self.set_zoom(1.0);
+            }
+            WordProcessorEffect::Spellcheck => self.toggle_spellcheck(),
+            WordProcessorEffect::Markup => self.toggle_markup(),
+            WordProcessorEffect::Styles => {
+                self.view.styles_panel_visible = !self.view.styles_panel_visible;
+            }
+            WordProcessorEffect::Ruler => self.view.ruler_visible = !self.view.ruler_visible,
+            WordProcessorEffect::Outline => self.outline.toggle(),
+            other => return Err(format!("`{}` is not handled here", other.id())),
+        }
+        self.lifecycle.dirty = true;
+        Ok(Effected::done())
+    }
+
+    /// Replace the document with the file at `path` (its format by
+    /// extension), as one action Undo takes back; the file becomes where
+    /// Save writes.
+    fn open_in_place(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let bytes = tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+            .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+        let format = WpFormat::from_path(path);
+        let action = crate::import_action(&bytes, format, self.inner.content_store())?;
+        cx.apply(&action);
+        self.set_file(path.to_path_buf(), format);
+        self.scroll_y = 0.0;
+        // The whole body changes; per-block caches keyed by id/text go stale.
+        self.layout_cache.clear();
+        self.recent_layout_cache.clear();
+        self.spell_cache.clear();
+        Ok(())
+    }
+
+    /// Write the document to `path` now, from the document lent to the
+    /// effect.
+    fn save_now(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        self.try_write_to_path(&doc, path, WpFormat::from_path(path))
+    }
+
+    /// Ask the person where to save with the host's chooser; the chosen file
+    /// is written on the next sync, which answers the caller.
+    fn choose_where_to_save(
+        &self,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+    ) -> ui::framework::Effected {
+        let suggested = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
+            || "Untitled.md".to_string(),
+            |f| f.to_string_lossy().into_owned(),
+        );
+        cx.choose_path(save_request(&suggested), |editor, path, cx| match path {
+            Some(path) => {
+                editor.pending_save = Some((path, cx.reply()));
+                editor.lifecycle.dirty = true;
+                Ok(ui::framework::Effected::Pending)
+            }
+            None => Err("the file picker was cancelled".into()),
+        })
     }
 }
 
@@ -10315,73 +10179,6 @@ impl Widget for WordProcessorWidget {
         }))
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE,
-            // Published via tilo_document::RichText::local_operations (editor/compact).
-            "tilo.rich-text.view",
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let (request, scope) = op.with_custody();
-        if scope.is_some() {
-            return self.start_file_operation(request, doc, scope);
-        }
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.start_file_operation(request, doc, None)? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .apply_operation(request.kind, request.type_id, request.payload, doc)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.expire_file_jobs();
-        if cancellation_requested && self.file_job_scopes.contains_key(&invocation) {
-            if let Some(scope) = self.file_job_scopes.get(&invocation) {
-                scope.cancel();
-            }
-            self.expire_file_jobs();
-            self.scoped_file_results.insert(
-                invocation,
-                tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("file operation cancelled".into()),
-                },
-            );
-        }
-        if let Some(update) = self.scoped_file_results.remove(&invocation) {
-            return Some(update);
-        }
-        if self
-            .resource_file_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_file_result.take()
-        } else {
-            None
-        }
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the editor binds, rebases and reconciles in one sync pass"
@@ -10392,7 +10189,6 @@ impl Widget for WordProcessorWidget {
         if self.source.is_none() && self.dispatch.is_some() {
             self.source = ui::framework::testing::detached_live(state).ok();
         }
-        self.expire_file_jobs();
         // A participant who may only view (or History mode's past version)
         // keeps its caret on what is there.
         if self.read_only() {
@@ -10400,27 +10196,15 @@ impl Widget for WordProcessorWidget {
         } else {
             self.inner.bind(state, root);
         }
-        if let Some((invocation, open_path)) = self.pending_resource_open.take() {
-            let update = match self.try_open_document_in_place(state, &open_path) {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "word_processor.open_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            };
-            self.finish_file_operation(update);
+        if let Some((path, reply)) = self.pending_save.take() {
+            let format = WpFormat::from_path(&path);
+            reply.finish(
+                self.try_write_to_path(state, &path, format)
+                    .map(|()| tilo_actions::ActionOutput::default()),
+            );
         }
-        // Fold in a completed host portal request (open / save / image insert),
-        // if the portal worker finished.
-        self.drain_portal(state);
+        // Fold in a chosen image, if the host's chooser answered.
+        self.drain_image_choice(state);
         self.refresh_blocks(state);
         if let Some(scenario) = self.staged_scenario.take() {
             self.run_staged_scenario(state, &scenario);
@@ -10965,109 +10749,9 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
     }
 }
 
-impl WordProcessorWidget {
-    /// The tree this window's own view offers: the edits bound to its caret
-    /// and selection, beside the framework's publication of the document.
-    pub(crate) fn own_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let Some(ctx) = self.wp_resource_ctx(doc) else {
-            return Vec::new();
-        };
-        let body = self.kept_body();
-        crate::actions::bound::view_only(crate::actions::live_presentation_resources(
-            &ctx,
-            doc,
-            body.as_deref(),
-        ))
-    }
-}
-
 impl ui::resources::PublishesResources for WordProcessorWidget {
-    /// Publish the resource tree Ctrl+K walks (delegates to the
-    /// [`PublishesResources`](ui::resources::PublishesResources) impl in
-    /// [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // While a delivered invocation by a participant (an agent task) is
-        // being resolved, "the open tree" is that participant's own tree,
-        // whichever host path asks: a bound component's snapshot resolution
-        // calls `resources` on the record document, not `resources_for`.
-        // Resolving against the schema (or this window's caret) would build
-        // its positional envelopes from someone else's view.
-        // An invocation without a participant (a certified job, a person
-        // through the command path) resolves against this widget's own view,
-        // as before participant views; the declaration-only schema is never
-        // invocable.
-        if let Some(invoker) = ui::invocation_scope::current_invoker() {
-            return match invoker.participant {
-                Some(participant) => self.participant_resources(Some(&participant), doc),
-                None => self.own_resources(doc),
-            };
-        }
-        self.own_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if let Some(invoker) = ui::invocation_scope::current_invoker() {
-            let tree = match invoker.participant {
-                Some(participant) => self.participant_resources(Some(&participant), doc),
-                None => self.own_resources(doc),
-            };
-            return find(&tree, id);
-        }
-        find(&self.own_resources(doc), id)
-    }
-    fn action_directory_invocation_domain(
-        &self,
-        _doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        // Writer offers place-image; its replaceable process blob resolver
-        // has no inert identity yet, so the whole domain stays unknown.
-        ui::widget::ActionDirectoryInvocationDomain::Unsupported
-    }
-    /// A delivered invocation's tree, rebuilt for its invoker's own view.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        match participant {
-            None => ui::resources::resources(self, doc),
-            Some(participant) => self.participant_resources(Some(participant), doc),
-        }
-    }
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        fn find(
-            resources: Vec<tilo_actions::Resource>,
-            id: &str,
-        ) -> Option<tilo_actions::Resource> {
-            resources.into_iter().find_map(|resource| {
-                if resource.id.as_str() == id {
-                    Some(resource)
-                } else {
-                    find(resource.children, id)
-                }
-            })
-        }
-        let Some(participant) = participant else {
-            return ui::resources::resource(self, doc, id);
-        };
-        find(self.participant_resources(Some(participant), doc), id)
-    }
+    // The document is the framework's publication; the editor adds only
+    // what an edit answers its caller with.
     fn document_action_result(
         &self,
         doc: &AutoCommit,
