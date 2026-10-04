@@ -4955,7 +4955,7 @@ impl Widget for PasswordsSurface {
                     .with_name("Apps with ongoing access")
                     .with_children(grants),
             );
-        } else if self.mode == ShowcaseMode::Health {
+        } else if self.mode == Pane::Health {
             let mut findings = vec![
                 AccessNode::new(Role::StaticText)
                     .with_name("Logins checked")
@@ -5436,7 +5436,7 @@ mod tests {
 
     #[test]
     fn the_password_review_reads_out_its_findings() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let mut app = demo("vault");
         let mut doc = AutoCommit::new();
         assert!(app.perform_semantic_action(
             "passwords.review",
@@ -5444,7 +5444,7 @@ mod tests {
             &mut doc,
             &automerge::ROOT,
         ));
-        assert_eq!(app.mode, ShowcaseMode::Health);
+        assert_eq!(app.mode, Pane::Health);
         let tree = app.accessibility().unwrap();
         let review = tree
             .children
