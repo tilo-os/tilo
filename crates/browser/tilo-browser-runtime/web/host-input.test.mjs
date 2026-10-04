@@ -195,3 +195,24 @@ test('desktop search chords follow the platform command key',async()=>{
  assert.equal(isDesktopSearchShortcut({key:'k',metaKey:true,repeat:true},true),false);
  assert.equal(isDesktopSearchShortcut({key:'j',metaKey:true},true),false);
 });
+
+test('mounted semantic watch latches with pixels and preserves input through disposal',async()=>{
+ const f=await fixture({standalone:true});const requests=[];f.runtime.close=()=>[];
+ f.runtime.request_component_locus=(_id,target,observe)=>requests.push({target:JSON.parse(target),observe});
+ const target={app:'writer',instance:1,record:'one',resource:'tilo-ui-bound:v1:host:lifetime:hex',action:'edit'};
+ const before=f.document.activeElement,delivered=f.delivered.length;
+ Object.assign(f.host.canvas,{width:100,height:50});
+ const watch=f.host.observeSemanticTarget(target);assert.equal(watch.read(),null);
+ const ctx=new Proxy({}, {get:()=>()=>{}});
+ const observer=createPanorama({canvas:{getContext:()=>ctx},sources:[{source:f.host.captureSource,rect:[0,0,100,50]}],width:100,height:50});
+ document.createElement=tag=>Object.assign(new Node(tag),{getContext:()=>ctx});
+ const state={phase:'presented',presentation:true,frames:2,record:'one',gpuGeneration:1,layoutGeneration:1,logicalSize:[100,50],surfaceSize:[100,50],semanticLoci:[{target,rect:[2,3,20,30]}]};
+ f.update(state);
+ const semantic=watch.read(),pane=observer.render({cx:50,cy:25,scale:1}).panes[0];
+ assert.deepEqual(semantic.rect,[2,3,20,30]);assert.equal(semantic.frame,pane.frame);assert.equal(semantic.gpuGeneration,pane.gpuGeneration);assert.equal(semantic.layoutGeneration,pane.layoutGeneration);assert.equal(semantic.presentedAtMs,pane.presentedAtMs);
+ f.update({...state,presentation:false,semanticLoci:[]});assert.deepEqual(watch.read().rect,[2,3,20,30]);
+ f.host.canvas.width=101;assert.equal(watch.read(),null);
+ assert.equal(f.document.activeElement,before);assert.equal(f.delivered.length,delivered);
+ watch.close();assert.equal(requests.at(-1).observe,false);assert.equal(watch.read(),null);
+ observer.close();await f.host.cleanup();assert.throws(()=>f.host.observeSemanticTarget(target),/closed/);
+});
