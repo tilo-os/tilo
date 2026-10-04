@@ -370,7 +370,7 @@ impl ResourceApp for ChatShell {
     /// A new record's first workspace, owned by its creator. A capture's
     /// record is its scenario's instead.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Chat>> {
-        if cx.host().capture().is_some() {
+        if cx.host().is_some_and(|host| host.capture().is_some()) {
             return Vec::new();
         }
         let creator = LocalIdentity::for_participant(cx.me());
