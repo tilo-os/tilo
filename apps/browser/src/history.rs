@@ -83,9 +83,16 @@ impl PartialEq for History {
 // Match quality carries the largest weight so a clearly better textual
 // match always outranks a worse one regardless of recency/frequency;
 // recency and frequency only order comparable matches.
-const W_MATCH: f64 = 1.0;
-const W_RECENCY: f64 = 0.3;
-const W_FREQ: f64 = 0.2;
+struct Weights {
+    matching: f64,
+    recency: f64,
+    frequency: f64,
+}
+const WEIGHTS: Weights = Weights {
+    matching: 1.0,
+    recency: 0.3,
+    frequency: 0.2,
+};
 
 /// Recency half-life: a page loses half its recency weight every this
 /// many seconds (3 days). Long enough that yesterday's pages still rank,
@@ -210,9 +217,9 @@ impl History {
             };
             let match_score = f64::from(rank) / f64::from(MAX_FIELD_RANK);
 
-            let score = W_MATCH * match_score
-                + W_RECENCY * recency_score(entry.last_visit, now)
-                + W_FREQ * frequency_score(entry.visit_count);
+            let score = WEIGHTS.matching * match_score
+                + WEIGHTS.recency * recency_score(entry.last_visit, now)
+                + WEIGHTS.frequency * frequency_score(entry.visit_count);
             scored.push((score, entry));
         }
 
