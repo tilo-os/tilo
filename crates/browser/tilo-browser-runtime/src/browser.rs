@@ -187,6 +187,17 @@ struct GpuSetup {
     caps: SurfaceCaps,
 }
 
+/// Bounded exact publication request; never a presence or action invocation.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticPresentationTarget {
+    app: String,
+    instance: u64,
+    record: String,
+    resource: String,
+    action: String,
+}
+
 struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
@@ -210,6 +221,8 @@ struct Mount {
     hidden: bool,
     generation: u64,
     frames: u64,
+    presentation: std::cell::Cell<bool>,
+    semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     error: Option<String>,
@@ -418,6 +431,8 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
     if let Some(peer) = mount.peer {
         crate::replication::detach(peer, id);
     }
+    mount.semantic_targets.clear();
+    mount.presentation.set(false);
     mount.frame.close_components();
     let reports = mount.frame.take_component_close_reports();
     mount.flush_records();
@@ -965,6 +980,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hidden: false,
         generation: 1,
         frames: 0,
+        presentation: std::cell::Cell::new(false),
+        semantic_targets: Vec::new(),
         status: status.clone(),
         images,
         error: None,
@@ -1429,7 +1446,9 @@ impl Mount {
             self.metrics.borrow_mut().presented(reasons);
         }
         let stage = self.metric_start();
+        self.presentation.set(true);
         self.publish(0);
+        self.presentation.set(false);
         self.metric_end("publish", stage);
         Ok(())
     }
@@ -1483,7 +1502,20 @@ impl Mount {
             "id": id,
             "error": self.error,
             "frames": self.frames,
+            "presentation": self.presentation.get(),
+            "componentInstance": self.frame.component_instance_id(),
+            "semanticLoci": self.presentation.get().then(|| self.semantic_targets.iter().map(|target| {
+                let rect = if self.desktop.is_none()
+                    && self.checkout.as_ref().is_some_and(|c| c.id.as_str() == target.record)
+                {
+                    self.frame.published_action_locus(target.instance, &target.app, &target.record,
+                        &tilo_actions::ActionAddress::new(&target.resource, &target.action))
+                        .map(|r| [r.x0, r.y0, r.width(), r.height()])
+                } else { None };
+                serde_json::json!({"target": target, "rect": rect})
+            }).collect::<Vec<_>>()),
             "gpuGeneration": self.generation,
+            "layoutGeneration": self.frame.relayout_frames(),
             "logicalSize": applied.logical_size(),
             "dpr": applied.dpr,
             "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
@@ -1609,6 +1641,62 @@ pub fn component_actions(
             .bound_resources_of(instance, resource.as_deref())
             .map_err(|e| door_error(&e))?;
         serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+    })
+}
+
+/// Publish component aliases through the canonical native publication namespace.
+/// Existing `component_actions` retains its domain-address compatibility.
+///
+/// # Errors
+/// Refuses closed mounts and unavailable component publications.
+#[wasm_bindgen]
+pub fn component_publications(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let resources = m
+            .frame
+            .published_bound_resources_of(None)
+            .map_err(|e| door_error(&e))?;
+        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+    })
+}
+
+/// Register/remove an exact read-only target for the next successful presentation.
+/// Requests are local observations and do not establish authenticated admission.
+///
+/// # Errors
+/// Refuses malformed/oversized targets, desktops and more than 32 queued targets.
+#[wasm_bindgen]
+pub fn request_component_locus(id: u64, target: &str, observe: bool) -> Result<(), JsValue> {
+    if target.len() > 17_000 {
+        return Err(error("semantic target exceeds size bound"));
+    }
+    let target: SemanticPresentationTarget = serde_json::from_str(target).map_err(error)?;
+    if target.instance > 9_007_199_254_740_991
+        || [
+            &target.app,
+            &target.record,
+            &target.resource,
+            &target.action,
+        ]
+        .into_iter()
+        .any(|s| s.is_empty() || s.len() > 4096)
+    {
+        return Err(error("invalid semantic target"));
+    }
+    with_mount(id, |m| {
+        if m.desktop.is_some() {
+            return Err(error("semantic presentation requires a single-app mount"));
+        }
+        m.semantic_targets.retain(|t| t != &target);
+        if observe {
+            if m.semantic_targets.len() >= 32 {
+                return Err(error("semantic target capacity exceeded"));
+            }
+            m.semantic_targets.push(target);
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
     })
 }
 
