@@ -107,8 +107,8 @@ const PADDING: f64 = 12.0;
 const BUTTON_WIDTH: f64 = 96.0;
 const BUTTON_HEIGHT: f64 = 32.0;
 /// The replace prompt's card, at most; a narrow picker narrows it.
-const REPLACE_CARD_WIDTH: f64 = 440.0;
-const REPLACE_CARD_HEIGHT: f64 = 140.0;
+const REPLACE_CARD_WIDTH: f64 = 440.0; // a dialog card's size, as the picker's own, not spacing
+const REPLACE_CARD_HEIGHT: f64 = 140.0; // a dialog card's size, not spacing
 /// What Replace does, under the replace prompt's question.
 const REPLACE_PROMPT_DETAIL: &str = "Replacing it overwrites its contents.";
 const BUTTON_GAP: f64 = 8.0;
