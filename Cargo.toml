@@ -18,6 +18,8 @@ exclude = [
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
+    "vendor/zlink-macros",
     "vendor/web-transport-quinn",
     "vendor/automerge",
 ]
