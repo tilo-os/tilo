@@ -273,6 +273,7 @@ impl RichTextLayout {
             crate::text_render::browser_emoji_runs(&shaping_text, &attrs, browser_emoji),
             metrics,
             style.kind,
+            style.optical(),
             style.distinguish || crate::font_catalog::matched::distinguish_everywhere(),
         );
         crate::font_catalog::matched::set_spans(
@@ -438,6 +439,7 @@ impl RichTextLayout {
             }),
             Metrics::new(size, line_height),
             style.kind,
+            style.optical(),
             style.distinguish || crate::font_catalog::matched::distinguish_everywhere(),
         );
         buffer.set_rich_text(

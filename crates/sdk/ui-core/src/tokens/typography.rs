@@ -9,7 +9,9 @@
 //! the theme's UI and text scale ([`TextScaling::Resolved`]), so the renderer
 //! paints it exactly once at that size.
 
-use crate::text_render::{FontChoice, TextKind, TextScaling, TextStyle, TextWeight};
+use crate::text_render::{
+    FontChoice, NumericStyle, TextGround, TextKind, TextScaling, TextStyle, TextWeight,
+};
 
 /// The body size, in logical pixels at 1×, that every role is designed
 /// against. Role sizes are `body × role_px / REFERENCE_BODY_PX`, so they land
@@ -181,7 +183,8 @@ impl FontFamily {
 }
 
 /// A UI face the system ships, chosen by name in a theme's type role or by
-/// the accessibility layer. Reading and code keep their own faces.
+/// the accessibility layer. Reading ([`ReadingFace`]) and code keep their
+/// own faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum UiFace {
     /// The system UI face.
@@ -223,6 +226,77 @@ impl UiFace {
     }
 }
 
+/// A reading face the system ships, chosen by name in a theme's type role or
+/// by a reader in an app that sets long-form text (Books). Each is set
+/// through the Reading role's family, so its optical sizes, features and
+/// script fallbacks work like the default's.
+///
+/// | Face | Optical sizes |
+/// |---|---|
+/// | `Default`, New Computer Modern | 8 pt cut for small text, Book for body text, Regular for titles |
+/// | `Libertinus`, Libertinus Serif | text cut, Display cut for large upright text |
+/// | `Literata` | `opsz` axis |
+/// | `Garamond`, EB Garamond | one design |
+/// | `SourceSerif`, Source Serif 4 | `opsz` axis |
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ReadingFace {
+    /// New Computer Modern, Computer Modern as TeX sets it.
+    #[default]
+    Default,
+    Libertinus,
+    Literata,
+    Garamond,
+    SourceSerif,
+}
+
+impl ReadingFace {
+    pub const ALL: [Self; 5] = [
+        Self::Default,
+        Self::Libertinus,
+        Self::Literata,
+        Self::Garamond,
+        Self::SourceSerif,
+    ];
+
+    /// The name a theme document stores and a reader is shown.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "New Computer Modern",
+            Self::Libertinus => "Libertinus",
+            Self::Literata => "Literata",
+            Self::Garamond => "EB Garamond",
+            Self::SourceSerif => "Source Serif",
+        }
+    }
+
+    /// The font family the face is set in. Pass it as the family of a
+    /// Reading style; the toolkit picks the face's optical cut per size.
+    #[must_use]
+    pub const fn family(self) -> &'static str {
+        match self {
+            Self::Default => crate::text_render::UI_SERIF_FAMILY,
+            Self::Libertinus => "Libertinus Serif",
+            Self::Literata => "Literata",
+            Self::Garamond => "EB Garamond",
+            Self::SourceSerif => "Source Serif 4 Variable",
+        }
+    }
+
+    /// The face a theme document or a reader's setting names: by face name,
+    /// family name, or `Default`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("Default") {
+            return Some(Self::Default);
+        }
+        Self::ALL.into_iter().find(|face| {
+            face.name().eq_ignore_ascii_case(name) || face.family().eq_ignore_ascii_case(name)
+        })
+    }
+}
+
 /// A theme's type: three families and the scale every role derives from.
 #[derive(Clone, Debug)]
 pub struct Typography {
@@ -230,6 +304,8 @@ pub struct Typography {
     pub serif_family: String,
     pub mono_family: String,
     pub(crate) scale: TypeScale,
+    /// The ground the theme's content is set on, carried by every role.
+    pub(crate) ground: TextGround,
     /// "Always distinguish similar letters", resolved: every look-alike (I,
     /// l, 1 and 0, O) set apart in all text, not only in identifiers, codes
     /// and links. From the theme's type role
@@ -246,6 +322,7 @@ impl Default for Typography {
             serif_family: crate::text_render::UI_SERIF_FAMILY.into(),
             mono_family: crate::text_render::UI_MONOSPACE_FAMILY.into(),
             scale: TypeScale::default(),
+            ground: TextGround::Light,
             distinct_letters: false,
         }
     }
@@ -254,7 +331,8 @@ impl Default for Typography {
 /// The stock typography, built once: what a retained widget resolves its
 /// role against before it has seen the active theme.
 pub(crate) fn stock() -> &'static Typography {
-    static STOCK: std::sync::LazyLock<Typography> = std::sync::LazyLock::new(Typography::default);
+    static STOCK: std::sync::LazyLock<Typography> =
+        std::sync::LazyLock::new(|| crate::theme::Theme::default().tokens.typography);
     &STOCK
 }
 
@@ -281,6 +359,42 @@ impl Typography {
             .map_or_else(|| self.sans_family.clone(), |face| face.name().to_owned())
     }
 
+    /// Set the reading face from a theme document's type role: a built-in
+    /// face by name ([`ReadingFace::name`]) or any installed family by its
+    /// name.
+    pub fn set_reading_face(&mut self, face: &str) {
+        self.serif_family = ReadingFace::from_name(face)
+            .map_or_else(|| face.trim().to_owned(), |face| face.family().to_owned());
+    }
+
+    /// This typography with the reading face `face`
+    /// ([`Self::set_reading_face`]).
+    #[must_use]
+    pub fn with_reading_face(mut self, face: &str) -> Self {
+        self.set_reading_face(face);
+        self
+    }
+
+    /// The reading face as a theme document names it: a built-in face's
+    /// name, or the family name of any other face.
+    #[must_use]
+    pub fn reading_face_name(&self) -> String {
+        ReadingFace::from_name(&self.serif_family)
+            .map_or_else(|| self.serif_family.clone(), |face| face.name().to_owned())
+    }
+
+    /// The ground the theme's roles are set on ([`TextGround`]).
+    #[must_use]
+    pub fn ground(&self) -> TextGround {
+        self.ground
+    }
+
+    /// Set the ground the theme's roles are set on: the theme's content
+    /// ground, or the ground a widget's container hands it.
+    pub fn set_ground(&mut self, ground: TextGround) {
+        self.ground = ground;
+    }
+
     /// Set the 1× body size every role derives from. Theme authors call this
     /// on a fresh theme, before the text or UI scale is applied.
     #[must_use]
@@ -303,7 +417,13 @@ impl Typography {
         let mut style = TextStyle::new(self.scale.size(role))
             .with_line_height(spec.leading)
             .with_weight(spec.weight)
-            .with_family(FontChoice::Named(family.clone()));
+            .with_family(FontChoice::Named(family.clone()))
+            .with_ground(self.ground);
+        if role == TextRole::Reading {
+            // Figures in running text are old-style and proportional, as a
+            // book sets them; `.numeric()` makes them tabular lining again.
+            style = style.with_numeric_style(NumericStyle::ProportionalOldstyle);
+        }
         style.scaling = TextScaling::Resolved;
         style
     }
@@ -513,6 +633,76 @@ mod tests {
         document.type_.face = "Hyperlegible".into();
         let spec_theme = Theme::from_document(&document).unwrap();
         assert_eq!(spec_theme.tokens.typography.face_name(), "Hyperlegible");
+    }
+
+    #[test]
+    fn reading_faces_are_chosen_by_name_in_the_theme_s_type_role() {
+        let mut typography = Typography::default();
+        assert_eq!(typography.reading_face_name(), "New Computer Modern");
+        for face in ReadingFace::ALL {
+            typography.set_reading_face(face.name());
+            assert_eq!(typography.serif_family, face.family());
+            assert_eq!(typography.reading_face_name(), face.name());
+            assert_eq!(
+                typography.style(TextRole::Reading).family,
+                FontChoice::Named(face.family().into())
+            );
+            // The UI keeps its face.
+            assert_eq!(
+                typography.style(TextRole::Body).family,
+                FontChoice::Named(crate::text_render::UI_SANS_FAMILY.into())
+            );
+        }
+        assert_eq!(
+            ReadingFace::from_name(" default "),
+            Some(ReadingFace::Default)
+        );
+        assert_eq!(
+            ReadingFace::from_name("libertinus serif"),
+            Some(ReadingFace::Libertinus)
+        );
+        typography.set_reading_face("Charis SIL");
+        assert_eq!(typography.reading_face_name(), "Charis SIL");
+
+        let mut document = crate::theme::Preset::Light.document();
+        assert_eq!(document.type_.reading, "New Computer Modern");
+        document.type_.reading = "Literata".into();
+        let theme = Theme::from_document(&document).unwrap();
+        assert_eq!(theme.tokens.typography.reading_face_name(), "Literata");
+    }
+
+    #[test]
+    fn roles_carry_the_ground_their_theme_sets_them_on() {
+        assert_eq!(
+            Theme::light().text(TextRole::Reading).ground,
+            TextGround::Light
+        );
+        assert_eq!(
+            Theme::dark().text(TextRole::Reading).ground,
+            TextGround::Dark
+        );
+        assert_eq!(Theme::dark().text(TextRole::Body).ground, TextGround::Dark);
+        // A light page inside a dark theme.
+        let paper = vello::peniko::Color::from_rgb8(0xF4, 0xEC, 0xD8);
+        assert_eq!(
+            Theme::dark()
+                .on_ground(paper)
+                .text(TextRole::Reading)
+                .ground,
+            TextGround::Light
+        );
+    }
+
+    #[test]
+    fn reading_figures_are_old_style_until_a_kind_decides_them() {
+        let reading = Typography::default().style(TextRole::Reading);
+        let tags = |style: &TextStyle| -> Vec<[u8; 4]> {
+            style.font_features.iter().map(|f| f.tag.0).collect()
+        };
+        assert_eq!(tags(&reading), [*b"pnum", *b"onum"]);
+        assert!(tags(&reading.clone().numeric()).is_empty());
+        assert!(tags(&reading.with_kind(TextKind::Secret)).is_empty());
+        assert!(tags(&Typography::default().style(TextRole::Body)).is_empty());
     }
 
     #[test]

@@ -33,6 +33,7 @@ use unicode_properties::general_category::{GeneralCategory, UnicodeGeneralCatego
 use unicode_script::{Script, UnicodeScript};
 
 use super::faces::{FaceCaps, caps};
+use super::optical::Optical;
 use crate::text_render::TextKind;
 
 /// One face matched to the UI face for scripts it lacks.
@@ -129,14 +130,17 @@ pub(crate) fn distinguish_everywhere() -> bool {
     })
 }
 
-/// Split `spans` into spans of one face each, with features resolved for
-/// `kind`. `base` is the buffer's own metrics, used for spans that carry
-/// none. `distinguish` sets every look-alike apart whatever the kind.
+/// Split `spans` into spans of one face each, each in the optical cut of its
+/// family for the size it is set at ([`super::optical`]), with features
+/// resolved for `kind`. `base` is the buffer's own metrics, used for spans
+/// that carry none. `distinguish` sets every look-alike apart whatever the
+/// kind.
 pub(crate) fn plan<'t, 'a>(
     db: &fontdb::Database,
     spans: impl IntoIterator<Item = (&'t str, Attrs<'a>)>,
     base: Metrics,
     kind: TextKind,
+    optical: Optical,
     distinguish: bool,
 ) -> Vec<(&'t str, Attrs<'a>)> {
     plan_runs(
@@ -144,6 +148,7 @@ pub(crate) fn plan<'t, 'a>(
         spans.into_iter().map(|(text, attrs)| (text, attrs, None)),
         base,
         kind,
+        optical,
         distinguish,
     )
 }
@@ -157,6 +162,7 @@ pub(crate) fn plan_runs<'t, 'a>(
     runs: impl IntoIterator<Item = (&'t str, Attrs<'a>, Option<TextKind>)>,
     base: Metrics,
     kind: TextKind,
+    optical: Optical,
     distinguish: bool,
 ) -> Vec<(&'t str, Attrs<'a>)> {
     let runs: Vec<(&'t str, Attrs<'a>, Option<TextKind>)> = runs.into_iter().collect();
@@ -174,6 +180,7 @@ pub(crate) fn plan_runs<'t, 'a>(
     let mut out = Vec::new();
     let mut offset = 0;
     for (text, attrs, own) in runs {
+        let attrs = in_optical_cut(db, attrs, base, optical);
         let start = offset;
         offset += text.len();
         if let Some(own) = own {
@@ -200,6 +207,41 @@ pub(crate) fn plan_runs<'t, 'a>(
         }
     }
     out
+}
+
+/// `attrs` in the cut of its family for the size the span is set at, when
+/// its family (named, or the generic serif) is drawn in optical cuts.
+fn in_optical_cut<'a>(
+    db: &fontdb::Database,
+    attrs: Attrs<'a>,
+    base: Metrics,
+    optical: Optical,
+) -> Attrs<'a> {
+    let family = match attrs.family {
+        Family::Name(name) => name,
+        Family::Serif => db.family_name(&Family::Serif),
+        _ => return attrs,
+    };
+    let size = attrs.metrics_opt.map_or(base, Metrics::from).font_size;
+    let italic = attrs.style != Style::Normal;
+    let bold = attrs.weight.0 > 500;
+    // A cut this font system lacks in the run's style and weight (the
+    // standalone catalog's missing Regular, whose family still holds the
+    // shared Bold) is served by the next smaller cut.
+    let installed = |cut: &str| {
+        db.faces().any(|face| {
+            (face.style != fontdb::Style::Normal) == italic
+                && (face.weight.0 > 500) == bold
+                && face
+                    .families
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(cut))
+        })
+    };
+    match super::optical::cut_where(family, size, optical, italic, attrs.weight.0, installed) {
+        Some(cut) if cut != family => attrs.family(Family::Name(cut)),
+        _ => attrs,
+    }
 }
 
 fn query(db: &fontdb::Database, attrs: &Attrs<'_>) -> Option<fontdb::ID> {
