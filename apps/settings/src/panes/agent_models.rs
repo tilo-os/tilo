@@ -157,11 +157,14 @@ pub enum AgentModelsEffect {
         #[param("The provider's id")]
         provider: String,
     },
-    /// Store the API key typed for a provider in the vault.
+    /// Store a provider's API key in this device's vault: a hosted
+    /// provider that roamed here from another device needs its own.
     #[effect(job, row, label = "Save API key")]
     SaveProviderKey {
         #[param("The provider's id")]
         provider: String,
+        #[param(secret, "The API key; what the key field holds when omitted")]
+        key: Option<String>,
     },
     /// Remove a provider's stored API key.
     #[effect(job, row, destructive, label = "Remove API key")]
@@ -252,26 +255,32 @@ pub(crate) fn answer(
                 },
             ))
         }
-        AgentModelsEffect::SaveProviderKey { provider } => {
+        AgentModelsEffect::SaveProviderKey { provider, key } => {
             let buffer = model.key_buffer(&provider);
             drop(model);
             Ok(cx.thread(
                 move |_| {
-                    let mut key = buffer
+                    let mut typed = buffer
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let value = std::mem::take(&mut *key);
-                    key.zeroize();
-                    drop(key);
+                    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
+                    typed.zeroize();
+                    drop(typed);
+                    if value.trim().is_empty() {
+                        return Err(t_args(
+                            "agent-key-save-err",
+                            &[("error", "the key is empty".into())],
+                        ));
+                    }
                     tilo_model_gateway::set_api_key(&provider, value).map_err(|error| {
                         t_args("agent-key-save-err", &[("error", error.to_string().into())])
                     })
                 },
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
-                    app.agent_models()
-                        .model()
-                        .borrow_mut()
-                        .provider_notice(outcome.as_ref().map(|()| t("agent-key-saved")));
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.read_keys();
+                    model.provider_notice(outcome.as_ref().map(|()| t("agent-key-saved")));
                     outcome.map(|()| Effected::done())
                 },
             ))
@@ -288,10 +297,10 @@ pub(crate) fn answer(
                     })
                 },
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
-                    app.agent_models()
-                        .model()
-                        .borrow_mut()
-                        .provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.read_keys();
+                    model.provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
                     outcome.map(|()| Effected::done())
                 },
             ))
@@ -417,21 +426,33 @@ impl AgentModelsArea {
         }
         for profile in &model.providers.get().config.profiles {
             let id = profile.id.clone();
-            rows.push(
-                LiveRow::new(
-                    format!("settings.agent-provider:{id}"),
-                    "settings.agent-provider",
-                    profile.display_label().to_owned(),
+            let row = LiveRow::new(
+                format!("settings.agent-provider:{id}"),
+                "settings.agent-provider",
+                profile.display_label().to_owned(),
+            )
+            .operation(offer(AgentModelsEffect::SetProviderEnabled {
+                provider: id.clone(),
+                on: !profile.enabled,
+            }))
+            .operation(offer(AgentModelsEffect::SetDefaultProvider {
+                provider: id.clone(),
+            }))
+            .operation(offer(AgentModelsEffect::RemoveProvider {
+                provider: id.clone(),
+            }));
+            let row = if model.needs_key(profile) {
+                row.operation(
+                    SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
+                        provider: id,
+                        key: None,
+                    })
+                    .bound_asking(&["key"]),
                 )
-                .operation(offer(AgentModelsEffect::SetProviderEnabled {
-                    provider: id.clone(),
-                    on: !profile.enabled,
-                }))
-                .operation(offer(AgentModelsEffect::SetDefaultProvider {
-                    provider: id.clone(),
-                }))
-                .operation(offer(AgentModelsEffect::RemoveProvider { provider: id })),
-            );
+            } else {
+                row
+            };
+            rows.push(row);
         }
         rows
     }
@@ -454,6 +475,9 @@ pub struct AgentModelsModel {
     /// accepts or rejects them.
     provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
+    /// Whether this device's vault holds each hosted provider's key, or why
+    /// that could not be told.
+    keys: HashMap<String, Result<bool, String>>,
     changed: bool,
 }
 
@@ -482,10 +506,40 @@ impl AgentModelsModel {
             last_poll: ui::time::now(),
             provider_key_buffers: Mutex::new(HashMap::new()),
             provider_field_buffers: Mutex::new(HashMap::new()),
+            keys: HashMap::new(),
             changed: false,
         };
         model.sync_local_profile();
+        model.read_keys();
         model
+    }
+
+    /// Ask the gateway whether this device's vault holds each hosted
+    /// provider's key.
+    fn read_keys(&mut self) {
+        self.keys = self
+            .providers
+            .get()
+            .config
+            .profiles
+            .iter()
+            .filter(|profile| profile.location == EndpointLocation::Hosted)
+            .map(|profile| {
+                (
+                    profile.id.clone(),
+                    tilo_model_gateway::secret_configured(&profile.id)
+                        .map_err(|error| error.to_string()),
+                )
+            })
+            .collect();
+        self.changed = true;
+    }
+
+    /// Whether `profile` is hosted and this device's vault has no key for
+    /// it: one that roamed here from another device needs its own.
+    fn needs_key(&self, profile: &ProviderProfile) -> bool {
+        profile.location == EndpointLocation::Hosted
+            && matches!(self.keys.get(&profile.id), Some(Ok(false)))
     }
 
     fn refresh(&mut self) {
@@ -1150,11 +1204,11 @@ impl AgentModelsModel {
             body.push(value_row(&protocol, profile.protocol.label()));
             let buffer = self.key_buffer(&profile_id);
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
-            let (configured, configured_error) =
-                match tilo_model_gateway::secret_configured(&profile_id) {
-                    Ok(configured) => (configured, None),
-                    Err(error) => (false, Some(error.to_string())),
-                };
+            let (configured, configured_error) = match self.keys.get(&profile_id) {
+                Some(Ok(configured)) => (*configured, None),
+                Some(Err(error)) => (false, Some(error.clone())),
+                None => (false, None),
+            };
             if let Some(error) = configured_error {
                 body.push(crate::widgets::error_caption(&t_args(
                     "agent-key-read-error",
@@ -1185,6 +1239,7 @@ impl AgentModelsModel {
                             .content_sized(),
                             AgentModelsEffect::SaveProviderKey {
                                 provider: profile_id.clone(),
+                                key: None,
                             },
                         ),
                     ))
@@ -1203,11 +1258,13 @@ impl AgentModelsModel {
                     ))
                     .push(Box::new(Spacer::new())),
             ));
-            body.push(caption(&if configured {
-                t("agent-key-stored")
+            body.push(if configured {
+                caption(&t("agent-key-stored"))
+            } else if self.needs_key(profile) {
+                semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
             } else {
-                t("agent-key-none")
-            }));
+                caption(&t("agent-key-none"))
+            });
             if profile.default_model.is_some() {
                 body.push(Box::new(
                     self.cx.bind_invocation(
@@ -1730,7 +1787,7 @@ impl PaneModel for AgentModelsModel {
 
     fn poll(&mut self) -> bool {
         if self.providers.refresh() {
-            self.changed = true;
+            self.read_keys();
         }
         if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.refresh();
@@ -1890,6 +1947,34 @@ mod tests {
         for child in widget.children() {
             collect_accessibility(child, nodes);
         }
+    }
+
+    /// A hosted provider whose key this device's vault lacks says so and
+    /// offers to take one; once the vault holds it, it says it is stored.
+    #[test]
+    fn a_hosted_provider_without_a_key_here_asks_for_one() {
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.change_providers(AgentModelsEffect::AddProvider {
+            protocol: "anthropic".into(),
+        })
+        .unwrap();
+        let profile = pane.providers.get().config.profiles[0].clone();
+        pane.keys.insert(profile.id.clone(), Ok(false));
+        assert!(pane.needs_key(&profile));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Needs a key on this device"),
+            "{text:#?}"
+        );
+
+        pane.keys.insert(profile.id.clone(), Ok(true));
+        assert!(!pane.needs_key(&profile));
+        let save = SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
+            provider: profile.id,
+            key: None,
+        })
+        .bound_asking(&["key"]);
+        assert!(save.params().iter().any(|param| param.name == "key"));
     }
 
     fn model_over(control: Arc<MockControl>) -> AgentModelsModel {

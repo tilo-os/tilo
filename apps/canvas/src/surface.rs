@@ -726,11 +726,22 @@ impl CanvasSurface {
                     .map(crate::model::Selection::region)
             })
             .flatten();
+        // Sampling one layer, the chosen one (the top one when none is).
+        let layers = (self.tools.sampling.with(|sampling| *sampling)
+            == crate::tools::Sampling::Layer)
+            .then(|| {
+                self.ink()
+                    .layer
+                    .or_else(|| self.art.top_layer().map(|layer| layer.id.clone()))
+            })
+            .flatten()
+            .map(|layer| vec![layer]);
         let query = crate::author::ColourQuery {
             at: Some(at),
             tolerance: crate::author::TOLERANCE,
             // Ctrl finds the colour everywhere, touching or not.
             everywhere: !fill && self.modifiers.control_key(),
+            layers,
             within,
             ..crate::author::ColourQuery::default()
         };
@@ -1261,6 +1272,7 @@ impl CanvasSurface {
                 self.dispatch(&CanvasAction::Paint(Paint {
                     layer: ink.layer,
                     strokes: vec![stroke],
+                    group: None,
                 }));
             }
             Drag::Sweep { crossed, .. } if !crossed.is_empty() => {
@@ -2033,7 +2045,16 @@ impl CanvasSurface {
             "content": address,
             "revision": revision,
         });
-        if svg.len() <= MAX_INLINE_SVG
+        let written = match &export.path {
+            Some(path) => Some(crate::document::export_to(path, &["svg"], svg.as_bytes())?),
+            None => None,
+        };
+        if let (Some(written), Value::Object(fields)) = (&written, &mut value) {
+            fields.insert("path".into(), written.clone().into());
+        }
+        // Written to a file, the markup need not be read again.
+        if written.is_none()
+            && svg.len() <= MAX_INLINE_SVG
             && let Value::Object(fields) = &mut value
         {
             fields.insert("svg".into(), svg.into());

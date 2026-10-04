@@ -166,8 +166,9 @@ the published tree into search, the palette and the control socket.
 - **Accessibility and automation are the same door.** Screen readers, scripts and agents
   browse resources and invoke actions; none see or click. A capability reachable only
   through a click handler does not exist for them.
-- **Search is a system service.** Apps register a search provider and a renderer per
-  resource type, so a hit opens the app at that position. See `search.md`.
+- **Search is a system service.** An app's resource and its surfaces publish search
+  entries, each invoking the action that opens the app at that position. See
+  `search.md`.
 - **Undo, history, device sync and theming are system services.** One implementation, not
   forty. Per-author undo reverts through the inverse document action when the action
   recorded an outside consequence, otherwise through Automerge inverse patches, so one

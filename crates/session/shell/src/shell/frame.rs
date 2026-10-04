@@ -451,6 +451,11 @@ pub struct FrameBuilder {
     osk_active: bool,
     /// [`crate::compositor::state::State::osk_commits`], for the state dump.
     osk_commits: u64,
+    /// The keyboard serves one of the shell's own fields.
+    osk_serves_shell: bool,
+    /// The lock screen's keyboard keys by name and where they sit, while it
+    /// shows; for the state dump.
+    lock_keyboard_keys: Vec<(String, Rect)>,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -675,6 +680,8 @@ impl FrameBuilder {
             osk_anchor_x: None,
             osk_active: false,
             osk_commits: 0,
+            osk_serves_shell: false,
+            lock_keyboard_keys: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
             last_produced_sections: None,
@@ -2694,11 +2701,14 @@ impl FrameBuilder {
         &mut self,
         surface_id: Option<u64>,
         focused_surface: Option<u64>,
+        shell_field: Option<ui::ime::ImeWindowState>,
         active: bool,
     ) {
         let anchor = focused_surface
             .and_then(|id| self.host.foreign_surface_rect(id))
-            .map(|rect| rect.center().x);
+            .map(|rect| rect.center().x)
+            .or_else(|| shell_field.map(|field| f64::from(field.x) + f64::from(field.width) / 2.0));
+        self.osk_serves_shell = shell_field.is_some();
         self.osk_anchor_x = anchor;
         self.osk_active = active;
         match surface_id {
@@ -2928,6 +2938,22 @@ impl FrameBuilder {
         self.osk_commits = commits;
     }
 
+    /// Record where the lock screen's keyboard keys sit (empty: hidden).
+    pub fn set_lock_keyboard_keys(&mut self, keys: Vec<(String, Rect)>) {
+        self.lock_keyboard_keys = keys;
+    }
+
+    /// The lock screen's keyboard keys by name, while it shows.
+    pub fn lock_keyboard_keys(&self) -> &[(String, Rect)] {
+        &self.lock_keyboard_keys
+    }
+
+    /// Whether the keyboard serves one of the shell's own fields rather
+    /// than an application's.
+    pub fn osk_serves_shell(&self) -> bool {
+        self.osk_serves_shell
+    }
+
     /// How many commits the on-screen keyboard has made this session.
     pub fn osk_commits(&self) -> u64 {
         self.osk_commits
@@ -2980,6 +3006,16 @@ impl FrameBuilder {
         let mut best: Option<(f64, winit::window::CursorIcon)> = None;
         chrome_cursor_walk(self.host.as_ref(), point, &mut best);
         best.map(|(_, icon)| icon)
+    }
+
+    /// What the focused chrome widget asks of an input method — its purpose
+    /// and caret — when it takes text; `None` otherwise.
+    pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
+        let widget = *self.node_map.get(&focus?)?;
+        // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
+        // pointer stays valid until the next structural rebuild, the same
+        // invariant every focused-node dispatch here relies on.
+        ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
     }
 
     /// Whether a chrome widget under `point` handles a touch contact that
@@ -4051,10 +4087,10 @@ mod tests {
             crate::shell::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
             let mut fb = FrameBuilder::new((1600, 900));
 
-            fb.set_osk_surface(Some(SURFACE), None, false);
+            fb.set_osk_surface(Some(SURFACE), None, None, false);
             assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
 
-            fb.set_osk_surface(Some(SURFACE), None, true);
+            fb.set_osk_surface(Some(SURFACE), None, None, true);
             let (id, rect) = fb
                 .osk_surface_hit((800.0, 700.0))
                 .expect("active keyboard is hit-testable");
@@ -4062,7 +4098,7 @@ mod tests {
             assert_eq!(rect.width(), 960.0);
             assert_eq!(rect.y1, 880.0);
 
-            fb.set_osk_surface(Some(SURFACE), None, false);
+            fb.set_osk_surface(Some(SURFACE), None, None, false);
             assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
             crate::shell::foreign::store().forget(SURFACE);
         }
@@ -4080,7 +4116,7 @@ mod tests {
             let plane_id = plane.id();
             crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
             let mut fb = FrameBuilder::new((1600, 900));
-            fb.set_osk_surface(Some(SURFACE), None, true);
+            fb.set_osk_surface(Some(SURFACE), None, None, true);
 
             let frame = fb.paint_with_damage();
             let [layer] = frame.hdr_layers.as_slice() else {

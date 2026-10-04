@@ -37,6 +37,25 @@ use vello::{
 pub(crate) struct Shown {
     pub(crate) clocks: Clocks,
     pub(crate) device: OnThisDevice,
+    /// The moment wall clocks show, when a capture pins it; else the
+    /// device's clock.
+    pub(crate) pinned_now: Option<chrono::DateTime<Utc>>,
+}
+
+impl Shown {
+    /// The present as wall clocks show it.
+    fn now(&self) -> chrono::DateTime<Utc> {
+        self.pinned_now.unwrap_or_else(Utc::now)
+    }
+
+    /// The local time of day the "Here" clock shows: a capture's pinned
+    /// moment reads the same on every machine.
+    fn here(&self) -> chrono::NaiveDateTime {
+        self.pinned_now.map_or_else(
+            || chrono::Local::now().naive_local(),
+            |pinned| pinned.naive_utc(),
+        )
+    }
 }
 
 /// How the window's controls reach the resource and the device.
@@ -141,12 +160,11 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
         .join(", ")
 }
 
-fn city_time(zone: &str) -> String {
+fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
     zone.parse::<chrono_tz::Tz>().map_or_else(
         |_| "Time unavailable".into(),
         |z| {
-            Utc::now()
-                .with_timezone(&z)
+            now.with_timezone(&z)
                 .format("%H:%M · %a %-d %b · %Z · UTC%:z")
                 .to_string()
         },
@@ -209,7 +227,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
         for (id, clock) in s.clocks.world_clocks.iter() {
             let row = Row::new()
                 .push(Box::new(
-                    Text::new(&city_time(&clock.timezone.0)).with_size(28.0),
+                    Text::new(&city_time(&clock.timezone.0, s.now())).with_size(28.0),
                 ))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
@@ -260,22 +278,22 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                 CardGrid::content_sized(vec![
                     Box::new(Card::titled(
                         "Here",
-                        Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .with_gap(6.0)
-                                .push(Box::new(
-                                    Text::new(&chrono::Local::now().format("%H:%M").to_string())
-                                        .with_size(52.0),
-                                ))
-                                .push(Box::new(
-                                    Text::new(
-                                        &chrono::Local::now().format("%A, %-d %B").to_string(),
-                                    )
-                                    .dimmed(),
-                                )),
-                        ),
+                        Box::new(ModelView::from_state(state, |s| {
+                            let here = s.here();
+                            Box::new(
+                                Column::new()
+                                    .with_no_padding()
+                                    .with_intrinsic_height()
+                                    .with_gap(6.0)
+                                    .push(Box::new(
+                                        Text::new(&here.format("%H:%M").to_string())
+                                            .with_size(52.0),
+                                    ))
+                                    .push(Box::new(
+                                        Text::new(&here.format("%A, %-d %B").to_string()).dimmed(),
+                                    )),
+                            ) as Element
+                        })),
                     )),
                     Box::new(Card::titled(
                         "Add a city",
@@ -999,6 +1017,7 @@ impl ClocksApp {
         let state = ui::LocalState::new(Shown {
             clocks: Clocks::default(),
             device: device.get(),
+            pinned_now: None,
         });
         let notice = ui::LocalState::new(None);
         let validation_error = ui::LocalState::new(None);

@@ -64,9 +64,6 @@ pub enum CodeEditorEffect {
     /// Revert file to saved.
     #[effect(device_only)]
     RevertFile,
-    /// Close active tab.
-    #[effect(permission = "read")]
-    CloseTab,
     /// Find in file.
     #[effect(permission = "read")]
     Find,
@@ -137,7 +134,6 @@ impl CodeEditorEffect {
             Self::SaveAs => Command::SaveAs,
             Self::SaveAll => Command::SaveAll,
             Self::RevertFile => Command::RevertFile,
-            Self::CloseTab => Command::CloseTab,
             Self::Find => Command::Find,
             Self::Replace => Command::Replace,
             Self::SearchProject => Command::SearchProject,
@@ -171,7 +167,6 @@ impl Command {
             Self::SaveAs => CodeEditorEffect::SaveAs,
             Self::SaveAll => CodeEditorEffect::SaveAll,
             Self::RevertFile => CodeEditorEffect::RevertFile,
-            Self::CloseTab => CodeEditorEffect::CloseTab,
             Self::Find => CodeEditorEffect::Find,
             Self::Replace => CodeEditorEffect::Replace,
             Self::SearchProject => CodeEditorEffect::SearchProject,

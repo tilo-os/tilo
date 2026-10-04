@@ -106,8 +106,8 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
             .iter()
             .any(|d| d.message == "Fresh server result")
     );
-    let active = app.session.active.unwrap();
-    app.session.open[active].language = Language::Python;
+    let shown = app.session.active_buffer().unwrap().node;
+    app.session.buffer.as_mut().unwrap().language = Language::Python;
     app.refresh_diagnostics(&doc);
     assert_eq!(app.diagnostics_buffer_reads, 3);
     let other = app
@@ -115,13 +115,13 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
         .project
         .nodes
         .values()
-        .find(|n| matches!(n.kind, NodeKind::File { .. }) && n.id != app.session.open[active].node)
+        .find(|n| matches!(n.kind, NodeKind::File { .. }) && n.id != shown)
         .unwrap()
         .id;
     app.session.open_file(other);
     app.refresh_diagnostics(&doc);
     assert_eq!(app.diagnostics_buffer_reads, 4);
-    app.session.active = Some(active);
+    app.session.open_file(shown);
     app.refresh_diagnostics(&doc);
     assert_eq!(app.diagnostics_buffer_reads, 5);
     let historical = doc.get_heads();

@@ -2482,7 +2482,10 @@ impl PhotoResourceSeed {
             parts.push(format!("Tags: {}", self.tags.join(", ")));
         }
         if let Some(captured_at) = &self.captured_at {
-            parts.push(format!("Captured: {captured_at}"));
+            parts.push(format!(
+                "Captured: {}",
+                crate::model::capture_label(captured_at)
+            ));
         }
         if let Some(location) = &self.location {
             parts.push(format!("Place: {}", location.display_name()));

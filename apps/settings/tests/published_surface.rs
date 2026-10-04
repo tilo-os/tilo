@@ -30,3 +30,33 @@ fn every_pane_publishes_a_surface_that_passes_contract_validation() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A sidebar row opens its pane through the pane row's open effect, the
+/// one way search and agents open it too.
+#[test]
+fn a_sidebar_click_opens_the_pane_through_its_effect() {
+    let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
+    app.settle();
+    let bindings = app
+        .surface::<settings::SettingsApp, _>(|settings| {
+            ui::widget::controls::control_action_bindings(&*settings)
+        })
+        .expect("the settings surface is mounted");
+    let open = open_pane_address(Category::Bluetooth);
+    assert!(
+        bindings.iter().any(|binding| matches!(
+            &binding.kind,
+            ui::widget::ControlBindingKind::Action(address) if address.action == open.action
+        ) && binding.control_id == "settings.sidebar.bluetooth"),
+        "the Bluetooth row opens its pane through {}: {bindings:#?}",
+        open.action
+    );
+    app.harness()
+        .click_named(&Category::Bluetooth.label())
+        .expect("the Bluetooth row is on screen");
+    app.settle();
+    let selected = app
+        .surface::<settings::SettingsApp, _>(|settings| settings.selected())
+        .expect("the settings surface is mounted");
+    assert_eq!(selected, Category::Bluetooth);
+}

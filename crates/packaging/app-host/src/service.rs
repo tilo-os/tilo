@@ -151,6 +151,41 @@ fn launcher_bin() -> std::path::PathBuf {
     )
 }
 
+fn app_bin() -> std::path::PathBuf {
+    path_or_default(
+        crate::dev_env::dev_override(crate::dev_env::APP_BIN_ENV),
+        "/usr/bin/app",
+    )
+}
+
+/// The person's app repositories, as `app repo list --json` prints them.
+/// The Store reads them here because its sandbox has a home of its own: a
+/// copy there would be a second list `app repo` never edits.
+fn repositories_json() -> Result<String, Error> {
+    repositories_json_from(&app_bin())
+}
+
+fn repositories_json_from(app: &std::path::Path) -> Result<String, Error> {
+    let mut command = std::process::Command::new(app);
+    command.args(["repo", "list", "--json"]);
+    let output = bounded_command::run_prepared(
+        command,
+        None,
+        256 * 1024,
+        std::time::Duration::from_secs(30),
+    )
+    .map_err(|error| Error::failed(format!("app repo list failed: {error}")))?;
+    if !output.status.success() {
+        return Err(Error::failed(format!(
+            "app repo list exited {}: {}",
+            output.status.code().unwrap_or(1),
+            safe_host_diagnostic(&output.stderr)
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|_| Error::failed("app repo list printed invalid UTF-8".to_owned()))
+}
+
 fn wayland_socket() -> Option<std::path::PathBuf> {
     let display = std::env::var_os("WAYLAND_DISPLAY")?;
     let display = std::path::PathBuf::from(display);
@@ -564,11 +599,52 @@ impl app_host::Server for AppHostServer {
             Ok(())
         }
     }
+
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
+    fn repositories(
+        self: capnp::capability::Rc<Self>,
+        _params: app_host::RepositoriesParams,
+        mut results: app_host::RepositoriesResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let json = tokio::task::spawn_blocking(repositories_json)
+                .await
+                .map_err(|e| Error::failed(format!("join: {e}")))??;
+            results.get().set_json(&json);
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
 mod command_tests {
-    use super::safe_host_diagnostic;
+    use super::{repositories_json_from, safe_host_diagnostic};
+
+    #[test]
+    fn repositories_are_what_app_repo_list_prints() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        let script = |body: &str| {
+            std::fs::write(&app, format!("#!/bin/sh\n{body}\n")).unwrap();
+            let mut permissions = std::fs::metadata(&app).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+            std::fs::set_permissions(&app, permissions).unwrap();
+        };
+        script(r#"[ "$*" = "repo list --json" ] && echo '{"registry":[]}'"#);
+        assert_eq!(
+            repositories_json_from(&app).unwrap().trim(),
+            r#"{"registry":[]}"#
+        );
+        script("echo broken >&2; exit 3");
+        let error = repositories_json_from(&app).unwrap_err().to_string();
+        assert!(
+            error.contains("exited 3") && error.contains("broken"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn host_diagnostics_are_small_and_strip_terminal_controls() {

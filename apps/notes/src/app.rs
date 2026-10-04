@@ -393,10 +393,10 @@ impl NotesApp {
         main.set_local_author(Some(author.0.clone()));
         let snapshot = crate::notebook::asset_snapshot(doc)?;
         let waiting = !crate::notebook::assets_complete(doc, &snapshot)?;
-        let canonical_assets = Arc::new(std::sync::RwLock::new(snapshot));
-        main.set_image_store(Some(canonical_image_store(&canonical_assets)));
         let mut app = Self::build_widget(workspace, sidebar, main);
-        app.canonical_assets = canonical_assets;
+        if let Ok(mut assets) = app.canonical_assets.write() {
+            *assets = snapshot;
+        }
         app.canonical_assets_waiting = waiting.then(ui::time::now);
         app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
@@ -478,6 +478,9 @@ impl NotesApp {
             save_status: None,
             open_when_present: None,
         };
+        // Images are drawn from the notebook's assets, whoever hosts it.
+        app.main
+            .set_image_store(Some(canonical_image_store(&app.canonical_assets)));
         app.refresh_link_pages();
         app.main.set_tags(app.selected_tag_chips());
         app.refresh_status();
@@ -1026,6 +1029,9 @@ impl NotesApp {
                 .restore_expanded_pages(&ancestors, &self.workspace);
             self.navigate_to(page);
         }
+        if matches!(scenario, Some("image" | "image_edit")) {
+            self.load_images_for_capture();
+        }
         match scenario {
             Some("status") => self.set_save_status_for_shots(SaveStatus::Saved),
             Some("saving") => self.set_save_status_for_shots(SaveStatus::Saving),
@@ -1036,6 +1042,26 @@ impl NotesApp {
             ),
             _ => {}
         }
+    }
+
+    /// Decode every image the notebook holds before a capture is drawn: a
+    /// screenshot is one frame, which an image still decoding would show as
+    /// its placeholder.
+    fn load_images_for_capture(&mut self) {
+        let Some(store) = self.main.image_store().cloned() else {
+            return;
+        };
+        let sources = self
+            .canonical_assets
+            .read()
+            .map(|assets| assets.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for source in &sources {
+            let _ = store.get(source);
+        }
+        store.block_until_idle(std::time::Duration::from_secs(10));
+        self.bound_page = None;
+        self.self_dirty = true;
     }
 
     /// Present the framework's workspace projection.
@@ -3151,6 +3177,36 @@ mod tests {
             let source = &assets[0].0;
             assert_eq!(imported, format!("![Repeated]({source})\n").repeat(10));
         }
+    }
+
+    #[test]
+    fn a_hosted_notebook_draws_its_images() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+        let page = PageId::new_v4();
+        let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+        let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+        for action in [
+            actions::new_page_action(page, None, 0, "Shots"),
+            actions::add_image_asset_action(
+                page,
+                bytes,
+                tilo_document::RichTextAction::AppendParagraph {
+                    text: format!("![Settings]({source})"),
+                },
+            ),
+        ] {
+            app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
+                .unwrap();
+        }
+        app.settle();
+        let store = app
+            .surface(|notes: &mut NotesApp| notes.main.image_store().cloned())
+            .unwrap()
+            .expect("the hosted editor draws images from the notebook");
+        let _ = store.get(&source);
+        store.block_until_idle(tilo_test_env::hang_bound());
+        assert!(store.get(&source).is_some(), "the image decodes");
     }
 
     #[test]

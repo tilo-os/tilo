@@ -1006,6 +1006,7 @@ agent-key-removed = API-Schlüssel aus dem Tilo-Tresor entfernt.
 agent-key-remove-err = API-Schlüssel wurde nicht entfernt: { $error }
 agent-key-stored = Der API-Schlüssel liegt im Tilo-Tresor.
 agent-key-none = Kein API-Schlüssel gespeichert.
+agent-key-needed = Braucht einen Schlüssel auf diesem Gerät
 agent-default-current = Standard für neue Aufgaben
 agent-use-default = Als Standard verwenden
 agent-config-issue = Anbieterkonfiguration: { $message }

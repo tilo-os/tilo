@@ -743,6 +743,16 @@ impl ComputeClient {
     }
 }
 
+impl ComputeClient {
+    /// Leave the relay now: close the connection and wait until the relay
+    /// has been told, so it withdraws this worker at once rather than when
+    /// the connection times out.
+    pub async fn close(self) {
+        self.connection.close(0u32.into(), b"compute client closed");
+        self.endpoint.close().await;
+    }
+}
+
 impl Drop for ComputeClient {
     fn drop(&mut self) {
         self.connection

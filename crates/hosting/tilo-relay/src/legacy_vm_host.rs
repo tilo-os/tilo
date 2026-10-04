@@ -89,7 +89,9 @@ impl TiloLegacyHost {
             )
             .env("HOME", &home)
             .env("XDG_DATA_HOME", home.join("data"))
-            .env("XDG_CONFIG_HOME", home.join("config"))
+            // libvirt's session daemon keeps its QEMU monitor sockets below
+            // the config directory: reach the durable one by a short link.
+            .env("XDG_CONFIG_HOME", Self::member_runtime(area).join("config"))
             .env("XDG_STATE_HOME", home.join("state"))
             .env("XDG_CACHE_HOME", home.join("cache"))
             .env("XDG_RUNTIME_DIR", Self::member_runtime(area))
@@ -133,10 +135,13 @@ impl LegacyVmHost for TiloLegacyHost {
         }
         let home = Self::member_home(&member.area);
         let runtime = Self::member_runtime(&member.area);
-        for dir in [&home, &runtime] {
+        let config = home.join("config");
+        for dir in [&home, &runtime, &config] {
             create_private_dir(dir)
                 .map_err(|error| LaunchError::Failed(format!("{}: {error}", dir.display())))?;
         }
+        link_config(&runtime.join("config"), &config)
+            .map_err(|error| LaunchError::Failed(format!("the config link: {error}")))?;
         let mut child = self
             .command(&member.area, request)
             .spawn()
@@ -189,6 +194,15 @@ fn read_frames(
             ),
         });
     }
+}
+
+/// `link` → `target`, replacing whatever `link` was.
+fn link_config(link: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    if std::fs::read_link(link).is_ok_and(|current| current == target) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(link);
+    std::os::unix::fs::symlink(target, link)
 }
 
 /// `dir`, private to this process's user; one someone else made first (in a

@@ -44,6 +44,9 @@ pub(crate) enum HistoryEdit {
     Undo {
         steps: Option<u32>,
         run: Option<String>,
+        /// Every step after this version instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
     },
     Redo {
         steps: Option<u32>,
@@ -64,12 +67,16 @@ fn limit(steps: Option<u32>, default: usize) -> usize {
 impl tilo_actions::Action for HistoryEdit {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
-            Self::Undo { steps, run } => {
+            Self::Undo { steps, run, to } => {
                 let (scope, default) = match run {
                     Some(run) => (Scope::Run(run.clone()), usize::MAX),
                     None => (Scope::invoking(doc), 1),
                 };
-                steps::undo(doc, &scope, limit(*steps, default)).map(drop)
+                match to {
+                    Some(to) => steps::resolve(doc, to)
+                        .and_then(|heads| steps::undo_since(doc, &scope, &heads).map(drop)),
+                    None => steps::undo(doc, &scope, limit(*steps, default)).map(drop),
+                }
             }
             Self::Redo { steps } => {
                 let scope = Scope::invoking(doc);
@@ -203,16 +210,22 @@ fn edit_specs() -> Vec<ActionSpec> {
         edit(
             "undo",
             "Undo",
-            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps.",
+            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with to, all after a version.",
             vec![
                 steps("How many steps, newest first"),
                 ActionParam::optional("run", ParamType::Text, "An agent run id from history")
                     .nullable(),
+                ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
             ],
             |args| {
+                let to = args.text("to").map(str::to_owned);
+                if to.is_some() && args.integer("steps").is_some() {
+                    return Err("give steps or to, not both".into());
+                }
                 Ok(HistoryEdit::Undo {
                     steps: steps_arg(args)?,
                     run: args.text("run").map(str::to_owned),
+                    to,
                 })
             },
         ),
@@ -272,7 +285,7 @@ fn view_specs() -> Vec<ActionSpec> {
         view(
             "history",
             "History",
-            "List the versions, oldest first: change id, action and its arguments, run, author, time, undone, checkpoints.",
+            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
             vec![
                 ActionParam::optional(
                     "last",

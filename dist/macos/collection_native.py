@@ -87,7 +87,9 @@ def load_paths(binary, main, app, arch):
             continue
         # This adapter supports the SDK's two statically linked executables.
         # Frameworks and dylibs require a separate, reviewed signing adapter.
-        raise ValueError(f'external or unresolved/non-system library {value} in {binary}')
+        raise ValueError(f'external or unresolved/non-system library {value} in {binary}; '
+                         'use collection.py audit-runtime to inspect dependency/profile blockers before rebuilding; '
+                         'a reviewed relocation adapter is required')
     return dependencies
 
 

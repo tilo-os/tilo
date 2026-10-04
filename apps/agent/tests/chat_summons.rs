@@ -38,7 +38,6 @@ fn config(path: std::path::PathBuf) -> Config {
         model_timeout: Duration::from_millis(10),
         await_document: Duration::ZERO,
         settle: Duration::ZERO,
-        directory: None,
         permissions: PermissionContext::from_capabilities(
             Actor::agent("Scribe"),
             vec![

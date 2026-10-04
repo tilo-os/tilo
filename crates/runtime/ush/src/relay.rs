@@ -45,6 +45,14 @@ pub struct RelayPeer {
     /// without one the relay is found by its id.
     #[serde(skip)]
     pub address: Option<String>,
+    /// Whether the relay last said a worker runs environment sessions:
+    /// its newest answer ([`relay_offers`]), else its registration.
+    #[serde(skip)]
+    pub runs_environments: bool,
+    /// When this device last asked the relay, Unix milliseconds; 0 when it
+    /// never has.
+    #[serde(skip)]
+    pub checked_at_ms: u64,
 }
 
 /// The part of a home-peer registration a relay session needs.
@@ -58,6 +66,8 @@ struct Registration {
     relay_workspace_ids: Vec<u64>,
     #[serde(default)]
     relay_endpoint: Option<serde_json::Value>,
+    #[serde(default)]
+    environments: tilo_relay_protocol::RelayEnvironments,
 }
 
 /// The identity this supervisor's user has on this device.
@@ -85,11 +95,23 @@ pub fn relays(identity: &IdentityPaths) -> Vec<RelayPeer> {
     let Some(path) = identity_root(identity).map(|root| root.join("home-peers.json")) else {
         return Vec::new();
     };
-    relays_in(&path, &user)
+    let offers = offers_path()
+        .map(|path| load_offers(&path))
+        .unwrap_or_default();
+    relays_with_offers(&path, &user, &offers)
 }
 
 /// [`relays`] from one registry file, for `user`.
 pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
+    relays_with_offers(path, user, &tilo_relay_protocol::RelayOffers::new())
+}
+
+/// [`relays_in`], with what the relays said since they were registered.
+pub fn relays_with_offers(
+    path: &Path,
+    user: &[u8; 32],
+    offers: &tilo_relay_protocol::RelayOffers,
+) -> Vec<RelayPeer> {
     let readable = std::fs::metadata(path).is_ok_and(|meta| meta.len() <= MAX_REGISTRY_BYTES);
     let Some(registrations) = readable
         .then(|| std::fs::read(path).ok())
@@ -117,6 +139,12 @@ pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
                 .relay_endpoint
                 .filter(|address| !address.is_null())
                 .map(|address| address.to_string()),
+            runs_environments: offers
+                .get(&r.relay_service_node_id.to_ascii_lowercase())
+                .map_or(r.environments.sessions, |offer| offer.environments.sessions),
+            checked_at_ms: offers
+                .get(&r.relay_service_node_id.to_ascii_lowercase())
+                .map_or(0, |offer| offer.checked_at_ms),
         })
         .filter(|peer| {
             tilo_environment::Location::Relay {
@@ -128,6 +156,110 @@ pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
     out.sort_by(|a, b| a.label.cmp(&b.label));
     out.dedup_by(|a, b| a.relay == b.relay);
     out
+}
+
+/// How old the newest answer from a relay may be before the picker asks
+/// again.
+pub const OFFER_MAX_AGE_MS: u64 = 60_000;
+
+/// How long all the relays together may take to answer.
+pub const OFFER_BUDGET: Duration = Duration::from_secs(2);
+
+/// Largest offers file read.
+const MAX_OFFERS_BYTES: u64 = 1024 * 1024;
+
+static ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Where this user's relays' answers are kept: their cache directory.
+pub fn offers_path() -> Option<PathBuf> {
+    xdg_paths::cache_dir().map(|cache| cache.join(tilo_relay_protocol::RELAY_OFFERS_FILE))
+}
+
+/// The answers recorded at `path`; nothing when absent or unreadable.
+pub fn load_offers(path: &Path) -> tilo_relay_protocol::RelayOffers {
+    std::fs::metadata(path)
+        .ok()
+        .filter(|meta| meta.len() <= MAX_OFFERS_BYTES)
+        .and_then(|_| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Whether any relay's newest answer is older than [`OFFER_MAX_AGE_MS`].
+pub fn needs_asking(peers: &[RelayPeer], now_ms: u64) -> bool {
+    peers
+        .iter()
+        .any(|peer| now_ms.saturating_sub(peer.checked_at_ms) >= OFFER_MAX_AGE_MS)
+}
+
+/// Where `tilo-relay-offers` is: `$TILO_RELAY_OFFERS_BIN`, the installed
+/// location, then `PATH`.
+pub fn offers_binary() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("TILO_RELAY_OFFERS_BIN") {
+        return Some(PathBuf::from(explicit));
+    }
+    let installed = PathBuf::from("/usr/libexec/tilo-relay-offers");
+    if installed.exists() {
+        return Some(installed);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("tilo-relay-offers"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Ask the person's relays again, without waiting: `binary` asks them all
+/// at once within [`OFFER_BUDGET`] and records the answers at `offers`, and
+/// the next list shows them. Returns whether asking started; it does not
+/// while an earlier ask is still out.
+pub fn ask_in_background(binary: &Path, identity_root: &Path, offers: &Path) -> bool {
+    use std::sync::atomic::Ordering;
+    if ASKING.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    let budget_ms = OFFER_BUDGET.as_millis().to_string();
+    let child = std::process::Command::new(binary)
+        .arg("--identity-root")
+        .arg(identity_root)
+        .arg("--offers")
+        .arg(offers)
+        .arg("--budget-ms")
+        .arg(&budget_ms)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        ASKING.store(false, Ordering::Release);
+        return false;
+    };
+    std::thread::spawn(move || {
+        // The asker bounds itself; this bounds a hung one.
+        let deadline = std::time::Instant::now()
+            .checked_add(OFFER_BUDGET.saturating_mul(3))
+            .unwrap_or_else(std::time::Instant::now);
+        while matches!(child.try_wait(), Ok(None)) {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        ASKING.store(false, Ordering::Release);
+    });
+    true
+}
+
+/// Ask the person's relays again in the background, with the installed
+/// asker, when one is installed.
+pub fn ask_relays_again(identity: &IdentityPaths) {
+    let (Some(binary), Some(root), Some(offers)) =
+        (offers_binary(), identity_root(identity), offers_path())
+    else {
+        return;
+    };
+    ask_in_background(&binary, &root, &offers);
 }
 
 /// Where `tilo-relay-environment` is: `$TILO_RELAY_ENVIRONMENT_BIN`, the
@@ -303,6 +435,10 @@ mod tests {
             serde_json::json!([
                 {"device_node_id": "x", "relay_service_node_id": relay.to_uppercase(),
                  "label": "Home", "user_public_key": hex::encode(me),
+                 "relay_workspace_ids": [workspace],
+                 "environments": {"sessions": true, "legacy_apps": false}},
+                {"device_node_id": "y", "relay_service_node_id": "12".repeat(32),
+                 "label": "Files only", "user_public_key": hex::encode(me),
                  "relay_workspace_ids": [workspace]},
                 {"device_node_id": "x", "relay_service_node_id": "cd".repeat(32),
                  "label": "Someone's", "user_public_key": hex::encode([8u8; 32]),
@@ -315,11 +451,76 @@ mod tests {
         )
         .unwrap();
         let relays = relays_in(&path, &me);
-        assert_eq!(relays.len(), 1);
-        assert_eq!(relays[0].relay, relay);
-        assert_eq!(relays[0].label, "Home");
-        assert_eq!(relays[0].workspace, workspace);
+        assert_eq!(relays.len(), 2);
+        let home = relays.iter().find(|peer| peer.label == "Home").unwrap();
+        assert_eq!(home.relay, relay);
+        assert_eq!(home.workspace, workspace);
+        // Only a relay whose workers run environments is offered for a new
+        // one; the other stays reachable for sessions already there.
+        let offered: Vec<_> = relays
+            .iter()
+            .filter(|peer| peer.runs_environments)
+            .collect();
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].label, "Home");
         assert!(relays_in(&dir.path().join("absent.json"), &me).is_empty());
+    }
+
+    #[test]
+    fn newer_answers_override_registrations_and_age_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("home-peers.json");
+        let me = [7u8; 32];
+        let workspace = tilo_relay_protocol::personal_continuity_workspace_id(&me);
+        std::fs::write(
+            &path,
+            serde_json::json!([
+                {"device_node_id": "x", "relay_service_node_id": "ab".repeat(32),
+                 "label": "Home", "user_public_key": hex::encode(me),
+                 "relay_workspace_ids": [workspace],
+                 "environments": {"sessions": true, "legacy_apps": false}},
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let mut offers = tilo_relay_protocol::RelayOffers::new();
+        let unanswered = relays_with_offers(&path, &me, &offers);
+        assert!(unanswered[0].runs_environments, "the registration speaks");
+        assert!(needs_asking(&unanswered, 100_000), "never asked: ask");
+        offers.insert(
+            "ab".repeat(32),
+            tilo_relay_protocol::RelayOffer {
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
+                checked_at_ms: 100_000,
+            },
+        );
+        let answered = relays_with_offers(&path, &me, &offers);
+        assert!(!answered[0].runs_environments, "the newer answer wins");
+        assert!(!needs_asking(&answered, 100_000 + OFFER_MAX_AGE_MS - 1));
+        assert!(needs_asking(&answered, 100_000 + OFFER_MAX_AGE_MS));
+    }
+
+    #[test]
+    fn asking_never_waits_for_the_relays() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let slow = dir.path().join("slow-asker");
+        std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        assert!(ask_in_background(
+            &slow,
+            dir.path(),
+            &dir.path().join("offers.json")
+        ));
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the list is answered without waiting for the relays"
+        );
+        assert!(
+            !ask_in_background(&slow, dir.path(), &dir.path().join("offers.json")),
+            "one ask at a time"
+        );
     }
 
     #[test]
@@ -330,6 +531,8 @@ mod tests {
             user: "cd".repeat(32),
             workspace: 42,
             address: None,
+            runs_environments: true,
+            checked_at_ms: 0,
         };
         let args = |session: &RelaySession| -> Vec<String> {
             bridge_command(

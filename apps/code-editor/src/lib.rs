@@ -1,6 +1,6 @@
 //! Code — Tilo native code editor / lightweight IDE.
 //!
-//! A file-tree sidebar, editor tabs, a syntax-highlighted code pane with line
+//! A file-tree sidebar, one file per window, a syntax-highlighted code pane with line
 //! numbers and a gutter, a command palette, a status bar, and a bottom panel
 //! for problems/terminal. Buffer text lives in the shared Automerge document,
 //! so edits are collaborative and undoable; colours come entirely from the OS

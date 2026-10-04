@@ -2502,3 +2502,65 @@ fn a_mention_replaces_its_typed_query_as_one_marked_run() {
     e.set_read_only(true);
     assert!(!e.insert_text("x"), "a read-only editor takes nothing");
 }
+
+#[test]
+fn visual_formula_cut_waits_for_clipboard_acceptance() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    #[derive(Default)]
+    struct Clipboard {
+        accept: AtomicBool,
+        stored: InProcessClipboard,
+    }
+    impl ClipboardBackend for Clipboard {
+        fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+            self.accept.load(Ordering::Relaxed) && self.stored.set_text(target, text)
+        }
+        fn text(&self, target: ClipboardTarget) -> Option<String> {
+            self.stored.text(target)
+        }
+        fn name(&self) -> &'static str {
+            "formula-test-clipboard"
+        }
+    }
+    let clipboard = Arc::new(Clipboard::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = crate::host::enter(&services);
+    let mut editor = crate::math::edit::Editor::from_linear("x + y");
+    editor.select_all();
+    let before = editor.to_linear();
+    let selected = editor.selected_linear();
+    assert!(selected.is_some());
+    let key = Key::Character("x".into());
+    let modifiers = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    assert!(!handle_visual_formula_key(&mut editor, &key, modifiers));
+    assert_eq!(editor.to_linear(), before);
+    assert_eq!(editor.selected_linear(), selected);
+    clipboard.accept.store(true, Ordering::Relaxed);
+    assert!(handle_visual_formula_key(&mut editor, &key, modifiers));
+    assert_eq!(clipboard.text(ClipboardTarget::Clipboard), selected);
+    assert!(editor.to_linear().is_empty());
+}
+
+#[test]
+fn a_block_fields_suggestion_timer_wakes_the_editor() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    assert_eq!(Widget::next_wake_deadline(&editor), None);
+
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_cursor_pos("so beautifull".len());
+    field.refresh_suggestion_at(now);
+
+    // Block lines are not widget children; their timers still reach the host.
+    assert_eq!(
+        Widget::next_wake_deadline(&editor),
+        Some(now + crate::text_edit::SUGGESTION_SETTLE)
+    );
+}

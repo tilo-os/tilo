@@ -269,7 +269,7 @@ impl FileDesk {
         } else {
             document::read(path).map(|artwork| {
                 let action = CanvasAction::OpenArtwork(OpenArtwork {
-                    file: String::from_utf8_lossy(&artwork.to_bytes()).into_owned(),
+                    file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
                 });
                 (vec![action], Some(artwork))
             })
@@ -311,7 +311,9 @@ impl FileDesk {
     /// Save the artwork to `path`; keep working there when `follow`.
     fn save_to(&self, path: &Path, follow: bool) {
         let file = ArtworkFile::of(&self.live.get());
-        match document::write(path, &file.to_bytes()) {
+        let packed = document::pack(&file, &tilo_content::ContentStore::for_app())
+            .and_then(|(bytes, _missing)| document::write(path, &bytes));
+        match packed {
             Ok(()) => {
                 if follow {
                     self.tools.file.set(Some(path.display().to_string()));

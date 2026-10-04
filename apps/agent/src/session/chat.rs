@@ -404,7 +404,7 @@ impl Session {
             else {
                 continue;
             };
-            let offers = self.offers(&self.held(), &self.view(None));
+            let offers = self.offers(&self.held());
             let Some(offer) = surface::find(&offers, id).cloned() else {
                 return self.chat_refused("That action is no longer offered.");
             };
