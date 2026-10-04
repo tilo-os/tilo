@@ -344,3 +344,10 @@ regular expressions and whole-word options remain open.
   `82ab5a487728c603e2f1981a6f09bcb7d1c82f2ec5602a10260c3982f67d3962`.
   Shift+Enter is the advertised cross-platform shortcut; the shared browser host
   retains Ctrl/Cmd+Enter inside native text inputs, so no host routing was changed.
+- The Agent adapter maps every batch replacement span to the original block and
+  character range for its interaction anchor. A focused regression covers two
+  blocks, Unicode replacement text and unrelated focus. Strict Agent library
+  Clippy passes; independent review found no remaining issues in the adapter.
+  The focused Agent test and all-target check cannot run through their shell
+  dependency on Darwin: the same 22 unresolved Linux compositor imports stop
+  compilation before the new assertion. Linux CI must execute that regression.
