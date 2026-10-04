@@ -17,7 +17,7 @@ use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::record::RecordSaveStatus;
-use ui_core::search::{SearchProvider, SearchResult};
+use ui_core::search::{SearchCursor, SearchPage, SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
@@ -66,8 +66,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
-    /// The resource's search entries at one live revision, indexed.
-    search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
+    /// The resource's and its surfaces' search entries, indexed.
+    search: std::cell::RefCell<Option<SearchCache>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
@@ -528,32 +528,66 @@ impl<R: Resource> ResourceRoot<R> {
     }
 }
 
+/// The index of the resource's search entries and its surfaces', as of one
+/// revision of the resource and one set of surface entries.
+struct SearchCache {
+    revision: u64,
+    shown: Vec<SearchEntry>,
+    indexed: Arc<IndexedEntries>,
+}
+
 /// A resource's search entries and their index, keyed by position.
 struct IndexedEntries {
     entries: Vec<SearchEntry>,
     index: SearchIndex,
+    /// Which build of the entries this is: a page cursor from another build
+    /// starts over rather than skipping or repeating.
+    generation: u64,
 }
 
 impl IndexedEntries {
     fn new(entries: Vec<SearchEntry>) -> Self {
+        Self::built(entries, 0)
+    }
+
+    fn built(entries: Vec<SearchEntry>, generation: u64) -> Self {
         // Entry titles are names a person half remembers: typos match too.
         let mut index = SearchIndex::new(Matching::LOOSE);
         index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
             Document::new(at as u64)
                 .field(entry.title.as_str(), FieldWeight::TITLE)
                 .field(entry.text.as_str(), FieldWeight::BODY)
+                .field(
+                    entry.subtitle.as_deref().unwrap_or_default(),
+                    FieldWeight::BODY,
+                )
         }));
         if let Err(error) = index.commit() {
             tracing::warn!(%error, "could not index resource search entries");
         }
-        Self { entries, index }
+        Self {
+            entries,
+            index,
+            generation,
+        }
     }
 }
 
 /// A search provider over one snapshot of the resource's entries.
-struct ResourceSearch {
+pub(crate) struct ResourceSearch {
     name: &'static str,
     indexed: Arc<IndexedEntries>,
+}
+
+impl ResourceSearch {
+    /// The search source over `entries`, listed under `name` unless an
+    /// entry names its own group.
+    pub(crate) fn over(name: &'static str, entries: Vec<SearchEntry>) -> Self {
+        Self {
+            name,
+            indexed: Arc::new(IndexedEntries::new(entries)),
+        }
+    }
 }
 
 impl SearchProvider for ResourceSearch {
@@ -566,30 +600,95 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.indexed
-            .index
-            .search(query, Page::first(limit))
+        self.results(query, Page::first(limit)).0
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.indexed.generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        cursor.opaque_parts().0 == self.indexed.generation
+    }
+
+    // Every entry stays findable however many there are: a page continues
+    // where the last one stopped, within the caller's budgets.
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        let limit = work_budget.min(result_limit);
+        let folded = ui_core::search::normalize_search_text(query);
+        let offset = cursor
+            .map(SearchCursor::opaque_parts)
+            .filter(|(generation, at_query, _, _)| {
+                *generation == self.indexed.generation && *at_query == folded
+            })
+            .and_then(|(_, _, _, offset)| usize::try_from(offset?).ok())
+            .unwrap_or(0);
+        if limit == 0 {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let (results, more) = self.results(query, Page { offset, limit });
+        let inspected = results.len();
+        let next = more.then(|| {
+            SearchCursor::opaque(
+                self.indexed.generation,
+                folded,
+                None,
+                u64::try_from(offset.saturating_add(inspected)).ok(),
+            )
+        });
+        SearchPage {
+            results,
+            next,
+            inspected,
+        }
+    }
+}
+
+impl ResourceSearch {
+    /// One page of hits for `query`, and whether more follow it.
+    fn results(&self, query: &str, page: Page) -> (Vec<SearchResult>, bool) {
+        let found = self.indexed.index.search(query, page);
+        let results = found
             .hits
             .into_iter()
             .filter_map(|hit| {
                 let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
-                let result = match &entry.action {
-                    Some(action) => {
-                        SearchResult::for_action(self.name, entry.title.clone(), action)
-                    }
+                let group = entry.group.as_deref().unwrap_or(self.name);
+                let mut result = match &entry.action {
+                    Some(action) => SearchResult::for_action(group, entry.title.clone(), action),
                     None => SearchResult::new(
-                        self.name,
+                        group,
                         entry.title.clone(),
                         entry.anchor.clone().unwrap_or_default(),
                     ),
                 };
-                Some(
-                    result
-                        .with_preview(entry.text.clone())
-                        .with_score(hit.rank.unwrap_or(0)),
-                )
+                if let Some(subtitle) = &entry.subtitle {
+                    result = result.with_subtitle(subtitle.clone());
+                }
+                if let Some(icon) = entry
+                    .icon
+                    .as_deref()
+                    .and_then(ui_core::icons::Icon::from_name)
+                {
+                    result = result.with_icon(icon);
+                }
+                if !entry.text.is_empty() {
+                    result = result.with_preview(entry.text.clone());
+                }
+                Some(result.with_score(hit.rank.unwrap_or(0).saturating_add(entry.boost)))
             })
-            .collect()
+            .collect();
+        (results, found.more)
     }
 }
 
@@ -784,14 +883,29 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
 impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        // The resource's entries change with its revision; what the surfaces
+        // show (a page's text, live rows) changes on their own, so their
+        // entries are read now and the index rebuilt only when either moved.
         let revision = self.live.revision();
+        let mut shown = Vec::new();
+        self.surfaces(&mut |surface| shown.extend(surface.search_entries()));
         let indexed = {
             let mut cached = self.search.borrow_mut();
             match cached.as_ref() {
-                Some((at, indexed)) if *at == revision => Arc::clone(indexed),
-                _ => {
-                    let indexed = Arc::new(IndexedEntries::new(R::search(&self.live.get())));
-                    *cached = Some((revision, Arc::clone(&indexed)));
+                Some(cache) if cache.revision == revision && cache.shown == shown => {
+                    Arc::clone(&cache.indexed)
+                }
+                previous => {
+                    let generation =
+                        previous.map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
+                    let mut entries = R::search(&self.live.get());
+                    entries.extend(shown.iter().cloned());
+                    let indexed = Arc::new(IndexedEntries::built(entries, generation));
+                    *cached = Some(SearchCache {
+                        revision,
+                        shown,
+                        indexed: Arc::clone(&indexed),
+                    });
                     indexed
                 }
             }
@@ -1074,5 +1188,66 @@ mod tests {
         assert_eq!(garden.len(), 1);
         assert_eq!(garden[0].action_address(), None);
         assert_eq!(garden[0].action_id, "page:2");
+    }
+
+    #[test]
+    fn a_search_entry_reads_as_its_group_subtitle_and_icon() {
+        let reveal = tilo_actions::ActionAddress::new("video.marker:1", "reveal");
+        let search = ResourceSearch {
+            name: "Project",
+            indexed: Arc::new(IndexedEntries::new(vec![
+                SearchEntry::new("Sunset", "the last light")
+                    .invoking(reveal)
+                    .grouped("Timeline markers")
+                    .subtitled("0:21 · Drone")
+                    .with_icon("star")
+                    .boosted(5),
+                SearchEntry::new("Sunset take", ""),
+            ])),
+        };
+        let hits = search.search("sunset");
+        let marker = hits
+            .iter()
+            .find(|hit| hit.title == "Sunset")
+            .expect("the marker is found");
+        assert_eq!(marker.kind, "Timeline markers");
+        assert_eq!(marker.subtitle.as_deref(), Some("0:21 · Drone"));
+        assert_eq!(marker.icon, Some(ui_core::icons::Icon::Star));
+        let plain = hits
+            .iter()
+            .find(|hit| hit.title == "Sunset take")
+            .expect("the plain entry is found");
+        assert_eq!(plain.kind, "Project", "an ungrouped hit is the resource's");
+        assert!(plain.preview.is_none(), "no text, no preview");
+        // Subtitles are searched too: a marker is found by the shot it is on.
+        assert!(
+            search
+                .search("drone")
+                .iter()
+                .any(|hit| hit.title == "Sunset")
+        );
+    }
+
+    #[test]
+    fn every_entry_stays_findable_page_by_page() {
+        let search = ResourceSearch::over(
+            "Tracks",
+            (0..257)
+                .map(|n| SearchEntry::new(format!("Common track {n}"), ""))
+                .collect(),
+        );
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page = search.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.results.len() <= 5);
+            for hit in &page.results {
+                assert!(seen.insert(hit.title.clone()), "{} came twice", hit.title);
+            }
+            let Some(next) = page.next else { break };
+            assert!(search.action_directory_cursor_is_current(&next));
+            cursor = Some(next);
+        }
+        assert_eq!(seen.len(), 257, "every match is reachable");
     }
 }

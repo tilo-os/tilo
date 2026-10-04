@@ -398,18 +398,21 @@ impl Resource for Calendar {
             title: event.display_title().to_owned(),
             text: format!("{} {}", event.location, notes(event.id)),
             action: Some(crate::actions::open_event_address(event.id)),
+            ..Default::default()
         });
         let tasks = state.tasks.iter().map(|task| SearchEntry {
             anchor: Some(crate::actions::task_resource_id(task.id)),
             title: task.title.clone(),
             text: notes(task.id),
             action: Some(crate::actions::open_task_address(task.id)),
+            ..Default::default()
         });
         let projects = state.projects.iter().map(|project| SearchEntry {
             anchor: Some(crate::actions::project_resource_id(project.id)),
             title: project.name.clone(),
             text: String::new(),
             action: Some(crate::actions::open_project_address(project.id)),
+            ..Default::default()
         });
         events.chain(tasks).chain(projects).collect()
     }

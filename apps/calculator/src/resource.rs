@@ -274,6 +274,7 @@ impl Resource for Calculator {
                 title: history_label(entry),
                 text: entry.expr.clone(),
                 action: None,
+                ..Default::default()
             });
         let graphs = [GraphKind::Curve2d, GraphKind::Surface3d]
             .into_iter()
@@ -286,6 +287,7 @@ impl Resource for Calculator {
                         title: graph_label(kind, plot),
                         text: plot.expr.clone(),
                         action: None,
+                        ..Default::default()
                     })
             });
         history.chain(graphs).collect()

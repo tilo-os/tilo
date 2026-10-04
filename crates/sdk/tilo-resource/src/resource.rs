@@ -285,22 +285,31 @@ impl tilo_actions::Action for NoAction {
 /// A search index entry. `anchor` addresses what a hit opens (an item id);
 /// `action`, when set, is the published action a hit invokes, so choosing it
 /// goes through the same door, permissions and history as the palette.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// How a hit reads is the entry's too: the result group it is listed under
+/// (the resource's label unless `group` names another, such as "Timeline
+/// markers"), a dimmer `subtitle` line, a named `icon` (a lucide kebab name,
+/// `"star"`), and a `boost` that floats pinned or recent items over an equal
+/// match.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchEntry {
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
     pub action: Option<tilo_actions::ActionAddress>,
+    pub group: Option<String>,
+    pub subtitle: Option<String>,
+    pub icon: Option<String>,
+    pub boost: i32,
 }
 
 impl SearchEntry {
     /// An entry titled `title` whose body text is `text`.
     pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
-            anchor: None,
             title: title.into(),
             text: text.into(),
-            action: None,
+            ..Self::default()
         }
     }
 
@@ -315,6 +324,35 @@ impl SearchEntry {
     #[must_use]
     pub fn invoking(mut self, action: tilo_actions::ActionAddress) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    /// List hits under `group` rather than the resource's label.
+    #[must_use]
+    pub fn grouped(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    /// A secondary line under the title: where the item is, what it is.
+    #[must_use]
+    pub fn subtitled(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// The glyph a hit leads with, by its lucide kebab name (`"star"`).
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Rank the hit `boost` above an equal match: a nudge, never an
+    /// override of how well it matches.
+    #[must_use]
+    pub fn boosted(mut self, boost: i32) -> Self {
+        self.boost = boost;
         self
     }
 }

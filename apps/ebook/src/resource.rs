@@ -94,6 +94,7 @@ impl Resource for Ebook {
                 title: entry.title.clone(),
                 text: entry.author.clone(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

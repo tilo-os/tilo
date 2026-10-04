@@ -116,12 +116,14 @@ impl Resource for Mail {
             title: (*folder).to_owned(),
             text: String::new(),
             action: None,
+            ..Default::default()
         });
         let custom = state.custom_folders.iter().map(|(id, name)| SearchEntry {
             anchor: Some(format!("mail.folder:{id}")),
             title: name.clone(),
             text: String::new(),
             action: None,
+            ..Default::default()
         });
         folders.chain(custom).collect()
     }

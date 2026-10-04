@@ -72,6 +72,7 @@ impl Resource for Photos {
                     .collect::<Vec<_>>()
                     .join(" "),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

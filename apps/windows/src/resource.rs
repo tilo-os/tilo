@@ -137,6 +137,7 @@ impl Resource for Windows {
                 title: app_id.clone(),
                 text: route.label().to_owned(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
