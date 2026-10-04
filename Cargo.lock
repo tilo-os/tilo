@@ -16056,6 +16056,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-paint-stream"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "serde_json",
+ "usvg",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
@@ -16728,6 +16739,7 @@ dependencies = [
  "tilo-host-search",
  "tilo-image-codec",
  "tilo-media",
+ "tilo-paint-stream",
  "tilo-paths",
  "tilo-process",
  "tilo-resource",
