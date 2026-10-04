@@ -289,6 +289,8 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         sessions: Mutex::new(BTreeMap::new()),
         governance: Mutex::new(Vec::new()),
         keys: joined.keys.clone(),
+        content: std::sync::OnceLock::new(),
+        requesters: content::Requesters::default(),
     };
     assert!(
         probe.action_room(actor, &room.to_string()).is_ok(),
@@ -953,4 +955,181 @@ fn the_rooms_the_desktop_session_enrolled_are_refused() {
         desktop_enrolled(directory.path()).is_err(),
         "an unreadable desktop record refuses rather than guesses"
     );
+}
+
+/// Content kept in memory, as a profile's content store keeps it.
+#[derive(Default)]
+struct Shelf(
+    Mutex<
+        std::collections::BTreeMap<
+            (tilo_action_broker::record_content::ContentScope, String),
+            Vec<u8>,
+        >,
+    >,
+);
+
+impl tilo_action_broker::record_content::ContentShelf for Shelf {
+    fn read(
+        &self,
+        scope: &tilo_action_broker::record_content::ContentScope,
+        hash: &str,
+    ) -> Option<Vec<u8>> {
+        self.0
+            .lock()
+            .ok()?
+            .get(&(scope.clone(), hash.to_owned()))
+            .cloned()
+    }
+
+    fn keep(
+        &self,
+        scope: &tilo_action_broker::record_content::ContentScope,
+        hash: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        self.0
+            .lock()
+            .map_err(|_| "poisoned".to_owned())?
+            .insert((scope.clone(), hash.to_owned()), bytes.to_vec());
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
+    use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+    use tilo_peer_state::peer_handle;
+
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let governing = Box::pin(HostedRoom::start(directory.path())).await;
+    let room = governing.room;
+    let device_key = SigningKey::from_bytes(&[95; 32]);
+    let root_key = SigningKey::from_bytes(&[96; 32]);
+    let mut capabilities = DeviceCapabilities::member();
+    capabilities.foreign = true;
+    let mut device = DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: device_key.verifying_key().to_bytes(),
+        device_label: "Runtime on a laptop".into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut device, &root_key).unwrap();
+    let invitation = governing.invite(device.user_public_key);
+    let joined = Joined::open(
+        directory.path(),
+        HostIdentity {
+            device_cert: device.clone(),
+            device_signing_key: device_key.clone(),
+            workspace_device_certs: std::collections::HashMap::default(),
+            workspace_revocations: std::collections::HashMap::default(),
+            identity_paths: None,
+        },
+        local_endpoint(&device_key).await,
+        BTreeSet::new(),
+        (
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        ),
+    )
+    .unwrap();
+    let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
+    assert_eq!(joined.join(&invitation).await.unwrap(), room);
+    let (governor, _endpoint) = governing.publish_history(device.device_public_key).await;
+    let governor_handle = peer_handle(&governing.governor.device_public_key);
+    let runtime_handle = peer_handle(&device.device_public_key);
+    let route =
+        tilo_action_broker::route::CrdtRoute::record("so.tilo.slides", room.to_string(), "deck");
+
+    // The runtime asks the room for a picture; the governor's device sends it.
+    let picture: Vec<u8> = (0..PIECE_BYTES + 5)
+        .map(|index| u8::try_from(index % 241).unwrap())
+        .collect();
+    let hash = content_hash(&picture);
+    let mut arrivals = content.subscribe(&route);
+    tilo_test_env::within("the runtime's request", async {
+        loop {
+            content.want(&route, &hash);
+            let request = tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if let Some(Inbound::Presence { author, payload }) = governor.recv().await
+                        && author == device.device_public_key
+                        && let Ok(NeighbourMsg::RecordContentWant {
+                            requester,
+                            hash: asked,
+                            ..
+                        }) = postcard::from_bytes(&payload)
+                    {
+                        break (requester, asked);
+                    }
+                }
+            })
+            .await;
+            if let Ok((requester, asked)) = request {
+                assert_eq!(requester, runtime_handle);
+                assert_eq!(asked, hash);
+                break;
+            }
+        }
+    })
+    .await;
+    for (index, chunk) in picture.chunks(PIECE_BYTES).enumerate() {
+        let piece = NeighbourMsg::RecordContentPiece {
+            responder: governor_handle,
+            requester: runtime_handle,
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            hash: hash.clone(),
+            total: picture.len() as u64,
+            offset: (index * PIECE_BYTES) as u64,
+            bytes: chunk.to_vec(),
+        };
+        governor
+            .publish_record_content(
+                device.device_public_key,
+                postcard::to_allocvec(&piece).unwrap(),
+            )
+            .unwrap();
+    }
+    let arrival = tilo_test_env::within("the picture at the runtime", arrivals.recv())
+        .await
+        .unwrap();
+    assert_eq!(arrival.bytes, picture);
+
+    // The governor's device asks for it in turn; the runtime answers it alone.
+    let want = NeighbourMsg::RecordContentWant {
+        requester: governor_handle,
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id.clone(),
+        hash: hash.clone(),
+    };
+    governor
+        .publish_presence(postcard::to_allocvec(&want).unwrap())
+        .unwrap();
+    let mut gathered = vec![0_u8; picture.len()];
+    let mut received = 0;
+    tilo_test_env::within("the picture at the governor", async {
+        while received < picture.len() {
+            if let Some(Inbound::RecordContent { from, frame }) = governor.recv().await {
+                assert_eq!(from, device.device_public_key);
+                let Ok(NeighbourMsg::RecordContentPiece {
+                    requester,
+                    offset,
+                    bytes,
+                    ..
+                }) = postcard::from_bytes(&frame)
+                else {
+                    panic!("a piece of record content");
+                };
+                assert_eq!(requester, governor_handle);
+                let start = usize::try_from(offset).unwrap();
+                gathered[start..start + bytes.len()].copy_from_slice(&bytes);
+                received += bytes.len();
+            }
+        }
+    })
+    .await;
+    assert_eq!(gathered, picture);
 }
