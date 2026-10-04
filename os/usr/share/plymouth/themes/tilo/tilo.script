@@ -62,6 +62,12 @@ fun setup_dialog()
     dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
                             Window.GetY() + Window.GetHeight() * 0.535, 100);
 
+    global.dialog.retry_image = Image("unlock-retry.png");
+    global.dialog.retry = Sprite(dialog.retry_image);
+    dialog.retry.SetPosition(center_x - dialog.retry_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.67, 100);
+    dialog.retry.SetOpacity(0);
+
     global.dialog.entry_x = center_x - entry_image.GetWidth() / 2;
     global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
     global.dialog.entry = Sprite(entry_image);
@@ -77,6 +83,9 @@ fun setup_dialog()
 
 fun display_password(prompt, bullets)
   {
+    local.retry = global.unlock_pending && global.unlock_prompt == prompt;
+    global.unlock_pending = 0;
+    global.unlock_prompt = prompt;
     global.mode = "password";
     place_brand(1);
     progress.background.SetOpacity(0);
@@ -84,6 +93,8 @@ fun display_password(prompt, bullets)
     if (!global.dialog)
       setup_dialog();
     set_dialog_opacity(1);
+    if (retry)
+      dialog.retry.SetOpacity(1);
 
     # Keep very long passphrases visually bounded while accepting them in full.
     local.visible_bullets = bullets;
@@ -106,7 +117,11 @@ fun display_password(prompt, bullets)
 
 fun display_normal()
   {
+    if (global.mode == "password")
+      global.unlock_pending = 1;
     global.mode = "normal";
+    if (dialog.ready)
+      dialog.retry.SetOpacity(0);
     place_brand(0);
     set_dialog_opacity(0);
     progress.background.SetOpacity(1);
