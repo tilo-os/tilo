@@ -1555,9 +1555,17 @@ impl ContactsApp {
             .filtered_sorted(self.search.value(), self.group_filter.as_deref(), self.sort)
     }
 
-    fn group_filter_options(&self) -> Vec<String> {
+    /// "All", "Favorites", then the book's groups. A group named
+    /// "Favorites" is the favourites filter already listed, not a second
+    /// entry of the same name.
+    pub(crate) fn group_filter_options(&self) -> Vec<String> {
         let mut options = vec!["All".to_string(), "Favorites".to_string()];
-        options.extend(self.store.all_groups());
+        options.extend(
+            self.store
+                .all_groups()
+                .into_iter()
+                .filter(|group| !group.eq_ignore_ascii_case("Favorites")),
+        );
         options
     }
 
@@ -4789,8 +4797,7 @@ impl ContactsApp {
         theme: &Theme,
         anchor: Rect,
     ) {
-        let mut opts = vec!["All".to_string(), "Favorites".to_string()];
-        opts.extend(self.store.all_groups());
+        let opts = self.group_filter_options();
         let (panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         menu_panel(scene, t, theme, panel);
         for (i, r) in rows.iter().enumerate() {
