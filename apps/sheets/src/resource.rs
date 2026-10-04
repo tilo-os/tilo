@@ -168,6 +168,10 @@ impl Resource for SheetsWorkbook {
         crate::actions::register(registry);
     }
 
+    fn least_permission() -> ui::tilo_resource::PermissionRequirement {
+        ui::tilo_resource::PermissionRequirement::Comment
+    }
+
     /// Commenting on a cell — a thread, a reply, an edit of one's comment,
     /// resolving it — needs only the right to comment.
     fn permission(action: &SheetsAction) -> ui::tilo_resource::PermissionRequirement {

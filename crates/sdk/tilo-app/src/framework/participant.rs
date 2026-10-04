@@ -264,6 +264,19 @@ impl Participant {
         confirmed: bool,
     ) -> Result<Option<Vec<u8>>, DoorError> {
         let resources = self.resources();
+        // The tree offers an action under the least it needs; this
+        // invocation needs what its value asks (a reply commenting, a
+        // deletion writing).
+        if let Some(spec) = door::resolve(&resources, address)
+            && !self
+                .permissions
+                .permits_invocation(self.app_id(), spec, Some(arguments), None)
+        {
+            return Err(DoorError::Unavailable {
+                code: "permission_denied".into(),
+                reason: format!("you may not {} here", spec.label.to_lowercase()),
+            });
+        }
         let ambient = self.ambient();
         let provenance = InvocationProvenance {
             actor: &self.actor,

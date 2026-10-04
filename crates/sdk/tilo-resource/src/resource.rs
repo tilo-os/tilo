@@ -149,6 +149,15 @@ pub trait Resource: Sized + 'static {
         PermissionRequirement::Write
     }
 
+    /// The least any of the resource's actions needs
+    /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
+    /// group actions are offered under, each invocation then checked
+    /// against what its value needs. Writing by default; `Comment` for a
+    /// resource someone who may only comment can still reply in.
+    fn least_permission() -> PermissionRequirement {
+        PermissionRequirement::Write
+    }
+
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -789,6 +798,16 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
+    // Offered to whoever may take the least of its edits; each value needs
+    // what that edit needs.
+    .requiring(R::least_permission())
+    .with_permission_of(|args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
+            return PermissionRequirement::Write;
+        };
+        read_apply::<R>(serde_json::Value::Object(value.clone()))
+            .map_or(PermissionRequirement::Write, |action| R::permission(&action))
+    })
     // History names each value after what it did, not after `apply`.
     .with_history_label(apply_label::<R>)
     // Each value is classified: deleting is destructive, trimming is not, so
@@ -802,6 +821,18 @@ fn apply_spec<R: Resource>() -> ActionSpec {
                 tilo_actions::Action::risk(&action)
             })
     })
+}
+
+/// How much a requirement asks, least first.
+fn permission_rank(requirement: PermissionRequirement) -> u8 {
+    match requirement {
+        PermissionRequirement::None => 0,
+        PermissionRequirement::Read => 1,
+        PermissionRequirement::Comment => 2,
+        PermissionRequirement::Write => 3,
+        PermissionRequirement::Invite => 4,
+        PermissionRequirement::Admin => 5,
+    }
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
@@ -827,6 +858,21 @@ fn group_spec<R: Resource>() -> ActionSpec {
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
     .programmatic()
+    // Needs what its most demanding member needs.
+    .requiring(R::least_permission())
+    .with_permission_of(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
+            PermissionRequirement::Write,
+            |group| {
+                group
+                    .actions
+                    .iter()
+                    .map(R::permission)
+                    .max_by_key(|requirement| permission_rank(*requirement))
+                    .unwrap_or(PermissionRequirement::Write)
+            },
+        )
+    })
     // As consequential as its most consequential member.
     .with_risk(|args| {
         crate::group::build_group::<R>(&args.to_json(), 0)

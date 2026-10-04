@@ -75,6 +75,10 @@ impl Resource for PdfViewer {
         crate::actions::declarations()
     }
 
+    fn least_permission() -> PermissionRequirement {
+        PermissionRequirement::Comment
+    }
+
     /// Replying and commenting need only the right to comment.
     fn permission(action: &PdfViewerAction) -> PermissionRequirement {
         match action.required_verb() {
