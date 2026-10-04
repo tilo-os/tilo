@@ -6034,11 +6034,12 @@ mod tests {
             app.step = Step::Account;
             let (_taffy, _root) = build(&mut app);
 
-            // Username + optional full name + password + confirmation + Back + Next.
+            // Username + optional full name + password + confirmation, each
+            // password with its show/hide control, + Back + Next.
             assert_eq!(
                 count_focusable(&app),
-                6,
-                "4 inputs + 2 nav buttons must be focusable"
+                8,
+                "4 inputs, 2 show/hide controls and 2 nav buttons must be focusable"
             );
         }
         // Phase `keyboard_step_has_dropdown_and_nav_and_a_preview`.

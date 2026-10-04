@@ -35,11 +35,11 @@ fn a_generated_app_builds_outside_the_tilo_repository() {
         .expect("checkout root")
         .canonicalize()
         .expect("canonical checkout");
-    let parent = tempfile::Builder::new()
-        .prefix("tilo-outside-")
-        .tempdir_in(std::env::temp_dir())
-        .expect("temporary directory");
-    let parent_path = parent.path().canonicalize().expect("canonical temp dir");
+    // A fixed directory, not a random one: the compiler cache keys every
+    // unit by its working directory and build-script output paths, so a new
+    // path each run would rebuild the whole graph uncached.
+    let parent = OutsideDir::create(std::env::temp_dir().join("tilo-outside-repo"));
+    let parent_path = parent.0.canonicalize().expect("canonical temp dir");
     assert!(
         !parent_path.starts_with(&checkout),
         "the temporary directory must be outside the checkout"
@@ -93,4 +93,28 @@ fn a_generated_app_builds_outside_the_tilo_repository() {
     );
     let built = app.join("target/tilo-app").join(host).join("hello");
     assert!(built.is_dir(), "no artifact under {}", built.display());
+}
+
+/// A directory removed before use and when the test ends.
+#[cfg(test)]
+struct OutsideDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl OutsideDir {
+    fn create(path: std::path::PathBuf) -> Self {
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove {}: {error}", path.display()),
+        }
+        std::fs::create_dir_all(&path).expect("outside directory");
+        Self(path)
+    }
+}
+
+#[cfg(test)]
+impl Drop for OutsideDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }

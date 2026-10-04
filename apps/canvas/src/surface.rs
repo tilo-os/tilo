@@ -711,8 +711,7 @@ impl CanvasSurface {
                 None
             }
             Tool::Eyedropper => {
-                let colour = self.tools.renderer.borrow_mut().sample(&self.art, at);
-                self.tools.pick(colour);
+                self.pick_colour(at);
                 None
             }
             Tool::Marquee | Tool::Oval => {
@@ -735,6 +734,21 @@ impl CanvasSurface {
                 None
             }
         };
+    }
+
+    /// The eyedropper's click: the brush takes the colour the canvas shows
+    /// at `at`, after masks and erasers, as the eye sees it.
+    fn pick_colour(&mut self, at: Point) {
+        if !self.art.bounds().contains(at) {
+            return;
+        }
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let shown =
+            view_ops::shown_colour(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
+        // A canvas that cannot draw a picture of itself picks nothing.
+        if let Ok(colour) = shown {
+            self.tools.pick(colour);
+        }
     }
 
     /// How a new area meets the selection, from the held keys.
@@ -2205,7 +2219,7 @@ impl CanvasSurface {
             return None;
         }
         self.art
-            .mark_at(self.content_point(self.cursor))
+            .pick_at(self.content_point(self.cursor))
             .filter(|mark| !self.selection.contains(&mark.id))
     }
 
@@ -2218,6 +2232,7 @@ impl CanvasSurface {
     ) {
         self.overlay_crop(scene, to_screen, theme);
         self.overlay_area(scene, to_screen);
+        self.overlay_erasers(scene, to_screen, theme);
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
@@ -2310,6 +2325,22 @@ impl CanvasSurface {
         }
     }
 
+    /// Where erasers took paint off, outlined while the eraser or the
+    /// selection tool is in hand: an eraser has no ink to see it by, and
+    /// this is how a person finds one to pick, reshape or take away.
+    fn overlay_erasers(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
+        if !matches!(self.current_tool(), Tool::Select | Tool::Eraser) || self.text.is_some() {
+            return;
+        }
+        let hovered = self.hovered().map(|mark| mark.id.as_str());
+        for mark in self.art.erasers() {
+            let mut outline = crate::render::silhouette(mark);
+            outline.apply_affine(to_screen * mark.affine());
+            let marked = hovered == Some(mark.id.as_str()) || self.selection.contains(&mark.id);
+            crate::render::eraser_outline(scene, &outline, marked.then_some(theme.accent_primary));
+        }
+    }
+
     /// What is hovered and picked: outlines, the frame and its guides.
     fn overlay_selection(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
         let accent = theme.accent_primary;
@@ -2330,7 +2361,7 @@ impl CanvasSurface {
                 shape => shape.path(),
             }
         };
-        if let Some(mark) = self.hovered() {
+        if let Some(mark) = self.hovered().filter(|mark| !mark.erases()) {
             scene.stroke(
                 &line,
                 Affine::IDENTITY,

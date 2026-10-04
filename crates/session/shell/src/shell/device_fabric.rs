@@ -589,6 +589,58 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::shell::speaker_calibration::SpeakerHearing,
     },
+    /// The legacy app windows this device shows right now, each at the size
+    /// it shows it. The device running a listed window streams that one
+    /// window here, and stops once a refresh no longer lists it or the
+    /// refreshes stop. An empty list ends every stream to this device.
+    /// `decode` is what this device's hardware decoders take, so the host
+    /// encodes nothing they would hand back to the CPU.
+    WindowViews {
+        views: Vec<WindowView>,
+        decode: Vec<HardwareDecode>,
+    },
+}
+
+/// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
+/// more than a person can see at once on any one screen.
+pub const MAX_WINDOW_VIEWS: usize = 32;
+/// Largest window side, in logical pixels, a viewer may ask for.
+pub const MAX_WINDOW_VIEW_SIDE: u32 = 8192;
+
+/// One legacy app window a device shows: the workspace tab holding it and the
+/// tile's size in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowView {
+    pub tab: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One codec a device decodes in hardware, with the largest picture its
+/// decoder takes when it has a limit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareDecode {
+    /// The codec's stream label (`h264`, `vp9`, `av1`, `hevc-main10`).
+    pub codec: String,
+    pub max: Option<(u32, u32)>,
+}
+
+impl HardwareDecode {
+    fn valid(&self) -> bool {
+        media::StreamCodec::from_wire_label(&self.codec).is_some()
+            && self.max.is_none_or(|(width, height)| {
+                (2..=MAX_WINDOW_VIEW_SIDE).contains(&width)
+                    && (2..=MAX_WINDOW_VIEW_SIDE).contains(&height)
+            })
+    }
+}
+
+impl WindowView {
+    fn valid(&self) -> bool {
+        self.tab != 0
+            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.width)
+            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.height)
+    }
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -783,6 +835,21 @@ impl PersonalFabricActionEnvelope {
                 hearing,
             } => {
                 if !group.valid() || sweep == &[0; 16] || !hearing.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::WindowViews { views, decode } => {
+                let mut tabs = BTreeSet::new();
+                let mut codecs = BTreeSet::new();
+                if views.len() > MAX_WINDOW_VIEWS
+                    || !views
+                        .iter()
+                        .all(|view| view.valid() && tabs.insert(view.tab))
+                    || decode.len() > media::StreamCodec::ALL.len()
+                    || !decode
+                        .iter()
+                        .all(|codec| codec.valid() && codecs.insert(codec.codec.as_str()))
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2311,6 +2378,63 @@ mod tests {
         video_cannot_be_sent_to_an_audio_only_device();
         media_action_locators_reject_host_paths_and_url_credentials();
         media_terminal_actions_require_exact_nonzero_request_and_session();
+    }
+
+    #[test]
+    fn window_views_are_bounded_distinct_and_sized() {
+        let source = id("viewer");
+        let target = id("host");
+        let envelope =
+            |views: Vec<WindowView>, decode: Vec<HardwareDecode>| PersonalFabricActionEnvelope {
+                request_id: [5; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::WindowViews { views, decode },
+            };
+        let view = |tab, width, height| WindowView { tab, width, height };
+        let ok = |views| {
+            envelope(views, Vec::new())
+                .validate_at(&source, &target, 10_000)
+                .is_ok()
+        };
+        let decodes = |decode| {
+            envelope(vec![view(7, 1280, 800)], decode)
+                .validate_at(&source, &target, 10_000)
+                .is_ok()
+        };
+        let hw = |codec: &str, max| HardwareDecode {
+            codec: codec.into(),
+            max,
+        };
+
+        assert!(ok(Vec::new()), "an empty list ends every stream");
+        assert!(ok(vec![
+            view(7, 1280, 800),
+            view(8, 1, MAX_WINDOW_VIEW_SIDE)
+        ]));
+        assert!(!ok(vec![view(0, 1280, 800)]), "a tab id is never zero");
+        assert!(!ok(vec![view(7, 0, 800)]));
+        assert!(!ok(vec![view(7, 1280, MAX_WINDOW_VIEW_SIDE + 1)]));
+        assert!(
+            !ok(vec![view(7, 1280, 800), view(7, 640, 480)]),
+            "one size per tab"
+        );
+        assert!(!ok((1..=u64::try_from(MAX_WINDOW_VIEWS).unwrap() + 1)
+            .map(|tab| view(tab, 100, 100))
+            .collect()));
+
+        // A board's decoder limit travels with the list.
+        assert!(decodes(vec![
+            hw("h264", Some((1920, 1088))),
+            hw("av1", None)
+        ]));
+        assert!(!decodes(vec![hw("mjpeg", None)]), "a codec streams use");
+        assert!(!decodes(vec![hw("h264", Some((0, 1088)))]));
+        assert!(
+            !decodes(vec![hw("h264", None), hw("h264", Some((1280, 720)))]),
+            "one limit per codec"
+        );
     }
 
     #[test]

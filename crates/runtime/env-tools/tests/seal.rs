@@ -98,6 +98,34 @@ fn the_seal_keeps_package_files_and_drops_package_manager_churn() {
 }
 
 #[test]
+fn the_seal_recognizes_only_empty_files_with_whiteout_attributes() {
+    let dir = tempfile::tempdir().unwrap();
+    let upper = dir.path().join("upper");
+    let lower = dir.path().join("lower");
+    let out = dir.path().join("out");
+    std::fs::create_dir(&lower).unwrap();
+    write(&upper, "deleted", "", 0o644);
+    write(&upper, "empty", "", 0o644);
+    write(&upper, "nonempty", "keep", 0o644);
+    for name in ["deleted", "nonempty"] {
+        xattr::set(upper.join(name), "user.overlay.whiteout", b"").unwrap();
+    }
+    std::os::unix::fs::symlink("deleted", upper.join("link")).unwrap();
+
+    let report = seal::seal(&upper, &lower, &out).unwrap();
+    assert_eq!(report.whiteouts, ["deleted"]);
+    assert_eq!(report.files, 2);
+    assert_eq!(report.symlinks, 1);
+    assert!(!out.join("deleted").exists());
+    assert_eq!(std::fs::read(out.join("empty")).unwrap(), b"");
+    assert_eq!(std::fs::read(out.join("nonempty")).unwrap(), b"keep");
+    assert_eq!(
+        std::fs::read_link(out.join("link")).unwrap(),
+        Path::new("deleted")
+    );
+}
+
+#[test]
 fn the_seal_refuses_an_existing_destination() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("upper/usr")).unwrap();

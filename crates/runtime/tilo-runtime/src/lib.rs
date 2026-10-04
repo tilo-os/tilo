@@ -103,6 +103,23 @@ pub trait RuntimeServices: Sized {
     /// The workspace room every app of this profile joins.
     fn room(&self) -> &str;
 
+    /// Select the fixed audience of a host-configured MCP endpoint. This
+    /// never enrolls a room or changes grants. Hosts supporting shared rooms
+    /// must check their current certified admission and the profile actor.
+    ///
+    /// # Errors
+    /// Refuses any audience this host cannot currently authenticate.
+    fn mcp_room(&self, requested: Option<&str>) -> io::Result<String> {
+        let room = requested.unwrap_or_else(|| self.room());
+        if room != self.room() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "this runtime has no admitted MCP audience for that room",
+            ));
+        }
+        Ok(room.to_owned())
+    }
+
     /// The profile's fixed actor, as which MCP callers act.
     fn actor(&self) -> &str;
 

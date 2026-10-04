@@ -90,8 +90,10 @@
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
 //!   it, a minted one) and which of the resource's actions the launch takes
 //!   there ([`ResourceApp::launch`], through the same door as every
-//!   control); the view reads the same launch ([`ViewCx::launch`]) to show
-//!   what those actions made. [`ResourceApp::OPENS`] names the media types it is handed and
+//!   control), or which of its effects, for a launch that shows something
+//!   (a link to one item) rather than editing ([`Invoke::effect`](tilo_resource::Invoke::effect));
+//!   the view reads the same launch ([`ViewCx::launch`]) to show what those
+//!   actions made. [`ResourceApp::OPENS`] names the media types it is handed and
 //!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
 //!   binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
