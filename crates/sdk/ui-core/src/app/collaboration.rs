@@ -673,8 +673,8 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                self.respond_primary_document_snapshot();
+            CollabEvent::DocumentSnapshotRequested { route } => {
+                self.respond_document_snapshot(&route);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
@@ -854,6 +854,23 @@ impl App {
             );
             self.collaboration.history.reset_in_flight();
         }
+    }
+
+    /// Answer a request for the whole document on `route`: a record kept
+    /// beside the shown one ([`Widget::record_owners`](crate::widget::Widget::record_owners))
+    /// is published whole on its own route with the next publication; any
+    /// other request is the primary document's.
+    fn respond_document_snapshot(&mut self, route: &crate::collaboration::RouteSpec) {
+        if let Some(entry) = self
+            .document_routes
+            .owners
+            .iter_mut()
+            .find(|entry| entry.answers_snapshots && entry.route == *route)
+        {
+            entry.needs_snapshot = true;
+            return;
+        }
+        self.respond_primary_document_snapshot();
     }
 
     fn respond_primary_document_snapshot(&mut self) {
@@ -1092,8 +1109,8 @@ impl App {
                 None => self.unfollow(),
             },
             CollabEvent::Handoff { request } => self.apply_handoff(request),
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                self.respond_primary_document_snapshot();
+            CollabEvent::DocumentSnapshotRequested { route } => {
+                self.respond_document_snapshot(&route);
             }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);

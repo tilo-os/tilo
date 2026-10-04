@@ -209,3 +209,54 @@ fn without_a_root_identity_the_persons_records_stay_on_the_device() {
     app.publish_owned_documents();
     assert!(app.document_routes.sent.is_empty());
 }
+
+#[test]
+fn a_device_that_was_away_catches_up_when_its_route_returns() {
+    let laptop = device();
+    let phone = device();
+    let mut laptop_app = app_holding(&laptop);
+    let mut phone_app = app_holding(&phone);
+    laptop_app.publish_owned_documents();
+    let (route, first) = snapshots(&mut laptop_app).into_iter().next().unwrap();
+    phone_app.apply_signed_document_envelope(&from_device(&route, first), None);
+    phone_app.publish_owned_documents();
+    phone_app.document_routes.sent.clear();
+
+    // The phone is away while the laptop watches something: the change the
+    // laptop publishes never reaches it.
+    watch(&laptop, "while-away");
+    laptop_app.publish_owned_documents();
+    let lost = std::mem::take(&mut laptop_app.document_routes.sent);
+    assert!(
+        lost.iter().all(|(sent, request)| sent == &route
+            && matches!(
+                request,
+                CollabRequest::Document {
+                    mutation: collab_types::DocumentMutation::Incremental(_),
+                    ..
+                }
+            )),
+        "an ordinary change goes out as a delta"
+    );
+    assert!(!watched(&phone).contains(&"while-away".to_owned()));
+
+    // A request on a route the app does not keep a person's record on is
+    // not this record's to answer.
+    laptop_app.apply_collab_event_for_test(CollabEvent::DocumentSnapshotRequested {
+        route: crate::collaboration::RouteSpec::record(APP, uuid::Uuid::new_v4(), "elsewhere"),
+    });
+    laptop_app.publish_owned_documents();
+    assert!(snapshots(&mut laptop_app).is_empty());
+
+    // The phone's route returns: the laptop is asked for the record whole,
+    // and the phone, merging it, has everything.
+    laptop_app.apply_collab_event_for_test(CollabEvent::DocumentSnapshotRequested {
+        route: route.clone(),
+    });
+    laptop_app.publish_owned_documents();
+    let (sent, whole) = snapshots(&mut laptop_app).into_iter().next().unwrap();
+    assert_eq!(sent, route);
+    phone_app.apply_signed_document_envelope(&from_device(&route, whole), None);
+    assert_eq!(watched(&phone), watched(&laptop));
+    assert!(watched(&phone).contains(&"while-away".to_owned()));
+}
