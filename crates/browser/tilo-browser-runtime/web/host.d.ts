@@ -1,3 +1,6 @@
+import type {CaptureSource} from './panorama';
+export {createPanorama} from './panorama';
+export type {CaptureSource, PanoramaCamera, CaptureBounds, PanoramaReceipt, PanoramaObserver} from './panorama';
 import type {DesktopNavigationV1} from "./navigation";
 export type * from "./navigation";
 import type {CertifiedActionsV1,PrivateInvocation} from './peer';
@@ -263,6 +266,8 @@ export interface DesktopMount {
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;
   readonly canvas: HTMLCanvasElement;
+  /** Explicit single-app source for a shared-host composition, never desktop capture. */
+  readonly captureSource: CaptureSource;
   readonly editor: HTMLTextAreaElement;
   readonly semantics: HTMLElement;
   semantic(path: string, target: string | undefined, action: string, value: string, anchor: number, focus: number): unknown;
