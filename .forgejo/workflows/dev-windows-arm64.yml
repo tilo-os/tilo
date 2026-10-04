@@ -30,7 +30,7 @@ jobs:
           cp target/aarch64-pc-windows-msvc/release/tilo-vm.exe out/tilo-vm.exe
           (cd out && sha256sum tilo-vm.exe > tilo-vm.exe.sha256)
           printf '%s\n' "$GITHUB_SHA" > out/source-commit.txt
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-vm-windows-arm64-${{ github.sha }}
           path: out/
@@ -78,7 +78,7 @@ jobs:
           cp "${tests[0]}" out/imager-tests.exe
           (cd out && sha256sum imager.exe imager-tests.exe > sha256.txt)
           printf '%s\n' "$GITHUB_SHA" > out/source-commit.txt
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: imager-windows-arm64-handoff-${{ github.sha }}
           path: out/

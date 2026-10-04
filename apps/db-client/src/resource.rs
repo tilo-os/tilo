@@ -1,6 +1,7 @@
 //! Database client as a [`tilo_resource::Resource`]: connection profiles and
-//! saved queries sync (passwords stay on the device); connect / run SQL are
-//! Effects.
+//! saved queries sync (passwords stay on the device); connecting, running SQL
+//! and everything else done on a database server are [`DbEffect`]s, offered
+//! on the connection, query, table or result they act on.
 
 use std::rc::Rc;
 
@@ -244,9 +245,12 @@ impl Resource for DbClient {
                 .iter()
                 .find(|profile| connection_resource_id(profile.id) == child.id.as_str())
             {
-                child
-                    .actions
-                    .push(crate::actions::connect_operation(profile.id));
+                child.actions.push(
+                    DbEffect::Connect {
+                        connection: profile.id,
+                    }
+                    .bound(),
+                );
             } else if let Some(query) = state
                 .saved_queries
                 .iter()
@@ -254,7 +258,7 @@ impl Resource for DbClient {
             {
                 child
                     .actions
-                    .push(crate::actions::run_saved_query_operation(query));
+                    .push(DbEffect::Run { query: query.id }.bound());
             }
         }
         children.push(publish_child::<PlainText, Self>(
@@ -312,9 +316,11 @@ pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<Pl
     dispatcher.child::<PlainText>(&sql_resource_id(), DbAction::EditSql)
 }
 
-/// The client's work on a database server, which changes no document: run
-/// SQL on the open connection. Connecting, browsing a table and running a
-/// saved query ride the rows they act on.
+/// The client's work on a database server and what it shows of one, which
+/// change no document. Running SQL is offered on the workspace; everything
+/// else rides the connection, saved query, catalog entry, result or history
+/// entry it acts on, which it names by id and resolves again when invoked.
+/// None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "db_client.effects")]
 pub enum DbEffect {
@@ -326,6 +332,49 @@ pub enum DbEffect {
         #[param("SQL query")]
         sql: String,
     },
+    /// Connect
+    ///
+    /// Opens the saved connection on this device, with this device's
+    /// password.
+    #[effect(row, job, idempotent)]
+    Connect { connection: Uuid },
+    /// Run saved query
+    #[effect(row, job, destructive)]
+    Run { query: Uuid },
+    /// Show database
+    #[effect(view, row)]
+    FocusDatabase { connection: Uuid },
+    /// Show schema
+    #[effect(view, row)]
+    FocusSchema { connection: Uuid, schema: String },
+    /// Browse rows
+    #[effect(row, job, idempotent)]
+    Browse {
+        connection: Uuid,
+        schema: String,
+        table: String,
+    },
+    /// Show query result
+    #[effect(view, row)]
+    ShowResult { connection: Uuid, generation: usize },
+    /// Export CSV
+    #[effect(row, job)]
+    ExportCsv { connection: Uuid, generation: usize },
+    /// Begin transaction
+    #[effect(row, job)]
+    Begin { connection: Uuid },
+    /// Commit transaction
+    #[effect(row, job, destructive)]
+    Commit { connection: Uuid },
+    /// Roll back transaction
+    #[effect(row, job, destructive)]
+    Rollback { connection: Uuid },
+    /// Run historical query
+    ///
+    /// Runs again a query from this device's own history, which is never
+    /// shared.
+    #[effect(row, job, destructive)]
+    Rerun { connection: Uuid, generation: usize },
 }
 
 /// What a capture shows in place of a database server: the bundled sample
@@ -420,9 +469,7 @@ impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
     }
 
     fn effect(&mut self, effect: DbEffect, cx: &mut EffectCx<DbClient, Self>) -> EffectAnswer {
-        match effect {
-            DbEffect::Query { sql } => self.start_query_effect(&sql, cx),
-        }
+        self.answer_effect(effect, cx)
     }
 
     fn effects(&self) -> Vec<EffectStatus> {

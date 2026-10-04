@@ -10,6 +10,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
 | Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
+| any, with `ssh` | `device`: a real machine on a dev image (`vm add`) | its own display | on the device, or host with an aarch64 cargo | the device's |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
 `rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native

@@ -25,7 +25,7 @@ use winit::event::WindowEvent;
 use crate::continuity::{Capability, ContinuityPrivacy};
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    StatusTone, caption, card, card_with_action, cards, choice_row_described, rows,
+    StatusTone, caption, card, card_with_action, cards, choice_row_described, error_caption, rows,
     semantic_status_pill, setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
@@ -151,19 +151,32 @@ enum RelayRuntimeStatus {
     Online,
     Syncing,
     Ready,
+    /// The relay's state could not be read from here, which says nothing
+    /// about whether the relay is running.
+    Unreadable,
 }
 
 impl RelayRuntimeStatus {
     fn read(config: &RelayConfig, now: SystemTime) -> Self {
+        // The state directory's parent always exists on a device; when it is
+        // not visible the relay cannot be observed, not "offline".
+        if config
+            .state_root
+            .parent()
+            .is_some_and(|parent| !parent.is_dir())
+        {
+            return Self::Unreadable;
+        }
         let metrics_path = config
             .state_root
             .join(tilo_relay_protocol::metrics::METRICS_FILE);
-        let fresh = std::fs::metadata(metrics_path)
-            .and_then(|metadata| metadata.modified())
-            .is_ok_and(|modified| {
-                now.duration_since(modified).unwrap_or(Duration::ZERO) <= STATUS_FRESHNESS
-            });
-        if !fresh {
+        let modified =
+            match std::fs::metadata(metrics_path).and_then(|metadata| metadata.modified()) {
+                Ok(modified) => modified,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Self::Offline,
+                Err(_) => return Self::Unreadable,
+            };
+        if now.duration_since(modified).unwrap_or(Duration::ZERO) > STATUS_FRESHNESS {
             return Self::Offline;
         }
         match tilo_relay_protocol::metrics::load_metrics(&config.state_root) {
@@ -195,7 +208,8 @@ impl RelayRuntimeStatus {
                 if ready { Self::Ready } else { Self::Syncing }
             }
             Ok(Some(_)) => Self::Online,
-            Ok(None) | Err(_) => Self::Offline,
+            Ok(None) => Self::Offline,
+            Err(_) => Self::Unreadable,
         }
     }
 
@@ -205,6 +219,7 @@ impl RelayRuntimeStatus {
             Self::Online => "mesh-runtime-online",
             Self::Syncing => "mesh-runtime-syncing",
             Self::Ready => "mesh-runtime-ready",
+            Self::Unreadable => "mesh-runtime-unreadable",
         })
     }
 }
@@ -212,7 +227,7 @@ impl RelayRuntimeStatus {
 fn runtime_status_tone(status: RelayRuntimeStatus) -> StatusTone {
     match status {
         RelayRuntimeStatus::Ready | RelayRuntimeStatus::Online => StatusTone::Success,
-        RelayRuntimeStatus::Syncing => StatusTone::Warning,
+        RelayRuntimeStatus::Syncing | RelayRuntimeStatus::Unreadable => StatusTone::Warning,
         RelayRuntimeStatus::Offline => StatusTone::Neutral,
     }
 }
@@ -562,6 +577,27 @@ impl DeviceMeshPane {
     fn from_path(config_path: PathBuf) -> Self {
         let (config, load_status) = match RelayConfig::load(&config_path) {
             Ok(config) => (config, "Configuration loaded".to_string()),
+            Err(tilo_relay_protocol::config::ConfigError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && config_path.parent().is_some_and(|dir| !dir.is_dir()) =>
+            {
+                // The configuration directory ships with every device; not
+                // seeing it means it cannot be read from here, not that the
+                // device is unconfigured.
+                let config = RelayConfig {
+                    device_role: DeviceRole::Interactive,
+                    services: tilo_relay_protocol::ServiceCapabilities::default(),
+                    ..RelayConfig::default()
+                };
+                let dir = config_path
+                    .parent()
+                    .map(|dir| dir.display().to_string())
+                    .unwrap_or_default();
+                (
+                    config,
+                    format!("Configuration could not be read: {dir} is not visible to Settings"),
+                )
+            }
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
@@ -937,10 +973,12 @@ impl DeviceMeshPane {
         }
         if self.load_status.starts_with("Configuration could not")
             || self.load_status.starts_with("Not saved")
-            || self.load_status.starts_with("Saving")
+            || self.load_status.starts_with("Could not start pairing")
+        {
+            continuation_rows.push(error_caption(&mesh_status_shown(&self.load_status)));
+        } else if self.load_status.starts_with("Saving")
             || self.load_status == "Saved"
             || self.load_status.starts_with("Waiting")
-            || self.load_status.starts_with("Could not start pairing")
         {
             continuation_rows.push(caption(&mesh_status_shown(&self.load_status)));
         }
@@ -959,6 +997,7 @@ impl DeviceMeshPane {
                 RelayRuntimeStatus::Online => "mesh-home-online",
                 RelayRuntimeStatus::Syncing => "mesh-home-syncing",
                 RelayRuntimeStatus::Offline => "mesh-home-offline",
+                RelayRuntimeStatus::Unreadable => "mesh-home-unreadable",
             });
             let runtime = self.runtime_status.label();
             availability_rows.push(setting_row_described(
@@ -2171,6 +2210,38 @@ mod tests {
         let mut ids = Vec::new();
         walk(widget, &mut ids);
         ids
+    }
+
+    /// A configuration directory or relay state that is not visible from
+    /// here is reported as unreadable, not as an unconfigured or offline
+    /// device.
+    #[test]
+    fn invisible_relay_state_is_unreadable_not_unconfigured() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join("etc-tilo").join("relay.toml");
+        let pane = DeviceMeshPane::with_path(&hidden);
+        assert!(
+            pane.load_status
+                .starts_with("Configuration could not be read: "),
+            "{}",
+            pane.load_status
+        );
+        let config = RelayConfig {
+            state_root: dir.path().join("missing").join("tilo-relay"),
+            ..RelayConfig::default()
+        };
+        assert_eq!(
+            RelayRuntimeStatus::read(&config, ui::time::wall()),
+            RelayRuntimeStatus::Unreadable
+        );
+        let config = RelayConfig {
+            state_root: dir.path().join("tilo-relay"),
+            ..RelayConfig::default()
+        };
+        assert_eq!(
+            RelayRuntimeStatus::read(&config, ui::time::wall()),
+            RelayRuntimeStatus::Offline
+        );
     }
 
     /// Continuity controls, conflict summaries, refused future provenance and redacted audit rows.
