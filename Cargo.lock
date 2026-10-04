@@ -18516,8 +18516,6 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-files",
- "tilo-paths",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
