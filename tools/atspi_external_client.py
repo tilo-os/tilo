@@ -783,15 +783,28 @@ def prepare_typing(address: str, app_name: str, create: str, state: Path) -> Non
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     document = None
     while document is None:
-        for path in client.tree(TYPING_TREE_NODE_LIMIT):
+        seen: list[str] = []
+        try:
+            tree = client.tree(TYPING_TREE_NODE_LIMIT)
+        except GateError:
+            # The app replaces its tree while the new document opens.
+            tree = {}
+        for path, name in tree.items():
             role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
             if "document" in role and "Component" in client.interfaces(path):
                 document = path
                 break
+            seen.append(f"{role.strip()} {name.strip()}")
         else:
             if time.monotonic() >= deadline:
                 close_app(pid)
-                raise GateError(f"{app_name}: {create!r} opened no document to type into")
+                # What the app shows instead says why: the empty state still
+                # up means the action created nothing.
+                raise GateError(
+                    f"{app_name}: {create!r} opened no document to type into; "
+                    f"the app exposes: {'; '.join(seen) or 'nothing'}; "
+                    f"session log: {app_log(app_name)}"
+                )
             time.sleep(POLL_SECONDS * 4)
     client.call(document, "org.a11y.atspi.Component.GrabFocus")
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
