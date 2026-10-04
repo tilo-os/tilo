@@ -231,6 +231,8 @@ pub enum NetCmd {
         target: EndpointId,
         msg: NeighbourMsg,
     },
+    /// Send one piece of a record's content to the device that asked for it.
+    PublishRecordContent(RecordContentDelivery),
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
     /// ordinary `SyncResp` messages may be partial anti-entropy responses.
@@ -292,6 +294,17 @@ pub enum NetCmd {
         host: uuid::Uuid,
         rooms: Vec<uuid::Uuid>,
     },
+}
+
+/// A piece of a record's content on its way to the device of the room that
+/// asked: over the direct plane when that device is a live peer of the
+/// room's topic, otherwise on the topic itself. Never handed to workspace
+/// hosts, which keep no content.
+#[derive(Debug)]
+pub struct RecordContentDelivery {
+    pub ws: WorkspaceId,
+    pub target: Option<EndpointId>,
+    pub msg: NeighbourMsg,
 }
 
 /// One immutable Nearby spool object and the receiver-confirmed checkpoint
@@ -574,6 +587,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
                         | NeighbourMsg::RemoteAction { .. }
+                        | NeighbourMsg::RecordContentPiece { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -618,6 +632,7 @@ async fn enqueue_surface_event(
         InternalEvent::SurfaceFrame {
             msg: NeighbourMsg::RemoteInput { .. }
                 | NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::RecordContentPiece { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -1204,6 +1219,9 @@ impl ActorState {
             }
             Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
                 self.publish_remote_action(ws, target, msg).await;
+            }
+            Some(NetCmd::PublishRecordContent(delivery)) => {
+                self.publish_record_content(delivery).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 if self.native_routes.contains(ws) {
@@ -1876,6 +1894,33 @@ impl ActorState {
         }
     }
 
+    async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
+        let RecordContentDelivery { ws, target, msg } = delivery;
+        if !matches!(msg, NeighbourMsg::RecordContentPiece { .. }) {
+            tracing::warn!(
+                ws,
+                "refused a non-content message on the record-content route"
+            );
+            return;
+        }
+        if let Some(target) = target
+            && self.peers_seen.contains_key(&(ws, target))
+            && self.publish_direct(ws, target, msg.clone()).await
+        {
+            return;
+        }
+        publish(
+            &self.topics,
+            &self.host_sessions,
+            ws,
+            msg,
+            false,
+            true,
+            false,
+        )
+        .await;
+    }
+
     /// Deliver one message to exactly `target` on the authenticated direct
     /// surface/control plane. The peer must be live on this workspace.
     /// Returns whether the message was written.
@@ -1891,7 +1936,10 @@ impl ActorState {
         }
         // Input must land within an interactive frame budget or not at all;
         // an action frame (up to a catalogue page) is worth waiting for.
-        let budget = if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
+        let budget = if matches!(
+            msg,
+            NeighbourMsg::RemoteAction { .. } | NeighbourMsg::RecordContentPiece { .. }
+        ) {
             Duration::from_secs(2)
         } else {
             Duration::from_millis(40)

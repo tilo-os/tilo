@@ -204,30 +204,47 @@ struct SessionContentStore;
 static SESSION_BLOBS: std::sync::Mutex<Option<runtime_fs::blobs::BlobClient>> =
     std::sync::Mutex::new(None);
 
+/// Run `call` against the filesystem daemon's content store as the desktop
+/// session, connecting on first use and again after the daemon went away.
+///
+/// # Errors
+/// Returns why the store could not be reached, or `call`'s refusal.
+pub(super) fn with_session_blobs<T>(
+    call: impl FnOnce(&runtime_fs::blobs::BlobClient) -> Result<T, runtime_fs::blobs::BlobError>,
+) -> Result<T, runtime_fs::blobs::BlobError> {
+    use runtime_fs::blobs::{BlobClient, BlobError};
+
+    let mut session = SESSION_BLOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let client = if let Some(client) = session.as_ref() {
+        client.clone()
+    } else {
+        let socket = ::launcher::services::blob_socket();
+        let client = BlobClient::connect_session(&socket)?;
+        *session = Some(client.clone());
+        client
+    };
+    drop(session);
+    let result = call(&client);
+    if matches!(result, Err(BlobError::Disconnected(_))) {
+        // Reconnect on the next call rather than keep a dead session.
+        *SESSION_BLOBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+    result
+}
+
 impl LaunchContentReader for SessionContentStore {
     fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
-        use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
+        use runtime_fs::blobs::ReadOutcome;
 
-        let mut session = SESSION_BLOBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let client = if let Some(client) = session.as_ref() {
-            client.clone()
-        } else {
-            let socket = ::launcher::services::blob_socket();
-            let client = BlobClient::connect_session(&socket)
-                .map_err(|error| format!("launch content store: {error}"))?;
-            *session = Some(client.clone());
+        let result = with_session_blobs(|client| {
             client
-        };
-        let result = client
-            .scope(room, app)
-            .and_then(|scoped| scoped.read_all(hash));
-        if matches!(result, Err(BlobError::Disconnected(_))) {
-            // Reconnect on the next launch rather than keep a dead session.
-            *session = None;
-        }
-        drop(session);
+                .scope(room, app)
+                .and_then(|scoped| scoped.read_all(hash))
+        });
         match result {
             Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
             Ok(ReadOutcome::Pending) => {

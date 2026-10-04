@@ -386,6 +386,10 @@ struct DrainQueues {
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
     remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Other devices' requests for, and answers with, records' content.
+    record_content_inbound: Arc<Mutex<Vec<crate::shell::network::InboundRecordContent>>>,
+    /// The record-content service those reach; absent on a peer broker.
+    record_content: Option<Arc<tilo_action_broker::record_content::RouteContent>>,
     /// The action host remote requests are answered by, built once the
     /// application broker is up; its invocation ledger lives as long as
     /// the drainer so retries stay idempotent.
@@ -421,6 +425,20 @@ impl DrainQueues {
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
+            && self.drain_record_content()
+    }
+
+    fn drain_record_content(&self) -> bool {
+        match &self.record_content {
+            Some(content) => {
+                crate::shell::record_content::drain(&self.record_content_inbound, content)
+            }
+            None => self
+                .record_content_inbound
+                .lock()
+                .map(|mut inbound| inbound.clear())
+                .is_ok(),
+        }
     }
 
     /// Answer remote-action requests through the same broker local callers
@@ -651,6 +669,9 @@ fn spawn_inner(
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
+    let record_content = peer_sync
+        .filter(|_| config.is_none())
+        .map(crate::shell::record_content::session_record_content);
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),
@@ -658,6 +679,8 @@ fn spawn_inner(
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
             remote_actions: net.inbound_remote_actions_handle(),
+            record_content_inbound: net.inbound_record_content_handle(),
+            record_content: record_content.clone(),
             action_host: std::sync::OnceLock::new(),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
@@ -699,6 +722,7 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    services.record_content = record_content;
     if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
     }
