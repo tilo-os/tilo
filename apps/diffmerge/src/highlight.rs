@@ -11,16 +11,33 @@
 use std::path::Path;
 
 use ui::paint::PaintCtx;
-use ui::text_render::TextStyle;
-use ui::widget::code_editor::{Span, SyntaxHighlighter};
+use ui::tokens::{SyntaxPalette, TextRole};
+use ui::widget::code_editor::{Span, SyntaxHighlighter, TokenKind};
 use vello::kurbo::Point;
+use vello::peniko::Color;
 
-/// The grammar for a panel label such as `"rate_limiter.rs · HEAD"` or a
-/// path: its file extension, else its whole file name (`Dockerfile`), else
-/// plain text.
+/// A panel label as the file it names and the revision it shows: the label
+/// `rate_limiter.rs (working tree)` is `("rate_limiter.rs", Some("working tree"))`.
+pub fn split_label(label: &str) -> (&str, Option<&str>) {
+    let label = label.trim();
+    match label.rsplit_once(" (") {
+        Some((name, rest)) if rest.ends_with(')') => {
+            (name.trim_end(), rest.strip_suffix(')').map(str::trim))
+        }
+        _ => (label, None),
+    }
+}
+
+/// The file a panel label names: the label without its revision.
+pub fn file_name(label: &str) -> &str {
+    split_label(label).0
+}
+
+/// The grammar for a panel label such as `"rate_limiter.rs (working tree)"`
+/// or a path: its file extension, else its whole file name (`Dockerfile`),
+/// else plain text.
 pub fn grammar_for_label(label: &str) -> SyntaxHighlighter {
-    let name = label.split(" · ").next().unwrap_or(label).trim();
-    let path = Path::new(name);
+    let path = Path::new(file_name(label));
     path.extension()
         .and_then(|ext| ext.to_str())
         .and_then(SyntaxHighlighter::for_token)
@@ -44,17 +61,22 @@ pub fn document<'a>(
         .collect()
 }
 
-/// Paint `text` at `origin` (the glyph top) as runs coloured by `spans`. A
-/// line with no spans (its side was never tokenized) paints as body text.
-pub fn draw_line(
-    ctx: &mut PaintCtx<'_>,
-    origin: Point,
-    text: &str,
-    spans: &[Span],
-    font_size: f32,
-) {
+/// The colour a token paints in. The theme's syntax palette sets attributes,
+/// macros, tags and keys (a TOML `host = …`) in the danger hue, which reads as
+/// an error on a line that has none; they take the type colour instead.
+fn token_colour(syntax: &SyntaxPalette, kind: TokenKind) -> Color {
+    match kind {
+        TokenKind::Attribute | TokenKind::Preprocessor => syntax.type_name,
+        other => syntax.color(other),
+    }
+}
+
+/// Paint `text` at `origin` (the top of its line box) in the `Code` role as
+/// runs coloured by `spans`. A line with no spans (its side was never
+/// tokenized) paints as body text.
+pub fn draw_line(ctx: &mut PaintCtx<'_>, origin: Point, text: &str, spans: &[Span]) {
     let syntax = &ctx.theme.tokens.syntax;
-    let style = TextStyle::new(font_size);
+    let style = ctx.theme.text(TextRole::Code);
     if spans.is_empty() {
         if !text.is_empty() {
             ctx.text(text, &style, syntax.text, origin, None);
@@ -69,8 +91,8 @@ pub fn draw_line(
         if run.is_empty() {
             continue;
         }
-        ctx.text(run, &style, syntax.color(span.kind), at, None);
-        let (w, _) = ctx.text.measure(run, font_size, None);
+        ctx.text(run, &style, token_colour(syntax, span.kind), at, None);
+        let (w, _) = ctx.text.measure_style(run, None, &style);
         at.x += f64::from(w);
     }
 }
@@ -100,13 +122,21 @@ mod tests {
     }
 
     fn the_grammar_follows_the_file_a_label_names() {
-        assert_eq!(grammar_for_label("rate_limiter.rs · HEAD").name(), "Rust");
-        assert_eq!(grammar_for_label("config.toml · ours").name(), "TOML");
+        assert_eq!(
+            grammar_for_label("rate_limiter.rs (working tree)").name(),
+            "Rust"
+        );
+        assert_eq!(grammar_for_label("config.toml (ours)").name(), "TOML");
+        assert_eq!(
+            file_name("rate_limiter.rs (working tree)"),
+            "rate_limiter.rs"
+        );
+        assert_eq!(file_name("plain.txt"), "plain.txt");
         assert_eq!(
             grammar_for_label("/srv/app/Dockerfile").name(),
             "Dockerfile"
         );
-        assert_eq!(grammar_for_label("notes · draft").name(), "Plain Text");
+        assert_eq!(grammar_for_label("notes (draft)").name(), "Plain Text");
         assert_eq!(grammar_for_label("").name(), "Plain Text");
     }
 
