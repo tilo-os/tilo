@@ -271,42 +271,34 @@ fn verify_known_host(
     }
 }
 
-/// Resolve the auth method from a lookup function (the process environment
-/// in production, an in-test map in the unit tests). Password auth reads
-/// `REMOTE_SSH_PASSWORD`; key auth reads `REMOTE_SSH_KEY` (falling back to
-/// the usual `~/.ssh` identities) and the optional `REMOTE_SSH_KEY_PASSPHRASE`.
-///
-/// Split out from the environment so it can be tested without mutating
-/// process-global state.
+/// Resolve how to authenticate. Password auth needs the connection's saved
+/// password; key auth uses the first of the usual `~/.ssh` identities that
+/// exists, unlocked with the connection's saved passphrase if it has one.
+/// Credentials come from this device's secret store, never the document.
 ///
 /// # Errors
 ///
-/// Returns an error if key auth is requested and neither `REMOTE_SSH_KEY`
-/// nor any default identity file exists, or if password auth is requested
-/// and `REMOTE_SSH_PASSWORD` is unset.
+/// Returns an error if key auth is requested and no default identity file
+/// exists, or if password auth is requested and no password is saved.
 pub fn resolve_auth(
     prefer_key: bool,
-    get: impl Fn(&str) -> Option<String>,
+    secret: Option<String>,
     default_keys: &[PathBuf],
 ) -> anyhow::Result<SshAuth> {
     if prefer_key {
-        let path = match get("REMOTE_SSH_KEY") {
-            Some(p) => PathBuf::from(p),
-            None => default_keys
-                .iter()
-                .find(|p| p.exists())
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow!("no SSH key: set REMOTE_SSH_KEY or add ~/.ssh/id_ed25519")
-                })?,
-        };
+        let path = default_keys
+            .iter()
+            .find(|p| p.exists())
+            .cloned()
+            .ok_or_else(|| anyhow!("no SSH key: add ~/.ssh/id_ed25519 or ~/.ssh/id_ecdsa"))?;
         Ok(SshAuth::Key {
             path,
-            passphrase: get("REMOTE_SSH_KEY_PASSPHRASE"),
+            passphrase: secret,
         })
     } else {
-        let pw = get("REMOTE_SSH_PASSWORD")
-            .ok_or_else(|| anyhow!("no SSH password: set REMOTE_SSH_PASSWORD"))?;
+        let pw = secret.ok_or_else(|| {
+            anyhow!("no SSH password saved on this device: edit the connection to enter it")
+        })?;
         Ok(SshAuth::Password(pw))
     }
 }
@@ -643,11 +635,10 @@ mod tests {
     const HANG_BOUND: Duration = Duration::from_secs(30);
 
     #[test]
-    fn auth_resolution_reads_env_and_default_keys() {
-        eprintln!("phase resolve_auth_password_reads_env");
+    fn auth_resolution_reads_saved_secrets_and_default_keys() {
+        eprintln!("phase resolve_auth_password_uses_the_saved_password");
         {
-            let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
-            match resolve_auth(false, env, &[]).unwrap() {
+            match resolve_auth(false, Some("hunter2".into()), &[]).unwrap() {
                 SshAuth::Password(p) => assert_eq!(p, "hunter2"),
                 other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
             }
@@ -655,24 +646,29 @@ mod tests {
 
         eprintln!("phase resolve_auth_password_missing_is_error");
         {
-            assert!(resolve_auth(false, |_| None, &[]).is_err());
+            assert!(resolve_auth(false, None, &[]).is_err());
         }
 
-        eprintln!("phase resolve_auth_key_prefers_env_over_defaults");
+        eprintln!("phase resolve_auth_key_uses_the_first_existing_default");
         {
-            let env = |k: &str| match k {
-                "REMOTE_SSH_KEY" => Some("/keys/explicit".to_string()),
-                "REMOTE_SSH_KEY_PASSPHRASE" => Some("pw".to_string()),
-                _ => None,
-            };
-            let defaults = vec![PathBuf::from("/keys/default")];
-            match resolve_auth(true, env, &defaults).unwrap() {
+            let directory =
+                std::env::temp_dir().join(format!("tilo-remote-keys-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&directory).unwrap();
+            let present = directory.join("id_ecdsa");
+            fs::write(&present, b"key").unwrap();
+            let defaults = vec![directory.join("id_ed25519"), present.clone()];
+            match resolve_auth(true, Some("pw".into()), &defaults).unwrap() {
                 SshAuth::Key { path, passphrase } => {
-                    assert_eq!(path, PathBuf::from("/keys/explicit"));
+                    assert_eq!(path, present);
                     assert_eq!(passphrase.as_deref(), Some("pw"));
                 }
                 other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
             }
+            assert!(
+                resolve_auth(true, None, &[directory.join("missing")]).is_err(),
+                "no identity file is an error"
+            );
+            fs::remove_dir_all(&directory).unwrap();
         }
 
         eprintln!("phase default_key_paths_are_under_dot_ssh");

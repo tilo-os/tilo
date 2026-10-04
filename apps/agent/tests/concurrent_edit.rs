@@ -116,7 +116,7 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
         vec![
             CapOverride::grant(
                 Subject::agent(name),
-                Scope::App("word-processor".to_string()),
+                Scope::App("so.tilo.word-processor".to_string()),
                 Verb::Write,
             )
             .with_id("invited"),

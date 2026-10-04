@@ -41,6 +41,7 @@ use automerge::AutoCommit;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
 use ui::permissions::{PermissionContext, PermissionScope, ResourceRef, Verb};
+use ui::tilo_resource::ResourceKind;
 
 /// Separator between a resource id and an action id in an address.
 ///
@@ -113,30 +114,19 @@ pub fn opens(address: &ActionAddress) -> Option<&str> {
 
 /// Where the agent is looking.
 ///
-/// Its own view state, and the only thing it contributes to a resource tree.
-/// Nothing here is a screen position: a block id and a directory path are
-/// addresses, and both keep meaning the same thing on a machine with no
-/// display at all.
+/// Its own view state. Nothing here is a screen position: a block id and a
+/// directory path are addresses, and both keep meaning the same thing on a
+/// machine with no display at all. The trees the agent surveys are the ones
+/// the apps publish from their documents alone; an edit that names a place
+/// names it in its own arguments.
 #[derive(Clone, Debug)]
 pub struct View {
     /// The block the agent's caret is on, for an app whose subject is a
-    /// document. Structural inserts anchor here.
+    /// document.
     pub focus_block: Option<String>,
-    /// Where in that block.
-    pub focus_offset: usize,
-    /// The blocks a block-level operation would target — the agent's
-    /// selection, or just the focus block.
+    /// The blocks the agent is pointing at — the instruction it answers, or
+    /// a picture it was asked about.
     pub target_blocks: Vec<String>,
-    /// Exact character ranges selected in the document. Keeping these in the
-    /// semantic view lets the agent discover the same inline-format actions
-    /// as an on-screen selection instead of silently losing that surface.
-    pub format_spans: Vec<word_processor::actions::Span>,
-    /// The ordered semantic selection used by operations which replace text.
-    /// Keeping it separate from formatting spans preserves a single stable
-    /// resource address for a selection that crosses block boundaries.
-    pub selection: Option<word_processor::actions::SelectionTarget>,
-    /// Page region containing the caret/selection.
-    pub region: word_processor::actions::RegionKind,
     /// The resource a request named, when it named one. An address, like
     /// everything else here: the gesture that produces it is somebody
     /// pointing at an object and saying something about *that*, so the app
@@ -154,11 +144,7 @@ impl Default for View {
     fn default() -> Self {
         Self {
             focus_block: None,
-            focus_offset: 0,
             target_blocks: Vec::new(),
-            format_spans: Vec::new(),
-            selection: None,
-            region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: None,
             content: tilo_content::ContentStore::memory(),
@@ -166,50 +152,36 @@ impl Default for View {
     }
 }
 
-/// One app whose contract the agent speaks.
+/// One app the agent speaks to.
 ///
-/// Every field is the app's own code. Adding an app is one entry: what it
-/// announces, how its documents are told apart from every other app's in the
-/// room, the function that builds its tree, and the decoders it registers.
-/// Nothing here describes *what* the app can do — that is the tree's job,
-/// asked afresh each time.
+/// What the app does is its resource kind's: the kind is registered once
+/// from the app's own [`ResourceApp`](ui::framework::ResourceApp), and the
+/// tree the agent surveys is the one the kind publishes for a document —
+/// the tree the app's own window publishes — asked afresh each time. Which
+/// app a document in the room is comes from the authenticated route it
+/// arrived on, never from its contents. The rest is how the agent talks
+/// about the app.
 pub struct AppContract {
-    /// What a launched copy of this app announces to the broker.
-    pub app_id: &'static str,
+    /// The app's resource kind: its id and title, how its documents are
+    /// read and published, and the decoders its actions replay with.
+    pub kind: ResourceKind,
     /// What this app is called, in the words a sentence about it would use
     /// — "I'm not allowed to open the word processor here".
     pub title: &'static str,
-    /// The namespace its resource ids start with, and the app name a
-    /// capability question is phrased about.
+    /// The namespace the app's nested resource ids start with, and the key
+    /// the agent holds its document under.
     pub namespace: &'static str,
-    /// Whether a document in the room is one this app authored.
-    ///
-    /// A room carries every app's state and none of it is labelled; a
-    /// participant that announced no app id reaches every subscriber. So a
-    /// held replica has to be attributable, and the app is the only thing
-    /// that knows its own schema.
-    pub recognises: fn(&AutoCommit) -> bool,
-    /// The app's own resource tree for a view of a document.
-    pub resources: fn(&View, &AutoCommit) -> Vec<Resource>,
-    /// The app's own decoders, so the door can prove what it would run
-    /// before running it.
-    pub register: fn(&mut ActionRegistry),
-    /// Whether [`Self::recognises`] is a claim on **any** document rather
-    /// than on this app's own.
-    ///
-    /// Every app built on the toolkit's document schema will answer "yes,
-    /// this parses" to that same test, so a contract using it has to be
-    /// tried **last** — it wins a document only when nothing with a test of
-    /// its own claims it first.
-    pub fallback: bool,
     /// What this app's document currently *denotes*, as something another
     /// app's operation could be handed — or `None` for an app whose subject
     /// is not transferable.
-    ///
-    /// The app's own reading, for the same reason [`Self::resources`] is: an
-    /// agent that worked this out for itself would be publishing its own
-    /// idea of the result under the app's name.
     pub product: fn(&View, &AutoCommit) -> Option<Product>,
+}
+
+impl AppContract {
+    /// What a launched copy of this app announces to the broker.
+    pub fn app_id(&self) -> &'static str {
+        self.kind.app_id().unwrap_or_else(|| self.kind.kind())
+    }
 }
 
 /// What one operation left behind for the next one.
@@ -245,16 +217,15 @@ fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
 /// The picture in the open document, as content another application could
 /// be handed.
 ///
-/// A word processor's document denotes its prose, which is not
-/// transferable — but a picture *in* it is exactly the kind of thing
-/// another application could be asked to work on. The block already holds
-/// the content hash (`InsertImage` writes `blob`), so nothing is derived
-/// here and nothing is re-encoded.
+/// A rich-text document denotes its prose, which is not transferable — but
+/// a picture *in* it is exactly the kind of thing another application could
+/// be asked to work on. The block already holds the content hash, so nothing
+/// is derived here and nothing is re-encoded.
 ///
 /// The one the agent's view targets, and otherwise the document's only one.
 /// Several with nothing said about which denotes **nothing**: picking the
 /// first would answer a question nobody asked.
-fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
+fn rich_text_product(view: &View, doc: &AutoCommit) -> Option<Product> {
     let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
     let snap = tilo_doc::model::materialize(doc, &c);
     let images: Vec<&tilo_doc::snapshot::BlockView> =
@@ -272,114 +243,14 @@ fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
     }
 }
 
-fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    // The anchor for a structural insert: the agent's caret when it has one,
-    // else the document's first block. A document with nothing in it is
-    // still a document, and reports its own empty anchor rather than
-    // reading as though nothing were open.
-    let anchor = view.focus_block.clone().or_else(|| {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
-        tilo_doc::model::materialize(doc, &c)
-            .blocks
-            .first()
-            .map(|b| b.id.clone())
-    });
-    let anchor = anchor.unwrap_or_default();
-    let targets = if !view.target_blocks.is_empty() {
-        view.target_blocks.clone()
-    } else if anchor.is_empty() {
-        Vec::new()
-    } else {
-        vec![anchor.clone()]
-    };
-    word_processor::actions::provide_resources(
-        &word_processor::actions::WpResourceCtx {
-            caret_block: anchor,
-            caret_offset: view.focus_offset,
-            target_blocks: targets,
-            format_spans: view.format_spans.clone(),
-            selection: view.selection.clone(),
-            region: view.region,
-            // An agent's headless view does not own the Word Processor's
-            // Find session. Search result resources are therefore absent
-            // here; collaborative review resources are materialized from
-            // the shared document below, independently of presentation
-            // state.
-            search_hits: Vec::new(),
-            content: view.content.clone(),
-        },
-        doc,
-    )
-}
-
-/// The room as chat publishes it, seen by a participant with no window open.
-///
-/// Every channel of the first workspace, and no active one: a live chat
-/// client fills `active_channel` in from what is on screen, and the agent
-/// has no screen. The message-level resources belong to whoever is actually
-/// looking at them.
-fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    let Some(ws) = chat::doc::ChatDoc::list_workspaces(doc).into_iter().next() else {
-        return Vec::new();
-    };
-    let channels = chat::doc::ChatDoc::list_channels(doc)
-        .into_iter()
-        .filter(|c| c.workspace == ws.id)
-        .map(|c| chat::actions::ChannelResource {
-            id: c.id,
-            name: c.name,
-            kind: c.kind,
-            archived: c.archived,
-        })
-        .collect();
-    chat::actions::provide_resources(
-        &chat::actions::ChatResourceCtx {
-            me: String::new(),
-            workspace_id: ws.id,
-            workspace_name: ws.name,
-            channels,
-            active_channel: String::new(),
-            messages: Vec::new(),
-            participants: chat::doc::ChatDoc::list_users(doc)
-                .into_iter()
-                .map(|u| chat::mention::Participant {
-                    id: u.id,
-                    name: u.name,
-                    is_agent: u.is_agent,
-                })
-                .collect(),
-        },
-        doc,
-    )
-}
-
-fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    photos::actions::PhotosResources.publish_resources(doc)
-}
-
-/// Whether a document is the photo editor's — asked of its own schema.
-/// `is_empty` is the app's own test for "never written to", so its negation
-/// is "this app has written here".
-fn photos_document(doc: &AutoCommit) -> bool {
-    !photos::doc::PhotosDoc::is_empty(doc)
-}
-
 /// The word processor's contract, named on its own so a caller that needs
 /// exactly this app — [`crate::apply::Editor::empty`], the replica used
-/// where no peer snapshot exists to attribute — never has to index into
-/// [`CONTRACTS`] to get it.
+/// where no peer snapshot exists — never has to index into [`CONTRACTS`].
 pub const WORD_PROCESSOR: AppContract = AppContract {
-    app_id: "so.tilo.word-processor",
+    kind: ui::framework::resource_kind::<word_processor::framework::WordProcessorApp>(),
     title: "the word processor",
     namespace: "word-processor",
-    recognises: |doc| tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
-    resources: word_processor_resources,
-    register: word_processor::actions::register,
-    // "This parses as a rich-text document" is true of every document
-    // built on the toolkit's schema, so this contract must be tried
-    // last: it means "a document, and nobody else's".
-    fallback: true,
-    product: word_processor_product,
+    product: rich_text_product,
 };
 
 /// Every app the agent can speak to: a rich-text document, a conversation, a
@@ -393,38 +264,18 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
 pub static CONTRACTS: &[AppContract] = &[
     WORD_PROCESSOR,
     AppContract {
-        app_id: "so.tilo.chat",
+        kind: ui::framework::resource_kind::<chat::ChatShell>(),
         title: "the conversation",
         namespace: "chat",
-        recognises: chat::doc::ChatDoc::is_seeded,
-        resources: chat_resources,
-        register: chat::actions::register,
-        fallback: false,
         product: nothing,
     },
     AppContract {
-        app_id: "so.tilo.photos",
+        kind: ui::framework::resource_kind::<photos::PhotosShell>(),
         title: "the photo editor",
         namespace: "photos",
-        recognises: photos_document,
-        resources: photos_resources,
-        register: photos::actions::register,
-        fallback: false,
         product: nothing,
     },
 ];
-
-/// The contract for a document, or `None` when nothing in the room's apps
-/// claims it.
-pub fn recognise(doc: &AutoCommit) -> Option<&'static AppContract> {
-    // Two passes: an app with a test of its own claims its document before
-    // an app whose test claims anything shaped like a document at all. See
-    // [`AppContract::fallback`].
-    CONTRACTS
-        .iter()
-        .find(|c| !c.fallback && (c.recognises)(doc))
-        .or_else(|| CONTRACTS.iter().find(|c| c.fallback && (c.recognises)(doc)))
-}
 
 /// The contract whose resource ids start with `namespace`.
 pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
@@ -433,7 +284,31 @@ pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
 
 /// The contract for an announced app id.
 pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|contract| contract.app_id == app_id)
+    CONTRACTS
+        .iter()
+        .find(|contract| contract.app_id() == app_id)
+}
+
+/// The contract whose package-primary document `artifact` is, in the room
+/// `cluster_id`. The artifact is part of the authenticated envelope a
+/// document arrives in, so this names the app that wrote it without reading
+/// a byte of what it wrote.
+pub fn for_artifact(
+    cluster_id: &str,
+    artifact: collab_types::ArtifactId,
+) -> Option<&'static AppContract> {
+    CONTRACTS.iter().find(|contract| {
+        artifact == collab_types::document_artifact_id(contract.app_id(), cluster_id, "")
+    })
+}
+
+/// The contract an operation belongs to: the app whose resource kind it is
+/// published on, or whose namespace its resource id starts with.
+pub fn for_descriptor(descriptor: &ActionDescriptor) -> Option<&'static AppContract> {
+    CONTRACTS
+        .iter()
+        .find(|contract| contract.kind.kind() == descriptor.resource_kind)
+        .or_else(|| for_namespace(app_of(&descriptor.address.resource)))
 }
 
 /// Decoders for every app the agent speaks to, in one registry: the door
@@ -442,7 +317,7 @@ pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
 pub fn registry() -> ActionRegistry {
     let mut r = ActionRegistry::new();
     for c in CONTRACTS {
-        (c.register)(&mut r);
+        c.kind.register(&mut r);
     }
     r
 }
@@ -643,8 +518,9 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
 
 /// The permission question performing `address` has to pass.
 ///
-/// Phrased about the app the resource id names, not about the agent's own
-/// namespace: a room grants edit rights per app, so folding every app's
+/// Phrased about the app the resource id names (by its app id, as every
+/// grant names an app), not about the agent's own namespace: a room grants
+/// edit rights per app, so folding every app's
 /// operations under one name would make a grant in one of them a grant in
 /// all.
 ///
@@ -659,17 +535,23 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
 pub fn scope_for(address: &ActionAddress) -> PermissionScope {
     if let Some(app) = opens(address) {
         return PermissionScope {
-            resource: ResourceRef::App(app.to_string()),
+            resource: ResourceRef::App(app_id_of(app).to_string()),
             op: Verb::Write,
         };
     }
     PermissionScope {
         resource: ResourceRef::Action {
-            app: app_of(&address.resource).to_string(),
+            app: app_id_of(app_of(&address.resource)).to_string(),
             action: address.action.clone(),
         },
         op: Verb::Write,
     }
+}
+
+/// The app id permissions name for `app`: the id of the app whose
+/// namespace it is, or `app` itself when it already is an app id.
+fn app_id_of(app: &str) -> &str {
+    for_namespace(app).map_or(app, |contract| contract.app_id())
 }
 
 /// Whether the agent may perform `address`. Fail-closed: anything not
@@ -678,14 +560,22 @@ pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
     perms.check(&scope_for(address))
 }
 
-/// Check the authority the operation itself declares. The address gate stays
-/// the fallback for legacy descriptors; a read-only view must not silently be
-/// upgraded to Write, and an administrative action must not be downgraded.
+/// Whether the agent may perform `descriptor`, published by the app
+/// `app_id`, with the authority the operation itself declares: a read-only
+/// view must not silently be upgraded to Write, and an administrative action
+/// must not be downgraded. The scope names the app that published it, as the
+/// app's own host does, so an invitation to one app is never leave to act in
+/// another.
 pub(crate) fn permitted_descriptor(
     perms: &PermissionContext,
+    app_id: &str,
     descriptor: &ActionDescriptor,
 ) -> bool {
-    let mut scope = scope_for(&descriptor.address);
+    let mut scope = if opens(&descriptor.address).is_some() {
+        scope_for(&descriptor.address)
+    } else {
+        PermissionScope::action(app_id, descriptor.address.action.clone(), Verb::Write)
+    };
     scope.op = match descriptor.contract.permission {
         PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,
         PermissionRequirement::Comment => Verb::Comment,
@@ -696,13 +586,18 @@ pub(crate) fn permitted_descriptor(
     perms.check(&scope)
 }
 
-/// The tree `contract` publishes for `doc` as it stands, seen from `view`.
+/// The tree `contract` publishes for `doc` as it stands: the one its kind
+/// publishes, which is the one the app's own window publishes.
 ///
 /// Rebuilt on every call, never cached — an app's tree changes with every
 /// edit, and the whole value of an address is that it names what is there
 /// *now*.
-pub fn tree(contract: &AppContract, view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    (contract.resources)(view, doc)
+pub fn tree(contract: &AppContract, doc: &AutoCommit) -> Vec<Resource> {
+    contract
+        .kind
+        .publish(contract.kind.kind(), doc)
+        .into_iter()
+        .collect()
 }
 
 /// Everything the room exports that the agent may perform.
@@ -716,11 +611,10 @@ pub fn offers(
 ) -> Vec<Offer> {
     let mut out = Vec::new();
     for (contract, doc) in held {
-        let resources = tree(contract, view, doc);
-        for descriptor in tilo_actions::door::survey(&resources) {
+        for descriptor in tilo_actions::door::survey(&tree(contract, doc)) {
             // Denied means absent, so nothing downstream can decide to
             // perform an operation it may not.
-            if !permitted_descriptor(perms, &descriptor) {
+            if !permitted_descriptor(perms, contract.app_id(), &descriptor) {
                 continue;
             }
             out.push(Offer {
@@ -737,19 +631,19 @@ pub fn offers(
 /// Whether the room holds `namespace`'s state **with something in it**.
 ///
 /// Two facts wear the same word. An application is *here* when a document it
-/// authored has arrived and its contract claims it; it is **surveyable**
-/// when the tree it publishes for that document is not empty. An app can be
-/// here and export nothing — freshly opened, before it holds anything a
-/// request could act on — and a step that follows an open, asking what the
-/// open produced, needs the second answer while the first is what it was
-/// told.
-pub fn surveyable(
-    held: &[(&'static AppContract, &AutoCommit)],
-    view: &View,
-    namespace: &str,
-) -> bool {
-    held.iter()
-        .any(|(c, doc)| c.namespace == namespace && !(c.resources)(view, doc).is_empty())
+/// wrote has arrived on its route; it is **surveyable** when the tree it
+/// publishes for that document offers something to do by name — beyond the
+/// generic typed edits every resource takes. An app can be here and offer
+/// nothing — freshly opened, before it holds anything a request could act
+/// on — and a step that follows an open, asking what the open produced,
+/// needs the second answer while the first is what it was told.
+pub fn surveyable(held: &[(&'static AppContract, &AutoCommit)], namespace: &str) -> bool {
+    held.iter().any(|(c, doc)| {
+        c.namespace == namespace
+            && tilo_actions::door::survey(&tree(c, doc))
+                .iter()
+                .any(|descriptor| !descriptor.contract.is_programmatic())
+    })
 }
 
 /// The applications this room does not have open, as the operations that
@@ -787,7 +681,7 @@ fn openable(
     };
     CONTRACTS
         .iter()
-        .filter(|c| !surveyable(held, view, c.namespace))
+        .filter(|c| !surveyable(held, c.namespace))
         .map(|c| Offer {
             app: c.namespace.to_string(),
             broker_peer_id: None,
@@ -836,7 +730,7 @@ pub struct ResourceFacts {
 
 /// Every resource the room's apps are publishing, whether or not it exports
 /// anything. Rebuilt on every call for the same reason [`tree`] is.
-pub fn facts(held: &[(&'static AppContract, &AutoCommit)], view: &View) -> Vec<ResourceFacts> {
+pub fn facts(held: &[(&'static AppContract, &AutoCommit)]) -> Vec<ResourceFacts> {
     fn walk(r: &Resource, out: &mut Vec<ResourceFacts>) {
         out.push(ResourceFacts {
             id: r.id.as_str().to_string(),
@@ -855,7 +749,7 @@ pub fn facts(held: &[(&'static AppContract, &AutoCommit)], view: &View) -> Vec<R
     }
     let mut out = Vec::new();
     for (contract, doc) in held {
-        for r in tree(contract, view, doc) {
+        for r in tree(contract, doc) {
             walk(&r, &mut out);
         }
     }
@@ -923,7 +817,7 @@ pub fn catalogue(
 ) -> Catalogue {
     Catalogue {
         offers: offers(held, view, perms),
-        facts: facts(held, view),
+        facts: facts(held),
         held: held.iter().map(|(c, _)| c.namespace).collect(),
     }
 }
@@ -1324,12 +1218,12 @@ mod tests {
                 "this test is about a document with nothing in it",
             );
 
-            let tree = word_processor_resources(&View::default(), &doc);
+            let tree = tree(&WORD_PROCESSOR, &doc);
             assert!(
                 !tree.is_empty(),
                 "an empty document reported nothing that could be done to it",
             );
-            let inserts = tree[0].actions.iter().any(|a| a.id == "insert-table");
+            let inserts = tree[0].actions.iter().any(|a| a.id == "insert-block");
             assert!(
                 inserts,
                 "the document exports {:?}, none of which inserts into it",
@@ -1370,13 +1264,13 @@ mod tests {
 
             assert_eq!(
                 scope_for(&open).resource,
-                ResourceRef::App("chat".to_string()),
+                ResourceRef::App("so.tilo.chat".to_string()),
                 "opening is asked about as the application itself"
             );
             assert_eq!(
                 scope_for(&post).resource,
                 ResourceRef::Action {
-                    app: "chat".to_string(),
+                    app: "so.tilo.chat".to_string(),
                     action: "post".to_string(),
                 },
                 "and an operation is still asked about as an operation"
@@ -1388,7 +1282,7 @@ mod tests {
             // "May do one thing inside an application that is already
             // running." Not leave to start it.
             let one_action = granting(vec![grant(Scope::Action {
-                app: "chat".to_string(),
+                app: "so.tilo.chat".to_string(),
                 action: "post".to_string(),
             })]);
             assert!(permitted(&one_action, &post));
@@ -1399,7 +1293,7 @@ mod tests {
             );
 
             // "May open *this* application."
-            let this_app = granting(vec![grant(Scope::App("chat".to_string()))]);
+            let this_app = granting(vec![grant(Scope::App("so.tilo.chat".to_string()))]);
             assert!(permitted(&this_app, &open));
             assert!(
                 !permitted(&this_app, &open_address("word-processor")),
@@ -1432,12 +1326,12 @@ mod tests {
             let chat = chat_contract();
             let doc = empty_chat();
             assert!(
-                (chat.recognises)(&doc),
-                "the fixture has to be a document the contract claims"
+                chat.kind.holds(&doc),
+                "the fixture has to be a document of the app's kind"
             );
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
-                tree(chat, &view, &doc).is_empty(),
+                !surveyable(&held, "chat"),
                 "this half is about an application with nothing open in it"
             );
             let empty_app = openable(&held, &view, &perms);
@@ -1453,7 +1347,7 @@ mod tests {
             doc.commit();
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
-                !tree(chat, &view, &doc).is_empty(),
+                surveyable(&held, "chat"),
                 "the fixture has to publish something, or this proves nothing"
             );
             let now = openable(&held, &view, &perms);
@@ -1478,13 +1372,13 @@ mod tests {
 
             let doc = empty_chat();
             assert!(
-                (chat.recognises)(&doc),
+                chat.kind.holds(&doc),
                 "this document is the app's own, so an agent holding it is \
                  holding the app — which is all `holds` ever meant"
             );
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
-                !surveyable(&held, &view, "chat"),
+                !surveyable(&held, "chat"),
                 "and it publishes nothing, so a step that followed an open here \
                  would survey a room with no operation in it"
             );
@@ -1494,7 +1388,7 @@ mod tests {
             doc.commit();
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
-                surveyable(&held, &view, "chat"),
+                surveyable(&held, "chat"),
                 "now it publishes its own operations, which is what the open \
                  was for"
             );
@@ -1510,10 +1404,9 @@ mod tests {
 
         // Case `no_app_publishes_an_address_that_reads_as_an_open`.
         {
-            let view = View::default();
             for contract in CONTRACTS {
                 let doc = automerge::AutoCommit::new();
-                for descriptor in tilo_actions::door::survey(&tree(contract, &view, &doc)) {
+                for descriptor in tilo_actions::door::survey(&tree(contract, &doc)) {
                     assert!(
                         opens(&descriptor.address).is_none(),
                         "{} publishes {:?}, which reads as an open",
@@ -1750,7 +1643,7 @@ mod tests {
         ui::action_contract_tests! {
             seed: seeded(),
             registry: registry(),
-            resources: |doc| tree(contract(), &View::default(), doc),
+            resources: |doc| tree(contract(), doc),
             palette: ["New channel", "Rename channel"],
         }
     }
@@ -1771,8 +1664,8 @@ mod tests {
         ui::action_contract_tests! {
             seed: seeded(),
             registry: registry(),
-            resources: |doc| tree(&WORD_PROCESSOR, &View::default(), doc),
-            palette: ["Insert table"],
+            resources: |doc| tree(&WORD_PROCESSOR, doc),
+            palette: ["Set page margins"],
         }
     }
 }

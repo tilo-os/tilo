@@ -40,6 +40,10 @@ pub const CLICK_BURST_WINDOW: Duration = Duration::from_millis(100);
 /// How long a peer stays blocked after a click burst — long enough to break an automated storm, short enough not to lock out a trackpad fumble.
 pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 
+/// Most text one remote input-method commit may carry: a dictated paragraph
+/// fits, a pasted document does not (paste goes through the clipboard).
+pub const MAX_REMOTE_TEXT_BYTES: usize = 4096;
+
 /// evdev keycodes the scrubber names directly.
 mod keycode {
     pub const DELETE: u32 = 111;
@@ -93,6 +97,8 @@ pub enum Denial {
     /// A local client holds the pointer locked or confined; a peer's
     /// pointer would move the shared seat and break (or steer) it.
     PointerHeld,
+    /// Committed text that is empty or longer than [`MAX_REMOTE_TEXT_BYTES`].
+    TextSize,
 }
 
 impl Denial {
@@ -115,6 +121,7 @@ impl Denial {
             Denial::RateLimited => "rate-limited",
             Denial::ClickBurst => "click-burst",
             Denial::PointerHeld => "pointer-held",
+            Denial::TextSize => "text-size",
         }
     }
 }
@@ -402,7 +409,8 @@ impl RemoteInputFirewall {
                 | InputEvent::Key { .. }
                 | InputEvent::PointerAxis { .. }
                 | InputEvent::ClipboardText { .. }
-                | InputEvent::Close => {}
+                | InputEvent::Close
+                | InputEvent::Text { .. } => {}
             }
         }
         outcome
@@ -516,7 +524,29 @@ impl RemoteInputFirewall {
                 self.spend_budget(peer, now, true)?;
                 Ok(event.clone())
             }
+            InputEvent::Text { text } => {
+                self.check_text(peer, surface, text, now)?;
+                Ok(event.clone())
+            }
         }
+    }
+
+    /// Committed text is typing, so the keyboard's focus guard applies: it
+    /// lands only in the shared window, and only while that has focus.
+    fn check_text(
+        &mut self,
+        peer: PeerId,
+        surface: SurfaceId,
+        text: &str,
+        now: Instant,
+    ) -> Result<(), Denial> {
+        if self.view.chrome_captures || self.view.keyboard_focus != Some(surface) {
+            return Err(Denial::FocusMuted);
+        }
+        if text.is_empty() || text.len() > MAX_REMOTE_TEXT_BYTES {
+            return Err(Denial::TextSize);
+        }
+        self.spend_budget(peer, now, true)
     }
 
     /// Region + z-order for one surface-local coordinate; returns the global point to inject.
@@ -761,6 +791,45 @@ mod tests {
                     Instant::now()
                 ),
                 Err(Denial::Occluded),
+            );
+        }
+    }
+
+    /// Text an input method committed is typing: it needs the shared
+    /// window to hold the keyboard, and it is bounded like one commit.
+    #[test]
+    fn remote_text_lands_only_in_the_focused_shared_window() {
+        let now = Instant::now();
+        let text = InputEvent::Text {
+            text: "grüße".into(),
+        };
+        assert_eq!(
+            firewall().review(PEER, SHARED, &text, now),
+            Ok(text.clone())
+        );
+
+        let mut unfocused = RemoteInputFirewall::new();
+        unfocused.publish_view(ShellView::new(
+            vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
+            Some(PRIVATE),
+            false,
+            false,
+        ));
+        assert_eq!(
+            unfocused.review(PEER, SHARED, &text, now),
+            Err(Denial::FocusMuted)
+        );
+        for size in [0, MAX_REMOTE_TEXT_BYTES + 1] {
+            assert_eq!(
+                firewall().review(
+                    PEER,
+                    SHARED,
+                    &InputEvent::Text {
+                        text: "a".repeat(size),
+                    },
+                    now,
+                ),
+                Err(Denial::TextSize)
             );
         }
     }

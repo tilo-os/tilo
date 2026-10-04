@@ -216,8 +216,14 @@ impl<R: Resource> Dispatcher<R> {
         });
     }
 
-    /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`).
+    /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
+    /// or an effect ([`Invoke::effect`]), which reaches its handler as
+    /// [`Self::effect`] does.
     pub fn invoke(&self, invoke: Invoke<R>) {
+        if invoke.is_effect() {
+            self.submit(invoke);
+            return;
+        }
         if self.read_only() {
             self.refuse(invoke.id, Self::view_only());
             return;

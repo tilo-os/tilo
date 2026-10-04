@@ -16,6 +16,8 @@ mod click_link_navigates;
 mod e2e_smoke;
 #[path = "framework_body.rs"]
 mod framework_body;
+#[path = "framework_new_note.rs"]
+mod framework_new_note;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
@@ -30,6 +32,8 @@ mod markdown_marks_roundtrip;
 mod markdown_phase3_roundtrip;
 #[path = "offscreen_smoke.rs"]
 mod offscreen_smoke;
+#[path = "outline_commands.rs"]
+mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
 #[path = "page_file_io.rs"]
@@ -52,6 +56,8 @@ mod slash_menu_focus;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_order.rs"]
+mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]

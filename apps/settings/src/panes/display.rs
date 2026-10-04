@@ -57,7 +57,7 @@ use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{
-    El, caption, card, choice_row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, choice_row, error_row, rows, setting_row, setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -499,7 +499,10 @@ pub struct DisplayPane {
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
-    hardware_probe: Option<std::sync::mpsc::Receiver<(f32, bool)>>,
+    hardware_probe: Option<std::sync::mpsc::Receiver<HardwareProbe>>,
+    /// Why the panel brightness could not be read; the slider is then not
+    /// offered at a made-up level.
+    brightness_error: Option<String>,
     brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
     brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
     pending_brightness: Option<(f32, f32)>,
@@ -519,6 +522,10 @@ pub struct DisplayPane {
     rect: Rect,
 }
 
+/// The panel brightness (or why it could not be read) and whether an
+/// ambient light sensor is present, as the background probe found them.
+type HardwareProbe = (Result<f32, String>, bool);
+
 impl Default for DisplayPane {
     fn default() -> Self {
         Self::new()
@@ -529,15 +536,16 @@ impl DisplayPane {
     pub fn new() -> Self {
         let initial = 0.5;
         let (probe_tx, probe_rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
+        let brightness_error = std::thread::Builder::new()
             .name("settings-display-probe".into())
             .spawn(move || {
                 let _ = probe_tx.send((
-                    os_actions::get_brightness().unwrap_or(0.5),
+                    os_actions::get_brightness(),
                     os_actions::has_ambient_light_sensor(),
                 ));
             })
-            .ok();
+            .err()
+            .map(|error| format!("the brightness probe could not start: {error}"));
         let dispatcher = dispatcher_or_real(None);
         let (brightness_tx, brightness_rx) = std::sync::mpsc::channel::<f32>();
         let (brightness_result_tx, brightness_result_rx) = std::sync::mpsc::channel();
@@ -572,6 +580,7 @@ impl DisplayPane {
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             hardware_probe: Some(probe_rx),
+            brightness_error,
             brightness_tx: Some(brightness_tx),
             brightness_result_rx: Some(brightness_result_rx),
             pending_brightness: None,
@@ -636,6 +645,7 @@ impl DisplayPane {
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
             hardware_probe: None,
+            brightness_error: None,
             brightness_tx: None,
             brightness_result_rx: None,
             pending_brightness: None,
@@ -1049,17 +1059,24 @@ impl DisplayPane {
         card(
             &t("display-brightness"),
             rows(vec![
-                setting_row(
-                    &t("display-brightness"),
-                    Box::new(
-                        Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
-                            .with_id("display.brightness")
-                            .on_action(
-                                crate::actions::display_number_binding("brightness")
-                                    .expect("brightness is part of the static resource contract"),
-                            ),
+                match &self.brightness_error {
+                    Some(error) => error_row(
+                        &t("display-brightness"),
+                        &t_args("display-brightness-error", &[("error", error.as_str().into())]),
                     ),
-                ),
+                    None => setting_row(
+                        &t("display-brightness"),
+                        Box::new(
+                            Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
+                                .with_id("display.brightness")
+                                .on_action(
+                                    crate::actions::display_number_binding("brightness").expect(
+                                        "brightness is part of the static resource contract",
+                                    ),
+                                ),
+                        ),
+                    ),
+                },
                 automatic_brightness,
                 setting_row(
                     &t("display-night-light"),
@@ -1851,14 +1868,20 @@ impl DisplayPane {
         };
         match receiver.try_recv() {
             Ok((brightness, ambient)) => {
-                self.initial_brightness = brightness;
-                self.last_brightness = brightness;
                 self.ambient_sensor_available = ambient;
-                let _ = state.put(
-                    root,
-                    BRIGHTNESS_KEY,
-                    automerge::ScalarValue::F64(f64::from(brightness)),
-                );
+                match brightness {
+                    Ok(brightness) => {
+                        self.initial_brightness = brightness;
+                        self.last_brightness = brightness;
+                        self.brightness_error = None;
+                        let _ = state.put(
+                            root,
+                            BRIGHTNESS_KEY,
+                            automerge::ScalarValue::F64(f64::from(brightness)),
+                        );
+                    }
+                    Err(error) => self.brightness_error = Some(error),
+                }
                 self.hardware_probe = None;
                 self.structure_dirty = true;
             }
@@ -2649,12 +2672,30 @@ mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
 
-    fn probed_pane() -> (DisplayPane, std::sync::mpsc::Sender<(f32, bool)>) {
+    fn probed_pane() -> (DisplayPane, std::sync::mpsc::Sender<HardwareProbe>) {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let (probe_tx, probe_rx) = std::sync::mpsc::channel();
         pane.hardware_probe = Some(probe_rx);
         (pane, probe_tx)
+    }
+
+    /// A brightness that could not be read is shown as that failure, not as
+    /// a slider resting at a made-up level.
+    #[test]
+    fn an_unreadable_brightness_is_shown_as_an_error() {
+        let (mut pane, probe_tx) = probed_pane();
+        probe_tx
+            .send((Err("no backlight device".into()), false))
+            .expect("probe receiver is alive");
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Can't read the brightness: no backlight device"),
+            "{text:#?}"
+        );
     }
 
     /// A brightness probe that lands after the pane was composed keeps the
@@ -2674,7 +2715,7 @@ mod tests {
         assert!(before.is_some(), "build_layout composes the pane");
 
         probe_tx
-            .send((0.8, false))
+            .send((Ok(0.8), false))
             .expect("probe receiver is alive");
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -2699,7 +2740,7 @@ mod tests {
         let mut harness =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(pane), (900, 700));
         probe_tx
-            .send((0.8, false))
+            .send((Ok(0.8), false))
             .expect("probe receiver is alive");
         harness.relayout();
         assert!(

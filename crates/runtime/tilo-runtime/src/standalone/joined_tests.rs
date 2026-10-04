@@ -66,6 +66,42 @@ async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
         .unwrap()
 }
 
+impl Joined {
+    pub(in crate::standalone) async fn test_empty() -> (Arc<Self>, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[93; 32]);
+        let root = SigningKey::from_bytes(&[94; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Synthetic runtime".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let joined = Self::open(
+            directory.path(),
+            HostIdentity {
+                device_cert: cert,
+                device_signing_key: key.clone(),
+                workspace_device_certs: std::collections::HashMap::default(),
+                workspace_revocations: std::collections::HashMap::default(),
+                identity_paths: None,
+            },
+            local_endpoint(&key).await,
+            BTreeSet::new(),
+            (
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                Arc::new(FanoutState::new()),
+            ),
+        )
+        .unwrap();
+        (joined, directory)
+    }
+}
+
 /// A room its governor's certified host serves over a relay with the join
 /// service, and the governor's own session on it once it publishes.
 struct HostedRoom {
@@ -231,6 +267,149 @@ impl HostedRoom {
     }
 }
 
+fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
+    let mut custody = joined.custody.clone();
+    let room_cert = custody.device_cert.clone();
+    let default_root = SigningKey::from_bytes(&[95; 32]);
+    custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
+    sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
+    let default_actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        custody.device_cert.user_public_key,
+    );
+    custody
+        .workspace_device_certs
+        .insert(room_topic(room).unwrap(), room_cert);
+    let mut probe = Joined {
+        owner: joined.owner.clone(),
+        custody,
+        endpoint: joined.endpoint.clone(),
+        refused: joined.refused.clone(),
+        channels: Arc::clone(&joined.channels),
+        fanout: Arc::clone(&joined.fanout),
+        sessions: Mutex::new(BTreeMap::new()),
+        governance: Mutex::new(Vec::new()),
+        keys: joined.keys.clone(),
+    };
+    assert!(
+        probe.action_room(actor, &room.to_string()).is_ok(),
+        "the admitted selected root is independent of the default root"
+    );
+    assert!(
+        probe
+            .action_room(&default_actor, &room.to_string())
+            .is_err(),
+        "a default root must not borrow the selected root's admission"
+    );
+    probe.custody.workspace_device_certs.clear();
+    assert!(
+        probe.action_room(actor, &room.to_string()).is_err(),
+        "changed selected custody must not reuse the retained roster identity"
+    );
+    assert!(
+        !probe
+            .workspaces()
+            .iter()
+            .any(|workspace| workspace.room == room)
+    );
+}
+
+fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &str) {
+    use crate::standalone::RuntimeActionHost;
+    use tilo_action_broker::{
+        collab_broker::CrdtRoute,
+        collab_broker_capnp::{
+            CapnpBrokerState, PublishedAction, PublishedInput, PublishedSurface,
+        },
+        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+    };
+    use tilo_actions::remote::{
+        ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeRequest,
+    };
+    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
+
+    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    workspace.set_owner(actor.to_owned());
+    workspace.room = room;
+    let room = room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let broker =
+        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.files".into(),
+        route: CrdtRoute::app("so.tilo.files", room.clone()),
+        actions: vec![PublishedAction {
+            resource: "files.entry:/tmp/synthetic-report".into(),
+            action: "refresh".into(),
+            resource_kind: "files.entry".into(),
+            resource_label: "Synthetic report".into(),
+            action_label: "Refresh".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
+                ..Default::default()
+            },
+            input: PublishedInput::None,
+            view: None,
+        }],
+        live: true,
+    }]);
+    let mut invocations = broker.capture_invocations_for_test(7);
+    let host = RuntimeActionHost {
+        broker,
+        room: "private-profile-room".into(),
+        joined: Arc::clone(joined),
+    };
+    let owner = Caller::local_person(actor)
+        .in_room(room.clone())
+        .in_new_execution();
+    let id = tilo_actions::InvocationId::new();
+    let request = InvokeRequest {
+        invocation: id,
+        target: RemoteActionTarget {
+            provider: "7".into(),
+            address: tilo_actions::ActionAddress::new(
+                "files.entry:/tmp/synthetic-report",
+                "refresh",
+            ),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+    };
+    let PendingPoll::Ready(Ok(_receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
+        panic!("the synthetic app must accept the invocation");
+    };
+    assert!(invocations.try_recv().is_ok());
+    assert!(host.observe(&owner, &id).is_some());
+    joined
+        .owner
+        .invalidate_identity(RoomId::parse(&room).unwrap());
+    assert!(host.observe(&owner, &id).is_none());
+    assert_eq!(
+        host.cancel(&owner, &id),
+        Err(ActionHostError::UnknownInvocation)
+    );
+    assert!(matches!(
+        host.invoke(&owner, request).poll_ready(),
+        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+    ));
+    assert!(matches!(
+        host.query(&owner, CatalogueQuery::default()).poll_ready(),
+        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+    ));
+    assert!(
+        invocations.try_recv().is_err(),
+        "revoked retries do not dispatch"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -273,7 +452,24 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         ),
     )
     .unwrap();
+    let actor =
+        tilo_action_broker::collab_broker_capnp::principal_id_for_root(device.user_public_key);
+    assert!(
+        joined.action_room(&actor, &room.to_string()).is_err(),
+        "an invitation is not current admission"
+    );
     assert_eq!(joined.join(&invitation).await.unwrap(), room);
+    assert_eq!(
+        joined.action_room(&actor, &room.to_string()).unwrap(),
+        room.to_string()
+    );
+    assert!(
+        joined
+            .action_room("forged-profile-actor", &room.to_string())
+            .is_err()
+    );
+    assert!(joined.action_room(&actor, &own_room.to_string()).is_err());
+    assert!(joined.action_room(&actor, "not-a-room").is_err());
     joined
         .owner
         .with_current(room, |view| {
@@ -422,6 +618,19 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         }
     })
     .await;
+    assert_changed_custody_refused(&joined, room, &actor);
+    assert_runtime_admission_revoked(&joined, room, &actor);
+    assert!(
+        !joined
+            .workspaces()
+            .iter()
+            .any(|workspace| workspace.room == room),
+        "broker snapshots must drop stale admission too"
+    );
+    assert!(
+        joined.action_room(&actor, &room.to_string()).is_err(),
+        "stale identity removes the selected audience"
+    );
     publisher.close().await;
     publisher_endpoint.close().await;
     governing.relay.shutdown().await;

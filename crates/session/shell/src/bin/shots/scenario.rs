@@ -405,6 +405,21 @@ pub enum Action {
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// Create the person's "Research" workspace on the shown device, the way
+    /// the laptop has it, and look at it.
+    SeedOwnWorkspace,
+    /// Split the "Outline" tab of the shown device's own "Research"
+    /// workspace into a window of its own.
+    SplitOwnOutline,
+    /// Hold another device of the same person (a laptop with the
+    /// "Research" workspace) in memory beside the shown one.
+    SeedOtherOwnDevice,
+    /// Bring the other device's workspace list and room content to the
+    /// shown device through the real signed list and room document, then
+    /// look at the workspace that arrived.
+    ReceiveFromOtherOwnDevice,
+    /// The other device splits its "Outline" tab into a window of its own.
+    OtherOwnDeviceSplitsOutline,
 }
 
 /// A named, ordered list of actions.
@@ -694,6 +709,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             resource,
         } => driver.seed_foreign_app_work_for_shots(app_id, action, resource),
         Action::SeedInvitePending => driver.seed_invite_pending_for_shots(),
+        Action::SeedOwnWorkspace => driver.seed_own_workspace_for_shots(),
+        Action::SplitOwnOutline => driver.split_own_outline_for_shots(),
+        Action::SeedOtherOwnDevice => driver.seed_other_own_device_for_shots(),
+        Action::ReceiveFromOtherOwnDevice => driver.receive_from_other_own_device_for_shots(),
+        Action::OtherOwnDeviceSplitsOutline => driver.other_own_device_splits_outline_for_shots(),
         Action::AdmitInvitedCollaborator => assert!(
             driver.admit_invited_collaborator_for_shots(),
             "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
@@ -1217,22 +1237,21 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                     },
                 ];
                 let mut p = WifiPasswordPrompt::new("Cafe WiFi");
-                match preset {
-                    "typed" => {
-                        p.password = "hunter2pass".into();
-                        p.selection = ui::text_selection::Selection::collapsed(p.password.len());
-                    }
-                    "rejected" => {
-                        p.password = "wrongpass".into();
-                        p.selection.anchor = 0;
-                        p.selection.cursor = p.password.len();
-                        p.error = Some("Couldn't join. Check the password.".into());
-                    }
-                    _ => {}
+                if preset == "rejected" {
+                    p.error = Some("Couldn't join. Check the password.".into());
                 }
                 st.quick_settings.wifi_password = Some(p);
                 st.bump();
             });
+            match preset {
+                "typed" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("hunter2pass", false),
+                "rejected" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("wrongpass", true),
+                _ => {}
+            }
         }
         Action::SelectGroup(idx) => {
             let idx = *idx;
@@ -1631,15 +1650,61 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         Scenario {
+            name: "personal_workspace_on_laptop",
+            description: "The person's Research workspace as the laptop that made it shows it, before and after splitting off the outline.",
+            actions: vec![
+                Action::SeedOwnWorkspace,
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("01-laptop-research"),
+                Action::SplitOwnOutline,
+                Action::Wait(120),
+                Action::Relayout,
+                Action::Snapshot("02-laptop-outline-split"),
+            ],
+        },
+        Scenario {
+            name: "personal_workspace_on_board",
+            description: "The same Research workspace arriving on the person's Orange Pi from the laptop, and following the laptop's split.",
+            actions: vec![
+                Action::Snapshot("00-board-before"),
+                Action::SeedOtherOwnDevice,
+                Action::ReceiveFromOtherOwnDevice,
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("01-board-research-arrived"),
+                Action::OtherOwnDeviceSplitsOutline,
+                Action::ReceiveFromOtherOwnDevice,
+                Action::Wait(120),
+                Action::Relayout,
+                Action::Snapshot("02-board-outline-split"),
+            ],
+        },
+        Scenario {
             name: "host_desktop_first_login",
             description: "Render the host-session identity setup exactly as the compositor shows it.",
             actions: vec![
                 Action::ShowHostDesktopOnboarding,
                 Action::Wait(4),
-                Action::Snapshot("01-identity-introduction"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Connect),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Intro),
                 Action::Relayout,
-                Action::Snapshot("02-restore-existing"),
+                Action::Snapshot("01-identity-introduction"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::Existing,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02-use-existing"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Nearby),
+                Action::Relayout,
+                Action::Snapshot("02a-nearby-waiting"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::NearbyCode,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02b-nearby-code"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Restore),
+                Action::Relayout,
+                Action::Snapshot("02c-restore-backup"),
                 Action::SetOnboardingVisual(
                     shell::onboarding_view::OnboardingVisualState::RestoreError,
                 ),

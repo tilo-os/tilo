@@ -294,6 +294,7 @@ mod tests {
             hdr_static_metadata: None,
             bit_depth: 8,
             app_id: "word-processor".into(),
+            tab: 0,
         }
     }
 

@@ -13,6 +13,8 @@
 # the runtime as an overlay lower, dnf as uid 0 of its own user namespace.
 # The state directory (dnf metadata, overlay uppers) must be on a filesystem
 # overlayfs accepts as an upper: TILO_ENV_TOOLS_STATE, default OUT_DIR/../state.
+# Builds reach only the runtime's repositories unless TILO_ENV_TOOLS_NETWORK
+# says otherwise (`host` on a builder without /dev/net/tun).
 # Needs: tilo-env-tools on PATH or as TILO_ENV_TOOLS, bwrap, python3.
 set -euo pipefail
 
@@ -47,6 +49,7 @@ while IFS= read -r line; do
   started=$(date +%s)
   if result="$("$bin" build --runtime-tapp "$runtime_tapp" --state "$state" \
       --out-dir "$out" --catalog "$out/catalog.json" "${identity_args[@]}" \
+      --network "${TILO_ENV_TOOLS_NETWORK:-gated}" \
       -- "${packages[@]}")"; then
     wall=$(( $(date +%s) - started ))
     printf '%s' "$result" | python3 -c '

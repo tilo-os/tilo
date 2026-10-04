@@ -323,6 +323,9 @@ def main() -> int:
                 "-drive", f"if=pflash,format=raw,readonly=on,file={code}",
                 "-drive", f"if=pflash,format=raw,file={vars_file}",
                 "-drive", f"file={disk},format=raw,if=virtio",
+                # No network: the initramfs needs none, and a default NIC
+                # makes QEMU require an iPXE option ROM the host may lack.
+                "-nic", "none",
                 "-display", "none", "-serial", f"file:{work / 'serial.log'}",
                 "-monitor", f"unix:{work / 'mon.sock'},server,nowait"]
         if args.arch == "x86_64":
@@ -336,7 +339,11 @@ def main() -> int:
         vm = subprocess.Popen(qemu)
         problems: list[str] = []
         try:
-            monitor = Monitor(work / "mon.sock")
+            try:
+                monitor = Monitor(work / "mon.sock")
+            except OSError as error:
+                vm.wait(timeout=10)
+                fail(f"QEMU exited ({vm.returncode}) before its monitor answered: {error}")
             deadline = time.monotonic() + args.timeout
             stub_frames = splash_frames = 0
             unlocked_at = None

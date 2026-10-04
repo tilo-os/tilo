@@ -145,6 +145,49 @@ struct CodecState {
     /// configured but no hardware 10-bit encoder every viewer can decode
     /// exists (the wire must match the bytes).
     hdr: Option<HdrConfig>,
+    /// The size frames are encoded at: the window's, or smaller where a
+    /// receiver's hardware decoder stops short of it.
+    encoded: (u32, u32),
+}
+
+/// The size to encode a `source`-sized window at in `codec` for `receivers`:
+/// at most what every receiver that decodes `codec` in hardware takes, so
+/// none falls back to software decoding. With mixed receivers this is the
+/// lowest common limit: one encode serves all, where an encode per limit
+/// would multiply the host's encoder load. Aspect is kept; sides are even;
+/// a window is never scaled up.
+pub fn encode_size(
+    codec: Codec,
+    source: (u32, u32),
+    receivers: &[CodecCapabilities],
+) -> (u32, u32) {
+    let even = |value: u32| (value & !1).max(2);
+    // `numerator * scale / denominator` in integers, saturating.
+    let scaled = |numerator: u32, scale: u32, denominator: u32| {
+        u64::from(numerator)
+            .saturating_mul(u64::from(scale))
+            .checked_div(u64::from(denominator.max(1)))
+            .map_or(u32::MAX, |value| u32::try_from(value).unwrap_or(u32::MAX))
+    };
+    let fitted = receivers
+        .iter()
+        .filter(|receiver| receiver.hardware_decode.contains(&codec))
+        .filter_map(|receiver| receiver.hardware_decode_max.get(&codec).copied())
+        .map(|(max_w, max_h)| {
+            if source.0 <= max_w && source.1 <= max_h {
+                return source;
+            }
+            // Fit inside the limit at the window's aspect.
+            let by_width = scaled(source.1, max_w, source.0);
+            if by_width <= max_h {
+                (max_w, by_width)
+            } else {
+                (scaled(source.0, max_h, source.1), max_h)
+            }
+        })
+        .min_by_key(|(w, h)| u64::from(*w).saturating_mul(u64::from(*h)))
+        .unwrap_or(source);
+    (even(fitted.0), even(fitted.1))
 }
 
 /// This machine's capabilities as the configured preference allows using
@@ -206,6 +249,9 @@ pub struct SharedFlatpakSession {
     /// lets late-joining viewers know when it's safe to start decoding.
     stream_sender: Arc<SurfaceStreamSender>,
     color_override: Arc<Mutex<ColorOverride>>,
+    /// The workspace tab holding the window, announced with the stream so a
+    /// viewer shows it in exactly that tab; `0` names none.
+    tab: u64,
 }
 
 impl SharedFlatpakSession {
@@ -283,7 +329,10 @@ impl SharedFlatpakSession {
                 .max(1),
         );
         let stream_sender = Arc::new(SurfaceStreamSender::new(surface_id, host_user_id));
-        stream_sender.set_format(state.codec, display_size(state.codec, width, height));
+        stream_sender.set_format(
+            state.codec,
+            display_size(state.codec, state.encoded.0, state.encoded.1),
+        );
 
         Ok(Self {
             host_user_id,
@@ -309,6 +358,7 @@ impl SharedFlatpakSession {
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
             color_override: Arc::new(Mutex::new(None)),
+            tab: 0,
         })
     }
 
@@ -334,12 +384,16 @@ impl SharedFlatpakSession {
             config.max_bitrate_kbps.max(500)
         };
         let fps = config.target_fps.max(1);
-        let init = match hdr {
+        let output = encode_size(codec, (width, height), receivers);
+        let mut init = match hdr {
             None => EncoderInit::sdr(codec, width, height, fps, bitrate_kbps, 1),
             Some(hdr_cfg) => {
                 EncoderInit::hdr10(codec, width, height, fps, bitrate_kbps, 1, hdr_cfg)
             }
         };
+        if output != (width & !1, height & !1) {
+            init.output = Some(output);
+        }
         let encoder = build(init, config.encoder).map_err(|e| match e {
             EncoderError::Unavailable { .. } => ShareError::EncoderUnavailable {
                 choice: config.encoder,
@@ -353,6 +407,7 @@ impl SharedFlatpakSession {
             kind: encoder.kind(),
             codec,
             hdr,
+            encoded: output,
         };
         tracing::info!(
             codec = codec.wire_label(),
@@ -377,7 +432,10 @@ impl SharedFlatpakSession {
             .codec_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if current.codec == codec && current.hdr.is_some() == hdr.is_some() {
+        if current.codec == codec
+            && current.hdr.is_some() == hdr.is_some()
+            && current.encoded == encode_size(codec, (self.width, self.height), receivers)
+        {
             return false;
         }
         let opened = Self::open_encoder(
@@ -404,7 +462,7 @@ impl SharedFlatpakSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
         self.stream_sender.set_format(
             state.codec,
-            display_size(state.codec, self.width, self.height),
+            display_size(state.codec, state.encoded.0, state.encoded.1),
         );
         if let Some(m) = &self.metrics {
             m.set_chosen_encoder(state.kind);
@@ -469,8 +527,30 @@ impl SharedFlatpakSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The window's size, the size frames are captured at.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The size frames are encoded and announced at: the window's, or less
+    /// for a receiver's hardware decoder.
+    pub fn encoded_dimensions(&self) -> (u32, u32) {
+        self.codec_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .encoded
+    }
+
+    /// Name the workspace tab the window is in, for the stream start.
+    #[must_use]
+    pub fn with_tab(mut self, tab: u64) -> Self {
+        self.tab = tab;
+        self
+    }
+
+    /// The workspace tab the stream names; `0` when none.
+    pub fn tab(&self) -> u64 {
+        self.tab
     }
 
     pub fn snapshot_config(&self) -> FlatpakShareConfig {
@@ -501,14 +581,15 @@ impl SharedFlatpakSession {
             surface: self.surface_id,
             source_peer: self.host_user_id,
             app_id: self.app_id.clone(),
-            width: self.width,
-            height: self.height,
+            width: state.encoded.0,
+            height: state.encoded.1,
             codec: codec_label,
             ts: now_ns,
             sender_monotonic_ns_at_send: now_ns,
             colorimetry,
             hdr_static_metadata: hdr_static,
             bit_depth,
+            tab: self.tab,
         }
     }
 
@@ -562,6 +643,29 @@ impl SharedFlatpakSession {
     /// nothing staged, or a swallowed encode error (logged once per
     /// consecutive run) — matches the compositor's "encode or drop" contract.
     #[tracing::instrument(level = "trace", skip(self))]
+    /// When a captured frame the throttle held back is due to be encoded;
+    /// `None` when nothing waits. A window that goes still right after a
+    /// change commits nothing more, so its last frame is sent at this time
+    /// rather than on a commit that never comes.
+    pub fn staged_due(&self) -> Option<Instant> {
+        if !self.active.load(Ordering::Acquire)
+            || self
+                .staged_frame
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        {
+            return None;
+        }
+        Some(
+            self.throttle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_due()
+                .unwrap_or(self.origin),
+        )
+    }
+
     pub fn encode_next_frame(&self, now: Instant) -> Option<EncodedFrame> {
         if !self.active.load(Ordering::Acquire) {
             return None;
@@ -858,6 +962,55 @@ mod tests {
         out
     }
 
+    /// A Pi-class viewer's 1080p hardware decoder bounds the encode; the
+    /// window keeps its aspect and is never scaled up; with several viewers
+    /// the smallest limit serves all; a viewer decoding in software or
+    /// without a stated limit bounds nothing.
+    #[test]
+    fn the_encode_fits_every_hardware_decoder_watching() {
+        use media::StreamCodec::{Av1, H264};
+        let board = |limit| CodecCapabilities {
+            hardware_decode: [H264].into(),
+            hardware_decode_max: [(H264, limit)].into(),
+            ..CodecCapabilities::default()
+        };
+        let desk = CodecCapabilities {
+            hardware_decode: [H264, Av1].into(),
+            ..CodecCapabilities::default()
+        };
+        let pi = board((1920, 1088));
+        let small = board((1280, 720));
+
+        assert_eq!(
+            encode_size(H264, (2560, 1440), std::slice::from_ref(&pi)),
+            (1920, 1080)
+        );
+        assert_eq!(
+            encode_size(H264, (1440, 2560), std::slice::from_ref(&pi)),
+            (612, 1088)
+        );
+        assert_eq!(
+            encode_size(H264, (1280, 800), std::slice::from_ref(&pi)),
+            (1280, 800)
+        );
+        assert_eq!(
+            encode_size(H264, (2560, 1440), &[pi.clone(), small, desk.clone()]),
+            (1280, 720),
+            "one encode at the lowest common limit"
+        );
+        assert_eq!(encode_size(H264, (3840, 2160), &[desk]), (3840, 2160));
+        assert_eq!(
+            encode_size(Av1, (3840, 2160), &[pi]),
+            (3840, 2160),
+            "a codec the board decodes in software is not its concern"
+        );
+        assert_eq!(
+            encode_size(H264, (1001, 701), &[]),
+            (1000, 700),
+            "even sides"
+        );
+    }
+
     #[test]
     #[allow(
         clippy::items_after_statements,
@@ -968,6 +1121,7 @@ mod tests {
                     hdr_static_metadata,
                     bit_depth,
                     app_id,
+                    tab: _,
                 } => {
                     assert_eq!(surface, 42);
                     assert_eq!(source_peer, 0xBEEF);

@@ -1377,8 +1377,13 @@ impl AccountsPane {
                 ));
             }
         }
-        let mut secret = account_root.vault().get(&id).unwrap_or_default();
+        let vault = account_root.vault();
+        let mut secret = vault.get(&id).unwrap_or_default();
         if password.trim().is_empty() {
+            // An unreadable vault is not one without this account's credential.
+            if let Some(error) = vault.recovery_error() {
+                return Err(format!("the credential vault could not be read: {error}"));
+            }
             if secret.is_empty() {
                 return Err("this account has no saved credential; enter one".into());
             }

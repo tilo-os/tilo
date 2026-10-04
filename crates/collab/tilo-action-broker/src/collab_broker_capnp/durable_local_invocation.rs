@@ -610,6 +610,7 @@ pub(super) fn invoke(
                 request.binding.peer_id,
                 offered,
                 InvocationInputs {
+                    execution: None,
                     argument: request.argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),

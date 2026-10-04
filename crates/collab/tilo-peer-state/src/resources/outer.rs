@@ -498,6 +498,7 @@ mod tests {
             since: vec![],
             room: "r".repeat(4096),
             invite_id: None,
+            nonce: 0,
         };
         let bytes = postcard::to_allocvec(&message).unwrap();
         assert_eq!(

@@ -1,5 +1,9 @@
 # Tilo for macOS
 
+For a catalog-driven collection of standalone native SDK apps, see
+[the collection script](collection.md). It plans by default and separates build,
+sign, package, verify and explicitly authorized notarization stages.
+
 `Tilo.app` is how the standalone per-user runtime reaches a stock Mac. Its
 visible app is the Store (`so.tilo.store`: registry search and install),
 branded Tilo; beside it is `tilo-runtime`, which every SDK app attaches to.

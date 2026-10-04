@@ -2484,7 +2484,7 @@ pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, 
 pub mod action_row;
 pub use action_row::ActionRowFace;
 pub mod choice_card;
-pub use choice_card::ChoiceCardFace;
+pub use choice_card::{ChoiceCard, ChoiceCardFace};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;

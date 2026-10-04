@@ -8,6 +8,8 @@
 //! each is one of the artwork's actions, which an agent already has.
 
 pub mod brushes;
+pub mod export;
+pub mod files;
 pub mod gradient;
 pub mod header;
 pub mod history;
@@ -15,6 +17,8 @@ pub mod inspector;
 pub mod layers;
 pub mod pane;
 pub mod picture;
+pub mod shortcuts;
+pub mod start;
 pub mod well;
 
 use ui::icons::Icon;

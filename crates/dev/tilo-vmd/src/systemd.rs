@@ -10,11 +10,12 @@ use std::process::Command;
 
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
-use crate::apply::{Apply, SessionProcess};
+use crate::apply::{Apply, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
 use crate::input;
+use crate::slots::DeviceSession;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
@@ -40,9 +41,42 @@ impl SystemdApply {
     }
 }
 
-/// `/run/tilo-vm/<slot>`: the session unit's `RuntimeDirectory=`.
-fn runtime_dir(slot: &str) -> PathBuf {
-    Path::new("/run/tilo-vm").join(slot)
+/// A board dev image runs its account's session without a greeter
+/// (os/dev/install-board-layer.sh): it installs this marker and enables one
+/// instance of [`DEVICE_SESSION_TEMPLATE`], named after the account.
+const DEVICE_SESSION_MARKER: &str = "/usr/share/tilo/board-headless-session";
+const DEVICE_SESSION_TEMPLATE: &str = "tilo-board-headless-session@";
+/// The unit `tilo-seat-session` runs the compositor in while a display is
+/// connected, a PAM login on seat0. The headless compositor runs in the
+/// account's user manager, which gets the layers anyway.
+const DEVICE_SESSION_UNITS: &[&str] = &["tilo-board-drm-session.service"];
+
+/// The board session's unit among `systemctl list-units --plain
+/// --no-legend` lines: the active instance, else the first one listed.
+fn device_session_unit(listing: &str) -> Option<String> {
+    let units: Vec<(&str, &str)> = listing
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let unit = words.next()?;
+            let active = words.nth(1).unwrap_or_default();
+            let account = unit
+                .strip_prefix(DEVICE_SESSION_TEMPLATE)?
+                .strip_suffix(".service")?;
+            (!account.is_empty()).then_some((unit, active))
+        })
+        .collect();
+    units
+        .iter()
+        .find(|(_, active)| *active == "active")
+        .or_else(|| units.first())
+        .map(|(unit, _)| (*unit).to_owned())
+}
+
+/// The compositor's control socket in the board session
+/// (`TILO_TEST_CONTROL`, set by `tilo-seat-session`).
+fn device_control_socket(uid: u32) -> PathBuf {
+    PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
 }
 
 fn run(step: &str, command: &mut Command) -> Result<String, DaemonError> {
@@ -162,6 +196,45 @@ impl Apply for SystemdApply {
         uid_of(user).ok_or_else(|| DaemonError::Apply {
             step: "useradd".into(),
             detail: format!("{user} has no uid after creation"),
+        })
+    }
+
+    fn account_uid(&mut self, user: &str) -> Result<u32, DaemonError> {
+        uid_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "getent passwd".into(),
+            detail: format!("no account {user}"),
+        })
+    }
+
+    fn device_session(&mut self) -> Option<DeviceSession> {
+        if !Path::new(DEVICE_SESSION_MARKER).exists() {
+            return None;
+        }
+        let listing = Command::new("systemctl")
+            .args([
+                "list-units",
+                "--all",
+                "--plain",
+                "--no-legend",
+                "--type=service",
+            ])
+            .arg(format!("{DEVICE_SESSION_TEMPLATE}*.service"))
+            .output()
+            .ok()?;
+        let unit = device_session_unit(&String::from_utf8_lossy(&listing.stdout))?;
+        let account = unit
+            .strip_prefix(DEVICE_SESSION_TEMPLATE)?
+            .strip_suffix(".service")?
+            .to_owned();
+        let uid = uid_of(&account)?;
+        Some(DeviceSession {
+            unit,
+            account,
+            units: DEVICE_SESSION_UNITS
+                .iter()
+                .map(|u| (*u).to_owned())
+                .collect(),
+            control_socket: device_control_socket(uid),
         })
     }
 
@@ -379,17 +452,18 @@ impl Apply for SystemdApply {
 
     fn control(
         &mut self,
-        slot: &str,
-        user: &str,
+        session: &Session,
         args: &[String],
     ) -> Result<ControlResult, DaemonError> {
         if !Path::new(TILO_CONTROL).exists() {
             return Err(DaemonError::ControlMissing(TILO_CONTROL.into()));
         }
-        let socket = runtime_dir(slot).join("control.sock");
         let output = Command::new("runuser")
-            .args(["-u", user, "--", "env"])
-            .arg(format!("TILO_TEST_CONTROL={}", socket.display()))
+            .args(["-u", &session.user, "--", "env"])
+            .arg(format!(
+                "TILO_TEST_CONTROL={}",
+                session.control_socket.display()
+            ))
             .arg(TILO_CONTROL)
             .args(args)
             .output()
@@ -404,12 +478,14 @@ impl Apply for SystemdApply {
         })
     }
 
-    fn wait_session_ready(&mut self, slot: &str) -> Result<(), String> {
+    fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
         // Restart=always turns a failing start into active/activating flapping,
         // so the unit has to stay active under one main process for a while.
         const SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-        let unit = crate::apply::session_unit(slot);
+        // A board session first waits for its user manager, the network and
+        // the clock (tilo-board-session-prepare).
+        let timeout = std::time::Duration::from_secs(if session.stand_in { 20 } else { 120 });
+        let unit = session.unit.clone();
         let started = std::time::Instant::now();
         let mut stable: Option<(std::time::Instant, String)> = None;
         loop {
@@ -431,17 +507,16 @@ impl Apply for SystemdApply {
             } else {
                 stable = None;
             }
-            if started.elapsed() >= TIMEOUT {
+            if started.elapsed() >= timeout {
                 return Err(state);
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
 
-    fn session_pid(&mut self, slot: &str) -> Option<u32> {
-        let unit = crate::apply::session_unit(slot);
+    fn session_pid(&mut self, session: &Session) -> Option<u32> {
         let output = Command::new("systemctl")
-            .args(["show", "--property=MainPID", "--value", &unit])
+            .args(["show", "--property=MainPID", "--value", &session.unit])
             .output()
             .ok()?;
         String::from_utf8_lossy(&output.stdout)
@@ -451,8 +526,8 @@ impl Apply for SystemdApply {
             .filter(|p| *p > 0)
     }
 
-    fn session_environment(&mut self, slot: &str) -> Vec<(String, String)> {
-        self.session_pid(slot)
+    fn session_environment(&mut self, session: &Session) -> Vec<(String, String)> {
+        self.session_pid(session)
             .and_then(|pid| fs::read(format!("/proc/{pid}/environ")).ok())
             .map(|environ| {
                 let mut env = crate::exec::session_env(&environ);
@@ -462,8 +537,8 @@ impl Apply for SystemdApply {
             .unwrap_or_default()
     }
 
-    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
-        let main = self.session_pid(slot)?;
+    fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
+        let main = self.session_pid(session)?;
         // Type=simple returns once forked; wait for the switch to the slot user.
         for _ in 0..20 {
             if proc_field(main, "Uid:")
@@ -513,9 +588,14 @@ impl Apply for SystemdApply {
         Some((numbers.next()??, numbers.next()??))
     }
 
-    fn shot(&mut self, slot: &str, user: &str) -> Result<Vec<u8>, DaemonError> {
-        let path = runtime_dir(slot).join(format!("shot-{}.png", uuid::Uuid::new_v4().simple()));
-        let result = self.control(slot, user, &["snapshot".into(), path.display().to_string()])?;
+    fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError> {
+        // Beside the control socket: a directory the compositor writes to.
+        let path = session
+            .control_socket
+            .parent()
+            .unwrap_or_else(|| Path::new("/run"))
+            .join(format!("shot-{}.png", uuid::Uuid::new_v4().simple()));
+        let result = self.control(session, &["snapshot".into(), path.display().to_string()])?;
         if result.exit_code != 0 {
             return Err(DaemonError::Apply {
                 step: "tilo-control snapshot".into(),
@@ -769,6 +849,58 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The board session tilo-vmd looks for is the one the board layer
+    /// installs, and the units and socket it names are the ones
+    /// `tilo-seat-session` uses.
+    #[test]
+    fn the_device_session_is_the_board_layers_session() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let read = |path: &str| fs::read_to_string(repo.join(path)).unwrap();
+        // Phase `the_names_match_the_board_layer`.
+        {
+            let layer = read("os/dev/install-board-layer.sh");
+            assert!(
+                layer.contains(&format!(": > {DEVICE_SESSION_MARKER}")),
+                "marker"
+            );
+            let template = format!("os/usr/lib/systemd/system/{DEVICE_SESSION_TEMPLATE}.service");
+            assert!(read(&template).contains("ExecStart=/usr/libexec/tilo-seat-session %i"));
+            let seat = read("os/usr/libexec/tilo-seat-session");
+            for unit in DEVICE_SESSION_UNITS {
+                let name = unit.strip_suffix(".service").unwrap();
+                assert!(seat.contains(&format!("drm_unit={name}\n")), "{unit}");
+            }
+            assert!(
+                seat.contains(
+                    r#"TILO_TEST_CONTROL="/run/user/$uid/tilo-session/test-control.sock""#
+                )
+            );
+            assert_eq!(
+                device_control_socket(1000),
+                Path::new("/run/user/1000/tilo-session/test-control.sock")
+            );
+        }
+        // Phase `the_active_instance_is_the_session`.
+        {
+            let listing = "tilo-board-headless-session@old.service loaded inactive dead Tilo board session for old\n\
+                           tilo-board-headless-session@tester.service loaded active running Tilo board session for tester\n";
+            assert_eq!(
+                device_session_unit(listing).as_deref(),
+                Some("tilo-board-headless-session@tester.service")
+            );
+            let stopped = "tilo-board-headless-session@tester.service loaded inactive dead x\n";
+            assert_eq!(
+                device_session_unit(stopped).as_deref(),
+                Some("tilo-board-headless-session@tester.service")
+            );
+            assert_eq!(device_session_unit(""), None);
+            assert_eq!(
+                device_session_unit("tilo-board-headless-session@.service loaded"),
+                None
+            );
+        }
+    }
 
     #[test]
     fn a_snapshot_is_read_once_the_compositor_has_written_all_of_it() {

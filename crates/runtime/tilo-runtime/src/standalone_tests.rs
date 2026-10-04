@@ -22,12 +22,12 @@ const PROCESS_TEST: &str =
 const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 
-#[test]
+#[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the broker fixture owns its authority and invocation registry for the whole scenario"
 )]
-fn runtime_invocation_ownership_survives_device_normalization() {
+async fn runtime_invocation_ownership_survives_device_normalization() {
     use tilo_action_broker::{
         collab_broker::CrdtRoute,
         collab_broker_capnp::{
@@ -69,7 +69,12 @@ fn runtime_invocation_ownership_survives_device_normalization() {
         live: true,
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
-    let host = RuntimeActionHost(broker);
+    let (joined, _directory) = Joined::test_empty().await;
+    let host = RuntimeActionHost {
+        broker,
+        room: room.clone(),
+        joined,
+    };
     let owner = Caller::local_person("a1".repeat(32))
         .in_room(room)
         .in_new_execution();

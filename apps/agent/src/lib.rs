@@ -70,12 +70,10 @@ pub mod memory;
 pub mod model;
 pub mod plan;
 pub mod providers;
-pub mod resource;
 pub mod session;
 pub mod surface;
 pub mod tools;
 pub mod transform;
 pub mod wire;
 
-pub use resource::{Agent, AgentShell};
 pub use session::{Config, Session};

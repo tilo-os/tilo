@@ -44,13 +44,16 @@ pub struct WifiNetwork {
 /// None)` fails for every protected network not seen before — every
 /// network on first boot — and there's nowhere else to type a passphrase
 /// on a machine with no network yet, so the chrome asks for it.
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// The passphrase itself is never chrome state: the overlay host's secret
+/// field holds it while this prompt is up, and lets go of it with the
+/// prompt.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WifiPasswordPrompt {
     pub ssid: String,
-    /// Held in the clear only while the prompt is up — cleared on
-    /// submit, cancel, or popover close.
-    pub password: String,
-    pub selection: ui::text_selection::Selection,
+    /// Tells this prompt from any other, even for the same network, so
+    /// nothing typed into one is ever shown in the next.
+    pub id: u64,
     /// Set after a failed attempt, so a wrong passphrase says so
     /// instead of reopening an empty prompt.
     pub error: Option<String>,
@@ -61,18 +64,18 @@ pub struct WifiPasswordPrompt {
 
 impl WifiPasswordPrompt {
     pub fn new(ssid: impl Into<String>) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             ssid: ssid.into(),
-            password: String::new(),
-            selection: ui::text_selection::Selection::collapsed(0),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             error: None,
             connecting: false,
         }
     }
 
     /// An empty passphrase is rejected by every WPA network.
-    pub fn can_submit(&self) -> bool {
-        !self.connecting && !self.password.is_empty()
+    pub fn can_submit(&self, password: &str) -> bool {
+        !self.connecting && !password.is_empty()
     }
 }
 

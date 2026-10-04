@@ -93,6 +93,7 @@ pub fn record(
             software_decode: CodecCapabilities::parse_labels(software_decode),
             hardware_encode: CodecCapabilities::parse_labels(hardware_encode),
             software_encode: CodecCapabilities::parse_labels(software_encode),
+            hardware_decode_max: std::collections::BTreeMap::new(),
         },
     );
 }

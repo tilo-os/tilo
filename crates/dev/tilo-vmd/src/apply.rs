@@ -15,7 +15,7 @@ use tilo_vm_protocol::{
 
 use crate::error::DaemonError;
 use crate::input::Geometry;
-use crate::slots::{Generation, SlotRecord};
+use crate::slots::{DeviceSession, Generation, SlotRecord};
 
 pub const LAYERS_DROPIN: &str = "50-tilo-vm-layers.conf";
 pub const SEAT_DROPIN: &str = "50-tilo-vm-seat.conf";
@@ -23,6 +23,55 @@ pub const GREETER_UNIT: &str = "greetd.service";
 
 pub fn session_unit(slot: &str) -> String {
     format!("tilo-vm-session@{slot}.service")
+}
+
+/// Where a slot session's control socket is: the `RuntimeDirectory=` of
+/// `tilo-vm-session@<slot>`.
+pub fn control_socket(slot: &str) -> PathBuf {
+    std::path::Path::new("/run/tilo-vm")
+        .join(slot)
+        .join("control.sock")
+}
+
+/// The session a slot's layers reach: its unit, user and control socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    pub slot: String,
+    /// The system unit that runs it.
+    pub unit: String,
+    pub user: String,
+    /// Units besides `unit` and the user manager that run the session's
+    /// processes; they get the layers too.
+    pub units: Vec<String>,
+    pub control_socket: PathBuf,
+    /// A slot's session stands in for a greetd login and is checked to be
+    /// equivalent to one; the device's own session is the production one.
+    pub stand_in: bool,
+}
+
+impl SlotRecord {
+    /// The session this slot's layers reach; `None` for the `vm` slot.
+    pub fn session(&self) -> Option<Session> {
+        let user = self.user()?;
+        Some(match &self.device {
+            Some(device) if self.kind == SlotKind::Device => Session {
+                slot: self.name.clone(),
+                unit: device.unit.clone(),
+                user,
+                units: device.units.clone(),
+                control_socket: device.control_socket.clone(),
+                stand_in: false,
+            },
+            _ => Session {
+                slot: self.name.clone(),
+                unit: session_unit(&self.name),
+                user,
+                units: Vec::new(),
+                control_socket: control_socket(&self.name),
+                stand_in: true,
+            },
+        })
+    }
 }
 
 pub fn user_unit(uid: u32) -> String {
@@ -38,6 +87,13 @@ pub fn user_unit(uid: u32) -> String {
 pub trait Apply {
     /// Create the slot's system user if missing; return its uid.
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError>;
+    /// The uid of an existing account, which is left as it is.
+    fn account_uid(&mut self, user: &str) -> Result<u32, DaemonError>;
+    /// The session this machine runs for its account without a greeter,
+    /// if it runs one (see [`crate::systemd`]).
+    fn device_session(&mut self) -> Option<DeviceSession> {
+        None
+    }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
@@ -72,34 +128,30 @@ pub trait Apply {
     /// The last `lines` journal entries matching any of `matches`
     /// (journalctl `FIELD=value` terms, `OR`ed).
     fn journal(&mut self, matches: &[String], lines: u32) -> Result<String, DaemonError>;
-    /// Run the in-VM `tilo-control` against this slot's session.
-    fn control(
-        &mut self,
-        slot: &str,
-        user: &str,
-        args: &[String],
-    ) -> Result<ControlResult, DaemonError>;
-    /// PNG of the slot's live scene.
-    fn shot(&mut self, slot: &str, user: &str) -> Result<Vec<u8>, DaemonError>;
-    /// Capabilities and `SELinux` domain of the slot's running session
-    /// process, or `None` when it is not running.
-    fn session_process(&mut self, slot: &str) -> Option<SessionProcess>;
-    /// The main process of the slot's running session unit, whose mount
+    /// Run the in-VM `tilo-control` against this session.
+    fn control(&mut self, session: &Session, args: &[String])
+    -> Result<ControlResult, DaemonError>;
+    /// PNG of the session's live scene.
+    fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
+    /// Capabilities and `SELinux` domain of the running session process,
+    /// or `None` when it is not running.
+    fn session_process(&mut self, session: &Session) -> Option<SessionProcess>;
+    /// The main process of the running session unit, whose mount
     /// namespace has the slot's layers over `/usr`.
-    fn session_pid(&mut self, _slot: &str) -> Option<u32> {
+    fn session_pid(&mut self, _session: &Session) -> Option<u32> {
         None
     }
-    /// The session variables ([`crate::exec::SESSION_ENV`]) of the slot's
+    /// The session variables ([`crate::exec::SESSION_ENV`]) of the
     /// running session, which a command run as the slot inherits.
-    fn session_environment(&mut self, _slot: &str) -> Vec<(String, String)> {
+    fn session_environment(&mut self, _session: &Session) -> Vec<(String, String)> {
         Vec::new()
     }
-    /// Wait until the slot's session unit is up and stays up.
+    /// Wait until the session unit is up and stays up.
     ///
     /// # Errors
     /// The unit's state when it never settled (a start that fails and
     /// restarts looks `active` for a moment, so one sample is not enough).
-    fn wait_session_ready(&mut self, _slot: &str) -> Result<(), String> {
+    fn wait_session_ready(&mut self, _session: &Session) -> Result<(), String> {
         Ok(())
     }
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
@@ -177,7 +229,7 @@ pub fn check_scope(
 ) -> Result<(), DaemonError> {
     let fits = match record.kind {
         SlotKind::Vm => info.scope == Scope::Vm,
-        SlotKind::Headful | SlotKind::Headless => info.scope != Scope::Vm,
+        SlotKind::Headful | SlotKind::Headless | SlotKind::Device => info.scope != Scope::Vm,
     };
     if fits {
         Ok(())
@@ -293,7 +345,7 @@ pub fn activate(
     change: SessionChange,
 ) -> Result<Vec<Action>, DaemonError> {
     let mut actions = Vec::new();
-    let Some(user) = record.user() else {
+    let Some(session) = record.session() else {
         apply.link_sysext(layers)?;
         apply.sysext_refresh()?;
         actions.push(Action::SysextRefresh);
@@ -304,11 +356,13 @@ pub fn activate(
         return Ok(actions);
     };
 
-    let uid = apply.ensure_user(&user)?;
-    actions.push(Action::EnsureUser {
-        user: user.clone(),
-        uid,
-    });
+    let uid = session_uid(apply, &session)?;
+    if session.stand_in {
+        actions.push(Action::EnsureUser {
+            user: session.user.clone(),
+            uid,
+        });
+    }
     if record.kind == SlotKind::Headful {
         // Idempotent, and re-creates the card after a VM reboot emptied configfs.
         let seat = apply.allocate_seat(&record.name, record.connectors())?;
@@ -318,15 +372,17 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let session = session_unit(&record.name);
     let dropin = layers_dropin(&record.name, generation.number, layers);
-    for unit in [user_unit(uid), session.clone()] {
+    for unit in layered_units(&session, uid) {
         apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
         actions.push(Action::WriteDropIn { unit });
     }
-    match seat_dropin(record) {
-        Some(text) => apply.write_dropin(&session, SEAT_DROPIN, &text)?,
-        None => apply.remove_dropin(&session, SEAT_DROPIN)?,
+    // The device's own session picks its seat itself.
+    if session.stand_in {
+        match seat_dropin(record) {
+            Some(text) => apply.write_dropin(&session.unit, SEAT_DROPIN, &text)?,
+            None => apply.remove_dropin(&session.unit, SEAT_DROPIN)?,
+        }
     }
     apply.reload()?;
 
@@ -338,10 +394,10 @@ pub fn activate(
     };
     match change {
         SessionChange::Ensure => {
-            apply.start_unit(&session)?;
-            actions.push(Action::StartUnit { unit: session });
+            apply.start_unit(&session.unit)?;
+            actions.push(Action::StartUnit { unit: session.unit });
         }
-        SessionChange::Restart => actions.extend(restart_session(apply, &record.name, uid)?),
+        SessionChange::Restart => actions.extend(restart_session(apply, &session, uid)?),
         SessionChange::Keep => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at next session restart"
@@ -360,21 +416,44 @@ pub fn activate(
 /// Any failing unit operation.
 pub fn restart_session(
     apply: &mut dyn Apply,
-    slot: &str,
+    session: &Session,
     uid: u32,
 ) -> Result<Vec<Action>, DaemonError> {
-    let session = session_unit(slot);
     let user_manager = user_unit(uid);
-    apply.stop_unit(&session)?;
+    apply.stop_unit(&session.unit)?;
     apply.restart_unit(&user_manager)?;
-    apply.start_unit(&session)?;
+    apply.start_unit(&session.unit)?;
     Ok(vec![
         Action::StopUnit {
-            unit: session.clone(),
+            unit: session.unit.clone(),
         },
         Action::RestartUnit { unit: user_manager },
-        Action::StartUnit { unit: session },
+        Action::StartUnit {
+            unit: session.unit.clone(),
+        },
     ])
+}
+
+/// The uid the session runs as: a slot's own user, created when missing,
+/// or the existing account of the device's session, left untouched.
+///
+/// # Errors
+/// A user that cannot be created, or an account that does not exist.
+pub fn session_uid(apply: &mut dyn Apply, session: &Session) -> Result<u32, DaemonError> {
+    if session.stand_in {
+        apply.ensure_user(&session.user)
+    } else {
+        apply.account_uid(&session.user)
+    }
+}
+
+/// Every unit whose mount namespace must show the slot's layers: the user
+/// manager (it starts the session's user services), the session unit and
+/// the units that unit starts for the session.
+pub fn layered_units(session: &Session, uid: u32) -> Vec<String> {
+    let mut units = vec![user_unit(uid), session.unit.clone()];
+    units.extend(session.units.iter().cloned());
+    units
 }
 
 /// Undo everything [`activate`] did for a user slot. The session stops
@@ -385,10 +464,15 @@ pub fn restart_session(
 /// Any failing side effect.
 pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Action>, DaemonError> {
     let mut actions = Vec::new();
-    let Some(user) = record.user() else {
+    let Some(Session {
+        user,
+        unit: session,
+        stand_in: true,
+        ..
+    }) = record.session()
+    else {
         return Ok(actions);
     };
-    let session = session_unit(&record.name);
     apply.stop_unit(&session)?;
     actions.push(Action::StopUnit {
         unit: session.clone(),
@@ -435,9 +519,24 @@ pub struct RecordingApply {
     /// Answers for the next `control` calls, in order; an echo of the
     /// arguments once they run out.
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// The machine's own session, when it has one.
+    pub device: Option<DeviceSession>,
 }
 
 impl RecordingApply {
+    /// A machine whose own session runs as `account`, as a board image's does.
+    pub fn with_device(account: &str) -> Self {
+        Self {
+            device: Some(DeviceSession {
+                unit: format!("tilo-board-headless-session@{account}.service"),
+                account: account.to_owned(),
+                units: vec!["tilo-board-drm-session.service".into()],
+                control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
+            }),
+            ..Self::default()
+        }
+    }
+
     fn call(&mut self, text: String) {
         self.calls.push(text);
     }
@@ -450,6 +549,13 @@ impl Apply for RecordingApply {
             .unwrap_or(0)
             .saturating_add(60_001);
         Ok(*self.users.entry(user.to_owned()).or_insert(next))
+    }
+    fn account_uid(&mut self, user: &str) -> Result<u32, DaemonError> {
+        self.call(format!("account_uid {user}"));
+        Ok(1000)
+    }
+    fn device_session(&mut self) -> Option<DeviceSession> {
+        self.device.clone()
     }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         self.call(format!("remove_user {user}"));
@@ -544,11 +650,10 @@ impl Apply for RecordingApply {
     }
     fn control(
         &mut self,
-        slot: &str,
-        _user: &str,
+        session: &Session,
         args: &[String],
     ) -> Result<ControlResult, DaemonError> {
-        self.call(format!("control {slot} {}", args.join(" ")));
+        self.call(format!("control {} {}", session.slot, args.join(" ")));
         if let Some(reply) = self.control_replies.pop_front() {
             return Ok(reply);
         }
@@ -558,8 +663,8 @@ impl Apply for RecordingApply {
             stderr: String::new(),
         })
     }
-    fn shot(&mut self, slot: &str, _user: &str) -> Result<Vec<u8>, DaemonError> {
-        self.call(format!("shot {slot}"));
+    fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError> {
+        self.call(format!("shot {}", session.slot));
         Ok(b"\x89PNG\r\n\x1a\n".to_vec())
     }
     fn disk_space(&mut self, _path: &std::path::Path) -> Option<(u64, u64)> {
@@ -629,9 +734,9 @@ impl Apply for RecordingApply {
             default_entry: None,
         })
     }
-    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
+    fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
         self.units
-            .get(&session_unit(slot))
+            .get(&session.unit)
             .copied()
             .unwrap_or(false)
             .then(|| SessionProcess {
@@ -659,6 +764,7 @@ mod tests {
             seat: None,
             seat0: None,
             outputs: Vec::new(),
+            device: None,
         }
     }
 
@@ -892,6 +998,54 @@ mod tests {
             assert!(dropin.contains(
                 "ExtensionDirectories=\nExtensionDirectories=/var/lib/tilo-vm/layers/h1\n"
             ));
+        }
+        // Phase `the_device_session_restarts_through_its_own_unit_as_its_account`.
+        {
+            let mut apply = RecordingApply::with_device("tester");
+            let mut device = record("device", SlotKind::Device);
+            device.device = apply.device.clone();
+            let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
+            let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+            let actions = activate(
+                &mut apply,
+                &mut device,
+                &g,
+                &layers,
+                Policy::SessionRestart,
+                &[],
+                SessionChange::Keep,
+            )
+            .unwrap();
+            let unit = "tilo-board-headless-session@tester.service";
+            assert_eq!(
+                apply.calls,
+                [
+                    "account_uid tester",
+                    "write_dropin user@1000.service 50-tilo-vm-layers.conf",
+                    &format!("write_dropin {unit} 50-tilo-vm-layers.conf"),
+                    "write_dropin tilo-board-drm-session.service 50-tilo-vm-layers.conf",
+                    "reload",
+                    &format!("stop {unit}"),
+                    "restart user@1000.service",
+                    &format!("start {unit}"),
+                ]
+            );
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::EnsureUser { .. })),
+                "the account is not a slot user: {actions:?}"
+            );
+            let session = device.session().unwrap();
+            assert!(!session.stand_in);
+            assert_eq!(session.user, "tester");
+            assert_eq!(
+                session.control_socket,
+                PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
+            );
+            // Without the session found, the slot has none.
+            device.device = None;
+            assert_eq!(device.session(), None);
         }
         // Phase `headful_ensures_its_seat_on_every_activation`.
         {

@@ -24,8 +24,8 @@
 //!   * [`app`]      — the root widget composing the formula bar + grid +
 //!     sheet tabs + the file/format menus and settings surfaces.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! [`SheetsShell`] is the app every host runs: the live window, screenshots
+//! and the browser desktop.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -69,24 +69,16 @@ mod interchange_tests;
 pub mod model;
 pub mod ods;
 pub mod resource;
+pub mod sample;
 pub mod search_provider;
 pub mod settings;
 pub mod xlsx;
 
 pub use app::SheetsApp;
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SheetsApp::new())
-}
-
 pub use resource::{SheetsShell, SheetsWorkbook};
 
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.sheets", app_root)
-        .component_actions(actions::register)
-        .as_definition("Sheets")
+    ui::framework::definition::<SheetsShell>()
 }

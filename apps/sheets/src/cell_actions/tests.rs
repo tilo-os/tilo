@@ -332,8 +332,8 @@ fn a_large_edit_answers_its_first_rows_and_names_the_whole_range() {
 fn the_app_answers_a_cell_edit_through_its_action_door() {
     use ui::Widget as _;
     let mut app = crate::app::SheetsApp::new();
-    app.shots_mode();
     let mut state = ui::State::new();
+    crate::sample::write(&mut state.doc);
     app.sync(&mut state.doc, &state.root);
     state.commit_action(None, None);
     let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (1200, 800));

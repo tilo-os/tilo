@@ -31,8 +31,12 @@ use crate::shell::i18n::t;
 pub enum Screen {
     /// What an identity is and what it enables.
     Intro,
-    /// Import an existing identity record instead of minting a new one.
-    Connect,
+    /// Use an identity that already exists: choose how to bring it here.
+    Existing,
+    /// Receive the identity from a nearby trusted device.
+    Nearby,
+    /// Restore the identity from an encrypted backup file.
+    Restore,
     /// The consequence of losing the device, and the acknowledgement.
     NoRecovery,
     /// The minted key: fingerprint and path.
@@ -158,19 +162,46 @@ impl Onboarding {
         }
     }
 
-    /// Choose the connect-existing branch from the intro screen.
-    pub fn begin_connect(&mut self) {
+    /// Choose the use-existing branch from the intro screen.
+    pub fn begin_existing(&mut self) {
         if self.screen == Screen::Intro {
-            self.screen = Screen::Connect;
+            self.screen = Screen::Existing;
         }
     }
 
-    /// Return to the choice screen before any identity exists.
-    pub fn back(&mut self) {
-        if matches!(self.screen, Screen::Connect | Screen::NoRecovery) {
-            self.screen = Screen::Intro;
-            self.acknowledged = false;
+    /// Open the nearby-device flow from the use-existing choice.
+    pub fn choose_nearby(&mut self) {
+        if self.screen == Screen::Existing {
+            self.screen = Screen::Nearby;
         }
+    }
+
+    /// Open the backup-restore flow from the use-existing choice.
+    pub fn choose_restore(&mut self) {
+        if self.screen == Screen::Existing {
+            self.screen = Screen::Restore;
+        }
+    }
+
+    /// Return to the choice this screen was opened from, before any
+    /// identity exists.
+    pub fn back(&mut self) {
+        match self.screen {
+            Screen::Nearby | Screen::Restore => self.screen = Screen::Existing,
+            Screen::Existing | Screen::NoRecovery => {
+                self.screen = Screen::Intro;
+                self.acknowledged = false;
+            }
+            Screen::Intro | Screen::Done => {}
+        }
+    }
+
+    /// Whether this screen brings an existing identity here.
+    pub fn is_existing_branch(&self) -> bool {
+        matches!(
+            self.screen,
+            Screen::Existing | Screen::Nearby | Screen::Restore
+        )
     }
 
     /// Toggle the acknowledgement — reversible: unticking must lose the ability to proceed again, or the gate is decorative.
@@ -201,7 +232,7 @@ impl Onboarding {
 
     /// Finish after an existing identity was validated and imported.
     pub fn complete_connected(&mut self, identity: MintedIdentity) -> bool {
-        if self.screen != Screen::Connect {
+        if !self.is_existing_branch() {
             return false;
         }
         self.minted = Some(identity);
@@ -378,9 +409,30 @@ mod tests {
             assert_eq!(o.screen(), Screen::Intro);
             assert!(!o.acknowledged());
 
-            o.begin_connect();
+            o.begin_existing();
+            assert_eq!(o.screen(), Screen::Existing);
+            o.choose_nearby();
+            assert_eq!(o.screen(), Screen::Nearby);
+            o.back();
+            assert_eq!(o.screen(), Screen::Existing, "back returns to the choice");
+            o.choose_restore();
+            assert_eq!(o.screen(), Screen::Restore);
+            o.choose_nearby();
+            assert_eq!(
+                o.screen(),
+                Screen::Restore,
+                "flows open only from the choice"
+            );
+            o.back();
             o.back();
             assert_eq!(o.screen(), Screen::Intro);
+
+            o.choose_restore();
+            assert_eq!(
+                o.screen(),
+                Screen::Intro,
+                "the intro has no restore shortcut"
+            );
         }
         // Phase `completing_without_the_gate_changes_nothing`.
         // A UI bug must not be able to mint behind the user's back.

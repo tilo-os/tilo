@@ -1779,37 +1779,23 @@ impl AppHandler {
             &app.theme,
             &app.presence_ctx,
         );
-        // Controls and named rows already publish their real accessibility
-        // geometry. Reuse that exact focus/selection outline for semantic
-        // action presence; this decorates the target without changing local
-        // focus, selection, active tab, or scroll position.
+        // Resolve canonical actions against this layout; never match resource
+        // labels or retain an arrival-time control id through a rebuild.
         let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
-        if !visible_interactions.is_empty() {
+        let bindings = if visible_interactions.is_empty() {
+            Vec::new()
+        } else {
             app.refresh_semantic_tree();
-        }
+            app.with_native_presentation(|root, _, _, _, _| {
+                crate::widget::controls::control_action_bindings(root)
+            })
+            .unwrap_or_default()
+        };
         let native_targets = visible_interactions
             .iter()
             .filter_map(|interaction| {
-                let exact = match &interaction.anchor {
-                    tilo_actions::InteractionAnchor::SemanticControl { id } => app
-                        .semantic_tree()
-                        .node(&crate::a11y_tree::SemanticId(id.clone()))
-                        .and_then(|node| node.bounds),
-                    tilo_actions::InteractionAnchor::ListItems { .. }
-                    | tilo_actions::InteractionAnchor::Resource => {
-                        let mut matches = app
-                            .semantic_tree()
-                            .iter()
-                            .filter(|node| {
-                                node.name.as_deref() == Some(interaction.resource.label.as_str())
-                            })
-                            .filter_map(|node| node.bounds);
-                        let only = matches.next();
-                        only.filter(|_| matches.next().is_none())
-                    }
-                    _ => None,
-                }?;
-                Some((interaction.clone(), exact))
+                crate::action_locus::interaction_bounds(app.semantic_tree(), &bindings, interaction)
+                    .map(|bounds| (interaction.clone(), bounds))
             })
             .collect::<Vec<_>>();
         for (interaction, rect) in native_targets {

@@ -1,6 +1,6 @@
 use super::{
-    AutoCommit, Hit, Key, MapInfo, MapsApp, NamedKey, NodeId, Panel, SearchHit, SearchKeyEffect,
-    Style, TaffyTree, Widget, WindowEvent,
+    AutoCommit, Hit, Key, MapInfo, MapsApp, NamedKey, Panel, SearchHit, SearchKeyEffect,
+    WindowEvent,
 };
 
 impl MapsApp {
@@ -16,54 +16,36 @@ impl MapsApp {
         doc: &mut AutoCommit,
     ) -> bool {
         if self.endpoints.is_focused() {
-            if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers) {
+            if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers, doc) {
                 self.apply_endpoint_effect(effect);
             }
             return true;
         }
         if self.search.is_focused() {
-            match self.search.handle_key(event, scale, modifiers) {
+            match self.search.handle_key(event, scale, modifiers, doc) {
                 SearchKeyEffect::None | SearchKeyEffect::Dismissed => {}
                 SearchKeyEffect::Changed(text) => {
                     self.model.query = text;
                     self.on_search_input();
                 }
-                SearchKeyEffect::Submit => self.run_search(Some(doc)),
+                SearchKeyEffect::Submit => self.run_search(true),
             }
             return true;
         }
         false
     }
 
-    /// Drive one raw event into the ⋯ overflow [`ContextMenu`] (hand-laid, so a
-    /// throwaway leaf + doc satisfy `Widget::handle_event`; the menu hit-tests
-    /// against its own `open_at` rect). Poll `take_selection` afterwards.
+    /// Drive one raw event into the ⋯ overflow [`ContextMenu`] (hand-laid: the
+    /// menu hit-tests against its own `open_at` rect). Poll `take_selection`
+    /// afterwards.
     pub(super) fn drive_overflow(
         &mut self,
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
-        let mut doc = AutoCommit::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return;
-        };
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        self.overflow.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        crate::search_box::drive_hand_laid(&mut self.overflow, event, scale, modifiers, doc);
     }
 
     /// Map an overflow-menu row selection to app state. Index 3 hands the live
@@ -89,9 +71,10 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
-        self.search.forward_pointer(event, scale, modifiers);
-        self.endpoints.forward_pointer(event, scale, modifiers);
+        self.search.forward_pointer(event, scale, modifiers, doc);
+        self.endpoints.forward_pointer(event, scale, modifiers, doc);
     }
 
     /// Forward a press to the field input `origin`/dest/search just focused so
@@ -102,18 +85,14 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
         if matches!(which, Hit::Search(SearchHit::Field)) {
-            self.search.forward_press(event, scale, modifiers);
+            self.search.forward_press(event, scale, modifiers, doc);
         }
     }
 
-    pub(super) fn handle_key(
-        &mut self,
-        key: &Key,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-    ) -> bool {
+    pub(super) fn handle_key(&mut self, key: &Key, modifiers: winit::event::Modifiers) -> bool {
         // A Directions endpoint field (From / To) has keyboard focus: typed
         // characters geocode that endpoint, mirroring the top search field.
         // Focused text fields (search / endpoints) are handled by
@@ -138,7 +117,7 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("t") => {
-                self.enter_transit(doc);
+                self.enter_transit();
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("f") => {
@@ -148,7 +127,7 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
-                self.toggle_save_selected(doc);
+                self.toggle_save_selected();
                 true
             }
             Key::Character(s) if s.as_str() == "1" => {

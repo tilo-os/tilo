@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use env_tools::network::NetworkChoice;
 use env_tools::{
     BuildError, Builder, CacheKey, Catalog, Entry, NoCatalog, Origin, ToolStore, rebuild_tools,
 };
@@ -95,7 +96,8 @@ fn a_fixture_build_seals_only_what_the_packages_added() {
     };
     let runtime = PackageId::from_bytes([1; 32]);
     let store = FakeStore::new(vec![(runtime, tree)], dir.path().join("kept"));
-    let builder = Builder::new(store, NoCatalog, dir.path().join("state"));
+    let builder = Builder::new(store, NoCatalog, dir.path().join("state"))
+        .with_network(NetworkChoice::Offline);
 
     let built = builder.build(&runtime, &packages(&["hello"])).unwrap();
     assert_eq!(
@@ -201,7 +203,8 @@ fn a_catalog_hit_skips_the_build() {
         requested: packages(&["hello"]),
     });
     let store = FakeStore::new(vec![(runtime, tree)], dir.path().join("kept"));
-    let builder = Builder::new(store, catalog, dir.path().join("state"));
+    let builder =
+        Builder::new(store, catalog, dir.path().join("state")).with_network(NetworkChoice::Offline);
     let built = builder.build(&runtime, &packages(&["hello"])).unwrap();
     assert_eq!((built.tool, built.origin), (published, Origin::Catalog));
     assert!(builder.store().stored.lock().unwrap().is_empty());
@@ -219,7 +222,8 @@ fn requests_dnf_rejects_fail_before_building() {
     };
     let runtime = PackageId::from_bytes([3; 32]);
     let store = FakeStore::new(vec![(runtime, tree)], dir.path().join("kept"));
-    let builder = Builder::new(store, NoCatalog, dir.path().join("state"));
+    let builder = Builder::new(store, NoCatalog, dir.path().join("state"))
+        .with_network(NetworkChoice::Offline);
     assert!(matches!(
         builder.build(&runtime, &packages(&["nosuch"])),
         Err(BuildError::Resolve(env_tools::resolve::ResolveError::NoMatch(names))) if names == ["nosuch"]
@@ -253,7 +257,8 @@ fn set_runtime_rebuilds_every_tool_or_none() {
         vec![(old, tree.clone()), (new, tree)],
         dir.path().join("kept"),
     );
-    let builder = Builder::new(store, NoCatalog, dir.path().join("state"));
+    let builder = Builder::new(store, NoCatalog, dir.path().join("state"))
+        .with_network(NetworkChoice::Offline);
 
     // `pkg install hello` on the old runtime, through the record's seam.
     let mut env = Environment::new("work", "2026.10", "x86_64", &old);
@@ -332,5 +337,47 @@ fn a_real_runtime_builds_a_small_package() {
     let sealed = builder.store().kept.join(built.tool.to_hex());
     assert!(sealed.join("usr/bin/tree").is_file());
     assert!(!sealed.join("usr/lib/sysimage/rpm").exists());
+    env_tools::sandbox::remove_tree(dir.path()).unwrap();
+}
+
+/// The build sandbox's network reaches the runtime's repositories and
+/// nothing else: a package host answers, any other host doesn't, and an
+/// address literal is refused. Needs `TILO_ENV_RUNTIME_TREE`, the network,
+/// `pasta` and `/dev/net/tun`.
+#[test]
+fn a_build_reaches_its_repositories_and_nothing_else() {
+    let Some(tree) = std::env::var_os("TILO_ENV_RUNTIME_TREE").map(PathBuf::from) else {
+        eprintln!("skipping: TILO_ENV_RUNTIME_TREE names no env-runtime tree");
+        return;
+    };
+    if !sandbox_or_skip() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(
+        std::env::var_os("TILO_ENV_TOOLS_SCRATCH").map_or_else(std::env::temp_dir, PathBuf::from),
+    )
+    .unwrap();
+    let policy = env_tools::network::repo_policy(&tree, &dir.path().join("mirrors")).unwrap();
+    let sandbox = env_tools::sandbox::BuildSandbox::create(&tree, &dir.path().join("sandbox"))
+        .unwrap()
+        .with_network(env_tools::network::gated(policy));
+    let curl = |url: &str| {
+        sandbox
+            .run(
+                &["curl", "-sS", "-o", "/dev/null", "--max-time", "20", url],
+                std::time::Duration::from_secs(60),
+            )
+            .unwrap()
+    };
+    let repo = curl("https://mirrors.fedoraproject.org/");
+    assert!(
+        repo.success,
+        "the repository host must answer: {}",
+        repo.stderr
+    );
+    let other = curl("https://example.com/");
+    assert!(!other.success, "another host must not answer");
+    let literal = curl("https://1.1.1.1/");
+    assert!(!literal.success, "an address literal must be refused");
     env_tools::sandbox::remove_tree(dir.path()).unwrap();
 }

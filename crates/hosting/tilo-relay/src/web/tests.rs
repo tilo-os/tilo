@@ -184,6 +184,7 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
         hdr_static_metadata: None,
         bit_depth: 0,
         app_id: "org.chromium.Chromium".into(),
+        tab: 0,
     }
 }
 

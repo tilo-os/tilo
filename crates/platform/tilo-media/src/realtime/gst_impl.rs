@@ -116,7 +116,13 @@ pub fn local_capabilities() -> CodecCapabilities {
         for e in realtime_decoders(codec) {
             if registry_has(e.element) {
                 if e.is_hardware() {
-                    caps.hardware_decode.insert(codec);
+                    // The first hardware decoder listed is the one a stream
+                    // gets, so its limit is the codec's.
+                    if caps.hardware_decode.insert(codec)
+                        && let Some(limit) = decoder_size_limit(e)
+                    {
+                        caps.hardware_decode_max.insert(codec, limit);
+                    }
                 } else {
                     caps.software_decode.insert(codec);
                 }
@@ -124,6 +130,45 @@ pub fn local_capabilities() -> CodecCapabilities {
         }
     }
     caps
+}
+
+/// The largest picture a hardware decoder element takes. VA-API, NVDEC and
+/// stateful V4L2 elements state their device's range in their sink caps.
+/// Stateless V4L2 elements (`v4l2sl*dec`, the decoders of ARM boards) state
+/// none; only the kernel's frame-size enumeration knows theirs, so they are
+/// taken to stop at 1920x1088, where the Hantro G1 and its peers do, rather
+/// than be sent pictures they would hand back to the CPU.
+fn decoder_size_limit(element: &CodecElement) -> Option<(u32, u32)> {
+    const STATELESS_V4L2_MAX: (u32, u32) = (1920, 1088);
+    let stated = gst::ElementFactory::find(element.element).and_then(|factory| {
+        factory
+            .static_pad_templates()
+            .iter()
+            .filter(|template| template.direction() == gst::PadDirection::Sink)
+            .flat_map(|template| {
+                let caps = template.caps();
+                caps.iter()
+                    .filter_map(|structure| {
+                        let side = |field: &str| {
+                            structure
+                                .get::<gst::IntRange<i32>>(field)
+                                .map(|range| range.max())
+                                .or_else(|_| structure.get::<i32>(field))
+                                .ok()
+                                .and_then(|max| u32::try_from(max).ok())
+                        };
+                        Some((side("width")?, side("height")?))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            // An open range (`[1, MAX]`) states no limit.
+            .filter(|(w, h)| *w < 32_768 && *h < 32_768)
+            .max_by_key(|(w, h)| u64::from(*w).saturating_mul(u64::from(*h)))
+    });
+    stated.or_else(|| {
+        (element.family == CodecFamily::V4l2 && element.element.starts_with("v4l2sl"))
+            .then_some(STATELESS_V4L2_MAX)
+    })
 }
 
 fn make(factory: &str) -> Result<gst::Element, String> {
@@ -598,17 +643,33 @@ impl RealtimeEncoder {
         // Pin the colour of the samples the encoder receives, so the
         // conversion targets the stream's colour and the encoder signals it.
         // `vapostproc` is left to report its own.
+        // A smaller output is scaled before encoding: `vapostproc` scales as
+        // it converts; otherwise `videoscale` follows the conversion.
+        let scale_to = config
+            .output_size
+            .filter(|size| *size != (config.width, config.height));
+        let scaler = match scale_to {
+            Some(_) if !use_vapostproc => Some(make("videoscale")?),
+            _ => None,
+        };
+        let mut target = if use_vapostproc {
+            gst::Caps::builder("video/x-raw")
+        } else {
+            gst::Caps::builder("video/x-raw")
+                .field("colorimetry", stream_color_to_gst(config.color).to_string())
+        };
+        if let Some((width, height)) = scale_to {
+            target = target
+                .field("width", i32::try_from(width).unwrap_or(i32::MAX))
+                .field("height", i32::try_from(height).unwrap_or(i32::MAX));
+        }
+        let target = if use_vapostproc && scale_to.is_none() {
+            gst::Caps::new_any()
+        } else {
+            target.build()
+        };
         let yuv_filter = gst::ElementFactory::make("capsfilter")
-            .property(
-                "caps",
-                if use_vapostproc {
-                    gst::Caps::new_any()
-                } else {
-                    gst::Caps::builder("video/x-raw")
-                        .field("colorimetry", stream_color_to_gst(config.color).to_string())
-                        .build()
-                },
-            )
+            .property("caps", target)
             .build()
             .map_err(|e| format!("capsfilter: {e}"))?;
         let convert_handle = convert.clone();
@@ -633,19 +694,15 @@ impl RealtimeEncoder {
             .build();
         let src_el = appsrc.clone().upcast::<gst::Element>();
         let sink_el = appsink.clone().upcast::<gst::Element>();
-        let chain = [
-            &src_el,
-            &convert,
-            &yuv_filter,
-            &encoder,
-            &parser,
-            &filter,
-            &sink_el,
-        ];
+        let mut chain = vec![&src_el, &convert];
+        if let Some(scaler) = scaler.as_ref() {
+            chain.push(scaler);
+        }
+        chain.extend([&yuv_filter, &encoder, &parser, &filter, &sink_el]);
         pipeline
-            .add_many(chain)
+            .add_many(chain.iter().copied())
             .map_err(|e| format!("assemble: {e}"))?;
-        gst::Element::link_many(chain).map_err(|e| format!("link: {e}"))?;
+        gst::Element::link_many(chain.iter().copied()).map_err(|e| format!("link: {e}"))?;
 
         let running = Running::start(pipeline, appsrc, &appsink)?;
         let mut enc = Self {

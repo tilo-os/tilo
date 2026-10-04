@@ -26,6 +26,9 @@ struct Desk {
 
 impl Desk {
     fn open() -> Self {
+        // A double click is two clicks within the session's interval; a
+        // busy test machine takes its time between them.
+        ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(10));
         let mut app = TestApp::<App>::new().expect("the app opens");
         for action in canvas::sample::shapes() {
             app.invoke(Invoke::apply(&action).unwrap())
@@ -481,6 +484,68 @@ fn the_eraser_rubs_out_paint_or_whole_strokes() {
     assert!(
         desk.art().mark(&painted).is_some(),
         "one undo brings it back"
+    );
+}
+
+/// An eraser has no ink, but it is a mark like any other: the selection
+/// tool picks it where it rubbed (its outline shows while that tool is in
+/// hand), and Delete takes it away, the paint under it back.
+#[test]
+fn an_eraser_is_picked_and_removed_like_a_mark() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.drag((100.0, 450.0), (450.0, 450.0));
+    let painted = desk.art().marks.last().unwrap().id.clone();
+    desk.key("x");
+    desk.drag((275.0, 400.0), (275.0, 500.0));
+    let rub = desk.art().marks.last().unwrap().id.clone();
+    desk.key("v");
+    desk.pointer(275.0, 470.0);
+    desk.shot("eraser-outlined");
+    desk.click(275.0, 470.0);
+    desk.shot("eraser-picked");
+    desk.key("Delete");
+    let art = desk.art();
+    assert!(art.mark(&rub).is_none(), "the picked eraser is removed");
+    assert!(art.mark(&painted).is_some(), "the paint it rubbed stays");
+}
+
+/// The eyedropper takes the colour the canvas shows: where an eraser took
+/// the paint off, the ground beneath, not the erased stroke's ink.
+#[test]
+fn the_eyedropper_sees_what_an_eraser_left() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.drag((100.0, 450.0), (450.0, 450.0));
+    let ink = desk.art().marks.last().unwrap().style.stroke.clone();
+    desk.key("x");
+    desk.drag((275.0, 400.0), (275.0, 500.0));
+    let picked = |desk: &mut Desk, at: (f64, f64), corner: f64| {
+        desk.key("i");
+        desk.click(at.0, at.1);
+        desk.key("r");
+        desk.drag((corner, 40.0), (corner + 40.0, 70.0));
+        desk.art().marks.last().unwrap().style.fill.clone()
+    };
+    let beside = picked(&mut desk, (150.0, 450.0), 40.0);
+    let erased = picked(&mut desk, (275.0, 450.0), 120.0);
+    assert_eq!(beside, ink, "beside the eraser the ink shows");
+    assert_ne!(erased, ink, "under the eraser it does not");
+    // The ground, give or take its paper's tooth.
+    let ground = desk.art().ground.colour;
+    let channels = |hex: &str| -> Vec<i32> {
+        (1..7)
+            .step_by(2)
+            .map(|at| i32::from_str_radix(hex.get(at..at + 2).unwrap(), 16).unwrap())
+            .collect()
+    };
+    let erased = channels(erased.as_deref().unwrap());
+    assert!(
+        erased
+            .iter()
+            .zip(channels(&ground))
+            .all(|(a, b)| (a - b).abs() <= 8),
+        "the ground shows: {erased:?} against {ground}"
     );
 }
 

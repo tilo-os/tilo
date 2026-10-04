@@ -117,6 +117,19 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(user_public_key);
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // Each device's latest signed directory snapshot is the whole of
+        // what it knows, so a device that was offline catches up from the
+        // newest one per author.
+        NeighbourMsg::PersonalWorkspaces {
+            user_public_key,
+            update,
+        } => {
+            let mut route = Vec::new();
+            route.extend_from_slice(b"personal-workspaces\0");
+            route.extend_from_slice(user_public_key);
+            route.extend_from_slice(&update.author_device_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))

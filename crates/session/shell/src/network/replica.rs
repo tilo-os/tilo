@@ -100,6 +100,11 @@ impl WorkspaceTreeReplica {
         let mut msgs = Vec::with_capacity(rooms.len());
         for room in rooms {
             if tree.requires_native_owner(room) {
+                tracing::debug!(
+                    target: "shell::network::replica",
+                    %room,
+                    "not requesting room replication: the room's native owner replicates it"
+                );
                 continue;
             }
             let heads = tree.room_heads(room);
@@ -119,6 +124,9 @@ impl WorkspaceTreeReplica {
                 since,
                 room: room.to_string(),
                 invite_id: None,
+                nonce: getrandom::rand_core::Rng::next_u64(&mut getrandom::rand_core::UnwrapErr(
+                    getrandom::SysRng,
+                )),
             });
         }
         drop(tree);
@@ -511,6 +519,7 @@ mod tests {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                     room: stranger_room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -534,6 +543,7 @@ mod tests {
                     since: Vec::new(),
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
 
@@ -955,6 +965,7 @@ mod tests {
                     since: vec![1],
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 });
             rep.pending_outgoing
                 .lock()
@@ -963,6 +974,7 @@ mod tests {
                     since: vec![2],
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 });
 
             let drained = rep.drain_outgoing();
@@ -1039,6 +1051,7 @@ mod tests {
                     since: since.clone(),
                     room: elsewhere.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1054,6 +1067,7 @@ mod tests {
                     since: since.clone(),
                     room: room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1068,6 +1082,7 @@ mod tests {
                     since,
                     room: room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1197,6 +1212,7 @@ mod native_owner_gate_tests {
                 since: vec![],
                 room: room.to_string(),
                 invite_id: None,
+                nonce: 0,
             },
         );
         assert!(

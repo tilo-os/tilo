@@ -18,13 +18,11 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
@@ -43,6 +41,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 zip.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
+tilo-automerge.workspace = true
 
 [lints]
 workspace = true

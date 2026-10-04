@@ -45,10 +45,18 @@ fn config(path: std::path::PathBuf) -> Config {
             vec![
                 CapOverride::grant(
                     Subject::agent("Scribe"),
-                    Scope::App("word-processor".into()),
+                    Scope::App("so.tilo.word-processor".into()),
                     Verb::Write,
                 )
                 .with_id("reviewed"),
+                // Invited to the conversation, as the launcher grants it: the
+                // agent's replies and work state are its own Chat edits.
+                CapOverride::grant(
+                    Subject::agent("Scribe"),
+                    Scope::App(CHAT.into()),
+                    Verb::Write,
+                )
+                .with_id("invited"),
             ],
         ),
         content: tilo_content::ContentStore::memory(),

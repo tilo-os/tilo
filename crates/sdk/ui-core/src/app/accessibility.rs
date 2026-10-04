@@ -357,29 +357,11 @@ impl App {
         &mut self,
         user_id: String,
         key: crate::presence::PresenceKey,
-        mut payload: crate::collaboration::PresencePayload,
+        payload: crate::collaboration::PresencePayload,
     ) {
         use crate::presence::RemotePresenceEffect;
-        // Domain actions arrive without UI coordinates by design. If this
-        // frame exposes the same address through one or more controls, bind
-        // the interaction to the preferred live semantic route before the
-        // monotonic presence store sees it. Every later phase resolves by the
-        // same address, so identity remains stable while menus/toolbars move.
-        if let crate::collaboration::PresencePayload::Interaction(update) = &mut payload
-            && matches!(&update.anchor, tilo_actions::InteractionAnchor::Resource)
-        {
-            let address = tilo_actions::ActionAddress::new(
-                update.resource.id.clone(),
-                update.action.id.clone(),
-            );
-            if let Some(route) = self.preferred_action_ui_route(&address)
-                && let Some(target) = route.path.last()
-            {
-                update.anchor = tilo_actions::InteractionAnchor::SemanticControl {
-                    id: target.as_str().to_string(),
-                };
-            }
-        }
+        // Keep canonical anchors intact. Resolve against each presented layout,
+        // never retain an arrival-time layout id across a rebuild.
         let interaction = match &payload {
             crate::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
             _ => None,

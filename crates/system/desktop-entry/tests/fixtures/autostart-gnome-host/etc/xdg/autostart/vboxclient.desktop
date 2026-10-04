@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=vboxclient
+Comment=VirtualBox User Session Services
+Exec=/usr/bin/VBoxClient-all
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+X-Desktop-File-Install-Version=0.28

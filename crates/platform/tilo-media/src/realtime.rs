@@ -28,7 +28,7 @@
 //! implementation needs `--features realtime`; without it construction
 //! returns [`RealtimeError::NotCompiled`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 pub use crate::hw::realtime::{CodecElement, CodecFamily, CodecTier, RealtimePolicy, StreamCodec};
@@ -229,6 +229,10 @@ pub struct EncoderConfig {
     /// sharp text and large static areas.
     pub screen_content: bool,
     pub policy: RealtimePolicy,
+    /// Encode at this size rather than the input's: the pipeline scales each
+    /// frame first (on the GPU where the VA-API path converts, else in
+    /// `videoscale`). Both dimensions must be even.
+    pub output_size: Option<(u32, u32)>,
 }
 
 impl EncoderConfig {
@@ -247,6 +251,7 @@ impl EncoderConfig {
             hdr: None,
             screen_content: false,
             policy: RealtimePolicy::encoder_from_env(),
+            output_size: None,
         }
     }
 
@@ -450,6 +455,11 @@ pub struct CodecCapabilities {
     pub hardware_decode: BTreeSet<StreamCodec>,
     pub software_encode: BTreeSet<StreamCodec>,
     pub software_decode: BTreeSet<StreamCodec>,
+    /// The largest picture each hardware decoder takes, where it has a limit
+    /// (the Hantro G1 on an RK3566 stops at 1920x1088 for H.264). A sender
+    /// encodes no larger, so a receiver never falls back to software
+    /// decoding. A codec missing here has no known limit.
+    pub hardware_decode_max: BTreeMap<StreamCodec, (u32, u32)>,
 }
 
 impl CodecCapabilities {
@@ -784,6 +794,7 @@ mod tests {
             hardware_decode: hw_dec.iter().copied().collect(),
             software_encode: sw.iter().copied().collect(),
             software_decode: sw.iter().copied().collect(),
+            hardware_decode_max: BTreeMap::new(),
         }
     }
 
@@ -819,6 +830,7 @@ mod tests {
                 hardware_decode: [Av1, Vp9].into(),
                 software_encode: [Vp9, Av1].into(),
                 software_decode: [Vp9, Av1].into(),
+                hardware_decode_max: BTreeMap::new(),
             };
             let receiver = CodecCapabilities {
                 software_decode: [Vp9, Av1].into(),
