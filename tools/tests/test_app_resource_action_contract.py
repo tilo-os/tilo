@@ -92,7 +92,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "pub fn app_root() {\n"
                 " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
                 " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
-                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                " ui::widget::resource_actions::immediate(root, resource, |_| {});\n"
                 "}\n"
             )
             violations, _ = contract.audit(root)

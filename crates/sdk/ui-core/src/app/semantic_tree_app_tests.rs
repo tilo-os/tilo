@@ -789,35 +789,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert!(app.action_palette().is_some(), "confirmation UI is open");
     }
 
-    // Case `action_bound_background_control_remains_pending_until_terminal_update`.
-    {
-        let resource =
-            crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
-        let button = Button::new("run", "Run", None).on_action(binding);
-        let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            sender
-                .send(Ok(tilo_actions::ActionOutput::default()))
-                .unwrap();
-            Ok(receiver)
-        });
-        let mut app = App::new_with_controlled_inputs(State::new(), root);
-        app.init_layout();
-        activate_bound_button(&mut app);
-        assert_eq!(app.dispatch_control_invocations(), 1);
-        assert_eq!(
-            app.actions.local_invocations.len(),
-            1,
-            "Accepted is not success"
-        );
-        assert!(app.poll_directed_invocations());
-        assert!(
-            app.actions.local_invocations.is_empty(),
-            "terminal result closes the tracked local job"
-        );
-    }
-
     // Case `confirmed_control_preserves_captured_arguments_through_palette_dispatch`.
     {
         let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);

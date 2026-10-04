@@ -12,9 +12,10 @@
 //!   cancelling makes the older completion stale, so a slow answer can never
 //!   overwrite a newer one, and the worker polls `is_current` between chunks
 //!   of work to stop early.
-//! - Run and Cancel are effect actions with a job lifecycle, not document
-//!   edits, so the palette, agents and scripts can start and cancel the task
-//!   exactly as the buttons do.
+//! - Run and Cancel are the app's effects: work with no document delta,
+//!   published beside the resource's actions, so the palette, agents and
+//!   scripts start and cancel the task exactly as the buttons do. Run is a
+//!   job: its caller learns the count when the worker finishes.
 //!
 //! The worker runs through `ui::background`: on a thread where the target has
 //! them, on the page's executor on the web.
@@ -110,52 +111,15 @@ enum Screen {
     Done,
 }
 
-/// Run and Cancel as effect actions on their own resource. Run takes no
-/// arguments; Cancel takes a confirmation flag, so the action surface asks
-/// before discarding work.
-#[expect(
-    clippy::expect_used,
-    reason = "a boolean argument object always serializes"
-)]
-fn task_resource() -> tilo_actions::Resource {
-    let mut resource = ui::widget::resource_actions::resource(
-        "example.prime-count",
-        "Prime count",
-        "run",
-        "Count primes",
-        true,
-    );
-    let mut cancel = tilo_actions::ActionSpec::typed_operation(
-        "cancel",
-        "Cancel the count",
-        "Confirm cancellation",
-        tilo_actions::OperationKind::Effect,
-        ui::widget::resource_actions::OPERATION_TYPE,
-        vec![tilo_actions::ActionParam::required_owned(
-            "cancel",
-            tilo_actions::ParamType::Boolean,
-            "Cancel the running count",
-        )],
-        |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                ui::widget::resource_actions::OPERATION_TYPE,
-                &args.to_json(),
-            )
-            .expect("a boolean argument object serializes")
-        },
-    );
-    cancel.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
-    cancel.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
-    cancel.contract.result = tilo_actions::ResultSpec::Job;
-    resource.actions.push(cancel);
-    resource
-}
-
-fn wants_cancel(payload: &[u8]) -> bool {
-    ui::serde_json::from_slice::<ui::serde_json::Value>(payload)
-        .ok()
-        .and_then(|value| value.get("cancel").and_then(ui::serde_json::Value::as_bool))
-        == Some(true)
+/// What anyone can do with the task.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "example.prime-search.task")]
+pub enum Task {
+    /// Count primes.
+    #[effect(job, cancellable)]
+    Run,
+    /// Cancel the count.
+    Cancel,
 }
 
 pub struct App;
@@ -165,10 +129,6 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
-    #[expect(
-        clippy::expect_used,
-        reason = "the buttons bind to the actions task_resource just built"
-    )]
     fn view(cx: &mut ViewCx<Search>) -> Element {
         install_catalog();
         #[expect(
@@ -197,18 +157,46 @@ impl ResourceApp for App {
 
         let task = LatestTask::new(Progress::Idle);
         let progress = task.state();
-        let resource = task_resource();
-        let run = Button::new("run-task", "task-run", None).on_action(
-            tilo_actions::ActionBinding::unit_for(&resource, "run")
-                .expect("the run button matches the exported action"),
-        );
-        let cancel = tilo_actions::ActionBinding::static_json_for(
-            &resource,
-            "cancel",
-            ui::serde_json::Map::from_iter([("cancel".into(), ui::serde_json::json!(true))]),
-        )
-        .expect("the cancel button matches the exported action");
+        cx.effects(move |effect: Task, cx| match effect {
+            Task::Cancel => {
+                task.cancel(Progress::Idle);
+                Ok(Effected::done())
+            }
+            Task::Run => {
+                // The worker gets a copy of its input, read from the resource now.
+                let limit = cx.live().with(|search| search.limit);
+                let completion = task.begin(Progress::Running);
+                let reply = cx.reply();
+                // A worker where the target has one; the page's executor otherwise.
+                let spawned =
+                    ui::background::Background::current().spawn("count-primes", move || {
+                        let result = count_primes(limit, || {
+                            completion.is_current() && !reply.is_cancelled()
+                        });
+                        if let Some(count) = result {
+                            completion.complete(Progress::Done { limit, count });
+                            reply.finish(Ok(tilo_actions::ActionOutput {
+                                value: Some(ui::serde_json::json!(count)),
+                                resources: Vec::new(),
+                            }));
+                        } else {
+                            // Stale once Cancel ran; current when the caller
+                            // cancelled the job itself.
+                            completion.complete(Progress::Idle);
+                            reply.finish(Err(String::from("cancelled")));
+                        }
+                    });
+                if spawned.is_err() {
+                    task.cancel(Progress::Idle);
+                    return Err(String::from("Background work is not available here."));
+                }
+                Ok(Effected::Pending)
+            }
+        });
 
+        let actions = cx.actions();
+        let run =
+            actions.bind_effect_invocation(Button::new("run-task", "task-run", None), &Task::Run);
         let body = ModelView::from_state_by(
             &progress,
             |progress| match progress {
@@ -222,7 +210,10 @@ impl ResourceApp for App {
                     Progress::Running => Box::new(ui::column![
                         Spinner::new(),
                         Text::new("task-running").with_id("task-status"),
-                        Button::new("cancel-task", "task-cancel", None).on_action(cancel.clone()),
+                        actions.bind_effect_invocation(
+                            Button::new("cancel-task", "task-cancel", None),
+                            &Task::Cancel
+                        ),
                     ]),
                     Progress::Done { limit, count } => Box::new(
                         Text::new("task-done")
@@ -234,44 +225,12 @@ impl ResourceApp for App {
             },
         );
 
-        let root = Box::new(ui::column![
+        Box::new(ui::column![
             Text::new("task-title").with_role(TextRole::Title),
             labeled_field("task-limit-label", limit),
             run,
             body,
-        ]);
-        let live = cx.live().clone();
-        let cancel_task = task.clone();
-        ui::widget::resource_actions::background(root, resource, move |payload| {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            if wants_cancel(payload) {
-                cancel_task.cancel(Progress::Idle);
-                let _ = sender.send(Ok(tilo_actions::ActionOutput::default()));
-                return Ok(receiver);
-            }
-            // The worker gets a copy of its input, read from the resource now.
-            let limit = live.with(|search| search.limit);
-            let completion = task.begin(Progress::Running);
-            let unavailable = sender.clone();
-            // A worker where the target has one; the page's executor otherwise.
-            let spawned = ui::background::Background::current().spawn("count-primes", move || {
-                let result = count_primes(limit, || completion.is_current());
-                let outcome = match result {
-                    Some(count) => {
-                        completion.complete(Progress::Done { limit, count });
-                        Ok(tilo_actions::ActionOutput::default())
-                    }
-                    None => Err(String::from("cancelled")),
-                };
-                let _ = sender.send(outcome);
-            });
-            if spawned.is_err() {
-                task.cancel(Progress::Idle);
-                let _ =
-                    unavailable.send(Err(String::from("Background work is not available here.")));
-            }
-            Ok(receiver)
-        })
+        ])
     }
 }
 

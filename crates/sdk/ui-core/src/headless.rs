@@ -9209,9 +9209,8 @@ mod tests {
     fn audits_certify_action_binding_search_projection_and_accessibility() {
         // Case `native_app_audit_proves_action_binding_and_a11y_together`.
         {
-            let resource = crate::widget::resource_actions::resource(
-                "example", "Example", "save", "Save", false,
-            );
+            let resource =
+                crate::widget::resource_actions::resource("example", "Example", "save", "Save");
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let operation_calls = calls.clone();
