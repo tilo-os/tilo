@@ -864,8 +864,7 @@ mod tests {
     fn captured<T>(scenario: &str, read: impl FnOnce(&mut TerminalWidget) -> T) -> T {
         let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
             .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
-        app.harness()
-            .with_widget_mut(read)
+        app.with_surface(read)
             .expect("the terminal surface is hosted")
     }
 
