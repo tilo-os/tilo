@@ -79,17 +79,7 @@ impl Resource for Notebook {
     }
 
     fn search(state: &Workspace) -> Vec<SearchEntry> {
-        state
-            .pages()
-            .iter()
-            .map(|page| SearchEntry {
-                anchor: Some(format!("notes.page:{}", page.id)),
-                title: page.title.clone(),
-                text: String::new(),
-                action: None,
-                ..Default::default()
-            })
-            .collect()
+        crate::search::entries(state)
     }
 }
 

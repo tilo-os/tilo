@@ -355,13 +355,10 @@ pub struct NotesApp {
     /// when the document heads advance, alongside the full-text catalogue;
     /// drawing a selected note therefore never scans a large notebook.
     backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
-    /// Durable document heads used as the retained search catalogue revision.
-    /// In the normal no-edit frame this avoids snapshotting every page/block
-    /// just to rediscover the catalogue has not changed.
+    /// Durable document heads the block snapshot and backlinks were taken
+    /// at. In the normal no-edit frame this avoids snapshotting every
+    /// page/block just to rediscover nothing changed.
     search_heads: Option<Vec<ChangeHash>>,
-    /// Retained complete catalogue; Ctrl+K receives a cheap handle instead of
-    /// rebuilding/cloning every page and block at open time.
-    search_provider: crate::search_provider::NoteSearchProvider,
     /// Last theme text scale, captured during layout. Responsive chrome uses
     /// it for width/height reservations so 200% text switches to the drawer
     /// before page labels or the title stack can collide.
@@ -423,7 +420,6 @@ impl NotesApp {
     }
 
     fn build_widget(workspace: Workspace, sidebar: PageSidebar, main: MainPanel) -> Self {
-        let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
         let initial_route = workspace.selected();
 
         let mut app = Self {
@@ -475,7 +471,6 @@ impl NotesApp {
             search_blocks: HashMap::new(),
             backlink_index: HashMap::new(),
             search_heads: None,
-            search_provider,
             text_scale: 1.0,
             motion_reduced: false,
             prepared_local_focus: None,
@@ -1127,8 +1122,6 @@ impl NotesApp {
                 (target, sources)
             })
             .collect();
-        self.search_provider
-            .update(&self.workspace, &self.search_blocks);
         self.search_heads = Some(heads);
     }
 
@@ -1902,7 +1895,6 @@ impl ui::application_view::ApplicationViewState for NotesApp {
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState
     );
@@ -2461,16 +2453,6 @@ impl ui::presence::capability::PublishesPresence for NotesApp {
             },
             PresencePayload::Arrived,
         ))
-    }
-}
-
-impl ui::search::capability::SearchSource for NotesApp {
-    /// Fold the notebook into the unified Ctrl+K palette: a snapshot
-    /// [`NoteSearchProvider`](crate::search_provider::NoteSearchProvider) makes
-    /// every page findable there by title, alongside the actions the app
-    /// exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 
