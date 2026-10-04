@@ -24,7 +24,6 @@
 "apps/browser/src/resource.rs" = 2
 "apps/calculator/src/resource.rs" = 1
 "apps/calendar/src/resource.rs" = 1
-"apps/camera/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
 "apps/clocks/src/resource.rs" = 1
 "apps/code-editor/src/resource.rs" = 2
@@ -77,8 +76,6 @@
 "apps/backups/src/main.rs" = 2
 "apps/calculator/src/main.rs" = 1
 "apps/calendar/src/main.rs" = 1
-"apps/camera/src/lib.rs" = 2
-"apps/camera/src/main.rs" = 1
 "apps/chat/src/main.rs" = 1
 "apps/clocks/src/lib.rs" = 2
 "apps/clocks/src/main.rs" = 2
@@ -151,7 +148,6 @@
 "apps/browser/src/browser_widget.rs" = 1
 "apps/calculator/src/framework_history.rs" = 1
 "apps/calendar/src/store.rs" = 1
-"apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1
 "apps/containers/src/framework_history.rs" = 1
 "apps/db-client/src/doc.rs" = 1

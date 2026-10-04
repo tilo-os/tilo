@@ -1,27 +1,30 @@
 //! Camera as a [`tilo_resource::Resource`]: one action vocabulary for capture
-//! prefs and scan history; live shutter / device Effects stay extras.
+//! prefs, scan history and the recent-capture handoff; the shutter, devices
+//! and scanners are live rows the surface publishes.
 //!
 //! Document mutations (mode, lens, settings toggles) live on this resource via
 //! [`Resource::bound_actions`] / [`Resource::children`]. Screen reveals are
 //! Views ([`Resource::local_operations`]). Shutter, record, device chooser,
-//! code-scanner import and document-scanner Effects are hosted live extras —
-//! never a second hand-built Document tree beside [`tilo_resource::publish`].
+//! code-scanner import and document-scanner Effects ride the surface's
+//! [`ResourceSurface::live_rows`].
 
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ROOT};
-use ui::framework::{Command, Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use automerge::ROOT;
+use ui::framework::{
+    Command, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
     CAMERA_ACTION_TYPE, CameraAction, bound_mode_facing_actions, capture_item_from_shared,
-    live_effect_extras, publish_document_children, register, screen_view_specs,
+    publish_document_children, screen_view_specs,
 };
 use crate::app::CameraApp;
 use crate::doc::{self, SharedCapture};
-use crate::model::{CaptureMode, Facing, ScanEntry, Settings};
+use crate::model::{CaptureKind, CaptureMode, Facing, ScanEntry, Settings, Timer};
 
 /// Stable id for the published camera root.
 pub const CAMERA_RESOURCE_ID: &str = "camera";
@@ -59,10 +62,6 @@ impl Resource for Camera {
     type State = CameraState;
     type Action = CameraAction;
 
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
     fn read(doc: &Doc) -> Result<CameraState, ModelError> {
         Ok(CameraState {
             mode: doc::read_mode(doc, &ROOT),
@@ -74,8 +73,8 @@ impl Resource for Camera {
     }
 
     fn bound_actions(state: &CameraState) -> Vec<ActionSpec> {
-        // Recording is a live Effect; hosted publish cannot see it, so mode
-        // stays available here and the surface still refuses while recording.
+        // Recording is live state the resource cannot see: mode stays
+        // offered here and the surface refuses a change while recording.
         bound_mode_facing_actions(state.facing, false)
             .into_iter()
             .filter(|spec| spec.kind == OperationKind::Document)
@@ -116,9 +115,46 @@ impl Resource for Camera {
     }
 }
 
-/// Hosted-only extras that are not document state.
-pub(crate) fn live_extras(app: &CameraApp) -> Vec<PublishedResource> {
-    live_effect_extras(&app.camera_resource_ctx())
+/// The clock a screenshot reads instead of the machine's, in Unix seconds,
+/// so capture times and their relative labels come out the same every run.
+#[derive(Clone, Copy, Debug)]
+pub struct ShotClock(pub i64);
+
+/// When every screenshot is taken.
+const SHOT_NOW: i64 = 1_800_000_000;
+
+/// The screenshots: the viewfinder (photo, video, a self-timer counting
+/// down), the code scanner, the document scanner (empty, with a page, cropping
+/// one), the settings (top and scrolled), and the viewfinder when the camera
+/// is missing, refused or broken.
+const SCENARIOS: &[&str] = &[
+    "video",
+    "timer",
+    "scanner",
+    "document",
+    "document-page",
+    "document-crop",
+    "settings",
+    "settings-scrolled",
+    "no-camera",
+    "camera-permission",
+    "camera-error",
+];
+
+/// The recent capture every screenshot hands off: a photo taken two minutes
+/// before the shot.
+pub(crate) fn sample_capture() -> CameraAction {
+    CameraAction::RegisterCapture {
+        id: "c1".into(),
+        media_id: format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1),
+        kind: CaptureKind::Photo,
+        ts: SHOT_NOW - 120,
+        w: 4_032,
+        h: 3_024,
+        dur_ms: 0,
+        label: "Golden hour".into(),
+        facing: Facing::Back,
+    }
 }
 
 /// Framework app: the camera widget is the surface over [`Camera`].
@@ -129,12 +165,45 @@ impl ResourceApp for CameraShell {
     const ID: &'static str = "so.tilo.camera";
     const TITLE: &'static str = "Camera";
     const ICON: Option<&'static str> = Some("camera");
+
+    /// A live window drives the cameras and scanners of this device and
+    /// writes captures to its picture folder; a screenshot or a past version
+    /// shows sample frames and reaches nothing.
+    fn view(cx: &mut ViewCx<Camera>) -> Element {
+        if cx.mode().is_live() {
+            cx.surface(CameraApp::disk())
+        } else {
+            cx.surface(CameraApp::sample())
+        }
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
-    fn view(cx: &mut ViewCx<Camera>) -> Element {
-        cx.surface(CameraApp::disk())
+    fn fixture(fixture: &mut Fixture<Camera>) {
+        fixture.provide(ShotClock(SHOT_NOW));
+    }
+
+    /// Every screenshot has a recent capture to hand off; the video and
+    /// timer scenarios set the mode and the timer as a person would.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Camera>> {
+        let mut actions = vec![sample_capture()];
+        match name {
+            Some("video") => actions.push(CameraAction::SetMode {
+                mode: CaptureMode::Video,
+            }),
+            Some("timer") => actions.push(CameraAction::SetTimer { timer: Timer::S3 }),
+            _ => {}
+        }
+        actions
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
     }
 
     fn commands() -> &'static [Command] {
@@ -168,137 +237,61 @@ fn emit_photos(dir: &str) -> Result<(), String> {
 }
 
 impl ResourceSurface<Camera> for CameraApp {
-    fn present(&mut self, state: &Rc<CameraState>) {
-        // Adopt shared prefs / scans / handoff only — never wipe unpublished local.
-        self.adopt_resource_state(state);
+    /// The surface reads the record in `sync`, from the document it is
+    /// handed: the live one, or a past version in History.
+    fn present(&mut self, _state: &Rc<CameraState>) {
+        self.mark_dirty();
     }
 
     fn attach(&mut self, cx: SurfaceCx<Camera>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher for capture settings, scans, and the recent handoff.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Camera>>,
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
+        if cx.mode() == RunMode::Capture
+            && let Some(clock) = cx.fixture::<ShotClock>()
+        {
+            self.set_clock(clock.0);
         }
+        self.attach_dispatcher(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scene(scenario);
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        crate::actions::live_effect_extras(&self.camera_resource_ctx())
+            .into_iter()
+            .map(live_row)
+            .collect()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.live_rows().into_iter().find(|row| row.id() == id)
     }
 }
 
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Camera>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &CameraAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = crate::actions::encode(action).ok();
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<CameraShell>()
-}
-
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots"
-            | "--responsive-matrix"
-            | "--native-audit"
-            | "--headless"
-            | "--scan-first"
-            | "--disk"
-            | "--crop"
-            | "--timer-running" => return true,
-            "--screen" | "--mode" | "--dir" | "--scroll" | "--hover" | "--width" | "--height"
-            | "--camera-state" => {
-                let _ = args.next();
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
+/// A published effect root as a live row.
+fn live_row(resource: PublishedResource) -> LiveRow {
+    let row = resource.actions.into_iter().fold(
+        LiveRow::new(resource.id.0, resource.kind, resource.label),
+        LiveRow::operation,
+    );
+    resource
+        .children
+        .into_iter()
+        .map(live_row)
+        .fold(row, LiveRow::row)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_actions::Action;
-    use ui::widget::Widget;
+    use ui::prelude::TestApp;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one assertion covers publish ownership and hosted extras"
-    )]
-    fn resource_publish_owns_document_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
-        CameraAction::SetMode {
+    fn the_published_camera_owns_the_document_door_and_rows_carry_effects() {
+        let state = CameraState {
             mode: CaptureMode::Video,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        CameraAction::SetGrid { on: true }.apply(&mut doc).unwrap();
-        doc.commit();
-
-        let state = Camera::read(&doc).expect("seeded camera state");
+            ..CameraState::default()
+        };
         let published = ui::tilo_resource::publish::<Camera>(CAMERA_RESOURCE_ID, "Camera", &state);
         assert_eq!(published.kind, "camera");
         for id in ["photo-mode", "video-mode", "lens-back", "lens-front"] {
@@ -319,89 +312,50 @@ mod tests {
             .iter()
             .find(|child| child.kind == "camera.settings")
             .expect("settings child on the published door");
-        for id in ["grid", "resolution-4k", "hdr"] {
+        for id in ["grid", "hdr"] {
             assert!(
-                settings.actions.iter().any(|action| action.id == id
-                    || action.id.starts_with("resolution-")
-                    || action.id == "hdr"
-                    || action.id == "grid"),
-                "{id}-family must be on settings; got {:?}",
-                settings
-                    .actions
-                    .iter()
-                    .map(|a| a.id.as_str())
-                    .collect::<Vec<_>>()
+                settings.actions.iter().any(|action| action.id == id),
+                "{id} must be on settings"
             );
         }
-        assert!(
-            settings.actions.iter().any(|action| action.id == "grid"),
-            "grid Document op must be on settings"
-        );
 
-        let mut app = CameraApp::sample();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        let camera = standalone
-            .iter()
-            .find(|resource| resource.kind == "camera")
-            .expect("standalone publishes the camera root");
+        let rows: Vec<_> = CameraApp::sample()
+            .live_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
+        for kind in [
+            "camera.capture",
+            "camera.scanner",
+            "camera.document-scanner",
+        ] {
+            assert!(rows.iter().any(|row| row.kind == kind), "{kind} is a row");
+        }
         assert!(
-            camera
-                .children
-                .iter()
-                .any(|child| child.kind == "camera.settings"),
-            "settings ride the published camera"
+            rows.iter()
+                .flat_map(|row| row.actions.iter())
+                .all(|action| action.kind != OperationKind::Document),
+            "rows carry views and effects only"
         );
-        assert!(
-            camera
-                .actions
-                .iter()
-                .any(|action| action.id == "video-mode"),
-            "mode Document ops ride the published camera"
-        );
+    }
 
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras.iter().all(|resource| {
-                !matches!(resource.kind.as_str(), "camera.settings" | "camera")
-                    && resource
-                        .actions
-                        .iter()
-                        .all(|action| action.kind != OperationKind::Document)
-            }),
-            "hosted must not republish Document prefs beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|r| {
-                    (
-                        r.id.as_str(),
-                        r.actions
-                            .iter()
-                            .map(|a| (a.id.as_str(), a.kind))
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            extras.iter().any(|r| r.kind == "camera.capture"),
-            "hosted still publishes live capture Effects"
-        );
+    /// Every screenshot is a capture of sample frames at a fixed time, its
+    /// recent capture and modes staged through actions.
+    #[test]
+    fn captures_stage_the_record_through_actions() {
+        let mut viewfinder = TestApp::<CameraShell>::capture(None).unwrap();
+        assert_eq!(viewfinder.harness().inspection().viewport, [1280, 800]);
+        let recent = viewfinder
+            .state()
+            .recent
+            .expect("a recent capture to hand off");
+        assert_eq!(recent.label, "Golden hour");
+        assert_eq!(viewfinder.state().mode, CaptureMode::Photo);
 
-        // Empty present must not wipe unpublished local prefs / scans.
-        let mut local = CameraApp::sample();
-        let mut local_doc = AutoCommit::new();
-        local.sync(&mut local_doc, &ROOT);
-        let before_scans = local.scan_count_for_test();
-        local.adopt_resource_state(&CameraState::default());
-        assert_eq!(
-            local.scan_count_for_test(),
-            before_scans,
-            "adopting an empty projection must not clear unpublished scans"
-        );
+        let video = TestApp::<CameraShell>::capture(Some("video")).unwrap();
+        assert_eq!(video.state().mode, CaptureMode::Video);
+
+        let timer = TestApp::<CameraShell>::capture(Some("timer")).unwrap();
+        assert_eq!(timer.state().settings.timer, Timer::S3);
     }
 }
