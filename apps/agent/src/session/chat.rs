@@ -42,15 +42,6 @@ fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
     format!("agent-reply-{}", digest.0.simple())
 }
 
-fn matching_document_route(
-    contract: &'static AppContract,
-    cluster_id: &str,
-    artifact: collab_types::ArtifactId,
-) -> Option<&'static str> {
-    (artifact == collab_types::document_artifact_id(contract.app_id, cluster_id, ""))
-        .then_some(contract.app_id)
-}
-
 impl Session {
     /// The artifact id is part of the authenticated envelope, unlike a
     /// schema discovered by inspecting untrusted document contents.
@@ -73,12 +64,12 @@ impl Session {
     fn document_heads(&mut self) -> BTreeMap<&'static str, Vec<automerge::ChangeHash>> {
         let mut heads = BTreeMap::new();
         if let Some(editor) = &mut self.editor {
-            heads.insert(editor.contract().namespace, editor.doc.get_heads());
+            heads.insert(editor.contract().namespace, editor.heads());
         }
         heads.extend(
             self.peers
                 .iter_mut()
-                .map(|(namespace, editor)| (*namespace, editor.doc.get_heads())),
+                .map(|(namespace, editor)| (*namespace, editor.heads())),
         );
         heads
     }
@@ -91,18 +82,16 @@ impl Session {
         self.peers.iter_mut().any(|(namespace, editor)| {
             before.get(namespace).is_some_and(|heads| {
                 editor
-                    .doc
-                    .get_changes(heads)
+                    .changes_since(heads)
                     .iter()
                     .any(|change| change.actor_id().to_bytes() == actor.as_bytes())
             })
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "route validation and schema validation remain adjacent for each accepted document"
-    )]
+    /// The app a document belongs to is read off its authenticated route.
+    /// In Chat mode every document is a route-owned replica; in document
+    /// mode, so is every app's except the page the agent was invited to.
     fn absorb_routed_document(&mut self, event: &CollabEvent) -> Result<bool> {
         let CollabEvent::Document {
             envelope,
@@ -116,48 +105,17 @@ impl Session {
             .document_mutation()
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?;
-        let cluster_id = self.cfg.cluster.to_string();
-        let route_for = |contract: &'static AppContract| {
-            matching_document_route(contract, &cluster_id, envelope.artifact)
-        };
-        let chat_contract = surface::CONTRACTS
-            .iter()
-            .find(|contract| contract.namespace == "chat");
-        let chat_route = chat_contract.and_then(route_for);
-        if let (Some(contract), Some(route_app_id)) = (chat_contract, chat_route) {
-            let changed = match mutation {
-                DocumentMutation::Snapshot(data) => {
-                    if let Some(peer) = self.peers.get_mut("chat") {
-                        if peer.route_app_id() == route_app_id {
-                            peer.merge_full_any(&data)
-                        } else {
-                            Ok(false)
-                        }
-                    } else if (contract.recognises)(&automerge::AutoCommit::load(&data)?) {
-                        self.peers.insert(
-                            "chat",
-                            Editor::peer_from_snapshot_on_route(
-                                contract,
-                                route_app_id,
-                                &data,
-                                &self.cfg.agent_id,
-                            )?,
-                        );
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                }
-                DocumentMutation::Incremental(data) => match self.peers.get_mut("chat") {
-                    Some(peer) if peer.route_app_id() == route_app_id => {
-                        peer.merge_incremental(&data)
-                    }
-                    Some(_) | None => Ok(false),
-                },
-            }?;
-            if changed && let Some(peer) = self.peers.get("chat") {
-                for channel in ChatDoc::list_channels(&peer.doc) {
-                    for message in ChatDoc::list_messages(&peer.doc, &channel.id) {
+        let chat_mode = is_chat_app_id(&self.cfg.app_id);
+        let routed = surface::for_artifact(&self.cfg.cluster.to_string(), envelope.artifact)
+            .filter(|contract| chat_mode || contract.app_id() != self.cfg.app_id);
+        if let Some(contract) = routed {
+            let changed = self.absorb_route_owned(contract, mutation);
+            if changed
+                && contract.namespace == "chat"
+                && let Some(peer) = self.peers.get("chat")
+            {
+                for channel in ChatDoc::list_channels(peer.doc()) {
+                    for message in ChatDoc::list_messages(peer.doc(), &channel.id) {
                         self.chat_sources
                             .entry(message.id)
                             .or_insert_with(|| (from_user_id.clone(), envelope.author));
@@ -166,82 +124,70 @@ impl Session {
             }
             return Ok(changed);
         }
-        // All documents in Chat mode remain route-owned secondary replicas.
-        // In particular, Writer must never become `editor`, whose legacy
-        // presence reply writes to the session's primary (now Chat) route.
-        if is_chat_app_id(&self.cfg.app_id) {
-            let Some((contract, route_app_id)) = surface::CONTRACTS
-                .iter()
-                .filter(|contract| contract.namespace != "chat")
-                .find_map(|contract| route_for(contract).map(|route| (contract, route)))
-            else {
-                return Ok(false);
-            };
-            return match mutation {
-                DocumentMutation::Snapshot(data) => {
-                    if let Some(peer) = self.peers.get_mut(contract.namespace) {
-                        if peer.route_app_id() == route_app_id {
-                            peer.merge_full_any(&data)
-                        } else {
-                            Ok(false)
-                        }
-                    } else if (contract.recognises)(&automerge::AutoCommit::load(&data)?) {
-                        self.peers.insert(
-                            contract.namespace,
-                            Editor::peer_from_snapshot_on_route(
-                                contract,
-                                route_app_id,
-                                &data,
-                                &self.cfg.agent_id,
-                            )?,
-                        );
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                }
-                DocumentMutation::Incremental(data) => match self.peers.get_mut(contract.namespace)
-                {
-                    Some(peer) if peer.route_app_id() == route_app_id => {
-                        peer.merge_incremental(&data)
-                    }
-                    Some(_) | None => Ok(false),
-                },
-            };
+        // Chat mode holds route-owned replicas only. In particular, Writer
+        // must never become `editor`, whose presence reply writes to the
+        // session's primary (there, Chat) route.
+        if chat_mode {
+            return Ok(false);
         }
         match mutation {
-            DocumentMutation::Snapshot(data) => {
-                if crate::apply::attribute(&data)
-                    .is_some_and(|contract| contract.namespace == "chat")
-                {
-                    return Ok(false);
-                }
-                self.absorb_snapshot(&data)
-            }
+            DocumentMutation::Snapshot(data) => self.absorb_snapshot(envelope.artifact, &data),
             DocumentMutation::Incremental(data) => {
-                // Never let a mismatched Chat artifact mutate the held Chat replica.
-                if let Some(editor) = self.editor.as_mut()
-                    && editor.merge_incremental(&data)?
-                {
-                    return Ok(true);
-                }
-                for (namespace, editor) in &mut self.peers {
-                    if *namespace != "chat" && editor.merge_incremental(&data)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+                // An unrouted change never touches a route-owned replica.
+                Ok(self
+                    .editor
+                    .as_mut()
+                    .is_some_and(|editor| editor.merge_incremental(&data)))
             }
         }
     }
 
+    /// Merge what `contract`'s package-primary route sent into the replica
+    /// held for it, starting one from a snapshot of the app's own kind.
+    fn absorb_route_owned(
+        &mut self,
+        contract: &'static AppContract,
+        mutation: DocumentMutation,
+    ) -> bool {
+        let route_app_id = contract.app_id();
+        match mutation {
+            DocumentMutation::Snapshot(data) => match self.peers.get_mut(contract.namespace) {
+                Some(peer) => peer.route_app_id() == route_app_id && peer.merge_full(&data),
+                None => match Editor::peer_from_snapshot_on_route(
+                    contract,
+                    route_app_id,
+                    &data,
+                    &self.cfg.agent_id,
+                    self.cfg.permissions.clone(),
+                ) {
+                    Ok(peer) => {
+                        self.peers.insert(contract.namespace, peer);
+                        true
+                    }
+                    Err(error) => {
+                        tracing::debug!(app = contract.namespace, %error, "ignored a snapshot");
+                        false
+                    }
+                },
+            },
+            DocumentMutation::Incremental(data) => {
+                self.peers.get_mut(contract.namespace).is_some_and(|peer| {
+                    peer.route_app_id() == route_app_id && peer.merge_incremental(&data)
+                })
+            }
+        }
+    }
+
+    /// Write to the conversation through Chat's own door: the agent's
+    /// reply and the state of its work are Chat actions, permission-checked
+    /// and attributed to the agent like any participant's.
     fn publish_chat(&mut self, action: &::chat::actions::ChatAction) -> Result<()> {
         let editor = self
             .peers
             .get_mut("chat")
             .ok_or_else(|| anyhow::anyhow!("Chat state unavailable"))?;
         let route_app_id = editor.route_app_id().to_string();
-        if let Some(data) = editor.apply_foreign(action)? {
+        if let Some(data) = editor.apply::<::chat::Chat>(std::slice::from_ref(action))? {
             self.link.send_to_route(
                 RouteSpec::app(route_app_id.as_str(), self.cfg.cluster),
                 &CollabRequest::document_incremental(data),
@@ -304,7 +250,7 @@ impl Session {
                     candidate.live
                         && candidate.cluster_id == self.cfg.cluster.to_string()
                         && candidate.record_id.is_empty()
-                        && candidate.app_id == contract.app_id
+                        && candidate.app_id == contract.app_id()
                 })
                 .map(|candidate| candidate.app_id.as_str())
                 .next()
@@ -367,9 +313,9 @@ impl Session {
         let Some(editor) = self.peers.get("chat") else {
             return Ok(false);
         };
-        let messages: Vec<_> = ChatDoc::list_channels(&editor.doc)
+        let messages: Vec<_> = ChatDoc::list_channels(editor.doc())
             .iter()
-            .flat_map(|channel| ChatDoc::list_messages(&editor.doc, &channel.id))
+            .flat_map(|channel| ChatDoc::list_messages(editor.doc(), &channel.id))
             .collect();
         let handled = crate::listen::answered(&messages, &self.cfg.agent_id);
         let Some(summons) = crate::listen::next_summons(
@@ -466,7 +412,10 @@ impl Session {
             if offer.descriptor.kind != tilo_actions::OperationKind::Document {
                 return self.chat_refused("External effects and view operations are unavailable in this Chat runner until durable delegated admission is connected.");
             }
-            let namespace = surface::app_of(&offer.descriptor.address.resource);
+            let namespace = surface::for_descriptor(&offer.descriptor).map_or_else(
+                || surface::app_of(&offer.descriptor.address.resource),
+                |contract| contract.namespace,
+            );
             if !self
                 .held()
                 .iter()
@@ -581,20 +530,25 @@ mod tests {
 
     #[test]
     fn routed_document_lookup_matches_only_the_contract_app_id() {
-        let contract = surface::for_namespace("photos").unwrap();
         let cluster = "6a462c9b-9d6f-41f0-a0d4-3fe31b451102";
         let artifact = collab_types::document_artifact_id("so.tilo.photos", cluster, "");
         assert_eq!(
-            matching_document_route(contract, cluster, artifact),
-            Some("so.tilo.photos")
+            surface::for_artifact(cluster, artifact).map(|contract| contract.namespace),
+            Some("photos")
         );
-        assert_eq!(
-            matching_document_route(
-                contract,
+        assert!(
+            surface::for_artifact(
                 cluster,
                 collab_types::document_artifact_id("so.tilo.notes", cluster, "")
-            ),
-            None
+            )
+            .is_none()
+        );
+        assert!(
+            surface::for_artifact(
+                cluster,
+                collab_types::document_artifact_id("so.tilo.photos", cluster, "file:/a.png")
+            )
+            .is_none()
         );
     }
 
