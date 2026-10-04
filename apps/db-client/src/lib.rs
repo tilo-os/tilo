@@ -19,15 +19,14 @@
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
-//! - `ui::CodeEditor` — the shared CRDT-backed SQL editing surface.
-//! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
-//! - `schema_tree` — the database → schema → table → column browser.
-//! - [`structure`] — the columns/keys/indexes inspector.
-//! - [`connect_modal`] — the new-connection form.
-//! - [`app`]       — the root widget that composes them all.
-//!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! - [`link`]      — the model the controller publishes and the intents the
+//!   views answer with.
+//! - [`navigator`] — the sidebar: connections and tables.
+//! - [`workspace`] — the content: tabs, the views they show, and the dialogs.
+//! - [`query`], [`results`], [`structure`] — the Query, Data and Structure
+//!   views over the toolkit's editor and table.
+//! - [`connect_modal`] — the new-connection form and the confirmation dialog.
+//! - [`app`]       — the controller that owns the session and the window.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -60,16 +59,18 @@ pub mod doc;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
-pub mod grid;
+pub mod link;
 pub mod model;
+pub mod navigator;
+pub mod query;
 pub mod resource;
+pub mod results;
 pub mod sample;
-pub mod schema_nav;
 pub mod search;
 pub mod session;
 pub mod structure;
-pub mod theme_ext;
 pub mod worker;
+pub mod workspace;
 
 pub use app::DbClientApp;
 
@@ -81,54 +82,10 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(DbClientApp::new())
 }
 
-/// Build a fully-populated app for the hermetic `--shots`/demo path — the
-/// sole source of the bundled sample database and connection profiles.
+/// Build a fully-populated app for the hermetic demo path — the sole source
+/// of the bundled sample database and connection profiles.
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(DbClientApp::new_demo())
 }
 
-/// Build the demo root for an offscreen `--shots` frame at a given width,
-/// with the responsive sidebar flap pre-snapped to that width's layout
-/// default (wide ⇒ docked+open, narrow ⇒ overlay+collapsed). This makes the
-/// single offscreen frame deterministic without waiting for the eased slide.
-pub fn app_root_for_shot(width: f64) -> Box<dyn Widget> {
-    let mut app = DbClientApp::new_demo();
-    app.snap_flap_for_width(width);
-    Box::new(app)
-}
-
-/// Like [`app_root_for_shot`] but the real live (empty) app, so the first-run
-/// empty state can be screenshotted.
-pub fn app_root_for_shot_empty(width: f64) -> Box<dyn Widget> {
-    let mut app = DbClientApp::new();
-    app.snap_flap_for_width(width);
-    Box::new(app)
-}
-
-/// Like [`app_root_for_shot`] but with the floating status bubble armed fully
-/// visible, so the chip that replaced the old bottom status strip can be
-/// screenshotted at the bottom-right of the populated demo.
-pub fn app_root_for_shot_status(width: f64) -> Box<dyn Widget> {
-    let mut app = DbClientApp::new_demo();
-    app.snap_flap_for_width(width);
-    app.arm_status_bubble_for_shots();
-    Box::new(app)
-}
-
-/// Like [`app_root_for_shot`] with the "New connection" sheet open.
-pub fn app_root_for_shot_connect(width: f64) -> Box<dyn Widget> {
-    let mut app = DbClientApp::new_demo();
-    app.snap_flap_for_width(width);
-    app.open_connect_modal_for_shots();
-    Box::new(app)
-}
-
-/// Like [`app_root_for_shot`] with the destructive-statement confirmation
-/// dialog armed.
-pub fn app_root_for_shot_confirm(width: f64) -> Box<dyn Widget> {
-    let mut app = DbClientApp::new_demo();
-    app.snap_flap_for_width(width);
-    app.arm_query_confirmation_for_shots();
-    Box::new(app)
-}
 pub use resource::{DbClient, DbClientShell, launch_spec};

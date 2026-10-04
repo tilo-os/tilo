@@ -238,8 +238,8 @@ fn index_relation(
         let result =
             SearchResult::for_action(KIND, &column.name, ActionAddress::new(&column_id, "browse"))
                 .with_subtitle(format!(
-                    "{}.{} · {}",
-                    schema.name, relation.name, column.decl_type
+                    "{} column in {}.{}",
+                    column.decl_type, schema.name, relation.name
                 ));
         let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);
@@ -377,7 +377,7 @@ fn index_query_history(
             "query-history-entry",
             &[connection_id, &entry.generation.to_string()],
         );
-        let title = format!("Query {} · {}", entry.generation, entry.summary);
+        let title = format!("Query {}: {}", entry.generation, entry.summary);
         let mut history_entry = Resource::new(&entry_id, "database.query-history-entry", &title);
         if let Ok(action) = ActionSpec::operation(
             "run",
@@ -685,7 +685,7 @@ mod tests {
     use super::*;
     use tilo_actions::Action;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
-    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchQuery};
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
         let address = result.action_address().expect("canonical action address");
@@ -716,7 +716,7 @@ mod tests {
             let index = DbSearchIndex::default();
             index.sync(&session, &mut doc).unwrap();
             let provider = index.provider();
-            let page = provider.search_page("albums", None, 20, 20);
+            let page = provider.search_page(&SearchQuery::new("albums"), None, 20, 20);
             assert!(page.inspected <= 20);
             let hit = page
                 .results
@@ -749,7 +749,7 @@ mod tests {
             );
             assert_eq!(
                 provider
-                    .search_page("", None, usize::MAX, usize::MAX)
+                    .search_page(&SearchQuery::new(""), None, usize::MAX, usize::MAX)
                     .results
                     .len(),
                 DEFAULT_SEARCH_RESULT_LIMIT
@@ -855,8 +855,8 @@ mod tests {
 
             let cases = [
                 (
-                    "Sample · chinook",
-                    "Sample · chinook",
+                    "Chinook sample",
+                    "Chinook sample",
                     &["connect", "rename", "remove"] as &[_],
                 ),
                 (
@@ -904,7 +904,7 @@ mod tests {
             let index = DbSearchIndex::default();
             index.sync(&session, &mut doc).unwrap();
             let provider = index.provider();
-            let first = provider.search_page("", None, 1, 1);
+            let first = provider.search_page(&SearchQuery::new(""), None, 1, 1);
             let cursor = first.next.expect("large catalog has a continuation");
             let mut relation = session.schema.schemas[0].tables[0].clone();
             relation.name = "cursor-change".into();
@@ -921,7 +921,7 @@ mod tests {
             index.sync(&session, &mut doc).unwrap();
             let provider = index.provider();
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("sample catalog is pageable");
 
@@ -949,7 +949,7 @@ mod tests {
             let provider = index.provider();
             let old_relation = provider.search_limited("albums", 4).remove(0);
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("sample catalog is pageable");
 
