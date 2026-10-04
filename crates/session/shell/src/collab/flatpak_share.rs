@@ -168,7 +168,7 @@ impl Encoder for PaintPassthrough {
     ) -> Result<crate::collab::encoder::FrameStats, EncoderError> {
         Err(EncoderError::EncodeFailed {
             kind: self.kind(),
-            detail: "a paint share encodes no pixels".into(),
+            detail: "paint_passthrough".into(),
         })
     }
 }
