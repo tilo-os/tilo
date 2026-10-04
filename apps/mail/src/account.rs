@@ -40,8 +40,9 @@ pub struct Account {
     /// and the transport layer consumes.
     pub config: AccountConfig,
     /// Whether this account's folder list is collapsed in the sidebar.
-    /// Per-account so a user can keep work expanded and personal collapsed.
-    #[serde(default)]
+    /// Per-account so a user can keep work expanded and personal collapsed;
+    /// kept in the person's Mail preferences, not the shared account store.
+    #[serde(skip)]
     pub collapsed: bool,
     /// A short accent hint (0..8) used to tint the account's avatar disc so
     /// multiple accounts are visually distinct at a glance.
@@ -85,7 +86,6 @@ impl Account {
         stored.tint = self.tint;
         stored.set_config(&StoredConfig {
             config: self.config.clone(),
-            collapsed: self.collapsed,
         });
         stored
     }
@@ -102,7 +102,7 @@ impl Account {
         Some(Self {
             id: stored.id.to_string(),
             config,
-            collapsed: payload.collapsed,
+            collapsed: false,
             tint: stored.tint,
         })
     }
@@ -110,14 +110,11 @@ impl Account {
 
 /// The opaque config payload a mail [`Account`] serialises into a shared
 /// [`StoredAccount`]. The `#[serde(skip)]` password on [`AccountConfig`] keeps
-/// the credential out of this JSON by construction; `collapsed` (per-account
-/// UI state) rides along so it survives a reload.
+/// the credential out of this JSON by construction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
     #[serde(flatten)]
     config: AccountConfig,
-    #[serde(default)]
-    collapsed: bool,
 }
 
 /// Mail's in-memory account list: the accounts plus which one is shown.
