@@ -53,7 +53,8 @@
 //! code: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome) and `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
-//! `#[param("…")]` describes a parameter.
+//! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
+//! secret the host keeps out of logs, history and confirmations.
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
@@ -483,6 +484,35 @@ mod tests {
         let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, "test.effects");
         assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
+    }
+
+    /// A secret argument is published as one, and still reaches the handler.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.secrets")]
+    enum Pairing {
+        /// Pair a device.
+        Pair {
+            #[param(secret, "The invite the other device shows")]
+            invite: String,
+            #[param(secret)]
+            pin: Option<String>,
+        },
+    }
+
+    #[test]
+    fn a_secret_parameter_is_published_as_a_secret() {
+        let specs = Pairing::specs();
+        let params = specs[0].params();
+        assert_eq!(params[0].ty, tilo_actions::ParamType::Secret);
+        assert_eq!(&*params[0].description, "The invite the other device shows");
+        assert_eq!(params[1].ty, tilo_actions::ParamType::Secret);
+        assert!(!params[1].required);
+        let value = Pairing::Pair {
+            invite: "grayjay://invite".into(),
+            pin: None,
+        };
+        let encoded = specs[0].build_json(&value.arguments()).unwrap();
+        assert_eq!(Pairing::from_payload(&encoded.payload).unwrap(), value);
     }
 
     #[test]

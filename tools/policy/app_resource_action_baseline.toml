@@ -35,8 +35,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/slides/src/app.rs" = 1
 "apps/terminal/src/main_body.rs" = 2
-"apps/tube/src/app.rs" = 2
-"apps/tube/src/resource.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
 
@@ -90,7 +88,6 @@
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/framework_history.rs" = 2
-"apps/tube/src/app.rs" = 3
 "apps/video-editor/src/project_file.rs" = 2
 "apps/video-player/src/actions.rs" = 1
 "apps/video-player/src/resource.rs" = 1
@@ -104,6 +101,5 @@
 "apps/ebook/src/resource.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
-"apps/tube/src/resource.rs" = 1
 "apps/video-editor/src/app.rs" = 1
 "apps/word-processor/src/framework.rs" = 1

@@ -90,7 +90,7 @@ impl TubeSearchProvider {
             catalog: SearchCatalog::new(TUBE_SEARCH_KIND),
         };
         for video in model.videos.iter().take(MAX_INDEXED_ENTITIES) {
-            let address = ActionAddress::new(format!("tube.video:{}", video.id), "open");
+            let address = ActionAddress::new(format!("tube.video:{}", video.id), "open-video");
             let result = SearchResult::for_action(
                 "Videos",
                 video.display_title(model.settings.dearrow_titles_on()),
@@ -104,7 +104,8 @@ impl TubeSearchProvider {
                 .upsert(address.resource, searchable, result);
         }
         for channel in model.channels.iter().take(MAX_INDEXED_ENTITIES) {
-            let address = ActionAddress::new(format!("tube.channel:{}", channel.id), "open");
+            let address =
+                ActionAddress::new(format!("tube.channel:{}", channel.id), "open-creator");
             let result = SearchResult::for_action("Creators", &channel.name, address.clone())
                 .with_subtitle(&channel.handle)
                 .with_icon(Icon::Users);
@@ -114,7 +115,8 @@ impl TubeSearchProvider {
                 .upsert(address.resource, searchable, result);
         }
         for playlist in model.playlists.iter().take(MAX_INDEXED_ENTITIES) {
-            let address = ActionAddress::new(format!("tube.playlist:{}", playlist.id), "open");
+            let address =
+                ActionAddress::new(format!("tube.playlist:{}", playlist.id), "open-playlist");
             let result = SearchResult::for_action("Playlists", &playlist.title, address.clone())
                 .with_subtitle(&playlist.channel_name)
                 .with_icon(Icon::ListVideo);
@@ -130,7 +132,7 @@ impl TubeSearchProvider {
             let Some(video) = model.video(video_id) else {
                 continue;
             };
-            let address = ActionAddress::new(format!("tube.history:{video_id}"), "open");
+            let address = ActionAddress::new(format!("tube.history:{video_id}"), "open-video");
             let result = SearchResult::for_action(
                 "Watch history",
                 video.display_title(model.settings.dearrow_titles_on()),
@@ -354,15 +356,15 @@ mod tests {
                 video_ids: vec![video_id],
             });
             let provider = TubeSearchProvider::new(&model);
-            for (query, resource) in [
-                ("compositor", "tube.video:"),
-                ("watchlist", "tube.playlist:"),
-                ("compositor", "tube.history:"),
+            for (query, resource, open) in [
+                ("compositor", "tube.video:", "open-video"),
+                ("watchlist", "tube.playlist:", "open-playlist"),
+                ("compositor", "tube.history:", "open-video"),
             ] {
                 assert!(
                     provider.search(query).iter().any(|hit| {
                         hit.action_address().is_some_and(|address| {
-                            address.resource.starts_with(resource) && address.action == "open"
+                            address.resource.starts_with(resource) && address.action == open
                         })
                     }),
                     "{query:?} exposes a canonical {resource} open action"
