@@ -66,6 +66,7 @@ snippets-cancel = Abbrechen
 
 snippets-action-open = Snippet öffnen
 snippets-action-reveal-tag = Snippets mit diesem Tag zeigen
+snippets-action-reveal-folder = Snippets in diesem Ordner zeigen
 snippets-action-rename = Umbenennen
 snippets-action-title = Titel
 snippets-action-title-hint = Neuer Titel…

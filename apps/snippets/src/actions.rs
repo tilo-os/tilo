@@ -64,10 +64,28 @@ pub fn reveal_tag_address(tag: &str) -> ActionAddress {
     ActionAddress::new(tag_resource_id(tag), "reveal")
 }
 
+/// Canonical view action that reveals the snippets filed under `folder`.
+pub fn reveal_folder_address(folder: &str) -> ActionAddress {
+    ActionAddress::new(folder_resource_id(folder), "reveal")
+}
+
+/// What a control that reveals `tag` invokes: the published tag's "reveal".
+pub fn reveal_tag_binding(tag: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&provide_tag_resource(tag.to_owned()), "reveal").ok()
+}
+
+/// What a control that reveals `folder` invokes: the published folder's
+/// "reveal".
+pub fn reveal_folder_binding(folder: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&provide_folder_resource(folder.to_owned()), "reveal")
+        .ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SnippetsOperation {
     OpenSnippet { id: SnippetId },
     RevealTag { tag: String },
+    RevealFolder { folder: String },
 }
 
 /// Decode a Snippets view operation when the type matches.
@@ -359,10 +377,18 @@ pub fn titled_snippet(title: &str, folder: &str) -> Snippet {
     snippet
 }
 
-/// A folder, which files a new snippet under itself.
+/// A folder, which reveals its snippets and files a new snippet under
+/// itself.
 pub fn provide_folder_resource(folder: String) -> Resource {
     let id = folder_resource_id(&folder);
     let label = folder.clone();
+    let reveal = view_operation(
+        "reveal",
+        &crate::tr("snippets-action-reveal-folder"),
+        &SnippetsOperation::RevealFolder {
+            folder: folder.clone(),
+        },
+    );
     let create = ActionDecl::<Snippets>::new(
         "new-snippet",
         crate::tr("snippets-new-snippet"),
@@ -379,7 +405,9 @@ pub fn provide_folder_resource(folder: String) -> Resource {
         },
     )
     .describe("Create a new snippet in this folder.");
-    Resource::new(id, "snippets.folder", label).with_action(declaration_spec(&create))
+    Resource::new(id, "snippets.folder", label)
+        .with_action(reveal)
+        .with_action(declaration_spec(&create))
 }
 
 pub fn provide_tag_resource(tag: String) -> Resource {

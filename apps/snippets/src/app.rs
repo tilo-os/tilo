@@ -116,6 +116,7 @@ impl Action {
         match self {
             Self::OpenSnippet(id) => Some(actions::open_snippet_address(*id)),
             Self::Select(Selection::Tag(tag)) => Some(actions::reveal_tag_address(tag)),
+            Self::Select(Selection::Folder(folder)) => Some(actions::reveal_folder_address(folder)),
             Self::NewSnippet => Some(tilo_actions::ActionAddress::new(
                 "snippets.library",
                 "new-snippet",
@@ -771,6 +772,13 @@ impl Core {
                     return Err("tag no longer exists".into());
                 }
                 self.select(Selection::Tag(tag));
+                self.show_pane = Some(NavPane::Overview);
+            }
+            actions::SnippetsOperation::RevealFolder { folder } => {
+                if !self.library.folders().contains(&folder) {
+                    return Err("folder no longer exists".into());
+                }
+                self.select(Selection::Folder(folder));
                 self.show_pane = Some(NavPane::Overview);
             }
         }
