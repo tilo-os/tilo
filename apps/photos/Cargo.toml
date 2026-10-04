@@ -49,11 +49,6 @@ kamadak-exif = "0.6.1"
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-# Launch tests hand child processes the same scoped content-store capability
-# the launcher does.
-runtime-fs = { path = "../../crates/runtime/runtime-fs" }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
-libc.workspace = true
 vello_encoding.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

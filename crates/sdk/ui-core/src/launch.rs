@@ -7,7 +7,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 use crate::App;
 use crate::Theme;
 use crate::headless::{self, FrameHarness};
