@@ -422,3 +422,7 @@ history-day-today = Today
 history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
+
+widget-block-duplicate = Duplicate block and children
+
+widget-block-duplicate-selection = Duplicate selected or focused blocks

@@ -1078,8 +1078,12 @@ jobs:
           # both take the commit time instead and their configs can agree.
           echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           if [[ $DEV_BUILD == true ]]; then
+            # Every rootfs step is keyed on the epoch, and the kernel enters
+            # only near the end of it: with the kernel snapshot (refreshed
+            # several times a day) in the epoch, each refresh rebuilt the
+            # whole rootfs and the dev build toolchain on every slot.
             epoch=0
-            for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do
+            for ref in "$BASE_REF" "$RPMS_REF"; do
               created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
               if (( created > epoch )); then epoch=$created; fi
             done
@@ -2648,6 +2652,11 @@ jobs:
           # throwaway overlay of the still-unbooted disk, it signs in straight
           # to the desktop, without identity setup or recovery.
           ./os/dev/test-joined-device-startup.sh "$TILO_DISK" --out "$TILO_RUN/joined-device"
+          # Two more overlays on one Ethernet segment: one creates an
+          # identity, the other joins it from first-boot onboarding through
+          # Connect a nearby device, first through an injected helper failure
+          # and then for real, and signs in again afterwards.
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
@@ -2740,6 +2749,12 @@ jobs:
           done
           ./os/dev/vm.sh keys tab ret
 
+          # A desktop that reached its first session can still be degraded.
+          # No unit may have failed by now, and the rollback confirmation
+          # (which refuses to confirm a degraded generation) must have run and
+          # succeeded. Before the app checks, so none of them can mask it.
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
+
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
           # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
           # deadlines on the shipped script, independent of Containerfile
@@ -2762,7 +2777,15 @@ jobs:
           # The empty workspace's cards perform what they name: the Notes card
           # opens Notes itself rather than a launcher pre-filled with "Notes".
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
+          # The call card starts the workspace's call through Chat's own
+          # action: Chat opens already in the call, not on a Call button.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The system authentication sheet is drawn by the compositor, not
+          # an app window. A real polkit request from the graphical session
+          # must reach an external reader as a dialog with password text it
+          # can focus, type into and cancel.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh auth
           # The greetd login left the display manager's SELinux domain: the
           # compositor and the apps it launched run as the user, in the
           # session's logind scope and their own app scopes, and nothing of
@@ -2775,7 +2798,8 @@ jobs:
           typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
           ./os/dev/vm.sh type "$typed_sentence"
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing"
+          # The note is durable, and Notes says so: "Saved", never "Not saved".
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
 
           # Tab in a note nests the line under the one above instead of
           # moving focus away; the second block must read as nested.
@@ -2796,6 +2820,12 @@ jobs:
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $((usb_kbds + 1))"
           ./os/dev/vm.sh cmd 'device_del hotplug-kbd'
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $usb_kbds"
+
+          # The windows opened above logged the GPU adapter they render on. On
+          # a virgl boot none may have fallen back to a CPU rasterizer; the 2D
+          # display has no render node, so there is nothing to judge.
+          ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
+            | python3 scripts/vm-acceptance/gpu_check.py
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
@@ -2856,6 +2886,7 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/joined-device/
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/nearby-pairing/
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
           if-no-files-found: ignore
 

@@ -359,11 +359,13 @@ fn registered_home_peer_count() -> usize {
 }
 
 fn registered_home_peers() -> Vec<tilo_relay_protocol::HomePeerRegistration> {
-    std::fs::read(identity_root().join("home-peers.json"))
-        .ok()
-        .filter(|bytes| bytes.len() <= 1024 * 1024)
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+        &identity_root(),
+    ))
+    .ok()
+    .filter(|bytes| bytes.len() <= 1024 * 1024)
+    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    .unwrap_or_default()
 }
 
 fn peer_key(action: &str, device: &str) -> String {

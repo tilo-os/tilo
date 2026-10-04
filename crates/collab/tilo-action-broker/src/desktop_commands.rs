@@ -16,7 +16,7 @@ impl CapnpBrokerState {
         self.owner_health()?;
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|e| e.to_string())?;
-        let peer_id = self.next_peer_id();
+        let peer_id = self.next_service_peer_id();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         self.invocation_subscribers
             .lock()
