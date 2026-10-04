@@ -227,6 +227,12 @@ impl CalcScreen {
         self.panel.toggle_rect()
     }
 
+    /// Keep `reserve` of the window's trailing corner free for its History
+    /// control.
+    pub fn set_trailing_reserve(&mut self, reserve: f64) {
+        self.panel.set_trailing_reserve(reserve);
+    }
+
     pub fn expression_ime_rect(&self) -> Option<Rect> {
         (self.expression_rect != Rect::ZERO).then(|| {
             Rect::new(
