@@ -432,7 +432,15 @@ and Zig toolchain, offline and locked. Four production cache/reader tests compil
 four new isolated compositor tests cover paired Unicode, completed-cache focus
 loss, plain replacement, NULL selection and deadline pipe closure/late-write
 refusal. Linux execution of these tests is still required before release.
-Deterministic selection-before-Enter, pending-pipe focus cancellation, and
-multi-seat orchestration remain additional qualification gaps; the current paired
-test does not establish exact protocol event ordering. This transport does not
-release the History-held Notes rich-paste consumer.
+A separate private-socket protocol fixture now supplies four deterministic tests
+for selection-before-Enter, same-client surface switches, both-pipe cancellation
+on Leave/NULL, multi-seat authority, and the public 40 ms deadline. It waits for
+both seats to bind and uses a worker-queue protocol sync as its event barrier.
+Cancellation tests have one absolute failure deadline earlier than the private
+read budget, so timer expiry cannot make them pass. Both public constructors
+retain 40 ms. The fixture uses the already-locked Wayland server crate as a
+Linux-only dev-dependency; no dependency versions changed or downloads were
+required. Linux execution is still pending; these client-worker tests complement
+the real-compositor authorization tests. The local Linux shell cross-check stops
+in glib-sys because no Linux pkg-config sysroot is configured on this Mac.
+This transport does not release the History-held Notes rich-paste consumer.

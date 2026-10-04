@@ -133,6 +133,8 @@ enum ClipboardCommand {
     SetText(Vec<u8>, std::sync::mpsc::Sender<bool>),
     SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>),
     Exit,
+    #[cfg(test)]
+    Fence(std::sync::mpsc::Sender<()>),
 }
 
 impl WaylandClipboard {
@@ -202,6 +204,13 @@ impl WaylandClipboard {
     pub fn new_for_wayland_test(
         connection: smithay_client_toolkit::reexports::client::Connection,
     ) -> Self {
+        Self::new_test_connection(connection, CLIPBOARD_READ_BUDGET)
+    }
+
+    fn new_test_connection(
+        connection: smithay_client_toolkit::reexports::client::Connection,
+        rich_read_budget: tilo_clock::Duration,
+    ) -> Self {
         let (sender, receiver) = smithay_client_toolkit::reexports::calloop::channel::channel();
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
@@ -212,7 +221,13 @@ impl WaylandClipboard {
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard-test".into())
             .spawn(move || {
-                publication_worker(connection, receiver, worker_pasted, worker_rich);
+                image_worker_impl::run(
+                    connection,
+                    receiver,
+                    worker_pasted,
+                    worker_rich,
+                    rich_read_budget,
+                );
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -330,6 +345,7 @@ mod image_worker_impl {
         rich_seat: Option<WlSeat>,
         rich_active_seat: Option<WlSeat>,
         rich_pending: Option<PendingRich>,
+        rich_read_budget: tilo_clock::Duration,
         exit: bool,
     }
 
@@ -355,6 +371,7 @@ mod image_worker_impl {
         commands: calloop::channel::Channel<ClipboardCommand>,
         pasted: PastedImage,
         rich: Arc<RichClipboard>,
+        rich_read_budget: tilo_clock::Duration,
     ) {
         struct ClearRich(Arc<RichClipboard>);
         impl Drop for ClearRich {
@@ -403,9 +420,12 @@ mod image_worker_impl {
             rich_seat: None,
             rich_active_seat: None,
             rich_pending: None,
+            rich_read_budget,
             exit: false,
         };
-        let _ = loop_handle.insert_source(commands, |event, (), state| {
+        #[cfg(test)]
+        let fence_connection = connection.clone();
+        let _ = loop_handle.insert_source(commands, move |event, (), state| {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
                     ClipboardCommand::SetText(text, reply) => {
@@ -417,6 +437,14 @@ mod image_worker_impl {
                         let _ = reply.send(state.publish_current());
                     }
                     ClipboardCommand::Exit => state.exit = true,
+                    #[cfg(test)]
+                    ClipboardCommand::Fence(reply) => {
+                        // A protocol sync reply shares the worker's event queue.
+                        // It proves earlier selection/focus events were handled,
+                        // unlike observing a command-channel acknowledgement.
+                        fence_connection.display().sync(&state.queue_handle, reply);
+                        let _ = fence_connection.flush();
+                    }
                 }
             }
         });
@@ -888,7 +916,7 @@ mod image_worker_impl {
             let plain_pipe = plain.and_then(|mime| offer.receive(mime.into()).ok());
             let generation = self.rich.generation();
             let now = tilo_clock::now();
-            let deadline = now.checked_add(super::CLIPBOARD_READ_BUDGET).unwrap_or(now);
+            let deadline = now.checked_add(self.rich_read_budget).unwrap_or(now);
             self.rich_seat = Some(seat);
             self.rich_pending = Some(PendingRich {
                 deadline,
@@ -1285,6 +1313,25 @@ mod image_worker_impl {
         }
     }
 
+    #[cfg(test)]
+    impl
+        Dispatch<
+            sctk::reexports::client::protocol::wl_callback::WlCallback,
+            std::sync::mpsc::Sender<()>,
+        > for State
+    {
+        fn event(
+            _: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            reply: &std::sync::mpsc::Sender<()>,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let _ = reply.send(());
+        }
+    }
+
     impl ProvidesRegistryState for State {
         sctk::registry_handlers![SeatState];
 
@@ -1306,7 +1353,7 @@ fn publication_worker(
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
 ) {
-    image_worker_impl::run(connection, commands, pasted, rich);
+    image_worker_impl::run(connection, commands, pasted, rich, CLIPBOARD_READ_BUDGET);
 }
 
 impl ClipboardBackend for WaylandClipboard {
@@ -1673,3 +1720,7 @@ mod tests {
         assert_eq!(value.as_deref(), Some("😀"));
     }
 }
+
+#[cfg(test)]
+#[path = "wayland_protocol_tests.rs"]
+mod protocol_tests;
