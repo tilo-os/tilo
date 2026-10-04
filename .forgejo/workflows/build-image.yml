@@ -2688,6 +2688,11 @@ jobs:
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The greetd login left the display manager's SELinux domain: the
+          # compositor and the apps it launched run as the user, in the
+          # session's logind scope and their own app scopes, and nothing of
+          # the session was denied home access in its first minute.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
