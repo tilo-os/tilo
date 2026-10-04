@@ -56,7 +56,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
     effects: Effects<R>,
-    content: Element,
+    /// The app's view: the custom surface itself when the view is one.
+    pub(crate) content: Element,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
@@ -184,12 +185,6 @@ impl<R: Resource> ResourceRoot<R> {
     pub(crate) fn with_presentation(mut self, operations: Vec<tilo_actions::ActionSpec>) -> Self {
         self.presentation = operations;
         self
-    }
-
-    /// The app's view: the custom surface itself when the view is one.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn content_mut(&mut self) -> &mut dyn Widget {
-        self.content.as_mut()
     }
 
     /// Stage a screenshot scenario's view state: every view's
