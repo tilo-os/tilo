@@ -69,11 +69,8 @@ pub struct PaintSource {
     resource_requests: HashMap<u32, (String, Instant)>,
     blobs: HashMap<[u8; 32], Arc<Vec<u8>>>,
     /// SVG images as vector drawings; `None` for blobs that are not SVG.
-    vectors: HashMap<[u8; 32], Option<Arc<SvgDrawing>>>,
+    vectors: HashMap<[u8; 32], Option<Arc<tilo_paint_stream::svg::Drawing>>>,
 }
-
-/// An SVG image converted to shapes: its view box and its paths.
-type SvgDrawing = (tilo_paint_stream::Rect, Vec<tilo_paint_stream::Shape>);
 
 impl PaintSource {
     #[must_use]
@@ -300,10 +297,12 @@ impl PaintSource {
             },
         };
         let blobs = &self.blobs;
-        let drawing = self
-            .vectors
-            .entry(hash)
-            .or_insert_with(|| blobs.get(&hash).and_then(|b| svg_drawing(b)).map(Arc::new));
+        let drawing = self.vectors.entry(hash).or_insert_with(|| {
+            blobs
+                .get(&hash)
+                .and_then(|b| tilo_paint_stream::svg::drawing(b))
+                .map(Arc::new)
+        });
         Some(match drawing {
             Some(drawing) => Item::Vector {
                 key,
@@ -318,127 +317,6 @@ impl PaintSource {
             },
         })
     }
-}
-
-/// Most shapes an SVG image may become; larger drawings stay unrendered.
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_SVG_SHAPES: usize = 4096;
-
-#[cfg(target_arch = "wasm32")]
-fn svg_drawing(_bytes: &[u8]) -> Option<SvgDrawing> {
-    None
-}
-
-/// Parse an SVG image into shapes with their transforms applied. Gradients
-/// fall back to their first stop; text without fonts is skipped.
-#[cfg(not(target_arch = "wasm32"))]
-fn svg_drawing(bytes: &[u8]) -> Option<SvgDrawing> {
-    let head = bytes.get(..bytes.len().min(1024))?;
-    if !String::from_utf8_lossy(head).contains("<svg") {
-        return None;
-    }
-    let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).ok()?;
-    let size = tree.size();
-    let mut shapes = Vec::new();
-    svg_group(tree.root(), &mut shapes);
-    (!shapes.is_empty()).then(|| {
-        (
-            tilo_paint_stream::Rect::new(0.0, 0.0, size.width(), size.height()),
-            shapes,
-        )
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn svg_group(group: &usvg::Group, shapes: &mut Vec<tilo_paint_stream::Shape>) {
-    for node in group.children() {
-        if shapes.len() >= MAX_SVG_SHAPES {
-            return;
-        }
-        match node {
-            usvg::Node::Group(g) => svg_group(g, shapes),
-            usvg::Node::Path(p) if p.is_visible() => {
-                let Some(data) = p.data().clone().transform(p.abs_transform()) else {
-                    continue;
-                };
-                let fill = p
-                    .fill()
-                    .and_then(|f| svg_paint(f.paint(), f.opacity().get()));
-                let stroke = p
-                    .stroke()
-                    .and_then(|s| svg_paint(s.paint(), s.opacity().get()));
-                if fill.is_none() && stroke.is_none() {
-                    continue;
-                }
-                let scale = p.abs_transform().get_scale();
-                shapes.push(tilo_paint_stream::Shape {
-                    path: svg_path_data(&data),
-                    fill,
-                    stroke,
-                    stroke_width: p
-                        .stroke()
-                        .map_or(0.0, |s| s.width().get() * scale.0.max(scale.1)),
-                    even_odd: p
-                        .fill()
-                        .is_some_and(|f| f.rule() == usvg::FillRule::EvenOdd),
-                });
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn svg_paint(paint: &usvg::Paint, opacity: f32) -> Option<PaintColor> {
-    let (c, stop_opacity) = match paint {
-        usvg::Paint::Color(c) => (*c, 1.0),
-        usvg::Paint::LinearGradient(g) => {
-            let stop = g.stops().first()?;
-            (stop.color(), stop.opacity().get())
-        }
-        usvg::Paint::RadialGradient(g) => {
-            let stop = g.stops().first()?;
-            (stop.color(), stop.opacity().get())
-        }
-        usvg::Paint::Pattern(_) => return None,
-    };
-    Some(PaintColor([
-        c.red,
-        c.green,
-        c.blue,
-        unit_alpha(opacity * stop_opacity),
-    ]))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "clamped to 0.0..=1.0 and scaled to 0.0..=255.0 before rounding"
-)]
-fn unit_alpha(alpha: f32) -> u8 {
-    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn svg_path_data(path: &usvg::tiny_skia_path::Path) -> String {
-    use std::fmt::Write as _;
-    let mut d = String::new();
-    for segment in path.segments() {
-        // Writing to a String cannot fail.
-        let _ = match segment {
-            usvg::tiny_skia_path::PathSegment::MoveTo(p) => write!(d, "M{} {}", p.x, p.y),
-            usvg::tiny_skia_path::PathSegment::LineTo(p) => write!(d, "L{} {}", p.x, p.y),
-            usvg::tiny_skia_path::PathSegment::QuadTo(a, b) => {
-                write!(d, "Q{} {} {} {}", a.x, a.y, b.x, b.y)
-            }
-            usvg::tiny_skia_path::PathSegment::CubicTo(a, b, c) => {
-                write!(d, "C{} {} {} {} {} {}", a.x, a.y, b.x, b.y, c.x, c.y)
-            }
-            usvg::tiny_skia_path::PathSegment::Close => write!(d, "Z"),
-        };
-    }
-    d
 }
 
 fn data_url_bytes(url: &str) -> Option<Vec<u8>> {
@@ -602,11 +480,8 @@ impl WebViewEngine for PaintEngine {
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         self.inner.set_waker(waker);
     }
-    #[cfg(unix)]
-    fn take_dmabuf(&self) -> Option<super::DmabufFrame> {
-        // The display list replaces pixels; drop GPU frames unread.
-        drop(self.inner.take_dmabuf());
-        None
+    fn wrapped(&self) -> Option<&SharedEngine> {
+        Some(&self.inner)
     }
     fn paint_frame(&self) -> Option<Arc<Frame>> {
         let mut state = self.lock();

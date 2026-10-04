@@ -4,7 +4,7 @@
 //
 // Loads tests/fixtures/layers.html at 800x600 and saves, per state, the raw
 // `DOMSnapshot.captureSnapshot` result (`layers.<state>.json`) and the
-// engine's own pixels (`layers.<state>.png`). The computed-style list is read
+// engine's own pixels for the first (`layers.top.png`). The computed-style list is read
 // from src/snapshot.rs so the fixture always matches what the host requests.
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
@@ -79,8 +79,11 @@ try {
       computedStyles, includePaintOrder: true, includeDOMRects: true,
     });
     writeFileSync(join(fixtures, `layers.${name}.json`), JSON.stringify(snapshot));
-    const shot = await send("Page.captureScreenshot", { format: "png" });
-    writeFileSync(join(fixtures, `layers.${name}.png`), Buffer.from(shot.data, "base64"));
+    // The renderer's fidelity test compares against the first state only.
+    if (name === "top") {
+      const shot = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(join(fixtures, `layers.${name}.png`), Buffer.from(shot.data, "base64"));
+    }
     console.log(`recorded ${name}`);
   }
 } finally {
