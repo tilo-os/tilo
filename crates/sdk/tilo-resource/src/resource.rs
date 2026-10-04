@@ -138,14 +138,6 @@ pub trait Resource: Sized + 'static {
         true
     }
 
-    /// Whether `action` only annotates what the action before it in the
-    /// same event wrote (who wrote the text just typed): it joins that
-    /// step, and the next action continues the one it annotates.
-    fn annotates(action: &Self::Action) -> bool {
-        let _ = action;
-        false
-    }
-
     /// The least a participant must be allowed to do for `action` to apply:
     /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
     /// reply or a note someone who may only comment can still add. The
