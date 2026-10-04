@@ -73,8 +73,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 accesskit_consumer = "0.39"
 # extension install tests unpack into throwaway directories
 tempfile.workspace = true
-# block_on for the headless dmabuf probe examples
-pollster.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
