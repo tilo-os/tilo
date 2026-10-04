@@ -6,6 +6,8 @@ calls the existing macOS assembler without building or signing. The SDK still
 checks the manifest's platform, required capabilities, and undeclared capability
 usage. Its identity, version, icon, usage descriptions, and entitlements remain
 the source of truth.
+The executable filename follows the manifest entrypoint, including apps whose
+Cargo package and binary have different names without `default-run`.
 
 The app source must be tracked-clean at an explicit commit matching the runtime
 profile. Supply the compiled executable's recorded SHA-256, the SDK executable,

@@ -442,6 +442,19 @@ fn assemble_macos_project(
     runtime_host: &Path,
     output: &Path,
 ) -> Result<PathBuf> {
+    // Assembly follows the app catalog's declared entrypoint. A Cargo package
+    // may have a differently named binary without setting `default-run`.
+    let mut project = project.clone();
+    project.bin = project
+        .manifest
+        .entrypoint
+        .as_ref()
+        .context("manifest has no entrypoint to assemble")?
+        .bin
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .context("manifest entrypoint has no executable filename")?
+        .to_owned();
     if project.bin.eq_ignore_ascii_case(macos::RUNTIME_HOST) {
         bail!("app executable collides with reserved macOS runtime helper name");
     }
@@ -468,7 +481,7 @@ fn assemble_macos_project(
     let work = tempfile::Builder::new()
         .prefix(".macos-assemble-")
         .tempdir_in(parent)?;
-    let app = macos::assemble(project, binary, runtime_host, work.path())?;
+    let app = macos::assemble(&project, binary, runtime_host, work.path())?;
     let name = app
         .file_name()
         .context("assembled bundle has no filename")?

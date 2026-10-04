@@ -540,6 +540,7 @@ mod tests {
     fn unsigned_assembly_preserves_inputs_and_refuses_overwrite() {
         let root = tempfile::tempdir().unwrap();
         let mut project = project("[capabilities]\noptional = [\"camera\"]\n");
+        project.bin = "cargo-package-fallback".into();
         project.app_dir = root.path().join("project with spaces");
         project.manifest_path = project.app_dir.join("tilo-app.toml");
         std::fs::create_dir_all(project.app_dir.join("assets")).unwrap();
@@ -553,7 +554,7 @@ mod tests {
         let app =
             super::super::assemble_macos_project(&project, &binary, &daemon, &output).unwrap();
         assert_eq!(
-            std::fs::read(executable(&app, &project)).unwrap(),
+            std::fs::read(app.join("Contents/MacOS/hello")).unwrap(),
             std::fs::read(&binary).unwrap()
         );
         assert_eq!(
@@ -566,6 +567,8 @@ mod tests {
         );
         let info = std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
         assert!(info.contains("<string>13.0</string>"));
+        assert!(info.contains("<key>CFBundleExecutable</key>\n\t<string>hello</string>"));
+        assert!(!app.join("Contents/MacOS/cargo-package-fallback").exists());
         assert!(info.contains("NSCameraUsageDescription"));
         assert_eq!(
             std::fs::read_to_string(entitlements_path(&app)).unwrap(),
@@ -576,7 +579,7 @@ mod tests {
             std::fs::read(&binary).unwrap(),
             b"app fixture, not executable"
         );
-        project.bin = "TILO-RUNTIME-MCP".into();
+        project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME-MCP");
         assert!(
             super::super::assemble_macos_project(
                 &project,
