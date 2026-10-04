@@ -565,6 +565,43 @@ fn the_shells_secret_prompts_are_never_captured() {
     }
 }
 
+/// A shortcut step that asks for a secret is withheld; one that asks for
+/// plain text is captured as it is.
+#[test]
+fn a_shortcut_steps_secret_answer_is_never_captured() {
+    use shell::shell::portal_dialog::{PortalDialogQueue, ShortcutStepField, ShortcutStepRequest};
+
+    for masked in [true, false] {
+        let mut fb = FrameBuilder::new((W, H));
+        let queue = PortalDialogQueue::default();
+        fb.host_mut().set_portal_dialog_queue(queue.clone());
+        queue
+            .enqueue_shortcut_step(
+                ShortcutStepRequest {
+                    handle: "shortcut-step:capture-protection".into(),
+                    shortcut: "Publish".into(),
+                    title: "Publishing token".into(),
+                    detail: String::new(),
+                    confirm_label: "Continue".into(),
+                    choices: Vec::new(),
+                    field: Some(ShortcutStepField { masked }),
+                },
+                |_| {},
+            )
+            .expect("the sheet is queued");
+        fb.host_mut().pump_portal_dialogs();
+        if masked {
+            assert_secret_prompts_withheld(&mut fb, "a shortcut step's secret answer");
+        } else {
+            let _ = frame(&mut fb);
+            assert!(
+                fb.host().secret_prompt_rects().is_empty(),
+                "a plain shortcut answer is no secret"
+            );
+        }
+    }
+}
+
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
