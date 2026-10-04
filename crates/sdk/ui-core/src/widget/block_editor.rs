@@ -4084,11 +4084,10 @@ fn push_indent(out: &mut String, indent: u8) {
 /// `CodeBlock` reserves gutter for its left-edge bar, drawn in `draw`.
 pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
     match kind {
-        BlockKind::Bullet { .. } => 20.0,
-        // Wide enough for a two-digit ordinal ("12.") without colliding
-        // with the text column.
-        BlockKind::Numbered { .. } => 28.0,
-        BlockKind::Checklist { .. } => 24.0,
+        // Every list kind sets its text in one column, so bullets, numbers
+        // and checkboxes mixed in a document line up: wide enough for a
+        // two-digit ordinal ("12.") without colliding with the text.
+        BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. } => 28.0,
         BlockKind::CodeBlock { .. } => 12.0,
         BlockKind::Quote => 16.0,
         _ => 0.0,
@@ -7336,9 +7335,17 @@ impl Widget for BlockEditor {
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
             let indent_px =
                 f64::from(LIST_INDENT_STEP_PX) * f64::from(b.indent()) * self.text_scale;
+            // A formula's source line does not wrap, so it has no document
+            // inset of its own; move it in by that inset so its card and
+            // source start where a wrapping code block's do.
+            let edge_px = if self.wrap_lines && formula_descriptor(&b.kind).is_some() {
+                (super::text_input::ML_PAD_X - pad).max(0.0)
+            } else {
+                0.0
+            };
             let original = b.line.get_rect();
             let original = Rect::new(
-                original.x0 + indent_px,
+                original.x0 + indent_px + edge_px,
                 original.y0,
                 original.x1,
                 original.y1,
