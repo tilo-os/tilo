@@ -153,7 +153,7 @@ mod macos_tests {
                     "a second session must not overwrite this profile"
                 );
                 session.tree.write().append_empty_workspace("Mac work");
-                session.tree.read().flush_to_disk();
+                session.tree.read().queue_save();
             }
             let session = prepare(&options).unwrap();
             assert!(

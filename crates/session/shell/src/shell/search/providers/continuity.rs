@@ -12,9 +12,7 @@ use ui::search::{FieldWeight, ListIndex};
 use super::actions::ACTION_ID_WEIGHT;
 
 use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
-use crate::shell::device_fabric_runtime::{
-    BluetoothHandoffPhaseView, DisplayMirrorPhase, MediaHandoffPhase,
-};
+use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::{
     DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView, RealtimeContinuityBridge,
@@ -667,95 +665,6 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             },
             confirm: false,
         });
-    }
-
-    for consent in &view.display_mirror_consents {
-        for (approved, title_key) in [
-            (true, "search-continuity-mirror-allow"),
-            (false, "search-continuity-mirror-decline"),
-        ] {
-            actions.push(DeviceAction {
-                id: format!(
-                    "display.mirror.consent.{}.{}",
-                    if approved { "allow" } else { "decline" },
-                    opaque(
-                        "so.tilo.continuity.display-mirror-session.v1",
-                        &consent.session_id
-                    )
-                ),
-                title: t_args(
-                    title_key,
-                    &[("device", consent.source_label.as_str().into())],
-                ),
-                subtitle: t("search-continuity-mirror-consent-subtitle"),
-                action: DeviceFabricUiAction::ResolveDisplayMirror {
-                    session_id: consent.session_id,
-                    approved,
-                },
-                confirm: approved,
-            });
-        }
-    }
-    for status in &view.display_mirrors {
-        if !matches!(
-            status.phase,
-            DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
-        ) {
-            actions.push(DeviceAction {
-                id: format!(
-                    "display.mirror.stop.{}",
-                    opaque(
-                        "so.tilo.continuity.display-mirror-session.v1",
-                        &status.session_id
-                    )
-                ),
-                title: t_args(
-                    "search-continuity-mirror-stop",
-                    &[("device", status.peer_label.as_str().into())],
-                ),
-                subtitle: t("search-continuity-mirror-stop-subtitle"),
-                action: DeviceFabricUiAction::StopDisplayMirror {
-                    session_id: status.session_id,
-                },
-                confirm: false,
-            });
-        }
-    }
-    if view.display_mirror_available {
-        for target in eligible
-            .iter()
-            .copied()
-            .filter(|device| device.video_output)
-        {
-            let already_active = view.display_mirrors.iter().any(|status| {
-                status.outbound
-                    && status.peer == target.id
-                    && !matches!(
-                        status.phase,
-                        DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
-                    )
-            });
-            if !already_active {
-                actions.push(DeviceAction {
-                    id: format!(
-                        "display.mirror.request.{}",
-                        opaque(
-                            "so.tilo.continuity.device.v1",
-                            target.id.as_str().as_bytes()
-                        )
-                    ),
-                    title: t_args(
-                        "search-continuity-mirror-request",
-                        &[("device", target.label.as_str().into())],
-                    ),
-                    subtitle: t("search-continuity-mirror-request-subtitle"),
-                    action: DeviceFabricUiAction::RequestDisplayMirror {
-                        target: target.id.clone(),
-                    },
-                    confirm: true,
-                });
-            }
-        }
     }
 
     let tethering_peers = view
@@ -1649,22 +1558,6 @@ mod tests {
                 },
                 ..Default::default()
             },
-            display_mirror_consents: vec![
-                crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
-                    session_id: [0x46; 16],
-                    source_label: "Laptop".into(),
-                },
-            ],
-            display_mirrors: vec![
-                crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
-                    session_id: [0x47; 16],
-                    peer: device("mirror-peer-secret-id"),
-                    peer_label: "Desk display".into(),
-                    outbound: false,
-                    phase: DisplayMirrorPhase::Streaming,
-                },
-            ],
-            display_mirror_available: true,
             tethering: vec![
                 crate::shell::personal_tethering_runtime::TetheringStatusView {
                     request_id: [0x43; 16],
@@ -1706,13 +1599,10 @@ mod tests {
                 for secret in [
                     "certified-peer-secret-looking-id",
                     "private-session-token",
-                    "mirror-peer-secret-id",
                     "2f6465762f",
                     "43434343",
                     "44444444",
                     "45454545",
-                    "46464646",
-                    "47474747",
                 ] {
                     assert!(
                         !descriptor.contains(secret),
@@ -1725,13 +1615,6 @@ mod tests {
                     == DeviceFabricUiAction::AuthorizeBluetoothHandoff {
                         request_id: [0x44; 16],
                         approved: true,
-                    }
-                    && action.confirm
-            }));
-            assert!(actions.iter().any(|action| {
-                action.action
-                    == DeviceFabricUiAction::RequestDisplayMirror {
-                        target: device("certified-peer-secret-looking-id"),
                     }
                     && action.confirm
             }));
@@ -1879,9 +1762,6 @@ mod tests {
         // Phase `dynamic_revision_changes_and_more_than_one_page_is_reachable`.
         {
             let mut view = fixture();
-            view.display_mirror_available = false;
-            view.display_mirror_consents.clear();
-            view.display_mirrors.clear();
             view.devices = (0..60)
                 .map(|index| FabricDeviceView {
                     id: device(&format!("certified-device-{index}")),

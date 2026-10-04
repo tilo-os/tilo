@@ -138,13 +138,10 @@ introduce silent test skips to obtain a pass.
 
 ## Coordination and workspace boundaries
 
-This linked worktree is shared with active tasks. Preserve all unrelated edits
-and stage only owned changes. Do not push, merge or publish as part of this
-request. Do not change Cargo target directories or broadly format unrelated
+Do not change Cargo target directories or broadly format unrelated
 files. Record owned files, commits, discoveries and test results in a report.
 
-The task "Plan cross-platform framework" (local task
-01a0aab1-c62e-79a3-947a-8f6096c53d30) owns ongoing renderer/performance work and
+The task "Plan cross-platform framework" owns ongoing renderer/performance work and
 has agreed to runtime-side validation for the content-handoff slice once its
 contract is established. Coordinate via the controller before editing its
 active UI/Writer/performance files or shared runtime proof files. Photos files
