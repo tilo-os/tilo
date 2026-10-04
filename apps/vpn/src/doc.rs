@@ -4,7 +4,6 @@
 //!
 //! ```text
 //! root
-//! ├── "tor_global" (Bool)
 //! └── "connections" (Map, keyed by ConnId string)
 //!     └── <id> (Map)
 //!         ├── "name" / "kind" (Str)
@@ -42,6 +41,7 @@ impl VpnDoc {
     }
 
     /// True when no connections have been written yet (fresh document).
+    #[cfg(test)]
     pub fn is_empty(doc: &AutoCommit) -> bool {
         match doc.get(&ROOT, "connections") {
             Ok(Some((Value::Object(ObjType::Map), id))) => doc.keys(&id).next().is_none(),
@@ -50,8 +50,8 @@ impl VpnDoc {
     }
 
     /// Write the whole vault into the document (idempotent upsert).
+    #[cfg(test)]
     pub fn write_vault(doc: &mut AutoCommit, vault: &Vault) {
-        let _ = doc.put(&ROOT, "tor_global", ScalarValue::Boolean(vault.tor_global));
         for c in &vault.connections {
             Self::write_connection(doc, c);
         }
@@ -101,10 +101,6 @@ impl VpnDoc {
         }
     }
 
-    pub fn set_tor_global(doc: &mut AutoCommit, on: bool) {
-        let _ = doc.put(&ROOT, "tor_global", ScalarValue::Boolean(on));
-    }
-
     pub fn remove_connection(doc: &mut AutoCommit, id: ConnId) {
         let conns = Self::connections_map(doc);
         let _ = doc.delete(&conns, id.to_string().as_str());
@@ -140,11 +136,9 @@ impl VpnDoc {
                 .cmp(&a.is_connected())
                 .then_with(|| a.name.cmp(&b.name))
         });
-        let tor_global = read_bool(doc, &ROOT, "tor_global").unwrap_or(false);
         Vault {
             connections,
             selected: None,
-            tor_global,
         }
     }
 }

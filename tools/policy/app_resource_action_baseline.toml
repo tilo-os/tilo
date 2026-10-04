@@ -67,7 +67,6 @@
 "apps/typst-editor/src/app.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
-"apps/vpn/src/resource.rs" = 2
 "apps/weather/src/resource.rs" = 2
 "apps/windows/src/resource.rs" = 2
 
@@ -127,7 +126,6 @@
 "apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2
 "apps/typst-editor/src/main.rs" = 1
-"apps/vpn/src/main.rs" = 2
 "apps/weather/src/main.rs" = 2
 "apps/windows/src/main.rs" = 1
 "apps/word-processor/src/main.rs" = 3
