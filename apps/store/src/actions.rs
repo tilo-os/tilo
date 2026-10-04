@@ -273,6 +273,11 @@ fn open_tilo(
                 return ActionOutcome::fail(format!("{}: install refused: {error}", item.name));
             }
         }
+        // An update replaces what runs at the app's next launch; it does
+        // not open the app.
+        if action == ActionKind::Update {
+            return ActionOutcome::ok(format!("Updated {} to {}", item.name, version.version));
+        }
     }
 
     // Launch. A launch failure (e.g. no sandbox on this host) is

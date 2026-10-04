@@ -113,7 +113,8 @@ class AppReleaseTests(unittest.TestCase):
                 "              args+=(--collection default)",
                 selection,
             )
-            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"', workflow)
+            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"',
+                          (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8"))
             self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
             self.assertIn("collection=default", workflow)
 
@@ -513,8 +514,10 @@ dependencies = ["markdown-parser 1.1.0"]
             publish = workflow.split("- name: Publish reusable tapps and assemble immutable collections", 1)[1]
             self.assertIn("PRIOR_X86_URL: ${{ needs.plan.outputs.prior_x86_url }}", publish)
             self.assertIn("PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}", publish)
-            self.assertNotIn("vars.TILO_APP_COLLECTION_URL", publish.split("run: |", 1)[0])
-            self.assertIn('update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"', publish)
+            self.assertNotIn("vars.TILO_APP_COLLECTION_URL", publish.split("run: ", 1)[0])
+            self.assertIn("run: tools/apps/publish-collections.sh", publish)
+            script = (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8")
+            self.assertIn('update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"', script)
 
 
 if __name__ == "__main__":
