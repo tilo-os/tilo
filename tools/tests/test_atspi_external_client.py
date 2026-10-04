@@ -111,6 +111,23 @@ class ManifestScenarioTests(unittest.TestCase):
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
 
 
+class TypingTargetTests(unittest.TestCase):
+    def test_a_named_field_or_else_the_document_takes_typing(self):
+        from unittest import mock
+
+        client = mock.Mock()
+        client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
+        client.call.return_value = "('document frame',)"
+        target = CLIENT.is_typing_target
+        with self.subTest(phase="a block editor's editable line, by name"):
+            self.assertTrue(target(client, "/1", "(<'Block text'>,)", "Block text"))
+            self.assertFalse(target(client, "/2", "(<'Page title'>,)", "Block text"))
+        with self.subTest(phase="without a field name, the document"):
+            self.assertTrue(target(client, "/3", "(<''>,)", None))
+            client.call.return_value = "('push button',)"
+            self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
+
+
 class TypedTextTests(unittest.TestCase):
     def test_text_replies_read_back_exactly(self):
         self.assertEqual(CLIENT.text_reply("('hi',)\n"), "hi")
