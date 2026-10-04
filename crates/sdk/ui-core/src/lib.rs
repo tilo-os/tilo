@@ -302,7 +302,7 @@ pub use input::{
 };
 pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
-    KeyboardFamily, PointerPrecision,
+    KeyboardFamily, PointerPrecision, TouchPointerEmulator, TouchPointerEvent,
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
