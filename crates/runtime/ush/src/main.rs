@@ -185,9 +185,13 @@ fn images() -> Arc<dyn Images> {
     ush::images::on_this_device()
 }
 
-/// How `pkg install` builds tool images on this device: into the store
-/// [`images`] reads them from.
+/// How `pkg install` builds tool images: into the store [`images`] reads
+/// them from on this device, or, for a member's supervisor on a relay, by
+/// the relay's worker, which holds the key this process must not.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
+    if let Some(remote) = env_tools::delegated::RemoteBuilder::from_env() {
+        return Arc::new(remote);
+    }
     if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
         return env_tools::store::dir_tool_builder(Path::new(&root));
     }
