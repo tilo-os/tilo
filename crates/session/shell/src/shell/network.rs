@@ -911,7 +911,7 @@ fn registered_home_peer_addrs(
 /// rejects a certificate that cannot act as a host, so a setup laptop is
 /// reached on its device endpoint instead. A device the person's root
 /// revoked — recorded beside the list, or in `known` — is never dialed, even
-/// before the privileged prune removes it from the list itself.
+/// before the prune removes it from the list itself.
 fn personal_device_peer_addrs(
     path: &Path,
     local_device: Option<[u8; 32]>,
@@ -995,12 +995,9 @@ fn personal_device_peer_path() -> PathBuf {
 /// The rooms listed at `path`. Unlike the enrollment writers, the session
 /// skips a malformed entry rather than dropping the whole list.
 fn personal_room_ids(path: &Path) -> Vec<RoomId> {
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(Some(bytes)) = tilo_relay_protocol::personal_devices::read_list_file(path) else {
         return Vec::new();
     };
-    if bytes.len() > 64 * 1024 {
-        return Vec::new();
-    }
     let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
         return Vec::new();
     };
@@ -3080,18 +3077,14 @@ impl ShellNetwork {
         peer: iroh::EndpointId,
         frame: &[u8],
     ) {
-        let Some(identity) = self
-            .peer_identities
-            .trusted(origin, tilo_clock::unix_now_ns())
-            .or_else(|| {
-                self.governed_identity(workspace_topic, peer)
-                    .filter(|identity| {
-                        !self
-                            .peer_identities
-                            .is_revoked(&identity.user_pubkey, &identity.device_pubkey)
-                    })
-            })
-        else {
+        let now = tilo_clock::unix_now_ns();
+        let Some(identity) = self.peer_identities.trusted(origin, now).or_else(|| {
+            self.governed_identity(workspace_topic, peer)
+                .filter(|identity| {
+                    self.peer_identities
+                        .holds(identity, tilo_user_identity::Authority::Device, now)
+                })
+        }) else {
             tracing::warn!(peer = %peer, "dropping remote action from an unauthenticated device");
             return;
         };
@@ -3099,6 +3092,16 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "dropping malformed remote action frame");
             return;
         };
+        // A request runs as the person; a dedicated host does not speak for
+        // them, though it may answer requests this device made.
+        if frame.message.is_request()
+            && !self
+                .peer_identities
+                .holds(&identity, tilo_user_identity::Authority::Person, now)
+        {
+            tracing::warn!(peer = %peer, "dropping a remote action request from a device that may not act for its person");
+            return;
+        }
         if frame.message.is_request() {
             let mut caller = tilo_actions::remote::Caller::authenticated(
                 identity.user_pubkey,
@@ -3554,7 +3557,7 @@ impl ShellNetwork {
     /// connected peer that may no longer act for its person, so a device
     /// revoked on this machine is refused from the next message on rather
     /// than when it next announces itself. Each new revocation is also
-    /// recorded beside the identity root, where the privileged prune removes
+    /// recorded in the identity's peers directory, where the prune removes
     /// the device from the direct-peer list.
     fn refresh_local_revocations(
         &self,
@@ -6821,7 +6824,7 @@ impl ShellNetwork {
     /// Keep revocations another device of the person carried: in this
     /// device's fleet, so it refuses the device after a restart and passes
     /// the revocation on, and beside the identity root, where the
-    /// privileged prune removes the device from the direct-peer list.
+    /// prune removes the device from the direct-peer list.
     fn remember_person_revocations(&self, list: &tilo_user_identity::RevocationList) {
         if list.is_empty() {
             return;
@@ -8648,7 +8651,7 @@ mod tests {
             crate::shell::state::Verb::Read,
             true,
         ));
-        // Recorded beside the identity root for the privileged prune.
+        // Recorded in the peers directory for the prune.
         let recorded = tilo_relay_protocol::personal_devices::read_revocations(dir.path()).unwrap();
         assert!(
             recorded

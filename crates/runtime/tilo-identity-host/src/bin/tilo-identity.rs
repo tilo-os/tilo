@@ -381,6 +381,24 @@ mod unix {
             }))
     }
 
+    /// Make the identity `joined_id` (public key, hex) this account's active
+    /// one, unless the account already chose an identity.
+    fn select_joined_identity(identity_dir: &Path, joined_id: &str) -> anyhow::Result<()> {
+        let identities = runtime_identity::list_identities(identity_dir)
+            .with_context(|| format!("read identities in {}", identity_dir.display()))?;
+        if identities.iter().any(|identity| identity.active) {
+            return Ok(());
+        }
+        let Some(record) = identities
+            .iter()
+            .find(|identity| hex::encode(identity.public_key) == joined_id)
+        else {
+            bail!("the joined identity {joined_id} has no record here");
+        };
+        runtime_identity::set_active_identity(identity_dir, &record.id)
+            .context("select the joined identity")
+    }
+
     fn active_record(identity_dir: &Path) -> anyhow::Result<PathBuf> {
         runtime_identity::resolve_active_identity(identity_dir).ok_or_else(|| {
             guided(
@@ -1088,6 +1106,12 @@ mod unix {
             .rev()
             .find_map(|line| serde_json::from_str::<Value>(line).ok())
             .unwrap_or(Value::Null);
+        // The join ran as root, which leaves choosing the identity to the
+        // account it belongs to: this command runs as that account.
+        if let Some(joined_id) = joined.get("identity").and_then(Value::as_str) {
+            select_joined_identity(&context.identity_dir, joined_id)
+                .context("the device joined, but selecting the joined identity failed")?;
+        }
         if restart_session {
             restart_board_session().context("the device joined, but the session restart failed")?;
         }

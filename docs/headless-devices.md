@@ -147,24 +147,23 @@ What revocation reaches, and when:
 - `create` calls `provisioning::ensure_collaboration_identity`, the function
   onboarding uses, and `runtime_identity::export_portable_backup`, the
   function onboarding's backup step uses.
-- `pair` runs `sudo tilo-enroll pair-device --headless`. `approve` runs
-  `tilo-enroll discover-device`, then the polkit/sudo helper
-  `tilo-home-peer-control approve-device`, the same path Settings uses. The
-  helper runs `tilo-enroll approve-device` as you (it signs with your
-  identity), then records the new device, with the identity that certified
-  it, in `/var/lib/tilo/personal-device-peers.json`, which only root may
-  change. It accepts only a certificate that names the device you chose, is
-  not a home server, and is signed by the same identity that certified this
-  machine's own device key.
-- A revocation in `/var/lib/tilo/device-revocations` (writable by the
-  `tilo-identity` group, sticky) removes a direct peer only when the identity
-  recorded with that peer signed it; a revocation from any other identity
-  changes nothing.
+- `pair` runs `sudo tilo-enroll pair-device --headless`, then makes the joined
+  identity your account's active one. `approve` runs `tilo-enroll
+  discover-device`, then the polkit/sudo helper `tilo-home-peer-control
+  approve-device`, the same path Settings uses. The helper runs `tilo-enroll
+  approve-device` as you (it signs with your identity), which records the new
+  device, with the identity that certified it, in
+  `/var/lib/tilo/peers/personal-device-peers.json`.
+- A revocation recorded in `/var/lib/tilo/peers/device-revocations` (writable
+  by the `tilo-identity` group, sticky) removes a direct peer only when the
+  identity recorded with that peer signed it; a revocation from any other
+  identity changes nothing.
 - The new device receives the approver's room list
   (`~/.local/state/tilo/personal-rooms.json`, kept by the session) and stores
-  it as `/var/lib/tilo/personal-rooms.json`, plus every other ordinary device
-  of the identity as a direct peer. The running session reads both files every
-  two seconds; no restart is needed for an already enrolled session.
+  it as `/var/lib/tilo/peers/personal-rooms.json`, plus every other ordinary
+  device of the identity as a direct peer. The running session reads both
+  files every two seconds; no restart is needed for an already enrolled
+  session.
 - The session publishes what it sees of your devices to
   `$XDG_RUNTIME_DIR/tilo-session/personal-devices.json`, which `status` reads.
 

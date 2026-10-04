@@ -89,13 +89,70 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+/// Read one list file. The peers directory is writable by the identity
+/// group, so the file is opened without following a symlink or blocking on a
+/// FIFO, must be a regular file, and is read only up to the bound.
 fn read_bounded(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() > MAX_LIST_BYTES => Err(invalid("device list exceeds 64 KiB")),
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
     }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(invalid("device list is not a regular file"));
+    }
+    let limit = u64::try_from(MAX_LIST_BYTES).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_LIST_BYTES {
+        return Err(invalid("device list exceeds 64 KiB"));
+    }
+    Ok(Some(bytes))
+}
+
+/// The bytes of a list file in the peers directory, read as [`read_rooms`]
+/// and [`read_direct_peers`] read it (no symlink, no FIFO, bounded); `None`
+/// when it does not exist.
+///
+/// # Errors
+///
+/// When the file cannot be opened, is not a regular file, or exceeds 64 KiB.
+pub fn read_list_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    read_bounded(path)
+}
+
+/// Hold an exclusive lock on `path`'s lock file while a list is read,
+/// changed and replaced, so a session pruning and an enrollment recording
+/// at once never lose each other's change.
+fn lock_list(path: &Path) -> io::Result<advisory_lock::FileLock> {
+    let mut lock = path.as_os_str().to_owned();
+    lock.push(".lock");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o660)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    let file = options.open(std::path::PathBuf::from(lock))?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(invalid("device list lock is not a regular file"));
+    }
+    advisory_lock::FileLock::exclusive(file)
 }
 
 fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
@@ -114,7 +171,7 @@ fn decode_key(id: &str) -> Option<[u8; 32]> {
 }
 
 /// One device this machine dials directly, and the identity whose
-/// certificate for it the privileged enrollment verified.
+/// certificate for it the enrollment verified.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DirectPeer {
     /// The person's identity root key.
@@ -196,6 +253,7 @@ pub fn read_direct_peers(path: &Path) -> io::Result<Vec<DirectPeer>> {
 /// When the existing list is invalid, the result would exceed
 /// [`MAX_DIRECT_PEERS`], or the file cannot be replaced.
 pub fn remember_direct_peers(path: &Path, peers: &[DirectPeer]) -> io::Result<bool> {
+    let _lock = lock_list(path)?;
     let mut known = read_direct_peers(path)?;
     let before = known.len();
     for peer in peers {
@@ -223,6 +281,7 @@ pub fn remember_direct_peers(path: &Path, peers: &[DirectPeer]) -> io::Result<bo
 ///
 /// When the existing list is invalid or the file cannot be replaced.
 pub fn forget_direct_peer(path: &Path, peer: DirectPeer) -> io::Result<bool> {
+    let _lock = lock_list(path)?;
     let mut known = read_direct_peers(path)?;
     let before = known.len();
     known.retain(|known| *known != peer);
@@ -565,6 +624,7 @@ pub fn remember_rooms(path: &Path, rooms: &[String]) -> io::Result<bool> {
     if rooms.iter().any(|room| !valid_room_id(room)) {
         return Err(invalid("personal room list is invalid"));
     }
+    let _lock = lock_list(path)?;
     let mut known = read_rooms(path)?;
     let before = known.len();
     for room in rooms {

@@ -13,6 +13,7 @@ homepage.workspace = true
 # transport, storage and sandbox dependencies: the frame codec belongs in
 # `tilo-relay-client`, the iroh endpoint, runtime and storage in `tilo-relay`.
 [dependencies]
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Crash-safe replacement of the metrics snapshot.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Certificates embedded in home-peer registrations and checked by the

@@ -16334,6 +16334,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-advisory-lock",
  "tilo-files",
  "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",

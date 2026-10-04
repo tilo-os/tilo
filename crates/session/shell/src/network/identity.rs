@@ -165,7 +165,9 @@ impl PeerIdentityStore {
     }
 
     /// The person (user root key) behind every authenticated peer whose
-    /// certificate is still valid and not revoked at `now_ns`.
+    /// chain holds at `now_ns` and lets it own that person's workspaces. The
+    /// map decides who governs a person's rooms, which a dedicated host never
+    /// does.
     pub fn authenticated_persons(
         &self,
         now_ns: u64,
@@ -183,7 +185,7 @@ impl PeerIdentityStore {
                     &identity.device_cert,
                     &ChainPolicy {
                         user_public_key: &identity.user_pubkey,
-                        authority: Authority::Device,
+                        authority: Authority::OwnWorkspaces,
                         revocations: inner
                             .revocations
                             .get(&identity.user_pubkey)
@@ -693,5 +695,17 @@ mod tests {
             // … but not under Alice's identity space.
             assert!(!store.is_revoked(&alice_user_pk, &bob_device_pk));
         }
+    }
+
+    #[test]
+    fn a_dedicated_host_never_governs_the_persons_rooms() {
+        let (_, _, host) = fresh_identity(DeviceCapabilities::host());
+        let (_, _, laptop) = fresh_identity(DeviceCapabilities::joined());
+        let store = PeerIdentityStore::new();
+        store.insert(peer(5), host, 500).unwrap();
+        store.insert(peer(6), laptop.clone(), 500).unwrap();
+        let persons = store.authenticated_persons(700);
+        assert!(!persons.contains_key(&peer(5)));
+        assert_eq!(persons.get(&peer(6)), Some(&laptop.user_public_key));
     }
 }
