@@ -3,9 +3,9 @@
 //! This is the single typed boundary between the settings document and shell
 //! continuity brokers. Every capability is off unless the document opts it in
 //! with a literal `true`. The master switch is on unless the document turns
-//! it off: on its own it only lets the person's linked devices find each
-//! other on the local network. A malformed section or a non-boolean switch
-//! reads as off.
+//! it off: on its own it lets the person's linked devices find each other on
+//! the local network and see each other's presence. A malformed section or a
+//! non-boolean switch reads as off.
 
 use serde_json::{Map, Value};
 

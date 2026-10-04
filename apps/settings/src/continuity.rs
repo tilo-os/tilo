@@ -114,8 +114,9 @@ impl AuditEntry {
 
 /// The release policy stored under `tilo.continuity` on this device.
 ///
-/// The master switch starts on: on its own it only lets this device's linked
-/// devices find each other on the local network. Every capability starts off.
+/// The master switch starts on: on its own it lets the person's linked devices
+/// find each other on the local network and see each other's presence. Every
+/// capability starts off.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
@@ -156,11 +157,15 @@ impl Default for ContinuityPrivacy {
 
 impl ContinuityPrivacy {
     pub(crate) fn load_at(path: &Path) -> Self {
-        let mut policy: Self = settings_store::load_at(path)
-            .get("continuity")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
+        // A section that does not parse reads as switched off, as the
+        // session reads it.
+        let mut policy: Self = match settings_store::load_at(path).get("continuity") {
+            None => Self::default(),
+            Some(value) => serde_json::from_value(value.clone()).unwrap_or_else(|_| Self {
+                enabled: false,
+                ..Self::default()
+            }),
+        };
         if policy.audit.len() > AUDIT_LIMIT {
             policy.audit.drain(..policy.audit.len() - AUDIT_LIMIT);
         }

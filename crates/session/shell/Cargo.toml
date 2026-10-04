@@ -103,7 +103,6 @@ qcms.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
-swarm-discovery.workspace = true
 bytes.workspace = true
 blake3.workspace = true
 

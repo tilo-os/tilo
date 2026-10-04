@@ -108,6 +108,8 @@ pub mod legacy_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod nearby;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;

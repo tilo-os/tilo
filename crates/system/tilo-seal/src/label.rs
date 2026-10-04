@@ -47,11 +47,14 @@ pub enum Label {
     /// The pairwise key two of a person's devices use to recognise each
     /// other's local-network advertisements.
     LanDiscovery,
+    /// A linked device's answer to a local-network probe, sealed to the
+    /// device that asked.
+    LanDiscoveryReply,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -69,6 +72,7 @@ impl Label {
         Self::UserRootWrap,
         Self::FileSecretStore,
         Self::LanDiscovery,
+        Self::LanDiscoveryReply,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -92,6 +96,7 @@ impl Label {
             Self::UserRootWrap => "tilo-seal/v1/user-root-wrap",
             Self::FileSecretStore => "tilo-seal/v1/file-secret-store",
             Self::LanDiscovery => "tilo-seal/v1/lan-discovery",
+            Self::LanDiscoveryReply => "tilo-seal/v1/linked-device-reply",
         }
     }
 

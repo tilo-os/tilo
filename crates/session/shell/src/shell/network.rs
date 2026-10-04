@@ -3252,12 +3252,16 @@ impl ShellNetwork {
             &personal_device_peer_path(),
             Some(*self.local_peer_id.as_bytes()),
         );
+        let revoked = self
+            .personal_continuity_user
+            .map(|user| self.locally_known_revocations(user))
+            .unwrap_or_default();
         let Ok(connected) = self.dialed_direct_peers.lock() else {
             return false;
         };
         let mut changed = false;
         for addr in direct {
-            if connected.contains(&addr.id) {
+            if connected.contains(&addr.id) || revoked.contains(addr.id.as_bytes()) {
                 continue;
             }
             if self.cmd_tx.try_send(NetCmd::Connect { addr }).is_ok() {
@@ -3291,7 +3295,19 @@ impl ShellNetwork {
             );
         }
         peers.remove(&local);
-        let locally_revoked: std::collections::HashSet<[u8; 32]> = self
+        let revoked = self.locally_known_revocations(user);
+        peers.retain(|device| {
+            !revoked.contains(device) && !self.peer_identities.is_revoked(&user, device, u64::MAX)
+        });
+        peers
+    }
+
+    /// Devices of `user` a root-signed revocation on this machine names: the
+    /// device fleet of each local identity with that root, read afresh so a
+    /// revocation made here applies at once, and those this session
+    /// started with.
+    fn locally_known_revocations(&self, user: [u8; 32]) -> std::collections::HashSet<[u8; 32]> {
+        let mut revoked: std::collections::HashSet<[u8; 32]> = self
             .host_identity
             .as_ref()
             .map(|identity| {
@@ -3304,11 +3320,26 @@ impl ShellNetwork {
                     .collect()
             })
             .unwrap_or_default();
-        peers.retain(|device| {
-            !locally_revoked.contains(device)
-                && !self.peer_identities.is_revoked(&user, device, u64::MAX)
-        });
-        peers
+        if let Ok(registry) = crate::identity_registry::IdentityRegistryStore::from_env()
+            .and_then(|store| store.load_reconciled_cached())
+            && let Ok(fleets) = crate::device_fleet::DeviceFleetStore::from_env()
+        {
+            for (id, profile) in &registry.identities {
+                if profile.user_public_key != user {
+                    continue;
+                }
+                if let Ok(fleet) = fleets.load(id) {
+                    revoked.extend(
+                        fleet
+                            .revocations
+                            .iter()
+                            .filter(|entry| entry.user_public_key == user)
+                            .map(|entry| entry.revoked_device_public_key),
+                    );
+                }
+            }
+        }
+        revoked
     }
 
     /// Tell local-network discovery which devices to look for, and whether

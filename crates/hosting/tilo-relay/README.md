@@ -66,11 +66,12 @@ the provisioning-image flow, while a hosted service supplies its provider
 identity through its control plane.
 
 A desktop session finds the person's own linked devices on the local network
-through `_tilo-lan-v1._udp.local`, with random instance names and blinded
-tokens only those devices recognise; it never advertises an endpoint id. The
-continuity switch in Settings → Devices & Sync turns it off. The scheme is
-documented in `crates/session/shell/src/network/lan_discovery.rs`. Invite
-addresses work without it.
+through the nearby rendezvous that pairing uses (UDP 23831, `src/nearby.rs`):
+it broadcasts blinded probes only those devices recognise and they answer with
+sealed addresses, so nothing on the network names the identity, the person or
+a device. The continuity switch in Settings → Devices & Sync turns it off.
+`src/nearby/linked.rs` documents the scheme. Invite addresses work without
+it.
 
 ## Wire protocol
 

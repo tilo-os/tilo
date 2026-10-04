@@ -12,7 +12,6 @@ use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
-use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
@@ -21,15 +20,7 @@ use tilo_user_identity::{
     verify_device_cert_at, verify_enrollment_token, verify_revocation_entry,
 };
 
-/// Well-known UDP port every nearby-pairing listener binds and every
-/// soliciting device broadcasts to. Broadcast discovery has no channel to
-/// advertise a port before the first datagram, so the rendezvous must be
-/// fixed. It stays below Linux's ephemeral range (32768-60999) so an outgoing
-/// socket can never be auto-assigned it and block a listener, and inside the
-/// 1025-65535 range the desktop firewall zone accepts. IANA leaves it
-/// unassigned and no common service uses it.
-const NEARBY_PORT: u16 = 23_831;
-const MAX_PACKET: usize = 60 * 1024;
+use tilo_relay::nearby::{MAX_PACKET, NEARBY_PORT, bind_listener, broadcast};
 const RESPONSE_DOMAIN: &[u8] = b"tilo-host-enrollment-response-v1\0";
 const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
 /// Solicitation magic: the device reads HPKE pair offers.
@@ -1247,22 +1238,8 @@ fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
         && tilo_relay::valid_home_peer_label(&solicitation.label)
 }
 
-/// Bind a LAN-discovery listener on `port` without making an already-running
-/// discovery view or approval sheet prevent another Tilo surface from joining
-/// the same nearby-device flow.  UDP broadcast is deliberately delivered to
-/// every reuse-port listener; each recipient still has to authenticate the
-/// encrypted offer or enrollment request before it can act on it.
-fn bind_pair_listener(port: u16) -> anyhow::Result<UdpSocket> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(unix)]
-    socket.set_reuse_port(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
-    Ok(socket.into())
-}
-
 fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
-    let socket = bind_pair_listener(NEARBY_PORT)?;
+    let socket = bind_listener(NEARBY_PORT)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
     let mut packet = vec![0_u8; MAX_PACKET];
@@ -1594,69 +1571,6 @@ fn received_packet(buffer: &[u8], received: usize) -> anyhow::Result<&[u8]> {
     buffer
         .get(..received)
         .context("socket reported a packet larger than its receive buffer")
-}
-
-/// Where a nearby-pairing datagram goes: the limited broadcast address, which
-/// leaves only through the interface of the default route, and the directed
-/// broadcast address of every other up IPv4 interface. A laptop whose default
-/// route is a VPN or a second uplink still reaches the device on its LAN.
-fn broadcast_destinations(port: u16) -> Vec<SocketAddrV4> {
-    let mut destinations = vec![SocketAddrV4::new(Ipv4Addr::BROADCAST, port)];
-    #[cfg(target_os = "linux")]
-    {
-        let mut addresses: *mut libc::ifaddrs = std::ptr::null_mut();
-        // SAFETY: getifaddrs writes a list head we free below with freeifaddrs.
-        if unsafe { libc::getifaddrs(&raw mut addresses) } == 0 {
-            let mut cursor = addresses;
-            while !cursor.is_null() {
-                // SAFETY: `cursor` is a non-null node of the list getifaddrs returned.
-                let entry = unsafe { &*cursor };
-                cursor = entry.ifa_next;
-                let flags = entry.ifa_flags;
-                let usable = flags & libc::IFF_UP as libc::c_uint != 0
-                    && flags & libc::IFF_BROADCAST as libc::c_uint != 0
-                    && flags & libc::IFF_LOOPBACK as libc::c_uint == 0;
-                let broadcast = entry.ifa_ifu;
-                if !usable || entry.ifa_addr.is_null() || broadcast.is_null() {
-                    continue;
-                }
-                // SAFETY: both pointers are non-null sockaddrs owned by the list.
-                let (family, target) = unsafe { ((*entry.ifa_addr).sa_family, &*broadcast) };
-                if i32::from(family) != libc::AF_INET
-                    || i32::from(target.sa_family) != libc::AF_INET
-                {
-                    continue;
-                }
-                // SAFETY: an AF_INET sockaddr is a sockaddr_in.
-                let target = unsafe { &*broadcast.cast::<libc::sockaddr_in>() };
-                let address = Ipv4Addr::from(u32::from_be(target.sin_addr.s_addr));
-                let destination = SocketAddrV4::new(address, port);
-                if !address.is_unspecified() && !destinations.contains(&destination) {
-                    destinations.push(destination);
-                }
-            }
-            // SAFETY: frees the list getifaddrs allocated, exactly once.
-            unsafe { libc::freeifaddrs(addresses) };
-        }
-    }
-    destinations
-}
-
-/// Send `bytes` to every [`broadcast_destinations`]. An interface that
-/// refuses the datagram does not stop the others.
-fn broadcast(socket: &UdpSocket, bytes: &[u8], port: u16) -> anyhow::Result<()> {
-    let mut sent = false;
-    let mut last_error = None;
-    for destination in broadcast_destinations(port) {
-        match socket.send_to(bytes, destination) {
-            Ok(_) => sent = true,
-            Err(error) => last_error = Some(error),
-        }
-    }
-    match last_error {
-        Some(error) if !sent => Err(error.into()),
-        _ => Ok(()),
-    }
 }
 
 fn validate_requester(lease: Option<tilo_relay::ProcessLease>) -> anyhow::Result<()> {
@@ -2611,7 +2525,7 @@ fn commit_approval(
 
 fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let identity = load_approval_identity(options)?;
-    let socket = bind_pair_listener(options.port)?;
+    let socket = bind_listener(options.port)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     if let Some(ready) = options.ready {
         let _ = ready.send(socket.local_addr()?.port());
@@ -3696,7 +3610,7 @@ mod tests {
         // them the kernel hands a unicast datagram must not decide whether
         // the enrollment completes.
         let _other_surfaces: Vec<UdpSocket> =
-            (0..3).map(|_| bind_pair_listener(port).unwrap()).collect();
+            (0..3).map(|_| bind_listener(port).unwrap()).collect();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
             JoinOptions {
