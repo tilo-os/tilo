@@ -54,6 +54,7 @@ mod map_controls;
 mod map_info_sheet;
 pub mod model;
 pub mod net;
+pub mod offline_areas;
 mod offline_panel;
 pub mod rank;
 pub mod resource;
