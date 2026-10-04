@@ -91,6 +91,14 @@ impl PersonRecords {
         })
     }
 
+    /// Write out what is not stored yet, as closing the window does.
+    ///
+    /// # Errors
+    /// The records' writer reports a storage failure.
+    pub fn flush(&self) -> Result<(), String> {
+        self.store.try_flush()
+    }
+
     /// The person these records belong to.
     #[must_use]
     pub fn author(&self) -> &UserId {
