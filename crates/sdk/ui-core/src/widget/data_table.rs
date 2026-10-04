@@ -576,6 +576,9 @@ pub struct DataTable<Row> {
     /// Horizontal scroll: how far the columns are scrolled, and how wide
     /// they are together.
     h_offset: f64,
+    /// The gutter kept under the rows for the sideways scroll bar while the
+    /// columns overflow, so the bar never covers the last row.
+    h_reserve: f64,
     content_w: f64,
     hbar: Scrollbar,
     /// The table takes the height its parent gives it and scrolls inside.
@@ -656,6 +659,7 @@ impl<Row> DataTable<Row> {
             on_row_drag_begin: None,
             row_press: None,
             h_offset: 0.0,
+            h_reserve: 0.0,
             content_w: 0.0,
             hbar: Scrollbar::horizontal(),
             fill_height: false,
@@ -1538,7 +1542,7 @@ impl<Row> DataTable<Row> {
         if self.viewport.viewport() > 0.0 {
             self.viewport.viewport()
         } else {
-            (self.rect.height() - self.header_h).max(0.0)
+            (self.rect.height() - self.header_h - self.h_reserve).max(0.0)
         }
     }
 
@@ -1614,10 +1618,16 @@ impl<Row> DataTable<Row> {
         if !self.h_overflow() {
             return None;
         }
+        // In the gutter kept under the rows.
         let band = self.columns_band();
         let body = self.body_rect();
         let track = crate::widget::scrollbar::horizontal_track(
-            Rect::new(band.x0, body.y0, band.x1, body.y1),
+            Rect::new(
+                band.x0,
+                body.y1,
+                band.x1,
+                body.y1 + self.h_reserve.max(self.gutter),
+            ),
             self.gutter,
         );
         (track.width() > crate::widget::scrollbar::MIN_THUMB_LEN).then_some(track)
@@ -1661,9 +1671,13 @@ impl<Row> DataTable<Row> {
         }
     }
 
-    /// The first column shown (a tree's chevron and indent sit in it).
+    /// The first text column shown: a tree's chevron and indent, and the add
+    /// row's placeholder, sit in it (never in a checkbox column).
     fn first_shown_column(&self) -> Option<usize> {
-        (0..self.columns.len()).find(|&i| !self.hidden.get(i).copied().unwrap_or(false))
+        (0..self.columns.len()).find(|&i| {
+            !self.hidden.get(i).copied().unwrap_or(false)
+                && self.columns.get(i).is_some_and(|c| c.checked.is_none())
+        })
     }
 
     /// How far a tree row's content stands in: its depth in `s4` steps, then
@@ -2793,7 +2807,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .max(self.viewport.estimated_height())
                 + add_row
         };
-        let height = self.header_h + body_height;
+        let height = self.header_h + body_height + self.h_reserve;
         let style = if self.fill_height {
             // The parent's height: the rows scroll inside it.
             Style {
@@ -2958,7 +2972,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         );
         if self.fill_height {
             // The rows scroll inside whatever height the parent gave.
-            let body = (self.rect.height() - self.header_h).max(0.0);
+            let body = (self.rect.height() - self.header_h - self.h_reserve).max(0.0);
             if (body - self.viewport.viewport()).abs() > 0.5 {
                 self.viewport.set_viewport(body);
                 self.viewport
@@ -2985,6 +2999,18 @@ impl<Row: 'static> Widget for DataTable<Row> {
             &self.hidden,
         );
         self.content_w = content_w;
+        // Keep a gutter under the rows for the sideways bar while the columns
+        // overflow; the next layout makes the room.
+        let reserve = if content_w > band.width() + 0.5 {
+            self.gutter
+        } else {
+            0.0
+        };
+        if (reserve - self.h_reserve).abs() > f64::EPSILON {
+            self.h_reserve = reserve;
+            self.structure_dirty = true;
+            self.layout_dirty = true;
+        }
         let max_h = (content_w - band.width()).max(0.0);
         self.h_offset = self.h_offset.clamp(0.0, max_h);
         for rect in &mut next_columns {
