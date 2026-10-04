@@ -46,6 +46,17 @@ fn oversized_argument(argument: &str) -> Option<String> {
     })
 }
 
+/// A retired transport run cannot use a retained caller clone. Legacy callers
+/// without an execution retain their existing behavior.
+fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
+    if caller.execution_id().is_some() && !caller.execution_is_live() {
+        return Err(ActionHostError::Unavailable {
+            reason: "execution session ended".into(),
+        });
+    }
+    Ok(())
+}
+
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
     #[must_use]
@@ -761,6 +772,9 @@ impl CapnpBrokerState {
         caller: &Caller,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        if let Err(error) = check_execution(caller) {
+            return Pending::ready(Err(error));
+        }
         if let Some(root) = query
             .provider
             .as_deref()
@@ -833,8 +847,12 @@ impl CapnpBrokerState {
             )
         };
         let root = root.clone();
+        let caller = caller.clone();
         match reply {
-            Ok(reply) => reply.map(move |reply| directory_page(&root, reply)),
+            Ok(reply) => reply.map(move |reply| {
+                check_execution(&caller)?;
+                directory_page(&root, reply)
+            }),
             Err(error) => Pending::ready(Err(bridge_error(error))),
         }
     }
@@ -867,13 +885,16 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(error) = check_execution(caller) {
+            return Pending::ready(Err(error));
+        }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
         {
             return self.invoke_launchable(caller, request);
         }
         if let Some(root) = self.directory_target(caller, request) {
-            return self.invoke_directory(caller, root, request);
+            return self.invoke_directory(caller, root, origin, request);
         }
         if self.services.shortcut_library.is_some()
             && let Some(room) = workspace_provider_room(&request.target.provider)
@@ -1180,6 +1201,7 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         root: ActionDirectoryRoot,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let unavailable = || ActionHostError::Unavailable {
@@ -1249,6 +1271,7 @@ impl CapnpBrokerState {
         let state = Arc::clone(self);
         let caller = caller.clone();
         let request = request.clone();
+        let origin = origin.cloned();
         // Runs on the broker's local set in the same turn the owner answered,
         // so nothing can change between resolution and admission.
         resolved.then(move |reply| {
@@ -1259,27 +1282,43 @@ impl CapnpBrokerState {
                     reason: "the caller stopped waiting for admission".into(),
                 })
             } else {
-                state.start_resolved(&caller, &root, &request, argument.as_deref(), reply)
+                state.start_resolved(
+                    &caller,
+                    &root,
+                    &request,
+                    origin.as_ref(),
+                    argument.as_deref(),
+                    reply,
+                )
             };
-            let result = match state.remote_invocations.lock() {
-                Ok(mut ledger) => match started {
-                    Ok(job) => {
-                        ledger.complete(&request.invocation, job);
-                        drop(ledger);
-                        Ok(state.receipt_for(request.invocation, job))
-                    }
-                    Err(error) => {
-                        ledger.abandon(&request.invocation);
-                        Err(error)
-                    }
-                },
-                Err(_) => Err(ActionHostError::Unavailable {
-                    reason: "the invocation ledger is unavailable".into(),
-                }),
-            };
-            completer.complete(result);
+            completer.complete(state.finish_directory_admission(request.invocation, started));
         });
         admitted
+    }
+
+    fn finish_directory_admission(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        started: Result<u64, ActionHostError>,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        let mut ledger =
+            self.remote_invocations
+                .lock()
+                .map_err(|_| ActionHostError::Unavailable {
+                    reason: "the invocation ledger is unavailable".into(),
+                })?;
+        match started {
+            Ok(job) => {
+                ledger.complete(&invocation, job);
+                drop(ledger);
+                Ok(self.receipt_for(invocation, job))
+            }
+            Err(error) => {
+                ledger.abandon(&invocation);
+                drop(ledger);
+                Err(error)
+            }
+        }
     }
 
     fn start_resolved(
@@ -1287,6 +1326,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         root: &ActionDirectoryRoot,
         request: &InvokeRequest,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
@@ -1330,7 +1370,7 @@ impl CapnpBrokerState {
             actions: vec![offered.clone()],
             live: true,
         };
-        self.start_invocation_from_offered(
+        self.start_invocation_from_offered_origin(
             root.peer_id,
             (surface, offered),
             InvocationInputs {
@@ -1341,6 +1381,7 @@ impl CapnpBrokerState {
                 context: request.context.clone(),
             },
             request.revision.as_deref(),
+            origin.cloned(),
         )
         .map(|job| job.id)
         .map_err(refusal)
@@ -2108,6 +2149,7 @@ impl CapnpBrokerState {
 
     #[must_use]
     pub fn remote_job(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<u64> {
+        check_execution(caller).ok()?;
         self.remote_invocations
             .lock()
             .ok()

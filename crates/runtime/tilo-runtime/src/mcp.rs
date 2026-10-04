@@ -14,6 +14,7 @@ use tilo_actions::remote::{
 
 pub struct McpServer<H> {
     host: H,
+    retire_execution: fn(&H, &Caller),
     room: String,
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
@@ -285,6 +286,12 @@ fn tool_result(result: Result<Value, String>) -> Value {
         Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
     }
 }
+impl<H> Drop for McpServer<H> {
+    fn drop(&mut self) {
+        (self.retire_execution)(&self.host, &self.caller);
+    }
+}
+
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
@@ -293,6 +300,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .in_new_execution();
         Self {
             host,
+            retire_execution: H::retire_execution,
             room,
             actor,
             caller,
@@ -306,6 +314,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             shown: std::sync::Mutex::default(),
         }
     }
+    pub(crate) fn execution_caller(&self) -> Caller {
+        self.caller.clone()
+    }
+
     /// Answer an action that produced image content with the image itself,
     /// read from `media` with the producing app's own scope.
     #[must_use]
@@ -798,6 +810,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             return Some(error(&reply_id, -32600, "Invalid Request"));
         }
         let id = id?;
+        // A request may have retained this server before HTTP DELETE or expiry
+        // and only now acquired its mutex. Do not let it resume a retired run.
+        if self.caller.execution_id().is_some() && !self.caller.execution_is_live() {
+            return Some(error(&id, -32000, "execution session ended"));
+        }
         let method = request
             .get("method")
             .and_then(Value::as_str)

@@ -5,7 +5,7 @@
 //! execution UUIDs and these public values alone grant no authority.
 use super::{BrokerActor, CrdtRoute, PublishedAction, PublishedSurface};
 use std::sync::{Arc, Mutex};
-use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_actions::remote::{Caller, CallerPrincipal, ExecutionLease};
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tokio::sync::broadcast;
 
@@ -40,18 +40,46 @@ pub struct ExecutionActivity {
 }
 
 /// Only trusted action-host admission constructs this input, not action context.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct ExecutionScope {
+    lifetime: ExecutionLease,
+    principal: String,
     execution: uuid::Uuid,
     invocation: InvocationId,
 }
 impl ExecutionScope {
     pub(super) fn for_call(caller: &Caller, invocation: InvocationId) -> Option<Self> {
-        matches!(caller.principal(), CallerPrincipal::Person(_)).then_some(())?;
+        let CallerPrincipal::Person(principal) = caller.principal() else {
+            return None;
+        };
+        let lifetime = caller.execution_lease()?;
         Some(Self {
+            lifetime,
+            principal: principal.clone(),
             execution: caller.execution_id()?,
             invocation,
         })
+    }
+
+    pub(super) fn invocation(&self) -> InvocationId {
+        self.invocation
+    }
+
+    pub(super) fn lease(&self) -> ExecutionLease {
+        self.lifetime.clone()
+    }
+
+    pub(super) fn participant(
+        &self,
+        actor: &BrokerActor,
+    ) -> Result<tilo_actions::ParticipantId, String> {
+        if !self.lifetime.is_live() {
+            return Err("execution session ended".into());
+        }
+        if actor.is_agent || actor.id != self.principal {
+            return Err("execution principal mismatch".into());
+        }
+        Ok(tilo_actions::ParticipantId::for_execution(self.execution))
     }
 }
 
