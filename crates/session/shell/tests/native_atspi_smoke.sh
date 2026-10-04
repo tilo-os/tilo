@@ -6,8 +6,8 @@ set -euo pipefail
 
 mode=${1:-}
 case "$mode" in
-  oobe|oobe-actions|desktop|lock) ;;
-  *) echo "usage: $0 {oobe|oobe-actions|desktop|lock}" >&2; exit 2 ;;
+  oobe|oobe-actions|desktop|established|lock) ;;
+  *) echo "usage: $0 {oobe|oobe-actions|desktop|established|lock}" >&2; exit 2 ;;
 esac
 
 command -v busctl >/dev/null
@@ -348,6 +348,18 @@ case "$mode" in
     ;;
   desktop)
     wait_for_names "Tilo workspace"
+    ;;
+  established)
+    # A session for an identity this device already holds: the desktop, with
+    # neither identity setup nor identity recovery in front of it.
+    wait_for_names "Tilo workspace"
+    for refused in "Use existing" "Create identity" "Your existing identity needs recovery"; do
+      if node_named "$refused" >/dev/null; then
+        echo "AT-SPI $mode tree shows '$refused' for an established identity" >&2
+        printf '%s\n' "$names" >&2
+        exit 1
+      fi
+    done
     ;;
   lock)
     wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"

@@ -115,6 +115,14 @@ tilo-vm shot -o target/yoga.png                              # tilo-vm seat clai
 tilo-vm vm upgrade --from sha:<commit>                       # that commit's image for this board, then a reboot
 ```
 
+The board job checks the Lenovo image's audio stack (topology, DSP firmware,
+UCM profile: `os/tests/board_audio_contract.sh --root`), but only the laptop
+proves the sound. After booting a build that changes it, `wpctl status` lists a
+speaker sink and a microphone source for Built-in Audio, and
+`journalctl -b -k | grep -i -e q6apm -e wsa884x` shows no errors. The four
+speakers run without DSP speaker protection, as upstream ships them: test them
+at low volume.
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets

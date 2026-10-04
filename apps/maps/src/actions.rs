@@ -56,7 +56,12 @@ pub const MAPS_ACTION_TYPE: &str = "maps.action";
 ///
 /// Each variant carries enough payload to replay deterministically against its
 /// addressed native CRDT record.
+///
+/// The value is tagged by name (`{"action": "clear-route"}`), so every edit
+/// — a unit one included — is the JSON object the resource's typed door
+/// takes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
 pub enum MapsAction {
     /// Accept geocoded places into the durable place collection. Search overlays
     /// may stay local, but a result that becomes a map resource always crosses

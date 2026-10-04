@@ -15,6 +15,9 @@ tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
 tab-closed-undo-hint = Select to undo, or press { $chord } later
 tab-closed-undo-hint-unbound = Select to undo
+workspace-deleted-toast = Deleted { $name }
+workspace-deleted-toast-hint = Select to undo
+workspace-deleted-undo = Undo
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
