@@ -875,15 +875,23 @@ fn commit_staged_personal_enrollment(
             .context("select the joined identity")?;
     }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
-    tilo_files::native::atomic::write(&paths.user_pubkey, &marker.user_public_key)?;
+    // The public key and certificates are public, whatever the umask this
+    // commit runs under: the session reads them to verify the device.
+    let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
+    tilo_files::native::atomic::write_with_mode(
+        &paths.user_pubkey,
+        &marker.user_public_key,
+        public,
+    )?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    tilo_files::native::atomic::write_creating_parent(
+    tilo_files::native::atomic::write_creating_parent_with_mode(
         &paths.device_cert_for_user(&marker.user_public_key),
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
+        public,
     )?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
-    tilo_files::native::atomic::write(&paths.device_cert, &cert_bytes)?;
+    tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
     // A root-run (headless) enrollment wrote these as root. Restore each
     // one's directory owner and group before the marker is cleared, so
     // recovery repeats this step if it is interrupted. Parents come before
@@ -3081,10 +3089,32 @@ mod tests {
             // explicit retry may complete that exact transaction under its own
             // live lease rather than leaving mixed durable state.
             let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
-                retry_lease.validate().map_err(Into::into)
-            })
-            .unwrap();
+            // A root-run commit may run under a strict umask (the pairing
+            // helper's, or a script's); the public files stay readable.
+            // SAFETY: umask has no preconditions; this test process is alone.
+            let umask = unsafe { libc::umask(0o077) };
+            let recovered = recover_personal_enrollments(
+                identity_root.path(),
+                identity_dir.path(),
+                &paths,
+                |_| retry_lease.validate().map_err(Into::into),
+            );
+            // SAFETY: as above, restoring the previous mask.
+            unsafe { libc::umask(umask) };
+            recovered.unwrap();
+            for public in [
+                paths.user_pubkey.clone(),
+                paths.device_cert.clone(),
+                paths.device_cert_for_user(&root.verifying_key().to_bytes()),
+            ] {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(
+                    std::fs::metadata(&public).unwrap().permissions().mode() & 0o777,
+                    tilo_user_identity::persist::PUBLIC_FILE_MODE,
+                    "{} is not readable to the session",
+                    public.display()
+                );
+            }
             assert_eq!(
                 std::fs::read(&paths.user_pubkey).unwrap(),
                 root.verifying_key().to_bytes()
