@@ -28,6 +28,8 @@ const PROBE_LIFETIME: Duration = Duration::from_secs(60);
 const ANSWER_INTERVAL: Duration = Duration::from_millis(500);
 /// A device found again at the same addresses is dialled at most this often.
 const REDIAL_INTERVAL: Duration = Duration::from_secs(20);
+/// How long after a dial the path in use is reported.
+const PATH_REPORT_DELAY: Duration = Duration::from_secs(3);
 
 /// What the session wants from discovery right now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -183,7 +185,34 @@ impl Runner {
         self.dialled.insert(device, (addrs.clone(), now));
         let addr =
             iroh::EndpointAddr::from_parts(id, addrs.into_iter().map(iroh::TransportAddr::Ip));
-        self.cmd_tx.send(NetCmd::Connect { addr }).await.is_ok()
+        if self.cmd_tx.send(NetCmd::Connect { addr }).await.is_err() {
+            return false;
+        }
+        self.report_path(id);
+        true
+    }
+
+    /// Say, once the connection has had a moment to settle, which of the
+    /// device's addresses the endpoint is using: a local-network address or
+    /// a relay.
+    fn report_path(&self, id: iroh::EndpointId) {
+        let endpoint = self.endpoint.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PATH_REPORT_DELAY).await;
+            let Some(info) = endpoint.remote_info(id).await else {
+                return;
+            };
+            let active: Vec<String> = info
+                .addrs()
+                .filter(|addr| matches!(addr.usage(), iroh::endpoint::TransportAddrUsage::Active))
+                .map(|addr| match addr.addr() {
+                    iroh::TransportAddr::Ip(ip) => format!("ip {ip}"),
+                    iroh::TransportAddr::Relay(url) => format!("relay {url}"),
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            tracing::info!(peer = %id.fmt_short(), ?active, "linked device path in use");
+        });
     }
 
     fn apply(&mut self, config: LanDiscoveryConfig) {
