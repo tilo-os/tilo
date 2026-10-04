@@ -1606,9 +1606,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Offline spelling dictionaries used by the shared text toolkit. Hunspell is
-# the affix-aware multilingual baseline; English also has an embedded fallback
-# so recovery/minimal environments retain checking. Keep this explicit rather
+# Offline spelling dictionaries used by the shared text toolkit, which reads
+# /usr/share/hunspell in-process (also inside app sandboxes); English also has
+# an embedded word list so recovery/minimal environments retain checking. The
+# `hunspell` CLI is for people at a terminal. Keep this explicit rather
 # than pulling every Fedora language pack into the immutable image.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     hunspell \

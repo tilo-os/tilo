@@ -8152,6 +8152,24 @@ impl Widget for BlockEditor {
         children
     }
 
+    /// Block lines are not children, so their fields' timers (a settling
+    /// squiggle, a suggestion for the word under the caret) are collected
+    /// here alongside the children's.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let mut earliest = self
+            .blocks
+            .iter()
+            .filter_map(|block| block.line.next_wake_deadline())
+            .min();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest =
+                    Some(earliest.map_or(deadline, |old: crate::time::Instant| old.min(deadline)));
+            }
+        });
+        earliest
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.copied_code_feedback.is_some()
             || self
