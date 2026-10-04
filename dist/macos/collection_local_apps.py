@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 import collection
+import collection_app_runtime as app_runtime
 import collection_local_runtime as runtime
 from collection_native import inspect_bundle_metadata, load_paths, read_entitlements, run
 from collection_stages import bounded_build
@@ -61,9 +62,10 @@ def make_plan(args):
         raise ValueError('app input is not an executable Mach-O')
     if runtime.version(facts['slices']['arm64']['minimum_macos']) > runtime.version('13.0'):
         raise ValueError('app binary exceeds its original SDK macOS 13 policy')
-    load_paths(binary, binary, binary.parent, 'arm64')
+    if not args.app_profile:
+        load_paths(binary, binary, binary.parent, 'arm64')
     sdk = runtime.regular_file(args.sdk, runtime.LIMIT)
-    return {'format': 1, 'stage': 'private-local-app', 'source': args.revision,
+    plan = {'format': 1, 'stage': 'private-local-app', 'source': args.revision,
             'source_root': str(root), 'app': entry, 'binary': str(binary),
             'binary_sha256': args.binary_sha256, 'binary_facts': facts,
             'sdk': str(sdk), 'sdk_sha256': collection.digest(sdk),
@@ -71,6 +73,16 @@ def make_plan(args):
             'payload_receipt_sha256': collection.digest(payload / 'receipt.json'),
             'minimum_macos': '27.0', 'general_product_minimum_unchanged': '13.0',
             'signed': False, 'notarized': False, 'runtime_qualified': False}
+    if args.app_profile:
+        if not args.app_profile_sha256:
+            raise ValueError('app profile requires its exact SHA-256')
+        plan['base_runtime_plan'] = runtime_plan
+        plan['runtime_plan'], plan['app_runtime'] = app_runtime.prepare(
+            args.app_profile, args.app_profile_sha256, entry,
+            {'path': str(binary), 'facts': facts}, runtime_plan)
+    elif args.app_profile_sha256:
+        raise ValueError('app profile SHA-256 requires an app profile')
+    return plan
 
 
 def executable(path):
@@ -81,7 +93,7 @@ def executable(path):
 def pinned_payload(plan):
     payload = Path(plan['payload'])
     record = runtime.checked_json(payload / 'receipt.json', plan['payload_receipt_sha256'])
-    if (record['plan'] != plan['runtime_plan'] or record['stage'] != 'local-runtime' or
+    if (record['plan'] != plan.get('base_runtime_plan', plan['runtime_plan']) or record['stage'] != 'local-runtime' or
             record['files'] != collection.inventory(payload)):
         raise ValueError('pinned payload changed')
     return record
@@ -91,14 +103,23 @@ def inspect_app(app, plan):
     main, helper, info, binaries = inspect_bundle_metadata(app, plan['app'])
     if main == helper or info['LSMinimumSystemVersion'] != '27.0':
         raise ValueError('private bundle must have distinct app/helper and explicit macOS 27 minimum')
-    if collection.digest(main) != plan['binary_sha256']:
+    extended = plan.get('app_runtime')
+    if not extended and collection.digest(main) != plan['binary_sha256']:
         raise ValueError('app executable changed')
     executable(main)
-    load_paths(main, main, app, 'arm64')
+    if extended:
+        app_runtime.inspect_launcher(main)
+    else:
+        load_paths(main, main, app, 'arm64')
     # The payload validator permits only this one independently checked app executable.
     facts = runtime.inspect_payload(app, plan['runtime_plan'], (str(main.relative_to(app)),))
     payload_receipt = pinned_payload(plan)
-    if facts != payload_receipt['facts']['images']:
+    originals = payload_receipt['facts']['images']
+    if extended:
+        unchanged = set(originals) - {runtime.SHIM, runtime.LAUNCHER}
+        if any(facts.get(path) != originals[path] for path in unchanged):
+            raise ValueError('base runtime library bytes changed')
+    elif facts != originals:
         raise ValueError('integrated runtime bytes differ from reviewed payload')
     for relative, item in facts.items():
         if item['slices']['arm64']['filetype'] == 'EXECUTE':
@@ -116,11 +137,16 @@ def inspect_app(app, plan):
     for relative, asset in plan['runtime_plan']['assets'].items():
         if collection.digest(app / relative) != asset['sha256']:
             raise ValueError(f'integrated resource changed: {relative}')
-    if set((app / 'Contents/MacOS').iterdir()) != {
-            main, helper, app / 'Contents/MacOS/tilo-runtime-mcp.real'}:
+    macos_files = {main, helper, app / 'Contents/MacOS/tilo-runtime-mcp.real'}
+    if extended:
+        macos_files.add(app / extended['main_real'])
+    if set((app / 'Contents/MacOS').iterdir()) != macos_files:
         raise ValueError('unexpected helper directory contents')
-    return {'runtime': facts, 'app': runtime.image_info(main, 'arm64', 15),
+    result = {'runtime': facts, 'app': runtime.image_info(main, 'arm64', 15),
             'code_objects': len(code), 'source': plan['source'], 'runtime_qualified': False}
+    if extended:
+        result['real_app'] = extended['main_real']
+    return result
 
 
 def sdk_environment(work):
@@ -172,7 +198,8 @@ def signing_inventory(app, policy, facts):
     return {'identity_class': 'Developer ID Application', 'secure_timestamp': True,
             'hardened_runtime': True, 'nested_code_in_order': paths,
             'final_bundle': app.name, 'app_entitlements': policy.name,
-            'nested_process_entitlements': {}, 'signature_verification': 'every code object, then outer bundle',
+            'nested_process_entitlements': ({facts['real_app']: policy.name} if facts.get('real_app') else {}),
+            'signature_verification': 'every code object, then outer bundle',
             'keychain_access': 'normal user authorization; never unlock/import/change ACLs',
             'runtime_validation_after_signing': ['libintl forwarding and three catalog domains',
                                                'non-English catalog lookup', 'scanner subprocess and codec discovery',
@@ -181,9 +208,11 @@ def signing_inventory(app, policy, facts):
             'notarization': 'not authorized', 'installation': 'not performed'}
 
 
-def assemble(out, plan, resume=False):
+def assemble(out, plan, resume=False, guard=None):
     root = Path(plan['source_root'])
     source_check(root, plan['source'])
+    if plan.get('app_runtime') and (not guard or not guard.is_file() or guard.name != 'rustc-budget.py'):
+        raise ValueError('main runtime assembly requires the existing shared compiler guard')
     runtime.floor(out.parent)
     # Admission covers both SDK copies and the subsequent runtime overlay;
     # the continuous supervisor/copy checks also enforce the live floor.
@@ -223,6 +252,8 @@ def assemble(out, plan, resume=False):
         read_entitlements(policy)
         original_info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         overlay(app, plan)
+        if plan.get('app_runtime'):
+            app_runtime.augment(app, plan, guard)
         facts = inspect_app(app, plan)
         final_info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         if final_info != {**original_info, 'LSMinimumSystemVersion': '27.0'}:
@@ -251,6 +282,9 @@ def main(argv=None):
     parser.add_argument('--sdk', type=Path, required=True)
     parser.add_argument('--profile', type=Path, required=True)
     parser.add_argument('--profile-sha256', required=True)
+    parser.add_argument('--app-profile', type=Path)
+    parser.add_argument('--app-profile-sha256')
+    parser.add_argument('--compiler-guard', type=Path)
     parser.add_argument('--payload', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--resume', action='store_true')
@@ -261,7 +295,7 @@ def main(argv=None):
             print(json.dumps(plan, indent=2))
             return 0
         if args.stage == 'assemble':
-            assemble(args.out.absolute(), plan, args.resume)
+            assemble(args.out.absolute(), plan, args.resume, args.compiler_guard)
         stage = 'app-' + plan['app']['name']
         directory = args.out / stage
         record = collection.check_receipt(directory, plan, stage)
