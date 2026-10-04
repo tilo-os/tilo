@@ -109,9 +109,7 @@ impl Default for Graph3dScreen {
             add_rect: Rect::ZERO,
             overlay: false,
             panel_open: true,
-            // Shots-only: force the panel open for the headless narrow-width
-            // screenshot (no effect when unset; live default is unchanged).
-            user_toggled: std::env::var_os("TILO_CALC_PANEL_OPEN").is_some(),
+            user_toggled: false,
             toggle_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             hovered_row: None,
@@ -209,21 +207,6 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
-    /// Pure graph rendering for a frozen History model; no editing controls.
-    pub(crate) fn draw_history_canvas(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        model: &CalcModel,
-        area: Rect,
-    ) {
-        self.canvas = area;
-        self.zoom.settle(model.view3d.zoom);
-        draw::fill_rect(scene, t, area, theme.bg_primary);
-        self.draw_surfaces(scene, t, theme, model);
-    }
-
     /// Resolve docked-vs-overlay + panel / canvas / scrim / toggle rects from
     /// the current width. Re-derived every layout pass so a resize reflows.
     fn resolve_panel(&mut self, area: Rect) {
@@ -355,13 +338,7 @@ impl Graph3dScreen {
                 .map(|f| MathField::new(&f.expr).with_size(20.0))
                 .collect();
             if let Some(field) = self.fields.get_mut(model.active_surface) {
-                if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
-                    field.park_caret_at_end();
-                } else if std::env::var_os("TILO_CALC_SELECTION_DEMO").is_some() {
-                    field.park_demo_selection();
-                } else {
-                    field.park_caret_in_structure();
-                }
+                field.park_caret_in_structure();
             }
         }
     }
@@ -415,6 +392,11 @@ impl Graph3dScreen {
     }
     pub fn row_at(&self, p: Point) -> Option<usize> {
         self.row_rects.iter().position(|r| r.contains(p))
+    }
+    /// Open the drawer as if the user had, at any width.
+    pub fn open_panel(&mut self) {
+        self.panel_open = true;
+        self.user_toggled = true;
     }
     pub fn toggle_panel(&mut self) {
         self.panel_open = !self.panel_open;

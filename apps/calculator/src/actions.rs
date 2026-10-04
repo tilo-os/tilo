@@ -1,5 +1,5 @@
-//! The calculator's exported **actions** and the **resource tree** it publishes
-//! to Ctrl+K.
+//! The calculator's exported **actions**: the one vocabulary every control,
+//! the palette, agents and scripts change its document with.
 //!
 //! Most of a calculator is ephemeral: the expression being typed, the running
 //! display, which mode (Calc / 2D / 3D) is showing, the pan/zoom of a graph, the
@@ -24,11 +24,9 @@
 //! visibility toggle / delete) dispatches and what the Ctrl+K palette dispatches
 //! — one source of truth, one replay path.
 //!
-//! Per-character editing of a graph formula is **not** an action: like the calc
-//! expression line and a notes page body, it splices directly into the row's
-//! Automerge `Text` (the CRDT-native, multi-cursor path). Only the discrete
-//! "replace this formula" ([`CalculatorAction::SetGraphExpr`], offered by Ctrl+K)
-//! is an action.
+//! Typing into a graph formula is [`CalculatorAction::SetGraphExpr`] per
+//! keystroke, diff-spliced into the row's Automerge `Text`; the keystrokes of
+//! one row coalesce into one undo step (`Resource::coalesces`).
 //!
 //! ## Determinism contract
 //!
@@ -41,18 +39,13 @@
 //! peer.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use ui::time::UNIX_EPOCH;
 
-use tilo_actions::{
-    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, Resource,
-};
+use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::{put_if_changed, put_text_diffed};
-use ui::tilo_resource::Resource as TiloResource;
-
-use crate::model::{HistoryEntry, Mode, PlotFn};
 
 /// Registry `type_id` for every calculator action.
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
@@ -163,9 +156,6 @@ fn rows_at(doc: &Doc, key: &str) -> Option<ObjId> {
 }
 
 fn ensure_rows(doc: &mut Doc, key: &str) -> Result<ObjId, ActionError> {
-    if doc.get(&ROOT, "calculator_resources_v2")?.is_none() {
-        doc.put(&ROOT, "calculator_resources_v2", true)?;
-    }
     rows_at(doc, key).map_or_else(|| Ok(doc.put_object(&ROOT, key, ObjType::Map)?), Ok)
 }
 
@@ -176,13 +166,7 @@ fn keyed_row(doc: &Doc, rows: &ObjId, id: &str) -> Option<ObjId> {
     }
 }
 fn resolved_row(doc: &Doc, key: &str, id: &str) -> Option<ObjId> {
-    let rows = rows_at(doc, key)?;
-    let id = id
-        .strip_prefix('@')
-        .and_then(|n| n.parse::<usize>().ok())
-        .and_then(|index| crate::doc::row_id_at(doc, key, index))
-        .unwrap_or_else(|| id.to_string());
-    keyed_row(doc, &rows, &id)
+    keyed_row(doc, &rows_at(doc, key)?, id)
 }
 
 fn ensure_keyed_row(doc: &mut Doc, rows: &ObjId, id: &str) -> Result<ObjId, ActionError> {
@@ -326,7 +310,8 @@ pub fn encode(action: &CalculatorAction) -> EncodedAction {
 
 // ===========================================================================
 // Action builders — the single source of truth shared by the on-screen
-// affordances (see `crate::app`) and the Ctrl+K resource tree below.
+// affordances (see `crate::app`) and the published declarations
+// (see `crate::resource`).
 // ===========================================================================
 
 /// Commit `expr = result` to the shared history.
@@ -339,7 +324,7 @@ pub fn commit_history_action(expr: &str, result: &str) -> CalculatorAction {
     }
 }
 
-/// Delete the history entry at `index` (newest = 0).
+/// A row an action addresses by its stable id.
 pub trait RowTarget {
     fn target(self) -> String;
 }
@@ -353,11 +338,7 @@ impl RowTarget for &String {
         self.clone()
     }
 }
-impl RowTarget for usize {
-    fn target(self) -> String {
-        format!("@{self}")
-    }
-}
+/// Delete one history entry.
 pub fn delete_history_entry_action(id: impl RowTarget) -> CalculatorAction {
     CalculatorAction::DeleteHistoryEntry { id: id.target() }
 }
@@ -365,11 +346,6 @@ pub fn delete_history_entry_action(id: impl RowTarget) -> CalculatorAction {
 /// Empty the history list.
 pub fn clear_history_ids_action(ids: Vec<String>) -> CalculatorAction {
     CalculatorAction::ClearHistory { ids }
-}
-/// Compatibility helper for callers that have no snapshot. UI and resources
-/// always use `clear_history_ids_action`, which carries the exact stable set.
-pub fn clear_history_action() -> CalculatorAction {
-    CalculatorAction::ClearHistory { ids: Vec::new() }
 }
 
 /// Append a graph row carrying `expr` (use `""` for a blank starter row).
@@ -382,7 +358,7 @@ pub fn add_graph_action(kind: GraphKind, expr: &str) -> CalculatorAction {
     }
 }
 
-/// Replace the formula of the `index`-th graph row.
+/// Replace the formula of one graph row.
 pub fn set_graph_expr_action(kind: GraphKind, id: impl RowTarget, expr: &str) -> CalculatorAction {
     CalculatorAction::SetGraphExpr {
         kind,
@@ -391,7 +367,7 @@ pub fn set_graph_expr_action(kind: GraphKind, id: impl RowTarget, expr: &str) ->
     }
 }
 
-/// Flip the visibility of the `index`-th graph row.
+/// Flip the visibility of one graph row.
 pub fn toggle_graph_visible_action(kind: GraphKind, id: impl RowTarget) -> CalculatorAction {
     CalculatorAction::ToggleGraphVisible {
         kind,
@@ -399,7 +375,7 @@ pub fn toggle_graph_visible_action(kind: GraphKind, id: impl RowTarget) -> Calcu
     }
 }
 
-/// Delete the `index`-th graph row.
+/// Delete one graph row.
 pub fn delete_graph_action(kind: GraphKind, id: impl RowTarget) -> CalculatorAction {
     CalculatorAction::DeleteGraph {
         kind,
@@ -411,8 +387,20 @@ fn row_deleted(doc: &Doc, row: &ObjId) -> bool {
     matches!(doc.get(row, "deleted"), Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), ScalarValue::Boolean(true)))
 }
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static LAST_RANK: AtomicI64 = AtomicI64::new(0);
+/// Ranks order rows by when they were made: wall-clock microseconds, kept
+/// strictly increasing within the process, so a row added after a restart
+/// still sorts after every row added before it.
 fn next_rank() -> i64 {
-    i64::try_from(NEXT_ID.fetch_add(1, Ordering::Relaxed)).unwrap_or(i64::MAX)
+    let now = ui::time::wall()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX));
+    let previous = LAST_RANK
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+            Some(now.max(last.saturating_add(1)))
+        })
+        .unwrap_or(now);
+    now.max(previous.saturating_add(1))
 }
 fn new_id(kind: &str) -> String {
     // Identity is chosen before action encoding, never during replay.  The
@@ -424,44 +412,13 @@ fn new_id(kind: &str) -> String {
     format!("{kind}-{tick}-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
-// ===========================================================================
-// Resource tree
-// ===========================================================================
-
-/// The presentation context the calculator hands [`provide_resources`]: the
-/// history + saved graphs it currently has (the in-memory mirror of the shared
-/// document). Nothing here is fabricated — it is exactly what the CRDT holds.
-#[derive(Debug, Clone)]
-pub struct CalcResourceCtx {
-    pub mode: Mode,
-    pub history: Vec<HistoryEntry>,
-    pub funcs: Vec<PlotFn>,
-    pub surfaces: Vec<PlotFn>,
-}
-
-/// Publish the calculator resource tree through [`tilo_resource::publish`].
-/// `ctx` is retained for call-site compatibility; the document is the source
-/// of truth for durable rows.
-pub fn provide_resources(_ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let state = <crate::resource::Calculator as TiloResource>::read(doc).unwrap_or_default();
-    vec![ui::tilo_resource::publish::<crate::resource::Calculator>(
-        <crate::resource::Calculator as TiloResource>::KIND,
-        "Calculator",
-        &state,
-    )]
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::CalculatorApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.calc_resource_ctx(), doc)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use crate::resource::Calculator;
+    use tilo_actions::{ActionInput, LocalTransport, Resource};
+    use ui::automerge::AutoCommit;
+    use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -477,33 +434,20 @@ mod tests {
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
-    fn prompted_encode(spec: &tilo_actions::ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
-    }
-
     // -- test-local readers over the raw document -------------------------------
 
     fn read_history(doc: &AutoCommit) -> Vec<(String, String)> {
-        crate::doc::load(doc).map_or_else(Vec::new, |m| {
-            m.history.into_iter().map(|e| (e.expr, e.result)).collect()
-        })
+        crate::doc::load_history(doc)
+            .into_iter()
+            .map(|e| (e.expr, e.result))
+            .collect()
     }
 
     fn read_graph(doc: &AutoCommit, kind: GraphKind) -> Vec<(String, bool)> {
-        crate::doc::load(doc).map_or_else(Vec::new, |m| {
-            match kind {
-                GraphKind::Curve2d => m.funcs,
-                GraphKind::Surface3d => m.surfaces,
-            }
+        crate::doc::load_graph(doc, kind.doc_key())
             .into_iter()
             .map(|f| (f.expr, f.visible))
             .collect()
-        })
     }
 
     /// History actions: commit pushes to the front and caps at `HISTORY_CAP`;
@@ -550,8 +494,9 @@ mod tests {
                     &commit_history_action(&format!("e{i}"), &format!("{i}")),
                 );
             }
-            // History front→back is e3,e2,e1,e0. Delete the middle (index 1 = e2).
-            dispatch(&mut doc, &delete_history_entry_action(1));
+            // History front→back is e3,e2,e1,e0. Delete the middle one (e2).
+            let e2 = crate::doc::visible_ids(&doc, "history")[1].clone();
+            dispatch(&mut doc, &delete_history_entry_action(&e2));
             let h = read_history(&doc);
             assert_eq!(
                 h.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>(),
@@ -559,15 +504,16 @@ mod tests {
                 "delete: middle entry removed"
             );
             // Clear empties it.
-            dispatch(&mut doc, &clear_history_action());
+            let ids = crate::doc::visible_ids(&doc, "history");
+            dispatch(&mut doc, &clear_history_ids_action(ids));
             assert!(read_history(&doc).is_empty(), "clear: history empty");
-            // Out-of-range delete is a no-op (dispatched last: the app never issues a
-            // no-op action — affordances gate on a real change — so the executor's
-            // empty-change handling is never exercised mid-sequence).
-            dispatch(&mut doc, &delete_history_entry_action(99));
+            // Deleting an unknown entry is a no-op (dispatched last: the app never
+            // issues a no-op action — affordances gate on a real change — so the
+            // executor's empty-change handling is never exercised mid-sequence).
+            dispatch(&mut doc, &delete_history_entry_action("missing"));
             assert!(
                 read_history(&doc).is_empty(),
-                "out-of-range delete changed nothing"
+                "deleting an unknown entry changed nothing"
             );
         }
     }
@@ -588,8 +534,9 @@ mod tests {
                 "{kind:?}: add"
             );
 
+            let ids = crate::doc::visible_ids(&doc, kind.doc_key());
             // Set replaces a formula (diff-spliced into the row's Text).
-            dispatch(&mut doc, &set_graph_expr_action(kind, 0, "x^2"));
+            dispatch(&mut doc, &set_graph_expr_action(kind, &ids[0], "x^2"));
             assert_eq!(
                 read_graph(&doc, kind)[0],
                 ("x^2".into(), true),
@@ -597,7 +544,7 @@ mod tests {
             );
 
             // Toggle flips visibility.
-            dispatch(&mut doc, &toggle_graph_visible_action(kind, 1));
+            dispatch(&mut doc, &toggle_graph_visible_action(kind, &ids[1]));
             assert_eq!(
                 read_graph(&doc, kind)[1],
                 ("sin(x)".into(), false),
@@ -605,7 +552,7 @@ mod tests {
             );
 
             // Delete removes a row.
-            dispatch(&mut doc, &delete_graph_action(kind, 0));
+            dispatch(&mut doc, &delete_graph_action(kind, &ids[0]));
             assert_eq!(
                 read_graph(&doc, kind),
                 vec![("sin(x)".into(), false)],
@@ -630,7 +577,7 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "x"));
-            let id = crate::doc::row_id_at(&doc, "funcs", 0).expect("stable graph id");
+            let id = crate::doc::visible_ids(&doc, "funcs")[0].clone();
             dispatch(
                 &mut doc,
                 &delete_graph_action(GraphKind::Curve2d, id.as_str()),
@@ -646,64 +593,45 @@ mod tests {
         }
     }
 
-    fn ctx() -> CalcResourceCtx {
-        CalcResourceCtx {
-            mode: Mode::Graph2d,
-            history: vec![
-                HistoryEntry {
-                    expr: "2^10".into(),
-                    result: "1024".into(),
-                },
-                HistoryEntry {
-                    expr: "sqrt(2)".into(),
-                    result: "1.41".into(),
-                },
-            ],
-            funcs: vec![
-                PlotFn {
-                    expr: "sin(x)".into(),
-                    visible: true,
-                },
-                PlotFn {
-                    expr: "x^2".into(),
-                    visible: false,
-                },
-            ],
-            surfaces: vec![PlotFn {
-                expr: "x*y".into(),
-                visible: true,
-            }],
-        }
-    }
-
-    fn doc_for_ctx() -> AutoCommit {
+    fn seed() -> AutoCommit {
         let mut doc = AutoCommit::new();
+        crate::doc::initialize(&mut doc).unwrap();
         // History is inserted at the front, so author it in reverse display order.
         dispatch(&mut doc, &commit_history_action("sqrt(2)", "1.41"));
         dispatch(&mut doc, &commit_history_action("2^10", "1024"));
         dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "sin(x)"));
         dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "x^2"));
+        let second = nth_graph_id(&doc, GraphKind::Curve2d, 1);
         dispatch(
             &mut doc,
-            &toggle_graph_visible_action(GraphKind::Curve2d, 1),
+            &toggle_graph_visible_action(GraphKind::Curve2d, &second),
         );
         dispatch(&mut doc, &add_graph_action(GraphKind::Surface3d, "x*y"));
         doc
     }
 
-    /// The stable row id a graph resource's address ends in.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let state = Calculator::read(doc).unwrap();
+        vec![ui::tilo_resource::publish::<Calculator>(
+            Calculator::KIND,
+            "Calculator",
+            &state,
+        )]
+    }
+
+    /// The stable row id an item resource's address ends in.
     fn row_id(res: &Resource) -> &str {
-        res.id.as_str().rsplit(':').next().expect("stable row id")
+        res.id.as_str().rsplit('/').next().expect("stable row id")
     }
 
     fn nth_graph_id(doc: &AutoCommit, kind: GraphKind, n: usize) -> String {
-        crate::doc::row_id_at(doc, kind.doc_key(), n).expect("seeded graph row")
+        crate::doc::visible_ids(doc, kind.doc_key())[n].clone()
     }
 
     ui::action_contract_tests! {
-        seed: doc_for_ctx(),
+        seed: seed(),
         registry: registry(),
-        resources: |doc| provide_resources(&ctx(), doc),
+        resources: |doc| published(doc),
         palette: ["Add function", "Clear history", "Delete formula"],
         replay: [
             set_formula => |doc| encode(&set_graph_expr_action(
@@ -723,202 +651,83 @@ mod tests {
             clear_history => ("calculator.document", "clear-history", |doc, _| {
                 encode(&clear_history_ids_action(crate::doc::visible_ids(doc, "history")))
             }),
-            toggle_visibility => ("calculator.graph", "toggle-visibility", |_, res| {
+            toggle_visibility => ("calculator.document.funcs", "toggle-function", |_, res| {
                 encode(&toggle_graph_visible_action(GraphKind::Curve2d, row_id(res)))
             }),
-            delete_formula => ("calculator.graph", "delete", |_, res| {
+            delete_formula => ("calculator.document.funcs", "delete-function", |_, res| {
                 encode(&delete_graph_action(GraphKind::Curve2d, row_id(res)))
             }),
-            edit_formula => ("calculator.graph", "edit", arg: "cos(x)", |_, res| {
+            edit_formula => ("calculator.document.funcs", "edit-function", arg: "cos(x)", |_, res| {
                 encode(&set_graph_expr_action(GraphKind::Curve2d, row_id(res), "cos(x)"))
+            }),
+            delete_entry => ("calculator.document.history", "delete-history-entry", |_, res| {
+                encode(&delete_history_entry_action(row_id(res)))
             }),
         ],
     }
 
-    /// The published resource tree (what Ctrl+K, search and a11y browse): the
-    /// workspace/history/graph hierarchy with its actions, the add-function
-    /// prompt building the canonical `AddGraph`, addresses that follow CRDT rows
-    /// across a positional delete, and a11y affordances that are the
-    /// byte-identical actions the on-screen controls dispatch. Each phase seeds a
-    /// fresh document.
+    /// The published tree (what Ctrl+K, search and agents browse): the
+    /// history and graph rows as items with their row actions, the
+    /// add-function prompt building the canonical `AddGraph`, and addresses
+    /// that follow CRDT rows across a delete.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn published_resources_expose_stable_canonical_affordances() {
-        // phase ctrl_k_publishes_workspace_history_and_graph_tree
-        {
-            let doc = doc_for_ctx();
-            let resources = provide_resources(&ctx(), &doc);
-            assert_eq!(resources.len(), 1, "one workspace root");
-            let ws = &resources[0];
-            assert_eq!(ws.kind, "calculator.document", "ctrl_k: document kind");
-            let ws_actions: Vec<&str> = ws.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(ws_actions.contains(&"add-function"), "{ws_actions:?}");
-            assert!(ws_actions.contains(&"add-surface"), "{ws_actions:?}");
-            assert!(ws_actions.contains(&"clear-history"), "{ws_actions:?}");
-
-            // Two history entries + two curves + one surface = five children.
-            let hist: Vec<&Resource> = ws
-                .children
-                .iter()
-                .filter(|r| r.kind == "calculator.history_entry")
-                .collect();
-            assert_eq!(hist.len(), 2, "ctrl_k: two history entries");
-            assert!(
-                hist[0].actions.iter().any(|a| a.id == "delete"),
-                "ctrl_k: history entry affords delete"
-            );
-            let graphs: Vec<&Resource> = ws
-                .children
-                .iter()
-                .filter(|r| r.kind == "calculator.graph")
-                .collect();
-            assert_eq!(graphs.len(), 3, "2 curves + 1 surface");
-            let g0 = &graphs[0];
-            let g0_actions: Vec<&str> = g0.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(g0_actions.contains(&"edit"), "{g0_actions:?}");
-            assert!(g0_actions.contains(&"toggle-visibility"), "{g0_actions:?}");
-            assert!(g0_actions.contains(&"delete"), "{g0_actions:?}");
+    fn published_items_expose_stable_canonical_affordances() {
+        let mut doc = seed();
+        let resources = published(&doc);
+        let root = &resources[0];
+        assert_eq!(root.kind, "calculator.document");
+        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+        for id in ["add-function", "add-surface", "clear-history"] {
+            assert!(ids.contains(&id), "{id}: {ids:?}");
         }
-
-        // phase add_function_prompt_builds_the_canonical_add_graph
-        {
-            // The workspace add-function prompt builds the same `AddGraph` the keypad
-            // "+" affordance does; its fresh stable id rules out a byte comparison.
-            let doc = doc_for_ctx();
-            let resources = provide_resources(&ctx(), &doc);
-            let ws = &resources[0];
-            let add = ws.actions.iter().find(|a| a.id == "add-function").unwrap();
-            let encoded = prompted_encode(add, "x^2");
-            let decoded: CalculatorAction =
-                serde_json::from_slice(&encoded.payload).expect("decode canonical action");
-            assert!(
-                matches!(decoded, CalculatorAction::AddGraph { kind: GraphKind::Curve2d, expr, .. } if expr == "x^2"),
-                "add-function uses the canonical AddGraph action with a fresh stable id"
-            );
-        }
-
-        // phase resource_addresses_follow_crdt_rows_after_a_positional_delete
-        {
-            let mut doc = doc_for_ctx();
-            let mut context = ctx();
-            let before = provide_resources(&context, &doc);
-            let history_before: Vec<String> = before[0]
+        let of_kind = |resources: &[Resource], kind: &str| -> Vec<Resource> {
+            resources[0]
                 .children
                 .iter()
-                .filter(|resource| resource.kind == "calculator.history_entry")
-                .map(|resource| resource.id.0.clone())
-                .collect();
+                .filter(|r| r.kind == kind)
+                .cloned()
+                .collect()
+        };
+        let history = of_kind(&resources, "calculator.document.history");
+        assert_eq!(history.len(), 2, "two history entries");
+        assert_eq!(
+            of_kind(&resources, "calculator.document.funcs").len(),
+            2,
+            "two curves"
+        );
+        let surfaces = of_kind(&resources, "calculator.document.surfaces");
+        assert_eq!(surfaces.len(), 1, "one surface");
+        let actions: Vec<&str> = surfaces[0].actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            actions,
+            ["edit-surface", "toggle-surface", "delete-surface"],
+            "a surface row carries its own actions"
+        );
 
-            dispatch(&mut doc, &delete_history_entry_action(0));
-            context.history.remove(0);
-            let after = provide_resources(&context, &doc);
-            let remaining = after[0]
-                .children
-                .iter()
-                .find(|resource| resource.kind == "calculator.history_entry")
-                .expect("the second history row remains");
-            assert_eq!(
-                remaining.id.0, history_before[1],
-                "addresses follow the CRDT row after a positional delete"
-            );
-        }
+        // The add-function prompt builds the same `AddGraph` the panel's "+"
+        // does; its fresh stable id rules out a byte comparison.
+        let add = root
+            .actions
+            .iter()
+            .find(|a| a.id == "add-function")
+            .unwrap();
+        let ActionInput::Prompted { build, .. } = &add.input else {
+            panic!("add-function asks for its formula");
+        };
+        let decoded: CalculatorAction =
+            serde_json::from_slice(&build("x^2").payload).expect("decode canonical action");
+        assert!(
+            matches!(decoded, CalculatorAction::AddGraph { kind: GraphKind::Curve2d, expr, .. } if expr == "x^2"),
+            "add-function uses the canonical AddGraph action with a fresh stable id"
+        );
 
-        // phase a11y_tree_surfaces_history_delete_as_the_affordance_action
-        {
-            // The retained accessibility tree surfaces the calculator's operable
-            // resources as stable nodes, and a node's exposed affordance is the
-            // byte-identical `EncodedAction` the on-screen control dispatches. (The
-            // calculator custom-draws its keypad, so its *operable* semantics come from
-            // the resource + action model, not per-key widgets.)
-            let mut resource_doc = doc_for_ctx();
-            let resources = provide_resources(&ctx(), &resource_doc);
-
-            // An inert root; the operable nodes come from the published resources.
-            // `HashMap::new()`'s type is inferred from `refresh`'s signature.
-            let root = ui::widget::Column::new();
-            let node_map = std::collections::HashMap::new();
-            let mut tree = ui::SemanticTree::new();
-
-            // First refresh populates the tree; a second, unchanged refresh is a
-            // no-op with identical node identity (retained, not rebuilt each frame).
-            let d1 = tree.refresh(&root, &node_map, None, &resources);
-            assert!(!d1.added.is_empty(), "the first refresh populates the tree");
-            let ws = tree
-                .node(&ui::SemanticId("r:calculator.document".into()))
-                .expect("workspace node present");
-            assert_eq!(
-                ws.name.as_deref(),
-                Some("Calculator"),
-                "a11y: workspace name"
-            );
-            assert!(
-                ws.action("clear-history").is_some(),
-                "workspace affords clear-history"
-            );
-            let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-
-            let d2 = tree.refresh(&root, &node_map, None, &resources);
-            assert!(d2.is_empty(), "an unchanged frame yields no delta: {d2:?}");
-            let ids2: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-            assert_eq!(ids1, ids2, "node identity survives across frames");
-
-            // The newest history entry is a node whose 'delete' affordance carries
-            // the exact EncodedAction the on-screen delete control dispatches.
-            let history_id = resources
-                .first()
-                .expect("calculator workspace resource")
-                .children
-                .iter()
-                .find(|resource| resource.kind == "calculator.history_entry")
-                .map(|resource| ui::SemanticId(format!("r:{}", resource.id.as_str())))
-                .expect("published history entry resource");
-            let entry = tree.node(&history_id).expect("history entry node");
-            let exposed = match &entry.action("delete").expect("delete affordance").kind {
-                ui::SemanticActionKind::App(enc) => enc.clone(),
-                other => panic!("expected an app action, got {other:?}"),
-            };
-            assert_eq!(
-                exposed,
-                encode(&delete_history_entry_action(
-                    resources[0]
-                        .children
-                        .iter()
-                        .find(|r| r.kind == "calculator.history_entry")
-                        .and_then(|r| r.id.as_str().rsplit(':').next())
-                        .expect("stable history id")
-                )),
-                "the a11y affordance and the on-screen builder are one action"
-            );
-
-            // Invoking the exposed action drives the doc exactly as the on-screen
-            // affordance's own builder does: seed two identical docs, delete through
-            // each path, and compare the results.
-            let bytes = resource_doc.save();
-            let mut via_a11y = AutoCommit::load(&bytes).expect("clone resource document");
-            let mut via_affordance = AutoCommit::load(&bytes).expect("clone resource document");
-
-            let decoded = registry().decode(&exposed).unwrap();
-            let mut tx = LocalTransport::new();
-            tilo_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
-            let id = crate::doc::row_id_at(&via_affordance, "history", 0).expect("stable id");
-            dispatch(
-                &mut via_affordance,
-                &delete_history_entry_action(id.as_str()),
-            );
-
-            assert_eq!(
-                read_history(&via_a11y),
-                read_history(&via_affordance),
-                "invoking the a11y affordance deletes the same entry the control does"
-            );
-            assert_eq!(
-                read_history(&via_a11y).len(),
-                1,
-                "one entry remains after the delete"
-            );
-        }
+        // Deleting the newest entry leaves the other at the address it had.
+        dispatch(&mut doc, &delete_history_entry_action(row_id(&history[0])));
+        let after = of_kind(&published(&doc), "calculator.document.history");
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after[0].id, history[1].id,
+            "addresses follow the CRDT row after a delete"
+        );
     }
 }

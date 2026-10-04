@@ -92,10 +92,7 @@ impl Default for Graph2dScreen {
             add_rect: Rect::ZERO,
             overlay: false,
             panel_open: true,
-            // Shots-only: force the panel open so the headless narrow-width
-            // screenshot can show the overlay drawer. No effect when unset, so
-            // live behaviour (breakpoint-driven default) is unchanged.
-            user_toggled: std::env::var_os("TILO_CALC_PANEL_OPEN").is_some(),
+            user_toggled: false,
             toggle_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             hovered_row: None,
@@ -196,21 +193,6 @@ const HEADER_H_1X: f64 = 64.0;
 const PREFIX_LABEL: &str = "y =";
 
 impl Graph2dScreen {
-    /// Pure graph rendering for a frozen History model; no editing controls.
-    pub(crate) fn draw_history_canvas(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        model: &CalcModel,
-        area: Rect,
-    ) {
-        self.canvas = area;
-        self.zoom.settle(model.view2d);
-        self.draw_canvas(scene, t, tr, theme, model, (None, &model.view2d));
-    }
-
     /// Resolve docked-vs-overlay and the panel / canvas / scrim / toggle rects
     /// from the current width. Re-derived every layout pass so a resize reflows.
     fn resolve_panel(&mut self, area: Rect) {
@@ -360,16 +342,8 @@ impl Graph2dScreen {
                 .collect();
             // Seed the active row's caret inside a structure so a fresh frame
             // (incl. the headless screenshot) shows a real 2D caret in place.
-            // `TILO_CALC_SELECTION_DEMO` instead seeds a selection band, for the
-            // drag-selection screenshot.
             if let Some(field) = self.fields.get_mut(model.active_fn) {
-                if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
-                    field.park_caret_at_end();
-                } else if std::env::var_os("TILO_CALC_SELECTION_DEMO").is_some() {
-                    field.park_demo_selection();
-                } else {
-                    field.park_caret_in_structure();
-                }
+                field.park_caret_in_structure();
             }
         }
     }
@@ -795,6 +769,11 @@ impl Graph2dScreen {
         self.overlay && self.panel_open && self.scrim_rect.contains(p)
     }
     /// Flip the panel open/closed and remember the user's explicit choice.
+    /// Open the drawer as if the user had, at any width.
+    pub fn open_panel(&mut self) {
+        self.panel_open = true;
+        self.user_toggled = true;
+    }
     pub fn toggle_panel(&mut self) {
         self.panel_open = !self.panel_open;
         self.user_toggled = true;

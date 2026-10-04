@@ -150,11 +150,11 @@ impl Default for CalcModel {
 pub const DEFAULT_SURFACE: &str = "sin(sqrt(x^2+y^2))";
 
 impl CalcModel {
-    /// Rich starting content for the headless `--shots` frame and tests — a
-    /// populated, lived-in calculator + graphs. NEVER used by the live event
-    /// loop (which boots empty via [`CalcModel::default`]).
+    /// Rich starting content for the screenshot scenarios and tests — a
+    /// populated, lived-in calculator + graphs. Never used by a live window
+    /// (which boots empty via [`CalcModel::default`]).
     pub fn seeded() -> Self {
-        let mut m = CalcModel {
+        CalcModel {
             mode: Mode::Graph2d,
             expr: "sin(0.5)+cos(0.5)".to_string(),
             ans: 1.0,
@@ -219,39 +219,12 @@ impl CalcModel {
             ],
             active_surface: 0,
             ..CalcModel::default()
-        };
-        // The headless screenshot picks which tab it captures via this hook;
-        // unset (the live default) keeps the lived-in Graph 2D launch view.
-        if let Some(want) = std::env::var_os("TILO_CALC_MODE") {
-            m.mode = match want.to_string_lossy().as_ref() {
-                "calc" | "calculator" => Mode::Calc,
-                "graph3d" | "3d" => Mode::Graph3d,
-                _ => Mode::Graph2d,
-            };
         }
-        // Shot-only: a single long function so the headless screenshot can show
-        // a formula that overflows the fixed-height field and scrolls within it
-        // (caret kept in view at the end) rather than resizing the row.
-        if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
-            m.mode = Mode::Graph2d;
-            m.funcs = vec![PlotFn {
-                expr: "sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)".into(),
-                visible: true,
-            }];
-            m.active_fn = 0;
-        }
-        // Screenshot-only: exercise the visible, truthful parse-error state.
-        // The live app never injects this expression.
-        if std::env::var_os("TILO_CALC_ERROR_DEMO").is_some() {
-            m.apply_error_demo();
-        }
-        m
     }
 
-    /// Configure the deterministic invalid-expression frame used only by the
-    /// headless visual-review hook. Keeping it as a pure transition makes the
-    /// fixture testable without changing global process environment.
-    fn apply_error_demo(&mut self) {
+    /// Configure the deterministic invalid-expression frame of the `error`
+    /// screenshot scenario.
+    pub(crate) fn apply_error_demo(&mut self) {
         self.mode = Mode::Calc;
         self.expr = "sqrt(".into();
         self.after_equals = false;

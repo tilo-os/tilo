@@ -22,7 +22,6 @@
 "apps/api-tester/src/resource.rs" = 2
 "apps/backups/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
-"apps/calculator/src/resource.rs" = 1
 "apps/calendar/src/resource.rs" = 1
 "apps/camera/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
@@ -75,7 +74,6 @@
 "apps/api-tester/src/lib.rs" = 2
 "apps/api-tester/src/main.rs" = 2
 "apps/backups/src/main.rs" = 2
-"apps/calculator/src/main.rs" = 1
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -149,7 +147,6 @@
 "apps/agent/src/apply.rs" = 9
 "apps/agent/src/session/chat.rs" = 2
 "apps/browser/src/browser_widget.rs" = 1
-"apps/calculator/src/framework_history.rs" = 1
 "apps/calendar/src/store.rs" = 1
 "apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1

@@ -1,9 +1,10 @@
 //! Root widget for the calculator. A single full-window widget that owns
 //! the [`CalcModel`], paints the header + the active mode's screen, and
-//! routes all keyboard / pointer input. State is flushed into the shared
-//! Automerge document on every change (see [`crate::doc`]).
+//! routes all keyboard / pointer input. Durable rows (history, graphs) are
+//! presented from the resource and changed only through its actions.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -15,12 +16,12 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
+use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_resource::Resource;
 
 use crate::actions::{self, CalculatorAction, GraphKind};
 use crate::draw::{self, Align};
@@ -29,6 +30,7 @@ use crate::graph2d::Graph2dScreen;
 use crate::graph3d::Graph3dScreen;
 use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
+use crate::resource::{Calculator, CalculatorState};
 
 const TOPBAR_H: f64 = 60.0;
 /// Gap between the segments of the mode switch and of the RAD/DEG toggle:
@@ -60,7 +62,7 @@ impl TopbarLabels {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, orthogonal flag (layout state, \
-              drag state, and seed/dirty bookkeeping); they aren't a state \
+              drag state, and dirty bookkeeping); they aren't a state \
               machine, and grouping them would mean churning every field \
               access across this widget for no behavioural gain"
 )]
@@ -97,76 +99,35 @@ pub struct CalculatorApp {
     last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
-    seeded: bool,
     model_dirty: bool,
     /// Something visible changed since the last paint. Cleared by
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
     /// whole desktop on every pointer move while the Calculator was active.
     dirty: bool,
-    /// Document heads and pending-operation count at the last model reload,
-    /// so `sync` reloads history, functions and surfaces only when the
-    /// document actually moved rather than on every frame.
-    synced: Option<(Vec<automerge::ChangeHash>, usize)>,
-    /// When `Some`, an edit landed at this time and has not yet been sealed into
-    /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
-    /// coalesces into a single Ctrl+Z step once editing pauses.
-    last_edit_time: Option<ui::time::Instant>,
     node: Option<NodeId>,
 
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`CalculatorAction`] through this: hosted via [`crate::resource::ActionSink`]
-    /// (framework [`Dispatcher`](ui::framework::Dispatcher)), standalone via the
-    /// local action host for tests and benches.
-    actions: crate::resource::ActionSink,
+    /// The resource's door: every on-screen affordance submits its
+    /// [`CalculatorAction`] here. `None` until the framework attaches the
+    /// surface, and for a bare widget in a layout test.
+    dispatch: Option<Dispatcher<Calculator>>,
+    /// The durable rows last presented, with their stable ids.
+    rows: Rc<CalculatorState>,
+    /// A graph row this window just added, to select once it is presented.
+    select: Option<(GraphKind, String)>,
 }
 
-/// How long editing must pause before a burst of keystrokes is sealed into one
-/// undo checkpoint (see [`CalculatorApp::needs_commit`]). Mirrors `TextInput`'s
-/// time-based coalescing so undo granularity is per-pause, not per-keystroke.
-const COMMIT_COALESCE: std::time::Duration = std::time::Duration::from_millis(600);
-
 impl CalculatorApp {
-    /// The live app: boots empty in Calculator mode. Persisted state (if any)
-    /// is adopted from the CRDT on the first [`Widget::sync`].
+    /// The live app: boots empty in Calculator mode. The resource's rows
+    /// arrive with the first [`ResourceSurface::present`](ui::framework::ResourceSurface::present).
     pub fn new() -> Self {
         Self::with_model(CalcModel::default())
     }
 
+    /// A lived-in instance (populated history / plots / surface) for layout
+    /// tests of the bare widget.
     #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// Project an already admitted Calculator record without authoring schema
-    /// or replacing malformed content. The checked component initializes New
-    /// records before calling this constructor; Existing records stay read-only.
-    ///
-    /// # Errors
-    ///
-    /// Returns the schema error when the record is not a valid Calculator
-    /// document.
-    pub fn from_document(doc: &AutoCommit) -> Result<Self, String> {
-        let mut app = Self::with_model(crate::doc::load_existing(doc)?);
-        app.seeded = true;
-        Ok(app)
-    }
-
-    /// A lived-in demo instance (populated history / plots / surface) used by
-    /// the headless `--shots` renderer and tests. Never used by the live loop.
-    pub fn seeded() -> Self {
+    pub(crate) fn seeded() -> Self {
         Self::with_model(CalcModel::seeded())
-    }
-
-    /// Shots/demo only: force the initial mode (e.g. a 3D-plot screenshot).
-    pub fn shots_set_mode(&mut self, m: Mode) {
-        self.set_mode(m);
-    }
-
-    /// Shots/demo only: force the history sidebar open/closed with no
-    /// animation, so a headless frame deterministically captures the docked /
-    /// collapsed / overlay states.
-    pub fn shots_set_history_open(&mut self, open: bool) {
-        self.calc.snap_sidebar(open);
     }
 
     fn with_model(model: CalcModel) -> Self {
@@ -190,21 +151,31 @@ impl CalculatorApp {
             host_focused: false,
             last_click: None,
             last_click_pos: Point::ZERO,
-            seeded: false,
             model_dirty: false,
             dirty: true,
-            synced: None,
-            last_edit_time: None,
             node: None,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
+            rows: Rc::default(),
+            select: None,
         }
     }
 
     /// Adopt durable history and graph rows from the framework resource state.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::CalculatorState) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<CalculatorState>) {
         self.model.history = state.history.iter().map(|(_, e)| e.clone()).collect();
         self.model.funcs = state.funcs.iter().map(|(_, f)| f.clone()).collect();
         self.model.surfaces = state.surfaces.iter().map(|(_, f)| f.clone()).collect();
+        self.rows = Rc::clone(state);
+        if let Some((kind, id)) = self.select.take() {
+            match state.graphs(kind).iter().position(|(row, _)| *row == id) {
+                Some(index) => match kind {
+                    GraphKind::Curve2d => self.model.active_fn = index,
+                    GraphKind::Surface3d => self.model.active_surface = index,
+                },
+                // Not presented yet: keep waiting for it.
+                None => self.select = Some((kind, id)),
+            }
+        }
         self.model.active_fn = self
             .model
             .active_fn
@@ -213,18 +184,51 @@ impl CalculatorApp {
             .model
             .active_surface
             .min(self.model.surfaces.len().saturating_sub(1));
-        self.seeded = true;
         self.model_dirty = true;
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Calculator>,
-    ) {
-        self.actions.attach(dispatcher);
-        self.seeded = true;
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`](ui::framework::ResourceSurface).
+    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Calculator>) {
+        self.dispatch = Some(dispatcher);
+    }
+
+    /// Stage the view a screenshot scenario shows, over the rows its
+    /// actions wrote.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        if scenario == Some("empty") {
+            return;
+        }
+        let lived_in = CalcModel::seeded();
+        self.model.expr = lived_in.expr;
+        self.model.ans = lived_in.ans;
+        self.model.memory = lived_in.memory;
+        match scenario {
+            Some("calculator" | "history-open" | "history-closed" | "narrow") => {
+                self.set_mode(Mode::Calc);
+            }
+            Some("error") => self.model.apply_error_demo(),
+            Some("graph3d") => self.set_mode(Mode::Graph3d),
+            _ => self.set_mode(Mode::Graph2d),
+        }
+        match scenario {
+            Some("history-open") => self.calc.snap_sidebar(true),
+            Some("history-closed") => self.calc.snap_sidebar(false),
+            Some("narrow-functions") => self.g2.open_panel(),
+            _ => {}
+        }
+        if self.model.mode == Mode::Graph2d {
+            self.g2.sync_fields(&self.model);
+            if let Some(field) = self.g2.active_field_mut(self.model.active_fn) {
+                match scenario {
+                    Some("long-formula") => field.park_caret_at_end(),
+                    Some("selection") => field.park_demo_selection(),
+                    _ => {}
+                }
+            }
+        }
+        self.model_dirty = true;
+        self.dirty = true;
     }
 
     /// Recompute the header geometry from `self.area`. The mode switcher and the
@@ -324,46 +328,102 @@ impl CalculatorApp {
         }
     }
 
-    /// The context Ctrl+K needs to build the calculator's resource tree: the
-    /// history + saved graphs the in-memory model mirrors from the shared
-    /// document. Read-only snapshot; nothing is fabricated.
-    pub(crate) fn calc_resource_ctx(&self) -> crate::actions::CalcResourceCtx {
-        crate::actions::CalcResourceCtx {
-            mode: self.model.mode,
-            history: self.model.history.clone(),
-            funcs: self.model.funcs.clone(),
-            surfaces: self.model.surfaces.clone(),
-        }
-    }
-
-    /// Dispatch one [`CalculatorAction`] — the single CRDT-mutation path shared
-    /// with the Ctrl+K palette. Applied through the Tilo action executor (a pinned
-    /// actor + committed change, so it replays byte-identically on peers). The
-    /// document heads captured just before the first action of the current event
-    /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory model is mutated by the
-    /// caller for immediate feedback; `store` then reconciles it (a no-op for the
-    /// list the action already wrote), and `sync` re-adopts the document on
-    /// undo/redo or a merged peer patch.
+    /// Submit one [`CalculatorAction`] through the resource's door — the one
+    /// way this window changes the document, shared with the palette, agents
+    /// and scripts. It applies now, inside the event, so a formula's next
+    /// keystroke builds on this one; the rows it changed are presented back
+    /// before the next frame. The caller updates the model for immediate
+    /// feedback.
     ///
     /// Only ever call this for an action that genuinely mutates the document —
     /// the affordances gate on a real change (a non-empty history to clear, an
-    /// existing row to toggle/delete) — because the executor commits even a
-    /// no-op action, and an empty change wedges the next dispatch. This app
-    /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &CalculatorAction) {
-        // Unit/headless callers can invoke controls before the first widget
-        // sync. Bootstrap their current shared artifacts once, then continue
-        // through the same canonical action path as a live window. Hosted
-        // surfaces never write the document outside Action::apply — the
-        // framework already initialized the record.
-        if !self.actions.is_hosted() && !crate::doc::is_seeded(doc) {
-            crate::doc::store(doc, &self.model);
+    /// existing row to toggle/delete).
+    fn submit(&self, doc: &mut AutoCommit, action: &CalculatorAction) {
+        if let Some(dispatch) = &self.dispatch {
+            // A refusal (a participant who may only view) writes nothing, and
+            // the stored rows are presented again.
+            let _ = dispatch.apply_now(doc, action);
         }
-        self.actions.dispatch(doc, action);
-        // Re-adopt only durable resources. This makes a keyed action visible
-        // immediately without ever copying another window's presentation.
-        let _ = crate::doc::load_into(doc, &mut self.model);
+    }
+
+    /// End the formula edit the last keystrokes belonged to, so the next one
+    /// is an undo step of its own.
+    fn settle_edit(&self) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.settle();
+        }
+    }
+
+    /// Add a graph row (empty, or a starter formula), select it, and submit
+    /// its `AddGraph`.
+    fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut AutoCommit) {
+        self.settle_edit();
+        let action = actions::add_graph_action(kind, expr);
+        if let CalculatorAction::AddGraph { id, .. } = &action {
+            self.select = Some((kind, id.clone()));
+        }
+        let row = PlotFn {
+            expr: expr.to_owned(),
+            visible: true,
+        };
+        match kind {
+            GraphKind::Curve2d => {
+                self.model.funcs.push(row);
+                self.model.active_fn = self.model.funcs.len() - 1;
+            }
+            GraphKind::Surface3d => {
+                self.model.surfaces.push(row);
+                self.model.active_surface = self.model.surfaces.len() - 1;
+            }
+        }
+        self.submit(doc, &action);
+        self.model_dirty = true;
+    }
+
+    /// Show or hide the `index`-th row of a graph list.
+    fn toggle_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) -> bool {
+        let rows = match kind {
+            GraphKind::Curve2d => &mut self.model.funcs,
+            GraphKind::Surface3d => &mut self.model.surfaces,
+        };
+        let Some(row) = rows.get_mut(index) else {
+            return false;
+        };
+        row.visible = !row.visible;
+        if let Some(id) = self.rows.graph_id(kind, index) {
+            let action = actions::toggle_graph_visible_action(kind, id);
+            self.submit(doc, &action);
+        }
+        self.model_dirty = true;
+        true
+    }
+
+    /// Replace the formula of the `index`-th row of a graph list, as typed.
+    fn set_graph_expr(&mut self, kind: GraphKind, index: usize, expr: &str, doc: &mut AutoCommit) {
+        let rows = match kind {
+            GraphKind::Curve2d => &mut self.model.funcs,
+            GraphKind::Surface3d => &mut self.model.surfaces,
+        };
+        if let Some(row) = rows.get_mut(index) {
+            expr.clone_into(&mut row.expr);
+        }
+        if let Some(id) = self.rows.graph_id(kind, index) {
+            let action = actions::set_graph_expr_action(kind, id, expr);
+            self.submit(doc, &action);
+        }
+        self.model_dirty = true;
+    }
+
+    /// Empty the history.
+    fn clear_history(&mut self, doc: &mut AutoCommit) {
+        // Only a non-empty history is a real mutation.
+        if self.model.history.is_empty() {
+            return;
+        }
+        self.model.history.clear();
+        let ids = self.rows.history.iter().map(|(id, _)| id.clone()).collect();
+        self.submit(doc, &actions::clear_history_ids_action(ids));
+        self.model_dirty = true;
     }
 
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
@@ -373,7 +433,7 @@ impl CalculatorApp {
     /// empty evaluation commits nothing and dispatches nothing.
     fn commit_equals(&mut self, doc: &mut AutoCommit) {
         if let Some(entry) = self.model.commit_equals() {
-            self.perform_action(
+            self.submit(
                 doc,
                 &actions::commit_history_action(&entry.expr, &entry.result),
             );
@@ -381,6 +441,7 @@ impl CalculatorApp {
         self.model_dirty = true;
     }
 
+    /// Show mode `m`: presentation only.
     fn set_mode(&mut self, m: Mode) {
         if self.model.mode != m {
             self.model.mode = m;
@@ -388,50 +449,25 @@ impl CalculatorApp {
             // visit; settle both animators to the current model view.
             self.g2.settle_zoom(self.model.view2d);
             self.g3.settle_zoom(self.model.view3d.zoom);
-            // Give tests and the screenshot-only constructor a useful starter
-            // without needing a live document. Production mode changes go
-            // through `set_mode_in_document`, which publishes this same row as
-            // a canonical AddGraph action before `store` reconciles the model.
-            match m {
-                Mode::Graph2d if self.model.funcs.is_empty() => {
-                    self.model.funcs.push(PlotFn {
-                        expr: String::new(),
-                        visible: true,
-                    });
-                    self.model.active_fn = 0;
-                }
-                Mode::Graph3d if self.model.surfaces.is_empty() => {
-                    self.model.surfaces.push(PlotFn {
-                        expr: model::DEFAULT_SURFACE.to_string(),
-                        visible: true,
-                    });
-                    self.model.active_surface = 0;
-                }
-                _ => {}
-            }
             self.model_dirty = true;
         }
     }
 
-    /// Switch modes on a live document.  A first visit to either graph mode
-    /// creates its starter row through the exact `AddGraph` action published to
-    /// Ctrl+K, rather than smuggling it into the CRDT in a later wholesale
-    /// store. This matters for undo, activity history, and collaborators.
-    fn set_mode_in_document(&mut self, m: Mode, doc: &mut AutoCommit) {
-        if !self.actions.is_hosted() && !crate::doc::is_seeded(doc) {
-            crate::doc::store(doc, &self.model);
-        }
-        let funcs_before = self.model.funcs.len();
-        let surfaces_before = self.model.surfaces.len();
+    /// Switch to mode `m`. A first visit to an empty graph mode gives it an
+    /// editable starter — an empty curve, an example surface — through the
+    /// same `AddGraph` action the palette offers, so it is undoable and
+    /// reaches collaborators.
+    fn switch_mode(&mut self, m: Mode, doc: &mut AutoCommit) {
+        self.settle_edit();
         self.set_mode(m);
-        if self.model.funcs.len() > funcs_before {
-            self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
-        }
-        if self.model.surfaces.len() > surfaces_before {
-            self.perform_action(
-                doc,
-                &actions::add_graph_action(GraphKind::Surface3d, model::DEFAULT_SURFACE),
-            );
+        match m {
+            Mode::Graph2d if self.model.funcs.is_empty() => {
+                self.add_graph(GraphKind::Curve2d, "", doc);
+            }
+            Mode::Graph3d if self.model.surfaces.is_empty() => {
+                self.add_graph(GraphKind::Surface3d, model::DEFAULT_SURFACE, doc);
+            }
+            _ => {}
         }
     }
 
@@ -535,10 +571,13 @@ impl CalculatorApp {
     // -- pointer routing -----------------------------------------------------
 
     fn on_press(&mut self, p: Point, doc: &mut AutoCommit) {
+        // A press ends the formula edit in progress: the next keystroke is
+        // an undo step of its own.
+        self.settle_edit();
         // header first
         for (i, r) in self.seg_rects.iter().enumerate() {
             if r.contains(p) {
-                self.set_mode_in_document(Mode::from_index(i), doc);
+                self.switch_mode(Mode::from_index(i), doc);
                 return;
             }
         }
@@ -578,25 +617,11 @@ impl CalculatorApp {
             return;
         }
         if self.g3.add_at(p) {
-            self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
-            self.model.active_surface = self.model.surfaces.len().saturating_sub(1);
-            self.model_dirty = true;
+            self.add_graph(GraphKind::Surface3d, "", doc);
         } else if let Some(i) = self.g3.delete_at(p) {
             self.delete_graph_row(GraphKind::Surface3d, i, doc);
         } else if let Some(i) = self.g3.vis_at(p) {
-            if let Some(f) = self.model.surfaces.get_mut(i) {
-                f.visible = !f.visible;
-                self.perform_action(
-                    doc,
-                    &crate::doc::row_id_at(doc, crate::doc::SURFACES, i).map_or_else(
-                        || actions::toggle_graph_visible_action(GraphKind::Surface3d, i),
-                        |id| {
-                            actions::toggle_graph_visible_action(GraphKind::Surface3d, id.as_str())
-                        },
-                    ),
-                );
-                self.model_dirty = true;
-            }
+            self.toggle_graph_row(GraphKind::Surface3d, i, doc);
         } else if let Some(i) = self.g3.field_at(p) {
             self.model.active_surface = i;
             self.g3.sync_fields(&self.model);
@@ -646,19 +671,7 @@ impl CalculatorApp {
                 self.model_dirty = true;
             }
         } else if self.calc.clear_history_at(p) {
-            // Only a non-empty history is a real mutation; clearing an empty
-            // list would be a no-op action (which wedges the executor).
-            if !self.model.history.is_empty() {
-                self.model.history.clear();
-                self.perform_action(
-                    doc,
-                    &actions::clear_history_ids_action(crate::doc::visible_ids(
-                        doc,
-                        crate::doc::HISTORY,
-                    )),
-                );
-                self.model_dirty = true;
-            }
+            self.clear_history(doc);
         } else if let Some(hi) = self.calc.history_at(p)
             && let Some(e) = self.model.history.get(hi).cloned()
         {
@@ -679,23 +692,11 @@ impl CalculatorApp {
             return;
         }
         if self.g2.add_at(p) {
-            self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
-            self.model.active_fn = self.model.funcs.len().saturating_sub(1);
-            self.model_dirty = true;
+            self.add_graph(GraphKind::Curve2d, "", doc);
         } else if let Some(i) = self.g2.delete_at(p) {
             self.delete_graph_row(GraphKind::Curve2d, i, doc);
         } else if let Some(i) = self.g2.vis_at(p) {
-            if let Some(f) = self.model.funcs.get_mut(i) {
-                f.visible = !f.visible;
-                self.perform_action(
-                    doc,
-                    &crate::doc::row_id_at(doc, crate::doc::FUNCS, i).map_or_else(
-                        || actions::toggle_graph_visible_action(GraphKind::Curve2d, i),
-                        |id| actions::toggle_graph_visible_action(GraphKind::Curve2d, id.as_str()),
-                    ),
-                );
-                self.model_dirty = true;
-            }
+            self.toggle_graph_row(GraphKind::Curve2d, i, doc);
         } else if let Some(i) = self.g2.field_at(p) {
             // Click landed in row i's editor: activate it and place the caret.
             self.model.active_fn = i;
@@ -724,21 +725,16 @@ impl CalculatorApp {
         }
     }
 
-    /// Delete one graph row through the same stable, tombstoned action used by
-    /// Ctrl+K. The model is deliberately not spliced optimistically: the action
-    /// reload gives this window the exact merged resource list a collaborator
-    /// sees, and keeps active-row clamping in one place (`doc::load_into`).
+    /// Delete one graph row through the same stable, tombstoned action the
+    /// palette offers. The model is deliberately not spliced optimistically:
+    /// the presented rows are the exact merged list a collaborator sees, and
+    /// keep active-row clamping in one place (`adopt_resource_state`).
     fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) {
-        let collection = match kind {
-            GraphKind::Curve2d => crate::doc::FUNCS,
-            GraphKind::Surface3d => crate::doc::SURFACES,
-        };
-        let action = crate::doc::row_id_at(doc, collection, index).map_or_else(
-            || actions::delete_graph_action(kind, index),
-            |id| actions::delete_graph_action(kind, id.as_str()),
-        );
-        self.perform_action(doc, &action);
-        self.model_dirty = true;
+        if let Some(id) = self.rows.graph_id(kind, index) {
+            let action = actions::delete_graph_action(kind, id);
+            self.submit(doc, &action);
+            self.model_dirty = true;
+        }
     }
 
     /// Extend a math-field drag-selection to the current pointer position.
@@ -862,10 +858,6 @@ impl CalculatorApp {
         self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one flat per-key dispatch table for every Calculator mode"
-    )]
     fn on_key_with_paste(
         &mut self,
         key: &WKey,
@@ -879,15 +871,15 @@ impl CalculatorApp {
         if ctrl && let WKey::Character(s) = key {
             match s.as_str() {
                 "1" => {
-                    self.set_mode_in_document(Mode::Calc, doc);
+                    self.switch_mode(Mode::Calc, doc);
                     return;
                 }
                 "2" => {
-                    self.set_mode_in_document(Mode::Graph2d, doc);
+                    self.switch_mode(Mode::Graph2d, doc);
                     return;
                 }
                 "3" => {
-                    self.set_mode_in_document(Mode::Graph3d, doc);
+                    self.switch_mode(Mode::Graph3d, doc);
                     return;
                 }
                 _ => {}
@@ -945,16 +937,8 @@ impl CalculatorApp {
                 // expression" gesture. The active-row field already round-trips
                 // its edit into the model on each keystroke, so the row is
                 // committed; here we just append (an action) and focus it.
-                Mode::Graph2d => {
-                    self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
-                    self.model.active_fn = self.model.funcs.len().saturating_sub(1);
-                    self.model_dirty = true;
-                }
-                Mode::Graph3d => {
-                    self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
-                    self.model.active_surface = self.model.surfaces.len().saturating_sub(1);
-                    self.model_dirty = true;
-                }
+                Mode::Graph2d => self.add_graph(GraphKind::Curve2d, "", doc),
+                Mode::Graph3d => self.add_graph(GraphKind::Surface3d, "", doc),
             },
             WKey::Named(NamedKey::Backspace) => {
                 if self.model.mode == Mode::Calc {
@@ -1017,21 +1001,9 @@ impl CalculatorApp {
         if !field_handles(key, modifiers) {
             return false;
         }
-        let changed = field.handle_key(key, &modifiers);
-        if changed {
+        if field.handle_key(key, &modifiers) {
             let linear = field.current_linear();
-            if let Some(f) = self.model.funcs.get_mut(a) {
-                f.expr = linear;
-            }
-            if let Some(id) = crate::doc::row_id_at(doc, crate::doc::FUNCS, a) {
-                let action = actions::set_graph_expr_action(
-                    GraphKind::Curve2d,
-                    id.as_str(),
-                    self.model.funcs.get(a).map_or("", |f| f.expr.as_str()),
-                );
-                self.perform_action(doc, &action);
-            }
-            self.model_dirty = true;
+            self.set_graph_expr(GraphKind::Curve2d, a, &linear, doc);
         }
         true
     }
@@ -1052,21 +1024,9 @@ impl CalculatorApp {
         if !field_handles(key, modifiers) {
             return false;
         }
-        let changed = field.handle_key(key, &modifiers);
-        if changed {
+        if field.handle_key(key, &modifiers) {
             let linear = field.current_linear();
-            if let Some(f) = self.model.surfaces.get_mut(a) {
-                f.expr = linear;
-            }
-            if let Some(id) = crate::doc::row_id_at(doc, crate::doc::SURFACES, a) {
-                let action = actions::set_graph_expr_action(
-                    GraphKind::Surface3d,
-                    id.as_str(),
-                    self.model.surfaces.get(a).map_or("", |f| f.expr.as_str()),
-                );
-                self.perform_action(doc, &action);
-            }
-            self.model_dirty = true;
+            self.set_graph_expr(GraphKind::Surface3d, a, &linear, doc);
         }
         true
     }
@@ -1078,31 +1038,13 @@ impl Default for CalculatorApp {
     }
 }
 
-/// Bench/test accessors used by the headless interaction bench (`--bench-clicks`)
-/// and regression tests. Not used by the live app.
+#[cfg(test)]
 impl CalculatorApp {
-    #[doc(hidden)]
-    pub fn bench_seg_center(&self, i: usize) -> Point {
-        self.seg_rects.get(i).map_or(Point::ZERO, Rect::center)
-    }
-
     /// Screen-space center of the Calc keypad key labelled `label`, after the
     /// current layout. `None` if the key is absent or the pad isn't laid out.
-    #[doc(hidden)]
-    pub fn bench_calc_key_center(&self, label: &str) -> Option<Point> {
+    fn calc_key_center(&self, label: &str) -> Option<Point> {
         let i = self.calc.key_index_for_label(label)?;
         self.calc.key_center(i)
-    }
-
-    /// Current calculator expression length, in characters.
-    #[doc(hidden)]
-    pub fn bench_expr_len(&self) -> usize {
-        self.model.expr.chars().count()
-    }
-
-    #[doc(hidden)]
-    pub fn bench_mode_is_calc(&self) -> bool {
-        self.model.mode == Mode::Calc
     }
 }
 
@@ -1202,8 +1144,7 @@ impl CalculatorApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
+        doc: &mut AutoCommit,
     ) -> Result<bool, String> {
         if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
@@ -1215,14 +1156,11 @@ impl CalculatorApp {
             return Err("Mode changes require a View invocation".into());
         }
         if let actions::CalculatorOperation::RecallHistory { id } = &operation {
-            let index = crate::doc::visible_ids(doc, crate::doc::HISTORY)
-                .iter()
-                .position(|visible| visible == id)
-                .ok_or("Calculation no longer exists")?;
-            let document = crate::doc::load(doc).ok_or("Calculation history is unavailable")?;
-            let entry = document
+            let (_, entry) = self
+                .rows
                 .history
-                .get(index)
+                .iter()
+                .find(|(row, _)| row == id)
                 .ok_or("Calculation no longer exists")?;
             self.model.expr.clone_from(&entry.expr);
             self.model.after_equals = false;
@@ -1230,31 +1168,24 @@ impl CalculatorApp {
             self.set_mode(Mode::Calc);
             return Ok(true);
         }
-        // Resource-open operations are presentation-only except for the first
-        // graph visit, whose starter must still be a replayable action. The
-        // handler receives an immutable document reference, so stage the
-        // visible mode here; the regular interaction path will materialize a
-        // starter before editing. (A palette add action is always available.)
-        self.set_mode(match operation {
-            actions::CalculatorOperation::ShowCalculator => Mode::Calc,
-            actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
-            actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
-            actions::CalculatorOperation::RecallHistory { .. } => {
-                return Ok(false);
-            }
-        });
+        // Showing a mode is presentation, except that a first graph visit
+        // adds its starter row through the resource's action.
+        self.switch_mode(
+            match operation {
+                actions::CalculatorOperation::ShowCalculator => Mode::Calc,
+                actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
+                actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
+                actions::CalculatorOperation::RecallHistory { .. } => {
+                    return Ok(false);
+                }
+            },
+            doc,
+        );
         Ok(true)
     }
 }
 
 impl Widget for CalculatorApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::resources::PublishesResources,
-        dyn ui::undo::UndoPoints
-    );
-
     fn is_focusable(&self) -> bool {
         true
     }
@@ -1301,60 +1232,12 @@ impl Widget for CalculatorApp {
             return Ok(None);
         };
         Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc)?
             .then(|| {
                 ui::widget::ResourceOperationStart::Completed(
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        use automerge::transaction::Transactable as _;
-        let (state, _) = ui::doc::document(state, path);
-        if !self.seeded {
-            if crate::doc::is_seeded(state) {
-                let _ = crate::doc::load_into(state, &mut self.model);
-            } else if self.actions.is_hosted() {
-                // Framework hosts initialize via Resource::initialize; never
-                // write the shared document from the surface.
-            } else {
-                // Keep standalone native and checked component roots on the
-                // same schema initializer. The explicit model preserves the
-                // separate screenshot/demo fixture path.
-                let _ = crate::doc::initialize(state, &self.model);
-            }
-            self.seeded = true;
-            return;
-        }
-        // After the first frame the CRDT holds the source of truth for all
-        // persisted state. If the document changed underneath us — Ctrl+Z/Y
-        // reloaded a snapshot through `ui::State`, or a collaborator's patch
-        // merged — adopt it so the restored formula / history / view is what we
-        // render and edit next. Without this, undo/redo would revert the CRDT
-        // but leave the on-screen model stale (the actual bug).
-        //
-        // Our own in-frame edits round-trip byte-identically through
-        // store→load, so this reloads *only* on a genuine external change.
-        // `after_equals` is ephemeral (never persisted), so carry it across the
-        // comparison to avoid a spurious reload after an `=`.
-        //
-        // Reload only when the document moved: committed heads differ, or a
-        // transaction is or was open. Reloading every frame re-read every
-        // history row, function and surface on each pointer move.
-        let heads = state.base_heads();
-        let pending = state.pending_ops();
-        let unchanged = self
-            .synced
-            .as_ref()
-            .is_some_and(|(synced_heads, synced_pending)| {
-                *synced_heads == heads && *synced_pending == 0 && pending == 0
-            });
-        if !unchanged {
-            let _ = crate::doc::load_into(state, &mut self.model);
-            self.synced = Some((heads, pending));
-            self.dirty = true;
-        }
     }
 
     fn build_layout(
@@ -1559,16 +1442,10 @@ impl Widget for CalculatorApp {
         if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || self.model_dirty {
             self.dirty = true;
         }
-        if self.model_dirty {
-            // `model_dirty` is presentation-only. Durable changes have already
-            // travelled through `perform_action`; never mirror this window's
-            // mode, selection or viewport back into the shared document.
-            self.model_dirty = false;
-            // Mark an uncommitted edit so `needs_commit` can seal it into an
-            // undo checkpoint once editing pauses (character-key edits are not
-            // committed by the App's per-event path, only coalesced here).
-            self.last_edit_time = Some(ui::time::now());
-        }
+        // `model_dirty` is presentation-only. Durable changes have already
+        // travelled through `perform_action`; never mirror this window's
+        // mode, selection or viewport back into the shared document.
+        self.model_dirty = false;
     }
 
     fn name(&self) -> &'static str {
@@ -1583,6 +1460,7 @@ impl Widget for CalculatorApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.model_dirty = false;
     }
 
     /// The calculator is custom-painted, so publish the complete retained
@@ -1779,13 +1657,13 @@ impl Widget for CalculatorApp {
         self.dirty = true;
         match target {
             "calculator.mode:0" if matches!(action, Action::Activate) => {
-                self.set_mode_in_document(Mode::Calc, state);
+                self.switch_mode(Mode::Calc, state);
             }
             "calculator.mode:1" if matches!(action, Action::Activate) => {
-                self.set_mode_in_document(Mode::Graph2d, state);
+                self.switch_mode(Mode::Graph2d, state);
             }
             "calculator.mode:2" if matches!(action, Action::Activate) => {
-                self.set_mode_in_document(Mode::Graph3d, state);
+                self.switch_mode(Mode::Graph3d, state);
             }
             "calculator.angle:radians"
                 if matches!(action, Action::Activate | Action::ToggleCheck) =>
@@ -1805,15 +1683,7 @@ impl Widget for CalculatorApp {
             "calculator.history.clear"
                 if matches!(action, Action::Activate) && !self.model.history.is_empty() =>
             {
-                self.model.history.clear();
-                self.perform_action(
-                    state,
-                    &actions::clear_history_ids_action(crate::doc::visible_ids(
-                        state,
-                        crate::doc::HISTORY,
-                    )),
-                );
-                self.model_dirty = true;
+                self.clear_history(state);
             }
             "calculator.expression" if matches!(action, Action::SetValue(_)) => {
                 let Action::SetValue(expr) = action else {
@@ -1910,79 +1780,6 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
-    }
-}
-
-impl ui::undo::UndoPoints for CalculatorApp {
-    /// Seal a burst of edits into one undo checkpoint after a short pause, so
-    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
-    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
-    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
-    /// bespoke stack.
-    fn needs_commit(&self) -> bool {
-        self.last_edit_time
-            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
-    }
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-}
-
-impl ui::resources::PublishesResources for CalculatorApp {
-    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
-    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes this document. The widget tree would
-        // be a second door.
-        if self.actions.is_hosted() {
-            return Vec::new();
-        }
-        let state = crate::resource::Calculator::read(doc).unwrap_or_default();
-        vec![ui::tilo_resource::publish::<crate::resource::Calculator>(
-            crate::resource::Calculator::KIND,
-            "Calculator",
-            &state,
-        )]
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if self.actions.is_hosted() && id == crate::resource::Calculator::KIND {
-            return None;
-        }
-        let state = crate::resource::Calculator::read(doc).unwrap_or_default();
-        let root = ui::tilo_resource::publish::<crate::resource::Calculator>(
-            crate::resource::Calculator::KIND,
-            "Calculator",
-            &state,
-        );
-        find(&[root], id)
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for CalculatorApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
-impl ui::undo::CommittedActions for CalculatorApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its history / graph action, so it records one undo boundary for the whole
-    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
@@ -2141,52 +1938,9 @@ impl CalculatorApp {
                 GraphKind::Curve2d => self.g2.toggle_panel(),
                 GraphKind::Surface3d => self.g3.toggle_panel(),
             },
-            (Some("add"), None, Action::Activate) => {
-                match kind {
-                    GraphKind::Curve2d => {
-                        self.model.funcs.push(PlotFn {
-                            expr: String::new(),
-                            visible: true,
-                        });
-                        self.model.active_fn = self.model.funcs.len() - 1;
-                    }
-                    GraphKind::Surface3d => {
-                        self.model.surfaces.push(PlotFn {
-                            expr: String::new(),
-                            visible: true,
-                        });
-                        self.model.active_surface = self.model.surfaces.len() - 1;
-                    }
-                }
-                self.perform_action(doc, &actions::add_graph_action(kind, ""));
-                self.model_dirty = true;
-            }
+            (Some("add"), None, Action::Activate) => self.add_graph(kind, "", doc),
             (Some("visible"), Some(index), Action::Activate | Action::ToggleCheck) => {
-                let changed = match kind {
-                    GraphKind::Curve2d => self
-                        .model
-                        .funcs
-                        .get_mut(index)
-                        .map(|row| row.visible = !row.visible),
-                    GraphKind::Surface3d => self
-                        .model
-                        .surfaces
-                        .get_mut(index)
-                        .map(|row| row.visible = !row.visible),
-                };
-                if changed.is_none() {
-                    return false;
-                }
-                let key = match kind {
-                    GraphKind::Curve2d => crate::doc::FUNCS,
-                    GraphKind::Surface3d => crate::doc::SURFACES,
-                };
-                let action = crate::doc::row_id_at(doc, key, index).map_or_else(
-                    || actions::toggle_graph_visible_action(kind, index),
-                    |id| actions::toggle_graph_visible_action(kind, id.as_str()),
-                );
-                self.perform_action(doc, &action);
-                self.model_dirty = true;
+                return self.toggle_graph_row(kind, index, doc);
             }
             (Some("delete"), Some(index), Action::Activate) => {
                 let exists = match kind {
@@ -2211,31 +1965,12 @@ impl CalculatorApp {
                         .get(index)
                         .is_some_and(|row| row.expr != *expr),
                 };
-                if !changed {
-                    return true;
+                if changed {
+                    // A value set by assistive technology is one edit.
+                    self.settle_edit();
+                    self.set_graph_expr(kind, index, expr, doc);
+                    self.settle_edit();
                 }
-                match kind {
-                    GraphKind::Curve2d => {
-                        if let Some(row) = self.model.funcs.get_mut(index) {
-                            row.expr.clone_from(expr);
-                        }
-                    }
-                    GraphKind::Surface3d => {
-                        if let Some(row) = self.model.surfaces.get_mut(index) {
-                            row.expr.clone_from(expr);
-                        }
-                    }
-                }
-                let key = match kind {
-                    GraphKind::Curve2d => crate::doc::FUNCS,
-                    GraphKind::Surface3d => crate::doc::SURFACES,
-                };
-                let action = crate::doc::row_id_at(doc, key, index).map_or_else(
-                    || actions::set_graph_expr_action(kind, index, expr),
-                    |id| actions::set_graph_expr_action(kind, id.as_str(), expr),
-                );
-                self.perform_action(doc, &action);
-                self.model_dirty = true;
             }
             (Some("field"), Some(index), Action::Activate | Action::Focus) => match kind {
                 GraphKind::Curve2d if index < self.model.funcs.len() => {
@@ -2255,6 +1990,9 @@ impl CalculatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::{CalculatorShell, history_entry_id};
+    use ui::prelude::TestApp;
+    use ui::tilo_resource::Invoke;
 
     fn keyboard(key: WKey) -> WindowEvent {
         let text = if let WKey::Character(text) = &key {
@@ -2282,11 +2020,89 @@ mod tests {
         }
     }
 
+    /// A hosted calculator: the framework's live app with its resource.
+    fn hosted() -> TestApp<CalculatorShell> {
+        let mut app = TestApp::<CalculatorShell>::new().unwrap();
+        app.harness().resize((1280, 800)).unwrap();
+        app
+    }
+
+    /// The calculator's retained node in the inspection tree: its path, and
+    /// the semantic tree it publishes.
+    fn calculator(app: &mut TestApp<CalculatorShell>) -> (String, ui::a11y::AccessNode) {
+        fn walk(node: &ui::headless::InspectionNode) -> Option<(String, ui::a11y::AccessNode)> {
+            match &node.semantics {
+                Some(semantics)
+                    if semantics.description.as_deref()
+                        == Some("Calculator and graphing workspace") =>
+                {
+                    Some((node.path.clone(), semantics.clone()))
+                }
+                _ => node.children.iter().find_map(walk),
+            }
+        }
+        walk(&app.harness().inspection().root).expect("the calculator is laid out")
+    }
+
+    /// The semantic node the calculator publishes for `target`.
+    fn node(app: &mut TestApp<CalculatorShell>, target: &str) -> ui::a11y::AccessNode {
+        fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
+            if node.action_target.as_deref() == Some(target) {
+                return Some(node.clone());
+            }
+            node.children.iter().find_map(|child| find(child, target))
+        }
+        find(&calculator(app).1, target).unwrap_or_else(|| panic!("no semantic node {target}"))
+    }
+
+    /// Click the painted control `target`, as a pointer does.
+    fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
+        let bounds = node(app, target)
+            .bounds
+            .unwrap_or_else(|| panic!("{target} is laid out"));
+        app.harness().click_at(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
+        app.settle();
+    }
+
+    /// A capture stages its view over the scenario's rows: the mode, an
+    /// open drawer, a collaborator's pointer over the first formula.
+    #[test]
+    fn captures_stage_mode_drawers_and_collaborators() {
+        let mut calc = TestApp::<CalculatorShell>::capture(Some("history-open")).unwrap();
+        assert!(node(&mut calc, "calculator.mode:0").state.selected);
+        assert_eq!(
+            node(&mut calc, "calculator.history.toggle").name.as_deref(),
+            Some("Hide history"),
+            "the history drawer is staged open"
+        );
+
+        let mut narrow = TestApp::<CalculatorShell>::capture(Some("narrow-functions")).unwrap();
+        assert_eq!(narrow.harness().inspection().viewport, [480, 800]);
+        assert_eq!(
+            node(&mut narrow, "calculator.graph.panel:2d").state.checked,
+            Some(true),
+            "the narrow functions drawer is staged open"
+        );
+
+        let mut remote = TestApp::<CalculatorShell>::capture(Some("remote-cursor")).unwrap();
+        let field = node(&mut remote, "calculator.graph.field:2d:0")
+            .bounds
+            .expect("the first formula is laid out");
+        let (x, y) = crate::resource::REMOTE_POINTER;
+        let (x, y) = (f64::from(x), f64::from(y));
+        assert!(
+            field.x0 <= x && x <= field.x1 && field.y0 <= y && y <= field.y1,
+            "the collaborator's pointer is over the first formula: {field:?}"
+        );
+    }
+
     #[test]
     fn keyboard_and_ime_only_mutate_the_host_focused_calculator() {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
 
         assert!(
             !send(&mut app, &mut state, &keyboard(WKey::Character("2".into())),),
@@ -2358,7 +2174,6 @@ mod tests {
     fn power_input_physical_keys_evaluates_once() {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
         app.set_focus(true);
         for text in ["2", "^", "2"] {
             send(
@@ -2382,7 +2197,6 @@ mod tests {
         use winit::event::Ime;
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
         app.set_focus(true);
         send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
         send(&mut app, &mut state, &keyboard(WKey::Dead(Some('^'))));
@@ -2412,7 +2226,6 @@ mod tests {
     fn power_input_browser_commits_evaluate_once() {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
         app.set_focus(true);
         for text in ["2", "^", "2"] {
             send(
@@ -2457,7 +2270,6 @@ mod tests {
         ] {
             let mut app = CalculatorApp::new();
             let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
             app.set_focus(true);
             app.on_key_with_paste(
                 &WKey::Character("v".into()),
@@ -2476,222 +2288,73 @@ mod tests {
         }
     }
 
-    /// A history row's published `open` action recalls exactly that row: via
-    /// the headless host for a local viewer, and via the resource operation by
-    /// stable identity (surviving index shifts, refusing deleted rows). Recall
-    /// is presentation only. Each phase builds a fresh seeded app + document.
+    /// A history row's published `open` recalls exactly that row by its
+    /// stable identity — surviving index shifts, refusing a deleted row —
+    /// and is presentation only, open to a participant who may only view.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn history_recall_by_published_action_uses_stable_identity() {
-        // phase history_recall_through_headless_host_is_available_to_local_viewer
-        {
-            let mut app = CalculatorApp::seeded();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
-            let expression = crate::doc::load(&state.doc).unwrap().history[1]
-                .expr
-                .clone();
-            let resources = ui::resources::resources(&app, &state.doc);
-            let row = resources[0]
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
-                .unwrap();
-            let binding = tilo_actions::ActionBinding::unit_for(row, "open").unwrap();
-            app.set_mode(Mode::Graph3d);
-            let before = state.doc.get_heads();
-            // Exercise the same published binding and host admission used by a
-            // search result, rather than calling the app's handler directly.
-            let root = ui::widget::Column::new().push(Box::new(app)).push(Box::new(
-                ui::widget::Button::new("recall", "Recall", None).on_action(binding),
-            ));
-            let mut harness = ui::headless::FrameHarness::new(state, Box::new(root), (800, 600));
-            harness.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(
-                    Some(ui::permissions::Role::Viewer),
-                    ui::permissions::LOCAL_USER,
-                ),
-                vec![],
-            ));
-            harness
-                .perform_named("recall", &ui::a11y::Action::Activate)
-                .unwrap();
-            harness
-                .expect(
-                    &ui::headless::SemanticExpectation::named("calculator_app").value(expression),
-                )
-                .unwrap();
-            assert_eq!(
-                harness.state_mut().doc.get_heads(),
-                before,
-                "headless recall: document unchanged"
-            );
-        }
+        let mut app = TestApp::<CalculatorShell>::capture(Some("graph3d")).unwrap();
+        let (id, expression) = app.state().history[1].clone();
+        let expression = expression.expr;
+        // A new calculation moves every positional index.
+        app.invoke(Invoke::apply(&actions::commit_history_action("999+1", "1000")).unwrap())
+            .unwrap();
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        app.call_on(&history_entry_id(&id), "open", serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert_eq!(
+            app.read_document(|doc| doc.clone().get_heads()),
+            heads,
+            "recall is presentation only"
+        );
+        assert_eq!(
+            calculator(&mut app).1.value.as_deref(),
+            Some(expression.as_str()),
+            "the recalled calculation is the expression"
+        );
+        assert!(
+            node(&mut app, "calculator.mode:0").state.selected,
+            "recall shows the calculator"
+        );
 
-        // phase search_recall_uses_stable_history_identity_and_refuses_deleted_entries
-        {
-            let mut app = CalculatorApp::seeded();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
-            let expression = crate::doc::load(&state.doc).unwrap().history[1]
-                .expr
-                .clone();
-            let resources = ui::resources::resources(&app, &state.doc);
-            let row = resources[0]
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
-                .unwrap();
-            let open = row.actions.iter().find(|spec| spec.id == "open").unwrap();
-            assert_eq!(
-                open.kind,
-                tilo_actions::OperationKind::View,
-                "search recall: open is a View"
-            );
-            let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
-                panic!("recall needs no prompt");
-            };
-            // A new calculation moves every old positional index. The saved search
-            // result must still recall exactly the document row it advertised.
-            app.perform_action(
-                &mut state.doc,
-                &actions::commit_history_action("999+1", "1000"),
-            );
-            let heads = state.doc.get_heads();
-            app.set_mode(Mode::Graph3d);
-            assert!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        open.kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut state.doc,
-                    &state.root
-                )
-                .map(|started| started.is_some())
-                .unwrap(),
-                "search recall: first invoke handled"
-            );
-            assert_eq!(app.model.mode, Mode::Calc, "search recall: back in Calc");
-            assert_eq!(app.model.expr, expression, "search recall: expression");
-            assert_eq!(state.doc.get_heads(), heads, "recall is presentation only");
-            app.model_dirty = false;
-            app.model.expr = "uncommitted input".into();
-            assert!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        open.kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut state.doc,
-                    &state.root
-                )
-                .map(|started| started.is_some())
-                .unwrap(),
-                "search recall: second invoke handled"
-            );
-            assert_eq!(
-                app.model.expr, expression,
-                "search recall: overwrites uncommitted input"
-            );
-            assert!(
-                app.model_dirty,
-                "recalling while already in Calc still repaints"
-            );
-            app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
-            assert!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        open.kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut state.doc,
-                    &state.root
-                )
-                .map(|started| started.is_some())
+        app.invoke_confirmed(Invoke::apply(&actions::delete_history_entry_action(&id)).unwrap())
+            .unwrap();
+        assert!(
+            app.call_on(&history_entry_id(&id), "open", serde_json::json!({}))
                 .is_err(),
-                "search recall: deleted row is refused"
-            );
-            assert_eq!(
-                app.model.expr, expression,
-                "stale search must not recall a different row"
-            );
-        }
+            "a deleted row is no longer offered"
+        );
     }
 
-    /// Launch and mode-switch state: the live app boots empty in Calc, the
-    /// seeded constructor is populated, `set_mode` marks dirty, and entering an
-    /// empty graph mode seeds an editable starter. Fresh app per phase.
+    /// Launch and mode-switch state: the live app boots empty in Calc, and
+    /// entering an empty graph mode adds an editable starter row through
+    /// the resource's action.
     #[test]
     fn launch_state_and_mode_switch_seeding() {
-        // phase live_launch_is_empty_calc_mode
-        {
-            // The live app must boot to a blank slate in Calculator mode — no
-            // fabricated plots / history / memory / expression.
-            let app = CalculatorApp::new();
-            assert_eq!(app.model.mode, Mode::Calc, "live launch: Calc mode");
-            assert!(
-                app.model.expr.is_empty(),
-                "live launch must have an empty expression"
-            );
-            assert!(
-                app.model.history.is_empty(),
-                "live launch must have no history"
-            );
-            assert!(
-                app.model.funcs.is_empty(),
-                "live launch must have no pre-plotted functions"
-            );
-            assert_eq!(app.model.memory, 0.0, "live launch must have empty memory");
-            assert_eq!(app.model.ans, 0.0, "live launch: ans is 0");
-        }
-        // phase seeded_launch_has_lived_in_content
-        {
-            // The demo/shots constructor keeps the populated content.
-            let app = CalculatorApp::seeded();
-            assert!(!app.model.funcs.is_empty(), "seeded: funcs present");
-            assert!(!app.model.history.is_empty(), "seeded: history present");
-        }
-        // phase set_mode_marks_dirty
-        {
-            let mut app = CalculatorApp::new();
-            app.set_mode(Mode::Graph2d);
-            assert_eq!(app.model.mode, Mode::Graph2d, "set_mode: mode");
-            assert!(app.model_dirty, "set_mode: marks dirty");
-        }
-        // phase entering_empty_graph_modes_seeds_a_starter
-        {
-            // Switching an empty live app into a graph mode gives it an editable
-            // starter (empty 2D row / example surface), not a blank void.
-            let mut app = CalculatorApp::new();
-            app.set_mode(Mode::Graph2d);
-            assert_eq!(app.model.funcs.len(), 1, "Graph 2D seeds one empty row");
-            assert!(
-                app.model.funcs[0].expr.is_empty(),
-                "Graph 2D starter row is empty"
-            );
-            app.set_mode(Mode::Graph3d);
-            assert_eq!(
-                app.model.surfaces.len(),
-                1,
-                "Graph 3D seeds one starter surface"
-            );
-            assert!(
-                !app.model.surfaces[0].expr.trim().is_empty(),
-                "Graph 3D starter is a non-empty example surface"
-            );
-        }
+        let app = CalculatorApp::new();
+        assert_eq!(app.model.mode, Mode::Calc, "live launch: Calc mode");
+        assert!(app.model.expr.is_empty(), "live launch: empty expression");
+        assert!(app.model.history.is_empty(), "live launch: no history");
+        assert!(app.model.funcs.is_empty(), "live launch: nothing plotted");
+        assert_eq!(app.model.memory, 0.0, "live launch: empty memory");
+        assert_eq!(app.model.ans, 0.0, "live launch: ans is 0");
+
+        let mut app = hosted();
+        assert_eq!(app.state(), CalculatorState::default());
+        click(&mut app, "calculator.mode:1");
+        let state = app.state();
+        assert_eq!(state.funcs.len(), 1, "Graph 2D adds one empty row");
+        assert!(state.funcs[0].1.expr.is_empty());
+        click(&mut app, "calculator.mode:2");
+        let state = app.state();
+        assert_eq!(state.surfaces.len(), 1, "Graph 3D adds one starter surface");
+        assert_eq!(state.surfaces[0].1.expr, model::DEFAULT_SURFACE);
+        // A second visit adds nothing.
+        click(&mut app, "calculator.mode:1");
+        assert_eq!(app.state().funcs.len(), 1);
+        assert!(app.undo(), "the starter is an undo step");
+        assert_eq!(app.state().surfaces.len(), 0);
     }
 
     /// The semantic tree exposes the topbar, keypad, expression and graph
@@ -2812,7 +2475,10 @@ mod tests {
             assert_eq!(app.model.expr, "sqrt(9)", "keypad: expression set");
 
             app.set_mode(Mode::Graph2d);
-            crate::doc::store(&mut doc, &app.model);
+            app.model.funcs = vec![PlotFn {
+                expr: String::new(),
+                visible: true,
+            }];
             app.layout_active();
             let graph = app.accessibility().expect("graph semantics");
             let panel = graph
@@ -2962,6 +2628,10 @@ mod tests {
     /// Backspace edit the active 2D function / 3D surface, and Enter appends and
     /// focuses a fresh row. Fresh app + state per phase.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn keyboard_path_switches_mode_and_edits_graph_rows() {
         let none = winit::event::Modifiers::default();
 
@@ -2972,6 +2642,7 @@ mod tests {
             let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
             app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
             assert_eq!(app.model.mode, Mode::Graph3d, "ctrl+3 switches to Graph 3D");
+            assert_eq!(app.model.surfaces.len(), 1, "with its starter surface");
         }
 
         // phase escape_clears_then_leaves_an_empty_calculator_to_the_host
@@ -3060,8 +2731,9 @@ mod tests {
         {
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
-            app.set_mode(Mode::Graph3d); // seeds one starter surface
+            app.switch_mode(Mode::Graph3d, &mut st.doc); // adds one starter surface
             let start = app.model.surfaces.len();
+            assert_eq!(start, 1);
             app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
             assert_eq!(
                 app.model.surfaces.len(),
@@ -3080,141 +2752,65 @@ mod tests {
         }
     }
 
-    /// Formula state is CRDT-backed and undoable through the framework: undo/redo
-    /// round-trips through `ui::State`'s snapshot stack, an external CRDT edit is
-    /// adopted on sync, and an event-path edit arms and seals the coalesced undo
-    /// commit. Fresh app + state per phase.
+    /// Typing a formula writes the document keystroke by keystroke, and the
+    /// keystrokes of one row are one undo step; a collaborator's edit to the
+    /// formula is presented.
     #[test]
-    fn formula_edits_sync_through_crdt_and_framework_undo() {
-        use ui::undo::needs_commit;
-        // phase undo_redo_of_formula_edit_routes_through_ui_state
-        {
-            // Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
-            // stack (not a bespoke calculator stack): typing checkpoints via
-            // `commit_action`, Ctrl+Z restores the previous CRDT snapshot, and `sync`
-            // adopts the restored document back into the on-screen model.
-            use crate::doc;
-            let mut app = CalculatorApp::new();
-            let mut state = ui::State::new();
-
-            // Seed the CRDT from the initial model, then checkpoint that baseline.
-            app.sync(&mut state.doc, &state.root);
-            state.commit_action(None, None);
-
-            // Start from a single, empty 2D function; checkpoint it.
-            app.set_mode(Mode::Graph2d);
-            app.model.funcs = vec![PlotFn {
-                expr: String::new(),
-                visible: true,
-            }];
-            app.model.active_fn = 0;
-            doc::store(&mut state.doc, &app.model);
-            state.commit_action(None, None);
-
-            // Type "2*x" (character edits) and seal one checkpoint — exactly what the
-            // App's needs_commit → commit_action coalescing does after a pause.
-            let none = winit::event::Modifiers::default();
-            for ch in ["2", "*", "x"] {
-                app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
+    fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
+        let mut app = hosted();
+        app.invoke(Invoke::apply(&actions::add_graph_action(GraphKind::Curve2d, "")).unwrap())
+            .unwrap();
+        click(&mut app, "calculator.mode:1");
+        click(&mut app, "calculator.graph.field:2d:0");
+        // Keyboard input goes to the focused calculator: Tab to it.
+        for _ in 0..32 {
+            if calculator(&mut app).1.state.focused {
+                break;
             }
-            assert_eq!(app.model.funcs[0].expr, "2*x", "undo: typed formula");
-            let before = ui::undo::take_committed_action(&mut app)
-                .expect("formula actions expose one undo bracket");
-            assert!(
-                state.record_committed_action(before, None, None),
-                "undo: committed action recorded"
-            );
-
-            // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
-            assert!(
-                state.undo(None, None).is_some(),
-                "undo must pop a checkpoint"
-            );
-            app.sync(&mut state.doc, &state.root);
-            assert_eq!(
-                app.model.funcs[0].expr, "",
-                "Ctrl+Z must restore the pre-edit formula"
-            );
-
-            // Ctrl+Y: redo re-applies; sync adopts it.
-            assert!(
-                state.redo(None, None).is_some(),
-                "redo must pop a checkpoint"
-            );
-            app.sync(&mut state.doc, &state.root);
-            assert_eq!(
-                app.model.funcs[0].expr, "2*x",
-                "Ctrl+Y must re-apply the edit"
-            );
+            app.harness().tab(false);
         }
+        assert!(
+            calculator(&mut app).1.state.focused,
+            "Tab reaches the calculator"
+        );
+        app.harness().type_text("2*x");
+        app.settle();
+        assert_eq!(
+            app.state().funcs[0].1.expr,
+            "2*x",
+            "every keystroke is written"
+        );
 
-        // phase external_crdt_edit_is_adopted_on_sync
-        {
-            // A change made directly in the shared CRDT (as a collaborator's merged
-            // patch would appear) is adopted by `sync` — proving the field buffer is
-            // genuinely CRDT-backed, not a private String the app owns.
-            let mut app = CalculatorApp::new();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
+        // Enter starts the next row: the typed formula is settled.
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(app.state().funcs.len(), 2, "Enter adds the next row");
+        assert!(app.undo(), "undo the new row");
+        assert_eq!(app.state().funcs.len(), 1);
+        assert!(app.undo(), "undo the typing");
+        assert_eq!(
+            app.state().funcs[0].1.expr,
+            "",
+            "one undo takes back the whole typed formula"
+        );
+        assert!(app.redo());
+        assert_eq!(app.state().funcs[0].1.expr, "2*x");
 
-            // Mutate the document out-of-band, then re-sync.
-            app.model.mode = Mode::Graph3d; // (only to prove sync overwrites it)
-            let mut edited = crate::doc::load(&state.doc).expect("seeded");
-            edited.surfaces = vec![PlotFn {
-                expr: "x*y+1".into(),
-                visible: true,
-            }];
-            crate::doc::store(&mut state.doc, &edited);
-            app.sync(&mut state.doc, &state.root);
-            assert_eq!(
-                app.model.surfaces.first().map(|f| f.expr.as_str()),
-                Some("x*y+1"),
-                "sync must adopt the external CRDT surface edit"
-            );
-        }
-
-        // phase edit_through_event_path_arms_and_seals_undo_commit
-        {
-            // The calculator's half of the framework Ctrl+Z: a real edit through the
-            // event path arms the coalescing timer, `needs_commit` seals a checkpoint
-            // only after the pause, and `on_commit` clears it. (The Ctrl+Z keybinding →
-            // snapshot → sync loop itself lives in `ui::App`; the snapshot round-trip is
-            // proven by the undo_redo_of_formula_edit_routes_through_ui_state phase above.)
-            let mut app = CalculatorApp::new();
-            let mut st = ui::State::new();
-            app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.relayout();
-            app.layout_active();
-            assert!(!needs_commit(&app), "no edit yet → nothing to commit");
-            let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
-            tap(&mut app, &mut st, five);
-            assert_eq!(app.model.expr, "5", "seal: tapped 5");
-            assert!(
-                app.last_edit_time.is_some(),
-                "an edit must arm the coalescing timer"
-            );
-            assert!(
-                !needs_commit(&app),
-                "a just-made edit must not seal a checkpoint mid-burst"
-            );
-            // Once the coalesce window has elapsed the widget asks to checkpoint.
-            app.last_edit_time = Some(
-                ui::clock::Instant::now()
-                    .checked_sub(COMMIT_COALESCE)
-                    .unwrap(),
-            );
-            assert!(
-                needs_commit(&app),
-                "after the pause the edit must seal into a checkpoint"
-            );
-            // The App calls on_commit after snapshotting; that clears the pending edit.
-            ui::undo::on_commit(&mut app);
-            assert!(!needs_commit(&app), "seal: on_commit clears needs_commit");
-            assert!(
-                app.last_edit_time.is_none(),
-                "seal: on_commit clears the timer"
-            );
-        }
+        let id = app.state().funcs[0].0.clone();
+        app.merge_peer_edit(|doc| {
+            use tilo_actions::Action as _;
+            actions::set_graph_expr_action(GraphKind::Curve2d, id.as_str(), "x*x+1")
+                .apply(doc)
+                .unwrap();
+        });
+        app.settle();
+        assert_eq!(
+            node(&mut app, "calculator.graph.field:2d:0")
+                .value
+                .as_deref(),
+            Some("x*x+1"),
+            "the collaborator's formula is shown"
+        );
     }
 
     // -- pointer-path harness: drive the REAL production handle_event route -----
@@ -3302,10 +2898,10 @@ mod tests {
             // real keycap rects (not a model-level apply_key shortcut).
             let mut app = wide(CalculatorApp::new()); // Calc mode, empty
             let mut st = ui::State::new();
-            let seven = app.bench_calc_key_center("7").expect("7 keycap laid out");
+            let seven = app.calc_key_center("7").expect("7 keycap laid out");
             tap(&mut app, &mut st, seven);
             assert_eq!(app.model.expr, "7", "tapping a digit keycap must append it");
-            let plus = app.bench_calc_key_center("+").expect("+ keycap laid out");
+            let plus = app.calc_key_center("+").expect("+ keycap laid out");
             tap(&mut app, &mut st, plus);
             assert_eq!(
                 app.model.expr, "7+",
@@ -3559,13 +3155,6 @@ mod tests {
             let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
             app.set_mode(Mode::Graph2d);
             let mut st = ui::State::new();
-            // Mirror the live frame loop, which syncs the model into the document
-            // before routing a pointer event. Without it the taps dispatch their
-            // toggle actions against an empty document: the first toggle finds no
-            // `funcs[0]` to flip, so it commits an empty change, and (per
-            // `perform_action`'s contract) an empty change wedges the next dispatch
-            // — the second tap then panics inside Automerge's transaction open.
-            app.sync(&mut st.doc, &st.root);
             let mut app = wide(app); // docked panel
             assert!(app.model.funcs[0].visible, "vis dot: starts visible");
             let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
@@ -3580,29 +3169,22 @@ mod tests {
 
         // phase graph_row_delete_button_tombstones_the_stable_resource
         {
-            // A directly visible delete button must use the same keyed action as
-            // the palette, so it cannot accidentally rebind after a peer changes
-            // list order.
-            let mut app = CalculatorApp::seeded();
-            let mut st = ui::State::new();
-            app.sync(&mut st.doc, &st.root);
-            let mut app = wide(app);
-            let id = crate::doc::row_id_at(&st.doc, crate::doc::FUNCS, 0)
-                .expect("first formula has a durable id");
-            let delete = app
-                .g2
-                .delete_rect(0)
-                .expect("first formula has a visible delete control")
-                .center();
-            let before = app.model.funcs.len();
-            tap(&mut app, &mut st, delete);
-            assert_eq!(
-                app.model.funcs.len(),
-                before - 1,
-                "delete button: one row removed"
+            // The visible delete button uses the same keyed action as the
+            // palette, so it cannot rebind after a peer changes list order.
+            let mut app = TestApp::<CalculatorShell>::capture(None).unwrap();
+            let before = app.state().funcs;
+            let delete = node(&mut app, "calculator.graph.delete:2d:0")
+                .bounds
+                .expect("first formula has a visible delete control");
+            app.harness().click_at(
+                f64::midpoint(delete.x0, delete.x1),
+                f64::midpoint(delete.y0, delete.y1),
             );
+            app.settle();
+            let after = app.state().funcs;
+            assert_eq!(after.len(), before.len() - 1, "one row removed");
             assert!(
-                !crate::doc::visible_ids(&st.doc, crate::doc::FUNCS).contains(&id),
+                after.iter().all(|(id, _)| *id != before[0].0),
                 "the clicked stable row is tombstoned rather than a neighbouring index"
             );
         }
