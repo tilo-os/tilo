@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 use tilo_vm_protocol::manifest::{Component, Manifest};
 use tilo_vm_protocol::{
     Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
-    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Owner, Policy,
-    Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList,
-    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Stick, Swap, VM_SLOT, VmTools,
+    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerList, LayerSource, Logs, Owner,
+    Policy, Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind,
+    SlotList, SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Stick, Swap, VM_SLOT, VmTools,
 };
 
 use crate::appsets;
@@ -3989,6 +3989,21 @@ impl App {
                 Err(error) => Err(error),
             };
         }
+        self.ci_layer_from_host(remote, vm, component, &image, &job, from_host)
+    }
+
+    /// `--from ci:` with the pull on this host: a device, or a VM without
+    /// podman. Only the component's layer goes to the guest, and it stays
+    /// kept here for the next swap of the same build.
+    fn ci_layer_from_host(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+        image: &str,
+        job: &CiJob,
+        from_host: bool,
+    ) -> Result<String, CliError> {
         // A device, or a VM without podman: pull here, upload only the layer.
         // The layer stays cached here by the image's digest, so a repeat swap
         // of the same build only asks the registry which digest it is.
@@ -3999,7 +4014,7 @@ impl App {
         let runner = &mut self.runner;
         let digest = self
             .receipt
-            .phase("lookup", || ci::registry_digest(runner, &image, &arch));
+            .phase("lookup", || ci::registry_digest(runner, image, &arch));
         let cached = digest
             .as_deref()
             .and_then(|digest| cache.get(digest, &component.name));
@@ -4010,6 +4025,21 @@ impl App {
                 component.name
             );
             self.receipt.set("ci_cache", "hit");
+            // The device may hold it already (a rollback, a second swap):
+            // then there is nothing to send.
+            if let Some(hash) = digest
+                .as_deref()
+                .and_then(|digest| cache.layer_hash(digest, &component.name))
+                && remote.call(LayerList {})?.iter().any(|l| l.hash == hash)
+            {
+                eprintln!(
+                    "tilo-vm: {} already holds layer {}; no upload",
+                    vm.name,
+                    short(&hash)
+                );
+                self.receipt.set("upload", "skipped");
+                return Ok(hash);
+            }
             (archive, pulled)
         } else {
             let why = if from_host {
@@ -4020,7 +4050,7 @@ impl App {
             eprintln!("tilo-vm: pulling {image} ({arch}) on this host; {why}");
             let runner = &mut self.runner;
             let pulled = self.receipt.phase("pull", || {
-                ci::extract_on_host(runner, &image, &arch, &job.paths, &staging.tree())
+                ci::extract_on_host(runner, image, &arch, &job.paths, &staging.tree())
             })?;
             build::pack(&staging.tree(), &staging.archive())?;
             if let Err(error) = cache.put(&component.name, &staging.archive(), &pulled) {
@@ -4051,6 +4081,10 @@ impl App {
                 provenance: Box::new(provenance),
             })
         })?;
+        if let Some(digest) = &digest {
+            // So the next swap of this build can ask the device first.
+            let _ = cache.record_hash(digest, &component.name, &imported.hash);
+        }
         Ok(imported.hash)
     }
 

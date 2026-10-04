@@ -65,7 +65,8 @@ work on a device too, beside the device's session.
   CI built). The board never downloads the multi-gigabyte image. The layer
   stays in this host's cache (`<cache>/tilo-vm/ci-layers`, the six most
   recently used) under the image's digest, so swapping the same build again
-  costs one registry lookup (`skopeo inspect --raw`) and the upload, no pull. The aarch64
+  costs one registry lookup (`skopeo inspect --raw`) and no pull, and no
+  upload either when the device still holds that layer (after a rollback, say). The aarch64
   lane builds the newest main commit only, so check that a commit has arm64
   first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
 - **Your worktree on a builder of the device's architecture**
