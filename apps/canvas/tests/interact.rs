@@ -835,3 +835,99 @@ fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
         .expect("back to the layer from the strip");
     assert_eq!(stroke(&mut desk), layer);
 }
+
+/// Picked marks line up from the strip over the canvas, each step one
+/// edit; a single picked mark lines up on the artwork.
+#[test]
+fn the_strip_lines_picked_marks_up() {
+    let mut desk = Desk::open();
+    desk.click(270.0, 240.0);
+    desk.hold(&["shift"]);
+    desk.click(760.0, 600.0);
+    desk.hold(&[]);
+    desk.app
+        .harness()
+        .click_named("canvas-align-top")
+        .expect("the strip offers lining up their tops");
+    let art = desk.art();
+    let top = |id: &str| art.visible_bounds(art.mark(id).unwrap()).y0;
+    assert!(
+        near(top("card"), top("leaf"), 1e-6),
+        "{} {}",
+        top("card"),
+        top("leaf")
+    );
+    // The strip's button has the focus now; the canvas's keys still act
+    // on what is picked.
+    let before = desk.art().marks.len();
+    desk.key("Delete");
+    assert_eq!(
+        desk.art().marks.len(),
+        before - 2,
+        "Delete removes the picked marks"
+    );
+    assert!(desk.app.undo());
+    assert!(desk.app.undo(), "lining up is one step");
+
+    desk.key("Escape");
+    desk.click(270.0, 240.0);
+    desk.app
+        .harness()
+        .click_named("canvas-align-center")
+        .expect("one picked mark lines up on the artwork");
+    let art = desk.art();
+    let card = art.visible_bounds(art.mark("card").unwrap());
+    assert!(
+        near(card.center().x, art.width / 2.0, 1e-6),
+        "{} {}",
+        card.center().x,
+        art.width / 2.0
+    );
+}
+
+/// A click a few pixels off a thin line still picks it, however far out
+/// the artwork is zoomed.
+#[test]
+fn a_click_just_off_a_thin_line_picks_it() {
+    let mut desk = Desk::open();
+    assert!(desk.zoom < 0.8, "the test needs a far zoom: {}", desk.zoom);
+    desk.key("l");
+    desk.drag((100.0, 870.0), (900.0, 870.0));
+    let line = desk.art().marks.last().cloned().expect("a line is drawn");
+    assert!(matches!(line.shape, Shape::Line { .. }), "{:?}", line.shape);
+    desk.key("Escape");
+    desk.key("v");
+    desk.click(40.0, 40.0);
+    // Three and a half screen pixels past the line's edge.
+    let off = line.style.stroke_width / 2.0 + 3.5 / desk.zoom;
+    desk.click(500.0, 870.0 - off);
+    desk.key("Delete");
+    assert!(
+        desk.art().mark(&line.id).is_none(),
+        "the click picked the line"
+    );
+}
+
+/// `[` and `]` make the brush smaller and larger.
+#[test]
+fn brackets_resize_the_brush() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    let laid = |desk: &mut Desk, y: f64| {
+        desk.drag((100.0, y), (300.0, y + 10.0));
+        match desk.art().marks.last().map(|mark| mark.shape.clone()) {
+            Some(Shape::Stroke { size, .. }) => size,
+            other => panic!("a stroke is laid, not {other:?}"),
+        }
+    };
+    let before = laid(&mut desk, 850.0);
+    desk.key("]");
+    desk.key("]");
+    let larger = laid(&mut desk, 865.0);
+    desk.key("[");
+    let smaller = laid(&mut desk, 880.0);
+    assert!(
+        larger > before && smaller < larger,
+        "{before} {larger} {smaller}"
+    );
+}

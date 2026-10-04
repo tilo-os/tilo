@@ -143,6 +143,13 @@ impl ArtworkResource {
     /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
     pub const COMBINE: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("combine", &["ids", "op"]);
+    /// `align`: marks lined up along an edge or centre line, within their
+    /// own extent or (`artwork`) the artwork's.
+    pub const ALIGN: ActionRef<Self, (Vec<String>, String, Option<String>)> =
+        ActionRef::new("align", &["ids", "edge", "to"]);
+    /// `align` spacing marks evenly, `horizontal` or `vertical`.
+    pub const DISTRIBUTE: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("align", &["ids", "distribute"]);
     /// `edit-layer` giving a layer a mask (`reveal`, `hide`) or removing it.
     pub const SET_LAYER_MASK: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "mask"]);

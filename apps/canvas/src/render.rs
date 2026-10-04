@@ -983,6 +983,25 @@ pub fn eraser_outline(scene: &mut Scene, path: &BezPath, marked: Option<Color>) 
     scene.stroke(&dashes, Affine::IDENTITY, ink, None, path);
 }
 
+/// Where a brush or eraser will land, round the pointer: a dark ring
+/// under a light one, so it reads on any paint.
+pub fn footprint_ring(scene: &mut Scene, path: &BezPath) {
+    scene.stroke(
+        &Stroke::new(1.5),
+        Affine::IDENTITY,
+        SHADOW_INK.with_alpha(0.6),
+        None,
+        path,
+    );
+    scene.stroke(
+        &Stroke::new(0.75),
+        Affine::IDENTITY,
+        BLANK_GROUND.multiply_alpha(0.9),
+        None,
+        path,
+    );
+}
+
 fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
     ImageData {
         data: Blob::new(Arc::new(pixels)),

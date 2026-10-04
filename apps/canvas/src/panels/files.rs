@@ -347,8 +347,25 @@ impl FileDesk {
     }
 }
 
-/// Carry out a key of the whole window: a tool's letter, `?`, and opening,
-/// saving and exporting. Whether it was one.
+/// The named keys that act on the canvas's selection wherever the focus
+/// is, unless what has the focus takes them itself.
+fn canvas_key(named: ui::winit::keyboard::NamedKey) -> bool {
+    use ui::winit::keyboard::NamedKey;
+    matches!(
+        named,
+        NamedKey::Escape
+            | NamedKey::Delete
+            | NamedKey::Backspace
+            | NamedKey::Enter
+            | NamedKey::ArrowLeft
+            | NamedKey::ArrowRight
+            | NamedKey::ArrowUp
+            | NamedKey::ArrowDown
+    )
+}
+
+/// Carry out a key of the whole window: a tool's letter, the brush's size,
+/// `?`, and opening, saving and exporting. Whether it was one.
 pub fn window_key(
     tools: &Tools,
     key: &str,
@@ -370,6 +387,7 @@ pub fn window_key(
             tools.sheet.set(Some(Sheet::Export));
             return true;
         }
+        (size @ ("[" | "]"), false, _) => return tools.size_key(size),
         (letter, false, false) if !modifiers.alt_key() => {
             let Some(tool) = Tool::for_key(letter) else {
                 return false;
@@ -472,11 +490,24 @@ impl ui::widget::Decorator for FileDesk {
         if key.state != ui::winit::event::ElementState::Pressed {
             return;
         }
-        let ui::winit::keyboard::Key::Character(typed) = &key.logical_key else {
-            return;
-        };
         let modifiers = ctx.modifiers.state();
-        if window_key(&self.tools, &typed.to_lowercase(), modifiers) {
+        let typed = match &key.logical_key {
+            ui::winit::keyboard::Key::Character(typed) => typed.to_lowercase(),
+            ui::winit::keyboard::Key::Named(named) if canvas_key(*named) => {
+                // A button or a swatch just clicked keeps the focus; the
+                // keys it leaves alone are still the canvas's.
+                self.tools.keys.update(|keys| {
+                    keys.push(crate::tools::CanvasKey {
+                        key: key.logical_key.clone(),
+                        text: None,
+                        modifiers,
+                    });
+                });
+                return;
+            }
+            _ => return,
+        };
+        if window_key(&self.tools, &typed, modifiers) {
             *ctx.handled = true;
         }
     }
