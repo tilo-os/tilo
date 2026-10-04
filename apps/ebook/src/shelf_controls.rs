@@ -1,29 +1,49 @@
 //! Library shelf sorting and filtering controls.
 //!
-//! The component owns dropdown visibility, drawing, and its topmost hit stack.
-//! Persisted preference changes are emitted as semantic actions for the app.
+//! The component owns the sort dropdown (the toolkit's [`Dropdown`], hosted),
+//! the hide-finished switch, their drawing and their hit stack. Persisted
+//! preference changes are emitted as semantic actions for the app.
+//!
+//! [`Dropdown`]: ui::widget::Dropdown
 
-use vello::kurbo::{Affine, Point, Rect};
+use automerge::{AutoCommit, ObjId};
+use vello::kurbo::{Point, Rect};
 
+use ui::TextRole;
 use ui::paint::PaintCtx;
-use ui::text_render::TextWeight;
-use ui::widget::{Toggle, ToggleFace};
+use ui::widget::{ControlSize, Toggle, ToggleFace};
 
+use crate::hosted_dropdown::HostedDropdown;
+use crate::input_controls::InputEventCtx;
 use crate::model::{LibraryPrefs, LibrarySort};
-use crate::paint;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShelfControlAction {
-    ToggleSortMenu,
-    SetSort(LibrarySort),
     ToggleHideRead,
-    Swallow,
 }
 
-#[derive(Default)]
+/// How a sort order reads in the dropdown, which shows it alone.
+fn sort_choice(sort: LibrarySort) -> &'static str {
+    match sort {
+        LibrarySort::Title => "By title",
+        LibrarySort::Author => "By author",
+        LibrarySort::Recent => "Recently opened",
+        LibrarySort::Progress => "By progress",
+    }
+}
+
 pub(super) struct ShelfControls {
-    sort_menu_open: bool,
+    sort: HostedDropdown,
     hits: Vec<(Rect, ShelfControlAction)>,
+}
+
+impl Default for ShelfControls {
+    fn default() -> Self {
+        Self {
+            sort: HostedDropdown::new("books.library.sort", "Sort books"),
+            hits: Vec::new(),
+        }
+    }
 }
 
 impl ShelfControls {
@@ -33,55 +53,29 @@ impl ShelfControls {
         focused: Option<&str>,
     ) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        self.hits
-            .iter()
-            .filter_map(|(rect, action)| {
-                let (target, name, role, state) = match action {
-                    ShelfControlAction::ToggleSortMenu => (
-                        "books.library.sort",
-                        format!("Sort books, currently {}", prefs.sort.label()),
-                        Role::ComboBox,
-                        AccessState::new().expanded(self.sort_menu_open),
-                    ),
-                    ShelfControlAction::SetSort(sort) => (
-                        match sort {
-                            LibrarySort::Recent => "books.library.sort.recent",
-                            LibrarySort::Title => "books.library.sort.title",
-                            LibrarySort::Author => "books.library.sort.author",
-                            LibrarySort::Progress => "books.library.sort.progress",
-                        },
-                        format!("Sort by {}", sort.label()),
-                        Role::RadioButton,
-                        AccessState::new().checked(prefs.sort == *sort),
-                    ),
-                    ShelfControlAction::ToggleHideRead => (
-                        "books.library.hide-read",
-                        "Hide finished books".into(),
-                        Role::Switch,
-                        AccessState::new().checked(prefs.hide_read),
-                    ),
-                    ShelfControlAction::Swallow => return None,
-                };
-                Some(
-                    AccessNode::new(role)
-                        .with_name(name)
+        let mut nodes: Vec<AccessNode> = self.sort.accessibility().into_iter().collect();
+        nodes.extend(
+            self.hits
+                .iter()
+                .map(|(rect, ShelfControlAction::ToggleHideRead)| {
+                    let target = "books.library.hide-read";
+                    AccessNode::new(Role::Switch)
+                        .with_name("Hide finished books")
                         .with_bounds(*rect)
-                        .with_state(state.focusable(true).focused(focused == Some(target)))
-                        .with_action_target(target),
-                )
-            })
-            .collect()
+                        .with_state(
+                            AccessState::new()
+                                .checked(prefs.hide_read)
+                                .focusable(true)
+                                .focused(focused == Some(target)),
+                        )
+                        .with_action_target(target)
+                }),
+        );
+        nodes
     }
 
     pub(super) fn semantic_action(target: &str) -> Option<ShelfControlAction> {
         match target {
-            "books.library.sort" => Some(ShelfControlAction::ToggleSortMenu),
-            "books.library.sort.recent" => Some(ShelfControlAction::SetSort(LibrarySort::Recent)),
-            "books.library.sort.title" => Some(ShelfControlAction::SetSort(LibrarySort::Title)),
-            "books.library.sort.author" => Some(ShelfControlAction::SetSort(LibrarySort::Author)),
-            "books.library.sort.progress" => {
-                Some(ShelfControlAction::SetSort(LibrarySort::Progress))
-            }
             "books.library.hide-read" => Some(ShelfControlAction::ToggleHideRead),
             _ => None,
         }
@@ -89,19 +83,11 @@ impl ShelfControls {
 
     pub(super) fn begin_frame(&mut self) {
         self.hits.clear();
-    }
-
-    pub(super) fn toggle_sort_menu(&mut self) {
-        self.sort_menu_open = !self.sort_menu_open;
+        self.sort.begin_frame();
     }
 
     pub(super) fn close_sort_menu(&mut self) {
-        self.sort_menu_open = false;
-    }
-
-    #[cfg(test)]
-    pub(super) fn sort_menu_open(&self) -> bool {
-        self.sort_menu_open
+        self.sort.close();
     }
 
     #[cfg(test)]
@@ -117,180 +103,103 @@ impl ShelfControls {
             .map(|(_, action)| *action)
     }
 
+    /// Route one event to the sort dropdown. Returns whether it took the
+    /// event, and the order the person picked, if they did.
+    pub(super) fn handle_event(
+        &mut self,
+        ctx: &mut InputEventCtx<'_>,
+    ) -> (bool, Option<LibrarySort>) {
+        let consumed = self.sort.handle_event(ctx);
+        let picked = self
+            .sort
+            .take_change()
+            .map(|value| LibrarySort::from_str(&value));
+        (consumed, picked)
+    }
+
+    /// An assistive technology's action on the sort dropdown: whether it
+    /// was the dropdown's, and the order it picked, if it did.
+    pub(super) fn perform_dropdown_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> (bool, Option<LibrarySort>) {
+        if !self.sort.perform_action(target, action, state, root) {
+            return (false, None);
+        }
+        let picked = self
+            .sort
+            .take_change()
+            .map(|value| LibrarySort::from_str(&value));
+        (true, picked)
+    }
+
+    /// The shelf's view controls, laid out leading-to-trailing from `start`
+    /// along the header `band`: the sort dropdown, then the hide-finished
+    /// switch with its label. Returns the x just past the last control.
     pub(super) fn draw_bar(
         &mut self,
         ctx: &mut PaintCtx<'_>,
-        viewport: Rect,
-        open_book_x: f64,
+        band: Rect,
+        start: f64,
         cursor: Point,
         prefs: LibraryPrefs,
-    ) -> Rect {
-        use crate::chrome::rhythm;
-        let (transform, theme) = (ctx.transform, ctx.theme);
-        let PaintCtx { scene, text, .. } = ctx;
-        let colors = &theme.tokens.colors;
-        let y = viewport.y0 + 13.0;
-        let compact = viewport.width() < 560.0;
-        // Bar controls are siblings: one `s3` between every neighbour, on
-        // every width.
-        let mut right = open_book_x - rhythm::SIBLING;
+    ) -> f64 {
+        let theme = ctx.theme;
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let size = ControlSize::Regular;
+        let height = size.height(theme);
+        let y = band.center().y - height / 2.0;
 
-        let label = if compact {
-            "Sort".to_string()
-        } else {
-            format!("Sort · {}", prefs.sort.label())
-        };
-        let label_width = text
-            .measure_weighted(&label, 13.0, None, TextWeight::Medium)
-            .0;
-        let width = f64::from(label_width) + if compact { 38.0 } else { 46.0 };
-        right -= width;
-        let sort = Rect::new(right, y, right + width, y + 30.0);
-        // A dropdown field rests like a Neutral button — raised face, derived
-        // edge (HIG §9.5) — and wears the focus ring while its menu is open.
-        crate::chrome::quiet_pill(
-            scene,
-            transform,
+        self.sort.set(
+            LibrarySort::ALL
+                .iter()
+                .map(|sort| (sort.as_str().to_string(), sort_choice(*sort).to_string()))
+                .collect(),
+            prefs.sort.as_str(),
+        );
+        let width = HostedDropdown::width(
+            LibrarySort::ALL.iter().map(|sort| sort_choice(*sort)),
+            size,
+            ctx.text,
             theme,
-            sort,
-            15.0,
-            colors.surfaces.raised,
-            self.sort_menu_open || sort.contains(cursor),
         );
-        if self.sort_menu_open {
-            paint::stroke_round(scene, transform, sort, 15.0, theme.border_focus, 2.0);
-        }
-        text.draw_text_weighted(
-            scene,
-            &label,
-            13.0,
-            colors.text_primary,
-            transform * Affine::translate((right + 13.0, y + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        paint::chevron_down(
-            scene,
-            transform,
-            Rect::new(right + width - 26.0, y + 3.0, right + width - 4.0, y + 27.0),
-            colors.text_dim,
-            1.7,
-        );
-        self.hits.push((sort, ShelfControlAction::ToggleSortMenu));
+        let sort = Rect::new(start, y, start + width, y + height);
+        self.sort
+            .draw(ctx.scene, ctx.transform, ctx.text, theme, sort);
 
-        right -= rhythm::SIBLING;
-        let toggle = Rect::new(right - 40.0, y + 4.0, right, y + 26.0);
+        // The switch and its label read as one control: the whole cluster is
+        // the pointer target.
+        let mut x = sort.x1 + f64::from(rhythm.sibling);
+        let hide = "Hide finished";
+        let label_band = Rect::new(x, band.y0, band.x1, band.y1);
+        ctx.text_role_in_band(hide, TextRole::Label, theme.text_dim, x, label_band, None);
+        x += ctx.measure_role(hide, TextRole::Label, None).width + f64::from(rhythm.related);
+        let (track_w, track_h) = crate::app::switch_size(theme);
+        let track = Rect::new(
+            x,
+            band.center().y - track_h / 2.0,
+            x + track_w,
+            band.center().y + track_h / 2.0,
+        );
+        let cluster = Rect::new(label_band.x0, y, track.x1, y + height);
         Toggle::paint(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             theme,
-            &ToggleFace::new(toggle, prefs.hide_read).hovered(toggle.contains(cursor)),
+            &ToggleFace::new(track, prefs.hide_read).hovered(cluster.contains(cursor)),
         );
-        self.hits.push((
-            crate::chrome::pointer_target(toggle, theme),
-            ShelfControlAction::ToggleHideRead,
-        ));
-        if !compact {
-            let hide = "Hide read";
-            let hide_width = text
-                .measure_weighted(hide, 13.0, None, TextWeight::Medium)
-                .0;
-            text.draw_text_weighted(
-                scene,
-                hide,
-                13.0,
-                colors.text_dim,
-                transform
-                    * Affine::translate((
-                        toggle.x0 - rhythm::RELATED - f64::from(hide_width),
-                        y + 8.0,
-                    )),
-                None,
-                TextWeight::Medium,
-            );
-        }
-        sort
+        self.hits
+            .push((cluster, ShelfControlAction::ToggleHideRead));
+        track.x1
     }
 
-    pub(super) fn draw_menu(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        viewport: Rect,
-        anchor: Rect,
-        cursor: Point,
-        selected: LibrarySort,
-    ) {
-        use crate::chrome::{MENU_ROW_H, rhythm};
-        if !self.sort_menu_open {
-            return;
-        }
-        let (transform, theme) = (ctx.transform, ctx.theme);
-        let PaintCtx { scene, text, .. } = ctx;
-        let colors = &theme.tokens.colors;
-        let width = 190.0_f64.max(anchor.width());
-        // Menu rows share the settings menu's pitch: a `MENU_ROW_H` face plus
-        // a related step, with a related step of panel padding around them.
-        let row_height = MENU_ROW_H + rhythm::RELATED;
-        let x = (anchor.x1 - width).max(viewport.x0 + rhythm::RELATED);
-        let top = anchor.y1 + rhythm::RELATED;
-        let menu = Rect::new(
-            x,
-            top,
-            x + width,
-            top + LibrarySort::ALL.len() as f64 * row_height + rhythm::RELATED,
-        );
-        crate::chrome::panel(scene, transform, theme, menu);
-        self.hits.push((menu, ShelfControlAction::Swallow));
-
-        let mut row_y = top + rhythm::RELATED;
-        for choice in LibrarySort::ALL {
-            let row = Rect::new(
-                x + rhythm::RELATED,
-                row_y,
-                x + width - rhythm::RELATED,
-                row_y + MENU_ROW_H,
-            );
-            let active = selected == choice;
-            // The current sort is a lift (HIG §9.3), not an accent wash.
-            crate::chrome::row(
-                scene,
-                transform,
-                theme,
-                row,
-                f64::from(theme.tokens.radii.md),
-                ui::chrome::SelectionState::new(active, row.contains(cursor), false),
-                false,
-            );
-            let (_, label_h) = text.measure_weighted(
-                choice.label(),
-                13.0,
-                None,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                },
-            );
-            text.draw_text_weighted(
-                scene,
-                choice.label(),
-                13.0,
-                colors.text_primary,
-                transform
-                    * Affine::translate((
-                        row.x0 + rhythm::RELATED,
-                        row.y0 + (row.height() - f64::from(label_h)) / 2.0,
-                    )),
-                None,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                },
-            );
-            self.hits.push((row, ShelfControlAction::SetSort(choice)));
-            row_y += row_height;
-        }
+    /// The open sort list, over everything inside `window`.
+    pub(super) fn draw_overlay(&mut self, ctx: &mut PaintCtx<'_>, window: Rect) {
+        self.sort
+            .draw_overlay(ctx.scene, ctx.transform, ctx.text, ctx.theme, window);
     }
 }
 
@@ -300,74 +209,35 @@ mod tests {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use vello::Scene;
+    use vello::kurbo::Affine;
 
-    fn draw(controls: &mut ShelfControls, prefs: LibraryPrefs) -> Rect {
+    /// The bar exposes the sort dropdown and the hide-finished switch.
+    #[test]
+    fn shelf_controls_expose_sort_and_filter() {
+        let mut controls = ShelfControls::default();
         controls.begin_frame();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
         let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let anchor = controls.draw_bar(&mut ctx, viewport, 1120.0, Point::ZERO, prefs);
-        controls.draw_menu(&mut ctx, viewport, anchor, Point::ZERO, prefs.sort);
-        anchor
-    }
-
-    /// The bar exposes sort and filter actions and an open menu owns its rows and swallows the gap.
-    #[test]
-    fn shelf_controls_hit_testing_and_menu_ownership() {
-        // --- phase: bar_hit_testing_exposes_sort_and_filter_actions ---
-        {
-            let mut controls = ShelfControls::default();
-            let anchor = draw(&mut controls, LibraryPrefs::default());
-            assert_eq!(
-                controls.hit_test(anchor.center()),
-                Some(ShelfControlAction::ToggleSortMenu)
-            );
-            let toggle = controls
-                .hits
+        let band = Rect::new(0.0, 0.0, 1280.0, 56.0);
+        controls.draw_bar(&mut ctx, band, 12.0, Point::ZERO, LibraryPrefs::default());
+        let toggle = controls
+            .hits
+            .iter()
+            .find(|(_, action)| *action == ShelfControlAction::ToggleHideRead)
+            .map(|(rect, _)| rect.center())
+            .expect("hide-read toggle");
+        assert_eq!(
+            controls.hit_test(toggle),
+            Some(ShelfControlAction::ToggleHideRead)
+        );
+        let nodes = controls.accessibility_nodes(LibraryPrefs::default(), None);
+        assert!(
+            nodes
                 .iter()
-                .find(|(_, action)| *action == ShelfControlAction::ToggleHideRead)
-                .map(|(rect, _)| rect.center())
-                .expect("hide-read toggle");
-            assert_eq!(
-                controls.hit_test(toggle),
-                Some(ShelfControlAction::ToggleHideRead)
-            );
-        }
-
-        // --- phase: open_menu_owns_rows_and_gap_swallowing ---
-        {
-            use crate::chrome::rhythm;
-            let mut controls = ShelfControls::default();
-            controls.toggle_sort_menu();
-            let anchor = draw(&mut controls, LibraryPrefs::default());
-            let progress = controls
-                .hits
-                .iter()
-                .find(|(_, action)| *action == ShelfControlAction::SetSort(LibrarySort::Progress))
-                .map(|(rect, _)| rect.center())
-                .expect("progress row");
-            assert_eq!(
-                controls.hit_test(progress),
-                Some(ShelfControlAction::SetSort(LibrarySort::Progress))
-            );
-            // The menu opens a related step under its anchor and pads its rows
-            // by another related step: a point inside that top padding is the
-            // panel's own (swallowed), a point in the gap above it is nobody's.
-            assert_eq!(
-                controls.hit_test(Point::new(
-                    anchor.x0,
-                    anchor.y1 + rhythm::RELATED + rhythm::TIGHT
-                )),
-                Some(ShelfControlAction::Swallow)
-            );
-            assert_eq!(
-                controls.hit_test(Point::new(anchor.x0, anchor.y1 + rhythm::TIGHT)),
-                None
-            );
-            controls.close_sort_menu();
-            assert!(!controls.sort_menu_open());
-        }
+                .any(|node| node.action_target.as_deref() == Some("books.library.sort")),
+            "the sort dropdown is in the accessibility tree"
+        );
     }
 }
