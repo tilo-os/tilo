@@ -136,10 +136,7 @@ fn startup_is_empty_live_with_onboarding_and_seeded_only_for_demo() {
     {
         // A fresh machine (no persisted document, no configured accounts) must
         // show an empty calendar — no sample events, tasks or accounts.
-        let missing = std::env::temp_dir()
-            .join(format!("cal-empty-{}", uuid::Uuid::new_v4()))
-            .join("calendar.automerge");
-        let mut app = CalendarApp::new_with_data_path(missing);
+        let mut app = CalendarApp::new_detached();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
         assert!(app.model.events.is_empty(), "no fabricated events");
@@ -152,10 +149,7 @@ fn startup_is_empty_live_with_onboarding_and_seeded_only_for_demo() {
     {
         // A fresh machine with no events surfaces the friendly first-run prompt;
         // the moment there is content it stands down.
-        let missing = std::env::temp_dir()
-            .join(format!("cal-onboard-{}", uuid::Uuid::new_v4()))
-            .join("calendar.automerge");
-        let mut app = CalendarApp::new_with_data_path(missing);
+        let mut app = CalendarApp::new_detached();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
         assert!(app.model.events.is_empty(), "precondition: no events");
@@ -404,43 +398,20 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn user_edits_and_source_identity_persist_across_restart() {
-    // Case `user_events_persist_across_restart`.
+    // Case `a_named_event_persists_across_restart`.
     {
-        // The real backend: an event created in one session is present after a
-        // fresh instance loads the same on-disk document.
-        let dir = std::env::temp_dir().join(format!("cal-persist-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("calendar.automerge");
-
-        let mut app = CalendarApp::new_with_data_path(path.clone());
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        app.apply_action(Action::NewEvent, &mut state.doc);
-        // A new event starts untitled (the title field shows its placeholder),
-        // and is the current selection.
-        let created = match app.selection {
-            Some(Sel::Event(id)) => Some(id),
-            _ => None,
-        };
-        assert!(created.is_some(), "NewEvent added an event to the model");
-        assert!(
-            app.model.events.iter().any(|e| e.title.is_empty()),
-            "the fresh event has no title yet"
+        // An event created and named in the window is in the calendar the
+        // next time it opens.
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+        app.harness().key("n");
+        let id = app.state().events.first().expect("n creates an event").id;
+        app.harness().type_text("Roadmap");
+        let app = app.reopen().unwrap();
+        assert_eq!(
+            app.state().event(id).expect("the event survived").title,
+            "Roadmap"
         );
-        // Persist runs on the next sync (writes only when heads changed).
-        app.sync(&mut state.doc, &state.root);
-        assert!(path.exists(), "document was written to disk");
-
-        // Fresh instance + fresh doc: it must load the event back from disk.
-        let mut app2 = CalendarApp::new_with_data_path(path);
-        let mut state2 = ui::State::new();
-        app2.sync(&mut state2.doc, &state2.root);
-        assert!(
-            app2.model.events.iter().any(|e| Some(e.id) == created),
-            "event survived the restart via on-disk persistence"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
     // Case `source_calendar_id_survives_the_crdt_round_trip`.
     {
@@ -473,50 +444,6 @@ fn user_edits_and_source_identity_persist_across_restart() {
         CalDoc::update_event(&mut doc, &ev);
         let back = CalDoc::read_model(&doc);
         assert_eq!(back.events[0].calendar_id.as_deref(), Some("work/oncall"));
-    }
-    // Case `edited_title_persists_across_restart`.
-    {
-        // The full real backend: a title typed into the field reaches the CRDT
-        // and the on-disk document, so a fresh instance loads it back.
-        let dir = std::env::temp_dir().join(format!("cal-title-persist-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("calendar.automerge");
-
-        let mut h = Harness::live(1280, 800, path.clone());
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
-        let id = selected_event_id(&h.app);
-        assert!(
-            h.app.title_input.is_focused(),
-            "the new event opens with the title focused"
-        );
-        for ch in ["R", "o", "a", "d", "m", "a", "p"] {
-            h.type_char(ch);
-        }
-        assert_eq!(h.app.model.event(id).unwrap().title, "Roadmap");
-        // Persist runs on the next sync (writes because the heads changed).
-        let (app, doc) = h.parts();
-        app.sync(doc, &automerge::ROOT);
-        assert!(path.exists(), "the document was written to disk");
-
-        // Fresh instance + fresh doc must load the named event back.
-        let mut app2 = CalendarApp::new_with_data_path(path);
-        let mut doc2 = AutoCommit::new();
-        app2.sync(&mut doc2, &automerge::ROOT);
-        let ev = app2
-            .model
-            .events
-            .iter()
-            .find(|e| e.id == id)
-            .expect("the created event survived the restart");
-        assert_eq!(
-            ev.title, "Roadmap",
-            "the edited title persisted across the restart"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -559,7 +486,7 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         let payload = format!(
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@tilo\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
         );
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_detached();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
 
@@ -571,14 +498,14 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, id.to_string(), "the VTODO UID is retained");
 
-        app.perform_action(&mut doc, &first);
+        app.dispatch_action(&mut doc, &first);
         app.model = CalDoc::read_model(&doc);
         assert!(
             app.model.task(id).is_some(),
             "the exact UID became the task id"
         );
         let again = crate::actions::import_action(&payload).expect("the file still holds it");
-        app.perform_action(&mut doc, &again);
+        app.dispatch_action(&mut doc, &again);
         assert_eq!(
             CalDoc::read_model(&doc).tasks.len(),
             1,
@@ -589,7 +516,7 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
     {
         let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\nSUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:batch-task\r\nSUMMARY:Valid batch task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         for invalid in ["event", "task", "project"] {
-            let mut app = CalendarApp::new();
+            let mut app = CalendarApp::new_detached();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
             let mut batch = crate::actions::import_action(payload).expect("mixed import fixture");
@@ -2974,12 +2901,6 @@ impl Harness {
         Self::mount(CalendarApp::new_demo(), w, h)
     }
 
-    /// A live (persisted, no sample content) app driven through the same
-    /// production event path — used to prove edits reach disk.
-    fn live(w: u32, h: u32, path: PathBuf) -> Self {
-        Self::mount(CalendarApp::new_with_data_path(path), w, h)
-    }
-
     fn mount(app: CalendarApp, w: u32, h: u32) -> Self {
         Harness {
             app: Framed::new(
@@ -3709,7 +3630,7 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
         h.click(p);
         assert_eq!(
             h.app.last_dispatched(),
-            Some(&expected),
+            Some(expected),
             "the trash button and the palette build the identical EncodedAction"
         );
         assert!(
@@ -3856,7 +3777,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             }));
             tasks.into_iter().next().expect("one VTODO parses")
         };
-        let mut app = CalendarApp::new();
+        let mut app = CalendarApp::new_detached();
         let mut doc = AutoCommit::new();
         let apply =
             |app: &mut CalendarApp, doc: &mut AutoCommit, task: crate::model::Task, etag: &str| {
@@ -3913,7 +3834,7 @@ fn restore_review(node: &ui::headless::InspectionNode) -> Option<&ui::headless::
 
 #[test]
 fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
-    let mut app = CalendarApp::new();
+    let mut app = CalendarApp::new_detached();
     let mut state = ui::State::new();
     let mut first = None;
     for title in ["Alpha review", "Beta sync"] {
@@ -3935,7 +3856,7 @@ fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
     let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (1200, 800));
     // The launcher hands History the app's own root factory; a preview is a
     // second, read-only instance of it.
-    harness.set_history_preview_root(|| Ok(Box::new(CalendarApp::new())));
+    harness.set_history_preview_root(|| Ok(Box::new(CalendarApp::new_detached())));
     harness.enable_document_history_chrome();
     harness.click_named("standalone-history-open").unwrap();
 

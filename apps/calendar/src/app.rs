@@ -28,8 +28,6 @@ fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
-use tilo_automerge::ApplyIncoming;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -455,18 +453,6 @@ pub struct CalendarApp {
     /// The accounts are a capture's sample ones: their servers answer from
     /// bundled sample calendars, and display choices are not saved.
     sample_accounts: bool,
-    /// Where the calendar document is persisted (live app only; `None` in
-    /// demo/test builds, which stay purely in-memory).
-    data_path: Option<PathBuf>,
-    /// Document heads at the last successful save, so we persist only when the
-    /// CRDT actually changed rather than every frame.
-    saved_heads: Vec<ChangeHash>,
-    /// Set by discrete data actions (new event, toggle, import, sync…) to force
-    /// an immediate save; continuous changes (typing in notes) coalesce instead.
-    force_persist: bool,
-    /// When the document was last written, used to debounce note typing so a
-    /// burst of keystrokes doesn't serialize the whole document every frame.
-    last_persist: ui::time::Instant,
 
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
@@ -547,9 +533,13 @@ pub struct CalendarApp {
     resource_import_invocation: Option<tilo_actions::InvocationId>,
     resource_import_result: Option<tilo_actions::InvocationUpdate>,
 
-    /// Framework-owned action dispatch. Hosted via
-    /// [`crate::resource::ActionSink`]; standalone tests use the local host.
-    actions: crate::resource::ActionSink,
+    /// Where the calendar's edits go: the framework's dispatcher, attached
+    /// before the first frame.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::Calendar>>,
+    /// The last edit an on-screen control dispatched, for the tests that
+    /// check a control and its published action build the same edit.
+    #[cfg(test)]
+    last_dispatched: std::cell::RefCell<Option<tilo_actions::EncodedAction>>,
 
     /// The exact encoded non-document operation an on-screen Calendar control
     /// sent through the resource-operation boundary. This is test-only because
@@ -572,14 +562,25 @@ impl CalendarApp {
         // The launcher's shared store owns loading, autosave and the exit flush.
         // A second widget-owned writer would keep importing stale legacy data
         // and bypass the host's persistence policy.
-        Self::build(None)
+        Self::build()
+    }
+
+    /// An empty calendar whose edits apply to the document its tests hand it,
+    /// through a dispatcher of no window.
+    #[cfg(test)]
+    pub(crate) fn new_detached() -> Self {
+        let mut app = Self::build();
+        let dispatcher = ui::framework::Dispatcher::detached("so.tilo.calendar");
+        app.notes_editor = Self::new_notes_editor(None, Some(&dispatcher));
+        app.dispatcher = Some(dispatcher);
+        app
     }
 
     /// The sample calendar tests start from: the sample events, tasks and
     /// accounts around today, the "Design review" event open.
     #[cfg(test)]
     pub(crate) fn new_demo() -> Self {
-        let mut app = Self::build(None);
+        let mut app = Self::new_detached();
         app.model = crate::model::seed_demo(app.today);
         app.accounts = AccountStore::sample();
         app.sample_accounts = true;
@@ -588,16 +589,11 @@ impl CalendarApp {
         app
     }
 
-    #[cfg(test)]
-    fn new_with_data_path(path: PathBuf) -> Self {
-        Self::build(Some(path))
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the constructor deliberately keeps every per-widget local state default adjacent to its field"
     )]
-    fn build(data_path: Option<PathBuf>) -> Self {
+    fn build() -> Self {
         let today = Local::now().date_naive();
         let model = Model::default();
         let selection = None;
@@ -649,10 +645,6 @@ impl CalendarApp {
             staged_new_event: false,
             staged_popover: None,
             sample_accounts: false,
-            data_path,
-            saved_heads: Vec::new(),
-            force_persist: false,
-            last_persist: ui::time::now(),
             sidebar: Sidebar::new(),
             topbar: Topbar::new(),
             text_scale: 1.0,
@@ -683,7 +675,9 @@ impl CalendarApp {
             pending_resource_import: None,
             resource_import_invocation: None,
             resource_import_result: None,
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
+            #[cfg(test)]
+            last_dispatched: std::cell::RefCell::default(),
             #[cfg(test)]
             last_local_resource_operation: None,
             model_heads: Vec::new(),
@@ -704,8 +698,8 @@ impl CalendarApp {
         accounts: Option<AccountStore>,
         sample: bool,
     ) {
-        self.actions.attach(dispatcher);
-        self.notes_editor = Self::new_notes_editor(self.bound, self.actions.framework());
+        self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
+        self.dispatcher = Some(dispatcher);
         if let Some(accounts) = accounts {
             self.accounts = accounts;
             self.sample_accounts = sample;
@@ -1016,7 +1010,7 @@ impl CalendarApp {
                     );
                 }
                 for id in pushed {
-                    self.perform_action(
+                    self.dispatch_action(
                         doc,
                         &crate::actions::CalendarAction::AcknowledgeRemotePush {
                             id: id.to_string(),
@@ -1024,7 +1018,7 @@ impl CalendarApp {
                     );
                 }
                 for id in deleted {
-                    self.perform_action(
+                    self.dispatch_action(
                         doc,
                         &crate::actions::CalendarAction::AcknowledgeRemoteDelete {
                             id: id.to_string(),
@@ -1062,8 +1056,6 @@ impl CalendarApp {
                         }
                     });
                 }
-                // A landed pull mutated the document — persist it.
-                self.force_persist = true;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1116,7 +1108,7 @@ impl CalendarApp {
                 continue;
             }
             e.id = Uuid::new_v4();
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::CalendarAction::AdoptRemoteEvent(
                     crate::actions::EventData::from_event(&e),
@@ -1158,7 +1150,7 @@ impl CalendarApp {
                     self.model.events.push(event.clone());
                     added += 1;
                 }
-                self.perform_action(
+                self.dispatch_action(
                     doc,
                     &crate::actions::CalendarAction::AdoptRemoteEvent(
                         crate::actions::EventData::from_event(&event),
@@ -1187,7 +1179,7 @@ impl CalendarApp {
                     self.model.tasks.push(task.clone());
                     added += 1;
                 }
-                self.perform_action(
+                self.dispatch_action(
                     doc,
                     &crate::actions::CalendarAction::AdoptRemoteTask(
                         crate::actions::TaskData::from_task(&task),
@@ -1211,7 +1203,7 @@ impl CalendarApp {
                 .map(|(id, _)| id)
                 .collect();
             for id in victims {
-                self.perform_action(
+                self.dispatch_action(
                     doc,
                     &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
                 );
@@ -1233,7 +1225,7 @@ impl CalendarApp {
                         .iter()
                         .any(|seen_href| caldav::hrefs_equal(base, seen_href))
                     {
-                        self.perform_action(
+                        self.dispatch_action(
                             doc,
                             &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
                         );
@@ -1247,7 +1239,7 @@ impl CalendarApp {
         // Commit markers are deliberately last: a crash before here repeats a
         // response idempotently; a crash after here sees fully reconciled data.
         for checkpoint in result.checkpoints {
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::CalendarAction::SetSyncToken {
                     calendar_id: checkpoint.calendar_id.clone(),
@@ -1361,7 +1353,7 @@ impl CalendarApp {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = Self::new_notes_editor(None, self.actions.framework());
+                    self.notes_editor = Self::new_notes_editor(None, self.dispatcher.as_ref());
                     self.bound = None;
                 }
                 return;
@@ -1376,7 +1368,7 @@ impl CalendarApp {
             Sel::Task(id) => CalDoc::notes(doc, false, id),
         };
         if exists.is_some() {
-            self.notes_editor = Self::new_notes_editor(Some(sel), self.actions.framework());
+            self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
             self.bound = Some(sel);
             self.dirty = true;
         }
@@ -1446,8 +1438,7 @@ impl CalendarApp {
             None
         };
         if let Some(patch) = patch {
-            self.perform_action(doc, &crate::actions::patch_event_action(id, patch));
-            self.force_persist = true;
+            self.dispatch_action(doc, &crate::actions::patch_event_action(id, patch));
             self.dirty = true;
         }
     }
@@ -1481,7 +1472,7 @@ impl CalendarApp {
             email: email.clone(),
             status: crate::model::InviteStatus::NeedsAction,
         };
-        self.perform_action(
+        self.dispatch_action(
             doc,
             &crate::actions::CalendarAction::UpsertAttendee {
                 event_id: event_id.to_string(),
@@ -1500,7 +1491,6 @@ impl CalendarApp {
         self.status = Some(format!(
             "Added {email} — prepare the invitation in Mail to send it"
         ));
-        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -1519,61 +1509,47 @@ impl CalendarApp {
         }
     }
 
-    /// Write the calendar document to disk when it has changed. No-op in the
-    /// demo/test build (no `data_path`) and when nothing changed since the last
-    /// save, so this is safe to call every frame.
-    ///
-    /// Discrete actions (new event, toggle, import, sync) force an immediate
-    /// write. Continuous edits — typing in a note — coalesce: the whole
-    /// document is serialized at most a few times a second while the keystrokes
-    /// keep landing, and once more when they stop.
-    fn maybe_persist(&mut self, state: &mut AutoCommit) {
-        let Some(path) = self.data_path.clone() else {
-            return;
-        };
-        let heads = state.get_heads();
-        if heads == self.saved_heads {
-            self.force_persist = false;
-            return;
-        }
-        let due = self.force_persist
-            || self.last_persist.elapsed() >= std::time::Duration::from_millis(500);
-        if !due {
-            return;
-        }
-        match crate::store::save(&path, state) {
-            Ok(()) => {
-                self.saved_heads = heads;
-                self.last_persist = ui::time::now();
-                self.force_persist = false;
-            }
-            Err(e) => tracing::warn!(error = %e, "calendar: failed to persist document"),
+    // --- action dispatch -------------------------------------------------
+
+    /// Apply one [`CalendarAction`](crate::actions::CalendarAction) through
+    /// the calendar's dispatcher — the one write path, shared with the
+    /// palette, agents and scripts: checked against the participant's
+    /// permissions, attributed and recorded in history. The in-memory model
+    /// is updated by the caller for immediate feedback and reconciled from
+    /// the document on the next `sync`.
+    fn dispatch_action(&self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
+        if let Err(error) = self.try_dispatch_action(doc, action) {
+            tracing::debug!(%error, "calendar: an edit was refused");
         }
     }
 
-    // --- action dispatch -------------------------------------------------
-
-    /// Dispatch one [`CalendarAction`](crate::actions::CalendarAction) — the
-    /// single CRDT-mutation path shared with the Ctrl+K palette. Delegates to the
-    /// framework's [`ActionHost`](ui::ActionHost), which brackets the undo
-    /// boundary and applies the action through the executor (a pinned actor +
-    /// committed change, so it replays byte-identically on peers), exactly as the
-    /// palette does. The in-memory model is updated by the caller for immediate UI
-    /// feedback and reconciled from the document on the next `sync`. This app
-    /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
-        self.actions.dispatch(doc, action);
+    /// [`Self::dispatch_action`], reporting a refusal.
+    fn try_dispatch_action(
+        &self,
+        doc: &mut AutoCommit,
+        action: &crate::actions::CalendarAction,
+    ) -> Result<(), tilo_actions::ActionError> {
+        #[cfg(test)]
+        {
+            *self.last_dispatched.borrow_mut() = Some(crate::actions::encode(action));
+        }
+        let Some(dispatcher) = &self.dispatcher else {
+            return Err(tilo_actions::ActionError::Refused(
+                "the calendar is not attached to a window".into(),
+            ));
+        };
+        dispatcher.apply_now_with(doc, action, crate::actions::history_context(action))
     }
 
     fn record_remote_binding(
-        &mut self,
+        &self,
         doc: &mut AutoCommit,
         id: Id,
         calendar_id: &str,
         href: &str,
         etag: Option<&str>,
     ) {
-        self.perform_action(
+        self.dispatch_action(
             doc,
             &crate::actions::CalendarAction::SetRemoteBinding {
                 id: id.to_string(),
@@ -1625,8 +1601,8 @@ impl CalendarApp {
     /// action.
     #[cfg(test)]
     #[allow(dead_code, reason = "framework migration test helper")]
-    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
+    fn last_dispatched(&self) -> Option<tilo_actions::EncodedAction> {
+        self.last_dispatched.borrow().clone()
     }
 
     #[cfg(test)]
@@ -1734,7 +1710,7 @@ impl CalendarApp {
         // remote delete, so every doc write is one replayable envelope.
         let remote_delete = self.resolve_remote_delete(id);
         self.model.events.retain(|e| e.id != id);
-        self.perform_action(
+        self.dispatch_action(
             doc,
             &crate::actions::delete_event_action(id.to_string(), remote_delete),
         );
@@ -1742,7 +1718,6 @@ impl CalendarApp {
             self.close_after_delete();
         }
         self.status = Some("Event deleted".into());
-        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -1760,7 +1735,7 @@ impl CalendarApp {
             .chain(subtasks.iter().copied())
             .collect();
         self.model.tasks.retain(|t| !victims.contains(&t.id));
-        self.perform_action(
+        self.dispatch_action(
             doc,
             &crate::actions::delete_task_action(
                 id.to_string(),
@@ -1774,7 +1749,6 @@ impl CalendarApp {
             self.close_after_delete();
         }
         self.status = Some("Task deleted".into());
-        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -1830,7 +1804,7 @@ impl CalendarApp {
             None
         };
         if let Some(done) = done {
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::set_task_done_action(id.to_string(), done),
             );
@@ -1844,7 +1818,7 @@ impl CalendarApp {
         };
         if let Some(task) = self.model.task_mut(id) {
             task.due = due;
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::patch_task_action(
                     id,
@@ -1864,7 +1838,7 @@ impl CalendarApp {
         };
         if let Some(task) = self.model.task_mut(id) {
             task.priority = priority;
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::patch_task_action(
                     id,
@@ -1884,7 +1858,7 @@ impl CalendarApp {
         };
         if let Some(task) = self.model.task_mut(id) {
             task.project = project;
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::patch_task_action(
                     id,
@@ -2039,7 +2013,7 @@ impl CalendarApp {
     /// placeholder until the user types.
     fn spawn_event(&mut self, ev: Event, doc: &mut AutoCommit) {
         let id = ev.id;
-        self.perform_action(doc, &crate::actions::upsert_event_action(&ev));
+        self.dispatch_action(doc, &crate::actions::upsert_event_action(&ev));
         self.fresh_draft = Some(ev.clone());
         self.model.events.push(ev);
         self.model.events.sort_by_key(|e| e.start);
@@ -2113,7 +2087,6 @@ impl CalendarApp {
             project: None,
         };
         self.spawn_event(ev, doc);
-        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -2145,9 +2118,8 @@ impl CalendarApp {
             None
         };
         if let Some(patch) = patch {
-            self.perform_action(doc, &crate::actions::patch_event_action(id, patch));
+            self.dispatch_action(doc, &crate::actions::patch_event_action(id, patch));
             self.status = Some("Event rescheduled".into());
-            self.force_persist = true;
             self.dirty = true;
         }
     }
@@ -2360,13 +2332,12 @@ impl CalendarApp {
             // One action writes the retargeted event AND updates the push queue
             // (enqueue for a remote target, dequeue for the local one).
             let enqueue = matches!(target, CalTarget::Remote(_));
-            self.perform_action(
+            self.dispatch_action(
                 doc,
                 &crate::actions::set_event_calendar_action(&snap, enqueue),
             );
         }
         self.event_popovers.close();
-        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -2615,7 +2586,7 @@ impl CalendarApp {
             return;
         };
         let (events_before, tasks_before) = (self.model.events.len(), self.model.tasks.len());
-        self.perform_action(doc, &action);
+        self.dispatch_action(doc, &action);
         self.model = CalDoc::read_model(doc);
         let added_e = self.model.events.len().saturating_sub(events_before);
         let added_t = self.model.tasks.len().saturating_sub(tasks_before);
@@ -2643,7 +2614,7 @@ impl CalendarApp {
                 None
             };
             if let Some(patch) = patch {
-                self.perform_action(doc, &crate::actions::patch_event_action(id, patch));
+                self.dispatch_action(doc, &crate::actions::patch_event_action(id, patch));
                 self.dirty = true;
             }
         }
@@ -3274,7 +3245,6 @@ impl CalendarApp {
         // Discrete actions are worth an immediate save; if the action didn't
         // touch the document (view/navigation) the head check in `maybe_persist`
         // makes this a no-op.
-        self.force_persist = true;
         self.dirty = true;
     }
 
@@ -6017,14 +5987,8 @@ impl CalendarApp {
         let Some(action) = self.pending_resource_import.take() else {
             return;
         };
-        let result = self.actions.try_dispatch_with_context(
-            state,
-            crate::actions::CALENDAR_ACTION_TYPE,
-            &action,
-            crate::actions::history_context(&action),
-        );
+        let result = self.try_dispatch_action(state, &action);
         if result.is_ok() {
-            self.force_persist = true;
             self.status = Some("Imported calendar items from the latest ICS file".to_string());
         } else if let Err(error) = &result {
             self.status = Some(format!("Import failed: {error}"));
@@ -6057,10 +6021,7 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::widget::controls::ActionControls
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn start_operation(
         &mut self,
@@ -6123,13 +6084,6 @@ impl Widget for CalendarApp {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         if !self.seeded {
-            // Live app: adopt the user's persisted calendar (empty on a fresh
-            // machine). Demo/test builds pass no path and stay in-memory.
-            if let Some(p) = &self.data_path
-                && let Some(mut loaded) = crate::store::load(p)
-            {
-                let _ = state.merge_incoming(&mut loaded);
-            }
             // Whatever the document holds is now authoritative for the UI.
             if CalDoc::is_empty(state) {
                 self.model = Model::default();
@@ -6137,7 +6091,6 @@ impl Widget for CalendarApp {
                 self.model = CalDoc::read_model(state);
             }
             self.revalidate_selection();
-            self.saved_heads = state.get_heads();
             self.model_heads = state.get_heads();
             self.seeded = true;
         }
@@ -6183,9 +6136,6 @@ impl Widget for CalendarApp {
             self.revalidate_selection();
             self.model_heads.clone_from(&post_hydration_heads);
         }
-        // Persist after the editor's sync so notes edits land too. Cheap: only
-        // writes when the document's heads changed since the last save.
-        self.maybe_persist(state);
     }
 
     fn build_layout(
@@ -6770,15 +6720,6 @@ impl ui::widget::controls::ActionControls for CalendarApp {
         for child in self.children_mut() {
             ui::widget::controls::on_control_invocation_result(child, address, result);
         }
-    }
-}
-
-impl ui::undo::CommittedActions for CalendarApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its calendar action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
