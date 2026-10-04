@@ -1491,6 +1491,10 @@ pub struct WordProcessorWidget {
     /// A screenshot scenario to stage in the next sync, which has the
     /// document its actions wrote.
     staged_scenario: Option<String>,
+    /// The file whose record this is, when the window was launched on one:
+    /// writing it records what it now holds, so a later open can tell a
+    /// change made elsewhere.
+    record_file: Option<PathBuf>,
     /// The edits bound to this window's caret and selection, and to each
     /// participant's, as the document they were resolved against last
     /// placed them: what [`ResourceSurface::bound_declarations`] publishes.
@@ -1656,6 +1660,7 @@ impl WordProcessorWidget {
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             staged_scenario: None,
+            record_file: None,
             bound: BoundEdits::default(),
             #[cfg(test)]
             last_dispatched: None,
@@ -1692,6 +1697,26 @@ impl WordProcessorWidget {
     #[cfg(test)]
     pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.last_dispatched.as_ref()
+    }
+
+    /// The window shows the record of the file at `path`.
+    pub(crate) fn show_record_of(&mut self, path: PathBuf) {
+        let format = WpFormat::from_path(&path);
+        self.set_file(path.clone(), format);
+        self.record_file = Some(path);
+    }
+
+    /// `bytes` were written to `path`: when that is the record's own file,
+    /// the record notes what the file now holds.
+    fn note_file_written(&self, path: &std::path::Path, bytes: &[u8]) {
+        if self.record_file.as_deref() != Some(path) {
+            return;
+        }
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(&crate::actions::RichTextAction::NoteFileWritten {
+                digest: tilo_content::hash_bytes(bytes),
+            });
+        }
     }
 
     /// Resolve the edits bound to this window's view and to each
@@ -3625,6 +3650,7 @@ impl WordProcessorWidget {
                         },
                     )?;
                     self.toast = Some((t("toast-saved"), ToastKind::Success));
+                    self.note_file_written(path, &bytes);
                 }
                 Err(e) => {
                     eprintln!("word-processor: export failed: {e}");

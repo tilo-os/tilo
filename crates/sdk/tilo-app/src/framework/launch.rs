@@ -36,6 +36,7 @@ pub struct LaunchInput<'a> {
     file: Option<&'a OpenFile>,
     content: Option<&'a tilo_content::ContentStore>,
     handoff: Option<&'a PlaybackHandoff>,
+    record: Option<&'a dyn std::any::Any>,
 }
 
 impl<'a> LaunchInput<'a> {
@@ -49,7 +50,23 @@ impl<'a> LaunchInput<'a> {
             file,
             content: None,
             handoff: None,
+            record: None,
         }
+    }
+
+    /// The same launch on a record that is already there, as it is now.
+    #[must_use]
+    pub fn with_record(mut self, state: &'a dyn std::any::Any) -> Self {
+        self.record = Some(state);
+        self
+    }
+
+    /// The state of the record the launch opened, as it is when the launch
+    /// is taken: `S` is the app resource's state. `None` before the record
+    /// is open (a [`genesis`](super::ResourceApp::genesis)) or for another
+    /// type.
+    pub fn record<S: 'static>(&self) -> Option<&'a S> {
+        self.record?.downcast_ref::<S>()
     }
 
     /// The same launch on a host that lends the app `content`.

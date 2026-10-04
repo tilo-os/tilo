@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use ui::tilo_resource::Invoke;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
@@ -110,6 +111,8 @@ pub struct SpeedTestApp {
     /// A screenshot holds still on the staged values.
     shot: bool,
     dispatcher: Option<Dispatcher<SpeedTest>>,
+    /// The device this window runs on, which every run it records names.
+    device: Option<String>,
 }
 
 impl SpeedTestApp {
@@ -128,6 +131,7 @@ impl SpeedTestApp {
             results: Vec::new(),
             shot: false,
             dispatcher: None,
+            device: None,
         }
     }
 
@@ -175,13 +179,7 @@ impl SpeedTestApp {
                 self.result = Some(result);
                 self.display_value = result.download;
                 self.phase = Phase::Complete;
-                cx.invoke(SpeedTest::RECORD.with((
-                    result.ping,
-                    result.jitter,
-                    result.download,
-                    result.upload,
-                    server.clone(),
-                )));
+                cx.invoke(self.recorded(&result, &server));
                 Ok(Effected::value(ui::serde_json::json!({
                     "ping_ms": result.ping,
                     "jitter_ms": result.jitter,
@@ -774,6 +772,21 @@ impl Widget for SpeedTestApp {
     }
 }
 
+impl SpeedTestApp {
+    /// The action that records `result`, measured against `server` on this
+    /// window's device.
+    fn recorded(&self, result: &ResultSet, server: &str) -> Invoke<SpeedTest> {
+        SpeedTest::RECORD.with((
+            result.ping,
+            result.jitter,
+            result.download,
+            result.upload,
+            server.to_owned(),
+            self.device.clone().unwrap_or_default(),
+        ))
+    }
+}
+
 impl ResourceSurface<SpeedTest, SpeedEffect> for SpeedTestApp {
     fn present(&mut self, state: &Rc<SpeedTest>) {
         self.results = state.newest_first().cloned().collect();
@@ -781,6 +794,7 @@ impl ResourceSurface<SpeedTest, SpeedEffect> for SpeedTestApp {
 
     fn attach(&mut self, cx: SurfaceCx<SpeedTest>) {
         self.dispatcher = Some(cx.dispatcher());
+        self.device = cx.device().map(str::to_owned);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -978,9 +992,18 @@ impl SpeedTestApp {
                 tr.draw_text(
                     scene,
                     &format!(
-                        "{}  ·  {}",
+                        "{}  ·  {}{}",
                         ui::widget::history::format_relative_time(at, now),
-                        item.server
+                        item.server,
+                        if self
+                            .device
+                            .as_deref()
+                            .is_some_and(|device| device != item.device)
+                        {
+                            "  ·  another device"
+                        } else {
+                            ""
+                        }
                     ),
                     theme.tokens.typography.scale.sm,
                     c.text_primary,
@@ -1256,10 +1279,35 @@ mod tests {
             matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "idle"),
             "{refused:?}"
         );
-        app.invoke(SpeedTest::RECORD.with((9.0, 1.0, 500.0, 90.0, "Cloudflare · FRA".into())))
-            .expect("a run is recorded");
+        app.invoke(SpeedTest::RECORD.with((
+            9.0,
+            1.0,
+            500.0,
+            90.0,
+            "Cloudflare · FRA".into(),
+            "test-device".into(),
+        )))
+        .expect("a run is recorded");
         let app = app.reopen().expect("the app reopens");
         assert_eq!(app.state().results.len(), 1, "measurements are kept");
+    }
+
+    #[test]
+    fn a_run_is_recorded_with_the_device_that_ran_it() {
+        let mut app = TestApp::<SpeedTestShell>::new().expect("the app opens");
+        let result = ResultSet {
+            ping: 9.0,
+            jitter: 1.0,
+            download: 500.0,
+            upload: 90.0,
+        };
+        let recorded = app
+            .with_widget(|surface: &mut SpeedTestApp| surface.recorded(&result, "Cloudflare"))
+            .expect("the surface is hosted");
+        app.invoke(recorded).expect("the run is recorded");
+        let state = app.state();
+        let run = state.newest_first().next().expect("a run");
+        assert_eq!(run.device, "test-device", "the device the test host names");
     }
 
     #[test]

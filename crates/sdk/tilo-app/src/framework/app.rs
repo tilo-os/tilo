@@ -144,8 +144,24 @@ pub trait ResourceApp: 'static {
     /// of the app's effects ([`Invoke::effect`]) through the same door. A
     /// capture launched on nothing takes none: its [scenario](Self::scenario)
     /// stages the record.
+    ///
+    /// When the record was already there, [`LaunchInput::record`] reads it
+    /// as it is: a launch on a file can tell that the file changed since
+    /// the record last read or wrote it.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
         let _ = (input, created);
+        Vec::new()
+    }
+
+    /// What a record a launch naming `input` creates starts with besides
+    /// the resource's [`initialize`](Resource::initialize): the content of
+    /// the file it was launched on. The actions are written into the
+    /// record's genesis, so they must depend on nothing but `input` — two
+    /// devices that each create the record of one file converge on one
+    /// document only if both write the same genesis. They are nobody's
+    /// edit: no history entry, no undo.
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Self::Resource>> {
+        let _ = input;
         Vec::new()
     }
 
@@ -447,6 +463,26 @@ pub(crate) fn apply_seed<A: ResourceApp>(
     Ok(())
 }
 
+/// Write a launch's [`ResourceApp::genesis`] into the record's genesis:
+/// built at time zero and applied as the genesis writes everything, so every
+/// device that creates the record writes the same change.
+fn write_genesis<A: ResourceApp>(
+    doc: &mut tilo_resource::Doc,
+    genesis: &[Invoke<A::Resource>],
+) -> Result<(), String> {
+    for invoke in genesis {
+        let actions = if invoke.is_group() {
+            tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, 0)?.actions
+        } else {
+            vec![invoke.build(0)?]
+        };
+        for action in &actions {
+            tilo_actions::Action::apply(action, doc).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the toolkit's ComponentFactory signature passes the target owned"
@@ -462,7 +498,16 @@ fn create<A: ResourceApp>(
     // A record of its own, or the room's record an app keeps one of
     // (`ResourceApp::ROOM_RECORD`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
+    record_content(&mut context);
+    let file = context.take_open_file();
+    let arguments = context.take_launch_arguments();
+    let options = context.take_launch_options();
     if created {
+        let genesis = A::genesis(
+            &LaunchInput::new(&arguments, file.as_ref())
+                .with_options(&options)
+                .with_content(context.content()),
+        );
         let author = context.author().0.clone();
         let seed = A::seed(&SeedCx {
             me: &author,
@@ -471,15 +516,15 @@ fn create<A: ResourceApp>(
         });
         context
             .initialize_new_record_seeded(
-                |doc| <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string()),
+                |doc| {
+                    <A::Resource as Resource>::initialize(doc)
+                        .map_err(|error| error.to_string())?;
+                    write_genesis::<A>(doc, &genesis)
+                },
                 |doc| apply_seed::<A>(doc, &author, &seed),
             )
             .map_err(LaunchError::Record)?;
     }
-    record_content(&mut context);
-    let file = context.take_open_file();
-    let arguments = context.take_launch_arguments();
-    let options = context.take_launch_options();
     let capture = context.capture().is_some();
     let file_history = A::FILE_HISTORY.map(|_| FileHistorySource::default());
     // A window someone uses can open another record in its place; a
@@ -538,7 +583,8 @@ fn create<A: ResourceApp>(
     // launch on nothing takes reads from this device (a library, the last
     // folder), which a screenshot must not depend on. A capture launched on
     // a file takes that file, as the command line does.
-    let launch = root.launch();
+    let record = root.live().get();
+    let launch = root.launch().with_record(&*record);
     if !capture || !launch.is_empty() {
         for invoke in A::launch(&launch, created) {
             root.dispatcher().invoke(invoke);

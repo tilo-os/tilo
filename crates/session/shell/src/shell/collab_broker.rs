@@ -1145,7 +1145,7 @@ mod tests {
 
             assert!(matches!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::WholeDocumentPayload::Cleartext(
+                Ok(collab_types::RoutedDocumentPayload::Cleartext(
                     DocumentMutation::Snapshot(data)
                 )) if data == b"whole document"
             ));
@@ -1184,7 +1184,7 @@ mod tests {
             );
             assert_eq!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::WholeDocumentPayload::Encrypted {
+                Ok(collab_types::RoutedDocumentPayload::Encrypted {
                     channel: expected_channel,
                     epoch: 9,
                 })

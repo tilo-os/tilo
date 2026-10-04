@@ -755,14 +755,10 @@ fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
         let _ = wp.participant_resources(Some(&agent), &state.doc);
         let (envelopes, next) = crate::actions::editing::new_paragraph(&view, &state.doc).unwrap();
         note_participant_outcome(&next);
-        let mut host = ui::ActionHost::new();
+        let dispatch =
+            ui::framework::testing::detached_dispatcher::<crate::framework::Document>("agent");
         for action in &envelopes {
-            host.try_dispatch(
-                &mut state.doc,
-                crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-                action,
-            )
-            .unwrap();
+            dispatch.apply_now(&mut state.doc, action).unwrap();
         }
     }
     wp.sync(&mut state.doc, &state.root);
