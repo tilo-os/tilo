@@ -299,26 +299,8 @@ impl Widget for ProgressBar {
                 }
             };
             self.last_segment = current_segment;
-        } else if self.progress > 0.0 {
-            // Determinate fill, width `progress * track_width`. Skipped
-            // entirely at `progress == 0.0` (rather than a zero-width
-            // rect) so the COLOR-draw-tag count can distinguish empty
-            // from non-empty bars at the encoding level in tests.
-            let fill_width = f64::from(self.progress) * track_width;
-            let fill_rect = Rect::new(
-                self.rect.x0,
-                self.rect.y0,
-                self.rect.x0 + fill_width,
-                self.rect.y1,
-            );
-            let fill_shape = RoundedRect::from_rect(fill_rect, radius);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &fill_shape,
-            );
+        } else {
+            paint_fill(scene, transform, theme, self.rect, self.progress);
         }
     }
 
@@ -439,6 +421,49 @@ impl crate::permissions::capability::PermissionGated for ProgressBar {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
+}
+
+/// The determinate fill over a track: `fraction` of its width in the
+/// inverted ink. Skipped entirely at zero (rather than a zero-width rect) so
+/// the COLOR-draw-tag count tells an empty bar from a started one.
+fn paint_fill(scene: &mut Scene, transform: Affine, theme: &Theme, track: Rect, fraction: f32) {
+    if fraction <= 0.0 {
+        return;
+    }
+    let radius = f64::from(theme.tokens.radii.detail).min(track.height() / 2.0);
+    let fill_rect = Rect::new(
+        track.x0,
+        track.y0,
+        track.x0 + f64::from(fraction.min(1.0)) * track.width(),
+        track.y1,
+    );
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.intent.inverted,
+        None,
+        &RoundedRect::from_rect(fill_rect, radius),
+    );
+}
+
+/// A level bar in a row (a destination's usage in a navigation list): the
+/// progress bar's track and fill at `track`'s size.
+pub(crate) fn paint_level(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    track: Rect,
+    fraction: f32,
+) {
+    let radius = f64::from(theme.tokens.radii.detail).min(track.height() / 2.0);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.intent.selection,
+        None,
+        &RoundedRect::from_rect(track, radius),
+    );
+    paint_fill(scene, transform, theme, track, fraction);
 }
 
 #[cfg(test)]

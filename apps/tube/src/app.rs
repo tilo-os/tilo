@@ -1050,7 +1050,7 @@ impl TubeApp {
                 item(&Route::Trending, &t("tube-nav-trending"), Icon::Flame),
                 item(
                     &Route::Subscriptions,
-                    &t("tube-nav-channels"),
+                    &t("tube-nav-subscriptions"),
                     Icon::GalleryVerticalEnd,
                 ),
                 item(&Route::Queue, &t("tube-nav-queue"), Icon::ListVideo),

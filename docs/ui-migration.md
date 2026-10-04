@@ -588,7 +588,7 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | `.inset_rows()` | Delete; every tree insets its rows `s2`, so the depth-0 caret is never on the pane edge. |
 | `.with_trailing_edge()` | Delete; regions are told apart by tone (`NavShell`, `surface::region`). |
 | The current row's accent rail (`set_current`) | Unchanged call; the current row is now its label in the heavier weight. |
-| A tree in a sidebar listing destinations (code-editor explorer, db-client schema, notes pages) | Keep `TreeView` for real hierarchies the person edits (files, schema, pages); it is a `NavShell::sidebar` child and paints the same lift. A flat or two-level list of places is a `NavList`. |
+| A tree in a sidebar listing destinations (code-editor explorer, db-client schema, notes pages) | A list of places, nested or not, is a `NavList`: nested items, rename, drag into and between items, Delete, row menus and per-row semantic keys are all its own. Keep `TreeView` only for a hierarchy the list cannot hold (a file tree that loads its children lazily); it is a `NavShell::sidebar` child and paints the same lift. |
 | `.with_ground(|t| t.tokens.colors.surfaces.sidebar)` (or another region tier) | Delete: the tree stands on the ground of the region its container hands it. Keep `with_ground` only for a tree on a raised well. |
 
 Selection forks:
@@ -601,27 +601,80 @@ Selection forks:
 
 ### Rows: what each part of a `NavItem` means
 
-- **Label**: sentence case, what the destination is called. It elides; it
-  never wraps. The selected row's label is set in the heavier weight.
+A sidebar row is a `NavItem` (in a painted app, a `NavRowFace` with the same
+builder names; both paint through `chrome::paint_nav_row`). A `ListRow` is a
+row of content the person reads, never a sidebar row: when a sidebar needs a
+part that is not here, report the gap instead of reaching for `ListRow`.
+
+Leading to trailing:
+
+- **Check**: `.checked(on)` with `NavList::on_check(|id, on| ..)`: a checkbox
+  in the leading slot for a place the person shows or hides (a calendar).
+  The whole row is its target (a click anywhere, Space, Enter); a checkable
+  row is not a destination and is never selected.
 - **Icon**: one `ui::icons` icon per row, or none for the whole section. Use
   the same icon family as the app's other chrome. Never an emoji or a
   coloured dot.
+- **Swatch**: `.swatch(color)` in the icon's place for the person's own
+  content colour (a calendar's, a project's). Never a status or a decoration.
+- **Badge**: `.badge("GET")` for a short leading code that classifies the row
+  (an HTTP method, a file kind). The codes of one section share a column, so
+  their labels line up.
+- **Label**: sentence case, what the destination is called. It elides; it
+  never wraps (a rail's caption wraps to a second line, then elides). The
+  selected row's label is set in the heavier weight; an elided label shows
+  in full as the row's tooltip.
+- **Secondary**: `.secondary("db.example.net:5432")`: one `Caption` line
+  under the label (a host and port, a schedule). It elides; the row grows to
+  hold it.
+- **Level**: `.level(fraction)`: a usage bar under the text, on the progress
+  bar's track and fill (a backup destination's space).
+- **Presence**: `.presence(identity)`, once per person: a mark in their
+  presence colour for someone on that place (a page a collaborator has open).
+- **Status label**: `.status_label("Active", Tone::Success)`: a quiet tinted
+  badge naming the row's state (a firewall zone).
+- **Meta**: `.meta("1.2 TB")`: a tertiary figure at the trailing edge (a size).
 - **Count**: `.count(n)` for how many items a place holds (messages in a
   folder, tracks in a playlist) — quiet tabular figures in tertiary ink.
   `.live_count(n)` only for things waiting for the person (unread, mentions,
   failed jobs): the one filled badge, in the person's own colour. Never a
   filled badge for a plain count, never a status colour.
+- **Status**: `.status(RowStatus::Active / Warning / Error / Idle)`: the dot
+  at the trailing edge (a drive's health, a connection's state, an account
+  that needs attention); `RowStatus::Presence(id)` for a person.
 - **Children**: nested places (`.children(..)`), indented one `s4` step, with
-  a trailing chevron. `.expanded()` to start open.
+  a trailing chevron. `.expanded()` to start open; `.ensure_expanded()` to
+  open whatever the person folded (the database a connection just opened).
+  `NavList::on_expand(|id, open| ..)` reports what the person folds so the
+  app can keep it; `set_expanded(id, open)` changes it without a report.
 - **Actions**: actions that apply to every row (rename, more) go in
   `NavList::item_actions(..)`; they show on hover and focus at the trailing
-  edge. `.without_actions()` on rows where none apply (Inbox, Trash).
+  edge, in place of the trailing parts. `.without_actions()` on rows where
+  none apply (Inbox, Trash). The row's More is
+  `NavAction::new("more", Icon::MoreHorizontal, "More").opens_context_menu()`.
+- **Menu**: `NavList::on_context_menu(|id, lift, at| ..)` is called for a
+  right click, a long press, the Menu key (Shift+F10) and a More action that
+  opens the menu. Open the app's `ContextMenu` there:
+  `menu.anchor_row(lift); menu.open_at([at.x as f32, at.y as f32])`. Outside
+  the callback, `row_lift_rect(id)` and `item_action_rect(id, "more")` give
+  the same geometry; never hit-test the list's rows yourself.
 - **Section**: `NavSection::new(id, "Sentence case title", items)`; never
   upper case or letter-spaced. `.collapsible()` when the person may fold it,
+  `.collapsed()` to start folded,
   `.trailing_action(NavAction::new("new", Icon::Plus, "New playlist"))` for
-  the one "new …" action of the section.
+  the one "new …" action of the section, `.empty_caption("No drafts")` for
+  what it says while empty, `.filterable()` when the window's filter
+  (`NavShell::with_filter`) narrows it. A section that does not opt in (the
+  connections above the tables) stays whole while the person filters. An
+  elided title shows in full as its tooltip.
 - **Editing**: `.editable_label()` plus `NavList::on_rename`; `.drop_target()`
-  plus `NavList::on_move` for places that hold other places.
+  plus `NavList::on_move` for places that hold other places;
+  `NavList::on_delete(|id| ..)` for the Delete key (never Backspace).
+  `NavList::stage_drag(id, before)` shows a drag in progress for a capture.
+- **Addressing**: `.semantic_key(key)` when agents and tests address the row
+  by the app's own id (a page); the default is `nav:item:{id}`.
+- **Selection**: `set_selected`, `.selected` and `bind_selection` bring the
+  chosen row into view, also before the list's first layout.
 
 ### New API
 
@@ -637,8 +690,13 @@ Selection forks:
 | `NavList::new(sections)` with `NavSection`, `NavItem`, `NavAction`, `NavDrop` | The one navigation list (keyboard, disclosure, semantics, rename, drag, row actions). |
 | `.selected(id)`, `.bind_selection(&LocalState<Option<String>>)`, `.on_select(..)`, `set_sections(..)`, `set_selected(..)`, `selected_id()` | Selection and updates. Choosing a destination in a narrow window closes the drawer or pushes the content by itself. |
 | `.item_actions(actions, on_action)`, `.on_section_action(..)`, `.on_rename(..)`, `.on_move(..)` | What the person can do to rows. |
-| `.rail()` | Icon over caption, for a docked rail. |
+| `NavItem::{secondary, meta, status, status_label, badge, swatch, checked, level, presence, ensure_expanded, semantic_key}` | The parts of a row ([Rows](#rows-what-each-part-of-a-navitem-means)). |
+| `NavSection::{collapsed, empty_caption, filterable}` | A section that starts folded, says when it is empty, and narrows under the window's filter. |
+| `.on_check(..)`, `.on_expand(..)`, `.on_delete(..)`, `.on_context_menu(..)`, `NavAction::opens_context_menu()` | Checks, folding, Delete and row menus. |
+| `set_expanded(id, open)`, `is_expanded(id)`, `row_lift_rect(id)`, `item_action_rect(id, action)`, `stage_drag(id, before)`, `set_filter(query)` | Folding without a report, menu geometry, a staged drag for captures, filtering by hand. |
+| `.rail()` | Icon over caption, for a docked rail; captions wrap to two lines before they elide. |
 | `chrome::paint_nav_row(scene, transform, text, theme, &NavRowFace)`, `chrome::nav_row_layout`, `nav_row_height(theme)`, `nav_rail_row_height(theme)` | One navigation row in a painted app, identical to a `NavList` row. |
+| `NavRowFace::{secondary, meta, status, status_label, badge, badge_column, swatch, checked, level, presence}`, `face.height(theme)` / `chrome::nav_item_height(theme, secondary, level)`, `chrome::nav_badge_column(theme, text, codes)`, `chrome::nav_rail_item_height(..)` | The same parts in a painted row: size the row with `height`, share a section's badge column. |
 | `chrome::paint_nav_section(.., &NavSectionFace)`, `nav_section_layout`, `nav_section_height(theme, first)` | One section header in a painted app. |
 | `chrome::paint_row_selection(scene, transform, rect, state, ground, theme)` | The hover and selection lift of any list row. |
 | `chrome::selection_floor_ramp(theme, state, ground)` | States of a control with its own rest face. |
@@ -867,6 +925,7 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `ToolbarItem::new(label, w).group_start(true)` | `.push_separator()` before the group |
 | `ToolbarItem::new(label, w).cue(..)` | delete (labels are `Label`) |
 | an icon-only toolbar command | `.push_icon(icon, name, f)` |
+| an icon-only toggle (bold, italic, compare) | `.push_icon_toggle(icon, name, on, f)` |
 | `chrome::paint_bar(scene, t, theme, rect)` | `ui::widget::toolbar::paint_band(scene, t, theme, rect)` (no fill, a bottom hairline) |
 | `chrome::bar_padding(theme)` | `ui::widget::toolbar::band_padding(theme)` |
 | a toolbar that wraps or clips commands on a narrow window | `Toolbar`: commands that do not fit go to its More menu |
@@ -932,6 +991,38 @@ icon instead of a stripe; the tree's disclosure, the breadcrumb separator,
 the date picker's month steps and the time picker's arrows are chevrons from
 `ui::icons` instead of typed glyphs. A screenshot test pinned to the old
 pixels is regenerated, not worked around.
+
+## Icons
+
+One set, `ui::icons::Icon`: Lucide glyphs stroked at 1.5 px on the 24-unit
+grid, in ink colours. Every icon an app needs is in it; an app never draws a
+glyph by hand, uses a Unicode character or an emoji, or borrows a nearby
+glyph that means something else. A missing icon is reported and added here.
+
+| Old | New |
+|---|---|
+| `IconWidget::new(icon, 20.0)` (or `Metrics::BASE.icon_md`, any pixel size) | `IconWidget::new(icon)` (Regular) or `.sized(IconSize::Small / Regular / Large)`, resolved from `metrics.icon_sm` / `icon_md` / `icon_lg` |
+| A hand-drawn heart, flag, pin, bookmark or star filled when on | `icon.draw_filled(scene, transform, rect, ink)` for the on state, `icon.draw(..)` for off |
+| `"..."` or `…` for hidden path segments | `Breadcrumb` paints `Icon::MoreHorizontal` itself |
+| A stand-in glyph (a `Circle` for a status, `Monitor` for a USB stick, `FileText` for a quote) | The icon that names the thing (below) |
+| A text toolbar command that has a glyph (Bold, Italic, Link, Table) | `Toolbar::push_icon(icon, name, f)` / `push_icon_toggle(icon, name, on, f)`; the name stays its tooltip, accessible name and overflow row |
+
+Added to the set, by what they are for:
+
+| Use | Icons |
+|---|---|
+| People and calls | `User`, `UserPlus`, `Phone`, `PhoneOff`, `Video`, `MessageSquare`, `Smile`, `SmilePlus`, `Hand`, `Hash` |
+| Places and travel | `MapPin`, `Navigation`, `LocateFixed`, `Landmark`, `Hospital`, `Coffee`, `Utensils`, `Beer`, `BedDouble`, `ShoppingBag`, `TrainFront`, `Plane`, `Trees`, `PawPrint`, `Flag`, `Trophy` |
+| Turns | `CornerUpLeft`, `CornerUpRight`, `ArrowUpLeft`, `ArrowUpRight`, `ArrowDownLeft`, `ArrowDownRight` |
+| Weather and time | `Cloud`, `CloudRain`, `CloudSnow`, `Wind`, `Droplet`, `Moon`, `Gauge`, `Clock`, `AlarmClock`, `Hourglass` |
+| Media | `Shuffle`, `Repeat`, `Repeat1`, `Heart`, `ListMusic`, `Speaker`, `Headphones`, `Disc3` |
+| Text and documents | `Type`, `Bold`, `Italic`, `Underline`, `Strikethrough`, `Superscript`, `Subscript`, `Heading1`, `Heading2`, `ListOrdered`, `ListTree`, `Quote`, `AlignLeft`, `AlignCenter`, `AlignRight`, `AlignJustify`, `Baseline`, `Highlighter`, `Table`, `Columns2` |
+| Canvas and images | `Box`, `BringToFront`, `SendToBack`, `Palette`, `Contrast`, `Crop`, `ScanLine`, `QrCode`, `SwitchCamera` |
+| Mail and sharing | `MailOpen`, `ReplyAll`, `Forward`, `Link`, `Upload`, `Rss`, `Bookmark`, `Tag` |
+| Devices and state | `Usb`, `SdCard`, `Lock`, `EyeOff`, `CircleCheck`, `Lightbulb` |
+
+Filled variants are not separate icons: a glyph whose on state is filled
+(`Heart`, `Bookmark`, `Flag`, `Star`, `Pin`) paints with `draw_filled`.
 
 ## Content widgets
 
@@ -1764,6 +1855,15 @@ take them when its migration is reconciled.
 - **The block editor owns its handle column.** Hosts of a `BlockEditor`
   (chat, ebook, mail, notes, pdf-viewer, slides, word-processor) delete the
   gutter they reserved for its drag handles.
+- **Rows stand where they are laid out.** A `NavList` (or any `TreeView`)
+  handed new sections before its first layout no longer animates its rows
+  from the stock 28 px row, and a finished transition always leaves rows at
+  their laid-out geometry. Delete workarounds that rebuilt the list until it
+  had been laid out, or held `set_sections` back until then (mail and feeds
+  are done).
+- **The lifted row floats beside the pointer.** A dragged tree row now
+  hangs below and beside the pointer, and the drop line paints above it, so
+  the place it lands is never hidden; nothing to change in an app.
 - **The sidebar collapses for the content's room.** `compact_breakpoint` is
   840 (`sidebar_width` 280 + `content_min_width` 560): tests or shots that
   pinned a docked sidebar at 720–839 px wide now see the drawer.

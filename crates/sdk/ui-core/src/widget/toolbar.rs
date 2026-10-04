@@ -156,6 +156,24 @@ impl Toolbar {
         });
         self
     }
+    /// An icon-only command that is on or off (bold, italic): the glyph on
+    /// the lift while on; `label` names it as [`Self::push_icon`] does.
+    #[must_use]
+    pub fn push_icon_toggle(
+        mut self,
+        icon: crate::icons::Icon,
+        label: &str,
+        active: bool,
+        on_click: impl FnMut() + 'static,
+    ) -> Self {
+        self.items.push(ToolbarItem::Button {
+            label: label.to_string(),
+            icon: Some(icon),
+            active: Some(active),
+            on_click: Box::new(on_click),
+        });
+        self
+    }
     /// Turn the toggle at `index` on or off (the host syncing from its model).
     pub fn set_active(&mut self, index: usize, on: bool) {
         if let Some(ToolbarItem::Button { active, .. }) = self.items.get_mut(index)

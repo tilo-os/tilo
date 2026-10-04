@@ -2224,7 +2224,7 @@ pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
 mod nav_list;
-pub use nav_list::{NavAction, NavDrop, NavItem, NavList, NavSection};
+pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
@@ -2382,7 +2382,7 @@ pub use avatar::{Avatar, AvatarFace, AvatarSize, initials_for_name};
 pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
-pub use icon::IconWidget;
+pub use icon::{IconSize, IconWidget};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
