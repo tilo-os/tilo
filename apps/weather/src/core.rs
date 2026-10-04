@@ -516,6 +516,41 @@ impl Core {
         }
     }
 
+    /// Select the saved place `id` (a rail row's id), as a click on its row
+    /// in the list does.
+    pub(crate) fn select_place(&mut self, id: &str) {
+        if let Some(index) = self
+            .model
+            .locations
+            .iter()
+            .position(|loc| loc.id.to_string() == id)
+        {
+            self.select_index(index);
+        }
+    }
+
+    /// The saved places as the overview's rail shows them: each one's id,
+    /// name and current condition glyph, and the selected one's id.
+    pub(crate) fn rail_places(&self) -> (Vec<(String, String, Icon)>, Option<String>) {
+        let places = self
+            .model
+            .locations
+            .iter()
+            .map(|loc| {
+                let icon = self
+                    .model
+                    .snapshot_for(loc.id)
+                    .map_or(Icon::MapPin, |snap| {
+                        crate::wxcode::Sky::from_code(snap.current.weather_code)
+                            .rail_icon(snap.current.is_day)
+                    });
+                (loc.id.to_string(), loc.name.clone(), icon)
+            })
+            .collect();
+        let selected = self.model.selected_location().map(|loc| loc.id.to_string());
+        (places, selected)
+    }
+
     /// Select the place at `index`, reset the forecast scroll, refresh it,
     /// and ask the shell to show its forecast.
     fn select_index(&mut self, index: usize) {
@@ -627,6 +662,7 @@ impl Core {
                     // A failed geocode must resolve the dropdown's spinner into
                     // an honest state rather than spin forever.
                     self.search_results.clear();
+                    self.search.set_busy(false);
                     self.search.set_status(Some(
                         "Couldn't search for places. Check your connection.".into(),
                     ));
@@ -644,6 +680,9 @@ impl Core {
             return;
         }
         let q = self.search_query.trim().to_string();
+        let pending = self.search_pending();
+        self.search
+            .set_busy(!q.is_empty() && self.search_results.is_empty() && pending);
         if q.is_empty() {
             self.search.set_suggestions(Vec::new());
             self.search.set_status(None);
@@ -661,7 +700,7 @@ impl Core {
                 .collect();
             self.search.set_suggestions(sugg);
             self.search.set_status(None);
-        } else if self.search_pending() {
+        } else if pending {
             self.search.set_suggestions(Vec::new());
             self.search.set_status(Some("Searching…".to_string()));
         } else {
@@ -1134,13 +1173,13 @@ impl Core {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
-        let presence = PresenceCtx::empty();
         if self.search.is_editing() {
-            self.search.draw_overlay(scene, t, tr, theme, &presence);
+            self.search.draw_overlay(scene, t, tr, theme, presence);
         }
         if self.menu.is_open() {
-            self.menu.draw(scene, t, tr, theme, &presence);
+            self.menu.draw_overlay(scene, t, tr, theme, presence);
         }
     }
 

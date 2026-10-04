@@ -56,6 +56,9 @@ use crate::doc::WeatherDoc;
 use crate::net::WeatherService;
 use crate::panes::{DetailPane, OverviewPane};
 
+/// The overview rail's places (id, name, condition glyph) and the selected one.
+type RailPlaces = (Vec<(String, String, Icon)>, Option<String>);
+
 /// The screenshot scenarios a capture can stage (`--shots --scenario NAME`).
 pub const SCENARIOS: &[&str] = &[
     "onboarding",
@@ -81,11 +84,10 @@ pub const SCENARIOS: &[&str] = &[
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
-    /// Whether the shell was built with a place in the forecast column.
+    /// Whether the forecast column's header shows a place's actions.
     shows_forecast: bool,
-
-    /// The shell was rebuilt; the host lays the window out again.
-    structure_dirty: bool,
+    /// The places the overview's rail was last built from.
+    rail: RailPlaces,
 
     live: bool,
     service: Option<WeatherService>,
@@ -250,24 +252,52 @@ impl WeatherApp {
                 move || core.borrow_mut().begin_search()
             }),
         );
-        let mut actions: Vec<Element> = Vec::new();
-        if Self::shows_forecast(&core.borrow()) {
-            actions.push(Box::new(
-                Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast").on_effect(
-                    {
-                        let core = Rc::clone(core);
-                        move || core.borrow_mut().refresh_selected_forecast()
-                    },
-                ),
-            ));
-        }
         let title = Self::content_title(&core.borrow());
+        let rail = core.borrow().rail_places();
         NavShell::new()
             .with_id("weather-shell")
             .overview(Box::new(OverviewPane::new(Rc::clone(core))))
+            .overview_rail(Self::place_rail(core, &rail))
             .content(Box::new(DetailPane::new(Rc::clone(core))))
             .overview_header("Places", vec![add])
-            .content_header(title, actions)
+            .content_header(title, Self::content_actions(core))
+    }
+
+    /// What the city list collapses into where it no longer fits beside the
+    /// forecast: a rail of the same places, each by its current condition.
+    fn place_rail(core: &Rc<RefCell<Core>>, (places, selected): &RailPlaces) -> Element {
+        let items = places
+            .iter()
+            .map(|(id, name, icon)| ui::widget::NavItem::new(id.clone(), name.clone()).icon(*icon))
+            .collect();
+        let mut rail = ui::widget::NavList::new(vec![ui::widget::NavSection::untitled(
+            "weather.places",
+            items,
+        )])
+        .with_id("weather.rail")
+        .with_accessible_name("Places")
+        .rail()
+        .on_select({
+            let core = Rc::clone(core);
+            move |id| core.borrow_mut().select_place(&id)
+        });
+        if let Some(selected) = selected {
+            rail = rail.selected(selected);
+        }
+        Box::new(rail)
+    }
+
+    /// The forecast's header actions: Refresh while it shows a place.
+    fn content_actions(core: &Rc<RefCell<Core>>) -> Vec<Element> {
+        if !Self::shows_forecast(&core.borrow()) {
+            return Vec::new();
+        }
+        vec![Box::new(
+            Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast").on_effect({
+                let core = Rc::clone(core);
+                move || core.borrow_mut().refresh_selected_forecast()
+            }),
+        )]
     }
 
     /// Whether the forecast column shows a place (and so can refresh it).
@@ -286,24 +316,32 @@ impl WeatherApp {
     /// Keep the forecast column's header on the selected place: its name as
     /// the title, and Refresh only while there is a place to refresh.
     fn sync_title(&mut self) {
-        let shows = Self::shows_forecast(&self.core.borrow());
-        if shows != self.shows_forecast {
-            self.nav = Self::build_nav(&self.core);
-            self.shows_forecast = shows;
-            self.structure_dirty = true;
+        let rail = self.core.borrow().rail_places();
+        if rail != self.rail {
+            self.nav
+                .set_overview_rail(Some(Self::place_rail(&self.core, &rail)));
+            self.rail = rail;
         }
+        let shows = Self::shows_forecast(&self.core.borrow());
         let title = Self::content_title(&self.core.borrow());
-        self.nav.set_content_title(title);
+        if shows == self.shows_forecast {
+            self.nav.set_content_title(title);
+        } else {
+            self.shows_forecast = shows;
+            self.nav
+                .set_content_header(title, Self::content_actions(&self.core));
+        }
     }
 
     fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
         let nav = Self::build_nav(&core);
         let shows_forecast = Self::shows_forecast(&core.borrow());
+        let rail = core.borrow().rail_places();
         Self {
             core,
             nav,
             shows_forecast,
-            structure_dirty: false,
+            rail,
             live,
             service: None,
             initial_fetch_done: false,
@@ -804,8 +842,7 @@ impl Widget for WeatherApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let rebuilt = std::mem::take(&mut self.structure_dirty);
-        self.nav.take_structure_dirty() || rebuilt
+        self.nav.take_structure_dirty()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -1145,8 +1182,15 @@ mod interaction_tests {
             assert!(g.overview_column.width() > 1.0);
             assert!(g.content_column.width() > 1.0);
 
-            // Simulate a resize down to a narrow width on the SAME instance.
+            // Between: the list collapses into its rail of places beside
+            // the forecast before anything pushes.
             h.layout(560.0, 720.0);
+            let g = h.app.nav.geometry();
+            assert_eq!(g.overview, ui::widget::OverviewPlacement::Rail, "{g:?}");
+            assert!(g.stack.is_empty(), "the rail keeps the forecast beside it");
+
+            // Simulate a resize down to a narrow width on the SAME instance.
+            h.layout(420.0, 720.0);
             assert!(
                 !h.app.nav.geometry().stack.is_empty(),
                 "a narrow width pushes the forecast over the list"
@@ -1240,7 +1284,7 @@ mod interaction_tests {
     fn city_navigation_by_pointer_keyboard_and_accessibility() {
         // Case `tapping_a_city_pushes_detail_then_back_returns`.
         {
-            let mut h = Harness::new(560.0, 720.0);
+            let mut h = Harness::new(420.0, 720.0);
             assert!(!h.app.nav.geometry().stack.is_empty());
             assert_ne!(
                 h.app.nav.front_pane(),
@@ -1265,7 +1309,7 @@ mod interaction_tests {
 
             // Settle the push so the Back button is placed, then press Back.
             h.app.nav.snap();
-            h.layout(560.0, 720.0);
+            h.layout(420.0, 720.0);
             let back = h.app.nav.geometry().back;
             assert!(back.width() > 0.0, "a pushed forecast has a Back button");
             h.click_named("nav-shell-back");
@@ -1500,7 +1544,7 @@ mod interaction_tests {
         {
             // Proves the select path issues a network request (not a mock): the
             // outbox holds a Forecast request the app would pump to the worker.
-            let mut h = Harness::new(560.0, 720.0);
+            let mut h = Harness::new(420.0, 720.0);
             h.redraw();
             let (x, y) = (h.row_center_x(), h.row_center_y(1));
             h.click(x, y);
@@ -1684,7 +1728,7 @@ mod interaction_tests {
     fn place_menu_and_swipe_gestures_edit_the_city_list() {
         // Case `right_click_menu_remove_deletes_the_city_and_persists`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let before = h.app.core.borrow().model.locations.len();
             let victim = h.app.core.borrow().model.locations[1].id;
@@ -1729,7 +1773,7 @@ mod interaction_tests {
         }
         // Case `right_click_menu_move_to_top_reorders`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let second = h.app.core.borrow().model.locations[1].id;
             let (x, y1) = (h.row_center_x(), h.row_center_y(1));
@@ -1750,7 +1794,7 @@ mod interaction_tests {
         }
         // Case `right_click_menu_refresh_queues_a_fetch_for_that_city`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let target = h.app.core.borrow().model.locations[1].id;
             h.app.core.borrow_mut().take_outbox(); // drain any startup requests
@@ -1774,7 +1818,7 @@ mod interaction_tests {
         }
         // Case `swipe_left_past_threshold_deletes_the_city`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let before = h.app.core.borrow().model.locations.len();
             let victim = h.app.core.borrow().model.locations[0].id;
@@ -1798,7 +1842,7 @@ mod interaction_tests {
         }
         // Case `short_swipe_does_not_delete`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let before = h.app.core.borrow().model.locations.len();
             let (x, y0) = (h.row_center_x() + 100.0, h.row_center_y(0));
@@ -1824,7 +1868,7 @@ mod interaction_tests {
     fn drag_reorder_reflows_live_commits_on_drop_and_cancels() {
         // Case `vertical_drag_reorders_the_city`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let first = h.app.core.borrow().model.locations[0].id;
             let n = h.app.core.borrow().model.locations.len();
@@ -1855,7 +1899,7 @@ mod interaction_tests {
         }
         // Case `drag_reflows_the_list_live_and_commits_only_on_drop`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let order_before: Vec<_> = h
                 .app
@@ -1908,7 +1952,7 @@ mod interaction_tests {
         }
         // Case `escape_cancels_an_in_flight_reorder_and_restores_order`.
         {
-            let mut h = Harness::new(560.0, 900.0);
+            let mut h = Harness::new(420.0, 900.0);
             h.redraw();
             let order_before: Vec<_> = h
                 .app
