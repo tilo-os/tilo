@@ -341,13 +341,7 @@ impl<R: Resource> ResourceRoot<R> {
             );
         });
         for decl in bound {
-            if !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == decl.id)
-            {
-                resource = resource.with_action(tilo_resource::declaration_spec(&decl));
-            }
+            resource = tilo_resource::bind_declaration(resource, &decl);
         }
         for status in &availability {
             for spec in resource

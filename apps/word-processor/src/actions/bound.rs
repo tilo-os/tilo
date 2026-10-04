@@ -44,6 +44,11 @@ const BOUND: &[&str] = &[
     "add-comment",
 ];
 
+/// Bound edits that refine the document's declared action of the same id:
+/// the append also leaves its writer's caret after the text, for the rest
+/// of a streamed paragraph to be typed there.
+const REFINES: &[&str] = &["append-paragraph"];
+
 /// The edits the view's tree `resources` offers, as declarations: the
 /// document operations of its top-level resources (the caret's and the
 /// selection's), each once.
@@ -119,6 +124,9 @@ fn declaration(spec: &ActionSpec) -> Option<ActionDecl<Document>> {
     }
     for tag in &spec.contract.tags {
         decl = decl.tagged(tag.clone());
+    }
+    if REFINES.contains(&id) {
+        decl = decl.refining();
     }
     Some(decl)
 }

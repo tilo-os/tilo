@@ -568,7 +568,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// state it captured. Invoking one dispatches what it builds through the
     /// same permission check, confirmation and undo as any other action. The
     /// binding lasts as long as this view scope (a row's ends with the row);
-    /// an id the resource already publishes keeps the resource's action.
+    /// an id the resource already publishes keeps the resource's action
+    /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
         self.bindings
             .0

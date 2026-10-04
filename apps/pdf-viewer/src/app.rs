@@ -5032,6 +5032,10 @@ impl Widget for PdfApp {
             self.portal_action = None;
             self.portal_rx = None;
             self.portal_save_rx = None;
+            // A document asked to open in this window's place is not opened.
+            if let Some((_, outcome)) = self.pending_reopen.take() {
+                outcome.withdraw();
+            }
             self.cancel_pending_open();
             if let Some(request) = self.pending_save.take() {
                 let _ = self
