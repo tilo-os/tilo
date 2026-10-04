@@ -91,9 +91,8 @@ impl Resource for SheetsWorkbook {
     }
 
     fn read(doc: &Doc) -> Result<SheetsState, ModelError> {
-        let mut projection = doc.clone();
-        let count = SheetsDoc::sheet_count_readonly(doc);
-        let names = SheetsDoc::sheet_names_readonly(doc);
+        let count = SheetsDoc::sheet_count(doc);
+        let names = SheetsDoc::sheet_names(doc);
         let mut sheets = Vec::with_capacity(count);
         for idx in 0..count {
             let id = SheetsDoc::sheet_resource_id(doc, idx)
@@ -103,7 +102,7 @@ impl Resource for SheetsWorkbook {
                 .cloned()
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("Sheet{}", idx.saturating_add(1)));
-            let snap = SheetsDoc::snapshot_sheet(&mut projection, idx, Currency::USD);
+            let snap = SheetsDoc::snapshot_sheet(doc, idx, Currency::USD);
             let values = crate::formula::recalculate(&snap.raw);
             let mut cells = snap
                 .raw
@@ -130,8 +129,8 @@ impl Resource for SheetsWorkbook {
                 id,
                 name,
                 cells,
-                charts: SheetsDoc::charts(&mut projection, idx),
-                comments: SheetsDoc::comments(&mut projection, idx),
+                charts: SheetsDoc::charts(doc, idx),
+                comments: SheetsDoc::comments(doc, idx),
             });
         }
         Ok(SheetsState { sheets })
@@ -397,84 +396,6 @@ impl ResourceSurface<SheetsWorkbook> for SheetsApp {
     // widget's own rather than as `bound_declarations`.
     fn publishes_document_actions(&self) -> bool {
         true
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<ui::framework::Dispatcher<SheetsWorkbook>>,
-    #[cfg(test)]
-    pub(crate) last: Option<tilo_actions::EncodedAction>,
-    /// Test-only: hosted lookup without a framework dispatcher.
-    #[cfg(test)]
-    hosted: bool,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            #[cfg(test)]
-            last: None,
-            #[cfg(test)]
-            hosted: false,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: ui::framework::Dispatcher<SheetsWorkbook>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        #[cfg(test)]
-        if self.hosted {
-            return true;
-        }
-        self.framework.is_some()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut automerge::AutoCommit,
-        action: &SheetsAction,
-        context: tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                #[cfg(test)]
-                {
-                    self.last = Some(encode(action));
-                }
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, SHEETS_ACTION_TYPE, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        #[cfg(test)]
-        if self.is_hosted() {
-            return self.last.as_ref();
-        }
-        self.local.last_dispatched()
     }
 }
 

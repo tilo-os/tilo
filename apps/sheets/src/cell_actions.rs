@@ -455,10 +455,9 @@ fn project_read(
 ) -> Result<ReadPage, SemanticReadError> {
     let request: ReadRequest =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    let mut doc = document.clone();
-    let sheet = SheetsDoc::sheet_index_by_resource_id(&doc, &request.sheet)
+    let sheet = SheetsDoc::sheet_index_by_resource_id(document, &request.sheet)
         .ok_or(SemanticReadError::InvalidRequest)?;
-    let snap = SheetsDoc::snapshot_sheet(&mut doc, sheet, Currency::USD);
+    let snap = SheetsDoc::snapshot_sheet(document, sheet, Currency::USD);
     let used = snap.raw.keys().chain(snap.bold.iter()).copied();
     let (start, end) = match request.range.as_deref() {
         Some(range) => parse_range(range).ok_or(SemanticReadError::InvalidRequest)?,
@@ -555,8 +554,7 @@ pub fn edit_result(
         end.1
             .min(start.1.saturating_add(shown_rows.saturating_sub(1))),
     );
-    let mut doc = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut doc, sheet, Currency::USD);
+    let snap = SheetsDoc::snapshot_sheet(doc, sheet, Currency::USD);
     let mut content = range_content(&snap, start, shown_end);
     if shown_end != end
         && let Some(fields) = content.as_object_mut()
