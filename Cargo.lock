@@ -2964,6 +2964,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -2971,6 +2972,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]
