@@ -96,9 +96,12 @@ jobs:
             exit 1
           }
 
+      # The package lane uploads with upload-artifact v4, which stores the
+      # artifact as one zip; v3's download hands back that zip as a single
+      # file, so the download must be v4 (Forgejo's build) to get the RPMs.
       - name: Take this run's RPMs
         if: ${{ inputs.rpm-artifact }}
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: ${{ inputs.rpm-artifact }}
           path: /var/tmp/host-session-e2e/rpms

@@ -307,6 +307,7 @@ fn exports_are_png_jpeg_or_webp_at_any_scale() {
             scale: Some(0.5),
             format: Some(format.into()),
             quality: Some(80),
+            ..Export::default()
         };
         let (picture, info) = view_ops::export(&mut renderer, &mut text, &art, &export).unwrap();
         assert!(picture.bytes.starts_with(magic), "{format}");
@@ -329,6 +330,48 @@ fn exports_are_png_jpeg_or_webp_at_any_scale() {
     .err()
     .unwrap();
     assert!(refused.contains("png, jpeg or webp"), "{refused}");
+}
+
+/// An export written to a file an agent or script names: the format
+/// follows the path, and a path that is not one is refused before anything
+/// is written.
+#[test]
+fn exports_are_written_where_the_caller_names() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("open", json!({"path": halves(40, 20)})).unwrap();
+    let dir = std::env::temp_dir().join(format!("canvas-export-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let jpeg = dir.join("halves.jpg");
+    let answer = view(
+        &mut app,
+        "export",
+        json!({"path": jpeg.display().to_string()}),
+    );
+    assert_eq!(answer["format"], "jpeg", "{answer}");
+    assert_eq!(answer["path"], jpeg.display().to_string());
+    assert!(std::fs::read(&jpeg).unwrap().starts_with(b"\xff\xd8"));
+    let svg = dir.join("halves.svg");
+    let answer = view(
+        &mut app,
+        "export-svg",
+        json!({"path": svg.display().to_string()}),
+    );
+    assert!(
+        answer.get("svg").is_none(),
+        "written, not answered: {answer}"
+    );
+    assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
+    for (action, path) in [
+        ("export", "halves.png"),
+        ("export", "/tmp/x.gif"),
+        ("export-svg", "/tmp/x.png"),
+    ] {
+        assert!(
+            app.call(action, json!({ "path": path })).is_err(),
+            "{action} {path} is refused"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

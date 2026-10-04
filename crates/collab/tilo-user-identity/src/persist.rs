@@ -414,35 +414,9 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
     Ok(bytes)
 }
 
-/// Unix mode of the public device-trust files: the device certificates and the
-/// person's public key. Everyone who may reach their directory reads them,
-/// which on an installed system is the device-trust group the session and the
-/// relay read through.
-pub const PUBLIC_TRUST_FILE_MODE: u32 = 0o644;
-
-/// Atomically publish public trust material with [`PUBLIC_TRUST_FILE_MODE`],
-/// whatever the writer's umask. A restrictive umask (a sandboxed service, or
-/// `sudo` from a shell with `umask 077`) must not leave a certificate that only
-/// its writer can read.
-///
-/// # Errors
-///
-/// Returns an error if writing to `path` fails.
-pub fn write_public_trust_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        tilo_files::native::atomic::write_with_mode(path, bytes, PUBLIC_TRUST_FILE_MODE)
-    }
-    #[cfg(not(unix))]
-    {
-        tilo_files::native::atomic::write(path, bytes)
-    }
-}
-
-/// Atomically write a 32-byte Ed25519 public key to disk, readable by everyone
-/// who may reach its directory whatever the writer's umask — public keys are
-/// non-secret. Atomic replacement avoids both partial trust roots and
-/// following a final symlink.
+/// Atomically write a 32-byte Ed25519 public key to disk with
+/// [`PUBLIC_FILE_MODE`] — public keys are non-secret. Atomic
+/// replacement avoids both partial trust roots and following a final symlink.
 ///
 /// # Errors
 ///
@@ -450,7 +424,7 @@ pub fn write_public_trust_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    write_public_trust_file(path, pubkey)
+    write_public_file(path, pubkey)
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
@@ -606,6 +580,24 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
 ///
 /// `other` gets nothing, and that is enforced on read.
 pub const DEVICE_KEY_MODE: u32 = 0o640;
+
+/// Mode of the public identity files: the person's public key and the device
+/// certificates. Pinned rather than left to the writer's umask: a root-run
+/// enrollment under a strict umask would otherwise leave them unreadable to
+/// the session that verifies them.
+pub const PUBLIC_FILE_MODE: u32 = 0o644;
+
+/// Atomically replace a public identity file with [`PUBLIC_FILE_MODE`].
+fn write_public_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        tilo_files::native::atomic::write_with_mode(path, bytes, PUBLIC_FILE_MODE)
+    }
+    #[cfg(not(unix))]
+    {
+        tilo_files::native::atomic::write(path, bytes)
+    }
+}
 
 /// Read the device key, requiring that it not be accessible to users
 /// outside the device-trust group.
@@ -979,8 +971,8 @@ pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
     Ok(cert)
 }
 
-/// Write a signed device cert to disk. Public metadata, published with
-/// [`PUBLIC_TRUST_FILE_MODE`] whatever the writer's umask.
+/// Write a signed device cert to disk. Public metadata, with
+/// [`PUBLIC_FILE_MODE`].
 ///
 /// # Errors
 ///
@@ -993,7 +985,7 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     fs::create_dir_all(parent)?;
-    write_public_trust_file(path, &bytes)?;
+    write_public_file(path, &bytes)?;
     Ok(())
 }
 

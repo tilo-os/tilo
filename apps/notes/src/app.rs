@@ -489,16 +489,81 @@ fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str),
     let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
         .map_err(|error| error.to_string())?
         .ok_or("Image is larger than 1 MiB")?;
-    let extension = if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
-        "png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "jpg"
-    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        "webp"
-    } else {
-        return Err("Choose a PNG, JPEG, or WebP image".into());
-    };
+    let extension = image_extension(&bytes).ok_or("Choose a PNG, JPEG, or WebP image")?;
     Ok((bytes, extension))
+}
+
+/// The file extension of a PNG, JPEG or WebP image, by its magic bytes.
+fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        Some("png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// `bytes` as an image the notebook keeps, with its extension: as given when
+/// it fits an asset, else re-encoded (JPEG, or PNG to keep transparency) and
+/// scaled down until it does. A screenshot is often larger than an asset may
+/// be, and pasting it must still work.
+fn fit_image_asset(bytes: Vec<u8>) -> Result<(Vec<u8>, &'static str), String> {
+    const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
+    let extension = image_extension(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    if bytes.len() <= MAX {
+        return Ok((bytes, extension));
+    }
+    let mut image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+    drop(bytes);
+    let transparent = image.color().has_alpha();
+    for _ in 0..8 {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        if transparent {
+            image
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .map_err(|error| error.to_string())?;
+        } else {
+            image::DynamicImage::ImageRgb8(image.to_rgb8())
+                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    &mut encoded,
+                    85,
+                ))
+                .map_err(|error| error.to_string())?;
+        }
+        let encoded = encoded.into_inner();
+        if encoded.len() <= MAX {
+            return Ok((encoded, if transparent { "png" } else { "jpg" }));
+        }
+        let (width, height) = (image.width(), image.height());
+        if width < 64 || height < 64 {
+            break;
+        }
+        image = image.resize(
+            width.saturating_mul(3) / 4,
+            height.saturating_mul(3) / 4,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    Err("Image is too large to keep in a note".into())
+}
+
+/// A pasted or dropped image, kept the way a chosen one is: as a file beside
+/// a folder notebook, else as a notebook asset.
+fn image_from_bytes(root: Option<&std::path::Path>, bytes: Vec<u8>) -> Result<LoadedImage, String> {
+    let (bytes, extension) = fit_image_asset(bytes)?;
+    if let Some(root) = root {
+        let assets = root.join("assets");
+        crate::files::create_dir_all(&assets).map_err(|error| error.to_string())?;
+        let name = format!("{}.{}", uuid::Uuid::new_v4(), extension);
+        tilo_files::native::atomic::write(&assets.join(&name), &bytes)
+            .map_err(|error| error.to_string())?;
+        return Ok((format!("../assets/{name}"), None));
+    }
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    Ok((format!("asset:{digest}"), Some(bytes)))
 }
 
 #[cfg(test)]
@@ -1295,6 +1360,60 @@ impl NotesApp {
             })
             .collect();
         self.main.set_transclusion_previews(previews);
+    }
+
+    /// Keep each image pasted into the open note with the notebook and put it
+    /// after the caret, as a chosen image is.
+    fn drain_pasted_images(&mut self, doc: &mut AutoCommit) {
+        for image in self.main.take_pasted_images() {
+            self.insert_image_bytes(doc, std::path::Path::new("Pasted image"), image.bytes);
+        }
+    }
+
+    /// Insert the image `bytes`, named after `source`, into the open note.
+    fn insert_image_bytes(
+        &mut self,
+        doc: &mut AutoCommit,
+        source: &std::path::Path,
+        bytes: Vec<u8>,
+    ) {
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let root = self
+            .legacy_fixture_storage
+            .as_ref()
+            .map(|legacy| legacy.root.clone());
+        let loaded = image_from_bytes(root.as_deref(), bytes);
+        if let Err(error) = self.insert_loaded_image(doc, page, source, loaded) {
+            tracing::warn!(%error, "notes: image not inserted");
+        }
+    }
+
+    /// Image files dropped on the window go into the open note.
+    fn handle_dropped_file(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let WindowEvent::DroppedFile(path) = event else {
+            return false;
+        };
+        if self.main.page_id().is_none() {
+            return false;
+        }
+        let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| bytes.ok_or_else(|| "Image is too large".to_owned()));
+        match bytes {
+            Ok(bytes) => self.insert_image_bytes(ctx.state, path, bytes),
+            Err(error) => self.transfer_toasts.push(
+                format!("Image import failed: {error}"),
+                ui::widget::toast::ToastKind::Error,
+            ),
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn drain_transclusion_opens(&mut self, doc: &AutoCommit) {
@@ -4469,6 +4588,7 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
+        self.drain_pasted_images(state);
         if self.legacy_fixture_storage.is_none() {
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
@@ -4881,6 +5001,9 @@ impl Widget for NotesApp {
             return;
         }
         if self.handle_link_click(event, ctx.state, ctx.handled) {
+            return;
+        }
+        if self.handle_dropped_file(event, ctx) {
             return;
         }
         self.route_to_children(event, ctx);

@@ -45,11 +45,11 @@ pub struct Select {
     pub colour: Option<String>,
     /// 0..1, default 0.15.
     pub tolerance: Option<f64>,
-    /// `replace`, `add`, `subtract`, `intersect` or `none`.
+    /// `replace`, `add`, `subtract`, `intersect` or `none` (deselect).
     pub mode: Option<String>,
     /// Units.
     pub feather: Option<f64>,
-    /// Units; negative shrinks.
+    /// Units, after invert; negative shrinks.
     pub grow: Option<f64>,
     pub invert: Option<bool>,
 }
@@ -236,11 +236,14 @@ impl Select {
                 )));
             }
         };
-        if let Some(grow) = self.grow {
-            region = region.grown(grow);
-        }
+        // Invert first: grow and feather refine the area that ends up
+        // selected, so `invert, grow -3` keeps a subject clear of its old
+        // background's edge.
         if self.invert == Some(true) {
             region = region.inverted(art.bounds());
+        }
+        if let Some(grow) = self.grow {
+            region = region.grown(grow);
         }
         let region = region
             .combine(&Region::of_rect(art.bounds()), Op::Intersect)

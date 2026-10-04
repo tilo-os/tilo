@@ -45,6 +45,10 @@ pub struct RelayPeer {
     /// without one the relay is found by its id.
     #[serde(skip)]
     pub address: Option<String>,
+    /// Whether the relay last said a worker runs environment sessions
+    /// (the registration's `environments.sessions`).
+    #[serde(skip)]
+    pub runs_environments: bool,
 }
 
 /// The part of a home-peer registration a relay session needs.
@@ -58,6 +62,8 @@ struct Registration {
     relay_workspace_ids: Vec<u64>,
     #[serde(default)]
     relay_endpoint: Option<serde_json::Value>,
+    #[serde(default)]
+    environments: tilo_relay_protocol::RelayEnvironments,
 }
 
 /// The identity this supervisor's user has on this device.
@@ -117,6 +123,7 @@ pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
                 .relay_endpoint
                 .filter(|address| !address.is_null())
                 .map(|address| address.to_string()),
+            runs_environments: r.environments.sessions,
         })
         .filter(|peer| {
             tilo_environment::Location::Relay {
@@ -128,6 +135,16 @@ pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
     out.sort_by(|a, b| a.label.cmp(&b.label));
     out.dedup_by(|a, b| a.relay == b.relay);
     out
+}
+
+/// The relays a new environment can be opened on: the person's relays whose
+/// workers last said they run environment sessions. A session already on a
+/// relay re-attaches through [`relays`] whatever the relay last said.
+pub fn offered(identity: &IdentityPaths) -> Vec<RelayPeer> {
+    relays(identity)
+        .into_iter()
+        .filter(|peer| peer.runs_environments)
+        .collect()
 }
 
 /// Where `tilo-relay-environment` is: `$TILO_RELAY_ENVIRONMENT_BIN`, the
@@ -303,6 +320,10 @@ mod tests {
             serde_json::json!([
                 {"device_node_id": "x", "relay_service_node_id": relay.to_uppercase(),
                  "label": "Home", "user_public_key": hex::encode(me),
+                 "relay_workspace_ids": [workspace],
+                 "environments": {"sessions": true, "legacy_apps": false}},
+                {"device_node_id": "y", "relay_service_node_id": "12".repeat(32),
+                 "label": "Files only", "user_public_key": hex::encode(me),
                  "relay_workspace_ids": [workspace]},
                 {"device_node_id": "x", "relay_service_node_id": "cd".repeat(32),
                  "label": "Someone's", "user_public_key": hex::encode([8u8; 32]),
@@ -315,10 +336,18 @@ mod tests {
         )
         .unwrap();
         let relays = relays_in(&path, &me);
-        assert_eq!(relays.len(), 1);
-        assert_eq!(relays[0].relay, relay);
-        assert_eq!(relays[0].label, "Home");
-        assert_eq!(relays[0].workspace, workspace);
+        assert_eq!(relays.len(), 2);
+        let home = relays.iter().find(|peer| peer.label == "Home").unwrap();
+        assert_eq!(home.relay, relay);
+        assert_eq!(home.workspace, workspace);
+        // Only a relay whose workers run environments is offered for a new
+        // one; the other stays reachable for sessions already there.
+        let offered: Vec<_> = relays
+            .iter()
+            .filter(|peer| peer.runs_environments)
+            .collect();
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].label, "Home");
         assert!(relays_in(&dir.path().join("absent.json"), &me).is_empty());
     }
 
@@ -330,6 +359,7 @@ mod tests {
             user: "cd".repeat(32),
             workspace: 42,
             address: None,
+            runs_environments: true,
         };
         let args = |session: &RelaySession| -> Vec<String> {
             bridge_command(

@@ -195,6 +195,12 @@ pub struct UndoEntry {
     /// Both are `None` for pure CRDT actions.
     pub undo_via: Option<tilo_actions::EncodedAction>,
     pub redo_via: Option<tilo_actions::EncodedAction>,
+    /// What the step this entry takes back or brings back did, carried
+    /// across undo and redo so history names "Undo Rename" and "Redo Rename"
+    /// after the step itself, never after the undo that last moved it.
+    /// `None` until an undo or redo first moves the entry: the context is
+    /// then read from the step's own change.
+    pub step: Option<tilo_actions::ActionContext>,
 }
 
 /// Per-document undo and redo depth. Entries retain two Automerge head sets
@@ -232,6 +238,70 @@ fn history_message_for_encoded_action(encoded: &tilo_actions::EncodedAction) -> 
     let value: serde_json::Value = serde_json::from_slice(&encoded.payload).ok()?;
     tilo_actions::ActionContext::for_action(&encoded.type_id, &encoded.type_id, &value)
         .change_message()
+}
+
+/// Which way an undo-stack entry is moved: what history names its change.
+#[derive(Clone, Copy)]
+enum Direction {
+    Undo,
+    Redo,
+}
+
+/// The context of the step `entry` takes back (undo) or brings back (redo):
+/// carried on the entry once an undo moved it, else read from the step's own
+/// change, which is the side of the bracket the move leaves.
+fn step_context(
+    doc: &mut AutoCommit,
+    entry: &UndoEntry,
+    direction: Direction,
+) -> Option<tilo_actions::ActionContext> {
+    if let Some(step) = &entry.step {
+        return Some(step.clone());
+    }
+    let (step, other) = match direction {
+        Direction::Undo => (&entry.after, &entry.before),
+        Direction::Redo => (&entry.before, &entry.after),
+    };
+    step.iter()
+        .filter(|head| !other.contains(head))
+        .find_map(|head| {
+            doc.get_change_meta_by_hash(head)
+                .and_then(|meta| meta.message.as_deref().map(str::to_owned))
+                .as_deref()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+        })
+        .filter(|context| !context.action_label.is_empty())
+}
+
+/// How history names an undo or redo of `step`: "Undo Rename", by whoever
+/// made the step, for the app and resource it was made in. The undo is the
+/// author's own step, so it stays theirs; without a known step it is the bare
+/// verb.
+fn inverse_message(
+    step: Option<&tilo_actions::ActionContext>,
+    direction: Direction,
+) -> Option<String> {
+    let key = match direction {
+        Direction::Undo => "host-undo",
+        Direction::Redo => "host-redo",
+    };
+    let action_label = match step {
+        Some(step) => {
+            let mut args = fluent::FluentArgs::new();
+            args.set("change", step.action_label.clone());
+            crate::i18n::I18nManager::lookup(&format!("{key}-named"), Some(&args))
+        }
+        None => crate::i18n::I18nManager::lookup_plain(key),
+    };
+    let context = tilo_actions::ActionContext {
+        action_label,
+        app: step.and_then(|step| step.app.clone()),
+        resource: step.and_then(|step| step.resource.clone()),
+        group: step.and_then(|step| step.group.clone()),
+        invoker: step.and_then(|step| step.invoker.clone()),
+        ..tilo_actions::ActionContext::default()
+    };
+    context.change_message()
 }
 
 impl UndoLog {
@@ -555,6 +625,7 @@ impl UndoLog {
                 instance_id,
                 undo_via: inverse.undo_via,
                 redo_via: inverse.redo_via,
+                step: None,
             },
         );
         if let Some(instance) = instance_id {
@@ -582,6 +653,7 @@ impl UndoLog {
         doc: &mut AutoCommit,
         entry: &UndoEntry,
         message: Option<String>,
+        named: Option<String>,
         registry: Option<&tilo_actions::ActionRegistry>,
     ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = doc.get_heads();
@@ -597,18 +669,20 @@ impl UndoLog {
         let history_message = if let Some(action) = via_action {
             if action.apply(doc).is_err() {
                 write_revert_patches(doc, &entry.after, &entry.before);
-                message
+                message.or(named)
             } else {
-                message.or_else(|| {
-                    entry
-                        .undo_via
-                        .as_ref()
-                        .and_then(history_message_for_encoded_action)
-                })
+                message
+                    .or_else(|| {
+                        entry
+                            .undo_via
+                            .as_ref()
+                            .and_then(history_message_for_encoded_action)
+                    })
+                    .or(named)
             }
         } else {
             write_revert_patches(doc, &entry.after, &entry.before);
-            message
+            message.or(named)
         };
         let _ = tilo_resource::history::commit_stamped_with_message(doc, history_message);
         let inverse_after = doc.get_heads();
@@ -650,7 +724,9 @@ impl UndoLog {
             return None;
         }
         let entry = self.undo_stack.remove(index);
-        let (before, after) = self.apply_inverse(doc, &entry, None, registry);
+        let step = step_context(doc, &entry, Direction::Undo);
+        let named = inverse_message(step.as_ref(), Direction::Undo);
+        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry);
         // Opposite stack: applying `redo_via` re-does the forward action;
         // applying `undo_via` again undoes that redo.
         push_history(
@@ -664,6 +740,7 @@ impl UndoLog {
                 instance_id: entry.instance_id,
                 undo_via: entry.redo_via.clone(),
                 redo_via: entry.undo_via.clone(),
+                step,
             },
         );
         self.bump();
@@ -783,7 +860,9 @@ impl UndoLog {
             return None;
         }
         let entry = self.redo_stack.remove(index);
-        let (before, after) = self.apply_inverse(doc, &entry, None, registry);
+        let step = step_context(doc, &entry, Direction::Redo);
+        let named = inverse_message(step.as_ref(), Direction::Redo);
+        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry);
         push_history(
             &mut self.undo_stack,
             UndoEntry {
@@ -795,6 +874,7 @@ impl UndoLog {
                 instance_id: entry.instance_id,
                 undo_via: entry.redo_via.clone(),
                 redo_via: entry.undo_via.clone(),
+                step,
             },
         );
         self.bump();
@@ -956,8 +1036,9 @@ impl UndoLog {
             instance_id,
             undo_via: None,
             redo_via: None,
+            step: None,
         };
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message, None);
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message, None, None);
         if inv_before == inv_after {
             return false;
         }
@@ -972,6 +1053,7 @@ impl UndoLog {
                 instance_id,
                 undo_via: None,
                 redo_via: None,
+                step: None,
             },
         );
         if let Some(instance) = instance_id {
@@ -2235,6 +2317,7 @@ mod tests {
                         instance_id: None,
                         undo_via: None,
                         redo_via: None,
+                        step: None,
                     },
                 );
             }
