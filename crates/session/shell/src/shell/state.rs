@@ -652,6 +652,13 @@ pub struct WorkspaceTree {
     /// Kept only in the device snapshot, never in a room document or peer offer.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub local_app_records: HashMap<TabId, LocalAppRecord>,
+    /// The Tilo package each tab's window was launched as, from the
+    /// launcher's authenticated launch record. Only these windows are Tilo
+    /// apps other devices open themselves; every other window is legacy and
+    /// stays hosted here. Device-local and persisted, so a restored window
+    /// keeps what it was launched as.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub package_launches: HashMap<TabId, String>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -688,6 +695,7 @@ impl Default for WorkspaceTree {
             continuation_file_references: HashMap::new(),
             native_document_tabs: HashMap::new(),
             local_app_records: HashMap::new(),
+            package_launches: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
             window_hosting: None,
@@ -1488,7 +1496,7 @@ impl WorkspaceTree {
             .unwrap_or_default();
         let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
             || ws.strips.clone(),
-            |hosting| hosting.published(&ws.strips),
+            |hosting| hosting.published(&ws.strips, &self.package_launches),
         );
         let room_str = room.to_string();
         let local_salt = self.local_salt();
@@ -6072,8 +6080,8 @@ mod automerge_foundation_tests {
         host.window_hosting = Some(WindowHosting {
             device: "ab".repeat(32),
             device_label: "Laptop".into(),
-            is_legacy: std::sync::Arc::new(|app: &str| !app.starts_with("so.tilo.")),
         });
+        host.remember_package_launch(native, "so.tilo.notes".into());
 
         ship(&mut host, &mut guest, room, 1);
 
