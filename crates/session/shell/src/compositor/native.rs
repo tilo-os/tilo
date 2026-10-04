@@ -896,6 +896,7 @@ fn pump_floating_surface_service(
     frame_builder: &mut FrameBuilder,
     capture: &mut CaptureExecutor,
     connection_ids: &mut HashMap<u64, Vec<String>>,
+    appearance: &mut crate::compositor::floating_service::AppearanceDelivery,
     outputs: &[Output],
     fallback_size: (u32, u32),
 ) -> bool {
@@ -904,6 +905,7 @@ fn pump_floating_surface_service(
     for event in service.drain() {
         match event {
             FloatingServiceEvent::Connected { connection, app_id } => {
+                appearance.connected(connection, &app_id);
                 service.send(
                     connection,
                     &ui::floating_surface::FloatingSurfaceHostMessage::DesktopBounds {
@@ -1200,6 +1202,7 @@ fn pump_floating_surface_service(
                 }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
+                appearance.disconnected(connection);
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
@@ -6792,6 +6795,7 @@ pub fn run() {
         }
     };
     let mut external_floating_ids: HashMap<u64, Vec<String>> = HashMap::new();
+    let mut window_appearances = crate::compositor::floating_service::AppearanceDelivery::default();
     let (system_audio, microphone) = crate::compositor::capture::recording_audio_availability();
     frame_builder.set_capture_audio_available(system_audio, microphone);
     if let Some(notice) = &state_notice {
@@ -7707,11 +7711,20 @@ pub fn run() {
                 &mut frame_builder,
                 &mut capture_executor,
                 &mut external_floating_ids,
+                &mut window_appearances,
                 backend.outputs(),
                 initial_size,
             )
         {
             force_first_paint = true;
+        }
+        // Each app window wears the temperature of the workspace it is in
+        // and the person's colour, told again whenever either moves.
+        if let Some(service) = floating_surface_service.as_ref() {
+            window_appearances.publish(
+                |app_id| frame_builder.window_appearance_for_app(app_id),
+                |connection, message| service.send(connection, message),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_toplevel_events(service, &mut state)

@@ -1,8 +1,0 @@
-# The copy ratchet for apps-diffmerge: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/diffmerge/src/app.rs middle_dot_join 4
-apps/diffmerge/src/doc.rs middle_dot_join 1
-apps/diffmerge/src/highlight.rs middle_dot_join 1
-apps/diffmerge/src/merge_view.rs middle_dot_join 6
-apps/diffmerge/src/samples.rs middle_dot_join 5

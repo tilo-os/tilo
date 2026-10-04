@@ -46,8 +46,8 @@
 //! ## Presentation is never an action
 //!
 //! Which connection is active, which table is selected, the current tab, the
-//! grid sort/scroll and the responsive sidebar flap are per-peer view state on
-//! the widget — presentation the recipe says must never be an action.
+//! table sort order and scroll position and whether the sidebar is shown are per-peer view state on
+//! the views — presentation the recipe says must never be an action.
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};

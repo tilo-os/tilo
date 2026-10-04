@@ -10,14 +10,14 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use tilo_automation::{
-    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, Condition, ResourceTarget,
-    Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
+    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, CheckErrorKind, Condition,
+    ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionParam, ParamType};
 
 use crate::grant;
-use crate::model::Draft;
+use crate::model::{Draft, step_at};
 
 /// The shortcut `draft` would save as, with the least grant it needs, as the
 /// checker and the save effect see it.
@@ -39,13 +39,114 @@ pub fn problems(
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     if let Err(errors) = check(&shortcut, catalog, &resolver) {
-        for CheckError { path, kind } in errors {
-            out.entry(path.as_str().to_owned())
+        for error in &errors {
+            out.entry(error.path.as_str().to_owned())
                 .or_default()
-                .push(kind.to_string());
+                .push(explain(error, &shortcut.steps, catalog));
         }
     }
     out
+}
+
+/// Every problem as a line for a list: where it is ("Step 2", "Result",
+/// "Shortcut") and what is wrong.
+#[must_use]
+pub fn problem_lines(steps: &[Step], problems: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (path, reasons) in problems {
+        let place = match path.as_str() {
+            "" => String::from("Shortcut"),
+            "output" => String::from("Result"),
+            path => step_at(steps, path)
+                .and_then(|step| step_number(steps, &step.id))
+                .map_or_else(|| String::from("A step"), |number| format!("Step {number}")),
+        };
+        lines.extend(reasons.iter().map(|reason| format!("{place}: {reason}")));
+    }
+    lines
+}
+
+/// What the checker found, in words for the person editing: the step is
+/// named by its number, a parameter by the label it has on the step.
+#[must_use]
+pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> String {
+    let step_label = |id: &str| {
+        step_number(steps, id)
+            .map_or_else(|| String::from("an earlier step"), |n| format!("step {n}"))
+    };
+    let here = step_at(steps, error.path.as_str());
+    match &error.kind {
+        CheckErrorKind::InvalidName { what, value } => {
+            format!("The {what} “{value}” may use only letters, digits, hyphens and underscores")
+        }
+        CheckErrorKind::MissingName => String::from("Give the shortcut a name"),
+        CheckErrorKind::DuplicateStep(_) => String::from("Two steps share the same name"),
+        CheckErrorKind::DuplicateInput(name) => format!("There are two inputs called {name}"),
+        CheckErrorKind::InvalidParam { name, reason } => {
+            format!("The input {name} is not valid: {reason}")
+        }
+        CheckErrorKind::UnknownInput(name) => format!("There is no input called {name}"),
+        CheckErrorKind::UnknownVariable(name) => {
+            format!("The variable {name} is not set before this step")
+        }
+        CheckErrorKind::UnknownStep(_) => {
+            String::from("A value comes from a step that does not run before this one")
+        }
+        CheckErrorKind::NoOutput(id) => step_number(steps, id).map_or_else(
+            || String::from("An earlier step gives no result to use"),
+            |number| format!("Step {number} gives no result to use"),
+        ),
+        CheckErrorKind::UnknownAction { .. } => {
+            String::from("The app no longer offers this action")
+        }
+        CheckErrorKind::UnknownArgument { name } => {
+            format!("This action does not take {name}")
+        }
+        CheckErrorKind::MissingArgument { name } => {
+            let label = here
+                .map(|step| params_of(step, catalog))
+                .unwrap_or_default()
+                .into_iter()
+                .find(|param| param.name.as_ref() == name.as_str())
+                .map(|param| param.description.to_string())
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| name.clone());
+            format!("{label} needs a value")
+        }
+        CheckErrorKind::Incompatible(reason) => capitalised(reason),
+        CheckErrorKind::BadPointer { step, .. } => format!(
+            "This points at a part of the result of {} that does not exist",
+            step_label(step)
+        ),
+        CheckErrorKind::BadTemplate(reason) => format!("The text is not valid: {reason}"),
+        CheckErrorKind::SecretInTemplate(what) => {
+            format!("Text cannot include {what}, which is secret")
+        }
+        CheckErrorKind::NotIterable(what) => format!("Repeat needs a list, not {what}"),
+        CheckErrorKind::OutsideGrant { app_id, .. } => {
+            format!(
+                "This shortcut is not allowed to act in {}",
+                app_label(app_id)
+            )
+        }
+        CheckErrorKind::UnresolvableShortcut => {
+            String::from("Choose exactly which shortcut this step runs")
+        }
+        CheckErrorKind::Recursion { .. } => {
+            String::from("This shortcut would end up running itself")
+        }
+        CheckErrorKind::UnusedConsent { .. } => {
+            String::from("A saved permission matches none of the steps")
+        }
+    }
+}
+
+/// `text` with its first letter in upper case.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// One value a parameter may be bound to, as the editor offers it.
@@ -67,8 +168,8 @@ pub fn choices(
     let shortcut = candidate(draft, catalog);
     binding_options(&shortcut, catalog, &step_path(path), param)
         .into_iter()
-        .map(|BindingOption { binding, describes }| Choice {
-            label: format!("{} · {describes}", describe(&binding)),
+        .map(|BindingOption { binding, .. }| Choice {
+            label: describe(&binding, &draft.program.0.steps),
             binding,
         })
         .collect()
@@ -91,21 +192,104 @@ pub fn step_path(path: &str) -> StepPath {
     out
 }
 
-/// How a binding reads in the editor.
+/// How a binding reads in the editor. `steps` is the program it belongs to,
+/// so a step's result is named by the position the editor shows.
 #[must_use]
-pub fn describe(binding: &Binding) -> String {
+pub fn describe(binding: &Binding, steps: &[Step]) -> String {
     match binding {
         Binding::Literal(Value::String(text)) => format!("“{text}”"),
         Binding::Literal(value) => value.to_string(),
         Binding::Input(name) => format!("input {name}"),
         Binding::Var(name) => format!("variable {name}"),
-        Binding::StepOutput { step, pointer } if pointer.is_empty() => {
-            format!("result of {step}")
+        Binding::StepOutput { step, pointer } => describe_result(step, pointer, steps),
+        Binding::Template(text) => describe_template(text, steps),
+    }
+}
+
+/// The position (from 1) the editor shows for the step with `id`: steps are
+/// numbered in reading order, branches included.
+#[must_use]
+pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
+    fn walk(steps: &[Step], id: &str, seen: &mut usize) -> Option<usize> {
+        for step in steps {
+            *seen += 1;
+            if step.id == id {
+                return Some(*seen);
+            }
+            let found = match &step.kind {
+                StepKind::If {
+                    then, otherwise, ..
+                } => walk(then, id, seen).or_else(|| walk(otherwise, id, seen)),
+                StepKind::ForEach { body, .. } => walk(body, id, seen),
+                StepKind::Invoke { .. }
+                | StepKind::SetVar { .. }
+                | StepKind::Ask { .. }
+                | StepKind::Ai { .. } => None,
+            };
+            if found.is_some() {
+                return found;
+            }
         }
-        Binding::StepOutput { step, pointer } => {
-            format!("{} of {step}", pointer.trim_start_matches('/'))
-        }
-        Binding::Template(text) => format!("text “{text}”"),
+        None
+    }
+    walk(steps, id, &mut 0)
+}
+
+/// What a step's result (or a field of it) is called: "result of step 2",
+/// "titles from step 2", "item 1 of titles from step 2".
+fn describe_result(step: &str, pointer: &str, steps: &[Step]) -> String {
+    let place = step_number(steps, step)
+        .map_or_else(|| format!("“{step}”"), |number| format!("step {number}"));
+    let fields: Vec<String> = pointer
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .rev()
+        .map(|segment| {
+            segment.parse::<usize>().map_or_else(
+                |_| segment.to_owned(),
+                |index| format!("item {}", index + 1),
+            )
+        })
+        .collect();
+    if fields.is_empty() {
+        format!("result of {place}")
+    } else {
+        format!("{} from {place}", fields.join(" of "))
+    }
+}
+
+/// A template with its `{{…}}` placeholders written the way the editor
+/// names the values they stand for.
+fn describe_template(text: &str, steps: &[Step]) -> String {
+    let mut written = String::new();
+    let mut rest = text;
+    let mut labels = Vec::new();
+    while let Some((before, after)) = rest.split_once("{{") {
+        let Some((inner, tail)) = after.split_once("}}") else {
+            break;
+        };
+        written.push_str(before);
+        let inner = inner.trim();
+        let label = if let Some(name) = inner.strip_prefix("input.") {
+            format!("input {name}")
+        } else if let Some(name) = inner.strip_prefix("var.") {
+            format!("variable {name}")
+        } else if let Some(reference) = inner.strip_prefix("step.") {
+            let (id, pointer) = reference.split_once('/').unwrap_or((reference, ""));
+            describe_result(id, pointer, steps)
+        } else {
+            inner.to_owned()
+        };
+        written.push('[');
+        written.push_str(&label);
+        written.push(']');
+        labels.push(label);
+        rest = tail;
+    }
+    written.push_str(rest);
+    match labels.as_slice() {
+        [only] if written == format!("[{only}]") => only.clone(),
+        _ => format!("text “{written}”"),
     }
 }
 
@@ -178,60 +362,67 @@ pub fn params_of(step: &Step, catalog: &ActionCatalog) -> Vec<ActionParam> {
         .unwrap_or_default()
 }
 
-/// How a step reads as a heading.
+/// How a step reads as a heading. `steps` is the program it is in.
 #[must_use]
-pub fn title(step: &Step, catalog: &ActionCatalog) -> String {
+pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
+    let say = |binding: &Binding| describe(binding, steps);
     match &step.kind {
-        StepKind::Invoke { app_id, action, .. } => row_for(step, catalog)
+        StepKind::Invoke { action, .. } => row_for(step, catalog)
             .and_then(|row| row.action.as_ref())
             .map_or_else(
-                || format!("{} · {action}", app_label(app_id)),
-                |descriptor| {
-                    format!(
-                        "{} · {} · {}",
-                        app_label(app_id),
-                        descriptor.resource_label,
-                        descriptor.action_label
-                    )
-                },
+                || action.clone(),
+                |descriptor| descriptor.action_label.clone(),
             ),
-        StepKind::If { cond, .. } => format!("If {}", describe_condition(cond)),
+        StepKind::If { cond, .. } => format!("If {}", describe_condition(cond, steps)),
         StepKind::ForEach { items, item, .. } => {
-            format!("Repeat with each {item} in {}", describe(items))
+            format!("Repeat with each {item} in {}", say(items))
         }
-        StepKind::SetVar { name, value } => format!("Set {name} to {}", describe(value)),
+        StepKind::SetVar { name, value } => format!("Set {name} to {}", say(value)),
         StepKind::Ask { param } => format!("Ask for {}", param.description),
-        StepKind::Ai { transform, input } => {
-            let what = match transform {
-                AiTransform::Summarise => "Summarise".to_owned(),
-                AiTransform::Extract { .. } => "Extract from".to_owned(),
-                AiTransform::Classify { choices } => {
-                    format!("Classify as {} ·", choices.join(" / "))
-                }
-                AiTransform::Freeform { prompt } => format!("Ask the agent “{prompt}” about"),
-            };
-            format!("{what} {}", describe(input))
-        }
+        StepKind::Ai { transform, input } => match transform {
+            AiTransform::Summarise => format!("Summarise {}", say(input)),
+            AiTransform::Extract { .. } => format!("Extract from {}", say(input)),
+            AiTransform::Classify { choices } => {
+                format!("Classify {} as {}", say(input), choices.join(" or "))
+            }
+            AiTransform::Freeform { prompt } => {
+                format!("Ask the agent “{prompt}” about {}", say(input))
+            }
+        },
     }
 }
 
-fn describe_condition(condition: &Condition) -> String {
+/// Where an action step acts: "Inbox in Notes". `None` for other steps.
+#[must_use]
+pub fn context(step: &Step, catalog: &ActionCatalog) -> Option<String> {
+    let StepKind::Invoke { app_id, .. } = &step.kind else {
+        return None;
+    };
+    Some(
+        row_for(step, catalog)
+            .and_then(|row| row.action.as_ref())
+            .map_or_else(
+                || format!("{} no longer offers this action", app_label(app_id)),
+                |descriptor| format!("{} in {}", descriptor.resource_label, app_label(app_id)),
+            ),
+    )
+}
+
+fn describe_condition(condition: &Condition, steps: &[Step]) -> String {
+    let join = |all: &[Condition], word: &str| {
+        all.iter()
+            .map(|condition| describe_condition(condition, steps))
+            .collect::<Vec<_>>()
+            .join(word)
+    };
     match condition {
-        Condition::Truthy(binding) => format!("{} is set", describe(binding)),
+        Condition::Truthy(binding) => format!("{} is set", describe(binding, steps)),
         Condition::Equals { left, right } => {
-            format!("{} is {}", describe(left), describe(right))
+            format!("{} is {}", describe(left, steps), describe(right, steps))
         }
-        Condition::Not(inner) => format!("not ({})", describe_condition(inner)),
-        Condition::All(all) => all
-            .iter()
-            .map(describe_condition)
-            .collect::<Vec<_>>()
-            .join(" and "),
-        Condition::Any(any) => any
-            .iter()
-            .map(describe_condition)
-            .collect::<Vec<_>>()
-            .join(" or "),
+        Condition::Not(inner) => format!("not ({})", describe_condition(inner, steps)),
+        Condition::All(all) => join(all, " and "),
+        Condition::Any(any) => join(any, " or "),
     }
 }
 
@@ -245,11 +436,7 @@ pub fn app_label(app_id: &str) -> String {
         if index > 0 {
             out.push(' ');
         }
-        let mut chars = word.chars();
-        if let Some(first) = chars.next() {
-            out.extend(first.to_uppercase());
-            out.push_str(chars.as_str());
-        }
+        out.push_str(&capitalised(word));
     }
     if out.is_empty() {
         app_id.to_owned()
@@ -288,6 +475,11 @@ pub fn picker(catalog: &ActionCatalog) -> Vec<AppGroup> {
                             param_type_name(param.ty)
                         )
                     })
+                    .collect(),
+                needs: descriptor
+                    .params
+                    .iter()
+                    .map(|param| param.name.to_string())
                     .collect(),
             });
     }
@@ -328,6 +520,8 @@ pub struct Offer {
     pub label: String,
     /// `name: type` per parameter, `name?` when optional.
     pub params: Vec<String>,
+    /// The name of each parameter, in order.
+    pub needs: Vec<String>,
 }
 
 impl Offer {

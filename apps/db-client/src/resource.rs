@@ -111,6 +111,18 @@ impl ResourceApp for DbClientShell {
     fn view(cx: &mut ViewCx<DbClient>) -> Element {
         cx.surface(DbClientApp::new())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "data",
+            "structure",
+            "wide",
+            "connect",
+            "confirm",
+            "error",
+            "empty",
+        ]
+    }
 }
 
 impl ResourceSurface<DbClient> for DbClientApp {
@@ -120,6 +132,34 @@ impl ResourceSurface<DbClient> for DbClientApp {
 
     fn attach(&mut self, cx: SurfaceCx<DbClient>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    /// A capture is the bundled sample database (the live app fabricates
+    /// nothing), staged on the tab and dialog the scenario names; `empty` is
+    /// the live app as a fresh machine shows it.
+    fn stage(&mut self, scenario: Option<&str>) {
+        if scenario == Some("empty") {
+            return;
+        }
+        self.enter_demo();
+        match scenario {
+            Some("data") => {
+                self.open_table("albums");
+                self.show_tab(crate::session::MainTab::Data);
+            }
+            Some("structure") => {
+                self.open_table("tracks");
+                self.show_tab(crate::session::MainTab::Structure);
+            }
+            Some("wide") => self.run_starter_query("Track listing"),
+            Some("connect") => self.open_connect_dialog(),
+            Some("confirm") => self.confirm_statement("DROP TABLE albums;"),
+            Some("error") => self.fail_connecting(
+                "Production analytics",
+                "Connection refused: the server at db.internal:5432 did not answer.",
+            ),
+            _ => {}
+        }
     }
 }
 

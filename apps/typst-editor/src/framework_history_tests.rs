@@ -25,8 +25,11 @@ fn verify_restored(doc: &AutoCommit) {
     );
 }
 
+/// The shared conformance helpers open History through the window's own bar,
+/// which the window draws only when the app has no History button of its own;
+/// the app's toolbar button is exercised separately below.
 fn test_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(crate::app::TypstApp::from_library(None))
+    Box::new(crate::app::TypstApp::from_library(None).without_history_button())
 }
 
 #[test]
@@ -189,9 +192,14 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 }],
             )
             .unwrap();
+            // The managed host opens History from its own bar, which the window
+            // draws only for an app without a History button of its own.
+            drop(root);
+            let managed: Box<dyn ui::widget::Widget> =
+                Box::new(crate::app::TypstApp::new().without_history_button());
             let mut driver = ui::headless::Driver::from_managed_root(
                 state,
-                ManagedRoot::new(root, reg),
+                ManagedRoot::new(managed, reg),
                 (900, 700),
             )
             .unwrap();

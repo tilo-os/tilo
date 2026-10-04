@@ -104,8 +104,8 @@ pub struct HistoryHost {
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
     open_button: bool,
-    /// The live app shows a `history_button` in its own toolbar, so this
-    /// toolbar draws none while History is closed.
+    /// The live app draws the window's header row, which holds the History
+    /// control while History is closed, so this toolbar draws none then.
     app_presents_button: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
@@ -174,6 +174,38 @@ impl HistoryHost {
         self.open
     }
 
+    /// The window's History door as this History serves it: the same
+    /// Open, Open at and Hide as the standalone door, without session rows.
+    pub(crate) fn door_resource(&self) -> tilo_actions::Resource {
+        crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
+    }
+
+    /// Run one History door operation resolved against [`Self::door_resource`]
+    /// (a header History control, the History shortcut): it opens, opens at
+    /// a change, or closes exactly as this History's own button does.
+    pub(crate) fn invoke_door(
+        &mut self,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, decode_entry};
+        if encoded.type_id != HISTORY_OPERATION {
+            return Err("Unsupported History operation".into());
+        }
+        match serde_json::from_slice(&encoded.payload) {
+            Ok(HistoryCommand::Open) if self.request_open() => Ok(()),
+            Ok(HistoryCommand::OpenAt { entry })
+                if decode_entry(&entry).is_ok_and(|entry| self.request_open_at(entry)) =>
+            {
+                Ok(())
+            }
+            Ok(HistoryCommand::Hide) => {
+                self.request_close();
+                Ok(())
+            }
+            _ => Err("Unsupported History operation".into()),
+        }
+    }
+
     /// The changes the timeline would list now, in causal order, whether
     /// or not History is open.
     #[cfg(any(feature = "native", test))]
@@ -224,14 +256,10 @@ impl HistoryHost {
             _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
-        let clicked = request.clone();
         let toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
-            .with_intrinsic_height()
-            .push(Box::new(Row::new().push(Box::new(
-                Button::new("history-open", "History", None).on_click(move || clicked.set(true)),
-            ))));
+            .with_intrinsic_height();
         let mut host = Self {
             enclosing_owner: None,
             embedded: false,
@@ -1272,10 +1300,15 @@ impl HistoryHost {
             if (self.open_button && !self.app_presents_button) || self.open {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
-                    Row::new().push(Box::new(
-                        Button::new("history-open", "history-mode-title", None)
+                    Row::new()
+                        .with_justify(taffy::JustifyContent::FlexEnd)
+                        .push(Box::new(
+                            crate::standalone_history_host::history_control_face(
+                                "history-open",
+                                crate::widget::window_header::HistoryControl::of(self.open),
+                            )
                             .on_click(move || clicked.set(true)),
-                    )),
+                        )),
                 ));
             }
             for review in self.pending_controls.review() {

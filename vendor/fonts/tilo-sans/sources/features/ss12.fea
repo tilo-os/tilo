@@ -1,7 +1,0 @@
-feature ss12 {
-featureNames {
-  name "Alternate Currency";
-};
-sub cent by cent.ss12;
-sub dollar by dollar.ss12;
-} ss12;

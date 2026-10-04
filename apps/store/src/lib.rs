@@ -9,11 +9,12 @@
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
 //!     Actions cross the capability-scoped app-host service.
 //!
-//! Filter chips (`All | Tilo | Flatpak | Installed`), category chips and a
-//! search box sit above a scrolling list of cards. A detail sheet slides
-//! in from the right when a card is clicked. Selection, filters and the
-//! search string all live in the CRDT so the UI is snapshot-restorable
-//! (undo/redo) exactly like the other native apps.
+//! The catalogue groups apps by the decision they invite (an update, already
+//! on the device, new) in a scrolling grid of cards, and a details page opens
+//! from a card. People search through the platform search, which the Store
+//! feeds with its catalogue and with source, category and status facets.
+//! Filters live in the window; moderation drafts live in the shared document
+//! so they are snapshot-restorable (undo/redo) like the other native apps.
 //!
 //! Module map:
 //!
@@ -27,9 +28,8 @@
 //!     one [`StoreItem`] stream.
 //!   * [`actions`]         — dispatches Add / Install / Remove via app-host.
 //!   * [`app`]             — the root `StoreApp` widget.
-//!   * [`shots`]           — headless `--shots` renderer.
-//!   * [`widgets`]         — small ui-toolkit compositions shared across
-//!     the surface (cards, filter chips, etc).
+//!   * [`shots`]           — the fixture catalogue and the capture scenarios.
+//!   * [`widgets`]         — the catalogue card and the app icon.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot

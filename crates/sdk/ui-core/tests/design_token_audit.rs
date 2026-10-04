@@ -532,7 +532,11 @@ fn launchers_build_on_the_shared_launch_specs() {
                 continue;
             }
             let source = fs::read_to_string(&main).expect("app main is readable");
+            // `launch::run_or_exit` takes only a `&LaunchSpec`, so calling it
+            // is the shared launcher even when the spec comes from a library
+            // function rather than being named here.
             let launched = source.contains("LaunchSpec")
+                || source.contains("launch::run_or_exit(")
                 || FRAMEWORK_LAUNCHERS
                     .iter()
                     .any(|entry| source.contains(entry));
