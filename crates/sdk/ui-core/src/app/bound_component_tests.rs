@@ -591,6 +591,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let context = HostContext::prepare(
@@ -896,6 +897,7 @@ impl ActionFixture {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create,
             };
             let target = if shared && !bindings.is_empty() {

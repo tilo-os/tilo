@@ -6,10 +6,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use tilo_actions::{ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation};
+use tilo_actions::{
+    ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation,
+    PermissionRequirement,
+};
 use tilo_resource::{Doc, Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
+use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
 
 /// Submits a view's edits. Cloneable; clones share one queue.
 ///
@@ -58,6 +62,14 @@ pub struct Dispatcher<R: Resource> {
     /// The invocations of the open group, and how many groups are open.
     group: Rc<RefCell<(usize, Vec<Invoke<R>>)>>,
     read_only: LocalState<bool>,
+    /// The participant's permissions as the host keeps them, for an action
+    /// that needs less than writing (a reply a commenter may add) or more.
+    /// Absent outside a host: a past version, which nobody edits, or a
+    /// test's detached dispatcher, which may do what writing allows.
+    permissions: Rc<RefCell<Option<LivePermissions>>>,
+    /// What applying an action needs: the resource's own
+    /// [`Resource::permission`], or for a child its parent's action's.
+    permission_of: PermissionOf<R>,
     refused: LocalState<Option<Refused>>,
     host: Rc<RefCell<ui_core::ActionHost>>,
     /// Applies one immediate action: the resource's own, or for a child
@@ -83,6 +95,9 @@ pub struct Dispatcher<R: Resource> {
     marker: std::marker::PhantomData<fn(R)>,
 }
 
+/// What applying one action needs.
+type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirement>;
+
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
@@ -105,6 +120,8 @@ impl<R: Resource> Clone for Dispatcher<R> {
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
+            permissions: Rc::clone(&self.permissions),
+            permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
             submit_now: Rc::clone(&self.submit_now),
@@ -133,6 +150,8 @@ impl<R: Resource> Dispatcher<R> {
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
+            permissions: Rc::default(),
+            permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
             host: Rc::default(),
             submit_now: Rc::new(|host, doc, action, context| {
@@ -181,6 +200,60 @@ impl<R: Resource> Dispatcher<R> {
         self.read_only.clone()
     }
 
+    /// Follow the participant's permissions as the host keeps them.
+    pub(crate) fn follow(&self, permissions: LivePermissions) {
+        *self.permissions.borrow_mut() = Some(permissions);
+    }
+
+    /// The same dispatcher deciding by `permissions`, for a test of a
+    /// surface whose participant may only comment, or only view.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_permissions(self, permissions: LivePermissions) -> Self {
+        self.follow(permissions);
+        self.refresh_read_only();
+        self
+    }
+
+    /// Whether the participant may, as of now, do what needs `requirement`:
+    /// writing for most edits, commenting for a reply, administering for a
+    /// change of who may do what.
+    pub fn may(&self, requirement: PermissionRequirement) -> bool {
+        let verb = match requirement {
+            PermissionRequirement::None => return true,
+            PermissionRequirement::Read => Verb::Read,
+            PermissionRequirement::Comment => Verb::Comment,
+            PermissionRequirement::Write => Verb::Write,
+            PermissionRequirement::Invite => Verb::Invite,
+            PermissionRequirement::Admin => Verb::Admin,
+        };
+        match self.permissions.borrow().as_ref() {
+            Some(permissions) => permissions.check(&PermissionScope::app(self.app_id, verb)),
+            // A detached dispatcher may what writing allows; a past version
+            // nothing.
+            None => !self.read_only.get(),
+        }
+    }
+
+    /// Whether the participant may apply `action`
+    /// ([`Resource::permission`]).
+    pub fn may_apply(&self, action: &R::Action) -> bool {
+        self.may((self.permission_of)(action))
+    }
+
+    /// Re-read whether the participant may write. Returns whether it
+    /// changed.
+    pub(crate) fn refresh_read_only(&self) -> bool {
+        let writes =
+            self.permissions.borrow().as_ref().map(|permissions| {
+                permissions.check(&PermissionScope::app(self.app_id, Verb::Write))
+            });
+        match writes {
+            Some(writes) => self.set_read_only(!writes),
+            None => false,
+        }
+    }
+
     /// Record a change of the participant's permissions. Returns whether
     /// anything changed.
     pub(crate) fn set_read_only(&self, read_only: bool) -> bool {
@@ -200,6 +273,17 @@ impl<R: Resource> Dispatcher<R> {
 
     fn view_only() -> String {
         format!("this {} is open to view only", R::LABEL.to_lowercase())
+    }
+
+    /// Why an edit needing `requirement` was refused.
+    fn not_allowed(requirement: PermissionRequirement) -> String {
+        match requirement {
+            PermissionRequirement::Write => Self::view_only(),
+            PermissionRequirement::Comment => {
+                format!("you may not comment on this {}", R::LABEL.to_lowercase())
+            }
+            _ => format!("you may not do this to this {}", R::LABEL.to_lowercase()),
+        }
     }
 
     /// Record that the door refused `action`, submitted here.
@@ -241,7 +325,7 @@ impl<R: Resource> Dispatcher<R> {
             self.submit(invoke);
             return;
         }
-        if self.read_only() {
+        if !self.may_invoke(&invoke) {
             self.refuse(invoke.id, Self::view_only());
             return;
         }
@@ -260,6 +344,24 @@ impl<R: Resource> Dispatcher<R> {
             address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
             arguments: invoke.arguments,
         });
+    }
+
+    /// Whether the participant may take `invoke`: what its declaration, or
+    /// the typed value it applies, needs. One this resource does not declare
+    /// (an edit bound to a surface's view state) is left to the host, which
+    /// checks what its published action needs.
+    fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
+        if invoke.id == tilo_resource::APPLY {
+            return match invoke.build(0) {
+                Ok(action) => self.may_apply(&action),
+                Err(_) => !self.read_only(),
+            };
+        }
+        match R::declarations().iter().find(|decl| decl.id == invoke.id) {
+            Some(decl) => self.may(decl.permission),
+            None if invoke.is_group() => !self.read_only(),
+            None => self.may(PermissionRequirement::Read),
+        }
     }
 
     /// Invoke an action published on a nested resource, such as one item of
@@ -361,8 +463,11 @@ impl<R: Resource> Dispatcher<R> {
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
-        if self.read_only() {
-            return Err(ActionError::Refused(Self::view_only()));
+        if !self.may_apply(action) {
+            return Err(ActionError::Refused(Self::not_allowed((self
+                .permission_of)(
+                action
+            ))));
         }
         // History names the resource and who edited it even when the
         // surface's context does not.
@@ -419,6 +524,9 @@ impl<R: Resource> Dispatcher<R> {
         wrap: impl Fn(C::Action) -> R::Action + 'static,
     ) -> Dispatcher<C> {
         let parent = Rc::clone(&self.submit_now);
+        let parent_permission = Rc::clone(&self.permission_of);
+        let wrap = Rc::new(wrap);
+        let wrap_for_permission = Rc::clone(&wrap);
         Dispatcher {
             app_id: self.app_id,
             me: self.me.clone(),
@@ -426,6 +534,10 @@ impl<R: Resource> Dispatcher<R> {
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
             read_only: self.read_only.clone(),
+            permissions: Rc::clone(&self.permissions),
+            permission_of: Rc::new(move |action: &C::Action| {
+                parent_permission(&wrap_for_permission(action.clone()))
+            }),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the

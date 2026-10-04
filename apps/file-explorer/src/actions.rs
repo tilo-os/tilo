@@ -29,6 +29,7 @@ mod tests {
 
     use crate::FileExplorerWidget;
     use crate::command::FileCommand;
+    use crate::resource::FileExplorer;
 
     /// Interaction state, filesystem operations and preferences never materialise in the shared document; resources expose typed local operations.
     #[test]
@@ -78,30 +79,34 @@ mod tests {
             );
         }
 
-        // --- phase: resources_expose_typed_local_operations_without_crdt_actions ---
+        // --- phase: the_window_publishes_only_live_rows ---
         {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
             let mut files = FileExplorerWidget::new();
+            files.navigate(directory.path().to_path_buf());
             let mut document = AutoCommit::new();
             files.sync(&mut document, &ROOT);
 
             let resources = ui::resources::resources(&files, &document);
-            assert_eq!(resources.len(), 1, "one current-folder root");
-            let folder = &resources[0];
-            assert_eq!(folder.kind, "files.folder");
-            let action_ids: Vec<_> = folder
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            for expected in ["refresh", "new-folder", "paste"] {
-                assert!(
-                    action_ids.contains(&expected),
-                    "missing {expected}: {action_ids:?}"
-                );
-            }
             assert!(
-                !action_ids.contains(&"navigate"),
-                "a raw local path is not a durable action identity"
+                resources
+                    .iter()
+                    .all(|resource| resource.kind != "files.folder"),
+                "the folder is the resource's publication, not the window's"
+            );
+            assert!(
+                resources
+                    .iter()
+                    .any(|resource| resource.label == "notes.txt"),
+                "the listing's rows are the window's"
+            );
+            assert!(
+                resources
+                    .iter()
+                    .flat_map(|resource| &resource.actions)
+                    .all(|action| action.kind != ui::tilo_actions::OperationKind::Document),
+                "a live row never changes the document"
             );
             assert!(ui::undo::take_committed_action(&mut files).is_none());
         }
@@ -110,22 +115,43 @@ mod tests {
     /// What Files publishes while showing a real folder holding a file, synced
     /// against `document` exactly as the host drives it.
     fn folder_resources(document: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        use ui::tilo_resource::Resource as _;
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::new();
         files.navigate(directory.path().to_path_buf());
         let mut synced = document.clone();
         files.sync(&mut synced, &ROOT);
-        ui::resources::resources(&files, &synced)
+        let state = FileExplorer::read(&synced).unwrap();
+        let mut resources = vec![ui::tilo_resource::publish::<FileExplorer>(
+            FileExplorer::KIND,
+            "Files",
+            &state,
+        )];
+        resources.extend(ui::resources::resources(&files, &synced));
+        resources
     }
 
-    // Files has no replayable CRDT actions (see the module docs): its surface
-    // is typed local operations only, so the registry is empty and the sweep
-    // checks the surface and its protocol.
+    fn seeded() -> AutoCommit {
+        use ui::tilo_resource::Resource as _;
+        let mut document = AutoCommit::new();
+        FileExplorer::initialize(&mut document).unwrap();
+        document
+    }
+
+    fn registry() -> ui::tilo_actions::ActionRegistry {
+        use ui::tilo_resource::Resource as _;
+        let mut registry = ui::tilo_actions::ActionRegistry::new();
+        FileExplorer::register(&mut registry);
+        registry
+    }
+
+    // The resource's publication (its places and the folder-wide work) and
+    // the window's live rows, as the palette sees them together.
     ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
+        seed: seeded(),
+        registry: registry(),
         resources: |document| folder_resources(document),
-        palette: ["Refresh folder", "New folder", "Sort by name"],
+        palette: ["Refresh folder", "Add to Favourites", "Sort by name"],
     }
 }

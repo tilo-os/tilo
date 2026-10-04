@@ -12,6 +12,7 @@ use tilo_app::prelude::*;
 pub struct Memo {
     pub title: String,
     pub lines: Collection<String>,
+    pub remarks: Collection<String>,
 }
 
 #[resource(kind = "test.memo", label = "Memo")]
@@ -27,12 +28,19 @@ impl Memo {
     pub fn add_line(&mut self, cx: &mut ActionCx, line: String) {
         self.lines.push(cx.id(), line);
     }
+
+    /// Remark on the memo: someone who may only comment may.
+    #[action(permission = "comment")]
+    pub fn remark(&mut self, cx: &mut ActionCx, remark: String) {
+        self.remarks.push(cx.id(), remark);
+    }
 }
 
 type Changes = Rc<RefCell<Vec<bool>>>;
 
 thread_local! {
     static PROBE_CHANGES: RefCell<Option<Changes>> = const { RefCell::new(None) };
+    static PROBE_DISPATCHER: RefCell<Option<Dispatcher<Memo>>> = const { RefCell::new(None) };
 }
 
 struct MemoApp;
@@ -102,8 +110,9 @@ impl Widget for AccessProbe {
 impl ResourceSurface<Memo> for AccessProbe {
     fn present(&mut self, _: &Rc<Memo>) {}
 
-    fn attach(&mut self, _: SurfaceCx<Memo>) {
+    fn attach(&mut self, cx: SurfaceCx<Memo>) {
         PROBE_CHANGES.with(|probe| *probe.borrow_mut() = Some(self.changes.clone()));
+        PROBE_DISPATCHER.with(|probe| *probe.borrow_mut() = Some(cx.dispatcher()));
     }
 
     fn read_only_changed(&mut self, read_only: bool) {
@@ -148,4 +157,37 @@ fn a_role_change_takes_effect_while_the_app_runs() {
     app.harness().type_text("Groceries");
     assert_eq!(app.state().title, "Groceries");
     assert_eq!(app.state().lines.len(), 2);
+}
+
+#[test]
+fn a_commenter_may_take_the_actions_that_need_only_commenting() {
+    let mut app = TestApp::<MemoApp>::new().unwrap();
+    let dispatcher = PROBE_DISPATCHER
+        .with(|probe| probe.borrow().clone())
+        .unwrap();
+    app.set_role(tilo_app::Role::Commenter);
+    assert!(dispatcher.read_only(), "a commenter may not write");
+
+    app.invoke(Memo::REMARK.with("looks good".into()))
+        .expect("a commenter remarks through the door");
+    assert!(
+        app.invoke(Memo::ADD_LINE.with("sneaky".into())).is_err(),
+        "but adds no line"
+    );
+    assert_eq!(app.state().remarks.len(), 1);
+    assert!(app.state().lines.is_empty());
+
+    // A surface asks the dispatcher what this participant may apply, and an
+    // immediate edit follows the action's own level.
+    let remark = Memo::REMARK.with("typed".into()).build(0).unwrap();
+    let line = Memo::ADD_LINE.with("typed".into()).build(0).unwrap();
+    assert!(dispatcher.may_apply(&remark));
+    assert!(!dispatcher.may_apply(&line));
+    assert!(dispatcher.may(PermissionRequirement::Comment));
+    assert!(!dispatcher.may(PermissionRequirement::Write));
+
+    // A viewer may do neither.
+    app.set_role(tilo_app::Role::Viewer);
+    assert!(app.invoke(Memo::REMARK.with("no".into())).is_err());
+    assert!(!dispatcher.may_apply(&remark));
 }

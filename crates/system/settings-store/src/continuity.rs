@@ -134,6 +134,7 @@ policies! {
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
+        "tilo.default_apps.handlers",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
     ],

@@ -59,11 +59,6 @@ pub struct Editor {
     route_app_id: String,
 }
 
-/// Whether a snapshot is a document with blocks in it.
-fn has_document_schema(doc: &AutoCommit) -> bool {
-    tilo_doc::model::open(doc, &automerge::ROOT).is_ok()
-}
-
 impl Editor {
     /// A fresh, unbound document of `contract`'s kind, as `author`. Used by
     /// tests; a live agent always starts from a peer's snapshot.
@@ -241,13 +236,9 @@ impl Editor {
     /// arrive picks whichever app answered first. An instruction addressed
     /// to us by name is the one signal in the content that settles it.
     pub fn is_addressed_to(bytes: &[u8], name: &str) -> bool {
-        let Ok(doc) = AutoCommit::load(bytes) else {
+        let Some(snapshot) = tilo_doc::model::snapshot_of(bytes) else {
             return false;
         };
-        let Ok(c) = tilo_doc::model::open(&doc, &automerge::ROOT) else {
-            return false;
-        };
-        let snapshot = tilo_doc::model::materialize(&doc, &c);
         let blocks = crate::plan::blocks(&snapshot);
         crate::plan::find_addressed(&blocks, name).is_some()
     }
@@ -328,6 +319,6 @@ impl Editor {
     /// Whether `bytes` are a document with blocks in it: what a page the
     /// agent is invited to looks like before any route says whose it is.
     pub fn looks_like_a_document(bytes: &[u8]) -> bool {
-        AutoCommit::load(bytes).is_ok_and(|doc| has_document_schema(&doc))
+        tilo_doc::model::snapshot_of(bytes).is_some()
     }
 }

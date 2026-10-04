@@ -510,6 +510,16 @@ impl Resource for RichText {
     type State = RichTextState;
     type Action = RichTextAction;
 
+    /// A comment or a reply needs only the right to comment.
+    fn permission(action: &RichTextAction) -> tilo_resource::PermissionRequirement {
+        match action {
+            RichTextAction::AddComment { .. } | RichTextAction::ReplyToComment { .. } => {
+                tilo_resource::PermissionRequirement::Comment
+            }
+            _ => tilo_resource::PermissionRequirement::Write,
+        }
+    }
+
     fn read(doc: &Doc) -> Result<RichTextState, ModelError> {
         Self::read_under(doc, &automerge::ROOT)
     }

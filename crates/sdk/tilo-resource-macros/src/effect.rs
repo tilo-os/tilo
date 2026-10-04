@@ -9,17 +9,20 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 
 /// A field's `#[param(…)]`: its description, after `secret,` when the
 /// argument is a secret (an invite, a password) the host keeps out of logs,
-/// history and confirmations.
+/// history and confirmations, and then `choices = EXPR` when the values it
+/// takes are a fixed list (any expression yielding strings, such as a
+/// constant table).
 #[derive(Default)]
 struct Param {
     secret: bool,
     description: Option<String>,
+    choices: Option<syn::Expr>,
 }
 
 impl syn::parse::Parse for Param {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut param = Self::default();
-        if input.peek(syn::Ident) {
+        if input.peek(syn::Ident) && !input.peek2(syn::Token![=]) {
             let flag: syn::Ident = input.parse()?;
             if flag != "secret" {
                 return Err(syn::Error::new(flag.span(), "expected `secret`"));
@@ -30,7 +33,19 @@ impl syn::parse::Parse for Param {
             }
             input.parse::<syn::Token![,]>()?;
         }
-        param.description = Some(input.parse::<syn::LitStr>()?.value());
+        if input.peek(syn::LitStr) {
+            param.description = Some(input.parse::<syn::LitStr>()?.value());
+            if input.is_empty() {
+                return Ok(param);
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        let key: syn::Ident = input.parse()?;
+        if key != "choices" {
+            return Err(syn::Error::new(key.span(), "expected `choices = ...`"));
+        }
+        input.parse::<syn::Token![=]>()?;
+        param.choices = Some(input.parse()?);
         Ok(param)
     }
 }
@@ -87,6 +102,7 @@ struct VariantOptions {
     returns: bool,
     destructive: bool,
     privileged: bool,
+    sensitive: bool,
     device_only: bool,
     permission: Option<String>,
 }
@@ -115,12 +131,14 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.destructive = true;
             } else if meta.path.is_ident("privileged") {
                 options.privileged = true;
+            } else if meta.path.is_ident("sensitive") {
+                options.sensitive = true;
             } else if meta.path.is_ident("device_only") {
                 options.device_only = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
-                     `destructive`, `privileged`, `idempotent`, `device_only` or `permission`",
+                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only` or `permission`",
                 ));
             }
             Ok(())
@@ -186,12 +204,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .collect::<Vec<_>>()
             .join(" ");
         if options.view
-            && (options.job || options.cancellable || options.destructive || options.privileged)
+            && (options.job
+                || options.cancellable
+                || options.destructive
+                || options.privileged
+                || options.sensitive)
         {
             return Err(syn::Error::new(
                 variant.span(),
                 "a `view` effect only changes what its caller sees: it answers at once and \
-                 asks no confirmation (drop `job`, `cancellable`, `destructive` and `privileged`)",
+                 asks no confirmation (drop `job`, `cancellable`, `destructive`, `privileged` and `sensitive`)",
             ));
         }
         let permission = match options.permission.as_deref() {
@@ -249,10 +271,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             } else {
                 param_ty
             };
-            if optional {
+            let declared = if optional {
                 quote!(#krate::__private::ActionParam::optional_owned(#param, #param_ty, #description))
             } else {
                 quote!(#krate::__private::ActionParam::required_owned(#param, #param_ty, #description))
+            };
+            match &described.choices {
+                Some(choices) => quote!(#declared.with_choices(#choices)),
+                None => declared,
             }
         });
         let answers = if options.job || options.cancellable {
@@ -263,17 +289,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(#krate::effect::Answers::Nothing)
         };
-        let risk = match (options.destructive, options.privileged) {
-            (true, true) => {
+        let risk = match (options.destructive, options.privileged, options.sensitive) {
+            (true, false, false) => quote!(Destructive),
+            (false, true, false) => quote!(Privileged),
+            (false, false, true) => quote!(Sensitive),
+            (false, false, false) if options.view => quote!(None),
+            (false, false, false) => quote!(Low),
+            _ => {
                 return Err(syn::Error::new(
                     variant.span(),
-                    "an effect is `destructive` or `privileged`, not both",
+                    "an effect is one of `destructive`, `privileged` or `sensitive`",
                 ));
             }
-            (true, false) => quote!(Destructive),
-            (false, true) => quote!(Privileged),
-            (false, false) if options.view => quote!(None),
-            (false, false) => quote!(Low),
         };
         let idempotent = options.idempotent;
         let device_only = all_device_only || options.device_only;

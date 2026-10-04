@@ -55,7 +55,7 @@ pub mod styles;
 pub mod widget;
 pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
-pub use widget::WordProcessorWidget;
+pub use widget::{PersonalDictionary, WordProcessorWidget};
 
 /// The kind of a Writer document record: the rich-text resource the native
 /// app, the workspace host and the browser all open. Records stamped with the

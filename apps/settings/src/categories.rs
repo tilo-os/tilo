@@ -560,6 +560,14 @@ impl Category {
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
+    /// The category whose [`Self::slug`] is `slug`.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|category| category.slug() == slug)
+    }
+
     pub fn slug(self) -> &'static str {
         match self {
             Category::Network => "network",

@@ -72,6 +72,11 @@ pub trait ResourceApp: 'static {
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
     const ARGUMENTS: usize = 0;
+    /// The app keeps one record per room, the room's own, rather than one
+    /// per window: every window of the app in the room opens that record,
+    /// and the first one creates it (and applies [`Self::seed`]). A room's
+    /// conversation is such a record.
+    const ROOM_RECORD: bool = false;
     /// The app's own command-line options that take a value
     /// (`--purpose number` or `--purpose=number`): how this window runs
     /// rather than what it opens. [`Self::launch`] reads them from its
@@ -298,6 +303,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         required: vec![],
         optional: vec![],
         opens: A::OPENS,
+        room_record: A::ROOM_RECORD,
         create: create::<A>,
     })
 }
@@ -439,7 +445,7 @@ fn create<A: ResourceApp>(
         catalog.ensure();
     }
     // A record of its own, or the room's record an app keeps one of
-    // (`ApplicationDefinition::keeps_room_record`), opened for the first time.
+    // (`ResourceApp::ROOM_RECORD`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
     if created {
         let seed = A::seed(&SeedCx { context: &context });
