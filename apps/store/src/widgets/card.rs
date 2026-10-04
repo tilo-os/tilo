@@ -46,7 +46,7 @@ pub struct CardDetails<'a> {
 /// The app's icon: its published artwork while it loads or when it is
 /// missing, the toolkit's generated tile.
 pub fn app_icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarSize) -> Avatar {
-    let avatar = Avatar::person(&item.name, &item.id).square().size(size);
+    let avatar = Avatar::person(&item.name, &item.id).neutral().size(size);
     match (images, item.icon_url.as_deref()) {
         (Some(store), Some(url)) => avatar.with_image_url(store.clone(), url),
         _ => avatar,

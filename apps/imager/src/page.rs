@@ -131,6 +131,14 @@ impl Frame {
         self
     }
 
+    /// Where a wizard is, with a stepper the caller configured (one that can
+    /// go back to a done step).
+    #[must_use]
+    pub(crate) fn stepper_widget(mut self, stepper: Stepper) -> Self {
+        self.stepper = Some(stepper);
+        self
+    }
+
     /// Keep the body's scroll position across rebuilds of the page.
     #[must_use]
     pub(crate) fn offset(mut self, offset: Rc<Cell<(f32, f32)>>) -> Self {

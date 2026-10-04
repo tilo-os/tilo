@@ -2386,22 +2386,18 @@ impl MusicApp {
     }
 
     /// A person's picture, round as people are: the artist's photo, else
-    /// the neutral placeholder art with their initials, in the disc that
-    /// fills the shorter side of `rect`. The media card has no round form
-    /// (and the avatar's fallback would paint an artist in a presence
-    /// colour), so the cover is shown through a circular clip.
+    /// the neutral placeholder with their initials, in the disc that fills
+    /// the shorter side of `rect` (a circular media card, art only).
     fn draw_portrait(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str, name: &str) {
         let side = rect.width().min(rect.height());
-        let disc = vello::kurbo::Circle::new(rect.center(), side / 2.0);
-        ctx.scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            ctx.transform,
-            &disc,
-        );
-        self.draw_cover(ctx, square_around(rect.center(), side), id, name);
-        ctx.scene.pop_layer();
+        let image = self.art_image(id);
+        let art = image
+            .as_ref()
+            .map_or(MediaArt::Placeholder, MediaArt::Image);
+        MediaCardFace::new(art)
+            .aspect(ui::widget::MediaAspect::Circle)
+            .seed(name)
+            .paint(ctx, square_around(rect.center(), side));
     }
 
     /// A person in a media grid: their round portrait over their name and
