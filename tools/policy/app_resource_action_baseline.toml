@@ -32,7 +32,6 @@
 "apps/containers/src/resource.rs" = 2
 "apps/db-client/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
-"apps/disk-usage/src/resource.rs" = 1
 "apps/disks/src/resource.rs" = 2
 "apps/ebook/src/resource.rs" = 2
 "apps/feeds/src/resource.rs" = 2
