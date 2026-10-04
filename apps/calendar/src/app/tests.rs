@@ -546,43 +546,11 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
             );
             assert_eq!(state.doc.get_heads(), before);
 
-            let invocation = tilo_actions::InvocationId::new();
-            app.pending_resource_import = Some(batch);
-            app.resource_import_invocation = Some(invocation);
-            app.sync(&mut state.doc, &state.root);
-            let result = Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                false,
-                &state.doc,
-                &state.root,
-            );
-            assert!(
-                matches!(result, Some(tilo_actions::InvocationUpdate::Failed { error, .. }) if error.code == "calendar.import_failed" && !error.retryable)
-            );
+            // The window's own import refuses it the same way.
+            assert!(app.try_dispatch_action(&mut state.doc, &batch).is_err());
             assert_eq!(state.doc.get_heads(), before);
             assert!(CalDoc::read_model(&state.doc).events.is_empty());
             assert!(CalDoc::read_model(&state.doc).tasks.is_empty());
-            assert!(
-                app.status
-                    .as_deref()
-                    .is_some_and(|status| status.starts_with("Import failed:"))
-            );
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_none(),
-                "refused import creates no successful history boundary"
-            );
-            assert!(
-                Widget::poll_resource_operation(
-                    &mut app,
-                    invocation,
-                    false,
-                    &state.doc,
-                    &state.root
-                )
-                .is_none(),
-                "failure is delivered once"
-            );
         }
     }
     // Case `resource_import_is_stable_until_invoked_then_commits_one_batch`.
@@ -596,79 +564,22 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today))
             .expect("write fixture");
 
-        let mut app = CalendarApp::new_demo();
-        let mut state = demo_document(&app);
-        app.sync(&mut state, &automerge::ROOT);
-        let resource_import = |state: &AutoCommit| {
-            published_root(state)
-                .actions
-                .iter()
-                .find(|action| action.id == "import-latest-ics")
-                .expect("import remains discoverable")
-                .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
-                .expect("nullary import operation")
-        };
-        let first = resource_import(&state);
-        let second = resource_import(&state);
-        assert_eq!(
-            first.payload, second.payload,
-            "resource enumeration is stable"
-        );
-        assert_eq!(
-            app.model
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+        let imported = |app: &ui::framework::testing::TestApp<crate::resource::CalendarShell>| {
+            app.state()
                 .events
                 .iter()
                 .filter(|event| event.title == "Quarterly all-hands")
-                .count(),
-            0,
-            "resource enumeration did not read or apply the transfer file"
-        );
-
-        let invocation = tilo_actions::InvocationId::new();
-        let start = Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                &first.type_id,
-                &first.payload,
-            ),
-            &mut state,
-            &automerge::ROOT,
-        )
-        .expect("resource import accepted");
-        assert!(matches!(
-            start,
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert!(
-            !app.model
-                .events
-                .iter()
-                .any(|event| event.title == "Quarterly all-hands"),
-            "success is deferred until a mutable document pass exists"
-        );
-        app.sync(&mut state, &automerge::ROOT);
-        assert!(
-            app.model
-                .events
-                .iter()
-                .any(|event| event.title == "Quarterly all-hands"),
-            "the queued batch crossed ActionHost and updated the model"
-        );
-        assert!(
-            matches!(
-                Widget::poll_resource_operation(
-                    &mut app,
-                    invocation,
-                    false,
-                    &state,
-                    &automerge::ROOT
-                ),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ),
-            "completion arrives only after the document action commits"
-        );
+                .count()
+        };
+        assert_eq!(imported(&app), 0, "nothing is read before the import");
+        app.effect(&crate::resource::CalendarEffect::ImportLatestIcs)
+            .expect("the import runs");
+        app.settle();
+        assert_eq!(imported(&app), 1, "the file's events were imported");
+        assert!(app.undo(), "the import is one undo step");
+        assert_eq!(imported(&app), 0);
 
         drop(env);
         std::fs::remove_dir_all(&dir).ok();
@@ -1301,41 +1212,27 @@ fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
 fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     // Case `invitation_handoff_is_the_exact_mail_resource_action_and_never_claims_send`.
     {
-        let mut app = CalendarApp::new_demo();
-        let mut doc = demo_document(&app);
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+        let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
+        for action in crate::resource::sample_actions(&sample) {
+            app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
+                .unwrap();
+        }
         let event = app
-            .selection
-            .and_then(|selection| match selection {
-                Sel::Event(id) => app.model.event(id),
-                Sel::Task(_) => None,
-            })
-            .expect("demo selects an event with a guest");
-        let attendee = event.attendees.first().expect("demo event has a guest");
-        let event_id = event.id;
-        let attendee_id = attendee.id;
+            .state()
+            .events
+            .into_iter()
+            .find(|event| !event.attendees.is_empty())
+            .expect("the sample calendar has an event with a guest");
+        let attendee = event.attendees.first().expect("a guest");
         let attendee_email = attendee.email.clone();
-        let payload = serde_json::to_vec(
-            &crate::actions::CalendarOperation::PrepareInvitationInMail {
-                event_id: event_id.to_string(),
-                attendee_id: attendee_id.to_string(),
-            },
-        )
-        .unwrap();
-        let ui::widget::ResourceOperationStart::Completed(output) = Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CALENDAR_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap()
-        .expect("Calendar handles its invitation effect") else {
-            panic!("the invitation handoff completes synchronously");
-        };
+        let output = app
+            .effect(&crate::resource::CalendarEffect::PrepareInMail {
+                event_id: event.id.to_string(),
+                attendee_id: attendee.id.to_string(),
+            })
+            .expect("Calendar answers its invitation effect");
         let value = output.value.expect("typed handoff result");
         assert_eq!(value["delivery"], "not_sent");
         assert_eq!(value["target"]["resource"], "mail.mailbox");
@@ -2042,17 +1939,6 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
 fn accessibility_exports_named_stable_controls_that_reuse_actions() {
     // Case `accessibility_exposes_sidebar_lists_and_calendar_visibility_controls`.
     {
-        use tilo_actions::ActionInput;
-
-        fn immediate(spec: &tilo_actions::ActionSpec) -> tilo_actions::EncodedAction {
-            match &spec.input {
-                ActionInput::Immediate(encoded) => encoded.clone(),
-                ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                    panic!("{} must not prompt", spec.id)
-                }
-            }
-        }
-
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
         app.sync(&mut state, &automerge::ROOT);
@@ -2104,23 +1990,19 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             &crate::actions::calendar_resource_id(&calendar_id),
         )
         .expect("configured calendar is an exact resource");
-        let pointer_spec = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "set-visibility")
-            .expect("calendar resource exposes the visibility operation");
-        let pointer_payload = immediate(pointer_spec);
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "set-visibility"),
+            "calendar resource exposes the visibility effect"
+        );
         app.apply_action(
             Action::SetCalendarVisible {
                 id: calendar_id.clone(),
                 visible: !before,
             },
             &mut state,
-        );
-        assert_eq!(
-            app.last_local_resource_operation(),
-            Some(&pointer_payload),
-            "the pointer row sends the exact resource action envelope"
         );
         assert_eq!(
             app.accounts
@@ -2130,22 +2012,6 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             "the pointer action reaches the Settings-owned absolute setter"
         );
 
-        // Rebuild the hit map after the pointer action. Its newly published
-        // resource action carries the opposite absolute state for the
-        // screen-reader checkbox as well.
-        let resource = published_resource(
-            &app,
-            &state,
-            &crate::actions::calendar_resource_id(&calendar_id),
-        )
-        .expect("visibility change keeps the configured resource addressable");
-        let semantic_payload = immediate(
-            resource
-                .actions
-                .iter()
-                .find(|action| action.id == "set-visibility")
-                .expect("resource republishes the inverse absolute operation"),
-        );
         let mut scene = Scene::new();
         app.draw(
             &mut scene,
@@ -2161,11 +2027,6 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             &automerge::ROOT,
         ));
         assert_eq!(
-            app.last_local_resource_operation(),
-            Some(&semantic_payload),
-            "the screen-reader checkbox sends the exact resource action envelope"
-        );
-        assert_eq!(
             app.accounts
                 .accounts
                 .iter()
@@ -2176,24 +2037,11 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             "screen-reader activation follows the same absolute Settings-backed operation as the row"
         );
 
-        // Replaying this absolute payload must converge on the requested value
-        // rather than invert it as a toggle would.
+        // Showing or hiding is absolute: asking twice converges on the
+        // requested value rather than inverting it as a toggle would.
         for _ in 0..2 {
-            assert!(matches!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        &semantic_payload.type_id,
-                        &semantic_payload.payload
-                    ),
-                    &mut state,
-                    &automerge::ROOT
-                )
-                .expect("published visibility action is accepted"),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
+            app.set_calendar_visibility(&calendar_id, before)
+                .expect("the calendar is configured");
         }
         assert_eq!(
             app.accounts

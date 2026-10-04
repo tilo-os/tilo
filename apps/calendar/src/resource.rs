@@ -7,10 +7,12 @@ use std::rc::Rc;
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
-    Dispatcher, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{
-    ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, child_resource_id, publish_child,
+    self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource, SearchEntry, child_resource_id,
+    publish_child,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -134,6 +136,48 @@ fn notes_child(state: &Model, id: &str) -> Option<tilo_actions::Resource> {
         _ => return None,
     };
     Some(notes_resource(owner, of))
+}
+
+/// The calendar's work outside its document: talking to the servers of the
+/// accounts on this device, files, Mail, and how this person shows each
+/// calendar.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "calendar.effects")]
+pub enum CalendarEffect {
+    /// Sync calendars
+    ///
+    /// Pulls the calendars of this device's accounts from their servers.
+    #[effect(job)]
+    Sync,
+    /// Export ICS
+    ///
+    /// Writes every event and task to an iCalendar file in Downloads.
+    ExportIcs,
+    /// Import latest ICS
+    ///
+    /// Imports the newest iCalendar file in Downloads.
+    ImportLatestIcs,
+    /// Prepare invitation in Mail
+    ///
+    /// Answers with the arguments of Mail's invitation draft for one attendee;
+    /// nothing is sent.
+    #[effect(returns, permission = "invite")]
+    PrepareInMail {
+        #[param("Event id")]
+        event_id: String,
+        #[param("Attendee id")]
+        attendee_id: String,
+    },
+    /// Show or hide a calendar
+    ///
+    /// A display choice of this person, which follows them to their other
+    /// devices.
+    SetVisibility {
+        #[param("Calendar id")]
+        id: String,
+        #[param("Whether its events are shown")]
+        visible: bool,
+    },
 }
 
 /// Framework app: the calendar widget is the surface over [`Calendar`].
@@ -305,24 +349,17 @@ impl Resource for Calendar {
             ("show-week", "Show week", CalendarOperation::ShowWeek),
             ("show-day", "Show day", CalendarOperation::ShowDay),
             ("show-agenda", "Show agenda", CalendarOperation::ShowAgenda),
-            ("sync", "Sync calendars", CalendarOperation::Sync),
-            ("export-ics", "Export ICS", CalendarOperation::ExportIcs),
-            (
-                "import-latest-ics",
-                "Import latest ICS",
-                CalendarOperation::ImportIcs,
-            ),
         ] {
-            let kind = match operation {
-                CalendarOperation::Sync
-                | CalendarOperation::ExportIcs
-                | CalendarOperation::ImportIcs => OperationKind::Effect,
-                _ => OperationKind::View,
-            };
             ops.push(
-                ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, &operation)
-                    .expect("CalendarOperation encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
+                ActionSpec::operation(
+                    id,
+                    label,
+                    OperationKind::View,
+                    CALENDAR_OPERATION_TYPE,
+                    &operation,
+                )
+                .expect("CalendarOperation encodes")
+                .retry_policy(RetryPolicy::Idempotent),
             );
         }
         ops
@@ -552,7 +589,7 @@ impl ResourceApp for CalendarShell {
     }
 }
 
-impl ResourceSurface<Calendar> for CalendarApp {
+impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
     fn present(&mut self, state: &Rc<Model>) {
         self.adopt_resource_state(state);
     }
@@ -574,6 +611,18 @@ impl ResourceSurface<Calendar> for CalendarApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: CalendarEffect,
+        cx: &mut EffectCx<Calendar, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
 
     /// The calendars of the accounts on this device, which can be opened,
@@ -844,5 +893,16 @@ mod host_undo_tests {
         )
         .expect("set location");
         assert_eq!(app.state().event(event).expect("event").location, "Room 4");
+    }
+
+    /// Sync and export say why they cannot run: no account on this device,
+    /// nothing to export.
+    #[test]
+    fn effects_that_cannot_run_are_refused_with_their_reason() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let sync = format!("{:?}", app.effect(&CalendarEffect::Sync).unwrap_err());
+        assert!(sync.contains("account"), "{sync}");
+        let export = format!("{:?}", app.effect(&CalendarEffect::ExportIcs).unwrap_err());
+        assert!(export.contains("export"), "{export}");
     }
 }

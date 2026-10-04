@@ -11,6 +11,7 @@ use tilo_actions::{
     ActionArgs, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, ParamType,
     Resource,
 };
+use ui::tilo_resource::Effect as _;
 use uuid::Uuid;
 
 use crate::actions::{
@@ -876,15 +877,13 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
                 },
             },
         ));
-        attendee_resource = attendee_resource.with_action(calendar_operation(
-            "prepare-in-mail",
-            "Prepare invitation in Mail",
-            OperationKind::Effect,
-            &CalendarOperation::PrepareInvitationInMail {
+        attendee_resource = attendee_resource.with_action(
+            crate::resource::CalendarEffect::PrepareInMail {
                 event_id: event_id_s.clone(),
                 attendee_id: attendee_id_s.clone(),
-            },
-        ));
+            }
+            .bound(),
+        );
         attendee_resource = attendee_resource.with_action(immediate_spec(
             "remove",
             "Remove attendee",
