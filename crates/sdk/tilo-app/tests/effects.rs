@@ -397,3 +397,62 @@ fn a_surface_answers_its_effects_and_completes_them_with_its_own_state() {
     let first = app.versions().first().unwrap().hash;
     assert!(app.past_version(&[first]).is_ok());
 }
+
+thread_local! {
+    /// What a service reports it holds: the outside a mirror drain compares
+    /// the document's sent messages against.
+    static MIRRORED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The mirror drain's handle, as the view registered it.
+    static MIRROR: RefCell<Option<tilo_app::framework::Projection>> = const { RefCell::new(None) };
+}
+
+struct MirrorApp;
+
+impl ResourceApp for MirrorApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-mirror";
+    const TITLE: &'static str = "Mirror";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let projection = cx.drain(
+            |mail: &Mailbox| {
+                let mirrored = MIRRORED.with(|mirrored| mirrored.borrow().clone());
+                mail.sent
+                    .iter()
+                    .filter(|(_, text)| !mirrored.contains(text))
+                    .map(|(_, text)| (text.clone(), text.clone()))
+                    .collect()
+            },
+            |text, _| {
+                MIRRORED.with(|mirrored| mirrored.borrow_mut().push(text));
+                Ok(Effected::done())
+            },
+        );
+        MIRROR.with(|mirror| *mirror.borrow_mut() = Some(projection));
+        Box::new(Column::new())
+    }
+}
+
+#[test]
+fn a_projection_looks_again_when_the_outside_it_compares_against_changed() {
+    MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+    let mirrored = || MIRRORED.with(|mirrored| mirrored.borrow().clone());
+    let mut app = TestApp::<MirrorApp>::new().unwrap();
+    app.invoke(Mailbox::SEND.with("hello".into())).unwrap();
+    let entry = app.state().outbox.iter().next().unwrap().0.clone();
+    app.invoke(Mailbox::DELIVERED.with(entry)).unwrap();
+    app.settle();
+    assert_eq!(mirrored(), ["hello"]);
+
+    // The service lost what it held; the document did not move.
+    MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+    app.settle();
+    assert!(
+        mirrored().is_empty(),
+        "nothing tells the drain to look again"
+    );
+
+    MIRROR.with(|mirror| mirror.borrow().as_ref().unwrap().outside_changed());
+    app.settle();
+    assert_eq!(mirrored(), ["hello"]);
+}

@@ -23,7 +23,10 @@ pub struct LaunchInput<'a> {
 }
 
 impl<'a> LaunchInput<'a> {
-    pub(crate) fn new(arguments: &'a [String], file: Option<&'a OpenFile>) -> Self {
+    /// A launch naming `arguments` and handing over `file`: what a host
+    /// asks [`ResourceApp::launch`](super::ResourceApp::launch) about, and
+    /// what a test of an app's launch builds.
+    pub fn new(arguments: &'a [String], file: Option<&'a OpenFile>) -> Self {
         Self { arguments, file }
     }
 
