@@ -1529,11 +1529,12 @@ impl TerminalWidget {
     /// on the text they were found on. The view does not move: only a step or
     /// a new query scrolls to a match.
     fn refresh_find_matches(&mut self) {
-        let Some(bar) = self.find_bar.as_ref() else {
+        let Some(bar) = self.find_bar.as_mut() else {
             return;
         };
-        let (query, options) = (bar.query().to_owned(), bar.options());
-        self.scan_find_matches(&query, options);
+        // The bar finds again and its counter follows, without a reveal.
+        bar.refresh();
+        self.drive_find();
     }
 
     fn reveal_current_find_match(&mut self) {
@@ -4204,14 +4205,11 @@ impl TerminalWidget {
         }
     }
 
-    /// The terminal's palette in `theme`: the theme's terminal palette with
-    /// the default background pinned to the window ground. A default-background
-    /// cell is then the surface the framework already painted, and a
-    /// reverse-video cell inverts against it.
+    /// The terminal's palette in `theme`. Its default background is the
+    /// window ground, so a default-background cell is the surface the
+    /// framework already painted and a reverse-video cell inverts against it.
     pub(crate) fn grid_palette(theme: &Theme) -> ui::tokens::TerminalPalette {
-        let mut palette = theme.tokens.terminal_palette.clone();
-        palette.bg_default = theme.tokens.colors.surfaces.content;
-        palette
+        theme.tokens.terminal_palette.clone()
     }
 
     /// Decode and paint graphics only when their buffer rows are visible.  The

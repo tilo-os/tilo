@@ -527,6 +527,8 @@ pub struct BlockEditor {
     /// The text inset of the block lines: where a paragraph's text starts
     /// inside its line rect, and so the editor's one content edge.
     text_pad: f64,
+    /// Text sizes are the document's own, not grown with the text scale.
+    content_sized: bool,
     /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
@@ -710,6 +712,8 @@ impl BlockEditor {
             text_scale: 1.0,
             handle: HandleMetrics::default(),
             text_pad: 0.0,
+            content_sized: false,
+
             wrap_lines: false,
             compact_paragraph_spacing: false,
             content_node: None,
@@ -1166,10 +1170,6 @@ impl BlockEditor {
             block.line.text_inset(&self.layout_theme),
         );
         rect.y0 -= code_header_height(&self.blocks, index, self.text_scale);
-        if matches!(block.kind, BlockKind::Quote) {
-            rect.y0 -= 4.0 * self.text_scale;
-            rect.y1 += 4.0 * self.text_scale;
-        }
         for preview in [
             &self.formula_preview_rects,
             &self.table_preview_rects,
@@ -1236,6 +1236,34 @@ impl BlockEditor {
     #[must_use]
     pub fn with_read_only(mut self, read_only: bool) -> Self {
         self.set_read_only(read_only);
+        self
+    }
+
+    /// How far a paragraph's text starts inside the editor's rect: the
+    /// drag-handle column (when shown) plus the lines' own text inset. Every
+    /// block kind starts at this edge, so a host lines a title, a caption or
+    /// a composer's controls up with it instead of measuring a laid-out
+    /// caret.
+    pub fn text_inset(&self, theme: &Theme) -> f64 {
+        let line = self.blocks.first().map_or_else(
+            || RichTextLine::new().text_inset(theme),
+            |b| b.line.text_inset(theme),
+        );
+        let handles = if self.block_handles && !self.read_only {
+            (self.handle.width + self.handle.gap - line).max(0.0)
+        } else {
+            0.0
+        };
+        handles + line
+    }
+
+    /// Size the text by the document alone: body and heading sizes as
+    /// given, not grown with the reader's text scale. For content that is
+    /// laid out at its own size and scaled as a whole (a slide's text box,
+    /// drawn into a thumbnail or the presentation).
+    #[must_use]
+    pub fn with_content_sizing(mut self, content_sized: bool) -> Self {
+        self.content_sized = content_sized;
         self
     }
 
@@ -6225,33 +6253,33 @@ fn draw_block(
         }
         BlockKind::Heading(_) => {}
         BlockKind::Quote => {
-            let background = Rect::new(
-                prefix_x0,
-                line_rect.y0 - 4.0 * scale,
-                line_rect.x1,
-                line_rect.y1 + 4.0 * scale,
+            // A quote is a quiet rule at the content edge and the quoted
+            // words in secondary ink: no ground, no bright bar.
+            let rule_w = f64::from(ctx.theme.tokens.spacing.s1) / 2.0;
+            let rule = vello::kurbo::RoundedRect::from_rect(
+                Rect::new(prefix_x0, line_rect.y0, prefix_x0 + rule_w, line_rect.y1),
+                rule_w / 2.0,
             );
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ctx.theme.tokens.colors.surfaces.raised,
-                None,
-                &background,
-            );
-            let rule = Rect::new(
-                background.x0,
-                background.y0,
-                background.x0 + 3.0 * scale,
-                background.y1,
-            );
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                ctx.theme.tokens.colors.intent.inverted,
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.content),
                 None,
                 &rule,
             );
+            let mut quiet = ctx.theme.clone();
+            quiet.text_primary = quiet.text_dim;
+            quiet.tokens.colors.text_primary = quiet.tokens.colors.text_dim;
+            b.line.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                &quiet,
+                ctx.presence,
+            );
+            return;
         }
+
         BlockKind::Bullet { .. } => {
             draw_bullet_prefix(line_rect, prefix_x0, ctx);
             let _ = indent_px;
@@ -6838,6 +6866,12 @@ impl BlockEditor {
         for (block, stack_box) in self.blocks.iter_mut().zip(&self.stack_boxes) {
             // A line the editor made since (a split, a paste) takes the
             // editor's body size too.
+            // The kind's role sets the line's weight and leading (a heading
+            // is semibold at its role's leading), its size the document's.
+            let role = block.kind.text_role();
+            if block.line.inner().text_role() != role {
+                block.line.set_text_role(role);
+            }
             block.line.set_size(block.kind.font_size() * font_scale);
             let content = match (
                 block.line.stacked_height(width),
@@ -7033,6 +7067,13 @@ impl Widget for BlockEditor {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let unit;
+        let theme = if self.content_sized {
+            unit = theme.at_unit_text_scale();
+            &unit
+        } else {
+            theme
+        };
         self.text_scale = f64::from(theme.text_scale);
         self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
         self.refresh_image_attachments();
@@ -7075,6 +7116,14 @@ impl Widget for BlockEditor {
             .map(|index| code_header_height(&self.blocks, index, self.text_scale))
             .collect();
         self.stack_boxes.clear();
+        let embeds: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                transclusion_target(block).is_some()
+                    || standalone_markdown_image(block.text()).is_some()
+            })
+            .collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -7142,9 +7191,15 @@ impl Widget for BlockEditor {
                 && is_paragraph[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_paragraph[previous]);
+            // An embed (an embedded note, an image) is an object in the
+            // flow: it stands a group gap from the text on either side.
+            let around_embed = embeds.get(i).copied().unwrap_or(false)
+                || i.checked_sub(1)
+                    .and_then(|previous| embeds.get(previous).copied())
+                    .unwrap_or(false);
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
-            } else if adjacent_fences {
+            } else if adjacent_fences || around_embed {
                 theme.tokens.spacing.s4 * theme.text_scale
             } else if compact_paragraph_pair {
                 theme.tokens.spacing.s1 * theme.text_scale
@@ -7450,6 +7505,13 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let unit;
+        let theme = if self.content_sized {
+            unit = theme.at_unit_text_scale();
+            &unit
+        } else {
+            theme
+        };
         self.refresh_image_dimensions();
         let single_block = self.blocks.len() == 1;
         for block in &mut self.blocks {

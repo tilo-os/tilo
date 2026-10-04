@@ -542,10 +542,8 @@ pub struct CodeApp {
     conflict: Option<Conflict>,
     /// A tab close waiting on the user's "save your changes?" answer.
     close_prompt: Option<ClosePrompt>,
-    /// Which dialog action the pointer is over, and the last dialog layout,
-    /// which resolves where a pointer landed.
-    dialog_hover: Option<usize>,
-    dialog_layout: Option<ui::widget::modal_dialog::ModalLayout>,
+    /// The sheet a question is asked in: it keeps where its answers landed.
+    question_sheet: ui::widget::ModalSheet,
 
     /// A transient message about the last file operation (saved, failed,
     /// reloaded). Shown in the status bar; cleared by the next action.
@@ -887,8 +885,7 @@ impl CodeApp {
             resource_result: None,
             conflict: None,
             close_prompt: None,
-            dialog_hover: None,
-            dialog_layout: None,
+            question_sheet: ui::widget::ModalSheet::new(),
             notice: None,
             pending_jump: None,
         }
@@ -1978,28 +1975,6 @@ impl CodeApp {
         }
     }
 
-    /// The unsaved-close prompt's keyboard shortcuts: Enter saves (the choice
-    /// that keeps the work), Escape cancels.
-    fn close_prompt_key(event: &WindowEvent) -> Option<CloseChoice> {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return None;
-        };
-        match logical_key {
-            Key::Named(winit::keyboard::NamedKey::Escape) => Some(CloseChoice::Cancel),
-            Key::Named(winit::keyboard::NamedKey::Enter) => Some(CloseChoice::Save),
-            _ => None,
-        }
-    }
-
     /// Run a command. `doc` is threaded in because the one doc-mutating
     /// command (New file) dispatches a [`CodeEditorAction`] through the action
     /// host; the rest are pure presentation.
@@ -2056,7 +2031,8 @@ impl CodeApp {
                     self.reload_buffer(doc, node);
                 }
             }
-            Command::Find | Command::Replace => self.open_find(),
+            Command::Find => self.open_find(),
+            Command::Replace => self.open_replace(),
             Command::SearchProject => {
                 // The platform search, seeded from the selection the way
                 // every editor does.
@@ -3373,7 +3349,7 @@ impl Widget for CodeApp {
         // while it is up it owns all input, because answering it decides
         // which of two versions of the file survives.
         if let Some(question) = self.question() {
-            self.handle_question(question, event, ctx.state, ctx.handled);
+            self.handle_question(question, event, ctx.scale_factor, ctx.state, ctx.handled);
             return;
         }
 

@@ -1537,21 +1537,6 @@ impl PdfApp {
             f64::midpoint(bounds_rect.x0, bounds_rect.x1),
             bounds_rect.y0,
         );
-        let c = &theme.tokens.colors;
-        // The HUD is a floating Panel: the panel ground, its derived border
-        // and the floating elevation; its ink is measured on that ground.
-        let ground = ui::chrome::panel_ground(theme);
-        let on_panel = theme.on_ground(ground);
-        let style = ui::ReaderHudStyle {
-            surface: ground,
-            border: ui::chrome::panel_border(theme),
-            elevation: theme.tokens.elevation.floating,
-            text: on_panel.tokens.colors.text_primary,
-            hover: c.lift_on(ground, 0.5),
-            pill: c.lift_on(ground, 1.0),
-            ring: c.intent.you,
-            danger: c.semantic.danger,
-        };
         let swatches: Vec<ui::HudSwatch> = Swatch::ALL
             .iter()
             .map(|&s| {
@@ -1559,22 +1544,23 @@ impl PdfApp {
                 ui::HudSwatch::new([r, g, b], s == self.swatch)
             })
             .collect();
+        // The HUD is a floating Panel on the window's theme. It stands under
+        // the selection, so a heading above the passage stays readable at
+        // any zoom.
         let hud = ui::SelectionHud::draw(
             scene,
             base,
             tr,
-            &style,
+            theme,
             &ui::HudControls {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: false,
             },
-            ui::HudPlacement {
-                anchor,
-                bounds: self.canvas_rect,
-            },
+            ui::HudPlacement::new(anchor, self.canvas_rect).below(bounds_rect.y1),
             self.last_mouse,
         );
+
         self.sel_hud = Some(hud);
     }
 

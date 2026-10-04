@@ -134,12 +134,17 @@ impl CodeApp {
         self.find.focus_query();
     }
 
-    /// Close the bar and stop painting matches. A closed bar is dropped, so
-    /// the next one opens fresh.
+    /// Close the bar and stop painting matches. The bar keeps its query and
+    /// options for the next time it opens.
     pub(super) fn close_find(&mut self) {
         self.find_open = false;
-        self.find = FindBar::new().with_replace();
         self.clear_find_matches();
+    }
+
+    /// Open the bar with its replacement field focused (Ctrl+H).
+    pub(super) fn open_replace(&mut self) {
+        self.open_find();
+        self.find.focus_replace();
     }
 
     pub(super) fn clear_find_matches(&mut self) {
@@ -171,7 +176,7 @@ impl CodeApp {
         let mut bar = std::mem::replace(&mut self.find, FindBar::new());
         bar.drive(&mut FindTarget { app: self, doc });
         self.find = bar;
-        if self.find.close_requested() {
+        if self.find.take_close_requested() {
             self.close_find();
         }
     }
@@ -199,5 +204,7 @@ impl CodeApp {
         self.find_matches = fresh;
         self.editor
             .set_find_matches(&self.find_matches, self.find_current);
+        // The bar's counter follows on its next drive, keeping its place.
+        self.find.refresh();
     }
 }

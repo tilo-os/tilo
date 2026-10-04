@@ -1481,9 +1481,6 @@ impl Widget for TypstApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Replaced controls may be dropped now: this pass rebuilds the tree
-        // (and `node_map`) without them.
-        self.chrome.layout_rebuilt();
         // One taffy node per hosted control, in the order `children` returns
         // them, so the host's focus walk lines up. The controls are placed by
         // hand in `draw`, so their taffy geometry is unused: the nodes exist
@@ -1624,13 +1621,9 @@ impl Widget for TypstApp {
     ) {
         // The diagnostic's hover card and the controls' open lists float
         // above both panes.
-        self.editor.draw_tooltip(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.diagnostics.diags(),
-        );
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.editor
+            .draw_tooltip(scene, transform, text_renderer, theme, window);
         for child in self.chrome.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }

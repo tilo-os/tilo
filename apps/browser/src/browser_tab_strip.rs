@@ -10,7 +10,7 @@ use ui::{
     text_render::TextRenderer,
     theme::Theme,
     widget::{
-        AppKind, Button, ButtonFace, ButtonRole, Spinner, TabBar, TabDescriptor, Widget,
+        AppKind, Button, ButtonFace, ButtonRole, TabBar, TabDescriptor, TabMark, Widget,
         tabs::{TAB_BAR_HEIGHT, TAB_PILL_INSET_Y},
     },
 };
@@ -29,9 +29,6 @@ struct StripMetrics {
     min_tab: f64,
     new_tab: f64,
     overflow: f64,
-    /// Inset of a tab's leading glyph from the tab's edge, and the glyph's size.
-    glyph_inset: f64,
-    glyph: f64,
 }
 
 impl StripMetrics {
@@ -43,8 +40,6 @@ impl StripMetrics {
             min_tab: f64::from(spacing.s16) * 2.0,
             new_tab: f64::from(metrics.min_pointer_target + spacing.s1),
             overflow: f64::from(metrics.min_pointer_target),
-            glyph_inset: f64::from(spacing.s3),
-            glyph: f64::from(metrics.icon_sm),
         }
     }
 }
@@ -64,24 +59,6 @@ impl AppImageSource for Favicon {
     }
 }
 
-/// An empty leading slot: the tab keeps its glyph column while a state mark
-/// (busy, playing, muted) is painted over it.
-struct EmptySlot;
-
-impl AppImageSource for EmptySlot {
-    fn key(&self) -> &'static str {
-        "browser.tab.empty-slot"
-    }
-    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
-        Some(vello::peniko::ImageData {
-            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![0, 0, 0, 0])),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: 1,
-            height: 1,
-        })
-    }
-}
 #[derive(Clone, Default)]
 pub(crate) struct TabVisual {
     pub favicon: Option<vello::peniko::ImageData>,
@@ -101,8 +78,6 @@ pub struct BrowserTabStrip {
     visuals: HashMap<u64, TabVisual>,
     pending_toggle_mute: Option<u64>,
     reduced_motion: bool,
-    /// One spinner per busy tab, so each keeps its own phase.
-    spinners: HashMap<u64, Spinner>,
     metrics: StripMetrics,
     rect: Rect,
 }
@@ -122,7 +97,6 @@ impl BrowserTabStrip {
             visuals: HashMap::new(),
             pending_toggle_mute: None,
             reduced_motion: false,
-            spinners: HashMap::new(),
             metrics: StripMetrics::of(&Theme::dark()),
             rect: Rect::ZERO,
         }
@@ -313,6 +287,16 @@ impl BrowserTabStrip {
         for tab in &mut visible {
             tab.app_kind = Some(AppKind::Browser);
             tab.icon = self.leading_art(tab.id);
+            let mark = self.visuals.get(&tab.id).and_then(|visual| {
+                if visual.muted {
+                    Some(TabMark::Muted)
+                } else if visual.media_playing {
+                    Some(TabMark::Playing)
+                } else {
+                    visual.loading.then_some(TabMark::Busy)
+                }
+            });
+            self.inner.set_mark(tab.id, mark);
         }
         self.visible_ids = visible.iter().map(|t| t.id).collect();
         *self.inner.tabs_mut() = visible;
@@ -325,13 +309,11 @@ impl BrowserTabStrip {
         }
         self.inner.set_active(active);
     }
-    /// What the tab bar paints in a tab's leading slot: its favicon, an empty
-    /// slot while a state mark covers it, or the browser glyph.
+    /// What the tab bar paints in a tab's leading slot: its favicon, or the
+    /// browser glyph. A state mark (busy, playing, muted) takes the slot's
+    /// place in the tab bar itself.
     fn leading_art(&self, id: u64) -> Option<AppImage> {
         let visual = self.visuals.get(&id)?;
-        if visual.loading || visual.media_playing || visual.muted {
-            return Some(AppImage::new(EmptySlot));
-        }
         visual.favicon.as_ref().map(|image| {
             AppImage::new(Favicon {
                 key: format!("favicon:{}", image.data.id()),
@@ -383,12 +365,14 @@ impl BrowserTabStrip {
             return false;
         };
         self.pinned.contains(&id)
-            || self.media_rect(index).x1
-                <= self
-                    .inner
-                    .tab_rects()
-                    .get(index)
-                    .map_or(0.0, |tab| tab.x0 + 32.0)
+            || self.inner.mark_rect(id).is_some_and(|mark| {
+                mark.x1
+                    <= self
+                        .inner
+                        .tab_rects()
+                        .get(index)
+                        .map_or(0.0, |tab| tab.x0 + 32.0)
+            })
     }
     #[cfg(any(test, debug_assertions))]
     pub fn new_tab_rect(&self) -> Rect {
@@ -420,29 +404,6 @@ impl BrowserTabStrip {
         (
             Rect::new(anchor - 2.0 * width, y0, anchor - width, y1),
             Rect::new(anchor - width, y0, anchor, y1),
-        )
-    }
-    fn media_rect(&self, index: usize) -> Rect {
-        let Some(id) = self.visible_ids.get(index) else {
-            return Rect::ZERO;
-        };
-        self.leading_rect(index, *id)
-    }
-    fn leading_rect(&self, index: usize, id: u64) -> Rect {
-        let Some(tab) = self.inner.tab_rects().get(index) else {
-            return Rect::ZERO;
-        };
-        let glyph = self.metrics.glyph;
-        let x0 = if self.pinned.contains(&id) {
-            tab.center().x - glyph / 2.0
-        } else {
-            tab.x0 + self.metrics.glyph_inset
-        };
-        Rect::new(
-            x0,
-            tab.center().y - glyph / 2.0,
-            x0 + glyph,
-            tab.center().y + glyph / 2.0,
         )
     }
     fn has_hidden_before(&self) -> bool {
@@ -614,30 +575,6 @@ impl Widget for BrowserTabStrip {
     ) {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
-        for (index, id) in self.visible_ids.clone().into_iter().enumerate() {
-            let Some(visual) = self.visuals.get(&id) else {
-                continue;
-            };
-            let slot = self.leading_rect(index, id);
-            if visual.media_playing || visual.muted {
-                // A muted tab is quieter than one that is playing.
-                let (icon, ink) = if visual.muted {
-                    (Icon::VolumeX, theme.tokens.colors.text_dim)
-                } else {
-                    (Icon::Volume2, theme.tokens.colors.text_primary)
-                };
-                icon.draw(scene, transform, slot, ink);
-            } else if visual.loading {
-                let spinner = self
-                    .spinners
-                    .entry(id)
-                    .or_insert_with(|| Spinner::with_size(self.metrics.glyph as f32));
-                spinner.set_rect(slot);
-                spinner.draw(scene, transform, text_renderer, theme, presence);
-            } else {
-                self.spinners.remove(&id);
-            }
-        }
         self.draw_overflow_controls(scene, transform, text_renderer, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -687,18 +624,6 @@ impl Widget for BrowserTabStrip {
                 *ctx.handled = true;
                 return;
             }
-            for (index, id) in self.visible_ids.iter().copied().enumerate() {
-                if self
-                    .visuals
-                    .get(&id)
-                    .is_some_and(|visual| visual.media_playing || visual.muted)
-                    && self.media_rect(index).contains(self.cursor)
-                {
-                    self.pending_toggle_mute = Some(id);
-                    *ctx.handled = true;
-                    return;
-                }
-            }
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.inner.bar_rect().contains(self.cursor)
@@ -716,6 +641,10 @@ impl Widget for BrowserTabStrip {
             return;
         }
         self.inner.handle_event(event, ctx);
+        // A click on a tab's sound mark mutes or unmutes it.
+        if let Some((id, _)) = self.inner.take_mark_click() {
+            self.pending_toggle_mute = Some(id);
+        }
     }
     fn perform_semantic_action(
         &mut self,
@@ -774,33 +703,14 @@ impl Widget for BrowserTabStrip {
             identity.as_str().hash(&mut hasher);
             child.key = Some(hasher.finish());
         }
-        for (index, id) in self.visible_ids.iter().copied().enumerate() {
-            if let Some(visual) = self.visuals.get(&id)
+        for id in &self.visible_ids {
+            if let Some(visual) = self.visuals.get(id)
                 && let Some(tab) = node
                     .children
                     .iter_mut()
                     .find(|n| n.action_target.as_deref() == Some(&format!("tab:{id}")))
             {
                 tab.state.busy = visual.loading;
-                if visual.media_playing {
-                    tab.description = Some("Media playing".into());
-                }
-                if visual.muted {
-                    tab.description = Some("Audio muted".into());
-                }
-                if visual.media_playing || visual.muted {
-                    tab.children.push(
-                        ui::a11y::AccessNode::new(ui::a11y::Role::Button)
-                            .with_name(if visual.muted {
-                                "Unmute tab"
-                            } else {
-                                "Mute tab"
-                            })
-                            .with_action_target(format!("tab-mute:{id}"))
-                            .with_hashed_key(format!("tab-mute:{id}"))
-                            .with_bounds(self.media_rect(index)),
-                    );
-                }
             }
         }
         let (left, right) = self.overflow_rects();

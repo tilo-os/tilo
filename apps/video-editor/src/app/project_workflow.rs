@@ -354,8 +354,19 @@ impl VideoEditorApp {
                 self.project_menu.push(ui::widget::MenuItem::separator());
                 first_recent = false;
             }
-            self.project_menu
-                .push(ui::widget::MenuItem::action(label, || {}));
+            // The menu names the keys that do the same thing, so the rows
+            // teach them.
+            let shortcut = match item {
+                ProjectMenuItem::Open => Some(ui::platform::Shortcut::command("O")),
+                ProjectMenuItem::Save => Some(ui::platform::Shortcut::command("S")),
+                ProjectMenuItem::SaveAs => Some(ui::platform::Shortcut::command("S").shift()),
+                ProjectMenuItem::Recent(_) => None,
+            };
+            let mut row = ui::widget::MenuItem::action(label, || {});
+            if let Some(shortcut) = shortcut {
+                row = row.with_shortcut(shortcut);
+            }
+            self.project_menu.push(row);
             self.project_menu_items.push(item);
         }
         self.project_menu.open_at([at.x as f32, at.y as f32]);

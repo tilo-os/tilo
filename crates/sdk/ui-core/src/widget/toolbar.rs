@@ -4,9 +4,15 @@
 //!
 //! Commands are `Label`-role plain buttons; a toggle that is on is a lift;
 //! groups are split by hairline separators that never stand at the start or
-//! end of what is shown. A painted widget hosts one with
-//! [`Toolbar::lay_out_in`]. The band behind a window's toolbar row is
-//! [`paint_band`] with its controls inset by [`band_padding`].
+//! end of what is shown. A command can be disabled (dimmed, announced as
+//! disabled, inert), carry a dot (something new behind it), open a menu of
+//! its own, or rank above its neighbours for staying out of the More menu
+//! ([`Toolbar::with_priority`]). Hosted controls (a segmented strip, a
+//! number field, a colour well) stand in the row with
+//! [`Toolbar::push_element`]. A painted widget hosts one with
+//! [`Toolbar::lay_out_in`] (or [`Toolbar::lay_out_at`] once it has been
+//! measured). The band behind a window's toolbar row is [`paint_band`]
+//! with its controls inset by [`band_padding`].
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -30,19 +36,62 @@ pub enum Orientation {
     Vertical,
 }
 
+/// One command of a toolbar and what it carries.
+pub struct ToolbarCommand {
+    /// The command's visible label, or the accessible name and tooltip of
+    /// an icon-only command.
+    pub label: String,
+    /// Shown instead of the label when present.
+    pub icon: Option<crate::icons::Icon>,
+    /// `Some` for a toggle; `Some(true)` paints the lift.
+    pub active: Option<bool>,
+    /// What assistive technology and the More menu call it, when that
+    /// differs from the label (a toggle labelled "Aa" is "Match case").
+    pub accessible_name: Option<String>,
+    /// A disabled command is dimmed, announced as disabled and inert.
+    pub enabled: bool,
+    /// A dot at the command's corner: something new behind it.
+    pub dot: bool,
+    /// Higher stays visible longer when the row is too narrow; equal
+    /// priorities give way from the end.
+    pub priority: i32,
+    /// `Some` opens a menu anchored to the command instead of running it.
+    pub menu: Option<Vec<MenuItem>>,
+    /// Goes with the command before it: the two (zoom out, zoom in) give way
+    /// to the More menu together, never one without the other.
+    pub joined: bool,
+    pub on_click: Box<dyn FnMut()>,
+}
+
+impl ToolbarCommand {
+    fn new(label: &str, on_click: Box<dyn FnMut()>) -> Self {
+        Self {
+            label: label.to_string(),
+            icon: None,
+            active: None,
+            accessible_name: None,
+            enabled: true,
+            dot: false,
+            priority: 0,
+            menu: None,
+            joined: false,
+            on_click,
+        }
+    }
+
+    /// The name it is announced and listed by.
+    fn name(&self) -> &str {
+        self.accessible_name.as_deref().unwrap_or(&self.label)
+    }
+}
+
 pub enum ToolbarItem {
-    Button {
-        /// The command's name: its visible label, or the accessible name
-        /// and tooltip of an icon-only command.
-        label: String,
-        /// Shown instead of the label when present.
-        icon: Option<crate::icons::Icon>,
-        /// `Some` for a toggle; `Some(true)` paints the lift.
-        active: Option<bool>,
-        on_click: Box<dyn FnMut()>,
-    },
+    Button(ToolbarCommand),
     Separator,
     Spacer,
+    /// A control hosted in the row: it lays itself out, paints and takes
+    /// focus like anywhere else. It never goes to the More menu.
+    Element(Box<dyn Widget>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,12 +100,19 @@ enum Target {
     Overflow,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent focus, capture and invalidation flags"
+)]
 pub struct Toolbar {
     items: Vec<ToolbarItem>,
     orientation: Orientation,
     rect: Rect,
     item_rects: Vec<Rect>,
+    /// One past the last shown item.
     visible_count: usize,
+    /// Commands that went to the More menu.
+    hidden: Vec<bool>,
     extents: Vec<Size<f32>>,
     chip_extent: Size<f32>,
     intrinsic: Size<f32>,
@@ -74,8 +130,19 @@ pub struct Toolbar {
     focus: Option<Target>,
     menu: ContextMenu,
     menu_indices: Vec<Option<usize>>,
+    /// A command's own menu, open, and the command it belongs to.
+    item_menu: Option<(usize, ContextMenu)>,
     viewport: Option<Rect>,
     swallow_release: bool,
+    /// The last command run, drained by [`Toolbar::take_activated`].
+    activated: Option<usize>,
+    /// A label, an item or the theme changed since the last placement.
+    layout_dirty: bool,
+    /// The text scale the extents were measured at.
+    measured_scale: Option<f32>,
+    /// Element nodes laid out apart from a host (a painted host).
+    detached: Vec<Option<super::floating_surface::DetachedContent>>,
+    theme: Theme,
 }
 
 impl Toolbar {
@@ -86,6 +153,7 @@ impl Toolbar {
             rect: Rect::ZERO,
             item_rects: Vec::new(),
             visible_count: 0,
+            hidden: Vec::new(),
             extents: Vec::new(),
             chip_extent: Size::ZERO,
             intrinsic: Size::ZERO,
@@ -107,64 +175,235 @@ impl Toolbar {
             focus: None,
             menu: ContextMenu::new(),
             menu_indices: Vec::new(),
+            item_menu: None,
             viewport: None,
             swallow_release: false,
+            activated: None,
+            layout_dirty: true,
+            measured_scale: None,
+            detached: Vec::new(),
+            theme: Theme::dark(),
         }
     }
 
-    #[must_use]
-    pub fn push_button(mut self, label: &str, on_click: impl FnMut() + 'static) -> Self {
-        self.items.push(ToolbarItem::Button {
-            label: label.to_string(),
-            icon: None,
-            active: None,
-            on_click: Box::new(on_click),
-        });
+    fn push_command(mut self, command: ToolbarCommand) -> Self {
+        self.items.push(ToolbarItem::Button(command));
+        self.layout_dirty = true;
         self
+    }
+
+    #[must_use]
+    pub fn push_button(self, label: &str, on_click: impl FnMut() + 'static) -> Self {
+        self.push_command(ToolbarCommand::new(label, Box::new(on_click)))
     }
     /// An icon-only command; `label` is its accessible name, its tooltip and
     /// its row in the overflow menu.
     #[must_use]
     pub fn push_icon(
-        mut self,
+        self,
         icon: crate::icons::Icon,
         label: &str,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.items.push(ToolbarItem::Button {
-            label: label.to_string(),
-            icon: Some(icon),
-            active: None,
-            on_click: Box::new(on_click),
-        });
-        self
+        let mut command = ToolbarCommand::new(label, Box::new(on_click));
+        command.icon = Some(icon);
+        self.push_command(command)
     }
     /// A command that is on or off (bold, a panel's visibility): a lift
     /// while on, a checked row in the overflow menu.
     #[must_use]
-    pub fn push_toggle(
-        mut self,
-        label: &str,
+    pub fn push_toggle(self, label: &str, active: bool, on_click: impl FnMut() + 'static) -> Self {
+        let mut command = ToolbarCommand::new(label, Box::new(on_click));
+        command.active = Some(active);
+        self.push_command(command)
+    }
+    /// An icon-only toggle (a panel's visibility, a view mode); `name` is
+    /// its accessible name, tooltip and overflow row.
+    #[must_use]
+    pub fn push_icon_toggle(
+        self,
+        icon: crate::icons::Icon,
+        name: &str,
         active: bool,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.items.push(ToolbarItem::Button {
-            label: label.to_string(),
-            icon: None,
-            active: Some(active),
-            on_click: Box::new(on_click),
-        });
+        let mut command = ToolbarCommand::new(name, Box::new(on_click));
+        command.icon = Some(icon);
+        command.active = Some(active);
+        self.push_command(command)
+    }
+    /// A command that opens `items` as a menu anchored to it (Sort, Insert,
+    /// View). In the More menu it is a row with the same nested menu.
+    #[must_use]
+    pub fn push_menu(self, label: &str, items: Vec<MenuItem>) -> Self {
+        let mut command = ToolbarCommand::new(label, Box::new(|| {}));
+        command.menu = Some(items);
+        self.push_command(command)
+    }
+    /// A control hosted in the row (a segmented strip, a number field, a
+    /// colour well). It keeps its own size and never goes to the More menu.
+    #[must_use]
+    pub fn push_element(mut self, element: Box<dyn Widget>) -> Self {
+        self.items.push(ToolbarItem::Element(element));
+        self.layout_dirty = true;
         self
     }
+
+    fn last_command(&mut self) -> Option<&mut ToolbarCommand> {
+        match self.items.last_mut() {
+            Some(ToolbarItem::Button(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    fn command(&self, index: usize) -> Option<&ToolbarCommand> {
+        match self.items.get(index) {
+            Some(ToolbarItem::Button(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    fn command_mut(&mut self, index: usize) -> Option<&mut ToolbarCommand> {
+        match self.items.get_mut(index) {
+            Some(ToolbarItem::Button(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    /// The last pushed command is announced and listed as `name` (a toggle
+    /// labelled "Aa" named "Match case").
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        if let Some(command) = self.last_command() {
+            command.accessible_name = Some(name.to_string());
+        }
+        self
+    }
+
+    /// The last pushed command stays visible ahead of lower priorities when
+    /// the row is too narrow (default 0; equal priorities give way from the
+    /// end).
+    #[must_use]
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        if let Some(command) = self.last_command() {
+            command.priority = priority;
+        }
+        self
+    }
+
+    /// The last pushed command goes with the command before it: they give
+    /// way to the More menu together (zoom out and zoom in), so overflow
+    /// never leaves one of the pair alone.
+    #[must_use]
+    pub fn joined(mut self) -> Self {
+        if let Some(command) = self.last_command() {
+            command.joined = true;
+        }
+        self
+    }
+
+    /// The last pushed command starts disabled.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        if let Some(command) = self.last_command() {
+            command.enabled = enabled;
+        }
+        self
+    }
+
     /// Turn the toggle at `index` on or off (the host syncing from its model).
     pub fn set_active(&mut self, index: usize, on: bool) {
-        if let Some(ToolbarItem::Button { active, .. }) = self.items.get_mut(index)
-            && active.is_some()
+        if let Some(command) = self.command_mut(index)
+            && command.active.is_some()
         {
-            *active = Some(on);
+            command.active = Some(on);
             self.menu_indices.clear();
             self.reconcile_menu();
         }
+    }
+
+    /// Enable or disable the command at `index`: a disabled command is
+    /// dimmed, announced as disabled, and neither the pointer nor the
+    /// keyboard runs it.
+    pub fn set_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(command) = self.command_mut(index)
+            && command.enabled != enabled
+        {
+            command.enabled = enabled;
+            self.menu_indices.clear();
+            self.reconcile_menu();
+        }
+    }
+
+    /// Replace the label of the command at `index` (a zoom level, a count).
+    pub fn set_label(&mut self, index: usize, label: &str) {
+        if let Some(command) = self.command_mut(index)
+            && command.label != label
+        {
+            label.clone_into(&mut command.label);
+            self.layout_dirty = true;
+            self.measured_scale = None;
+            self.menu_indices.clear();
+            self.reconcile_menu();
+        }
+    }
+
+    /// Replace the accessible name of the command at `index`.
+    pub fn set_accessible_name(&mut self, index: usize, name: &str) {
+        if let Some(command) = self.command_mut(index) {
+            command.accessible_name = Some(name.to_string());
+            self.menu_indices.clear();
+            self.reconcile_menu();
+        }
+    }
+
+    /// Show or hide the dot at the corner of the command at `index`.
+    pub fn set_dot(&mut self, index: usize, dot: bool) {
+        if let Some(command) = self.command_mut(index) {
+            command.dot = dot;
+        }
+    }
+
+    /// Replace the rows of the menu the command at `index` opens.
+    pub fn set_menu(&mut self, index: usize, items: Vec<MenuItem>) {
+        if let Some(command) = self.command_mut(index) {
+            command.menu = Some(items.clone());
+        }
+        if let Some((open, menu)) = self.item_menu.as_mut()
+            && *open == index
+        {
+            menu.set_items(items);
+        }
+    }
+
+    /// The command run last (by pointer, keyboard, the More menu or an
+    /// assistive action), once. Poll it after routing an event when the
+    /// host keeps its state in `&mut self` rather than in the callbacks.
+    pub fn take_activated(&mut self) -> Option<usize> {
+        self.activated.take()
+    }
+
+    /// Open the More menu (a stage hook that shows what overflowed).
+    pub fn open_overflow(&mut self) {
+        self.open_menu(false);
+    }
+
+    /// Where the item at `index` stands, while it is shown in the row.
+    pub fn item_rect(&self, index: usize) -> Option<Rect> {
+        self.item_rects
+            .get(index)
+            .copied()
+            .filter(|rect| !rect.is_zero_area())
+    }
+
+    /// The size the whole row wants: every item, at the theme's metrics.
+    pub fn intrinsic_size(&mut self, text: &mut TextRenderer, theme: &Theme) -> vello::kurbo::Size {
+        self.resolve_theme(theme);
+        self.update_measurements(text);
+        vello::kurbo::Size::new(
+            f64::from(self.intrinsic.width),
+            f64::from(self.intrinsic.height),
+        )
     }
 
     /// Lay the toolbar out in `rect` without a taffy pass, for a painted
@@ -173,43 +412,83 @@ impl Toolbar {
     /// usual afterwards.
     pub fn lay_out_in(&mut self, rect: Rect, text: &mut TextRenderer, theme: &Theme) {
         self.resolve_theme(theme);
+        self.measure_detached_elements(text, theme);
         self.update_measurements(text);
+        self.measured_scale = Some(theme.text_scale);
         self.rect = rect;
         self.place();
+        self.place_detached_elements();
+    }
+
+    /// [`Self::lay_out_in`] from a layout pass that has no renderer: the
+    /// cached measurements place the commands, and they are measured only
+    /// when a label or the text scale changed since.
+    pub fn lay_out_at(&mut self, rect: Rect, theme: &Theme) {
+        if self.measured_scale != Some(theme.text_scale) || self.extents.len() != self.items.len() {
+            crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                self.lay_out_in(rect, text, theme);
+            });
+            return;
+        }
+        self.resolve_theme(theme);
+        self.rect = rect;
+        self.place();
+        self.place_detached_elements();
     }
 
     /// Whether the separator at `index` is shown: only between two shown
     /// commands, never first, last, or beside another separator.
     fn separator_shown(&self, index: usize) -> bool {
-        let shown = self.items.get(..self.visible_count).unwrap_or_default();
-        let before = shown.get(..index).unwrap_or_default();
-        let after = shown.get(index.saturating_add(1)..).unwrap_or_default();
-        let command_before = before
+        self.separator_shown_in(index, self.visible_count, &self.hidden)
+    }
+
+    fn separator_shown_in(&self, index: usize, visible: usize, hidden: &[bool]) -> bool {
+        let shown = |i: usize| i < visible && !hidden.get(i).copied().unwrap_or(false);
+        let is_control = |i: usize, item: &ToolbarItem| {
+            shown(i) && matches!(item, ToolbarItem::Button(_) | ToolbarItem::Element(_))
+        };
+        let before = self
+            .items
             .iter()
+            .enumerate()
+            .take(index)
             .rev()
-            .find(|item| !matches!(item, ToolbarItem::Spacer))
-            .is_some_and(|item| matches!(item, ToolbarItem::Button { .. }));
-        let command_after = after
+            .find(|(i, item)| {
+                !matches!(item, ToolbarItem::Spacer)
+                    && (shown(*i) || !matches!(item, ToolbarItem::Button(_)))
+            })
+            .is_some_and(|(i, item)| is_control(i, item));
+        let after = self
+            .items
             .iter()
-            .any(|item| matches!(item, ToolbarItem::Button { .. }));
-        command_before && command_after
+            .enumerate()
+            .skip(index.saturating_add(1))
+            .any(|(i, item)| is_control(i, item));
+        index < visible && before && after
     }
     #[must_use]
     pub fn push_separator(mut self) -> Self {
         self.items.push(ToolbarItem::Separator);
+        self.layout_dirty = true;
         self
     }
     #[must_use]
     pub fn push_spacer(mut self) -> Self {
         self.items.push(ToolbarItem::Spacer);
+        self.layout_dirty = true;
         self
+    }
+
+    /// Whether the command at `index` is in the row (not in the More menu).
+    fn is_shown(&self, index: usize) -> bool {
+        index < self.visible_count && !self.hidden.get(index).copied().unwrap_or(false)
     }
 
     pub fn has_overflow(&self) -> bool {
         self.items
             .iter()
-            .skip(self.visible_count)
-            .any(|item| matches!(item, ToolbarItem::Button { .. }))
+            .enumerate()
+            .any(|(index, item)| matches!(item, ToolbarItem::Button(_)) && !self.is_shown(index))
     }
     pub fn visible_count(&self) -> usize {
         self.visible_count
@@ -234,9 +513,18 @@ impl Toolbar {
             .map(|item| match item {
                 ToolbarItem::Spacer => 0.0,
                 ToolbarItem::Separator => f64::from(separator_extent(theme)),
-                ToolbarItem::Button { label, .. } => {
+                ToolbarItem::Element(element) => {
+                    let rect = element.get_rect();
+                    match self.orientation {
+                        Orientation::Horizontal => rect.width(),
+                        Orientation::Vertical => rect.height(),
+                    }
+                }
+                ToolbarItem::Button(command) => {
                     let text = match self.orientation {
-                        Orientation::Horizontal => count_to_f64(label.chars().count()) * 7.0,
+                        Orientation::Horizontal => {
+                            count_to_f64(command.label.chars().count()) * 7.0
+                        }
                         Orientation::Vertical => {
                             f64::from(theme.tokens.typography.size(TextRole::Caption))
                         }
@@ -261,6 +549,7 @@ impl Toolbar {
                 used <= budget
             })
             .count();
+        self.hidden = vec![false; self.items.len()];
     }
 
     fn axis(&self, size: Size<f32>) -> f64 {
@@ -284,13 +573,17 @@ impl Toolbar {
             height: self.minimum,
         };
         let chip = square;
+        let previous = std::mem::take(&mut self.extents);
         let extents: Vec<_> = self
             .items
             .iter()
-            .map(|item| match item {
-                ToolbarItem::Button { icon: Some(_), .. } => square,
-                ToolbarItem::Button { label, .. } => button(label, text),
+            .enumerate()
+            .map(|(index, item)| match item {
+                ToolbarItem::Button(ToolbarCommand { icon: Some(_), .. }) => square,
+                ToolbarItem::Button(command) => button(&command.label, text),
                 ToolbarItem::Spacer => Size::ZERO,
+                // A hosted control's size comes from its own layout.
+                ToolbarItem::Element(_) => previous.get(index).copied().unwrap_or(square),
                 ToolbarItem::Separator => match self.orientation {
                     Orientation::Horizontal => Size {
                         width: self.separator,
@@ -303,9 +596,14 @@ impl Toolbar {
                 },
             })
             .collect();
-        let changed = extents != self.extents || chip != self.chip_extent;
+        let changed = extents != previous || chip != self.chip_extent;
         self.extents = extents;
         self.chip_extent = chip;
+        self.recompute_intrinsic();
+        changed
+    }
+
+    fn recompute_intrinsic(&mut self) {
         self.intrinsic =
             self.extents
                 .iter()
@@ -325,20 +623,103 @@ impl Toolbar {
             Orientation::Horizontal => self.intrinsic.width += gaps,
             Orientation::Vertical => self.intrinsic.height += gaps,
         }
-        changed
     }
 
-    fn fit(&self, budget: f64) -> usize {
+    /// The main-axis extent the row takes with `hidden` commands in the
+    /// More menu (spacers at zero).
+    fn used(&self, hidden: &[bool]) -> f64 {
         let gap = f64::from(self.gap);
-        let mut used = 0.0;
-        self.extents
+        let visible = self.items.len();
+        let shown_control = |index: usize, item: &ToolbarItem| match item {
+            ToolbarItem::Button(_) => !hidden.get(index).copied().unwrap_or(false),
+            ToolbarItem::Element(_) => true,
+            ToolbarItem::Separator | ToolbarItem::Spacer => false,
+        };
+        // Nothing after the last shown control takes room.
+        let end = self
+            .items
             .iter()
             .enumerate()
-            .take_while(|(index, size)| {
-                used += self.axis(**size) + if *index > 0 { gap } else { 0.0 };
-                used <= budget
-            })
-            .count()
+            .rev()
+            .find(|(index, item)| shown_control(*index, item))
+            .map_or(0, |(index, _)| index + 1);
+        let mut count = 0usize;
+        let mut used = 0.0;
+        for (index, item) in self.items.iter().enumerate().take(end) {
+            let present = match item {
+                ToolbarItem::Button(_) | ToolbarItem::Element(_) => shown_control(index, item),
+                ToolbarItem::Separator => self.separator_shown_in(index, visible, hidden),
+                ToolbarItem::Spacer => true,
+            };
+            if present {
+                used += self.extents.get(index).map_or(0.0, |size| self.axis(*size));
+                count += 1;
+            }
+        }
+        used + gap * count_to_f64(count.saturating_sub(1))
+    }
+
+    /// Which commands give way to the More menu in `axis_total`: none when
+    /// the row fits; otherwise the lowest priority first, from the end
+    /// among equals, until the rest and the More button fit.
+    fn fit(&self, axis_total: f64) -> Vec<bool> {
+        let mut hidden = vec![false; self.items.len()];
+        if self.used(&hidden) <= axis_total {
+            return hidden;
+        }
+        let budget = (axis_total - self.axis(self.chip_extent) - f64::from(self.gap)).max(0.0);
+        // Each pass hides at least one more command, so this ends.
+        loop {
+            if self.used(&hidden) <= budget {
+                break;
+            }
+            let candidate = self
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| match item {
+                    ToolbarItem::Button(command) if !hidden.get(index).copied().unwrap_or(true) => {
+                        Some((command.priority, index))
+                    }
+                    _ => None,
+                })
+                .min_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+            let Some((_, index)) = candidate else { break };
+            for member in self.joined_group(index) {
+                if let Some(slot) = hidden.get_mut(member) {
+                    *slot = true;
+                }
+            }
+        }
+        hidden
+    }
+
+    /// The command at `index` and every command joined to it, through the
+    /// commands before and after it ([`Self::joined`]).
+    fn joined_group(&self, index: usize) -> Vec<usize> {
+        let commands: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| matches!(item, ToolbarItem::Button(_)))
+            .map(|(i, _)| i)
+            .collect();
+        let Some(at) = commands.iter().position(|&i| i == index) else {
+            return vec![index];
+        };
+        let joined = |i: usize| self.command(i).is_some_and(|c| c.joined);
+        let mut start = at;
+        while start > 0 && commands.get(start).is_some_and(|&i| joined(i)) {
+            start -= 1;
+        }
+        let mut end = at;
+        while commands.get(end + 1).is_some_and(|&i| joined(i)) {
+            end += 1;
+        }
+        commands
+            .get(start..=end)
+            .map(<[usize]>::to_vec)
+            .unwrap_or_default()
     }
 
     fn place(&mut self) {
@@ -348,31 +729,50 @@ impl Toolbar {
         }
         .max(0.0);
         let gap = f64::from(self.gap);
-        self.visible_count = self.fit(axis_total);
-        if self.has_overflow() {
-            // The chip is one more sibling and takes its own gap.
-            self.visible_count =
-                self.fit((axis_total - self.axis(self.chip_extent) - gap).max(0.0));
-        }
-        let chip = if self.has_overflow() {
+        self.hidden = self.fit(axis_total);
+        // One past the last item that stands in the row.
+        self.visible_count = self
+            .items
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(index, item)| match item {
+                ToolbarItem::Button(_) => !self.hidden.get(*index).copied().unwrap_or(false),
+                ToolbarItem::Element(_) => true,
+                ToolbarItem::Separator | ToolbarItem::Spacer => false,
+            })
+            .map_or(0, |(index, _)| index + 1);
+        let overflow = self.has_overflow();
+
+        let chip = if overflow {
             self.axis(self.chip_extent).min(axis_total)
         } else {
             0.0
         };
+        let present: Vec<bool> = (0..self.items.len())
+            .map(|index| match self.items.get(index) {
+                Some(ToolbarItem::Button(_)) => self.is_shown(index),
+                Some(ToolbarItem::Separator) => self.separator_shown(index),
+                Some(ToolbarItem::Spacer | ToolbarItem::Element(_)) => index < self.visible_count,
+                None => false,
+            })
+            .collect();
+        let count = present.iter().filter(|p| **p).count();
         let used: f64 = self
             .extents
             .iter()
-            .take(self.visible_count)
-            .map(|size| self.axis(*size))
+            .zip(&present)
+            .filter(|(_, p)| **p)
+            .map(|(size, _)| self.axis(*size))
             .sum::<f64>()
-            + gap * count_to_f64(self.visible_count.saturating_sub(1));
+            + gap * count_to_f64(count.saturating_sub(1));
         let spacers = self
             .items
             .iter()
-            .take(self.visible_count)
-            .filter(|item| matches!(item, ToolbarItem::Spacer))
+            .zip(&present)
+            .filter(|(item, p)| **p && matches!(item, ToolbarItem::Spacer))
             .count();
-        let chip_gap = if self.has_overflow() { gap } else { 0.0 };
+        let chip_gap = if overflow { gap } else { 0.0 };
         let spacer = if spacers == 0 {
             0.0
         } else {
@@ -383,7 +783,10 @@ impl Toolbar {
             Orientation::Horizontal => self.rect.x0,
             Orientation::Vertical => self.rect.y0,
         };
-        for (index, item) in self.items.iter().take(self.visible_count).enumerate() {
+        for (index, item) in self.items.iter().enumerate() {
+            if !present.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let extent = if matches!(item, ToolbarItem::Spacer) {
                 spacer
             } else {
@@ -397,12 +800,28 @@ impl Toolbar {
                     Rect::new(self.rect.x0, cursor, self.rect.x1, cursor + extent)
                 }
             };
+            // A hosted control keeps its own cross size, centred in the row.
+            let rect = match (item, self.extents.get(index)) {
+                (ToolbarItem::Element(_), Some(size)) => match self.orientation {
+                    Orientation::Horizontal => {
+                        let h = f64::from(size.height).min(rect.height());
+                        let y = rect.center().y - h / 2.0;
+                        Rect::new(rect.x0, y, rect.x1, y + h)
+                    }
+                    Orientation::Vertical => {
+                        let w = f64::from(size.width).min(rect.width());
+                        let x = rect.center().x - w / 2.0;
+                        Rect::new(x, rect.y0, x + w, rect.y1)
+                    }
+                },
+                _ => rect,
+            };
             if let Some(slot) = self.item_rects.get_mut(index) {
                 *slot = rect;
             }
             cursor += extent + gap;
         }
-        self.overflow_rect = if self.has_overflow() {
+        self.overflow_rect = if overflow {
             match self.orientation {
                 Orientation::Horizontal => Rect::new(
                     self.rect.x1 - chip,
@@ -427,14 +846,69 @@ impl Toolbar {
         }
         self.refresh_hover();
         self.pressed = self.pressed.filter(|target| targets.contains(target));
+        self.layout_dirty = false;
+    }
+
+    /// Lay hosted controls out in their own trees, for a painted host.
+    fn measure_detached_elements(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let available = Size {
+            width: taffy::AvailableSpace::MaxContent,
+            height: taffy::AvailableSpace::MaxContent,
+        };
+        self.detached.resize_with(self.items.len(), || None);
+        for (index, item) in self.items.iter_mut().enumerate() {
+            let ToolbarItem::Element(element) = item else {
+                continue;
+            };
+            let content = super::floating_surface::DetachedContent::lay_out(
+                element.as_mut(),
+                theme,
+                available,
+                text,
+            );
+            let (w, h) = content.size();
+            if let Some(slot) = self.extents.get_mut(index) {
+                *slot = Size {
+                    width: crate::num::f32_of_f64(w),
+                    height: crate::num::f32_of_f64(h),
+                };
+            } else {
+                self.extents.resize(
+                    index,
+                    Size {
+                        width: self.minimum,
+                        height: self.minimum,
+                    },
+                );
+                self.extents.push(Size {
+                    width: crate::num::f32_of_f64(w),
+                    height: crate::num::f32_of_f64(h),
+                });
+            }
+            if let Some(slot) = self.detached.get_mut(index) {
+                *slot = Some(content);
+            }
+        }
+    }
+
+    /// Place the hosted controls of a painted host at their rects.
+    fn place_detached_elements(&mut self) {
+        for (index, item) in self.items.iter_mut().enumerate() {
+            let (ToolbarItem::Element(element), Some(Some(content)), Some(rect)) =
+                (item, self.detached.get(index), self.item_rects.get(index))
+            else {
+                continue;
+            };
+            element.apply_layout(&content.taffy, content.node, rect.origin());
+        }
     }
 
     fn reconcile_menu(&mut self) {
         let mut indices = Vec::new();
         let mut separator = false;
-        for (index, item) in self.items.iter().enumerate().skip(self.visible_count) {
+        for (index, item) in self.items.iter().enumerate() {
             match item {
-                ToolbarItem::Button { .. } => {
+                ToolbarItem::Button(_) if !self.is_shown(index) => {
                     if separator && !indices.is_empty() {
                         indices.push(None);
                     }
@@ -442,7 +916,7 @@ impl Toolbar {
                     separator = false;
                 }
                 ToolbarItem::Separator => separator = true,
-                ToolbarItem::Spacer => {}
+                ToolbarItem::Button(_) | ToolbarItem::Spacer | ToolbarItem::Element(_) => {}
             }
         }
         if indices != self.menu_indices {
@@ -454,23 +928,22 @@ impl Toolbar {
             self.menu = ContextMenu::new();
             for index in &indices {
                 self.menu
-                    .push(match index.and_then(|index| self.items.get(index)) {
-                        Some(ToolbarItem::Button {
-                            label,
-                            icon,
-                            active,
-                            ..
-                        }) => {
-                            let mut row = MenuItem::action(label.clone(), || {});
-                            if let Some(icon) = icon {
-                                row = row.with_icon(*icon);
+                    .push(match index.and_then(|index| self.command(index)) {
+                        Some(command) => {
+                            let mut row = match &command.menu {
+                                Some(items) => MenuItem::submenu(command.name(), items.clone()),
+                                None => MenuItem::action(command.name(), || {}),
+                            };
+                            if let Some(icon) = command.icon {
+                                row = row.with_icon(icon);
                             }
-                            if let Some(active) = active {
-                                row = row.with_checked(*active);
+                            // A toggle's row shows its state with the check.
+                            if let Some(active) = command.active {
+                                row = row.with_checked(active);
                             }
-                            row
+                            row.with_enabled(command.enabled)
                         }
-                        _ => MenuItem::separator(),
+                        None => MenuItem::separator(),
                     });
             }
             self.menu_indices = indices;
@@ -497,6 +970,7 @@ impl Toolbar {
         if !self.has_overflow() {
             return;
         }
+        self.item_menu = None;
         self.menu
             .open_anchored(self.overflow_rect, self.viewport.unwrap_or(self.rect));
         self.focus = Some(Target::Overflow);
@@ -506,9 +980,48 @@ impl Toolbar {
             self.menu.focus_first_action();
         }
     }
+
+    /// Open the menu of the command at `index`, anchored to it.
+    fn open_item_menu(&mut self, index: usize, keyboard: bool) {
+        let Some(items) = self.command(index).and_then(|c| c.menu.clone()) else {
+            return;
+        };
+        let anchor = self.item_rects.get(index).copied().unwrap_or(self.rect);
+        let mut menu = ContextMenu::with_items(items);
+        menu.open_anchored(anchor, self.viewport.unwrap_or(self.rect));
+        if keyboard {
+            menu.focus_first_action();
+        }
+        self.menu.close();
+        self.item_menu = Some((index, menu));
+        self.focus = Some(Target::Item(index));
+        self.hovered = None;
+        self.pressed = None;
+    }
+
     fn invoke(&mut self, index: usize) {
-        if let Some(ToolbarItem::Button { on_click, .. }) = self.items.get_mut(index) {
-            on_click();
+        let opens_menu = match self.items.get_mut(index) {
+            Some(ToolbarItem::Button(command)) if command.enabled => {
+                if command.menu.is_some() {
+                    true
+                } else {
+                    (command.on_click)();
+                    self.activated = Some(index);
+                    false
+                }
+            }
+            _ => false,
+        };
+        if opens_menu {
+            if self
+                .item_menu
+                .as_ref()
+                .is_some_and(|(open, _)| *open == index)
+            {
+                self.item_menu = None;
+            } else {
+                self.open_item_menu(index, false);
+            }
         }
     }
     fn drain_menu(&mut self) {
@@ -518,6 +1031,10 @@ impl Toolbar {
             .and_then(|row| self.menu_indices.get(row).copied().flatten())
         {
             self.invoke(index);
+        }
+        if self.menu.take_submenu_selection().is_some() {
+            // A pick in a command's nested menu ran its own action.
+            self.menu.close();
         }
         if !self.menu.is_open() {
             self.focus = Some(Target::Overflow);
@@ -529,7 +1046,7 @@ impl Toolbar {
     /// Popup routing still updates `pointer`, so closing or relayout cannot
     /// arm a command using a hover target from before the popup opened.
     fn refresh_hover(&mut self) -> bool {
-        let hovered = if self.menu.is_open() {
+        let hovered = if self.menu.is_open() || self.item_menu.is_some() {
             None
         } else {
             self.pointer.and_then(|point| {
@@ -549,9 +1066,9 @@ impl Toolbar {
             .items
             .iter()
             .enumerate()
-            .take(self.visible_count)
             .filter_map(|(index, item)| {
-                matches!(item, ToolbarItem::Button { .. }).then_some(Target::Item(index))
+                (matches!(item, ToolbarItem::Button(_)) && self.is_shown(index))
+                    .then_some(Target::Item(index))
             })
             .collect();
         if self.has_overflow() {
@@ -565,8 +1082,25 @@ impl Toolbar {
             Target::Overflow => Some(self.overflow_rect),
         }
     }
-    fn activate(&mut self, target: Target) {
+    fn target_enabled(&self, target: Target) -> bool {
         match target {
+            Target::Item(index) => self.command(index).is_some_and(|c| c.enabled),
+            Target::Overflow => true,
+        }
+    }
+    fn activate(&mut self, target: Target, keyboard: bool) {
+        match target {
+            Target::Item(index) if self.command(index).is_some_and(|c| c.menu.is_some()) => {
+                if self
+                    .item_menu
+                    .as_ref()
+                    .is_some_and(|(open, _)| *open == index)
+                {
+                    self.item_menu = None;
+                } else if self.target_enabled(target) {
+                    self.open_item_menu(index, keyboard);
+                }
+            }
             Target::Item(index) => self.invoke(index),
             Target::Overflow => self.open_menu(true),
         }
@@ -575,7 +1109,7 @@ impl Toolbar {
         match key {
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 if let Some(target) = self.focus {
-                    self.activate(target);
+                    self.activate(target, true);
                 }
                 *handled = true;
             }
@@ -635,7 +1169,7 @@ impl Toolbar {
     fn focus_target(&mut self, target: Target) {
         self.focused = true;
         match target {
-            Target::Item(index) if index >= self.visible_count => {
+            Target::Item(index) if !self.is_shown(index) => {
                 self.open_menu(true);
                 if let Some(row) = self
                     .menu_indices
@@ -647,6 +1181,24 @@ impl Toolbar {
             }
             _ => self.focus = Some(target),
         }
+    }
+
+    /// The hosted controls' nodes under the toolbar's node, in item order.
+    fn element_nodes(&self, taffy: &TaffyTree<()>, node: NodeId) -> Vec<(usize, NodeId)> {
+        let children = taffy.children(node).unwrap_or_default();
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| matches!(item, ToolbarItem::Element(_)))
+            .map(|(index, _)| index)
+            .zip(children)
+            .collect()
+    }
+
+    fn has_elements(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| matches!(item, ToolbarItem::Element(_)))
     }
 }
 
@@ -677,7 +1229,25 @@ fn count_to_f64(n: usize) -> f64 {
 fn to_f32(value: f64) -> f32 {
     value as f32
 }
+
 impl Widget for Toolbar {
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        Widget::set_platform_conventions(&mut self.menu, conventions);
+        for item in &mut self.items {
+            if let ToolbarItem::Element(element) = item {
+                element.set_platform_conventions(conventions);
+            }
+        }
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        for item in &mut self.items {
+            if let ToolbarItem::Element(element) = item {
+                element.sync(state, path);
+            }
+        }
+    }
+
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -685,12 +1255,14 @@ impl Widget for Toolbar {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.resolve_theme(theme);
+        self.layout_dirty = true;
+        self.detached.clear();
         // Bootstrap only for legacy callers that skip renderer settlement.
         self.extents = self
             .items
             .iter()
             .map(|item| match item {
-                ToolbarItem::Button { .. } => Size {
+                ToolbarItem::Button(_) | ToolbarItem::Element(_) => Size {
                     width: self.minimum,
                     height: self.minimum,
                 },
@@ -711,14 +1283,36 @@ impl Widget for Toolbar {
             width: self.minimum,
             height: self.minimum,
         };
-        let node = tree.leaf_node(Style {
+        let style = Style {
             flex_shrink: 1.0,
             min_size: Size {
                 width: Dimension::length(0.0),
                 height: Dimension::length(0.0),
             },
             ..Default::default()
-        });
+        };
+        let node = if self.has_elements() {
+            // Hosted controls are laid out by the host, out of flow; the
+            // toolbar sizes itself from its measured row in
+            // `adjust_layout_with_measure`.
+            let children: Vec<NodeId> = self
+                .items
+                .iter_mut()
+                .filter_map(|item| match item {
+                    ToolbarItem::Element(element) => Some(element.build_layout(tree, theme, nodes)),
+                    _ => None,
+                })
+                .collect();
+            for &child in &children {
+                if let Ok(mut child_style) = tree.style(child).cloned() {
+                    child_style.position = taffy::Position::Absolute;
+                    let _ = tree.set_style(child, child_style);
+                }
+            }
+            tree.parent_node(style, &children)
+        } else {
+            tree.leaf_node(style)
+        };
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -740,11 +1334,49 @@ impl Widget for Toolbar {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let changed = self.update_measurements(text);
-        if changed {
-            let _ = tree.mark_dirty(node);
+        self.measured_scale = Some(self.theme.text_scale);
+        let mut changed = self.update_measurements(text);
+        if !self.has_elements() {
+            if changed {
+                let _ = tree.mark_dirty(node);
+            }
+            return changed;
         }
-        changed
+        // Hosted controls: their extents are what the host measured, and
+        // the toolbar's own basis is the whole row.
+        for (index, child) in self.element_nodes(tree, node) {
+            let size = tree.layout(child).map(|l| l.size).unwrap_or(Size::ZERO);
+            if let Some(slot) = self.extents.get_mut(index)
+                && *slot != size
+            {
+                *slot = size;
+                changed = true;
+            }
+        }
+        self.recompute_intrinsic();
+        let Ok(mut style) = tree.style(node).cloned() else {
+            return changed;
+        };
+        let (main, cross) = match self.orientation {
+            Orientation::Horizontal => (self.intrinsic.width, self.intrinsic.height),
+            Orientation::Vertical => (self.intrinsic.height, self.intrinsic.width),
+        };
+        let basis = Dimension::length(main.ceil());
+        let cross = Dimension::length(cross.ceil());
+        let (want_basis, want_min) = (basis, cross);
+        let current_min = match self.orientation {
+            Orientation::Horizontal => style.min_size.height,
+            Orientation::Vertical => style.min_size.width,
+        };
+        if style.flex_basis == want_basis && current_min == want_min {
+            return changed;
+        }
+        style.flex_basis = want_basis;
+        match self.orientation {
+            Orientation::Horizontal => style.min_size.height = want_min,
+            Orientation::Vertical => style.min_size.width = want_min,
+        }
+        tree.set_style(node, style).is_ok() || changed
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = tree.layout(node).copied().unwrap_or_default();
@@ -757,6 +1389,21 @@ impl Widget for Toolbar {
             y + f64::from(layout.size.height),
         );
         self.place();
+        let elements = self.element_nodes(tree, node);
+        for (index, child) in elements {
+            let rect = self.item_rects.get(index).copied().unwrap_or(Rect::ZERO);
+            let l = tree.layout(child).copied().unwrap_or_default();
+            if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
+                element.apply_layout(
+                    tree,
+                    child,
+                    Point::new(
+                        rect.x0 - f64::from(l.location.x),
+                        rect.y0 - f64::from(l.location.y),
+                    ),
+                );
+            }
+        }
     }
     fn draw(
         &mut self,
@@ -779,7 +1426,7 @@ impl Widget for Toolbar {
             transform,
             &self.rect,
         );
-        for (index, item) in self.items.iter().enumerate().take(self.visible_count) {
+        for index in 0..self.items.len() {
             let Some(rect) = self
                 .item_rects
                 .get(index)
@@ -788,21 +1435,32 @@ impl Widget for Toolbar {
             else {
                 continue;
             };
-            match item {
-                ToolbarItem::Button {
-                    label,
-                    icon,
-                    active,
-                    ..
-                } => self.draw_button(
-                    &mut PaintCtx::new(scene, transform, text, theme),
-                    Target::Item(index),
-                    label,
-                    *icon,
-                    active.unwrap_or(false),
-                ),
-                ToolbarItem::Separator if !self.separator_shown(index) => {}
-                ToolbarItem::Separator => {
+            match self.items.get(index) {
+                Some(ToolbarItem::Button(command)) => {
+                    let (label, icon, active, enabled, dot, name) = (
+                        command.label.clone(),
+                        command.icon,
+                        command.active.unwrap_or(false),
+                        command.enabled,
+                        command.dot,
+                        command.accessible_name.clone(),
+                    );
+                    let open = self.item_menu.as_ref().is_some_and(|(i, _)| *i == index);
+                    self.draw_button(
+                        &mut PaintCtx::new(scene, transform, text, theme),
+                        Target::Item(index),
+                        &label,
+                        name.as_deref(),
+                        icon,
+                        active || open,
+                        enabled,
+                    );
+                    if dot {
+                        paint_dot(scene, transform, rect, theme);
+                    }
+                }
+                Some(ToolbarItem::Separator) if !self.separator_shown(index) => {}
+                Some(ToolbarItem::Separator) => {
                     let margin = f64::from(theme.tokens.spacing.s2);
                     let line = match self.orientation {
                         Orientation::Horizontal => Rect::new(
@@ -826,7 +1484,12 @@ impl Widget for Toolbar {
                         &line,
                     );
                 }
-                ToolbarItem::Spacer => {}
+                Some(ToolbarItem::Element(_)) => {
+                    if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
+                        element.draw(scene, transform, text, theme, presence);
+                    }
+                }
+                Some(ToolbarItem::Spacer) | None => {}
             }
         }
         if self.has_overflow() {
@@ -834,8 +1497,10 @@ impl Widget for Toolbar {
                 &mut PaintCtx::new(scene, transform, text, theme),
                 Target::Overflow,
                 "More commands",
+                None,
                 Some(crate::icons::Icon::MoreHorizontal),
                 false,
+                true,
             );
         }
         scene.pop_layer();
@@ -848,6 +1513,17 @@ impl Widget for Toolbar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        for item in &mut self.items {
+            if let ToolbarItem::Element(element) = item {
+                element.draw_overlay(scene, transform, text, theme, presence);
+            }
+        }
+        if let Some((index, menu)) = self.item_menu.as_mut() {
+            if let (Some(viewport), Some(anchor)) = (self.viewport, self.item_rects.get(*index)) {
+                menu.reanchor(*anchor, viewport);
+            }
+            menu.draw_overlay(scene, transform, text, theme, presence);
+        }
         self.menu
             .draw_overlay(scene, transform, text, theme, presence);
     }
@@ -874,6 +1550,34 @@ impl Widget for Toolbar {
             self.drain_menu();
             return;
         }
+        if let Some((_, menu)) = self.item_menu.as_mut() {
+            menu.handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                self.swallow_release = true;
+            }
+            if !menu.is_open() {
+                self.item_menu = None;
+                self.refresh_hover();
+            }
+            return;
+        }
+        // Hosted controls first: each answers for its own rect and focus.
+        let elements = self.element_nodes(ctx.taffy, ctx.node_id);
+        for (index, child) in elements {
+            if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
+                element.handle_event(event, &mut ctx.reborrow(ctx.path, child));
+                if *ctx.handled {
+                    return;
+                }
+            }
+        }
         match event {
             WindowEvent::CursorMoved { .. } => {
                 *ctx.handled |= self.refresh_hover();
@@ -884,10 +1588,13 @@ impl Widget for Toolbar {
                 ..
             } => {
                 self.refresh_hover();
-                self.pressed = self.hovered;
+                self.pressed = self.hovered.filter(|t| self.target_enabled(*t));
                 if let Some(target) = self.pressed {
                     self.focus_target(target);
                     *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
+                } else if self.hovered.is_some() {
+                    // A disabled command swallows its press.
                     *ctx.handled = true;
                 }
             }
@@ -908,7 +1615,7 @@ impl Widget for Toolbar {
                     .take()
                     .filter(|target| Some(*target) == self.hovered)
                 {
-                    self.activate(target);
+                    self.activate(target, false);
                     *ctx.handled = true;
                 }
             }
@@ -920,10 +1627,48 @@ impl Widget for Toolbar {
             _ => {}
         }
     }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                ToolbarItem::Element(element) => Some(element.as_ref()),
+                _ => None,
+            })
+            .collect()
+    }
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for item in &self.items {
+            if let ToolbarItem::Element(element) = item {
+                visitor(element.as_ref());
+            }
+        }
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.items
+            .iter_mut()
+            .filter_map(|item| match item {
+                ToolbarItem::Element(element) => Some(element.as_mut() as &mut (dyn Widget + '_)),
+                _ => None,
+            })
+            .collect()
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty
+            || self.items.iter().any(|item| match item {
+                ToolbarItem::Element(element) => element.is_layout_dirty(),
+                _ => false,
+            })
+    }
+    fn layout_needs_measure(&self) -> bool {
+        self.is_layout_dirty()
+    }
+    fn needs_redraw(&self) -> bool {
+        true
+    }
     fn is_focusable(&self) -> bool {
         self.items
             .iter()
-            .any(|item| matches!(item, ToolbarItem::Button { .. }))
+            .any(|item| matches!(item, ToolbarItem::Button(_)))
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
@@ -932,6 +1677,7 @@ impl Widget for Toolbar {
         }
         if !focused {
             self.menu.close();
+            self.item_menu = None;
             self.pressed = None;
             self.refresh_hover();
         }
@@ -940,13 +1686,22 @@ impl Widget for Toolbar {
         self.focused
     }
     fn traps_focus(&self) -> bool {
-        self.menu.is_open()
+        self.menu.is_open() || self.item_menu.is_some()
     }
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_open() || self.pressed.is_some() || self.swallow_release
+        self.menu.is_open()
+            || self.item_menu.is_some()
+            || self.pressed.is_some()
+            || self.swallow_release
+            || self.items.iter().any(|item| match item {
+                ToolbarItem::Element(element) => element.wants_pointer_capture(),
+                _ => false,
+            })
     }
     fn modal_capture(&self) -> Option<Rect> {
-        self.menu.modal_capture()
+        self.menu
+            .modal_capture()
+            .or_else(|| self.item_menu.as_ref().and_then(|(_, m)| m.modal_capture()))
     }
     fn name(&self) -> &'static str {
         "Toolbar"
@@ -959,21 +1714,24 @@ impl Widget for Toolbar {
             .targets()
             .iter()
             .map(|target| {
-                let (name, route, expanded, checked) = match target {
+                let (name, route, expanded, checked, enabled) = match target {
                     Target::Item(index) => {
-                        let (name, checked) = match self.items.get(*index) {
-                            Some(ToolbarItem::Button { label, active, .. }) => {
-                                (label.clone(), *active)
-                            }
-                            _ => (String::new(), None),
-                        };
-                        (name, format!("toolbar.item.{index}"), None, checked)
+                        let command = self.command(*index);
+                        let open = self.item_menu.as_ref().is_some_and(|(i, _)| i == index);
+                        (
+                            command.map(|c| c.name().to_owned()).unwrap_or_default(),
+                            format!("toolbar.item.{index}"),
+                            command.and_then(|c| c.menu.as_ref()).map(|_| open),
+                            command.and_then(|c| c.active),
+                            command.is_none_or(|c| c.enabled),
+                        )
                     }
                     Target::Overflow => (
                         "More commands".to_owned(),
                         "toolbar.overflow".to_owned(),
                         Some(self.menu.is_open()),
                         None,
+                        true,
                     ),
                 };
                 let role = if checked.is_some() {
@@ -992,6 +1750,7 @@ impl Widget for Toolbar {
                             && self.focus == Some(*target),
                         expanded,
                         checked,
+                        disabled: !enabled,
                         ..Default::default()
                     })
             })
@@ -1003,12 +1762,10 @@ impl Widget for Toolbar {
                 .enumerate()
                 .filter_map(|(row, index)| {
                     let index = (*index)?;
-                    let ToolbarItem::Button { label, .. } = self.items.get(index)? else {
-                        return None;
-                    };
+                    let command = self.command(index)?;
                     Some(
                         AccessNode::new(Role::MenuItem)
-                            .with_name(label.clone())
+                            .with_name(command.name().to_owned())
                             .with_action_target(format!("toolbar.item.{index}"))
                             // Keep scrolled-out actions focusable so semantic focus
                             // can reveal them, but export no fabricated painted area.
@@ -1016,6 +1773,8 @@ impl Widget for Toolbar {
                             .with_state(AccessState {
                                 focusable: true,
                                 focused: self.focused && self.menu.hovered() == Some(row),
+                                checked: command.active,
+                                disabled: !command.enabled,
                                 ..Default::default()
                             }),
                     )
@@ -1026,6 +1785,11 @@ impl Widget for Toolbar {
                     .with_bounds(self.menu.get_rect())
                     .with_children(rows),
             );
+        }
+        if let Some((_, menu)) = &self.item_menu
+            && let Some(node) = Widget::accessibility(menu)
+        {
+            children.push(node);
         }
         Some(
             AccessNode::new(Role::Toolbar)
@@ -1039,7 +1803,7 @@ impl Widget for Toolbar {
     }
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         match self.semantic_target(path)? {
-            Target::Item(index) if index >= self.visible_count => self
+            Target::Item(index) if !self.is_shown(index) => self
                 .menu_indices
                 .iter()
                 .position(|value| *value == Some(index))
@@ -1058,18 +1822,24 @@ impl Widget for Toolbar {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        if let Some((_, menu)) = self.item_menu.as_mut()
+            && menu.perform_semantic_action(target, action, state, path)
+        {
+            if !menu.is_open() {
+                self.item_menu = None;
+            }
+            return true;
+        }
         let target = if target == "toolbar.overflow" && self.has_overflow() {
             Target::Overflow
         } else if let Some(index) = target
             .strip_prefix("toolbar.item.")
             .and_then(|index| index.parse::<usize>().ok())
         {
-            if !matches!(self.items.get(index), Some(ToolbarItem::Button { .. }))
-                || (index >= self.visible_count && !self.menu.is_open())
-            {
+            if self.command(index).is_none() || (!self.is_shown(index) && !self.menu.is_open()) {
                 return false;
             }
             Target::Item(index)
@@ -1079,8 +1849,11 @@ impl Widget for Toolbar {
         match action {
             Action::Focus => self.focus_target(target),
             Action::Activate => {
+                if !self.target_enabled(target) {
+                    return false;
+                }
                 if let Target::Item(index) = target
-                    && index >= self.visible_count
+                    && !self.is_shown(index)
                 {
                     if let Some(row) = self
                         .menu_indices
@@ -1091,7 +1864,7 @@ impl Widget for Toolbar {
                         self.drain_menu();
                     }
                 } else {
-                    self.activate(target);
+                    self.activate(target, true);
                 }
             }
             _ => return false,
@@ -1100,10 +1873,29 @@ impl Widget for Toolbar {
     }
 }
 
+/// The dot on a command: your colour, at the corner of its rect, the
+/// mark an unread count has without the count.
+fn paint_dot(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let d = f64::from(theme.tokens.spacing.s2);
+    let inset = f64::from(theme.tokens.spacing.s1);
+    let centre = Point::new(rect.x1 - inset - d / 2.0, rect.y0 + inset + d / 2.0);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.intent.you,
+        None,
+        &vello::kurbo::Circle::new(centre, d / 2.0),
+    );
+}
+
 impl Toolbar {
     /// The theme's metrics for a toolbar: `Label` text, `s3` insets and
     /// gaps, and the pointer target as every command's floor.
     fn resolve_theme(&mut self, theme: &Theme) {
+        if (self.theme.text_scale - theme.text_scale).abs() > f32::EPSILON {
+            self.layout_dirty = true;
+        }
+        self.theme = theme.clone();
         self.font = theme.text(TextRole::Label);
         self.padding = theme.tokens.spacing.s3;
         // A hit target is a metric, not a spacing step: a custom theme's
@@ -1121,8 +1913,10 @@ impl Toolbar {
         ctx: &mut PaintCtx<'_>,
         target: Target,
         label: &str,
+        name: Option<&str>,
         icon: Option<crate::icons::Icon>,
         active: bool,
+        enabled: bool,
     ) {
         let Some(rect) = self.target_rect(target).filter(|rect| !rect.is_zero_area()) else {
             return;
@@ -1131,11 +1925,16 @@ impl Toolbar {
         let face = match icon {
             Some(icon) => crate::widget::ButtonFace::icon_only(rect, icon, label),
             None => crate::widget::ButtonFace::new(rect, label),
+        };
+        let face = match name {
+            Some(name) => face.accessible_name(name),
+            None => face,
         }
         .role(crate::widget::ButtonRole::Plain)
         .toggled(active)
-        .hovered(self.hovered == Some(target))
-        .pressed(self.pressed == Some(target))
+        .disabled(!enabled)
+        .hovered(enabled && self.hovered == Some(target))
+        .pressed(enabled && self.pressed == Some(target))
         .focused(self.focused && self.focus == Some(target) && !self.menu.is_open());
         crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
     }
@@ -2152,5 +2951,205 @@ mod lifecycle_tests {
                 "capture {path}; viewport={width}x{height}; toolbar_width={toolbar_width}; Theme::dark().with_text_scale({scale}); last command fired once"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod command_state_tests {
+    use super::*;
+    use crate::icons::Icon;
+    use automerge::AutoCommit;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use winit::event::DeviceId;
+
+    fn lay(tb: &mut Toolbar, width: f64) {
+        let mut text = TextRenderer::new();
+        tb.lay_out_in(Rect::new(0.0, 0.0, width, 40.0), &mut text, &Theme::dark());
+    }
+
+    fn dispatch(tb: &mut Toolbar, event: &WindowEvent) -> bool {
+        let mut tree = TaffyTree::new();
+        let node = tree.leaf_node(Style::default());
+        let mut handled = false;
+        tb.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Default::default(),
+                state: &mut AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &tree,
+            },
+        );
+        handled
+    }
+
+    fn click(tb: &mut Toolbar, p: Point) {
+        let device = unsafe { std::mem::zeroed::<DeviceId>() };
+        dispatch(
+            tb,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            },
+        );
+        for state in [ElementState::Pressed, ElementState::Released] {
+            dispatch(
+                tb,
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state,
+                    button: MouseButton::Left,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn icon_toggles_disabled_commands_and_labels_follow_the_model() {
+        let ran = Rc::new(Cell::new(0));
+        let r = Rc::clone(&ran);
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_icon_toggle(Icon::List, "Show outline", true, move || r.set(r.get() + 1))
+            .push_button("Reset", || {})
+            .push_toggle("Aa", false, || {})
+            .with_accessible_name("Match case");
+        lay(&mut tb, 600.0);
+        let node = Widget::accessibility(&tb).unwrap();
+        assert_eq!(node.children[0].role, Role::ToggleButton);
+        assert_eq!(node.children[0].state.checked, Some(true));
+        assert_eq!(node.children[2].name.as_deref(), Some("Match case"));
+        // A disabled command is announced as disabled and does nothing.
+        tb.set_enabled(1, false);
+        let node = Widget::accessibility(&tb).unwrap();
+        assert!(node.children[1].state.disabled);
+        let reset = tb.item_rect(1).unwrap();
+        click(&mut tb, reset.center());
+        assert_eq!(tb.take_activated(), None);
+        // The toggle runs and reports itself.
+        let toggle = tb.item_rect(0).unwrap();
+        click(&mut tb, toggle.center());
+        assert_eq!(ran.get(), 1);
+        assert_eq!(tb.take_activated(), Some(0));
+        assert_eq!(tb.take_activated(), None, "once");
+        // A label follows the model and the row is measured again.
+        let before = tb.item_rect(1).unwrap().width();
+        tb.set_label(1, "Reset all adjustments");
+        lay(&mut tb, 600.0);
+        assert!(tb.item_rect(1).unwrap().width() > before);
+        tb.set_dot(0, true);
+        let mut scene = Scene::new();
+        tb.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+    }
+
+    #[test]
+    fn priority_keeps_a_pair_together_and_the_more_menu_shows_state() {
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_button("Insert table", || {})
+            .with_priority(-1)
+            .push_button("Insert image", || {})
+            .with_priority(-1)
+            .push_icon(Icon::Minus, "Zoom out", || {})
+            .with_priority(1)
+            .push_icon(Icon::Plus, "Zoom in", || {})
+            .with_priority(1)
+            .push_icon_toggle(Icon::Eye, "Preview", true, || {});
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let full = tb.intrinsic_size(&mut text, &theme).width;
+        // Narrow enough that something must give.
+        lay(&mut tb, full - 40.0);
+        assert!(tb.has_overflow());
+        assert!(
+            tb.item_rect(2).is_some() && tb.item_rect(3).is_some(),
+            "the zoom pair stays"
+        );
+        assert!(
+            tb.item_rect(0).is_none() || tb.item_rect(1).is_none(),
+            "the low priority gives way"
+        );
+        // Everything is still reachable once.
+        let shown = (0..5).filter(|i| tb.item_rect(*i).is_some()).count();
+        assert_eq!(shown + tb.menu_indices.iter().flatten().count(), 5);
+        // The More menu opens on demand and a toggle there carries its check.
+        lay(&mut tb, 120.0);
+        tb.open_overflow();
+        assert!(tb.is_overflow_open());
+        let preview = tb
+            .menu_indices
+            .iter()
+            .position(|i| *i == Some(4))
+            .and_then(|row| tb.menu.items().get(row))
+            .and_then(MenuItem::checked);
+        assert_eq!(preview, Some(true));
+    }
+
+    #[test]
+    fn joined_commands_give_way_together() {
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_button("Compile", || {})
+            .push_icon(Icon::Minus, "Zoom out", || {})
+            .push_icon(Icon::Plus, "Zoom in", || {})
+            .joined();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let full = tb.intrinsic_size(&mut text, &theme).width;
+        for width in (60..(full as i32 + 10)).step_by(4) {
+            lay(&mut tb, f64::from(width));
+            assert_eq!(
+                tb.item_rect(1).is_some(),
+                tb.item_rect(2).is_some(),
+                "at {width} px the pair stands or folds together"
+            );
+        }
+    }
+
+    #[test]
+    fn a_menu_command_opens_its_menu_under_itself() {
+        let sorted = Rc::new(Cell::new(false));
+        let mut tb = Toolbar::new(Orientation::Horizontal).push_menu(
+            "Sort",
+            vec![
+                MenuItem::action("By name", || {}),
+                MenuItem::action("By date", || {}),
+            ],
+        );
+        lay(&mut tb, 400.0);
+        // The window the toolbar stands in, with room under it.
+        tb.viewport = Some(Rect::new(0.0, 0.0, 400.0, 400.0));
+        let sort = tb.item_rect(0).unwrap();
+        click(&mut tb, sort.center());
+        let (index, menu) = tb.item_menu.as_ref().expect("the command's menu opens");
+        assert_eq!(*index, 0);
+        assert!(menu.get_rect().y0 >= sort.y1 - 0.5, "under the command");
+        let node = Widget::accessibility(&tb).unwrap();
+        assert_eq!(node.children[0].state.expanded, Some(true));
+        let _ = sorted;
+    }
+
+    #[test]
+    fn layout_from_cached_measurements_needs_no_renderer() {
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_button("Bold", || {})
+            .push_button("Italic", || {});
+        let theme = Theme::dark();
+        tb.lay_out_at(Rect::new(0.0, 0.0, 400.0, 40.0), &theme);
+        let first = tb.item_rect(1).unwrap();
+        tb.lay_out_at(Rect::new(20.0, 0.0, 420.0, 40.0), &theme);
+        let moved = tb.item_rect(1).unwrap();
+        assert!((moved.x0 - first.x0 - 20.0).abs() < 1e-9);
+        assert!(!Widget::is_layout_dirty(&tb), "nothing changed since");
+        tb.set_label(0, "Bold text");
+        assert!(Widget::is_layout_dirty(&tb));
     }
 }

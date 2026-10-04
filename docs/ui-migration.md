@@ -824,6 +824,15 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | `Dropdown` at a fixed 40 px | nothing: it is a `Regular` control; `.control_size(ControlSize::Small)` in a toolbar |
 | `NumberInput::with_size(w, h)` | delete; `.control_size(size)`. The width is measured to hold every value in range |
 | a hand-drawn `− value +` stepper (zoom, page, point size, copies) | `NumberInput::new(v).with_range(..).with_step(..).with_suffix("%").compact()` |
+| a button whose click opens a `ContextMenu` placed from its rect (header More, a Sort menu), the rect walked out of a `NavShell` header | `Button::icon_only(id, Icon::MoreHorizontal, "More").with_menu(items)` (a `MenuButton`): it anchors the menu to its own rect wherever it stands, also in `NavShell` header actions. Add `.aligned(PanelAlign::Trailing)` at the end of a row. Poll `menu_mut().take_selection()` or use the row callbacks |
+| a `Toolbar` one control wide so every command lands in its More menu | `Button::with_menu(items)`; delete the one-wide container |
+| a button that opens a `Popover` placed by hand | `Button::new(..).with_popover(content)` (a `PopoverButton`); `popover_mut()` reaches the content |
+| a second `ContextMenu` opened beside a row as a flyout ("New file ›"), a row label ending in `…` or `›` | `MenuItem::submenu(label, items)`: a chevron, opens on hover, click, Enter or the arrow towards it; `take_submenu_selection()` reports `(row, nested row)` |
+| a shortcut painted beside a menu row, or in its label ("Save (Ctrl+S)") | `MenuItem::with_shortcut(Shortcut::command("S"))`; a key on its own is `Shortcut::key("Delete")` |
+| `Shortcut::key()` (the legend getter) | `Shortcut::key_name()`; `Shortcut::key(k)` now builds a modifier-free shortcut |
+| a popover or menu aligned to a trailing anchor by hand | `Popover::aligned(PanelAlign::Trailing)`, `ContextMenu::set_align(PanelAlign::Trailing)`; it flips to the leading edge only when it would leave the window |
+| a viewport inset by hand so a menu or popover keeps off the window edge | delete: every anchored panel keeps `floating_surface::viewport_margin(theme)` from the window's edges |
+| a form wrapper around one `TextInput` in a popover (caption, field, hint, Enter submits) | `Popover::prompt(caption, placeholder, hint).with_field_chars(n).with_field(\|input\| input.with_kind(..))`; `open_prompt(anchor, initial)`, `take_submitted()` |
 
 ### Chips and badges
 
@@ -870,6 +879,18 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `chrome::paint_bar(scene, t, theme, rect)` | `ui::widget::toolbar::paint_band(scene, t, theme, rect)` (no fill, a bottom hairline) |
 | `chrome::bar_padding(theme)` | `ui::widget::toolbar::band_padding(theme)` |
 | a toolbar that wraps or clips commands on a narrow window | `Toolbar`: commands that do not fit go to its More menu |
+| an icon command that is on or off, painted by hand next to the toolbar | `.push_icon_toggle(icon, name, active, f)` |
+| a command left out (or hidden) while it cannot run | `.set_enabled(index, false)` (or `.with_enabled(false)` after pushing): dimmed, announced as disabled, inert |
+| a toolbar rebuilt to change one label ("Problems (3)") | `.set_label(index, text)` |
+| items ordered by importance, or a re-layout so a pair (zoom out / in) is not split | `.with_priority(p)` after pushing: higher stays visible longer, equals give way from the end; `.joined()` after the second of a pair keeps it with the one before, so they fold together |
+| a toggle whose visible label is not its name ("Aa") | `.with_accessible_name("Match case")` after pushing, or `set_accessible_name(index, name)` |
+| a ContextMenu anchored to a toolbar item by hand, or reading private item rects | `.push_menu(label, items)`; `item_rect(index)` for anything else anchored to an item |
+| `Rc<Cell<..>>` flags set by command closures | `take_activated() -> Option<usize>` after routing each event |
+| `lay_out_in(Rect::ZERO, ..)` then `measure` to learn the toolbar's size | `intrinsic_size(text, theme)` |
+| placing a hosted toolbar only in `draw` (no renderer in `apply_layout`) | `lay_out_at(rect, theme)`: the cached measurements place it, measured again only when a label or the text scale changed |
+| a stage hook that cannot show the More menu | `open_overflow()` |
+| a `ToggleGroup`, `NumberInput` or colour well drawn beside the toolbar | `.push_element(Box::new(control))`: it stands in the row and never goes to the More menu |
+| a badge or dot painted over a toolbar item | `.set_dot(index, true)` |
 
 ### Scrolling
 
@@ -913,6 +934,14 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `NumberInput::{compact, control_size}` | Inline stepper; size |
 | `ChipStyle::{Neutral, Tinted(Tone), Live}`, `ChipFace`, `BadgeFace`, `ChipColors`, `Chip::{style, with_lead}`, `Badge::style` | Chips and badges |
 | `Toolbar::{push_icon, push_toggle, set_active, lay_out_in}`, `toolbar::{paint_band, band_padding}` | Toolbars |
+| `Toolbar::{push_icon_toggle, push_menu, push_element, with_priority, joined, with_enabled, with_accessible_name, set_enabled, set_label, set_dot, set_menu, item_rect, intrinsic_size, lay_out_at, take_activated, open_overflow}` | Toolbar commands with state, menus, hosted controls and overflow priority |
+| `Button::with_menu(items) -> MenuButton`, `Button::with_popover(content) -> PopoverButton` | A button that opens a menu or a popover at its own rect |
+| `MenuItem::{submenu, with_shortcut, shortcut, submenu_items}`, `ContextMenu::{with_items, set_items, set_align, open_submenu, close_submenu, take_submenu_selection}` | Nested menus, shortcuts, alignment |
+| `floating_surface::{PanelAlign, place_aligned, viewport_margin, panel_room, control_inset, single_row_radius, paint_rounded, paint_armed_row_in}` | Panel alignment, edge margin and concentric insets |
+| `Popover::{prompt, aligned, set_align}`, `PopoverPrompt` | A one-field prompt next to its trigger |
+| `Shortcut::key(k)`, `Shortcut::key_name()` | A shortcut without the command modifier; its legend |
+| `TabBar::{closable, without_new_tab, set_mark, mark, mark_rect, take_mark_click}`, `TabMark::{Busy, Playing, Muted}` | A strip of fixed views; what a tab's content is doing |
+
 | `Metrics::{menu_row_height, scrollbar_gutter}` | Menu rows; scroll bar gutter |
 | `ColorSwatch`, `ColorSwatchPicker::new(swatches, columns)`, `ColorSwatchFace::{of, focused}` | Swatches |
 | `InputHint::keycap_height(theme)` | Centring a row of keycaps |
@@ -1267,7 +1296,25 @@ input and everything drawn around it.
      `FindBar::height(theme)` tall at the top of the content.
    - Delete the app's find field, counter, case/word toggles, next/previous
      buttons, its Ctrl+F / F3 / Enter handling and its match colour.
+   - A hosted bar, with what used to need a workaround:
+
+     | Workaround | Instead |
+     |---|---|
+     | replacing the `FindBar` to clear a sticky `close_requested()` | `take_close_requested()` after `drive`; the bar keeps its query and options for the next open |
+     | `set_query(query)` again to make the counter follow content that changed under an open bar (terminal output, a reloaded file, PDF text arriving page by page) | `refresh()`: the next `drive` finds again and keeps the current match |
+     | a byte view whose bar opens on Text | `FindBar::with_mode(FindMode::Hex)` / `set_mode`; `set_options(options)` restores a view's last find |
+     | an engine that finds on its own (a web page) faking `Vec<FindMatch>` | return no matches from `find`, report with `FindBar::set_results(total, current)`, and step in `Findable::step(forward) -> true` |
+     | a regex toggle drawn beside the bar | `Findable::supports_regex() -> true` (or `FindBar::with_regex()`); `FindMode::Regex` reaches `find` |
+     | a second field focused by hand for Ctrl+H | `focus_replace()` |
+     | insetting the band and repainting its hairline so the field lines up with the content | `with_content_inset(leading, trailing)` / `set_content_inset` |
+     | a bare `FindBar` hosted because `FindScope` binds plain Ctrl+F (a terminal) | `FindScope::new(view).with_shortcut(Shortcut::command("F").shift())`, or `.without_shortcut()` and `FindScope::open()` from the app's own key |
+
+     The bar's labels come from the toolkit's catalogue (`find-bar-*`), its
+     Match case / Whole word / Regular expression options are toggle buttons,
+     Text / Hex is one segmented strip, and its only X is the bar's close
+     control.
 8. **Keys.** Delete every app handler for Ctrl+K, `/` and Ctrl+F that opens
+
    search or find: Ctrl+K and `/` open the platform search (a focused text
    field or terminal still types `/`), Ctrl+F belongs to the `FindScope` or
    `Filtered` around the content.
@@ -1380,6 +1427,58 @@ Scrims that covered only a pane (calendar, shortcuts, containers,
 word-processor) cover the window once the dialog is mounted as above; delete
 any per-pane scrim rect.
 
+A dialog (or a popover with content) mounted in a retained tree lays its
+content out in the window's own tree, out of flow: its node takes no room
+from the column it stands in, a click on a field focuses that field and
+blurs the one before, opening it focuses its first control, and Tab runs
+from the content into the footer actions and around inside the trap. A
+painted host that routes events through `handle_detached` keeps its content
+in the dialog's own tree; mount the dialog as a child node instead when its
+fields need the window's focus.
+
+What used to need a workaround around `ModalDialog`:
+
+| Workaround | Instead |
+|---|---|
+| translating a field's focus request to the window's node (`field_under`, `host_field_nodes`), a decorator that makes the dialog's node absolute | delete: the content is in the window's tree |
+| a `Scrollable` with a computed `max_height` as the body, MouseWheel routed to it by the app, a `fit` pass per window size | delete: a body taller than the window allows scrolls inside the sheet, with the wheel, a scroll thumb and hairlines at the scrolled edges, and ends on a row boundary |
+| rebuilding or re-measuring the dialog after the content changed size | `invalidate_layout()`; a structure change the content reports does it by itself |
+| `ModalSpec`/`paint_backdrop`/`paint_actions` to ask a question with three answers | `.primary_action("Save", ..).tertiary_action("Don't save", ..).with_destructive_tertiary(true).secondary_action("Cancel", ..)`: the third answer stands apart, Enter never fires it, Escape is Cancel |
+| a type-to-confirm gate painted by hand, or a primary action that looks enabled while locked | `set_primary_enabled(bool)` / `with_primary_enabled`, or `primary_enabled_if(\|content\| ..)`; `set_primary_label(text)` for a label that follows the content |
+| a typed-phrase confirmation body built by hand | `ModalDialog::new(title, PromptBody::confirm_phrase(message, phrase)).primary_enabled_if(PromptBody::confirms)` |
+| a title elided on one line | nothing: the title wraps to two lines before it elides |
+| a sheet that covers the window's header row | nothing: a tall sheet stands below the header row |
+| a dropdown inside a dialog whose list closes the dialog when picked below the sheet | nothing: an overlay the content opened gets the press before the scrim |
+| tests that could not find the footer buttons by name | `click_named("modal.primary")` (or `"<dialog test id>.primary"`, `.secondary`, `.tertiary`) |
+
+An immediate-mode host that asks a question from a painted widget uses
+`ModalSheet`, which keeps the layout of its last paint so the event path can
+hit-test without a renderer:
+
+```rust
+// draw_overlay
+let window = presence.viewport.get().unwrap_or(self.rect);
+let actions = [
+    ModalAction::primary("Save"),
+    ModalAction::alternate_danger("Don't save"),
+    ModalAction::secondary("Cancel"),
+];
+let spec = ModalSpec::new("Save changes to notes.md?").actions(&actions);
+self.sheet.paint_message(scene, transform, text, theme, window, &spec, "Your changes will be lost.");
+// handle_event
+match self.sheet.handle(event, ctx.scale_factor) {
+    Some(SheetResponse::Action(0)) => self.save(),
+    Some(SheetResponse::Action(1)) => self.discard(),
+    Some(SheetResponse::Action(_) | SheetResponse::Dismiss) => self.cancel(),
+    None => {}
+}
+*ctx.handled = true;
+```
+
+Delete the cached `ModalLayout` field, the hover index and the hit-testing
+around it. `ModalSheet::paint` takes a closure for a body that is not a
+message.
+
 ### Choosing modal or popover
 
 - Confirms a destructive or irreversible step, asks for a value, or blocks
@@ -1402,6 +1501,7 @@ any per-pane scrim rect.
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
 | A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
+| A readout that does something when clicked (a zoom level, an offset that opens Go to) | `ui::chrome::status_bar::draw_readouts(scene, t, tr, theme, bar, &left, &right, hovered)` with `StatusReadout::action(text)`; it returns each readout's rect to hit-test. `status_bar::height` grows with the `Caption` line at a large text scale |
 | An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
 | A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Saving and saved show in the transient bubble; a failure is an error card with Try again that stays until the save succeeds. Delete any save pill, pinned bubble or hand-drawn failure text |
@@ -1441,11 +1541,22 @@ and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
   and draw that text in `theme.tokens.colors.media.ink` (secondary:
   `media.ink_dim`).
 - Controls over media (capture toolbars, editor transport, photo info) → a
-  floating Panel shaped to the controls:
+  `ui::widget::floating_surface::ControlBar`: `ControlBar::bottom_centre(area,
+  count, theme)` (or `size`), `bar.paint(scene, t, text, theme, rect,
+  &[BarControl::new(icon, name).toggled(on).enabled(ok)])`, and
+  `bar.handle(event, scale)` returns the control a click activated. It owns
+  the panel, the `control_inset(theme)` around the buttons (panel radius less
+  control radius, so their corners run concentric), the gaps and the hit
+  rects; delete the app's constants for them. Anything else over media is a
+  floating Panel shaped to it:
   `ui::widget::floating_surface::paint(scene, t, rect, theme)`, inked with
   `let ink = theme.on_ground(ui::chrome::panel_ground(theme));`
-  (`ink.text_primary`, `ink.text_dim`). Glyphs are `metrics.icon_md` in
-  `metrics.min_pointer_target` hit rects that do not overlap.
+  (`ink.text_primary`, `ink.text_dim`).
+- A floating surface attached to an app (a call, picture in picture) that
+  must keep clear of the window's header row →
+  `FloatingPlacement::set_safe_insets([0.0, header, 0.0, 0.0])`; keep
+  `set_attached_chrome` for the surface's own decoration.
+
 - The area around a frame (letterbox, an empty viewfinder) →
   `theme.tokens.colors.media.letterbox`, never `surfaces.base`.
 - An idle or error state over media → text only; never draw a play glyph

@@ -314,7 +314,7 @@ pub use profiling::{
     StatSummary, run_scenario, run_scenario_on,
 };
 pub use reader_hud::{
-    HudAction, HudControls, HudPlacement, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud,
+    HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
 pub use remote_actions::{

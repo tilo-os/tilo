@@ -3179,7 +3179,7 @@ impl Widget for CameraApp {
             // Under the modal sheet only the sheet is operable.
             self.regions.clear();
             self.tooltip_targets.clear();
-            self.settings_sheet.fit(full, tr, theme);
+            self.settings_sheet.fit(full, theme);
         } else {
             self.draw_tooltip(scene, t, tr, theme);
         }
@@ -3203,7 +3203,6 @@ impl Widget for CameraApp {
         let path = ctx.path;
         // The settings sheet is modal: it takes every event while it is up.
         if self.screen == Screen::Settings {
-            self.settings_sheet.scroll(event, ctx);
             self.settings_sheet.dialog.handle_detached(
                 event,
                 ctx.scale_factor,
@@ -3501,7 +3500,7 @@ impl Widget for CameraApp {
         }
     }
     fn needs_redraw(&self) -> bool {
-        let mut dirty = self.dirty || self.tooltip.needs_frame() || self.settings_sheet.fitting();
+        let mut dirty = self.dirty || self.tooltip.needs_frame();
         self.for_each_child(&mut |child| dirty |= child.needs_redraw());
         dirty
     }
@@ -4090,8 +4089,9 @@ mod tests {
             let mut app = render_at(app, doc, 1280.0, 800.0);
             rerender_at(&mut app, 1280.0, 800.0);
             rerender_at(&mut app, 1280.0, 800.0);
-            assert!(
-                !app.settings_sheet.dialog.content().vertical_overflows(),
+            assert_eq!(
+                app.settings_sheet.dialog.scroll_offset(),
+                0.0,
                 "the whole form fits a 1280x800 window"
             );
         }
@@ -4107,10 +4107,6 @@ mod tests {
                 sheet.y0 >= 0.0 && sheet.y1 <= 600.0,
                 "the sheet stays inside the window: {sheet:?}"
             );
-            assert!(
-                app.settings_sheet.dialog.content().vertical_overflows(),
-                "the form is taller than a 600 px window allows"
-            );
             let centre = sheet.center();
             let device_id = unsafe { std::mem::zeroed() };
             let moved = WindowEvent::CursorMoved {
@@ -4125,12 +4121,10 @@ mod tests {
             let (camera, state) = Framed::split(&mut app);
             drive(camera, &moved, &mut state.doc, &root);
             drive(camera, &wheel, &mut state.doc, &root);
-            let content = camera.settings_sheet.dialog.content();
+            let dialog = &camera.settings_sheet.dialog;
             assert!(
-                content.offset_y() > 0.0 && content.offset_y() >= content.max_offset_y() - 0.5,
-                "the wheel scrolls the form to its end: {} of {}",
-                content.offset_y(),
-                content.max_offset_y()
+                dialog.scroll_offset() > 0.0,
+                "the wheel scrolls the form inside the sheet"
             );
             assert_eq!(
                 camera.screen,

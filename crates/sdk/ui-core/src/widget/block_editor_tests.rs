@@ -1130,14 +1130,19 @@ fn block_typography_scales_and_bands_each_kind() {
 
         let checklist = editor.blocks[0].line.get_rect();
         let code = editor.blocks[1].line.get_rect();
-        let band = |kind: BlockKind| f64::from(kind.font_size()) * 2.0 * 1.5;
+        // A row holds its text at its role's leading, scaled with the text.
+        let band = |kind: BlockKind| {
+            let style = crate::tokens::typography::stock().style(kind.text_role());
+            let leading = f64::from(style.line_height_px() / style.size).max(1.0);
+            f64::from(kind.font_size()) * 2.0 * leading - 0.01
+        };
         assert!(
             checklist.height() >= band(BlockKind::Paragraph),
-            "2× checklist text needs its 1.5-line band"
+            "2× checklist text needs its full scaled line band"
         );
         assert!(
             code.height() >= band(BlockKind::CodeBlock { lang: None }),
-            "2× code text needs its 1.5-line band"
+            "2× code text needs its full scaled line band"
         );
         assert!(checklist.y1 <= code.y0, "scaled rows must not collide");
         assert!(code.x0 >= prefix_gutter_for(&editor.blocks[1].kind) * 2.0);

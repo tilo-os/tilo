@@ -14,15 +14,13 @@
 
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::widget::Widget;
-use ui::widget::code_editor::{CodeEditor, Language};
+use ui::widget::code_editor::{CodeEditor, Diagnostic as CodeDiagnostic, Language, Severity};
 
 use crate::compile::{DiagKind, Diagnostic};
 
@@ -264,7 +262,10 @@ impl SourceEditor {
     // ----- rendering -------------------------------------------------------
 
     /// Paint the pane. The editor stands on the window ground: it fills
-    /// nothing of its own.
+    /// nothing of its own. The shared widget paints the gutter, line numbers,
+    /// current-line band, selection, highlighted text and caret, and the
+    /// compiler's diagnostics: a severity mark in the gutter and a squiggle
+    /// under each span, in the theme's status colours.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -273,23 +274,28 @@ impl SourceEditor {
         theme: &Theme,
         diags: &[Diagnostic],
     ) {
-        // The shared widget paints the gutter, line numbers, current-line band,
-        // selection, highlighted text, and caret.
         self.code.set_focused(self.focused);
         self.code.set_rect(self.rect);
+        let text = self.code.value().to_string();
+        let spans = diags
+            .iter()
+            .filter_map(|d| {
+                let (b0, b1) = diag_byte_span(d, &text)?;
+                let severity = match d.kind {
+                    DiagKind::Error => Severity::Error,
+                    DiagKind::Warning => Severity::Warning,
+                };
+                let message = match d.hints.first() {
+                    Some(hint) => format!("{}\n{hint}", d.message),
+                    None => d.message.clone(),
+                };
+                Some(CodeDiagnostic::new(b0..b1, severity, message))
+            })
+            .collect();
+        self.code.set_diagnostics(spans);
+        self.code
+            .set_pointer(self.hover.filter(|p| self.rect.contains(*p)));
         self.code.draw_embedded(scene, transform, tr, theme);
-
-        // Diagnostics overlay, drawn on top using the widget's geometry, clipped
-        // to the pane so squiggles/markers never spill past it.
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &self.rect,
-        );
-        self.draw_diagnostics(scene, transform, theme, diags);
-        scene.pop_layer();
     }
 
     /// The hover card for the diagnostic under the pointer, drawn in the
@@ -301,135 +307,10 @@ impl SourceEditor {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        diags: &[Diagnostic],
+        window: Rect,
     ) {
-        let Some(hp) = self.hover.filter(|p| self.rect.contains(*p)) else {
-            return;
-        };
-        let byte = self.code.byte_at_point(hp);
-        let text = self.code.value().to_string();
-        if let Some(d) = diags.iter().find(|d| {
-            diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-        }) {
-            self.paint_tooltip(scene, transform, tr, theme, hp, d);
-        }
-    }
-
-    /// Gutter severity markers + inline squiggles, positioned from the shared
-    /// widget's caret / selection geometry so they track scroll, wrap, and the
-    /// gutter width exactly.
-    fn draw_diagnostics(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        diags: &[Diagnostic],
-    ) {
-        if diags.is_empty() {
-            return;
-        }
-        let text = self.code.value().to_string();
-        let lh = self.code.line_height();
-        let unit = f64::from(theme.tokens.spacing.s1);
-
-        // Gutter severity dot on each line a diagnostic starts on.
-        for (line0, kind) in worst_severity_by_line(diags) {
-            let byte = byte_of_line_col(&text, line0, 0);
-            let cr = self.code.caret_rect(theme, byte);
-            if cr.y1 < self.rect.y0 || cr.y0 > self.rect.y1 {
-                continue;
-            }
-            let cx = self.rect.x0 + 2.0 * unit;
-            let cy = cr.y0 + lh * 0.5;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                diag_color(kind, theme),
-                None,
-                &Circle::new(Point::new(cx, cy), unit * 0.75),
-            );
-        }
-
-        // Inline squiggle under every diagnostic span, one segment per visual row.
-        for d in diags {
-            if let Some((b0, b1)) = diag_byte_span(d, &text) {
-                for r in self.code.selection_rects(theme, b0, b1) {
-                    let yb = r.y1 - unit * 0.9;
-                    draw_squiggle(
-                        scene,
-                        transform,
-                        (r.x0, r.x1, yb),
-                        unit,
-                        diag_color(d.kind, theme),
-                    );
-                }
-            }
-        }
-    }
-
-    /// Draw a floating card near `at` carrying a diagnostic's message (and
-    /// its first hint, dimmed). Sizing is measured from the text so the card
-    /// hugs the content.
-    fn paint_tooltip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        at: Point,
-        d: &Diagnostic,
-    ) {
-        let spacing = &theme.tokens.spacing;
-        let pad = f64::from(spacing.s3);
-        let gap = f64::from(spacing.s1);
-        let max_text_w = f64::from(theme.tokens.metrics.panel_width_list) - 2.0 * pad;
-        let message_style = theme.text(TextRole::Label);
-        let hint_style = theme.text(TextRole::Caption);
-        let mut lines = vec![(d.message.clone(), message_style, false)];
-        if let Some(h) = d.hints.first() {
-            lines.push((h.clone(), hint_style, true));
-        }
-        let mut w = 0.0f64;
-        let mut total_h = 0.0f64;
-        let mut heights = Vec::with_capacity(lines.len());
-        for (s, style, _) in &lines {
-            let (tw, th) = tr.measure_style(s, Some(ui::num::f32_of_f64(max_text_w)), style);
-            w = w.max(f64::from(tw));
-            heights.push(f64::from(th));
-            total_h += f64::from(th) + gap;
-        }
-        total_h -= gap;
-        let card_w = w + pad * 2.0;
-        let card_h = total_h + pad * 2.0;
-        let (below, side) = (f64::from(spacing.s4), f64::from(spacing.s3));
-        let mut x0 = at.x + side;
-        let mut y0 = at.y + below + f64::from(spacing.s1);
-        if x0 + card_w > self.rect.x1 - gap {
-            x0 = (self.rect.x1 - gap - card_w).max(self.rect.x0 + gap);
-        }
-        if y0 + card_h > self.rect.y1 - gap {
-            y0 = (at.y - card_h - f64::from(spacing.s2)).max(self.rect.y0 + gap);
-        }
-        let card = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
-        ui::widget::floating_surface::paint(scene, transform, card, theme);
-        let on_card = theme.on_ground(ui::chrome::panel_ground(theme));
-        let mut ty = y0 + pad;
-        for ((s, style, dim), h) in lines.iter().zip(heights.iter()) {
-            let color = if *dim {
-                on_card.text_dim
-            } else {
-                on_card.text_primary
-            };
-            tr.draw_style(
-                scene,
-                s,
-                color,
-                transform * Affine::translate((x0 + pad, ty)),
-                Some(ui::num::f32_of_f64(card_w - pad * 2.0)),
-                style,
-            );
-            ty += h + gap;
-        }
+        self.code
+            .draw_diagnostic_card(scene, transform, tr, theme, window);
     }
 
     /// The caret is a steady bar, so a focused-but-idle editor needs no
@@ -437,32 +318,6 @@ impl SourceEditor {
     pub fn wants_animation(&self) -> bool {
         false
     }
-}
-
-/// The theme colour a diagnostic severity draws in.
-fn diag_color(kind: DiagKind, theme: &Theme) -> vello::peniko::Color {
-    match kind {
-        DiagKind::Error => theme.tokens.colors.semantic.danger,
-        DiagKind::Warning => theme.tokens.colors.semantic.warning,
-    }
-}
-
-/// Map each 0-based source line that a diagnostic *starts* on to the worst
-/// severity present there (Error beats Warning), for the gutter markers.
-fn worst_severity_by_line(diags: &[Diagnostic]) -> std::collections::HashMap<usize, DiagKind> {
-    let mut map: std::collections::HashMap<usize, DiagKind> = std::collections::HashMap::new();
-    for d in diags {
-        let Some(line1) = d.line else { continue };
-        let line = line1.saturating_sub(1);
-        map.entry(line)
-            .and_modify(|k| {
-                if d.kind == DiagKind::Error {
-                    *k = DiagKind::Error;
-                }
-            })
-            .or_insert(d.kind);
-    }
-    map
 }
 
 /// The byte offset in `text` of 0-based `(line, col)` (col in chars). Clamps to
@@ -493,37 +348,6 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
         .max(b0 + 1)
         .min(text.len().max(b0 + 1));
     Some((b0, b1.min(text.len())))
-}
-
-/// Stroke a wavy underline (a squiggle) from `x0` to `x1` at baseline `y`
-/// (`span` is `(x0, x1, y)`), its wave `unit` wide, in `color`.
-fn draw_squiggle(
-    scene: &mut Scene,
-    transform: Affine,
-    span: (f64, f64, f64),
-    unit: f64,
-    color: vello::peniko::Color,
-) {
-    let (x0, x1, y) = span;
-    let period = unit;
-    let amplitude = unit * 0.4;
-    if x1 <= x0 {
-        return;
-    }
-    let mut path = BezPath::new();
-    path.move_to(Point::new(x0, y));
-    let mut x = x0;
-    let mut up = true;
-    loop {
-        if x >= x1 {
-            break;
-        }
-        x = (x + period * 0.5).min(x1);
-        let dy = if up { -amplitude } else { amplitude };
-        path.line_to(Point::new(x, y + dy));
-        up = !up;
-    }
-    scene.stroke(&Stroke::new(unit * 0.32), transform, color, None, &path);
 }
 
 #[cfg(test)]
@@ -603,8 +427,23 @@ mod tests {
                 end_col: Some(6),
                 hints: vec![],
             };
-            let map = worst_severity_by_line(&[warn, err]);
-            assert_eq!(map.get(&1), Some(&DiagKind::Error));
+            let mut ed = SourceEditor::new();
+            ed.code.set_text("a\nbcdefg\n");
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            ed.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &[warn, err],
+            );
+            let severities: Vec<Severity> =
+                ed.code.diagnostics().iter().map(|d| d.severity).collect();
+            assert_eq!(
+                severities,
+                [Severity::Warning, Severity::Error],
+                "the widget marks each span at its severity"
+            );
         }
     }
 
