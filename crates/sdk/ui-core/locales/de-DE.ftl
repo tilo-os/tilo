@@ -298,6 +298,10 @@ tree-move-down = Nach unten verschieben
 tree-move-indent = In das Element darüber verschieben
 tree-move-outdent = Aus dem übergeordneten Element verschieben
 
+# The show/hide control inside every password field.
+text-input-show-password = Passwort anzeigen
+text-input-hide-password = Passwort verbergen
+
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Willkommen zurück bei Tilo
 greeter-sign-in = Zum Fortfahren anmelden
