@@ -28,6 +28,7 @@ use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{ButtonFace, FlapState, SplitLayout, TextInput, TextInputKind, Widget};
 
+use crate::actions::GitClientEffect;
 use crate::changes::{ChangesColumn, ChangesHit};
 use crate::diffview::{self, DiffView, HunkInteraction};
 use crate::draw;
@@ -36,7 +37,8 @@ use crate::history::{self, HistoryView};
 use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
 use crate::panels::{BranchAction, PanelHit, PanelsView, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
-use ui::framework::{LiveRow, RunMode};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, RunMode};
+use ui::tilo_actions::ActionOutput;
 
 /// Which embedded text field currently holds keyboard focus. Text editing is
 /// delegated to the toolkit's [`TextInput`] (cursor, selection, word-nav,
@@ -240,13 +242,11 @@ const NARROW_BREAKPOINT: f64 = 760.0;
 /// the docked changes column so the list looks identical in both layouts.
 const FLAP_W: f64 = CHANGES_COL_W;
 
-/// One owned repository operation. Completion stays available until its action
-/// invocation consumes it, even when a normal UI sync receives it first.
+/// One running fetch, pull or push, answering the effect that started it (if
+/// any) when the worker finishes.
 struct RemoteJob {
     receiver: Receiver<Result<(), String>>,
-    result: Option<Result<(), String>>,
-    invocation: Option<tilo_actions::InvocationId>,
-    progress_sent: bool,
+    reply: Option<EffectReply>,
     /// Palette label while the transfer is in flight (a live row).
     label: String,
 }
@@ -693,7 +693,7 @@ impl GitClientApp {
         &mut self,
         action: RemoteAction,
         remote: Option<String>,
-        invocation: Option<tilo_actions::InvocationId>,
+        reply: Option<EffectReply>,
     ) -> Result<(), String> {
         if self.remote_job.is_some() {
             return Err(ui::i18n!("git-remote-busy"));
@@ -723,9 +723,7 @@ impl GitClientApp {
         self.last_error = None;
         self.remote_job = Some(RemoteJob {
             receiver,
-            result: None,
-            invocation,
-            progress_sent: false,
+            reply,
             label,
         });
         Ok(())
@@ -735,18 +733,17 @@ impl GitClientApp {
         let Some(job) = self.remote_job.as_mut() else {
             return;
         };
-        if job.result.is_some() {
-            return;
-        }
         let result = match job.receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(ui::i18n!("git-remote-worker-stopped")),
         };
         self.last_error = result.as_ref().err().cloned();
-        job.result = Some(result);
-        if job.invocation.is_none() {
-            self.remote_job = None;
+        // libgit2 transfers are not cancellable: the worker's actual outcome
+        // is the answer, so a push the server accepted is never reported as
+        // cancelled.
+        if let Some(reply) = self.remote_job.take().and_then(|job| job.reply) {
+            reply.finish(result.map(|()| ActionOutput::default()));
         }
         // A failed transfer can still have fetched objects/refs. Refresh from
         // disk on either outcome; never infer rollback from an error.
@@ -2709,10 +2706,6 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.drain_remote();
         self.publish_shared_repo_if_needed();
@@ -2975,91 +2968,11 @@ impl Widget for GitClientApp {
         true
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.remote_job.as_ref()?.invocation != Some(invocation) {
-            return None;
-        }
-        // libgit2 operations are currently non-cancellable. In particular,
-        // never report a cancelled push when the server may have accepted it.
-        self.drain_remote();
-        let job = self.remote_job.as_mut()?;
-        if let Some(result) = job.result.take() {
-            self.remote_job = None;
-            return Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "git.remote_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
-        if !job.progress_sent {
-            job.progress_sent = true;
-            return Some(tilo_actions::InvocationUpdate::Progress {
-                invocation,
-                sequence: 1,
-                phase: "git.remote".into(),
-                completed: None,
-                total: None,
-                message: Some(ui::i18n!("git-remote-running")),
-            });
-        }
-        None
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // Redraw while the flap animates, and while any embedded text field is
         // focused so its caret keeps blinking.
         self.flap.is_animating(self.layout_mode())
-            || self
-                .remote_job
-                .as_ref()
-                .is_some_and(|job| job.result.is_none())
+            || self.remote_job.is_some()
             || self.commit_input.needs_animation_frame()
             || self.branch_input.needs_animation_frame()
             || self.open_input.needs_animation_frame()
@@ -3079,90 +2992,34 @@ impl Widget for GitClientApp {
 }
 
 impl GitClientApp {
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::GitClientOperation;
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let remote = match (kind, operation) {
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Fetch { remote }) => {
-                Some((RemoteAction::Fetch, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Pull { remote }) => {
-                Some((RemoteAction::Pull, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Push { remote }) => {
-                Some((RemoteAction::Push, remote))
-            }
-            _ => None,
-        };
-        if let Some((action, remote)) = remote {
-            self.start_remote(action, Some(remote), Some(invocation))?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| {
-                handled.then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                })
-            })
-    }
-
+    /// Answer one of the client's effects, invoked by the palette, an agent
+    /// or a script. Fetch, pull and push run on the transfer worker and answer
+    /// when it finishes; everything else answers at once.
     #[allow(
         clippy::too_many_lines,
-        reason = "one exhaustive typed protocol match keeps publication-to-handler coverage auditable"
+        reason = "one exhaustive match over the effect vocabulary keeps every published effect's handler in view"
     )]
-    fn answer_resource_operation(
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(false);
-        }
-        if kind == tilo_actions::OperationKind::Effect && self.repository_busy() {
+        effect: GitClientEffect,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let view = matches!(
+            effect,
+            GitClientEffect::ShowChanges
+                | GitClientEffect::ShowHistory
+                | GitClientEffect::ShowBranches
+                | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::OpenCommit { .. }
+        );
+        if !view && self.repository_busy() {
             return Err(ui::i18n!("git-remote-busy"));
         }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowChanges,
-            ) => {
-                self.switch_screen(Screen::Changes);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowHistory,
-            ) => {
-                self.switch_screen(Screen::History);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowBranches,
-            ) => {
-                self.switch_screen(Screen::Panels);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::OpenChange { area, path },
-            ) => {
+        match effect {
+            GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
+            GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
+            GitClientEffect::ShowBranches => self.switch_screen(Screen::Panels),
+            GitClientEffect::OpenChange { area, path } => {
                 let area = match area.as_str() {
                     "staged" => ChangeArea::Staged,
                     "unstaged" => ChangeArea::Unstaged,
@@ -3182,10 +3039,7 @@ impl GitClientApp {
                 self.selected_change = Some((area, index));
                 self.diff_scroll = 0.0;
             }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::OpenCommit { id },
-            ) => {
+            GitClientEffect::OpenCommit { id } => {
                 let index = self
                     .model
                     .commits
@@ -3196,39 +3050,15 @@ impl GitClientApp {
                 self.selected_commit = index;
                 self.detail_scroll = 0.0;
             }
-            (tilo_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
-                self.stage_all();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::UnstageAll,
-            ) => {
-                self.unstage_all();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::StageFile { path },
-            ) => {
-                let found = self
-                    .model
-                    .unstaged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Unstaged, index))
-                    .or_else(|| {
-                        self.model
-                            .untracked
-                            .iter()
-                            .position(|change| change.path == path)
-                            .map(|index| (ChangeArea::Untracked, index))
-                    })
+            GitClientEffect::StageAll => self.stage_all(),
+            GitClientEffect::UnstageAll => self.unstage_all(),
+            GitClientEffect::StageFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
                     .ok_or_else(|| "file is no longer unstaged".to_string())?;
-                self.toggle_stage(found.0, found.1);
+                self.toggle_stage(area, index);
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::UnstageFile { path },
-            ) => {
+            GitClientEffect::UnstageFile { path } => {
                 let index = self
                     .model
                     .staged
@@ -3237,33 +3067,16 @@ impl GitClientApp {
                     .ok_or_else(|| "file is no longer staged".to_string())?;
                 self.toggle_stage(ChangeArea::Staged, index);
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::DiscardFile { path },
-            ) => {
-                let found = self
-                    .model
-                    .unstaged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Unstaged, index))
-                    .or_else(|| {
-                        self.model
-                            .untracked
-                            .iter()
-                            .position(|change| change.path == path)
-                            .map(|index| (ChangeArea::Untracked, index))
-                    })
+            GitClientEffect::DiscardFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
                     .ok_or_else(|| "file has no worktree changes".to_string())?;
                 if self.repo_path.is_none() {
                     return Err("discard is unavailable in the demonstration repository".into());
                 }
-                self.discard_file(found.0, found.1);
+                self.discard_file(area, index);
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Commit { message },
-            ) => {
+            GitClientEffect::Commit { message } => {
                 if self.model.staged.is_empty() {
                     return Err("there are no staged changes to commit".into());
                 }
@@ -3273,10 +3086,7 @@ impl GitClientApp {
                 self.commit_input.set_text(&message);
                 self.do_commit();
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::CreateBranch { name },
-            ) => {
+            GitClientEffect::CreateBranch { name } => {
                 if name.trim().is_empty() {
                     return Err("branch name cannot be empty".into());
                 }
@@ -3286,22 +3096,16 @@ impl GitClientApp {
                 self.branch_input.set_text(&name);
                 self.create_new_branch();
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::CheckoutBranch { name },
-            ) => self.apply_branch_action(BranchAction::Checkout(name)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::DeleteBranch { name },
-            ) => self.apply_branch_action(BranchAction::Delete(name)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::ApplyStash { index },
-            ) => self.apply_branch_action(BranchAction::StashApply(index)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::SaveStash { message },
-            ) => {
+            GitClientEffect::CheckoutBranch { name } => {
+                self.apply_branch_action(BranchAction::Checkout(name));
+            }
+            GitClientEffect::DeleteBranch { name } => {
+                self.apply_branch_action(BranchAction::Delete(name));
+            }
+            GitClientEffect::ApplyStash { index } => {
+                self.apply_branch_action(BranchAction::StashApply(index));
+            }
+            GitClientEffect::SaveStash { message } => {
                 let path = self
                     .repo()
                     .ok_or_else(|| "stashing requires a real repository".to_string())?;
@@ -3309,20 +3113,51 @@ impl GitClientApp {
                 self.last_error = None;
                 self.reload();
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Fetch { .. }
-                | crate::actions::GitClientOperation::Pull { .. }
-                | crate::actions::GitClientOperation::Push { .. },
-            ) => return Err("remote operations require lifecycle-aware action dispatch".into()),
-            _ => return Err("operation kind does not match Git operation".into()),
+            GitClientEffect::Fetch { remote } => {
+                return self.start_effect_remote(RemoteAction::Fetch, remote, cx);
+            }
+            GitClientEffect::Pull { remote } => {
+                return self.start_effect_remote(RemoteAction::Pull, remote, cx);
+            }
+            GitClientEffect::Push { remote } => {
+                return self.start_effect_remote(RemoteAction::Push, remote, cx);
+            }
         }
-        if kind == tilo_actions::OperationKind::Effect
-            && let Some(error) = &self.last_error
-        {
-            return Err(error.clone());
+        match &self.last_error {
+            Some(error) if !view => Err(error.clone()),
+            _ => Ok(Effected::done()),
         }
-        Ok(true)
+    }
+
+    /// Start a transfer with `remote` whose outcome answers the effect.
+    fn start_effect_remote(
+        &mut self,
+        action: RemoteAction,
+        remote: String,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let reply = cx.reply();
+        reply
+            .progress()
+            .report(ui::i18n!("git-remote-running"), None, None);
+        self.start_remote(action, Some(remote), Some(reply))?;
+        Ok(Effected::Pending)
+    }
+
+    /// The unstaged or untracked change at `path`.
+    fn worktree_change(&self, path: &str) -> Option<(ChangeArea, usize)> {
+        self.model
+            .unstaged
+            .iter()
+            .position(|change| change.path == path)
+            .map(|index| (ChangeArea::Unstaged, index))
+            .or_else(|| {
+                self.model
+                    .untracked
+                    .iter()
+                    .position(|change| change.path == path)
+                    .map(|index| (ChangeArea::Untracked, index))
+            })
     }
 }
 

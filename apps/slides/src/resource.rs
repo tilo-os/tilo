@@ -3,11 +3,24 @@
 
 use std::rc::Rc;
 
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::record::RecordId;
+use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
-use crate::actions::{SlidesDeck, SlidesResourceCtx};
+use crate::actions::{SlidesAction, SlidesDeck, SlidesResourceCtx, replace_deck_action};
 use crate::app::SlidesApp;
+use crate::model::{Deck, seed_deck};
+
+/// The media type of an ODF presentation (`.odp`).
+pub const ODP_MEDIA_TYPE: &str = "application/vnd.oasis.opendocument.presentation";
+/// The media type of an Office Open XML presentation (`.pptx`).
+pub const PPTX_MEDIA_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/// The window size of the scenarios that show the narrow layout, where the
+/// rail and the inspector are flaps over the canvas.
+const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
 /// Framework app: the slides editor is the surface over [`SlidesDeck`].
 pub struct SlidesShell;
@@ -17,12 +30,14 @@ impl ResourceApp for SlidesShell {
     const ID: &'static str = "so.tilo.slides";
     const TITLE: &'static str = "Slides";
     const ICON: Option<&'static str> = Some("slides");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    const OPENS: &'static [&'static str] = &[ODP_MEDIA_TYPE, PPTX_MEDIA_TYPE];
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<SlidesDeck>) -> Element {
-        cx.surface(SlidesApp::new())
+        let content = cx.content().unwrap_or_else(crate::assets::app_content);
+        // In a container, the editor is a widget of the view's tree that
+        // tests and staging reach by its type.
+        Box::new(ui::widget::Stack::new().push(cx.surface(SlidesApp::new(content))))
     }
 
     fn label(state: &SlidesResourceCtx) -> String {
@@ -33,6 +48,107 @@ impl ResourceApp for SlidesShell {
             title.to_owned()
         }
     }
+
+    /// A presentation file opens as a deck of its own, derived from the
+    /// file, so opening it again returns to that deck.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input
+            .argument()
+            .map(|path| RecordId::derived("slides", &RecordId::identify_file(path)))
+    }
+
+    /// The deck a file opens as is the file's when the record is new; a deck
+    /// opened before keeps the edits made to it since.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<SlidesDeck>> {
+        let Some(file) = input.file().filter(|_| created) else {
+            return Vec::new();
+        };
+        let content = crate::assets::app_content();
+        let deck = if file.media_type() == PPTX_MEDIA_TYPE {
+            crate::pptx::read_pptx(file.bytes(), &content)
+        } else {
+            crate::odp::read_odp(file.bytes(), &content)
+        };
+        match deck {
+            Ok(deck) => replace_deck(&deck).into_iter().collect(),
+            Err(error) => {
+                tracing::warn!(%error, file = file.name(), "slides: the presentation cannot be read");
+                Vec::new()
+            }
+        }
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "overview",
+            "present",
+            "present_notes",
+            "presenter",
+            "present_white",
+            "empty",
+            "help",
+            "rename",
+            "notes_edit",
+            "slide_props",
+            "toolbar_menu",
+            "many",
+            "many_rail",
+            "overview_end",
+            "picker",
+            "image",
+            "image_loading",
+            "open_error",
+            "narrow",
+            "narrow_closed",
+            "inspector",
+            "element_menu",
+            "slide_menu",
+            "reorder",
+            "edit_text",
+            "delete_zone",
+            "inspector_widgets",
+        ]
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some(
+                "narrow" | "narrow_closed" | "inspector" | "many_rail" | "toolbar_menu"
+                | "inspector_widgets",
+            ) => NARROW_VIEWPORT,
+            _ => ui::launch::DEFAULT_VIEWPORT,
+        }
+    }
+
+    /// The `image` scenario's picture is in the capture's content store.
+    fn fixture(fixture: &mut Fixture<SlidesDeck>) {
+        if fixture.scenario() == Some("image") {
+            let _ = crate::assets::store_asset(fixture.content(), &crate::sample::photo_png());
+        }
+    }
+
+    /// Every scenario but `empty` opens the sample deck; the long and
+    /// picture scenarios a variant of it.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<SlidesDeck>> {
+        let deck = match name {
+            Some("empty") => return Vec::new(),
+            Some("many" | "many_rail") => crate::sample::long_deck(),
+            Some("image") => match crate::sample::photo_src() {
+                Some(src) => crate::sample::picture_deck("Site photo", &src),
+                None => seed_deck(),
+            },
+            Some("image_loading") => {
+                crate::sample::picture_deck("Importing photo", crate::sample::MISSING_SRC)
+            }
+            _ => seed_deck(),
+        };
+        replace_deck(&deck).into_iter().collect()
+    }
+}
+
+fn replace_deck(deck: &Deck) -> Option<Invoke<SlidesDeck>> {
+    let action: SlidesAction = replace_deck_action(deck);
+    Invoke::apply(&action).ok()
 }
 
 impl ResourceSurface<SlidesDeck> for SlidesApp {
@@ -42,6 +158,10 @@ impl ResourceSurface<SlidesDeck> for SlidesApp {
 
     fn attach(&mut self, cx: SurfaceCx<SlidesDeck>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
     // Edits bound to where the user is publish as hand-built rows of the
@@ -60,7 +180,115 @@ mod tests {
     use crate::model::{Deck, PaletteKind, Slide, seed_deck};
     use ui::framework::ResourceSurface;
     use ui::resources::PublishesResources;
+    use ui::tilo_resource::Resource;
     use ui::widget::Widget;
+
+    use ui::framework::testing::TestApp;
+
+    fn titles(app: &TestApp<SlidesShell>) -> (String, usize) {
+        let state = app.state();
+        (state.deck_title.clone(), state.slides.len())
+    }
+
+    #[test]
+    fn every_scenario_stages_its_deck_and_view() {
+        for &scenario in SlidesShell::scenarios() {
+            let mut app = TestApp::<SlidesShell>::capture(Some(scenario))
+                .unwrap_or_else(|error| panic!("`{scenario}` stages: {error}"));
+            let (title, slides) = titles(&app);
+            let expected = match scenario {
+                "empty" => 1,
+                "many" | "many_rail" => crate::sample::LONG_DECK_SLIDES,
+                "image" | "image_loading" => crate::model::seed_deck().slides.len() + 1,
+                _ => crate::model::seed_deck().slides.len(),
+            };
+            assert_eq!(slides, expected, "`{scenario}` opens its deck ({title})");
+            let shown = app
+                .harness()
+                .with_widget_mut::<SlidesApp, _>(|slides| slides.current_slide())
+                .expect("the editor is mounted");
+            match scenario {
+                "many" | "many_rail" | "image" | "image_loading" => {
+                    assert_eq!(shown, slides - 1, "`{scenario}` rests on its last slide");
+                }
+                "empty" | "reorder" | "delete_zone" => assert_eq!(shown, 0, "`{scenario}`"),
+                _ => assert_eq!(shown, 1, "`{scenario}` opens on the second slide"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_narrow_scenarios_are_captured_at_a_narrow_window() {
+        assert_eq!(SlidesShell::shot_viewport(Some("narrow")), NARROW_VIEWPORT);
+        assert_eq!(
+            SlidesShell::shot_viewport(Some("overview")),
+            ui::launch::DEFAULT_VIEWPORT
+        );
+    }
+
+    #[test]
+    fn the_image_scenario_shows_its_picture_decoded() {
+        let mut app = TestApp::<SlidesShell>::capture(Some("image")).unwrap();
+        let src = crate::sample::photo_src().unwrap();
+        let ready = app
+            .harness()
+            .with_widget_mut::<SlidesApp, _>(|slides| slides.picture_ready(&src))
+            .unwrap();
+        assert!(ready, "the capture's content store holds the picture");
+    }
+
+    fn odp_of(deck: &Deck) -> Vec<u8> {
+        crate::odp::write_odp(deck, &tilo_content::ContentStore::memory()).unwrap()
+    }
+
+    #[test]
+    fn a_presentation_file_opens_as_its_own_deck() {
+        let mut deck = seed_deck();
+        deck.title = "Quarterly review".into();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("review.odp");
+        std::fs::write(&path, odp_of(&deck)).unwrap();
+        let path = path.to_string_lossy().into_owned();
+
+        let app = TestApp::<SlidesShell>::launched(&[&path]).unwrap();
+        assert_eq!(titles(&app), ("Quarterly review".into(), deck.slides.len()));
+        assert_eq!(
+            app.record(),
+            &RecordId::derived("slides", &RecordId::identify_file(&path))
+        );
+    }
+
+    #[test]
+    fn a_handed_file_replaces_the_new_deck_in_one_undo_step() {
+        let mut deck = seed_deck();
+        deck.title = "Handed over".into();
+        let (file, _receipt) =
+            ui::application::OpenFile::new("handed.odp", ODP_MEDIA_TYPE, odp_of(&deck)).unwrap();
+        let mut app = TestApp::<SlidesShell>::handed(file).unwrap();
+        assert_eq!(titles(&app), ("Handed over".into(), deck.slides.len()));
+        assert!(app.undo(), "opening the file is an undo step");
+        assert_eq!(titles(&app).1, 1, "undo returns to the starter deck");
+    }
+
+    #[test]
+    fn a_replacement_deck_is_refused_when_it_names_a_slide_twice() {
+        let mut deck = seed_deck();
+        let twin = deck.slides[0].clone();
+        deck.slides.push(twin);
+        let mut doc = ui::tilo_resource::Doc::new();
+        SlidesDeck::initialize(&mut doc).unwrap();
+        let refused =
+            tilo_actions::Action::apply(&crate::actions::replace_deck_action(&deck), &mut doc);
+        assert!(refused.is_err());
+        let empty = crate::model::Deck {
+            slides: Vec::new(),
+            ..seed_deck()
+        };
+        assert!(
+            tilo_actions::Action::apply(&crate::actions::replace_deck_action(&empty), &mut doc)
+                .is_err()
+        );
+    }
 
     #[test]
     fn the_deck_publish_includes_add_slide_and_theme_ops() {
@@ -126,7 +354,7 @@ mod tests {
             "selection is not document state"
         );
 
-        let mut app = SlidesApp::demo(None);
+        let mut app = SlidesApp::sample();
         let mut state = ui::State::new();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         assert!(
@@ -195,7 +423,7 @@ mod tests {
 
     #[test]
     fn present_empty_does_not_wipe_unpublished_local_deck() {
-        let mut app = SlidesApp::new();
+        let mut app = SlidesApp::new(crate::assets::app_content());
         let mut local = Deck {
             title: "local-only".into(),
             palette: crate::model::PaletteKind::Indigo,

@@ -19,8 +19,11 @@ use automerge::AutoCommit;
 use tilo_actions::{ActionContext, ActionError};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction, RichTextState};
-use ui::framework::{Dispatcher, Live, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::{ActionDecl, Demand, Doc, ModelError, Reader, Resource};
+use ui::framework::{
+    Dispatcher, LaunchInput, Live, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
+use ui::record::RecordId;
+use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Reader, Resource};
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
@@ -146,6 +149,32 @@ impl Resource for Document {
     }
 }
 
+/// The media types of the files the word processor opens: every format it
+/// imports (PDF and EPUB are export-only).
+const OPENS: &[&str] = &[
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/markdown",
+    "text/x-markdown",
+    "text/plain",
+    "text/html",
+    "application/rtf",
+    "text/rtf",
+];
+
+/// The screenshot scenarios: each stages the document through its actions
+/// and the editor's view state where it lives.
+const SCENARIOS: &[&str] = &[
+    "styles",
+    "comments",
+    "threaded-comments",
+    "template-picker",
+    "toolbar-overflow",
+    "find",
+    "error",
+    "image-object",
+];
+
 /// The word processor on the app framework.
 pub struct WordProcessorApp;
 
@@ -154,6 +183,9 @@ impl ResourceApp for WordProcessorApp {
     const ID: &'static str = "so.tilo.word-processor";
     const TITLE: &'static str = "Word Processor";
     const ICON: Option<&'static str> = Some("word-processor");
+    const OPENS: &'static [&'static str] = OPENS;
+    const ARGUMENTS: usize = 1;
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1000, 700)
     }
@@ -166,7 +198,7 @@ impl ResourceApp for WordProcessorApp {
     fn local_operations() -> Vec<tilo_actions::ActionSpec> {
         // History is the framework's own surface. The editor's version strip
         // is not offered beside it. Open, save, and save-as are Effects on
-        // this door; a live file continuation is overlaid by the standalone tree.
+        // this door.
         let mut specs = crate::actions::view_operations(false);
         specs.extend(crate::actions::file_operation_specs(None));
         specs
@@ -179,6 +211,55 @@ impl ResourceApp for WordProcessorApp {
             .map(|heading| heading.text.trim().to_owned())
             .find(|text| !text.is_empty())
             .unwrap_or_else(|| "Document".to_owned())
+    }
+
+    /// A file is a record of its own: reopening it reopens its history.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input.argument().map(RecordId::for_file)
+    }
+
+    /// A file's record starts as the file imported; reopened, the record is
+    /// the document and the file is where Save writes it.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Document>> {
+        let Some(file) = input.file().filter(|_| created) else {
+            return Vec::new();
+        };
+        let format = crate::WpFormat::from_path(std::path::Path::new(file.name()));
+        match crate::import_action(file.bytes(), format, &crate::app_content_store()) {
+            Ok(action) => Invoke::apply(&action).into_iter().collect(),
+            Err(error) => {
+                eprintln!("word-processor: could not open {}: {error}", file.name());
+                Vec::new()
+            }
+        }
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    /// The text each scenario shows; comments, images and the caret are
+    /// staged on the editor, which knows the paragraphs these actions made.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
+        let texts: &[&str] = match name {
+            Some("comments" | "threaded-comments") => &["Quarterly planning summary"],
+            Some("find") => &[
+                "Quarterly report",
+                "The report covers revenue, costs and headcount for the quarter.",
+                "A second report follows in the spring.",
+            ],
+            Some("image-object") => &["Product direction image"],
+            _ => &[],
+        };
+        texts
+            .iter()
+            .filter_map(|text| {
+                Invoke::apply(&RichTextAction::AppendParagraph {
+                    text: (*text).to_owned(),
+                })
+                .ok()
+            })
+            .collect()
     }
 }
 
@@ -370,12 +451,39 @@ impl ActionSink {
 impl ResourceSurface<Document> for WordProcessorWidget {
     /// The editor reads the live state where it needs it; a new state only
     /// asks for a redraw.
-    fn present(&mut self, _state: &Rc<RichTextState>) {
+    fn present(&mut self, state: &Rc<RichTextState>) {
+        // An editor that has not drawn yet still has a caret, at the start
+        // of the body, so edits bound to it (a table at the caret) can be
+        // invoked before the first frame.
+        if self.model().caret().block.is_empty()
+            && let Some(first) = state.body().id_at(0)
+        {
+            self.model_mut().set_caret(crate::word_processor::Caret {
+                block: first.to_owned(),
+                offset: 0,
+            });
+        }
         self.mark_document_changed();
     }
 
     fn attach(&mut self, cx: SurfaceCx<Document>) {
+        // A capture keeps the images it stages to itself; every other view
+        // reads the store the app keeps them in.
+        let content = cx.content().unwrap_or_else(|| match cx.mode() {
+            RunMode::Capture => tilo_content::ContentStore::memory(),
+            RunMode::Live | RunMode::Past => crate::app_content_store(),
+        });
+        self.model_mut().set_content_store(content);
+        if let Some(path) = cx.launch_arguments().first() {
+            let path = std::path::PathBuf::from(path);
+            let format = crate::WpFormat::from_path(&path);
+            self.set_file(path, format);
+        }
         self.attach_framework(cx.live(), cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
     // Edits bound to where the user is publish as hand-built rows of the

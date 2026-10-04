@@ -32,6 +32,20 @@ const DECODE_RESULT_CAPACITY: usize = 1;
 const MAX_READY_IMAGE_BYTES: usize = 96 * 1024 * 1024;
 pub const ASSET_PREFIX: &str = "asset:blake3:";
 
+/// The app's own content store, where pictures placed on slides and the
+/// pictures of imported presentations are kept; an in-memory one under unit
+/// test, so tests never write to the user's data directory.
+pub fn app_content() -> ContentStore {
+    #[cfg(test)]
+    {
+        ContentStore::memory()
+    }
+    #[cfg(not(test))]
+    {
+        ContentStore::for_app()
+    }
+}
+
 /// A deck carries this content identity, never a machine-local file path.
 pub fn is_asset_id(id: &str) -> bool {
     id.strip_prefix(ASSET_PREFIX)
@@ -118,6 +132,8 @@ pub struct ImageStore {
     ready_bytes: Cell<usize>,
     access: RefCell<HashMap<String, u64>>,
     access_clock: Cell<u64>,
+    /// Pictures shown as still arriving whatever their decode reports.
+    held: RefCell<std::collections::HashSet<String>>,
 }
 
 impl ImageStore {
@@ -150,6 +166,7 @@ impl ImageStore {
             ready_bytes: Cell::new(0),
             access: RefCell::new(HashMap::new()),
             access_clock: Cell::new(0),
+            held: RefCell::default(),
         }
     }
 
@@ -178,9 +195,9 @@ impl ImageStore {
         }
     }
 
-    /// Decode `path` synchronously and cache the result. Used by the headless
-    /// `--shots` path, where the single offscreen frame must have the pixels
-    /// ready before it renders. Never called on the live UI thread.
+    /// Decode `path` synchronously and cache the result: a screenshot, whose
+    /// frame must have the pixels before it renders. Never called on the
+    /// live UI thread.
     pub fn load_blocking(&self, path: &str) {
         let state = decode(&self.content, path);
         self.remove_ready_bytes(path);
@@ -191,12 +208,25 @@ impl ImageStore {
         self.evict_ready();
     }
 
+    /// Show `path` as still loading from now on, whatever its decode
+    /// reports: a screenshot of the frames before a picture's bytes arrive.
+    pub fn hold_loading(&self, path: &str) {
+        self.remove_ready_bytes(path);
+        self.inner
+            .borrow_mut()
+            .insert(path.to_string(), ImageState::Loading);
+        self.held.borrow_mut().insert(path.to_string());
+    }
+
     /// Drain finished decodes into the cache. Returns `true` if any image
     /// changed state (so the caller can invalidate render caches / request a
     /// frame). Called once per frame.
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
         while let Ok((path, state)) = self.rx.try_recv() {
+            if self.held.borrow().contains(&path) {
+                continue;
+            }
             self.remove_ready_bytes(&path);
             self.ready_bytes
                 .set(self.ready_bytes.get().saturating_add(state_bytes(&state)));
@@ -393,6 +423,7 @@ mod tests {
                 ready_bytes: Cell::new(0),
                 access: RefCell::new(HashMap::new()),
                 access_clock: Cell::new(0),
+                held: RefCell::default(),
             };
             assert!(matches!(
                 store.get("/does/not/exist.png"),

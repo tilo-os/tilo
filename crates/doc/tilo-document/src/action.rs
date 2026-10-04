@@ -1891,26 +1891,76 @@ fn apply_remove_region_blocks(dm: &mut DocMut, region: Region, blocks: &[String]
 const MAX_IMPORT_BYTES: usize = 8 * 1024 * 1024;
 
 fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) {
-    use tilo_doc_codecs::FormatProvider;
     let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
     for id in &existing {
         dm.tombstone_block_in(Region::Body, id);
     }
     let mut inputs = tilo_content::ContentInputs::new();
-    let imported = match format {
-        ImportFormat::Markdown => tilo_doc_codecs::MarkdownCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Html => tilo_doc_codecs::HtmlCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Rtf => tilo_doc_codecs::RtfCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Docx => tilo_doc_codecs::DocxCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Odt => tilo_doc_codecs::OdtCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Text => import_plain_text(dm, bytes),
-    };
-    if imported.is_err() {
+    if import_formatted(dm, format, bytes, &mut inputs).is_err() {
         // The caller stages a successful import before this write. A replay
         // that still fails keeps the cleared body rather than a half-written
         // codec result mixed with the old one.
-        let _ = imported;
     }
+}
+
+fn import_formatted(
+    dm: &mut DocMut,
+    format: ImportFormat,
+    bytes: &[u8],
+    inputs: &mut tilo_content::ContentInputs,
+) -> Result<(), tilo_doc_codecs::CodecError> {
+    use tilo_doc_codecs::FormatProvider;
+    match format {
+        ImportFormat::Markdown => tilo_doc_codecs::MarkdownCodec.import(bytes, dm, inputs),
+        ImportFormat::Html => tilo_doc_codecs::HtmlCodec.import(bytes, dm, inputs),
+        ImportFormat::Rtf => tilo_doc_codecs::RtfCodec.import(bytes, dm, inputs),
+        ImportFormat::Docx => tilo_doc_codecs::DocxCodec.import(bytes, dm, inputs),
+        ImportFormat::Odt => tilo_doc_codecs::OdtCodec.import(bytes, dm, inputs),
+        ImportFormat::Text => import_plain_text(dm, bytes),
+    }
+}
+
+/// Stage a [`RichTextAction::ReplaceFormatted`] of `bytes` read as `format`:
+/// decode them once into a scratch document, so bytes the codec rejects
+/// never become an action, and return the images they embed, which the
+/// document only names and the caller keeps in its content store before
+/// submitting the action.
+///
+/// # Errors
+///
+/// Returns why the bytes do not import as `format`.
+pub fn stage_import(
+    format: ImportFormat,
+    bytes: &[u8],
+) -> Result<(RichTextAction, tilo_content::ContentInputs), String> {
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err(format!(
+            "the file is larger than {} MiB",
+            MAX_IMPORT_BYTES / (1024 * 1024)
+        ));
+    }
+    let mut scratch = AutoCommit::new();
+    let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
+    let mut ids = tilo_doc::IdGen::new("staged-import".into());
+    let mut inputs = tilo_content::ContentInputs::new();
+    import_formatted(
+        &mut DocMut {
+            doc: &mut scratch,
+            c: &containers,
+            ids: &mut ids,
+        },
+        format,
+        bytes,
+        &mut inputs,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((
+        RichTextAction::ReplaceFormatted {
+            format,
+            bytes: bytes.to_vec(),
+        },
+        inputs,
+    ))
 }
 
 fn import_plain_text(dm: &mut DocMut, bytes: &[u8]) -> Result<(), tilo_doc_codecs::CodecError> {
