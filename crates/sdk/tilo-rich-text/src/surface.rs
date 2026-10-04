@@ -94,7 +94,9 @@ impl Default for RichTextSurface {
 }
 
 fn default_editor() -> BlockEditor {
-    BlockEditor::new().with_wrap_lines(true)
+    let mut editor = BlockEditor::new().with_wrap_lines(true);
+    editor.set_find_replace_enabled(true);
+    editor
 }
 
 impl RichTextSurface {
@@ -130,7 +132,8 @@ impl<S: RichTextSource> RichTextSurface<S> {
     /// Present the document in an editor configured by the caller (its
     /// empty hint, spacing, image store).
     #[must_use]
-    pub fn with_editor(mut self, editor: BlockEditor) -> Self {
+    pub fn with_editor(mut self, mut editor: BlockEditor) -> Self {
+        editor.set_find_replace_enabled(true);
         self.editor = editor;
         self.revision = None;
         self.cursor = None;
@@ -299,6 +302,124 @@ impl<S: RichTextSource> RichTextSurface<S> {
             .ok_or_else(|| {
                 ActionError::Refused("this selection cannot be replaced with an image".into())
             })
+    }
+
+    fn replace_find_match(&mut self, doc: &mut AutoCommit) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        let Some((target, replacement)) = self.editor.find_replace_request() else {
+            return false;
+        };
+        self.source.sync(doc);
+        let action = self
+            .source
+            .with_state(|state| {
+                let current = state.block(&target.block.id)?;
+                if content_of(current) != target.block
+                    || state.body().position(&current.id).is_none()
+                {
+                    return None;
+                }
+                let at = crate::convert::char_of_byte(&current.text, target.start_byte);
+                let end = crate::convert::char_of_byte(&current.text, target.end_byte);
+                Some(RichTextAction::SpliceText {
+                    region: tilo_document::action::RegionKind::Body,
+                    block: current.id.clone(),
+                    at,
+                    del: end.saturating_sub(at),
+                    ins: replacement.clone(),
+                })
+            })
+            .flatten();
+        let Some(action) = action else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(doc, &action) {
+            tracing::debug!(%error, "find replacement refused");
+            return false;
+        }
+        self.source.sync(doc);
+        self.present_state(None);
+        self.editor.finish_find_replace(&target, replacement.len());
+        true
+    }
+
+    fn replace_all_find_matches(&mut self, doc: &mut AutoCommit) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        let Some(batch) = self.editor.find_replace_all_request() else {
+            return false;
+        };
+        self.source.sync(doc);
+        let action = self
+            .source
+            .with_state(|state| {
+                if state.body().len() != batch.blocks.len() {
+                    return None;
+                }
+                for (index, captured) in batch.blocks.iter().enumerate() {
+                    if state.body().id_at(index)? != captured.id
+                        || content_of(state.block(&captured.id)?) != *captured
+                    {
+                        return None;
+                    }
+                }
+                let mut previous = None;
+                let mut byte = 0;
+                let mut character = 0usize;
+                let spans = batch
+                    .matches
+                    .iter()
+                    .map(|(index, range)| {
+                        let block = batch.blocks.get(*index)?;
+                        if previous != Some(*index) {
+                            previous = Some(*index);
+                            byte = 0;
+                            character = 0;
+                        }
+                        // Search ranges are ordered. Count each source character
+                        // once even when a long paragraph has many matches.
+                        let gap = block.text.get(byte..range.start)?.chars().count();
+                        let matched = block.text.get(range.clone())?.chars().count();
+                        let start = character.saturating_add(gap);
+                        character = start.saturating_add(matched);
+                        byte = range.end;
+                        Some(tilo_document::action::Span {
+                            block: block.id.clone(),
+                            start,
+                            end: character,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(RichTextAction::ReplaceMatches {
+                    region: tilo_document::action::RegionKind::Body,
+                    spans,
+                    ins: batch.replacement,
+                })
+            })
+            .flatten();
+        let Some(action) = action else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(doc, &action) {
+            tracing::debug!(%error, "find replace all refused");
+            return false;
+        }
+        self.source.sync(doc);
+        self.present_state(None);
+        self.editor.finish_find_replace_all();
+        true
+    }
+
+    fn drain_find_replace(&mut self, doc: &mut AutoCommit) {
+        if self.editor.take_find_replace_all_request() {
+            self.replace_all_find_matches(doc);
+        }
+        if self.editor.take_find_replace_request() {
+            self.replace_find_match(doc);
+        }
     }
 
     /// Where the text comes from.
@@ -788,6 +909,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         self.source.sync(state);
         // An edit made outside an input event (an accessibility action).
         self.commit(state);
+        self.drain_find_replace(state);
         if self.source.revision() != self.revision {
             self.present_state(None);
         }
@@ -812,6 +934,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         }
         self.editor.handle_event(event, ctx);
         self.commit(ctx.state);
+        self.drain_find_replace(ctx.state);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -871,6 +994,20 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if target == "notes.find:replace-all" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_all_find_matches(state);
+        }
+        if target == "notes.find:replace" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_find_match(state);
+        }
         if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;

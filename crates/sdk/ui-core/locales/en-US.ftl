@@ -426,3 +426,9 @@ widget-block-duplicate-selection = Duplicate selected or focused blocks
 
 widget-block-move-selection-up = Move selected blocks up
 widget-block-move-selection-down = Move selected blocks down
+
+block-editor-replace-placeholder = Replace with
+block-editor-replace = Replace
+
+block-editor-replace-all = Replace all
+block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
