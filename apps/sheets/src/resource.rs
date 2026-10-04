@@ -1,19 +1,21 @@
 //! Sheets as a [`tilo_resource::Resource`]: one action vocabulary, one publish
 //! path. Mutations are [`SheetsAction`] applied through the framework
-//! dispatcher; View/Effect ops come from [`Resource::local_operations`].
+//! dispatcher; file interchange and views are the surface's [`SheetsEffect`]s.
 
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 use automerge::ObjId;
-use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
-use ui::framework::{Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use tilo_actions::{ActionParam, ParamType};
+use ui::framework::{
+    EffectAnswer, EffectCx, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
 use ui::tilo_resource::{ActionDecl, Delta, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    SHEETS_ACTION_TYPE, SHEETS_OPERATION_TYPE, SearchableCell, SheetsAction, SheetsOperation,
-    add_sheet_action, document_children,
+    SHEETS_ACTION_TYPE, SearchableCell, SheetsAction, SheetsEffect, add_sheet_action,
+    document_children,
 };
 use crate::app::SheetsApp;
 use crate::doc::{ChartSnapshot, CommentThread, SheetSnapshot, SheetsDoc};
@@ -37,6 +39,8 @@ pub struct SheetsState {
 pub struct SheetInfo {
     pub id: String,
     pub name: String,
+    /// The file the sheet was imported from, which opening again reveals.
+    pub source: Option<String>,
     /// The stored cells: raw inputs, formats and bold.
     pub snapshot: SheetSnapshot,
     pub charts: Vec<ChartSnapshot>,
@@ -62,6 +66,7 @@ impl SheetInfo {
         Self {
             id,
             name,
+            source: SheetsDoc::sheet_source(doc, idx),
             charts: SheetsDoc::charts(doc, idx),
             comments: SheetsDoc::comments(doc, idx),
             snapshot,
@@ -267,10 +272,6 @@ impl Resource for SheetsWorkbook {
             .then(|| crate::actions::open_cell_resource(sheet_id, col, row))
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        workbook_local_operations()
-    }
-
     /// Every sheet by name and every populated cell by reference, input and
     /// what it shows; a hit opens it.
     fn search(state: &SheetsState) -> Vec<SearchEntry> {
@@ -301,127 +302,6 @@ impl Resource for SheetsWorkbook {
         }
         entries
     }
-}
-
-/// Import/export Effects and workbook Views — no document delta.
-#[allow(
-    clippy::too_many_lines,
-    clippy::expect_used,
-    reason = "workbook view/effect ops stay in one table; encode is infallible"
-)]
-fn workbook_local_operations() -> Vec<ActionSpec> {
-    use tilo_actions::{EncodedAction, ExecutionMode, ResultSpec};
-
-    let mut specs = Vec::new();
-    for (id, label, kind, variant) in [
-        ("import-csv", "Import CSV", OperationKind::Effect, 0_u8),
-        (
-            "import-xlsx",
-            "Import Excel workbook",
-            OperationKind::Effect,
-            1,
-        ),
-        (
-            "import-ods",
-            "Import OpenDocument spreadsheet",
-            OperationKind::Effect,
-            2,
-        ),
-        ("export-csv", "Export CSV", OperationKind::Effect, 3),
-        (
-            "export-xlsx",
-            "Export Excel workbook",
-            OperationKind::Effect,
-            4,
-        ),
-        (
-            "export-ods",
-            "Export OpenDocument spreadsheet",
-            OperationKind::Effect,
-            5,
-        ),
-        ("commands", "Open command palette", OperationKind::View, 6),
-        ("go-to-cell", "Go to cell…", OperationKind::View, 7),
-        (
-            "toggle-formula-view",
-            "Toggle formula view",
-            OperationKind::View,
-            8,
-        ),
-    ] {
-        match variant {
-            6 => specs.push(
-                ActionSpec::operation(
-                    id,
-                    label,
-                    kind,
-                    SHEETS_OPERATION_TYPE,
-                    &SheetsOperation::OpenCommandPalette,
-                )
-                .expect("SheetsOperation serializes"),
-            ),
-            7 => specs.push(ActionSpec::prompted_operation(
-                id,
-                label,
-                "Cell reference",
-                "e.g. B12",
-                kind,
-                SHEETS_OPERATION_TYPE,
-                |reference| {
-                    EncodedAction::encode_operation(
-                        SHEETS_OPERATION_TYPE,
-                        &SheetsOperation::GoToCell {
-                            reference: reference.to_string(),
-                        },
-                    )
-                    .expect("SheetsOperation serializes")
-                },
-            )),
-            8 => specs.push(
-                ActionSpec::operation(
-                    id,
-                    label,
-                    kind,
-                    SHEETS_OPERATION_TYPE,
-                    &SheetsOperation::ToggleFormulaView,
-                )
-                .expect("SheetsOperation serializes"),
-            ),
-            _ => specs.push(
-                ActionSpec::typed_operation(
-                    id,
-                    label,
-                    "path (omit to use the system file picker)",
-                    kind,
-                    SHEETS_OPERATION_TYPE,
-                    vec![ActionParam::optional_owned(
-                        "path",
-                        ParamType::Text,
-                        "Direct spreadsheet path",
-                    )],
-                    move |args: &tilo_actions::ActionArgs| {
-                        let path = args
-                            .text("path")
-                            .filter(|p| !p.trim().is_empty())
-                            .map(str::to_string);
-                        let value = match variant {
-                            0 => SheetsOperation::ImportCsv { path },
-                            1 => SheetsOperation::ImportXlsx { path },
-                            2 => SheetsOperation::ImportOds { path },
-                            3 => SheetsOperation::ExportCsv { path },
-                            4 => SheetsOperation::ExportXlsx { path },
-                            _ => SheetsOperation::ExportOds { path },
-                        };
-                        EncodedAction::encode_operation(SHEETS_OPERATION_TYPE, &value)
-                            .expect("sheet operation serializes")
-                    },
-                )
-                .execution(ExecutionMode::Background { cancellable: true })
-                .returns(ResultSpec::Job),
-            ),
-        }
-    }
-    specs
 }
 
 /// Framework app: the sheets grid is the surface over [`SheetsWorkbook`].
@@ -511,7 +391,15 @@ impl ResourceApp for SheetsShell {
     }
 }
 
-impl ResourceSurface<SheetsWorkbook> for SheetsApp {
+impl ResourceSurface<SheetsWorkbook, SheetsEffect> for SheetsApp {
+    fn effect(
+        &mut self,
+        effect: SheetsEffect,
+        cx: &mut EffectCx<SheetsWorkbook, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
     fn present(&mut self, state: &Rc<SheetsState>) {
         self.adopt_resource_state(state);
     }
