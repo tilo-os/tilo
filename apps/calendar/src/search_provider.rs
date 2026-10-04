@@ -85,7 +85,7 @@ impl CalendarSearchProvider {
         .with_subtitle(if calendar.visible {
             "Calendar"
         } else {
-            "Calendar · hidden"
+            "Hidden calendar"
         })
         .with_icon(Icon::Calendar);
         let id = calendar_resource_id(&calendar.id);
@@ -98,23 +98,16 @@ impl CalendarSearchProvider {
         }
     }
 
+    /// When the event happens: the one fact a search hit needs to tell two
+    /// events with the same title apart.
     fn event_subtitle(event: &Event) -> String {
-        let when = if event.all_day {
+        if event.all_day {
             date::fmt_day_long(event.start.date())
         } else {
             format!(
-                "{} · {}",
+                "{} at {}",
                 date::fmt_day_long(event.start.date()),
                 date::fmt_time(&event.start)
-            )
-        };
-        if event.attendees.is_empty() && event.timezone == "floating" {
-            when
-        } else {
-            format!(
-                "{when} · {} · {} guests",
-                event.timezone,
-                event.attendees.len()
             )
         }
     }
@@ -129,11 +122,14 @@ impl CalendarSearchProvider {
     }
 
     fn task_subtitle(task: &Task) -> String {
-        let state = if task.done { "Completed" } else { "Task" };
-        task.due.map_or_else(
-            || state.to_string(),
-            |due| format!("{state} · due {}", date::fmt_day_long(due)),
-        )
+        if task.done {
+            "Completed task".to_string()
+        } else {
+            task.due.map_or_else(
+                || "Task".to_string(),
+                |due| format!("Due {}", date::fmt_day_long(due)),
+            )
+        }
     }
 
     fn index_project(project: &Project) -> CatalogRow {
@@ -453,7 +449,8 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new(LATE_HIT_NEEDLE), None, 4, 4);
             assert_eq!(page.inspected, 1);
             let address = hit
                 .action_address()
@@ -486,7 +483,12 @@ mod tests {
             let mut cursor = None;
             let mut seen = BTreeSet::new();
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("common"),
+                    cursor.as_ref(),
+                    17,
+                    5,
+                );
                 assert!(page.inspected <= 17);
                 assert!(page.results.len() <= 5);
                 seen.extend(page.results.iter().map(|result| result.action_id.clone()));
@@ -515,7 +517,12 @@ mod tests {
                 provider.search_limited("common", usize::MAX).len(),
                 DEFAULT_SEARCH_RESULT_LIMIT
             );
-            let page = provider.search_page("common", None, 1_024, usize::MAX);
+            let page = provider.search_page(
+                &ui::search::SearchQuery::new("common"),
+                None,
+                1_024,
+                usize::MAX,
+            );
             assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
             assert!(page.inspected <= 1_024);
         }
@@ -555,7 +562,8 @@ mod tests {
                 assert!(tilo_actions::door::resolve(&[resource], address).is_some());
             }
 
-            let first_page = provider.search_page("same visible", None, 4, 1);
+            let first_page =
+                provider.search_page(&ui::search::SearchQuery::new("same visible"), None, 4, 1);
             let cursor = first_page.next.expect("more collision-safe rows remain");
             model.events[0].title = "revision invalidates cursors".into();
             provider

@@ -1,22 +1,4 @@
 # The app-paint ratchet for apps-calendar: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/calendar/src/agenda.rs desktop_ground 1
-apps/calendar/src/agenda.rs ramp_slot 4
-apps/calendar/src/app.rs desktop_ground 1
-apps/calendar/src/app.rs raw_paint 6
-apps/calendar/src/draw_util.rs desktop_ground 1
-apps/calendar/src/draw_util.rs raw_paint 7
-apps/calendar/src/event_popovers.rs ramp_slot 1
-apps/calendar/src/mini_month.rs ramp_slot 7
-apps/calendar/src/mini_month.rs raw_paint 2
-apps/calendar/src/model.rs ramp_slot 3
-apps/calendar/src/sidebar.rs desktop_ground 2
-apps/calendar/src/sidebar.rs ramp_slot 7
-apps/calendar/src/timeline_interaction.rs desktop_ground 5
-apps/calendar/src/timeline_interaction.rs literal_alpha 3
-apps/calendar/src/timeline_interaction.rs ramp_slot 8
-apps/calendar/src/timeline_interaction.rs raw_paint 1
-apps/calendar/src/topbar.rs desktop_ground 1
-apps/calendar/src/topbar.rs ramp_slot 8
-apps/calendar/src/topbar.rs raw_paint 1
+apps/calendar/src/draw_util.rs raw_paint 3
