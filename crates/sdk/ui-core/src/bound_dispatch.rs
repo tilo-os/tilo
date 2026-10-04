@@ -364,6 +364,9 @@ impl Default for BoundPublication {
     }
 }
 impl BoundPublication {
+    pub(crate) fn clear(&self) {
+        self.owners.borrow_mut().clear();
+    }
     pub(crate) fn alias(
         &self,
         binding: &CallbackBinding,
