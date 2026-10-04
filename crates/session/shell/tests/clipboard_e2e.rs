@@ -950,6 +950,8 @@ struct ClientState {
     /// Set after the seat advertised touch and this client issued
     /// `wl_seat.get_touch`; injection tests wait for this protocol precondition.
     touch_bound: bool,
+    /// Never ask for a `wl_touch`, like a toolkit without touch support.
+    refuse_touch: bool,
     /// Exact `wl_touch` events observed on the client connection.
     touch_events: Vec<TouchTrace>,
     /// Pointer traffic observed after the test clears setup noise.
@@ -1003,9 +1005,25 @@ struct TestClient {
 
 impl TestClient {
     fn new(conn: Connection, app_id: &str) -> Self {
+        Self::with_state(conn, app_id, ClientState::default())
+    }
+
+    /// A client whose toolkit has no touch support: it never asks the seat
+    /// for a `wl_touch`.
+    fn without_touch(conn: Connection, app_id: &str) -> Self {
+        Self::with_state(
+            conn,
+            app_id,
+            ClientState {
+                refuse_touch: true,
+                ..ClientState::default()
+            },
+        )
+    }
+
+    fn with_state(conn: Connection, app_id: &str, mut state: ClientState) -> Self {
         let mut queue: EventQueue<ClientState> = conn.new_event_queue();
         let qh = queue.handle();
-        let mut state = ClientState::default();
         let _registry = conn.display().get_registry(&qh, ());
         // First roundtrip collects the global advertisements; the second lets
         // the binds made while handling them complete.
@@ -1710,6 +1728,51 @@ fn a_touch_tap_on_a_client_activates_it_once() {
     );
 }
 
+/// A client that never asked for `wl_touch` still works under a finger: a
+/// tap on it arrives as exactly one pointer click, and no touch traffic.
+#[test]
+fn a_touch_tap_on_a_client_without_wl_touch_is_one_click() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::without_touch(compositor.connect(), "org.tilo.test.touch-less");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.roundtrip();
+    assert!(!client.state.touch_bound);
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    client.wait_until(
+        |state| {
+            state
+                .pointer_events
+                .iter()
+                .filter(|e| **e == "button")
+                .count()
+                >= 2
+        },
+        "the touch-less client never received the tap as a click",
+    );
+    client.roundtrip();
+    client.roundtrip();
+
+    let buttons = client
+        .state
+        .pointer_events
+        .iter()
+        .filter(|event| **event == "button")
+        .count();
+    assert_eq!(
+        buttons, 2,
+        "one press and one release: {:?}",
+        client.state.pointer_events
+    );
+    assert!(client.state.touch_events.is_empty());
+}
+
 /// The desktop help overlay speaks the input language in use. A headless
 /// session starts with no input devices at all; the first touch contact
 /// attaches its panel and switches help to gestures, and typing switches it
@@ -1895,7 +1958,7 @@ impl Dispatch<WlSeat, ()> for ClientState {
                 if caps.contains(wl_seat::Capability::Pointer) {
                     seat.get_pointer(qh, ());
                 }
-                if caps.contains(wl_seat::Capability::Touch) {
+                if caps.contains(wl_seat::Capability::Touch) && !state.refuse_touch {
                     state.touch = Some(seat.get_touch(qh, ()));
                     state.touch_bound = true;
                 }

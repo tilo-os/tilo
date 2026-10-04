@@ -97,6 +97,7 @@ pub mod test_control;
 pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
+pub mod touch_pointer;
 #[cfg(target_os = "linux")]
 pub mod window_previews;
 #[cfg(target_os = "linux")]
