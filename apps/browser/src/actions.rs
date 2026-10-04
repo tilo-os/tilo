@@ -431,13 +431,42 @@ mod tests {
         doc
     }
 
-    /// The resource tree a headless browser window publishes once it has
-    /// synced `doc`.
+    /// The tree a headless browser window publishes over `doc`: the
+    /// resource's own publication, joined by the window's live rows.
     fn published(doc: &Doc) -> Vec<tilo_actions::Resource> {
-        use ui::widget::Widget;
+        use ui::tilo_resource::Resource as _;
+        fn join(into: &mut Vec<tilo_actions::Resource>, rows: Vec<tilo_actions::Resource>) {
+            for row in rows {
+                match into.iter_mut().find(|child| child.id == row.id) {
+                    Some(existing) => {
+                        for action in row.actions {
+                            if !existing.actions.iter().any(|have| have.id == action.id) {
+                                existing.actions.push(action);
+                            }
+                        }
+                        join(&mut existing.children, row.children);
+                    }
+                    None => into.push(row),
+                }
+            }
+        }
+        let state = crate::resource::Browser::read(doc).unwrap();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Browser>(
+            crate::resource::Browser::KIND,
+            "Browser",
+            &state,
+        );
         let mut widget = crate::browser_widget::BrowserWidget::new_headless();
-        widget.sync(&mut doc.clone(), &ROOT);
-        ui::resources::resources(&widget, doc)
+        widget.present_state(&state);
+        join(
+            &mut root.children,
+            widget
+                .live_rows()
+                .into_iter()
+                .map(ui::framework::LiveRow::into_resource)
+                .collect(),
+        );
+        vec![root]
     }
 
     fn removal(doc: &Doc, url: &str) -> BrowserAction {
@@ -451,7 +480,7 @@ mod tests {
         seed: seeded_library(),
         registry: registry(),
         resources: |doc| published(doc),
-        palette: ["Remove bookmark", "Set homepage", "Show history", "Bookmark this page"],
+        palette: ["Remove bookmark", "Set homepage", "Show history", "Open bookmark"],
         replay: [
             remove_bookmark => |doc| encode(&removal(doc, RUST)),
             set_homepage => |_| encode(&BrowserAction::SetHomepage {
