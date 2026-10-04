@@ -103,7 +103,10 @@ pub trait ResourceApp: 'static {
     /// `created` when this launch created the record, so actions that fill
     /// a new record (the source of a new project) are taken only then. They
     /// go through the same door as every control: checked against the
-    /// participant's permissions, attributed, undoable and in history.
+    /// participant's permissions, attributed, undoable and in history. A
+    /// launch that shows something rather than changing the resource (a
+    /// link to one item, a file to look at before acting on it) invokes one
+    /// of the app's effects ([`Invoke::effect`]) through the same door.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
         let _ = (input, created);
         Vec::new()

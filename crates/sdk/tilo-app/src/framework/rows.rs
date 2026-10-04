@@ -3,7 +3,7 @@
 //! fetched catalogue rows, running jobs — published beneath the resource for
 //! the palette, agents and scripts.
 
-use tilo_actions::{ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionSpec, OperationKind, Resource, ResourcePresentation};
 use tilo_resource::Effect;
 
 /// One live external entity a surface publishes beneath its resource, with
@@ -33,6 +33,13 @@ impl LiveRow {
         Self {
             resource: Resource::new(id, kind, label),
         }
+    }
+
+    /// How the row is shown beside its label: a one-line detail, a badge.
+    #[must_use]
+    pub fn presented(mut self, presentation: ResourcePresentation) -> Self {
+        self.resource.presentation = Some(presentation);
+        self
     }
 
     /// Offer a view or effect operation on the row.
