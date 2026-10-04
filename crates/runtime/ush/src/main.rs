@@ -194,8 +194,12 @@ fn images() -> Arc<dyn Images> {
     }
 }
 
-/// How `pkg install` builds tool images on this device.
+/// How `pkg install` builds tool images on this device: into the store
+/// [`images`] reads them from.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
+    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
+        return env_tools::store::dir_tool_builder(Path::new(&root));
+    }
     env_tools::store::device_tool_builder()
 }
 
@@ -794,19 +798,35 @@ explain when the host does not offer them.\n";
     /// Tear the guest down so the supervisor can build it again. There is no
     /// way to remount a namespace from inside it, so a restart is literally a
     /// new guest: the broker records the request, this ends the current one,
-    /// and the supervisor loops — signalling PID 1 (the sandbox's own init
-    /// inside the guest's pid namespace) takes every process in it with it.
+    /// and the supervisor loops. Every process in the guest's pid namespace
+    /// is ended — hung up first, so shells save their history, then killed —
+    /// and the sandbox's init (pid 1, which the kernel shields from signals
+    /// sent inside its own namespace) exits with its last child.
     pub fn restart() -> anyhow::Result<i32> {
+        use std::io::Write as _;
         ask(&Request::Restart)?;
         println!("restarting the guest…");
-        // SAFETY: plain `kill(2)`. Inside the guest's pid namespace pid 1 is
-        // the sandbox's own init; outside one this fails with EPERM and the
-        // fallback below applies.
-        if unsafe { libc::kill(1, libc::SIGTERM) } == 0 {
+        let _ = std::io::stdout().flush();
+        // Only ever inside a guest: there pid 1 is the sandbox's init. On a
+        // host `kill(-1)` would end the whole login session.
+        let in_guest =
+            std::fs::read_to_string("/proc/1/comm").is_ok_and(|comm| comm.trim() == "bwrap");
+        if !in_guest {
+            // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
+            unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
             return Ok(0);
         }
-        // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
-        unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
+        // SAFETY: plain signal(2)/kill(2) calls. This process ignores the
+        // hangup it sends so it is still here to send the kill; `-1` reaches
+        // every process this one may signal, which inside the guest's pid
+        // namespace is the guest and nothing else.
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            libc::kill(-1, libc::SIGHUP);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // SAFETY: as above.
+        unsafe { libc::kill(-1, libc::SIGKILL) };
         Ok(0)
     }
 
