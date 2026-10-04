@@ -75,6 +75,7 @@ pub mod broker;
 pub mod fleet;
 pub mod guard;
 pub mod guest;
+pub mod host;
 pub mod images;
 pub mod policy;
 pub mod records;

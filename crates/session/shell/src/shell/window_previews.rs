@@ -76,7 +76,9 @@ impl WindowSource for ShellWindows {
                     }
                 }
             }
-            TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
+            TileContent::LocalApp { app_id, .. }
+            | TileContent::PeerWindow { app_id, .. }
+            | TileContent::HostedWindow { app_id, .. } => {
                 if crate::shell::capture_protection::holds_secrets(app_id) {
                     PreviewSource::Withheld
                 } else {
