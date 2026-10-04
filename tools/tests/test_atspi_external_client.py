@@ -72,6 +72,14 @@ class ManifestScenarioTests(unittest.TestCase):
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
 
 
+class TypedTextTests(unittest.TestCase):
+    def test_text_replies_read_back_exactly(self):
+        self.assertEqual(CLIENT.text_reply("('hi',)\n"), "hi")
+        self.assertEqual(CLIENT.text_reply("('',)"), "")
+        self.assertEqual(CLIENT.text_reply("('it\\'s, twice!',)"), "it's, twice!")
+        self.assertIsNone(CLIENT.text_reply("Error: GDBus.Error"))
+
+
 class LaunchpadCardTests(unittest.TestCase):
     def run_card(self, opened_root: str) -> tuple[str, int]:
         from unittest import mock
