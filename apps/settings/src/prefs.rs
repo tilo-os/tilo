@@ -1794,6 +1794,40 @@ mod tests {
         );
     }
 
+    /// "Always distinguish similar letters" follows the typeface until the
+    /// person chooses, and a choice that matches the typeface stays no
+    /// choice so a later Hyperlegible theme still turns it on.
+    #[test]
+    fn distinct_letters_follow_the_typeface_until_chosen() {
+        let mut prefs = AppearancePrefs::default();
+        assert!(
+            !prefs.distinct_letters_effective(),
+            "off in the default face"
+        );
+        assert!(!prefs.resolve_theme().tokens.typography.distinct_letters);
+
+        prefs.choose_distinct_letters(true);
+        assert_eq!(prefs.distinct_letters, Some(true));
+        assert!(prefs.resolve_theme().tokens.typography.distinct_letters);
+        prefs.choose_distinct_letters(false);
+        assert_eq!(prefs.distinct_letters, None, "the typeface's own value");
+
+        let mut legible = ui::theme::Preset::DarkGraphite.document();
+        legible.id = "legible".into();
+        legible.name = "Legible".into();
+        legible.type_.face = "Hyperlegible".into();
+        let mut prefs = AppearancePrefs {
+            dark_theme: "custom:legible".into(),
+            custom_themes: vec![serde_json::to_value(&legible).unwrap()],
+            ..AppearancePrefs::default()
+        };
+        assert!(prefs.distinct_letters_by_face(), "on with Hyperlegible");
+        assert!(prefs.distinct_letters_effective());
+        prefs.choose_distinct_letters(false);
+        assert_eq!(prefs.distinct_letters, Some(false));
+        assert!(!prefs.resolve_theme().tokens.typography.distinct_letters);
+    }
+
     /// Writing one section never clobbers the region store's locale, a theme
     /// studio artifact, or another app's section.
     #[test]
