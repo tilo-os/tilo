@@ -44,7 +44,7 @@ Unchecked entries need implementation or caller-level qualification.
 | P0 | IME / Unicode / caret | Shared line/table composition guards, Unicode joins, safe copy selection | Browser/OS input-method qualification |
 | P0 | Keyboard / accessibility | Focus escape, canonical read-only refusals and semantic duplication | Pointer command menu and browser/native assistive-technology qualification |
 | P1 | Tables as content | Shared source/grid table editor and canonical cells | Qualify cell navigation, paste and round-trip consistency |
-| P1 | Find / replace | Shared `open_find`; Notes search provider | Replace absent; selection-safe Unicode replacement |
+| P1 | Find / replace | Shared find overlay and canonical current-match replacement | Replace-all atomicity, advanced matching options and broader qualification |
 | P2 | Block anchors / mentions / backlinks | Notes resources, links and backlinks | Qualify reusable block links and cross-note references |
 
 ## Implementation sequence
@@ -275,3 +275,34 @@ step; redo restores the image. No History implementation or schema changes.
 - Required shell test compilation reproduces the same 22 Darwin-only unresolved
   compositor imports documented and proven at the clipboard-safety base. The
   affected compositor modules are unchanged in this increment.
+
+### Independent increment: replace the current find match
+
+The shared Find overlay adds a replacement field and Replace button. Tab moves
+between the two inputs, Enter in the replacement field replaces one match, F3
+navigates matches, and Escape closes the overlay. Pointer and semantic actions
+use the same command. The shared rich-text surface validates the captured block
+and match before one existing canonical `SpliceText` action; no schema or History
+changes are involved. Empty replacement deletes the match. Replacement is
+single-line (tabs allowed); Replace all and advanced matching options remain open.
+
+- Red: the mounted Notes caller had no find-query/replacement semantic targets.
+- Six actual Notes regressions pass: Unicode replacement, one-step undo/redo,
+  keyboard and pointer activation, marked suffix preservation, empty replacement,
+  peer text surviving undo, stale peer target refusal, viewer and IME safety,
+  and exclusive focus after navigation or replacing the final match.
+- This operation's concurrent-undo test passes independently of the unpublished
+  formatting increment's mark-inheritance failure. It edits a single existing
+  text object and does not recreate blocks.
+- Strict all-target Notes and SDK Clippy passes. Remaining SDK/browser results
+  are recorded after validation; no browser pass is inferred from compilation.
+- All 60 block-editor tests (including bounded typing work), both SearchField
+  tests and all 37 rich-text tests pass. Independent final review has no findings.
+- The standard offline WASM bundle builds. Disposable Chrome passes actual
+  Ctrl/Cmd+F entry, semantic Unicode replacement, empty replacement, atomic
+  undo/redo, and Tab/Enter replacement input. No browser errors were recorded.
+- Visual inspection found the default button footprint overlapping the input;
+  an explicit theme-scaled button size fixes it. The native pointer caller now
+  asserts the controls do not overlap; that regression and strict Clippy pass.
+- Required shell test compilation reproduces the same 22 baseline Darwin
+  compositor import errors. No compositor or History implementation was changed.
