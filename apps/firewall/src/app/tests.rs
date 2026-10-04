@@ -277,8 +277,15 @@ fn deleting_a_rule_asks_first() {
             public_rules(&app).iter().any(|r| r.id == rule.id),
             "the first press only asks for confirmation"
         );
+        // Return is the safe answer in a destructive confirmation.
         app.harness().key("Enter");
         app.settle();
+        assert!(
+            public_rules(&app).iter().any(|r| r.id == rule.id),
+            "Enter cancels the delete"
+        );
+        press(&mut app, &format!("firewall-rule-delete-{}", rule.id));
+        press(&mut app, "firewall-delete-dialog.primary");
         assert!(!public_rules(&app).iter().any(|r| r.id == rule.id));
 
         assert!(app.undo());

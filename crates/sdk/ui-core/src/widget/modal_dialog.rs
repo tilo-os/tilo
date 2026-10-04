@@ -5,7 +5,9 @@
 //! layer ([`Widget::draw_overlay`]), after the app and the window's own
 //! chrome (the History bar, sidebars), so its scrim covers all of them
 //! wherever in the tree the dialog is mounted. Escape or a click on the scrim
-//! dismisses; Enter fires the primary action unless the content consumes it.
+//! dismisses; Enter fires the default action unless the content consumes it.
+//! The default is the primary action, except in a destructive confirmation,
+//! where it is the safe answer (Cancel), as on macOS.
 //! Content taller than the window allows scrolls inside the body.
 //!
 //! A painted host that asks a question without a retained tree uses
@@ -62,11 +64,12 @@ const MODAL_MIN_INK_CONTRAST: f64 = 4.5;
 /// How an action is weighted in the footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalEmphasis {
-    /// The default action. One per modal, and the one Enter fires.
+    /// The main action. One per modal, and the one Enter fires.
     Primary,
     /// Everything else: Cancel, and any additional verb.
     Secondary,
-    /// A primary action that destroys something. Still what Enter fires.
+    /// A primary action that destroys something. Enter never fires it: in
+    /// a sheet with a way out, Enter is that way out (Cancel).
     Danger,
     /// A third answer that is neither the default nor the way out ("Don't
     /// save"). It stands apart from the other two at the footer's leading
@@ -275,7 +278,8 @@ pub struct ModalLayout {
     pub actions: Vec<Rect>,
     /// The body wanted more height than a sheet inside the window can give.
     pub body_overflows: bool,
-    /// Index of the action Enter fires, if any.
+    /// Index of the action Enter fires, if any: the primary action, or
+    /// Cancel when the primary action is destructive.
     pub primary: Option<usize>,
     /// Mirrors [`ModalSpec::dismiss_on_scrim`].
     pub dismiss_on_scrim: bool,
@@ -489,10 +493,19 @@ pub fn layout(
     );
 
     let actions = place_actions(spec, card, text_renderer, theme);
-    let primary = spec
+    let destructive = spec
         .actions
         .iter()
-        .position(|a| a.is_default() && a.enabled);
+        .any(|a| a.emphasis == ModalEmphasis::Danger);
+    let primary = if destructive {
+        spec.actions
+            .iter()
+            .position(|a| a.emphasis == ModalEmphasis::Secondary && a.enabled)
+    } else {
+        spec.actions
+            .iter()
+            .position(|a| a.is_default() && a.enabled)
+    };
 
     ModalLayout {
         scrim: window,
@@ -1285,7 +1298,8 @@ impl<C: Widget> ModalDialog<C> {
         self.pointer_inside = false;
     }
 
-    /// The default action: Enter fires it, and it is the inverted button.
+    /// The main action, the inverted button. Enter fires it unless it is
+    /// [destructive](Self::with_destructive), when Enter is Cancel.
     #[must_use]
     pub fn primary_action(
         mut self,
@@ -1344,7 +1358,9 @@ impl<C: Widget> ModalDialog<C> {
     }
 
     /// The primary action deletes, revokes or discards: it is a destructive
-    /// button.
+    /// button. As on macOS, Enter is then the safe answer (the secondary
+    /// action, Cancel) and the sheet opens with the keyboard on it; the
+    /// destructive action takes a click, or Tab and Space.
     #[must_use]
     pub fn with_destructive(mut self, on: bool) -> Self {
         self.destructive = on;
@@ -1533,9 +1549,10 @@ impl<C: Widget> ModalDialog<C> {
 
     /// The footer's slots in the order Tab visits them: the order they
     /// stand, leading to trailing, except that the alternate answer ("Don't
-    /// save") comes last. A dialog with nothing to type in opens with focus
-    /// on its first footer action, and that is never the answer that
-    /// discards the user's changes.
+    /// save") comes last, and a destructive confirmation starts on Cancel
+    /// wherever the platform stands it. A dialog with nothing to type in
+    /// opens with focus on its first footer action, and that is never the
+    /// answer that destroys or discards anything.
     fn slots_in_focus_order(&self) -> Vec<Slot> {
         let has = |slot: Slot| match slot {
             Slot::Primary => self.primary_action.is_some(),
@@ -1543,8 +1560,10 @@ impl<C: Widget> ModalDialog<C> {
             Slot::Tertiary => self.tertiary_action.is_some(),
         };
         let order = match self.platform.dialog_action_order() {
-            DialogActionOrder::PrimaryLast => [Slot::Secondary, Slot::Primary, Slot::Tertiary],
-            DialogActionOrder::PrimaryFirst => [Slot::Primary, Slot::Secondary, Slot::Tertiary],
+            DialogActionOrder::PrimaryFirst if !self.destructive => {
+                [Slot::Primary, Slot::Secondary, Slot::Tertiary]
+            }
+            _ => [Slot::Secondary, Slot::Primary, Slot::Tertiary],
         };
         order.into_iter().filter(|&s| has(s)).collect()
     }
@@ -1744,6 +1763,16 @@ impl<C: Widget> ModalDialog<C> {
         };
         if let Some(action) = action {
             action.run();
+        }
+    }
+
+    /// The action Enter takes: the primary action, or Cancel when the primary
+    /// action is destructive.
+    fn default_slot(&self) -> Option<Slot> {
+        if self.destructive {
+            self.secondary_action.is_some().then_some(Slot::Secondary)
+        } else {
+            Some(Slot::Primary)
         }
     }
 
@@ -2182,14 +2211,19 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     // Focus on a footer action: Enter and Space take it.
                     self.activate(slot);
                 } else {
-                    // The focused control has the first refusal: a widget
-                    // that reads the key itself, then the window's own
-                    // activation of the focused control (a switch, a check
-                    // box). Only a key nobody took is the sheet's Enter.
+                    // A control that reads the key itself keeps it (a
+                    // multiline field, an open list). Space then operates
+                    // the focused control (a switch, a check box); Enter
+                    // operates only a focused button, and is otherwise the
+                    // sheet's default answer, as Return is on macOS.
+                    let enter = *key == NamedKey::Enter;
                     let content_handled = self.forward_to_content(event, ctx)
-                        || activate_focused(&mut self.content, ctx.state, ctx.path);
-                    if !content_handled && *key == NamedKey::Enter {
-                        self.activate(Slot::Primary);
+                        || activate_focused(&mut self.content, ctx.state, ctx.path, enter);
+                    if !content_handled
+                        && enter
+                        && let Some(slot) = self.default_slot()
+                    {
+                        self.activate(slot);
                     }
                 }
                 *ctx.handled = true;
@@ -2459,15 +2493,25 @@ fn tree_window(taffy: &TaffyTree<()>, node: NodeId) -> Option<Rect> {
 }
 
 /// Offer the focused control under `widget` the activation the window gives a
-/// focused control on Enter or Space. Returns whether it took it.
-fn activate_focused(widget: &mut dyn Widget, state: &mut AppModel, path: &ModelPath) -> bool {
+/// focused control on Space, or on Enter (`buttons_only`) only when it is a
+/// button. Returns whether it took it.
+fn activate_focused(
+    widget: &mut dyn Widget,
+    state: &mut AppModel,
+    path: &ModelPath,
+    buttons_only: bool,
+) -> bool {
     if widget.is_focused() && widget.is_focusable() {
-        return widget.perform_action(&crate::a11y::Action::Activate, state, path);
+        let button = widget
+            .accessibility()
+            .is_some_and(|node| node.role == crate::a11y::Role::Button);
+        return (button || !buttons_only)
+            && widget.perform_action(&crate::a11y::Action::Activate, state, path);
     }
     widget
         .children_mut()
         .into_iter()
-        .any(|child| activate_focused(child, state, path))
+        .any(|child| activate_focused(child, state, path, buttons_only))
 }
 
 /// How far one wheel notch scrolls a sheet's body: three lines of body text.

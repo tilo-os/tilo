@@ -868,6 +868,12 @@ A destructive button is a neutral control lettered in danger ink. The filled
 danger face exists only in the confirmation step, and the toolkit gives it
 there: `ModalDialog::with_destructive(true)` and a painted modal action made with
 `ModalAction::danger(label)`. An app never asks for a filled danger button.
+As on macOS, Return in that confirmation is the safe answer: Enter fires
+Cancel, the sheet opens with the keyboard on Cancel, and the destructive
+action takes a click, or Tab and Space. In any sheet, Space operates the
+focused control (a switch, a check box) and Enter is the sheet's default
+answer unless the focused control reads Enter itself (a multiline field, an
+open list, a focused button).
 
 ### Choosing a size
 
