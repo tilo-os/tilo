@@ -5,7 +5,7 @@
 //! Hyperlegible and a probe face that has every distinct form as a feature.
 //!
 //! ```bash
-//! rcargo --on-builder --fetch look/distinct-letters run -p ui-examples \
+//! cargo run -p ui-examples \
 //!     --example distinct-letters-shots -- \
 //!     --shots target/look/distinct-letters/specimen.png --viewport 1280x420 --scale 2
 //! ```
