@@ -67,7 +67,9 @@
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome), `device_only` (only the person at this device),
-//! `programmatic` (for programs and agents, never offered in the palette) and
+//! `programmatic` (for programs and agents, never offered in the palette),
+//! `participant` (a view that moves only the invoking participant's own
+//! view, such as an agent's caret, so a remote participant may invoke it) and
 //! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
@@ -246,6 +248,10 @@ pub struct EffectDecl {
     /// Invoked by programs and agents, never offered to a person picking
     /// from the palette or a menu (an agent reading a page's structure).
     pub programmatic: bool,
+    /// A view that changes only the invoking participant's own view (an
+    /// agent's caret, its Find), so a remote participant may invoke it
+    /// without moving anybody else's.
+    pub participant: bool,
 }
 
 /// How an effect answers its caller.
@@ -349,6 +355,9 @@ impl EffectDecl {
                 };
                 if self.programmatic {
                     tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                }
+                if self.participant {
+                    tags.push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
                 }
                 tags
             },
