@@ -79,6 +79,7 @@ pub mod guard;
 pub mod guest;
 pub mod host;
 pub mod images;
+pub mod legacy_relay;
 pub mod policy;
 pub mod records;
 pub mod seccomp;

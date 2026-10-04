@@ -105,6 +105,10 @@ pub mod environment_tools;
 pub mod framing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
+#[cfg(target_os = "linux")]
+pub mod legacy_route;
+#[cfg(target_os = "linux")]
+pub mod legacy_vm_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
