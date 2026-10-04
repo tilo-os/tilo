@@ -816,7 +816,7 @@ jobs:
 
       - name: Retain public Lenovo firmware import evidence
         if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-lenovo-firmware-import-${{ github.sha }}
           path: firmware-import.json
@@ -2010,7 +2010,7 @@ jobs:
               --arch '${{ matrix.arch }}' --role "$role"
           done
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         with:
@@ -2217,7 +2217,7 @@ jobs:
       - name: Retain the boot splash frames
         if: always() && steps.splash.outcome == 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-boot-splash-${{ matrix.arch }}
           path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
@@ -2826,7 +2826,7 @@ jobs:
 
       - name: Upload the boot's QEMU and serial logs
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-os-boot-failure-${{ matrix.arch }}
           path: |
@@ -3045,7 +3045,7 @@ jobs:
             --data "$payload"
           echo "::notice::requested tilo-vm:$tag ($ARCH) from $IMAGE"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.release-mode.outputs.publish == 'true'
         with:
           name: tilo-os-child-${{ matrix.arch }}
@@ -3060,7 +3060,7 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-children
       # Promotion needs only Cosign, not the multi-gigabyte build-input cache.
@@ -3265,7 +3265,7 @@ jobs:
             > tilo-os-release-index.json
           echo "::notice::promoted signed, attested multi-architecture generation $generation ($index_digest)"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-os-release-index
           path: tilo-os-release-index.json
@@ -3559,7 +3559,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-os-child-aarch64
           path: release-child
@@ -3797,7 +3797,7 @@ jobs:
           fi
           skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
           echo "::notice::$moving -> $source ($digest)"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.lanes.outputs.both == 'true'
         with:
           name: tilo-os-integration-index
