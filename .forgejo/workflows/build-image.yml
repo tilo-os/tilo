@@ -1078,8 +1078,12 @@ jobs:
           # both take the commit time instead and their configs can agree.
           echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           if [[ $DEV_BUILD == true ]]; then
+            # Every rootfs step is keyed on the epoch, and the kernel enters
+            # only near the end of it: with the kernel snapshot (refreshed
+            # several times a day) in the epoch, each refresh rebuilt the
+            # whole rootfs and the dev build toolchain on every slot.
             epoch=0
-            for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do
+            for ref in "$BASE_REF" "$RPMS_REF"; do
               created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
               if (( created > epoch )); then epoch=$created; fi
             done
