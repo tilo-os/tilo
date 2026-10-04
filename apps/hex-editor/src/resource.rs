@@ -232,17 +232,22 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
             if *offset >= len {
                 return Err(beyond(*offset, len));
             }
+            let end = offset.saturating_add(bytes.len());
             let mut start = 0;
             for page in &mut pages {
+                let page_start = start;
+                start += page.len();
+                if start <= *offset || page_start >= end {
+                    continue;
+                }
                 for (index, slot) in page.iter_mut().enumerate() {
-                    if let Some(byte) = (start + index)
+                    if let Some(byte) = (page_start + index)
                         .checked_sub(*offset)
                         .and_then(|at| bytes.get(at))
                     {
                         *slot = *byte;
                     }
                 }
-                start += page.len();
             }
         }
     }
