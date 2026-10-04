@@ -10,12 +10,6 @@ use vello::peniko::{ColorStop, Fill, Gradient};
 
 use crate::theme::Theme;
 
-/// Strength of every scrim at full openness — behind a modal Panel, a sheet
-/// or an overlay drawer — as [`crate::chrome::fill_scrim`] reads it: it
-/// takes a uniform 21-23 L* off every ground from white to mid grey. One
-/// strength, so a drawer dims what it covers as clearly as a sheet does.
-pub const MODAL_STRENGTH: f32 = 0.45;
-
 /// Dim `rect` (the whole window) behind a modal Panel. `openness` runs from
 /// 0 (closed) to 1 (open), so the scrim fades in with the panel. Call after
 /// everything it dims is drawn into the same scene.
@@ -24,7 +18,7 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
         scene,
         transform,
         rect,
-        MODAL_STRENGTH * openness.clamp(0.0, 1.0),
+        theme.tokens.colors.surfaces.scrim_strength * openness.clamp(0.0, 1.0),
         theme,
     );
 }

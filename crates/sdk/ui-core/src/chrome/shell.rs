@@ -1203,6 +1203,24 @@ mod tests {
     }
 
     #[test]
+    fn a_dark_theme_scrim_dims_the_mid_tones_of_dark_content() {
+        // Over dark content the grounds are near black and cannot give up
+        // much; a sheet reads as lifted only when the rows, panels and map
+        // roads in the mid tones move. The dark theme's strength makes them.
+        let dark = Theme::dark();
+        let light = Theme::light();
+        let strength = |t: &Theme| t.tokens.colors.surfaces.scrim_strength;
+        assert!(strength(&dark) > strength(&light));
+        for v in [64u8, 96, 128] {
+            let drop = lstar(v) - lstar(scrim_maps(v, strength(&dark), &dark));
+            assert!(
+                drop >= 15.0,
+                "a dark-theme scrim takes only {drop:.1} L* off a mid tone at {v}"
+            );
+        }
+    }
+
+    #[test]
     fn scrim_dims_every_ground_while_keeping_its_structure() {
         // Case `a_scrim_dims_every_bright_ground_by_the_same_amount`:
         // Asserted only from `#ffffff` down to mid grey — those grounds *can*

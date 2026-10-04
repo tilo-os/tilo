@@ -1782,7 +1782,7 @@ clock. HIG §7c is the rule; this section is the mechanical part.
 | `ModalFrame::action_height(theme)` / `ModalFrame::ink(theme)` | `modal_dialog::action_height(theme)` / `modal_dialog::ink(theme)` |
 | `ModalFrame::card_fill(theme)` | delete; a colour derived from the sheet is `ui::chrome::panel_ground(theme)` |
 | `ui::widget::modal_frame::{ModalAction, ModalEmphasis, ModalHit, ModalLayout, ModalSpec}` | same names in `ui::widget::modal_dialog` (also re-exported from `ui::widget`) |
-| `MODAL_SCRIM_ALPHA` (`ui::widget::modal_frame`) | `ui::overlay::scrim::MODAL_STRENGTH`; better, `ui::overlay::scrim::modal(scene, transform, window, openness, theme)` |
+| `MODAL_SCRIM_ALPHA` (`ui::widget::modal_frame`) | `theme.tokens.colors.surfaces.scrim_strength`; better, `ui::overlay::scrim::modal(scene, transform, window, openness, theme)` |
 | `MODAL_PAD`, `MODAL_TITLE_ROW_H`, `MODAL_ACTION_ROW_H`, `MODAL_CLOSE_SIZE`, `MODAL_VIEWPORT_MARGIN` | delete; read geometry from the `ModalLayout` |
 | `ModalSpec::body_height(h / text_scale)` | `ModalSpec::body_height(h)`: the body height in the same logical pixels as everything else; never divide by the text scale |
 | `ModalDialog::with_max_size(w, h)` / `set_max_size(w, h)` | `ModalDialog::with_max_width(w)` / `set_max_width(w)`; the height always follows the content (`shortcuts`' `with_max_size(560.0, 520.0)` becomes `with_max_width(560.0)`) |

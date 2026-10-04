@@ -343,6 +343,20 @@ impl Palette {
         }
     }
 
+    /// How strongly a scrim dims what it covers (see
+    /// `chrome::fill_scrim`). A dark theme's grounds have little lightness
+    /// left to give, so its scrim is stronger: it has to move the mid tones
+    /// (rows, roads, raised panels) for a sheet to read as lifted.
+    /// High contrast keeps the light strength, which holds white ink on
+    /// black at 7:1 behind it.
+    pub(crate) fn scrim_strength(&self) -> f32 {
+        if self.dark && !self.high_contrast {
+            0.6
+        } else {
+            0.45
+        }
+    }
+
     /// Lightness of the modal scrim.
     pub(crate) fn scrim(&self) -> f32 {
         if self.high_contrast {
