@@ -70,7 +70,6 @@ pub struct ContainersState {
     pub section: Section,
     pub selected: Option<String>,
     pub tab: DetailTab,
-    pub search: String,
 }
 
 impl Default for ContainersState {
@@ -79,7 +78,6 @@ impl Default for ContainersState {
             section: Section::Containers,
             selected: None,
             tab: DetailTab::Logs,
-            search: String::new(),
         }
     }
 }
@@ -104,7 +102,6 @@ impl Resource for Containers {
             section: ViewDoc::section(doc),
             selected: ViewDoc::selected(doc),
             tab: ViewDoc::tab(doc),
-            search: ViewDoc::search(doc),
         })
     }
 
@@ -213,7 +210,7 @@ impl ResourceApp for ContainersShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["confirm", "prompt"]
+        crate::SCENARIOS
     }
 }
 
@@ -330,7 +327,6 @@ mod tests {
         }
         .apply(&mut doc)
         .unwrap();
-        ViewDoc::set_search(&mut doc, "nginx");
         doc.commit();
 
         let state = Containers::read(&doc).expect("seeded containers state");
@@ -369,7 +365,6 @@ mod tests {
         assert_eq!(state.section, Section::Images);
         assert_eq!(state.selected.as_deref(), Some("abc123"));
         assert_eq!(state.tab, DetailTab::Stats);
-        assert_eq!(state.search, "nginx");
 
         let mut app = ContainersApp::new(false);
         let mut seeded = doc.clone();
