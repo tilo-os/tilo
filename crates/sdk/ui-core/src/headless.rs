@@ -564,6 +564,9 @@ pub struct FrameHarness {
     focused: Option<NodeId>,
     focus_trap_active: bool,
     active_input_instance: Option<crate::application::InstanceId>,
+    // An activation is complete only when its current focus and encoded frame
+    // agree. Failed composition keeps this intent for the original retry path.
+    pending_app_activation: Option<crate::application::InstanceId>,
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
     input_sequence: std::cell::Cell<u64>,
@@ -982,6 +985,7 @@ impl FrameHarness {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.pending_app_activation = None;
         self.control_domain.close();
         if let Some(wake) = &self.component_wake {
             wake.close();
@@ -1022,6 +1026,7 @@ impl FrameHarness {
     /// freed widgets.
     #[cfg(test)]
     fn replace_root(&mut self, root: Box<dyn Widget>) {
+        self.pending_app_activation = None;
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
@@ -1459,6 +1464,7 @@ impl FrameHarness {
             focused: None,
             focus_trap_active: false,
             active_input_instance: None,
+            pending_app_activation: None,
             saved_instance_focus: HashMap::new(),
             input_sequence: std::cell::Cell::new(0),
             observed_input_owner: std::cell::RefCell::new(None),
@@ -2508,8 +2514,10 @@ impl FrameHarness {
             self.discard_layout_tree();
             self.owner_service_layout_retired = true;
         }
+        let finalizing_activation = self.pending_app_activation.is_some();
+        let previous_viewport = self.presence.viewport.get();
         #[cfg(not(target_arch = "wasm32"))]
-        let result = if self.owner_service_layout_retired {
+        let result = if self.owner_service_layout_retired || finalizing_activation {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.try_relayout_content()
             })) {
@@ -2517,6 +2525,12 @@ impl FrameHarness {
                 Err(payload) => {
                     self.discard_layout_tree();
                     self.last_layout_viewport = None;
+                    if finalizing_activation {
+                        self.presence.pop_viewport(previous_viewport);
+                        self.scene.reset();
+                        self.owner_service_layout_retired = true;
+                        self.layout_requested = true;
+                    }
                     std::panic::resume_unwind(payload);
                 }
             }
@@ -2526,11 +2540,18 @@ impl FrameHarness {
         #[cfg(target_arch = "wasm32")]
         let result = self.try_relayout_content();
         if result.is_ok() {
+            self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
             // composition/draw/focus pipeline. Host reentry cannot acquire it.
             self.layout_requested = false;
         } else {
+            if finalizing_activation {
+                self.presence.pop_viewport(previous_viewport);
+                self.scene.reset();
+                self.owner_service_layout_retired = true;
+                self.layout_requested = true;
+            }
             if self.owner_service_layout_retired {
                 self.discard_layout_tree();
             }
@@ -2783,7 +2804,16 @@ impl FrameHarness {
                 );
                 self.layout_built = true;
             }
-            if rebuilt_this_pass || must_compute {
+            // Sync and view restoration can revive an outgoing owner's local
+            // focus. Normalize it within composition, before sizing and ink.
+            // Each arbitrary setter is followed by the existing structure
+            // contract; a replaced child invalidates maps before another visit.
+            if let Some(instance) = self.pending_app_activation
+                && !self.blur_inactive_app_components(instance)
+            {
+                return Ok((None, true));
+            }
+            if rebuilt_this_pass || must_compute || self.pending_app_activation.is_some() {
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
                     // re-measures exactly the widgets that report a possible
@@ -2948,6 +2978,7 @@ impl FrameHarness {
         // enabled state the user would see.
         self.publish_undo_status();
 
+        self.validate_app_activation_frame()?;
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
         // Cull against the window exactly as the live host does, so offscreen
@@ -3066,6 +3097,9 @@ impl FrameHarness {
         crate::history_mode::embedded::finish_returns(self.root.as_mut());
 
         self.restore_history_focus();
+        // Draw and History-return callbacks remain original. A late mutation
+        // cannot turn their already encoded ink into a successful activation.
+        self.validate_app_activation_frame()?;
 
         // One `relayout` is one rendered frame; commit it, folding in any
         // `handle_event` time banked by a preceding `send`.
@@ -3370,7 +3404,7 @@ impl FrameHarness {
             .or_else(|| order.first().copied())
     }
 
-    fn blur_inactive_app_components(&mut self, active: crate::application::InstanceId) {
+    fn blur_inactive_app_components(&mut self, active: crate::application::InstanceId) -> bool {
         let outgoing: Vec<_> = self
             .node_map
             .keys()
@@ -3383,12 +3417,84 @@ impl FrameHarness {
             .collect();
         for node in outgoing {
             let _ = self.mutate_node(node, |widget| widget.set_focus(false));
+            let changed = self.take_composition_dirty();
+            let history_invalidated = self.invalidate_unsupported_history_owner();
+            if changed || history_invalidated {
+                self.discard_layout_tree();
+                return false;
+            }
         }
+        true
+    }
+
+    fn validate_app_activation_frame(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        let Some(instance) = self.pending_app_activation else {
+            return Ok(());
+        };
+        let changed = self.take_composition_dirty();
+        let history_invalidated = self.invalidate_unsupported_history_owner();
+        if changed || history_invalidated {
+            self.discard_layout_tree();
+            return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+        }
+        if self.active_input_instance != Some(instance)
+            || self.focused.is_some_and(|node| {
+                self.bindings
+                    .binding_for(node)
+                    .is_none_or(|binding| binding.instance_id != instance)
+            })
+        {
+            return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+        }
+        if let Some(node) = self.focused {
+            let focused = self
+                .inspect_node(node, |widget| widget.is_focused())
+                .unwrap_or(false);
+            let changed = self.take_composition_dirty();
+            let history_invalidated = self.invalidate_unsupported_history_owner();
+            if changed || history_invalidated {
+                self.discard_layout_tree();
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+            if !focused {
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+        }
+        let outgoing: Vec<_> = self
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.bindings
+                    .binding_for(node)
+                    .is_some_and(|binding| binding.instance_id != instance)
+            })
+            .collect();
+        for node in outgoing {
+            let focused = self
+                .inspect_node(node, |widget| widget.is_focused())
+                .unwrap_or(false);
+            // Even a custom inspection must report changed child storage before
+            // another mapped reference is used, as on the setter path above.
+            let changed = self.take_composition_dirty();
+            let history_invalidated = self.invalidate_unsupported_history_owner();
+            if changed || history_invalidated {
+                self.discard_layout_tree();
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+            if focused {
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+        }
+        Ok(())
     }
 
     /// Resolve focus only in the selected, live app instance. A missing control
     /// is an authoritative no-owner result; layout cannot revive another app.
     pub fn prepare_app_activation(&mut self, instance: crate::application::InstanceId) {
+        // A new explicit selection replaces failed prior selection metadata;
+        // its callbacks still require the original fresh layout admission.
+        self.pending_app_activation = None;
         if self.readmit_owner_service_layout().is_err() {
             return;
         }
@@ -3407,6 +3513,7 @@ impl FrameHarness {
     }
 
     pub fn activate_app_focus(&mut self, instance: crate::application::InstanceId) {
+        self.pending_app_activation = None;
         if self.readmit_owner_service_layout().is_err() {
             return;
         }
@@ -3447,12 +3554,8 @@ impl FrameHarness {
         self.input_sequence
             .set(self.input_sequence.get().wrapping_add(1));
         self.remember_app_focus();
+        self.pending_app_activation = Some(instance);
         self.relayout();
-        // Reconciliation can restore an opaque component's app-local focus
-        // flags after the runner has moved its own focus. Enforce the selected
-        // instance after that final layout so old controls cannot stay blue or
-        // claim accessibility focus.
-        self.blur_inactive_app_components(instance);
     }
 
     /// No-control shortcut routing stays inside the selected app and its
@@ -13185,3 +13288,7 @@ mod owner_background_work;
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/mount_service_custody.rs"]
 mod owner_mount_service_custody;
+
+#[cfg(test)]
+#[path = "headless/activation_scene_consistency_tests.rs"]
+mod activation_scene_consistency_tests;
