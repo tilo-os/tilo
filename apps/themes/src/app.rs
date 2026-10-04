@@ -75,8 +75,6 @@ pub const NARROW_CONTENT_GUTTER: f32 = Spacing::BASE.s4;
 /// customizer stop fitting side by side (`GALLERY_W + CUSTOMIZER_W` plus a
 /// readable preview column).
 const BREAKPOINT: f64 = 840.0;
-/// How far the scrolled screenshot scenarios scroll the narrow stack.
-const SCENARIO_SCROLL: f64 = 260.0;
 
 /// A top-bar button invoking one of the studio's effects through the same
 /// door as the palette, or disabled when the effect is not published.
@@ -322,13 +320,16 @@ impl ThemesApp {
     /// Stage the view a screenshot scenario shows; see [`scenario`].
     fn stage_scenario(&mut self, name: Option<&str>) {
         let custom = crate::model::seed_custom().id;
+        // How far the scrolled scenarios scroll the narrow stack: partway
+        // into the specimen on a phone-sized window.
+        let scrolled = Some(260.0);
         match name {
             Some(scenario::LIVE | scenario::SCROLL) => {
                 if name == Some(scenario::SCROLL) {
                     self.select(&custom);
                 }
                 self.gallery_flap.snap(false);
-                self.staged.scroll = Some(SCENARIO_SCROLL);
+                self.staged.scroll = scrolled;
             }
             Some(scenario::CUSTOMIZE) => {
                 self.select(&custom);
@@ -339,7 +340,7 @@ impl ThemesApp {
                 self.gallery_flap.snap(false);
                 self.narrow_view_chosen = true;
                 self.set_narrow_preview(true);
-                self.staged.scroll = Some(SCENARIO_SCROLL);
+                self.staged.scroll = scrolled;
             }
             Some(scenario::MENU) => {
                 self.select(&custom);
