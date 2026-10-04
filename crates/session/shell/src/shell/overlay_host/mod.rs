@@ -159,6 +159,14 @@ mod device_fabric_ui_tests;
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
+    reason = "each test reads one host and chrome borrow through to its last assertion"
+)]
+#[path = "launcher_action_coverage_tests.rs"]
+mod launcher_action_coverage_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "idle_io_animation_tests.rs"]
@@ -8186,13 +8194,15 @@ impl ShellOverlayHost {
         root: &ObjId,
         visibility: &dyn crate::shell::search::action_api::ActionVisibility,
     ) -> crate::shell::search::action_api::ActionCatalog {
-        let scope = chrome.search_scope;
-        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        // A caller that cannot see the screen cannot see the palette's scope
+        // pills either: whichever pill a person last left selected must not
+        // narrow what an agent or script is told exists. Visibility is the
+        // capability gate's alone.
         crate::shell::search::action_api::ActionCatalog::build(
             &self.search_registry,
             query,
-            scope,
-            active_provider.as_deref(),
+            crate::shell::chrome_state::SearchScope::All,
+            None,
             chrome,
             doc,
             root,

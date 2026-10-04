@@ -1,11 +1,22 @@
-//! `tilo-control` — thin CLI over the `TILO_TEST_CONTROL` socket.
+//! `tilo-control` — drive a running Tilo desktop through its control sockets.
 //!
-//! Wraps the JSON command protocol of [`shell::compositor::test_control`] so
-//! scripts don't have to glue `socat` to `jq`. The socket path comes from
-//! `$TILO_TEST_CONTROL` — the same env var the compositor binds against —
-//! falling back to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. No
-//! `clap`, no async, just stdlib + `serde_json`. Run `--help` for the
-//! subcommand list.
+//! Wraps the compositor's JSON control protocol (one request and one response
+//! per line, defined by `shell::shell::test_control`) so scripts don't have to
+//! glue `socat` to `jq`. Two sockets speak it:
+//!
+//! - the device admin's control socket,
+//!   `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock`, which every build
+//!   serves in the device admin's session once first login is complete. It
+//!   answers the action model — `actions`, `state-dump`, `windows` — and is
+//!   where those subcommands go by default;
+//! - the development test-control socket, bound only by development builds
+//!   at `$TILO_TEST_CONTROL`, which also takes synthetic input and
+//!   screenshots. Input subcommands go there (default
+//!   `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`), and a set
+//!   `$TILO_TEST_CONTROL` routes every subcommand there.
+//!
+//! `--socket PATH` overrides both. No `clap`, no async, just stdlib +
+//! `serde_json`. Run `--help` for the subcommand list.
 //!
 //! Exit codes: `0` on `Ok`/`Targets`/`State`, `1` on `Err` (echoing
 //! `err.code`/`err.message` to stderr), `2` on argv / I/O / parse failures.
@@ -16,24 +27,86 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use shell::shell::test_control_socket::{TEST_CONTROL_ENV, default_socket_path};
+use tilo_control::{TEST_CONTROL_ENV, admin_socket_path, default_socket_path};
+
+/// Which socket a command was routed to, so a failure to reach it can say
+/// what that socket is and how to get one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocketKind {
+    /// Named by `--socket` or `$TILO_TEST_CONTROL`.
+    Named,
+    /// The device admin's control socket.
+    Admin,
+    /// The default development test-control socket.
+    TestControl,
+}
 
 /// Pick the socket: `--socket`, else `$TILO_TEST_CONTROL`, else the default
-/// in the private runtime directory. Never a shared directory: without a
-/// runtime directory the caller has to name the socket.
+/// in the private runtime directory — the admin control socket for the
+/// action model, the test-control socket for synthetic input. Never a shared
+/// directory: without a runtime directory the caller has to name the socket.
 fn resolve_socket(
     flag: Option<PathBuf>,
     env: Option<OsString>,
     runtime_dir: Option<OsString>,
-) -> Result<PathBuf, ParseError> {
-    flag.or_else(|| env.filter(|env| !env.is_empty()).map(PathBuf::from))
-        .or_else(|| default_socket_path(runtime_dir))
-        .ok_or_else(|| {
-            ParseError::Usage(format!(
-                "no control socket: pass --socket PATH or set ${TEST_CONTROL_ENV} \
-                 (XDG_RUNTIME_DIR is unset or relative, so there is no default)"
-            ))
-        })
+    semantic: bool,
+) -> Result<(PathBuf, SocketKind), ParseError> {
+    if let Some(path) = flag.or_else(|| env.filter(|env| !env.is_empty()).map(PathBuf::from)) {
+        return Ok((path, SocketKind::Named));
+    }
+    let default = if semantic {
+        admin_socket_path(runtime_dir).map(|path| (path, SocketKind::Admin))
+    } else {
+        default_socket_path(runtime_dir).map(|path| (path, SocketKind::TestControl))
+    };
+    default.ok_or_else(|| {
+        ParseError::Usage(format!(
+            "no control socket: pass --socket PATH or set ${TEST_CONTROL_ENV} \
+             (XDG_RUNTIME_DIR is unset or relative, so there is no default; a login \
+             or ssh session as the desktop's own account sets it)"
+        ))
+    })
+}
+
+/// What to do when the socket cannot be reached: what it is, why it may be
+/// missing, and the route that works.
+fn connect_hint(kind: SocketKind, error: &std::io::Error) -> String {
+    match (kind, error.kind()) {
+        (SocketKind::Admin, std::io::ErrorKind::PermissionDenied) => {
+            "the admin control socket belongs to another account; it serves only the account \
+             whose session it is"
+                .to_string()
+        }
+        (SocketKind::Admin, _) => "the desktop serves the admin control socket in the device \
+             admin's session once first login is complete. Run this as the account that set \
+             the device up (its own login or ssh), with the desktop signed in. A development \
+             session is reached with TILO_TEST_CONTROL=<socket> instead."
+            .to_string(),
+        (SocketKind::TestControl, _) => format!(
+            "synthetic input and screenshots exist only in a development session started with \
+             ${TEST_CONTROL_ENV} (a dev-overrides build). To drive a desktop, use the action \
+             model instead: `tilo-control actions list`, `actions invoke`, `windows`."
+        ),
+        (SocketKind::Named, _) => {
+            "is the desktop running, and is this the socket it bound?".to_string()
+        }
+    }
+}
+
+/// A next step for a refusal the compositor answered with.
+fn error_hint(code: &str) -> Option<&'static str> {
+    match code {
+        "unknown_action" => Some(
+            "list what this desktop offers with `tilo-control actions list [QUERY]` and pass \
+             back a PROVIDER ID pair exactly as listed",
+        ),
+        "invalid_arguments" => Some(
+            "`tilo-control actions list QUERY --json` shows each action's `params`; pass them \
+             as --args-json '{\"name\": value}'",
+        ),
+        "session_locked" => Some("unlock the session at the device, then retry"),
+        _ => None,
+    }
 }
 
 /// Internal representation of a parsed CLI invocation. Built by
@@ -91,6 +164,11 @@ enum Command {
     StateDump {
         pretty: bool,
     },
+    /// The open windows, read from the state dump in the desktop's own
+    /// terms: workspace, strip, window group, tab.
+    Windows {
+        json: bool,
+    },
     /// List the actions the shell exports right now. Read-only.
     ActionsList {
         query: String,
@@ -113,6 +191,24 @@ enum Command {
     Raw {
         json: String,
     },
+}
+
+impl Command {
+    /// Whether the command belongs to the action model, which the device
+    /// admin's control socket serves; everything else is synthetic input or
+    /// capture, which only a development session's test-control socket takes.
+    const fn is_semantic(&self) -> bool {
+        matches!(
+            self,
+            Self::StateDump { .. }
+                | Self::Windows { .. }
+                | Self::ActionsList { .. }
+                | Self::ActionsInvoke { .. }
+                | Self::ActionsStatus { .. }
+                | Self::ActionsCancel { .. }
+                | Self::Raw { .. }
+        )
+    }
 }
 
 /// Top-level CLI invocation — the `--socket` override, if given, + the
@@ -236,19 +332,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             Command::Snapshot { path: path.clone() }
         }
         "watch" => parse_watch(iter.next())?,
-        "state-dump" => {
-            let mut pretty = false;
-            for rest in iter.by_ref() {
-                if rest == "--pretty" {
-                    pretty = true;
-                } else {
-                    return Err(ParseError::Usage(format!(
-                        "state-dump: unknown flag `{rest}` (only --pretty)"
-                    )));
-                }
-            }
-            Command::StateDump { pretty }
-        }
+        "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
         "actions" => parse_actions_command(&mut iter)?,
         "raw" => {
             let json = iter.next().ok_or_else(|| {
@@ -264,6 +348,34 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     };
 
     Ok(Invocation { socket, command })
+}
+
+/// Parse `state-dump [--pretty]` and `windows [--json]`, the two reads of
+/// the session's state.
+fn parse_state_read<'a>(
+    op: &str,
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let flag = if op == "windows" {
+        "--json"
+    } else {
+        "--pretty"
+    };
+    let mut set = false;
+    for rest in iter.by_ref() {
+        if rest == flag {
+            set = true;
+        } else {
+            return Err(ParseError::Usage(format!(
+                "{op}: unknown flag `{rest}` (only {flag})"
+            )));
+        }
+    }
+    Ok(if op == "windows" {
+        Command::Windows { json: set }
+    } else {
+        Command::StateDump { pretty: set }
+    })
 }
 
 /// Parse the `actions list|invoke ...` subcommand. Split out of
@@ -513,7 +625,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             steps,
         } => json!({ "op": "pinch", "fingers": fingers, "scale": scale, "steps": steps }),
         Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
-        Command::StateDump { .. } => json!({ "op": "state_dump" }),
+        Command::StateDump { .. } | Command::Windows { .. } => json!({ "op": "state_dump" }),
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
         }
@@ -672,6 +784,9 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             .unwrap_or("unknown");
         let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
         eprintln!("error [{code}]: {msg}");
+        if let Some(hint) = error_hint(code) {
+            eprintln!("hint: {hint}");
+        }
         return 1;
     }
     match cmd {
@@ -690,6 +805,42 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                 inner.to_string()
             };
             println!("{out}");
+        }
+        Command::Windows { json } => {
+            let tree = response
+                .get("state")
+                .and_then(|state| state.get("workspace_tree"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let windows = windows_of(&tree);
+            if *json {
+                println!("{}", serde_json::Value::Array(windows));
+            } else if windows.is_empty() {
+                println!("no windows are open");
+            } else {
+                for window in &windows {
+                    let field = |name: &str| {
+                        window.get(name).map_or_else(String::new, |v| match v {
+                            serde_json::Value::String(text) => text.clone(),
+                            other => other.to_string(),
+                        })
+                    };
+                    let active = if window.get("active") == Some(&serde_json::Value::Bool(true)) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!(
+                        "{active} {}/{}  group {}  tab {}  {}  {}",
+                        field("workspace"),
+                        field("strip"),
+                        field("group"),
+                        field("tab"),
+                        field("app_id"),
+                        field("title"),
+                    );
+                }
+            }
         }
         Command::Snapshot { path } => {
             // The wire's `Ok { frame }` doesn't echo the path back, so print
@@ -728,19 +879,116 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     0
 }
 
+/// One row per tab in `workspace_tree`: where it is, which app shows it, and
+/// whether it is the tab in front of the active workspace's active group.
+fn windows_of(tree: &serde_json::Value) -> Vec<serde_json::Value> {
+    let str_or_id = |value: &serde_json::Value, name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map_or_else(
+                || value.get("id").cloned().unwrap_or_default(),
+                |text| serde_json::Value::String(text.to_string()),
+            )
+    };
+    let active_workspace = tree.get("active").cloned().unwrap_or_default();
+    let mut rows = Vec::new();
+    let workspaces = tree.get("workspaces").and_then(serde_json::Value::as_array);
+    for workspace in workspaces.into_iter().flatten() {
+        let workspace_active = workspace.get("id") == Some(&active_workspace);
+        let workspace_key = workspace
+            .get("id")
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let active_strip = tree
+            .get("active_strip")
+            .and_then(|strips| strips.get(&workspace_key));
+        let strips = workspace
+            .get("strips")
+            .and_then(serde_json::Value::as_array);
+        for strip in strips.into_iter().flatten() {
+            let strip_key = strip.get("id").map(ToString::to_string).unwrap_or_default();
+            let strip_active = workspace_active && strip.get("id") == active_strip;
+            let active_group = tree
+                .get("active_group")
+                .and_then(|groups| groups.get(&strip_key));
+            let groups = strip
+                .get("window_groups")
+                .and_then(serde_json::Value::as_array);
+            for group in groups.into_iter().flatten() {
+                let group_active = strip_active && group.get("id") == active_group;
+                let tabs = group.get("tabs").and_then(serde_json::Value::as_array);
+                for tab in tabs.into_iter().flatten() {
+                    let tile = tab.get("tile").cloned().unwrap_or_default();
+                    let (kind, app_id) = match &tile {
+                        serde_json::Value::String(kind) => (kind.clone(), serde_json::Value::Null),
+                        serde_json::Value::Object(map) => map.iter().next().map_or_else(
+                            || (String::new(), serde_json::Value::Null),
+                            |(kind, body)| {
+                                (
+                                    kind.clone(),
+                                    body.get("app_id").cloned().unwrap_or_default(),
+                                )
+                            },
+                        ),
+                        _ => (String::new(), serde_json::Value::Null),
+                    };
+                    rows.push(serde_json::json!({
+                        "workspace": str_or_id(workspace, "name"),
+                        "strip": str_or_id(strip, "name"),
+                        "group": group.get("id"),
+                        "tab": tab.get("id"),
+                        "kind": kind,
+                        "app_id": app_id,
+                        "title": tab.get("title"),
+                        "active": group_active && group.get("active_tab") == tab.get("id"),
+                    }));
+                }
+            }
+        }
+    }
+    rows
+}
+
 /// Print the CLI usage banner to stdout. Mirrors the module-level
 /// docstring's subcommand table.
 fn print_usage() {
     println!(
-        "tilo-control — drive a running tilo-desktop's test_control socket\n\
+        "tilo-control — drive a running Tilo desktop\n\
          \n\
          Usage:\n\
          \x20 tilo-control [--socket PATH] <subcommand> [args]\n\
          \n\
-         Default socket path comes from $TILO_TEST_CONTROL, falling back to\n\
-         $XDG_RUNTIME_DIR/tilo-session/test-control.sock.\n\
+         The action model — the typed actions behind the launcher, the palette, settings\n\
+         and every app — is the way to drive a desktop. Run it as the device admin (the\n\
+         account that set the device up, over its own login or ssh): the desktop serves\n\
+         $XDG_RUNTIME_DIR/tilo-session/admin-control.sock to that account once first login\n\
+         is complete. A set $TILO_TEST_CONTROL, or --socket, sends every subcommand there\n\
+         instead.\n\
          \n\
-         Subcommands:\n\
+         Action model (admin control socket):\n\
+         \x20 actions list [QUERY] [--json] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
+         \x20                               (read-only; empty QUERY lists everything;\n\
+         \x20                               --json adds params, contract and hierarchy)\n\
+         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT]\n\
+         \x20                               run one action by its address; answers the\n\
+         \x20                               typed receipt. --device sends it to that\n\
+         \x20                               enrolled device\n\
+         \x20 actions status INVOCATION_ID  latest state and output of a running action\n\
+         \x20 actions cancel INVOCATION_ID  request cooperative cancellation\n\
+         \x20 windows [--json]              open windows: workspace/strip, group, tab, app\n\
+         \x20                               (`*` marks the one in front)\n\
+         \x20 state-dump [--pretty]         the whole workspace_tree + chrome as JSON\n\
+         \x20 raw '<json>'                  passthrough — escape hatch for new commands\n\
+         \n\
+         For example: `actions list notes`, then `actions invoke applications so.tilo.notes`,\n\
+         then `windows` shows its window. Open a file with `actions invoke files /abs/path`,\n\
+         lock with `actions invoke session lock`.\n\
+         \n\
+         Synthetic input and capture (development sessions only: a dev-overrides build\n\
+         started with $TILO_TEST_CONTROL; default $XDG_RUNTIME_DIR/tilo-session/test-control.sock).\n\
+         Prefer the action model; these exist for testing pointer, hit-testing and painting:\n\
          \x20 list-targets                  print every target as `NAME  (X, Y, W, H)`\n\
          \x20 click NAME                    click_named\n\
          \x20 click-at X Y                  click_at\n\
@@ -751,17 +999,9 @@ fn print_usage() {
          \x20 type TEXT                     type each character in TEXT\n\
          \x20 modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo\n\
          \x20                               (empty string clears all)\n\
-         \x20 snapshot PATH                 snapshot — write PNG to PATH\n\
-         \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop\n\
-         \x20 state-dump [--pretty]         dump workspace_tree + chrome as JSON\n\
-         \x20 actions list [QUERY] [--json] list exported actions as `PROVIDER:ID  KIND  TITLE`\n\
-         \x20                               (read-only; empty QUERY lists everything)\n\
-         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT]\n\
-         \x20                               run one typed action without synthetic input;\n\
-         \x20                               --device sends resource/action to that enrolled device\n\
-         \x20 actions status INVOCATION_ID   read latest broker state/output\n\
-         \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
-         \x20 raw '<json>'                  passthrough — escape hatch for new commands"
+         \x20 snapshot PATH                 write a PNG of the screen to PATH; answers once\n\
+         \x20                               the file is complete\n\
+         \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop"
     );
 }
 
@@ -806,12 +1046,13 @@ fn main() -> ExitCode {
         }
     };
 
-    let socket = match resolve_socket(
+    let (socket, kind) = match resolve_socket(
         invocation.socket.clone(),
         std::env::var_os(TEST_CONTROL_ENV),
         std::env::var_os("XDG_RUNTIME_DIR"),
+        invocation.command.is_semantic(),
     ) {
-        Ok(socket) => socket,
+        Ok(resolved) => resolved,
         Err(ParseError::Usage(msg)) => {
             eprintln!("tilo-control: {msg}");
             return ExitCode::from(2);
@@ -825,6 +1066,7 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("tilo-control: connect {}: {e}", socket.display());
+            eprintln!("hint: {}", connect_hint(kind, &e));
             return ExitCode::from(2);
         }
     };
@@ -1035,21 +1277,102 @@ mod tests {
     }
 
     #[test]
+    fn the_action_model_and_input_route_to_their_own_sockets() {
+        for semantic in [
+            &["actions", "list"][..],
+            &["actions", "invoke", "applications", "so.tilo.notes"],
+            &["actions", "status", "7"],
+            &["state-dump"],
+            &["windows"],
+            &["windows", "--json"],
+        ] {
+            assert!(
+                parse(semantic).unwrap().command.is_semantic(),
+                "{semantic:?}"
+            );
+        }
+        for input in [
+            &["click-at", "1", "2"][..],
+            &["type", "x"],
+            &["snapshot", "shot.png"],
+            &["list-targets"],
+        ] {
+            assert!(!parse(input).unwrap().command.is_semantic(), "{input:?}");
+        }
+        assert!(parse(&["windows", "--pretty"]).is_err());
+    }
+
+    /// `windows` reads the tree in the desktop's own terms, and marks the
+    /// tab in front of the active workspace's active group.
+    #[test]
+    fn windows_lists_every_tab_with_its_app_and_place() {
+        let tree = serde_json::json!({
+            "active": 1,
+            "active_strip": {"1": 10},
+            "active_group": {"10": 100},
+            "workspaces": [{
+                "id": 1, "name": "Home",
+                "strips": [{
+                    "id": 10, "name": "",
+                    "window_groups": [
+                        {"id": 100, "active_tab": 1000, "tabs": [
+                            {"id": 1000, "title": "Notes",
+                             "tile": {"Foreign": {"app_id": "so.tilo.notes", "surface_id": 3}}},
+                            {"id": 1001, "title": "Activity", "tile": "WorkspaceActivity"}
+                        ]},
+                        {"id": 101, "active_tab": 1010, "tabs": [
+                            {"id": 1010, "title": "Terminal",
+                             "tile": {"LocalApp": {"app_id": "so.tilo.terminal", "label": "Terminal"}}}
+                        ]}
+                    ]
+                }]
+            }]
+        });
+        let rows = windows_of(&tree);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["app_id"], "so.tilo.notes");
+        assert_eq!(rows[0]["workspace"], "Home");
+        assert_eq!(rows[0]["strip"], 10, "an unnamed strip is named by its id");
+        assert_eq!(rows[0]["active"], true);
+        assert_eq!(rows[1]["kind"], "WorkspaceActivity");
+        assert_eq!(rows[1]["active"], false);
+        assert_eq!(rows[2]["app_id"], "so.tilo.terminal");
+        assert_eq!(
+            rows[2]["active"], false,
+            "only the active group's tab is in front"
+        );
+        assert!(windows_of(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
     fn socket_resolution_prefers_flag_then_env_then_runtime_dir() {
         let flag = Some(PathBuf::from("/flag.sock"));
         let env = Some(OsString::from("/env.sock"));
         let runtime = Some(OsString::from("/run/user/1000"));
+        for semantic in [true, false] {
+            assert_eq!(
+                resolve_socket(flag.clone(), env.clone(), runtime.clone(), semantic).unwrap(),
+                (PathBuf::from("/flag.sock"), SocketKind::Named)
+            );
+            assert_eq!(
+                resolve_socket(None, env.clone(), runtime.clone(), semantic).unwrap(),
+                (PathBuf::from("/env.sock"), SocketKind::Named)
+            );
+        }
+        // The action model needs no environment: it goes to the admin socket.
         assert_eq!(
-            resolve_socket(flag, env.clone(), runtime.clone()).unwrap(),
-            PathBuf::from("/flag.sock")
+            resolve_socket(None, None, runtime.clone(), true).unwrap(),
+            (
+                PathBuf::from("/run/user/1000/tilo-session/admin-control.sock"),
+                SocketKind::Admin
+            )
         );
         assert_eq!(
-            resolve_socket(None, env, runtime.clone()).unwrap(),
-            PathBuf::from("/env.sock")
-        );
-        assert_eq!(
-            resolve_socket(None, None, runtime).unwrap(),
-            PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
+            resolve_socket(None, None, runtime, false).unwrap(),
+            (
+                PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
+                SocketKind::TestControl
+            )
         );
 
         // No usable runtime dir means no default rather than /tmp.
@@ -1059,7 +1382,7 @@ mod tests {
             Some(OsString::from("relative")),
         ] {
             // An empty TILO_TEST_CONTROL counts as unset, not as a path.
-            let err = resolve_socket(None, Some(OsString::new()), runtime).unwrap_err();
+            let err = resolve_socket(None, Some(OsString::new()), runtime, true).unwrap_err();
             let ParseError::Usage(message) = err else {
                 panic!("expected a usage error, got {err:?}");
             };

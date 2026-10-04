@@ -165,21 +165,29 @@ click handler is invisible to every one of them.
 
 **There is one story. Do not build a second one.**
 
-`tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
-default `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (never `/tmp`: anyone could bind a
-shared name first). It is a `shell` binary and is **not on PATH**; run it with
-`cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
-if you use it often. It has two halves; reach for the first.
+`tilo-control` is the CLI over the compositor's control sockets (never in `/tmp`: anyone could
+bind a shared name first). Every image ships it at `/usr/bin/tilo-control`; from a checkout run
+`cargo run -q --bin tilo-control --`. It has two halves; reach for the first.
+
+The semantic half needs no development build and no environment variable: every compositor
+serves `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` in the **device admin's** session (the
+`wheel` account whose identity owns the device) once first login is complete, to that account's
+own unconfined processes — its login or ssh — and never to an app. On a real device, ssh in as
+the admin and run `tilo-control actions list`. A development session started with
+`$TILO_TEST_CONTROL` serves both halves there, and a set `$TILO_TEST_CONTROL` routes every
+subcommand to it.
 
 Semantic — how a collaborator, an agent or a script drives an app:
 
 ```bash
 cargo run -q --bin tilo-control -- actions list                 # what this desktop can do
 cargo run -q --bin tilo-control -- actions invoke PROVIDER ID   # do it: no coordinates
+cargo run -q --bin tilo-control -- windows                      # which windows are open, in View terms
 cargo run -q --bin tilo-control -- state-dump --pretty          # what it believes is on screen
 ```
 
-Input — for when the thing under test *is* the pointer, hit-testing or painting:
+Input — for when the thing under test *is* the pointer, hit-testing or painting (development
+sessions only):
 
 ```bash
 cargo run -q --bin tilo-control -- list-targets      # named rects, via Widget::test_id

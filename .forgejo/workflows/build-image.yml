@@ -2723,6 +2723,9 @@ jobs:
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The device admin drives the session through the action model over
+          # their own ssh login: no TILO_TEST_CONTROL, no synthetic input.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-admin-actions.sh
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
