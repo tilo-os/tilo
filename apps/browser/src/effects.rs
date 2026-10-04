@@ -13,7 +13,11 @@ use ui::webview::{KeyModifiers, PageKey, PageRequest};
 
 use crate::browser_widget::{BrowserOperation, LibrarySection};
 
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+/// How long a settle waits for the page to go quiet, and at most, by default.
+const PAGE_SETTLE_QUIET_MS: u32 = 500;
+const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "browser.effect", device_only)]
 pub enum BrowserEffect {
     /// Go back
@@ -149,24 +153,90 @@ pub enum BrowserEffect {
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs.
-    #[effect(row, job, idempotent, programmatic, permission = "write")]
+    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
     ReadPage,
+    /// What changed on the page
+    ///
+    /// Answers with the outline lines added and removed since the last read,
+    /// or the whole outline when the document is new.
+    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    ReadPageChanges,
+    /// Element at a page point
+    ///
+    /// Answers with what a click at the point would hit, through overlays
+    /// and banners, and the interactive element holding it.
+    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    ReadPageElementAt {
+        #[param("Viewport x in CSS pixels from the page's left edge")]
+        x: f64,
+        #[param("Viewport y in CSS pixels from the page's top edge")]
+        y: f64,
+    },
+    /// Wait for the page to settle
+    ///
+    /// Answers once the document has loaded and stopped changing for a
+    /// quiet period, or the longest wait passed.
+    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    WaitPageSettled {
+        #[param("How long the page must stay unchanged, milliseconds (default 500)")]
+        quiet_ms: Option<u32>,
+        #[param("Longest wait, milliseconds (default 10000, at most 20000)")]
+        timeout_ms: Option<u32>,
+    },
+    /// Page console messages
+    ///
+    /// Console messages and uncaught errors, collected from the first time
+    /// an agent touched the tab.
+    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    ReadPageConsole {
+        #[param(
+            "Only entries after this sequence number: the `next` of the previous answer (default 0)"
+        )]
+        since: Option<u64>,
+    },
+    /// Page network requests
+    ///
+    /// Method, address, type, status, size and failure of the page's
+    /// requests, never headers, bodies or cookies.
+    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    ReadPageNetwork {
+        #[param(
+            "Only entries after this sequence number: the `next` of the previous answer (default 0)"
+        )]
+        since: Option<u64>,
+    },
     /// Click page element
-    #[effect(row, job, programmatic)]
+    #[effect(row, job, programmatic, untrusted)]
     ClickPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
     },
     /// Fill page field
-    #[effect(row, job, programmatic)]
+    ///
+    /// A password or card field is refused: those take the secret fill.
+    #[effect(row, job, programmatic, untrusted)]
     FillPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
         #[param("Text that replaces the field's contents")]
         text: String,
     },
+    /// Fill page password field
+    ///
+    /// Fills a password or card field; the text is a secret kept out of
+    /// logs and history.
+    #[effect(row, job, programmatic, untrusted)]
+    FillPageSecret {
+        #[param("Element ref from the page outline, such as d1e5")]
+        element: String,
+        #[param(
+            secret,
+            "Password or card number for the field; kept out of logs and history"
+        )]
+        text: String,
+    },
     /// Choose page options
-    #[effect(row, job, programmatic)]
+    #[effect(row, job, programmatic, untrusted)]
     SelectPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -174,7 +244,7 @@ pub enum BrowserEffect {
         values: Vec<String>,
     },
     /// Press key on page
-    #[effect(row, job, programmatic)]
+    #[effect(row, job, programmatic, untrusted)]
     PressPage {
         #[param("Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a")]
         key: String,
@@ -182,10 +252,16 @@ pub enum BrowserEffect {
         element: Option<String>,
     },
     /// Submit page form
-    #[effect(row, job, programmatic)]
+    ///
+    /// A form that sends its data to another site than the page's own is
+    /// refused, through submit, click or Enter, unless `cross_origin` allows
+    /// it.
+    #[effect(row, job, programmatic, untrusted)]
     SubmitPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
+        #[param("Allow sending the form to another site than the page's own (default false)")]
+        cross_origin: Option<bool>,
     },
 }
 
@@ -230,11 +306,31 @@ impl BrowserEffect {
             Self::OpenDownload { id } => BrowserOperation::OpenDownload { id },
             Self::RevealDownload { id } => BrowserOperation::RevealDownload { id },
             Self::ReadPage => page(PageRequest::Outline),
+            Self::ReadPageChanges => page(PageRequest::Changes),
+            Self::ReadPageElementAt { x, y } => page(PageRequest::At { x, y }),
+            Self::WaitPageSettled {
+                quiet_ms,
+                timeout_ms,
+            } => page(PageRequest::Settle {
+                quiet_ms: quiet_ms.unwrap_or(PAGE_SETTLE_QUIET_MS),
+                timeout_ms: timeout_ms.unwrap_or(PAGE_SETTLE_TIMEOUT_MS),
+            }),
+            Self::ReadPageConsole { since } => page(PageRequest::Console {
+                since: since.unwrap_or(0),
+            }),
+            Self::ReadPageNetwork { since } => page(PageRequest::Network {
+                since: since.unwrap_or(0),
+            }),
             Self::ClickPage { element } => page(PageRequest::Click { element }),
             Self::FillPage { element, text } => page(PageRequest::Fill {
                 element,
                 text,
                 secret: false,
+            }),
+            Self::FillPageSecret { element, text } => page(PageRequest::Fill {
+                element,
+                text,
+                secret: true,
             }),
             Self::SelectPage { element, values } => page(PageRequest::Select { element, values }),
             Self::PressPage { key, element } => page(PageRequest::Press {
@@ -244,9 +340,12 @@ impl BrowserEffect {
                     modifiers: KeyModifiers::default(),
                 }),
             }),
-            Self::SubmitPage { element } => page(PageRequest::Submit {
+            Self::SubmitPage {
                 element,
-                cross_origin: false,
+                cross_origin,
+            } => page(PageRequest::Submit {
+                element,
+                cross_origin: cross_origin.unwrap_or(false),
             }),
         }
     }
