@@ -266,7 +266,7 @@ pub enum AppearanceEffect {
 
 /// Answer `effect`.
 pub(crate) fn answer(
-    app: &mut SettingsApp,
+    app: &SettingsApp,
     effect: AppearanceEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
@@ -335,12 +335,9 @@ fn schedule_time(time: &str) -> Result<String, String> {
 /// Ask for a picture through the file-chooser portal, then hand it to the
 /// Wallpaper portal, which previews it and asks before applying it. The
 /// pane shows where the request stands.
-fn choose_wallpaper(
-    app: &mut SettingsApp,
-    cx: &mut EffectCx<Settings, SettingsApp>,
-) -> EffectAnswer {
-    if !app.host().is_live() {
-        return Err("a screenshot opens no file chooser".into());
+fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>) -> EffectAnswer {
+    if !app.host().reaches_devices() {
+        return Err("only a window someone uses opens the file chooser".into());
     }
     let target = match app
         .host()
@@ -493,7 +490,6 @@ impl AppearancePane {
     }
 
     fn dropdown(
-        &self,
         options: Vec<String>,
         state: &LocalState<String>,
         id: &str,
@@ -521,7 +517,7 @@ impl AppearancePane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let cx = &self.cx;
-        let theme = self.dropdown(
+        let theme = Self::dropdown(
             AppearancePrefs::THEMES
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -530,7 +526,7 @@ impl AppearancePane {
             "appearance.theme",
             |control| cx.bind(control, effect(AppearanceEffect::SET_THEME)),
         );
-        let ui_scale = self.dropdown(
+        let ui_scale = Self::dropdown(
             UI_SCALE_NAMES
                 .iter()
                 .map(|name| (*name).to_owned())
@@ -539,7 +535,7 @@ impl AppearancePane {
             "appearance.ui_scale",
             |control| cx.bind(control, effect(AppearanceEffect::SET_UI_SCALE)),
         );
-        let size = self.dropdown(
+        let size = Self::dropdown(
             text_size_options(),
             &self.shown.text_size,
             "appearance.text_size",
@@ -628,7 +624,7 @@ impl AppearancePane {
             caption(&t("settings-appearance-wallpaper-body")),
             choice_row(
                 &t("settings-appearance-use-for"),
-                self.dropdown(
+                Self::dropdown(
                     WALLPAPER_SCOPES
                         .iter()
                         .map(|(_, value)| scope_label(value))
@@ -649,7 +645,7 @@ impl AppearancePane {
             ),
             choice_row(
                 &t("settings-appearance-show-on"),
-                self.dropdown(
+                Self::dropdown(
                     WALLPAPER_TARGETS
                         .iter()
                         .map(|(_, value)| target_label(value))
@@ -700,7 +696,7 @@ impl AppearancePane {
         };
         let mut body = vec![choice_row(
             &t("settings-appearance-schedule"),
-            self.dropdown(
+            Self::dropdown(
                 SCHEDULES
                     .iter()
                     .map(|(_, value)| schedule_label(value))
@@ -723,7 +719,7 @@ impl AppearancePane {
         if !schedule.config.follow_sun {
             body.push(choice_row(
                 &t("settings-appearance-day-starts"),
-                self.dropdown(
+                Self::dropdown(
                     times(),
                     &self.shown.sunrise,
                     "appearance.sunrise",
@@ -732,7 +728,7 @@ impl AppearancePane {
             ));
             body.push(choice_row(
                 &t("settings-appearance-night-starts"),
-                self.dropdown(
+                Self::dropdown(
                     times(),
                     &self.shown.sunset,
                     "appearance.sunset",
@@ -1059,10 +1055,10 @@ mod tests {
         }
     }
 
-    /// A screenshot never opens the file chooser.
+    /// Without a person at the window nothing opens the file chooser.
     #[test]
-    fn a_capture_refuses_to_choose_a_wallpaper() {
-        let mut app = TestApp::<SettingsShell>::capture(Some("appearance")).unwrap();
+    fn only_a_window_someone_uses_chooses_a_wallpaper() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
         assert!(
             app.effect(&SettingsEffect::from(AppearanceEffect::ChooseWallpaper))
                 .is_err()

@@ -129,23 +129,6 @@ pub(crate) fn ensure_text_object(
     obj
 }
 
-/// Clear the contents of the `Text` object at `key` (seeding one if absent) so
-/// an editable field is reset to empty **without** replacing the object with a
-/// scalar — which would break the next round of typing.
-pub(crate) fn clear_text_object(
-    state: &mut automerge::AutoCommit,
-    root: &automerge::ObjId,
-    key: &str,
-) {
-    use automerge::{ReadDoc, transaction::Transactable};
-    let obj = ensure_text_object(state, root, key);
-    if let Ok(text) = state.text(&obj) {
-        let n = text.chars().count();
-        if n > 0 {
-            let _ = state.splice_text(&obj, 0, n as isize, "");
-        }
-    }
-}
 pub use resource::{Settings, SettingsShell};
 
 /// The app as every host mounts it.

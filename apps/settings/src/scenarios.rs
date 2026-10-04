@@ -129,15 +129,14 @@ pub(crate) fn network_pane() -> crate::panes::network::NetworkPane {
             connected: false,
         },
     ];
-    let pane = crate::panes::network::NetworkPane::new_demo(nets)
+    crate::panes::network::NetworkPane::new_demo(nets)
         .with_wired(WiredInfo {
             connected: true,
             device: Some("enp3s0".into()),
             speed: Some("1000 Mb/s".into()),
             ipv4: Some("192.168.1.42".into()),
         })
-        .with_expanded("Office_5G");
-    pane
+        .with_expanded("Office_5G")
 }
 
 /// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output

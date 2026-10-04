@@ -518,7 +518,10 @@ impl ProviderConfig {
         Some(removed)
     }
 
-    fn sanitised(mut self) -> Self {
+    /// The configuration as it is stored and read: profiles without an id,
+    /// models without an id and defaults naming no model are dropped.
+    #[must_use]
+    pub fn sanitised(mut self) -> Self {
         // Do not turn unknown/malformed input into a usable provider.
         self.profiles
             .retain(|profile| !profile.id.trim().is_empty());

@@ -74,13 +74,6 @@ pub(crate) fn tts_capability() -> Option<&'static str> {
     }
 }
 
-/// Whether the screen-reader controls can produce spoken output on this
-/// device. Keep this separate from the display label so the resource tree can
-/// omit an effect that would otherwise be an inert promise.
-pub(crate) fn screen_reader_available() -> bool {
-    tts_capability().is_some()
-}
-
 /// The automatic scan intervals switch control offers, and their periods.
 pub const SWITCH_SCANS: [(&str, u16); 4] = [
     ("Manual", 0),
@@ -220,7 +213,7 @@ pub enum AccessibilityEffect {
 
 /// Answer `effect`.
 pub(crate) fn answer(
-    app: &mut SettingsApp,
+    app: &SettingsApp,
     effect: AccessibilityEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
@@ -458,6 +451,23 @@ impl Software {
         Self {
             on_screen_keyboard: osk_service_available(),
             speech: tts_capability(),
+        }
+    }
+
+    /// What a screenshot and the crate's tests show installed: everything.
+    pub fn sample() -> Self {
+        Self {
+            on_screen_keyboard: true,
+            speech: Some("Speech Dispatcher"),
+        }
+    }
+
+    /// What `cx` reaches: this device's software, or the sample.
+    pub fn for_host(cx: &PaneCx) -> Self {
+        if cx.reaches_devices() {
+            Self::installed()
+        } else {
+            Self::sample()
         }
     }
 }

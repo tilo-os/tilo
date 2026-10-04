@@ -275,13 +275,8 @@ fn all_panels_navigate_and_seed_their_controls() {
         // seed their primary device state into the collaborative document.
         let seeded_key = match target {
             Category::Network => Some(settings::panes::network::WIFI_ENABLED_KEY),
-            Category::Bluetooth => Some(settings::panes::bluetooth::BT_ENABLED_KEY),
             Category::Sound => Some(settings::panes::audio::VOLUME_KEY),
             Category::Displays => Some(settings::panes::display::BRIGHTNESS_KEY),
-            Category::Storage => Some(settings::panes::storage::CLEAN_KEY),
-            Category::Printers => Some("settings.printers.refresh"),
-            Category::Users => Some("settings.users.add"),
-            Category::AgentModels => Some("agent_models.local.confirm"),
             _ => None,
         };
         if let Some(key) = seeded_key {

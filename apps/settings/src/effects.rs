@@ -88,18 +88,43 @@ settings_effects! {
     Navigation(NavigationEffect) => answer_navigation,
     Appearance(crate::panes::appearance::AppearanceEffect) => crate::panes::appearance::answer,
     Accessibility(crate::panes::accessibility::AccessibilityEffect) => crate::panes::accessibility::answer,
+    Notifications(crate::panes::notifications::NotificationEffect) => crate::panes::notifications::answer,
+    DefaultApps(crate::panes::personal_apps::DefaultAppsEffect) => crate::panes::personal_apps::answer,
+    Region(crate::panes::region::RegionEffect) => crate::panes::region::answer,
+    TimeDate(crate::panes::time_date::TimeDateEffect) => crate::panes::time_date::answer,
+    Shortcuts(crate::panes::keyboard_shortcuts::ShortcutEffect) => crate::panes::keyboard_shortcuts::answer,
+    Input(crate::panes::mouse_keyboard::InputEffect) => crate::panes::mouse_keyboard::answer,
+    Power(crate::panes::power::PowerEffect) => crate::panes::power::answer,
+    Updates(crate::panes::updates::UpdatesEffect) => crate::panes::updates::answer,
+    Storage(crate::panes::storage::StorageEffect) => crate::panes::storage::answer,
+    About(crate::panes::about::AboutEffect) => crate::panes::about::answer,
+    Permissions(crate::panes::permissions::PermissionsEffect) => crate::panes::permissions::answer,
+    Printers(crate::panes::printers::PrinterEffect) => crate::panes::printers::answer,
+    Users(crate::panes::users::UsersEffect) => crate::panes::users::answer,
+    Bluetooth(crate::panes::bluetooth::BluetoothEffect) => crate::panes::bluetooth::answer,
+    Speakers(crate::panes::speakers::SpeakerEffect) => crate::panes::speakers::answer,
+    SpeakerFlow(crate::panes::speakers::SpeakerFlow) => crate::panes::speakers::answer_flow,
+    AgentModels(crate::panes::agent_models::AgentModelsEffect) => crate::panes::agent_models::answer,
+    DeviceMesh(crate::panes::device_mesh::DeviceMeshEffect) => crate::panes::device_mesh::answer,
 }
 
 /// The live rows of every area — the devices, networks, accounts and other
 /// entities outside any document that Settings shows — with the effects each
 /// offers bound to it.
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
-    let rows = Vec::new();
-    let _ = app;
+    let mut rows = app.notifications().rows();
+    rows.extend(app.default_apps().rows());
+    rows.extend(app.input().rows());
+    rows.extend(app.printers().rows());
+    rows.extend(app.users().rows());
+    rows.extend(app.bluetooth().rows());
+    rows.extend(app.speakers().rows());
+    rows.extend(app.agent_models().rows());
+    rows.extend(app.device_mesh().rows());
     rows
 }
 
-/// The live row `id`, at any depth.
+/// The live row `id`.
 pub(crate) fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
     fn find(rows: Vec<ui::framework::LiveRow>, id: &str) -> Option<ui::framework::LiveRow> {
         rows.into_iter().find(|row| row.id() == id)
