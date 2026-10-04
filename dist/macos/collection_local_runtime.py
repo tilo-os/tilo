@@ -7,6 +7,7 @@ The payload is not an app, installable artifact, or redistribution approval.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,9 +32,11 @@ LIMIT = 1024**3
 
 def checked_json(path, expected):
     regular_file(path, 4 * 1024**2)
-    if not re.fullmatch(r'[0-9a-f]{64}', expected) or digest(path) != expected:
+    with path.open('rb') as stream:
+        data = stream.read(4 * 1024**2 + 1)
+    if len(data) > 4 * 1024**2 or not re.fullmatch(r'[0-9a-f]{64}', expected) or hashlib.sha256(data).hexdigest() != expected:
         raise ValueError('profile SHA-256 mismatch')
-    return json.loads(path.read_text())
+    return json.loads(data)
 
 
 def destination(path, roots):
@@ -253,9 +256,9 @@ def compile_adapters(work, plan, guard):
          '@loader_path/' + Path(plan['intl']).name, work / SHIM])
 
 
-def inspect_payload(work, plan):
+def inspect_payload(work, plan, extra_code=()):
     expected = {item['destination'] for item in plan['images'].values()} | {SHIM, LAUNCHER}
-    if {str(p.relative_to(work)) for p in machos(work)} != expected:
+    if {str(p.relative_to(work)) for p in machos(work)} != expected | set(extra_code):
         raise ValueError('unexpected or missing payload code')
     records = {}
     for relative in sorted(expected):

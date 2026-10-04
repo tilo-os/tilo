@@ -58,7 +58,9 @@ unexpected architectures, and deployment floors above 27 fail closed.
 The launcher sets the versioned and legacy GStreamer plugin, scanner, and
 registry variables. It restricts plugin discovery to the bundled directory and
 uses an owned, non-group-writable cache directory under the user's
-`Library/Caches/so.tilo.local-runtime/<profile SHA>/`. It rejects colon-containing
+`Library/Caches/so.tilo.local-runtime/<profile SHA>/<canonical plugin path SHA>/`.
+Separate app locations and moved bundles therefore have separate registries.
+It rejects colon-containing
 bundle paths because GStreamer treats colons as path separators. Paths containing
 spaces are supported. It resets registry update/fork options and removes an
 inherited feature-rank override so the selected profile is consistently scanned.
@@ -85,7 +87,8 @@ SDK-generated app and set **that private app's** `LSMinimumSystemVersion` to
 `27.0`. Preserve its catalog identity, version, icon, assets and entitlements.
 Do not change the general SDK minimum or relax its existing validator merely
 because this payload has a receipt. The app's own dependency closure must pass
-separately. A dedicated app integration/signing policy remains necessary.
+separately. `collection_local_apps.py` performs this unsigned integration using
+the SDK's `bundle-macos` command; see [local app assembly](local-apps.md).
 
 After the user is present for normal Keychain access, sign nested images inside
 out with the selected existing Developer ID Application identity, then the app.
