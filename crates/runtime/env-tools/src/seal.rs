@@ -222,16 +222,9 @@ fn is_whiteout(path: &Path, meta: &std::fs::Metadata) -> bool {
 }
 
 fn has_xattr(path: &Path, name: &str) -> bool {
-    let (Ok(cpath), Ok(cname)) = (
-        CString::new(path.as_os_str().as_bytes()),
-        CString::new(name),
-    ) else {
-        return false;
-    };
-    // SAFETY: both strings are NUL-terminated and outlive the call; a null
-    // buffer with size 0 only asks for the value's length.
-    let len = unsafe { libc::lgetxattr(cpath.as_ptr(), cname.as_ptr(), std::ptr::null_mut(), 0) };
-    len >= 0
+    // The shared Unix adapter preserves no-follow semantics on Linux and
+    // macOS, whose native getxattr signatures differ.
+    xattr::get(path, name).is_ok_and(|value| value.is_some())
 }
 
 /// Remove directories that ended up with nothing in them. Returns whether

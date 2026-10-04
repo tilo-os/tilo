@@ -134,16 +134,41 @@ impl MemberQuota {
 /// built as the member and signed with the relay's `key` in this process;
 /// the key's file (`key_file`) must be readable by the relay's uid alone,
 /// or builds are off. `None` config: none.
-#[must_use]
+///
+/// # Errors
+/// Returns [`io::ErrorKind::Unsupported`] when local environment hosting is
+/// configured on a platform without the Linux `ush` guest backend. Remote
+/// session routing and hosts supplied through [`GuestLauncher`] stay available.
 pub fn worker_environments(
     config: Option<&tilo_relay_protocol::config::EnvironmentsConfig>,
     root: &Path,
     key: &ed25519_dalek::SigningKey,
     key_file: &Path,
-) -> crate::compute_worker::WorkerEnvironments {
+) -> io::Result<crate::compute_worker::WorkerEnvironments> {
     let Some(config) = config else {
-        return crate::compute_worker::WorkerEnvironments::default();
+        return Ok(crate::compute_worker::WorkerEnvironments::default());
     };
+    #[cfg(target_os = "linux")]
+    {
+        Ok(ush_worker_environments(config, root, key, key_file))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (config, root, key, key_file);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "local relay environment hosting requires the Linux ush backend",
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ush_worker_environments(
+    config: &tilo_relay_protocol::config::EnvironmentsConfig,
+    root: &Path,
+    key: &ed25519_dalek::SigningKey,
+    key_file: &Path,
+) -> crate::compute_worker::WorkerEnvironments {
     let quota = MemberQuota::from_config(config);
     let mut launcher = crate::environment_guest::UshLauncherConfig::at(root.to_path_buf());
     launcher.ush_binary.clone_from(&config.ush_binary);
