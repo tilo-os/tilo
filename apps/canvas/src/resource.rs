@@ -202,7 +202,8 @@ pub struct Inspect {
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
     pub layer: Option<String>,
-    /// How many of the newest matching marks to list, 1 to 400 (default 100).
+    /// How many of the newest matching marks to list, 0 to 400 (default
+    /// 100; none with measure).
     pub limit: Option<u32>,
     /// A past version: a change id from history or a checkpoint name.
     pub version: Option<String>,
@@ -235,10 +236,12 @@ pub struct Compare {
 pub struct Export {
     /// Pixels per artwork unit, 0.05 to 4 (default 1).
     pub scale: Option<f64>,
-    /// `png` (default), `jpeg` or `webp` (lossless).
+    /// `png` (default, or the path's), `jpeg` or `webp` (lossless).
     pub format: Option<String>,
     /// JPEG quality, 1 to 100 (default 90).
     pub quality: Option<u8>,
+    /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
+    pub path: Option<String>,
 }
 
 /// Export the artwork, or some of its marks, as SVG.
@@ -251,6 +254,8 @@ pub struct ExportSvg {
     /// Write text as outlines, which look the same without its fonts.
     /// Text along a path is always outlined.
     pub outline_text: Option<bool>,
+    /// An absolute `.svg` path to write it to.
+    pub path: Option<String>,
 }
 
 /// Save the artwork as a `.artwork` file.
@@ -502,9 +507,10 @@ fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
         ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {
             let open: OpenArtwork = read_args(args)?;
             let bytes = artwork_bytes(&open.file)?;
-            crate::document::ArtworkFile::parse(&bytes)?;
-            let file = String::from_utf8(bytes)
-                .map_err(|_| "the artwork file is not UTF-8 text".to_owned())?;
+            // The file's pictures go in the content store here; the action
+            // carries the artwork's JSON alone.
+            let file = crate::document::unpack(&bytes, &tilo_content::ContentStore::for_app())?;
+            let file = String::from_utf8_lossy(&file.to_json()).into_owned();
             Ok(CanvasAction::OpenArtwork(OpenArtwork { file }))
         })
         .describe("Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away."),
@@ -512,7 +518,7 @@ fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
 }
 
 /// The bytes of the artwork file `file` names: its JSON itself, stored
-/// content, or a file.
+/// content, or a file (a package, or JSON).
 ///
 /// # Errors
 /// Returns why the file cannot be had.
@@ -621,7 +627,7 @@ impl Resource for ArtworkResource {
             decl::<Paint>(
                 "paint",
                 "Paint strokes",
-                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
                 CanvasAction::Paint,
             ),
             ActionDecl::new("draw", "Draw shapes", params_of::<Draw>(), |args, _now| {
@@ -756,7 +762,7 @@ impl Resource for ArtworkResource {
         )
         .requiring(PermissionRequirement::Read)
         .with_description(
-            "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP and answer with its content address.",
+            "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
         );
         export.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
@@ -911,7 +917,7 @@ fn vector_operations() -> [ActionSpec; 2] {
         |args| ViewOp::ExportSvg(read_args(args).unwrap_or_default()),
     )
         .with_description(
-            "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
+            "Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
         );
     svg.contract.result = ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),

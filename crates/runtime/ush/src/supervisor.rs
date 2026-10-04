@@ -1140,7 +1140,7 @@ fn is_relay(target: &Target) -> bool {
 
 fn list_relays() -> ServeResponse {
     ServeResponse::Relays {
-        relays: crate::relay::relays(&crate::relay::identity_paths()),
+        relays: crate::relay::offered(&crate::relay::identity_paths()),
     }
 }
 

@@ -86,7 +86,7 @@ use smithay::{
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_primary_selection, delegate_relative_pointer,
     delegate_session_lock, delegate_shm,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_viewporter, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
@@ -716,6 +716,17 @@ pub struct State {
     /// Text commits the on-screen keyboard has made into focused fields this
     /// session: what a person typed on it, counted but never kept.
     pub osk_commits: u64,
+    /// Whether one of the shell's own text fields holds the seat's
+    /// text-input focus (see `compositor::shell_text_input`).
+    pub(crate) shell_field_active: bool,
+    /// Editing keys a virtual keyboard sent while a shell field was served,
+    /// as chrome events, until the loop delivers them.
+    pub(crate) shell_field_keys: Vec<winit::event::WindowEvent>,
+    /// Each virtual keyboard's current keymap, to read its keys as keysyms.
+    pub(crate) virtual_keymaps: std::collections::HashMap<
+        smithay::reexports::wayland_server::backend::ObjectId,
+        smithay::input::keyboard::xkb::Keymap,
+    >,
     /// Toplevels the compositor has asked to close, each with the moment its
     /// frame callbacks stop going unthrottled. See
     /// [`Self::ask_toplevel_to_close`].
@@ -1213,6 +1224,9 @@ impl State {
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,
+            shell_field_active: false,
+            shell_field_keys: Vec::new(),
+            virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -2478,7 +2492,16 @@ impl State {
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
-        session.deposit_captured_rgba(frame.rgba);
+        // The stream carries the window as its tab shows it, at the size its
+        // first frame (the tab's snapshot) set: without the shadow and resize
+        // border a client-side-decorating toolkit draws around it.
+        let rgba = crate::compositor::foreign::store().crop_to_window(
+            surface_id,
+            frame.rgba,
+            frame.width,
+            frame.height,
+        );
+        session.deposit_captured_rgba(rgba);
         if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
             && self.legacy_stream_publisher.is_some()
         {
@@ -5585,7 +5608,104 @@ impl
         >>::destroyed(state, client, resource, data);
     }
 }
-delegate_virtual_keyboard_manager!(State);
+// The virtual-keyboard manager is Smithay's. `zwp_virtual_keyboard_v1` is
+// too, but while one of the shell's own fields is served (see
+// `compositor::shell_text_input`) its keys also reach the chrome, which holds
+// no `wl_keyboard` Smithay could send them to.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1:
+    smithay::wayland::virtual_keyboard::VirtualKeyboardManagerGlobalData
+] => VirtualKeyboardManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1: ()
+] => VirtualKeyboardManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        request: smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::Request,
+        data: &smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::Request;
+        match &request {
+            Request::Keymap { fd, size, .. } => {
+                if let Some(keymap) = read_virtual_keymap(fd, *size) {
+                    state.virtual_keymaps.insert(resource.id(), keymap);
+                }
+            }
+            Request::Key { key, state: key_state, .. } if state.shell_field_active => {
+                if let Some(event) = state
+                    .virtual_keymaps
+                    .get(&resource.id())
+                    .and_then(|keymap| {
+                        let keysym = smithay::input::keyboard::xkb::State::new(keymap)
+                            .key_get_one_sym(smithay::input::keyboard::Keycode::new(
+                                key.saturating_add(8),
+                            ));
+                        crate::compositor::shell_text_input::translate_key(
+                            keysym.raw(),
+                            *key_state == 1,
+                        )
+                    })
+                {
+                    state.shell_field_keys.push(event);
+                }
+            }
+            _ => {}
+        }
+        <VirtualKeyboardManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        data: &smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+    ) {
+        state.virtual_keymaps.remove(&resource.id());
+        <VirtualKeyboardManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
+
+/// Compile the XKB text keymap a virtual keyboard uploaded, read without
+/// moving the descriptor Smithay reads after us.
+fn read_virtual_keymap(
+    fd: &std::os::fd::OwnedFd,
+    size: u32,
+) -> Option<smithay::input::keyboard::xkb::Keymap> {
+    use smithay::input::keyboard::xkb;
+    use std::os::unix::fs::FileExt as _;
+    // A keymap is text of a few kilobytes; refuse anything absurd.
+    let size = usize::try_from(size).ok().filter(|size| *size <= 1 << 20)?;
+    let file = std::fs::File::from(fd.try_clone().ok()?);
+    let mut bytes = vec![0_u8; size];
+    file.read_exact_at(&mut bytes, 0).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_string(
+        &context,
+        text.trim_end_matches('\0').to_owned(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+}
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
 delegate_relative_pointer!(State);
