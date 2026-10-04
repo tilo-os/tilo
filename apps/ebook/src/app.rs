@@ -139,7 +139,7 @@ struct ImportWorker {
 struct SearchBuild {
     fingerprint: u64,
     generation: u64,
-    provider: crate::search_provider::BookSearchProvider,
+    provider: crate::search_provider::BookSearch,
 }
 
 struct SearchWorker {
@@ -150,7 +150,7 @@ impl SearchWorker {
     /// `prior` is the published provider; its chapter-prose index is reused
     /// when the book set has not changed.
     fn spawn(
-        prior: crate::search_provider::BookSearchProvider,
+        prior: crate::search_provider::BookSearch,
         books: Arc<Vec<Arc<Book>>>,
         annotations: Arc<Vec<Annotation>>,
         registry: Arc<Vec<crate::model::LibraryEntry>>,
@@ -159,7 +159,7 @@ impl SearchWorker {
     ) -> Result<Self, String> {
         let (send, results) = mpsc::sync_channel(1);
         ui::rt::spawn_thread("ebook-search-builder", move || {
-            let provider = crate::search_provider::BookSearchProvider::new_shared_after(
+            let provider = crate::search_provider::BookSearch::new_shared_after(
                 &prior,
                 books,
                 annotations,
@@ -1105,7 +1105,7 @@ pub struct BooksApp {
     /// the library, so it is refreshed at document/materialisation boundaries
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
-    search_provider: crate::search_provider::BookSearchProvider,
+    book_search: crate::search_provider::BookSearch,
     /// A single off-UI builder. A newer snapshot supersedes its result before
     /// publication instead of mutating a live provider in place.
     search_worker: Option<SearchWorker>,
@@ -1209,7 +1209,7 @@ impl BooksApp {
             View::Reader
         };
         let library: Arc<Vec<Arc<Book>>> = Arc::new(library.into_iter().map(Arc::new).collect());
-        let search_provider = crate::search_provider::BookSearchProvider::new_shared(
+        let book_search = crate::search_provider::BookSearch::new_shared(
             Arc::clone(&library),
             Arc::new(Vec::new()),
             Arc::new(Vec::new()),
@@ -1218,7 +1218,7 @@ impl BooksApp {
         Self {
             library,
             view,
-            search_provider,
+            book_search,
             search_revision: 1,
             ..Self::blank_view_state(dispatch)
         }
@@ -1329,7 +1329,7 @@ impl BooksApp {
             schemes: default_schemes(),
             annotations: Vec::new(),
             all_annotations: Arc::new(Vec::new()),
-            search_provider: crate::search_provider::BookSearchProvider::new(&[], &[]),
+            book_search: crate::search_provider::BookSearch::new(&[], &[]),
             search_worker: None,
             search_fingerprint: 0,
             search_revision: 0,
@@ -4387,8 +4387,7 @@ impl Continuable for BooksApp {
 impl Widget for BooksApp {
     ui::provides!(
         dyn ui::widget::Continuable,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -4518,7 +4517,7 @@ impl Widget for BooksApp {
                 // Publication is a single UI-thread assignment. Sessions that
                 // already hold the prior Arc remain valid until their own
                 // generation check rejects the continuation.
-                self.search_provider = build.provider;
+                self.book_search = build.provider;
                 self.search_fingerprint = fingerprint;
                 self.search_revision = build.generation;
             }
@@ -4527,7 +4526,7 @@ impl Widget for BooksApp {
             let Some(generation) = self.search_revision.checked_add(1) else {
                 // Never wrap a generation: a stale palette cursor must not
                 // become valid again after integer exhaustion.
-                self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                self.book_search = crate::search_provider::BookSearch::new_shared(
                     Arc::clone(&self.library),
                     Arc::clone(&self.all_annotations),
                     Arc::new(registry),
@@ -4537,7 +4536,7 @@ impl Widget for BooksApp {
             };
             let registry = Arc::new(registry);
             if let Ok(worker) = SearchWorker::spawn(
-                self.search_provider.clone(),
+                self.book_search.clone(),
                 Arc::clone(&self.library),
                 Arc::clone(&self.all_annotations),
                 registry,
@@ -4548,7 +4547,7 @@ impl Widget for BooksApp {
             } else {
                 // A worker construction failure withdraws the directory;
                 // publishing stale canonical resources would be worse.
-                self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                self.book_search = crate::search_provider::BookSearch::new_shared(
                     Arc::clone(&self.library),
                     Arc::clone(&self.all_annotations),
                     Arc::new(Vec::new()),
@@ -5148,11 +5147,10 @@ impl Widget for BooksApp {
     }
 }
 
-impl ui::search::capability::SearchSource for BooksApp {
-    /// Make books, chapters and annotations findable through canonical
-    /// resource view actions in the unified Ctrl+K palette.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
+impl BooksApp {
+    /// The books, chapters, annotations and remote books as search entries.
+    pub(crate) fn book_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.book_search.entries()
     }
 }
 
@@ -5195,10 +5193,16 @@ impl ui::resources::PublishesResources for BooksApp {
     fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
         Some(format!("ebook-search:{}", self.search_revision))
     }
+    /// The reading position, or the exact book, chapter, annotation or
+    /// reading location a search hit names.
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.current_book_resource_context()
             .map(|ctx| crate::actions::reading_resource(&ctx))
             .filter(|resource| resource.id.as_str() == id)
+            .or_else(|| {
+                self.book_search
+                    .resolve(&tilo_actions::ActionAddress::new(id, "open"))
+            })
     }
 }
 
