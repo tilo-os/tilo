@@ -416,33 +416,38 @@ impl FileExplorerWidget {
         if crate::archive::location(path).is_some() {
             return;
         }
-        self.recent.note(path, last_use, crate::recent::now_ms());
-        self.save_recent();
+        let at = crate::recent::now_ms();
+        self.edit_recent(|recent| recent.note(path, last_use, at));
     }
 
     pub(super) fn recent_moved(&mut self, from: &Path, to: &Path) {
-        self.recent.moved(from, to);
-        self.save_recent();
+        self.edit_recent(|recent| recent.moved(from, to));
     }
 
-    fn save_recent(&self) {
-        // Unit tests built with `new()` point at the developer's real config
-        // directory; they must never rewrite that person's Recent list.
-        #[cfg(test)]
-        if self.config_dir == crate::config::config_dir() {
-            return;
+    /// Change the Recent list: this device's setting, where every window
+    /// sees it; a window no framework hosts keeps its own.
+    fn edit_recent(&mut self, change: impl FnOnce(&mut crate::recent::RecentFiles)) {
+        match &self.recent_setting {
+            Some(setting) => {
+                if let Err(error) = setting.update(change) {
+                    tracing::warn!(%error, "could not save recent files");
+                }
+            }
+            None => change(&mut self.recent),
         }
-        if let Some(dir) = self.config_dir.as_deref()
-            && let Err(error) = self.recent.save(dir)
-        {
-            tracing::warn!(%error, "could not save recent files");
-        }
+    }
+
+    /// The Recent list as stored.
+    fn recent_list(&self) -> crate::recent::RecentFiles {
+        self.recent_setting
+            .as_ref()
+            .map_or_else(|| self.recent.clone(), ui::framework::Setting::get)
     }
 
     /// The Recent listing: every remembered path that still exists, in
     /// recency order.
     pub(super) fn recent_entries(&self) -> Vec<Entry> {
-        self.recent
+        self.recent_list()
             .items()
             .iter()
             .filter_map(|item| {
@@ -495,9 +500,9 @@ impl FileExplorerWidget {
     /// `FileCommand::ForgetRecent` — drop the item from Recent (the file is
     /// untouched).
     pub(super) fn apply_forget_recent(&mut self, path: &Path) -> bool {
-        if self.recent.forget(path) {
-            self.save_recent();
-        }
+        self.edit_recent(|recent| {
+            recent.forget(path);
+        });
         if self.is_recent_view() {
             self.refresh();
         }

@@ -10,21 +10,8 @@ use collab_types::files::{
 use host_fs::attributes::{self, ErrorCode};
 use std::fs::File;
 use std::{path::Path, sync::Arc};
-use ui::history_mode::{
-    HistoryDefinition, HistoryPresentation, HistoryScopeDefinition,
-    checked_files::{
-        FileHistoricalContent, FileHistoryTarget, FileHistoryTransport, FilePreviewInput,
-    },
-};
-
-pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "so.tilo.file-explorer",
-    scopes: &[HistoryScopeDefinition {
-        key: "selected-file",
-        title: "Selected file",
-        presentation: HistoryPresentation::CheckedFiles { create: preview },
-        content_schema: None,
-    }],
+use ui::history_mode::checked_files::{
+    FileHistoricalContent, FileHistoryTarget, FileHistoryTransport, FilePreviewInput,
 };
 
 /// A descriptor pins the kernel object. A later path replacement cannot retarget
@@ -201,7 +188,7 @@ struct FilePreview {
 }
 #[expect(
     clippy::unnecessary_wraps,
-    reason = "signature is fixed by `HistoryPresentation::CheckedFiles::create`"
+    reason = "signature is fixed by `FileHistory::preview`"
 )]
 pub(crate) fn preview(
     input: FilePreviewInput,

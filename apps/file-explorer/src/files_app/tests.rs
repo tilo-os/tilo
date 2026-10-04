@@ -573,7 +573,7 @@ mod open_with_tests {
     }
 
     #[test]
-    fn recent_lists_what_you_opened_newest_first_and_survives_a_restart() {
+    fn recent_lists_what_you_opened_newest_first() {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
@@ -581,7 +581,7 @@ mod open_with_tests {
         }
         set_document_opener(|_| Ok(()));
         let _clear = ClearRoute;
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         w.navigate(folder.path().to_path_buf());
         assert_eq!(displayed_names(&w), vec!["a.txt", "b.txt", "c.txt"]);
         let mut runner = RecRunner::default();
@@ -608,17 +608,46 @@ mod open_with_tests {
                 .collect::<Vec<_>>(),
             vec!["Recent"]
         );
+    }
 
-        let reopened =
-            FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+    /// The Recent list is this device's setting: a reopened window lists it.
+    #[test]
+    fn recent_is_a_device_setting_that_survives_a_restart() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(folder.path().join(name), name).unwrap();
+        }
+        let mut app = ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[folder
+            .path()
+            .to_str()
+            .unwrap()])
+        .unwrap();
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            for name in ["b.txt", "a.txt"] {
+                files.note_recent(&folder.path().join(name), crate::recent::RecentUse::Opened);
+            }
+        })
+        .unwrap();
+        let stored = app.settings::<crate::recent::RecentFiles>().get();
         assert_eq!(
-            reopened
-                .recent_entries()
+            stored
+                .items()
                 .iter()
-                .map(|entry| entry.name.clone())
+                .map(|item| item.path.clone())
                 .collect::<Vec<_>>(),
-            vec!["a.txt", "c.txt", "b.txt"]
+            vec![folder.path().join("a.txt"), folder.path().join("b.txt")]
         );
+        let mut app = app.reopen().unwrap();
+        let names = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files
+                    .recent_entries()
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(names, vec!["a.txt", "b.txt"]);
     }
 
     #[test]
@@ -628,7 +657,7 @@ mod open_with_tests {
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
             std::fs::write(folder.path().join(name), name).unwrap();
         }
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
             w.note_recent(&folder.path().join(name), crate::recent::RecentUse::Changed);
         }
@@ -669,7 +698,7 @@ mod open_with_tests {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("draft.txt"), "x").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         w.navigate(folder.path().to_path_buf());
         w.note_recent(
             &folder.path().join("draft.txt"),
@@ -1006,7 +1035,7 @@ mod command_path_tests {
         std::fs::create_dir(&folder).unwrap();
         std::fs::write(folder.join("b.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path().to_path_buf()),
+            Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
         w.navigate(folder);
@@ -1063,7 +1092,7 @@ mod command_path_tests {
         let state_dir = tempfile::tempdir().unwrap();
         let home_dir = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path().to_path_buf()),
+            Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
         // This is intentionally a synthetic, non-existent Trash path. The
@@ -2159,7 +2188,7 @@ mod command_path_tests {
     fn hermetic() -> (FileExplorerWidget, tempfile::TempDir) {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         (w, cfg)
@@ -2299,7 +2328,7 @@ mod command_path_tests {
     fn favorite_commands_add_reorder_and_remove() {
         let cfg = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let sub = PathBuf::from("/home/tester/Projects/tilo");
@@ -2331,11 +2360,8 @@ mod command_path_tests {
             videos: Some(home.join("Videos")),
             ..Default::default()
         };
-        let w = FileExplorerWidget::with_persistence_dirs(
-            Some(cfg.path().to_path_buf()),
-            Some(home.clone()),
-            dirs,
-        );
+        let w =
+            FileExplorerWidget::with_persistence_dirs(Some(cfg.path()), Some(home.clone()), dirs);
         let labels: Vec<String> = w.favorites().iter().map(|f| f.label.clone()).collect();
         // The sidebar shows the user's real localized names, not hard-coded
         // English ones.
@@ -3049,8 +3075,6 @@ mod command_path_tests {
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
         assert!(w.collab_panel.is_none());
-        let registration = ui::history_mode::capability::history_registration(&w);
-        assert!(registration.unwrap().is_some());
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
     }
@@ -4586,7 +4610,7 @@ mod responsive_body_tests {
     fn dropping_a_folder_on_the_sidebar_pins_it() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
@@ -4616,7 +4640,7 @@ mod responsive_body_tests {
     fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
@@ -4675,7 +4699,7 @@ mod responsive_body_tests {
     fn right_clicking_a_favourite_opens_its_menu() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
