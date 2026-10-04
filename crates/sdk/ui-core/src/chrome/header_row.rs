@@ -65,7 +65,7 @@ impl HeaderRowMetrics {
             chip,
             inset,
             gap: f64::from(theme.tokens.spacing.s2),
-            gutter: f64::from(theme.tokens.spacing.rhythm.group),
+            gutter: crate::chrome::column_gutter(theme),
         }
     }
 
