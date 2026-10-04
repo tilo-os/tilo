@@ -3,7 +3,7 @@
 //! fetched catalogue rows, running jobs — published beneath the resource for
 //! the palette, agents and scripts.
 
-use tilo_actions::{ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionSpec, OperationKind, Resource, ResourcePresentation};
 
 /// One live external entity a surface publishes beneath its resource, with
 /// the view and effect operations it offers (inspect a process, stop a
@@ -44,6 +44,15 @@ impl LiveRow {
         if admits(&operation, self.id()) {
             self.resource.actions.push(operation);
         }
+        self
+    }
+
+    /// How the entity stands right now (a process's CPU use, what a timer
+    /// has left), shown beside its label. A row merged into a document child
+    /// that has no presentation of its own lends it this one.
+    #[must_use]
+    pub fn presentation(mut self, presentation: ResourcePresentation) -> Self {
+        self.resource.presentation = Some(presentation);
         self
     }
 
@@ -118,9 +127,12 @@ pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item =
     }
 }
 
-/// Add to `existing` the operations and rows of `row`, which names it, that
-/// it lacks.
+/// Add to `existing` the presentation, operations and rows of `row`, which
+/// names it, that it lacks.
 pub(crate) fn join(existing: &mut Resource, row: Resource) {
+    if existing.presentation.is_none() {
+        existing.presentation = row.presentation;
+    }
     for action in row.actions {
         if !existing.actions.iter().any(|known| known.id == action.id) {
             existing.actions.push(action);
