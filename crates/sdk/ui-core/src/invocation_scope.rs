@@ -64,6 +64,108 @@ impl Drop for InvokerScope {
     }
 }
 
+/// Who an effect invocation runs for, kept while it runs: what its handler
+/// and completion submit is applied for the same invoker, in the same
+/// context, and only as far as the invoker was admitted.
+#[derive(Clone, Debug)]
+pub(crate) struct Continuation {
+    pub(crate) invoker: tilo_actions::ActionInvoker,
+    pub(crate) context: Option<tilo_actions::ActionContext>,
+    /// What the invoker was admitted for: the effect's own requirement for
+    /// its arguments, which the admitting host checked the invoker holds.
+    pub(crate) admitted: tilo_actions::PermissionRequirement,
+    /// Why an edit the effect submitted was refused: the effect then fails.
+    pub(crate) refused: Option<tilo_actions::ActionFailure>,
+}
+
+impl Continuation {
+    /// Enter the invoker's scope for one edit the effect submitted.
+    pub(crate) fn enter(&self) -> (InvokerScope, ContinuationScope) {
+        (
+            InvokerScope::enter(self.invoker.clone()),
+            ContinuationScope::enter(self.admitted),
+        )
+    }
+
+    /// Why the effect fails when the edit it submitted was refused with
+    /// `error`: a refusal keeps its own code.
+    pub(crate) fn failure(error: &tilo_actions::DoorError) -> tilo_actions::ActionFailure {
+        let (code, message) = match error {
+            tilo_actions::DoorError::Unavailable { code, reason } => (code.clone(), reason.clone()),
+            error => (
+                crate::bound_dispatch::door_error_code(error).to_owned(),
+                error.to_string(),
+            ),
+        };
+        tilo_actions::ActionFailure {
+            code,
+            message,
+            details: None,
+            retryable: false,
+        }
+    }
+
+    /// The effect's terminal `update`, failed when an edit it submitted was
+    /// refused.
+    pub(crate) fn settle(
+        &self,
+        update: tilo_actions::InvocationUpdate,
+    ) -> tilo_actions::InvocationUpdate {
+        match (update, &self.refused) {
+            (tilo_actions::InvocationUpdate::Succeeded { invocation, .. }, Some(error)) => {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: error.clone(),
+                }
+            }
+            (update, _) => update,
+        }
+    }
+}
+
+thread_local! {
+    static CONTINUATION_BOUNDS: std::cell::RefCell<Vec<tilo_actions::PermissionRequirement>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An edit an effect submitted on its invoker's behalf is being applied on
+/// this thread: it may need no more than the invoker was admitted for.
+#[must_use = "the bound applies only while the guard is alive"]
+pub(crate) struct ContinuationScope(());
+impl ContinuationScope {
+    pub(crate) fn enter(admitted: tilo_actions::PermissionRequirement) -> Self {
+        CONTINUATION_BOUNDS.with_borrow_mut(|bounds| bounds.push(admitted));
+        Self(())
+    }
+}
+impl Drop for ContinuationScope {
+    fn drop(&mut self) {
+        CONTINUATION_BOUNDS.with_borrow_mut(|bounds| {
+            bounds.pop();
+        });
+    }
+}
+
+/// Refuse an edit that needs `needed` while applying an effect's edit for
+/// an invoker admitted for less: an effect never lends its invoker more
+/// than they hold.
+///
+/// # Errors
+/// [`tilo_actions::DoorError::Unavailable`] with code `permission_denied`.
+pub(crate) fn check_continuation(
+    spec: &tilo_actions::ActionSpec,
+    needed: tilo_actions::PermissionRequirement,
+) -> Result<(), tilo_actions::DoorError> {
+    let admitted = CONTINUATION_BOUNDS.with_borrow(|bounds| bounds.last().copied());
+    match admitted {
+        Some(admitted) if !admitted.covers(needed) => Err(tilo_actions::DoorError::Unavailable {
+            code: "permission_denied".into(),
+            reason: format!("the invoker may not {} here", spec.label.to_lowercase()),
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// The invoker of the delivered invocation being resolved on this thread.
 /// `None` outside any delivered invocation (the local person acting).
 pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
