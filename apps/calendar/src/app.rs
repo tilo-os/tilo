@@ -623,7 +623,9 @@ impl CalendarApp {
             form_event: None,
             event_popovers: EventPopovers::new(today),
             task_popover: None,
-            task_due_picker: DatePicker::new(today).with_accessible_name("Task due date"),
+            task_due_picker: DatePicker::new(today)
+                .with_today(today)
+                .with_accessible_name("Task due date"),
             choices: Choices::new(),
             form: FormRects::default(),
             modal: None,
@@ -632,6 +634,7 @@ impl CalendarApp {
                 .with_items(["Export calendar", "Import calendar"])
                 .with_label("Calendar file"),
             mini_month: DatePicker::new(today)
+                .with_today(today)
                 .navigator()
                 .with_accessible_name("Month"),
             search_opener: ui::search::SearchOpener::new(),

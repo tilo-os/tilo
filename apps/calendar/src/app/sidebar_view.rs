@@ -358,6 +358,7 @@ impl CalendarApp {
     /// month.
     fn draw_sidebar_month(&mut self, ctx: &mut PaintCtx<'_>, column: &mut Column<'_>, rect: Rect) {
         self.mini_month.set_selected(self.anchor);
+        self.mini_month.set_today(self.today);
         let (year, month) = self.mini_month.month_view();
         let hidden = self.hidden_calendar_ids();
         if let Some(first) = chrono::NaiveDate::from_ymd_opt(year, month, 1) {

@@ -64,7 +64,7 @@ impl EventPopovers {
     pub fn new(today: NaiveDate) -> Self {
         Self {
             active: PopoverKind::None,
-            date_picker: DatePicker::new(today),
+            date_picker: DatePicker::new(today).with_today(today),
             start_time_picker: TimePicker::new(12, 0),
             end_time_picker: TimePicker::new(13, 0),
             hits: Vec::new(),
