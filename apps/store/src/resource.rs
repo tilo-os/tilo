@@ -119,6 +119,7 @@ impl Resource for Store {
                 anchor: Some(format!("store.report:{}", report.app_id)),
                 title: format!("Report for {}", report.app_id),
                 text: report.status.clone(),
+                ..Default::default()
             })
             .collect()
     }
@@ -135,6 +136,9 @@ impl ResourceApp for StoreShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
+        if cx.is_past() {
+            return cx.surface(crate::live::LiveStore::past());
+        }
         cx.surface(crate::live::LiveStore::new(None, None))
     }
 

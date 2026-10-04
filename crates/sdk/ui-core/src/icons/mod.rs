@@ -153,6 +153,239 @@ pub enum Icon {
     PanelRight,
 }
 
+impl Icon {
+    /// Every icon, in declaration order.
+    pub const ALL: [Self; 106] = [
+        Self::LayoutGrid,
+        Self::Settings2,
+        Self::Mouse,
+        Self::Keyboard,
+        Self::Users,
+        Self::Printer,
+        Self::Globe,
+        Self::Wifi,
+        Self::Bluetooth,
+        Self::Monitor,
+        Self::Battery,
+        Self::Shield,
+        Self::Maximize2,
+        Self::Minimize2,
+        Self::X,
+        Self::ChevronUp,
+        Self::ChevronDown,
+        Self::ChevronLeft,
+        Self::Plus,
+        Self::Search,
+        Self::PenTool,
+        Self::Code,
+        Self::Terminal,
+        Self::FileText,
+        Self::BarChart,
+        Self::Layers,
+        Self::Settings,
+        Self::Home,
+        Self::Camera,
+        Self::Power,
+        Self::Folder,
+        Self::FolderOpen,
+        Self::File,
+        Self::Image,
+        Self::Music,
+        Self::Film,
+        Self::Archive,
+        Self::FileCode,
+        Self::ArrowLeft,
+        Self::ArrowRight,
+        Self::ArrowUp,
+        Self::ArrowDown,
+        Self::ChevronRight,
+        Self::RotateCcw,
+        Self::RotateCw,
+        Self::Copy,
+        Self::Scissors,
+        Self::ClipboardPaste,
+        Self::Trash2,
+        Self::Pencil,
+        Self::Square,
+        Self::Minus,
+        Self::FolderPlus,
+        Self::FilePlus,
+        Self::List,
+        Self::Star,
+        Self::Pin,
+        Self::HardDrive,
+        Self::Check,
+        Self::Flame,
+        Self::GalleryVerticalEnd,
+        Self::History,
+        Self::Timer,
+        Self::ThumbsUp,
+        Self::ThumbsDown,
+        Self::ListVideo,
+        Self::PictureInPicture2,
+        Self::Sparkles,
+        Self::Eye,
+        Self::MousePointer2,
+        Self::Menu,
+        Self::Info,
+        Self::CloudDownload,
+        Self::ArrowUpDown,
+        Self::Bell,
+        Self::Play,
+        Self::Pause,
+        Self::Refresh,
+        Self::ExternalLink,
+        Self::Trash,
+        Self::MoreHorizontal,
+        Self::Inbox,
+        Self::Send,
+        Self::Reply,
+        Self::Mail,
+        Self::Paperclip,
+        Self::Calendar,
+        Self::Ban,
+        Self::Download,
+        Self::Sun,
+        Self::Volume2,
+        Self::VolumeX,
+        Self::WifiOff,
+        Self::EthernetPort,
+        Self::Mic,
+        Self::MicOff,
+        Self::SkipForward,
+        Self::SkipBack,
+        Self::ArrowBigUp,
+        Self::Delete,
+        Self::CornerDownLeft,
+        Self::Undo2,
+        Self::Redo2,
+        Self::TriangleAlert,
+        Self::PanelLeft,
+        Self::PanelRight,
+    ];
+
+    /// The icon's lucide kebab name (`Icon::LayoutGrid` → `layout-grid`):
+    /// how data that cannot name the enum (a resource's search row, a
+    /// manifest) names an icon.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LayoutGrid => "layout-grid",
+            Self::Settings2 => "settings-2",
+            Self::Mouse => "mouse",
+            Self::Keyboard => "keyboard",
+            Self::Users => "users",
+            Self::Printer => "printer",
+            Self::Globe => "globe",
+            Self::Wifi => "wifi",
+            Self::Bluetooth => "bluetooth",
+            Self::Monitor => "monitor",
+            Self::Battery => "battery",
+            Self::Shield => "shield",
+            Self::Maximize2 => "maximize-2",
+            Self::Minimize2 => "minimize-2",
+            Self::X => "x",
+            Self::ChevronUp => "chevron-up",
+            Self::ChevronDown => "chevron-down",
+            Self::ChevronLeft => "chevron-left",
+            Self::Plus => "plus",
+            Self::Search => "search",
+            Self::PenTool => "pen-tool",
+            Self::Code => "code",
+            Self::Terminal => "terminal",
+            Self::FileText => "file-text",
+            Self::BarChart => "bar-chart",
+            Self::Layers => "layers",
+            Self::Settings => "settings",
+            Self::Home => "home",
+            Self::Camera => "camera",
+            Self::Power => "power",
+            Self::Folder => "folder",
+            Self::FolderOpen => "folder-open",
+            Self::File => "file",
+            Self::Image => "image",
+            Self::Music => "music",
+            Self::Film => "film",
+            Self::Archive => "archive",
+            Self::FileCode => "file-code",
+            Self::ArrowLeft => "arrow-left",
+            Self::ArrowRight => "arrow-right",
+            Self::ArrowUp => "arrow-up",
+            Self::ArrowDown => "arrow-down",
+            Self::ChevronRight => "chevron-right",
+            Self::RotateCcw => "rotate-ccw",
+            Self::RotateCw => "rotate-cw",
+            Self::Copy => "copy",
+            Self::Scissors => "scissors",
+            Self::ClipboardPaste => "clipboard-paste",
+            Self::Trash2 => "trash-2",
+            Self::Pencil => "pencil",
+            Self::Square => "square",
+            Self::Minus => "minus",
+            Self::FolderPlus => "folder-plus",
+            Self::FilePlus => "file-plus",
+            Self::List => "list",
+            Self::Star => "star",
+            Self::Pin => "pin",
+            Self::HardDrive => "hard-drive",
+            Self::Check => "check",
+            Self::Flame => "flame",
+            Self::GalleryVerticalEnd => "gallery-vertical-end",
+            Self::History => "history",
+            Self::Timer => "timer",
+            Self::ThumbsUp => "thumbs-up",
+            Self::ThumbsDown => "thumbs-down",
+            Self::ListVideo => "list-video",
+            Self::PictureInPicture2 => "picture-in-picture-2",
+            Self::Sparkles => "sparkles",
+            Self::Eye => "eye",
+            Self::MousePointer2 => "mouse-pointer-2",
+            Self::Menu => "menu",
+            Self::Info => "info",
+            Self::CloudDownload => "cloud-download",
+            Self::ArrowUpDown => "arrow-up-down",
+            Self::Bell => "bell",
+            Self::Play => "play",
+            Self::Pause => "pause",
+            Self::Refresh => "refresh",
+            Self::ExternalLink => "external-link",
+            Self::Trash => "trash",
+            Self::MoreHorizontal => "more-horizontal",
+            Self::Inbox => "inbox",
+            Self::Send => "send",
+            Self::Reply => "reply",
+            Self::Mail => "mail",
+            Self::Paperclip => "paperclip",
+            Self::Calendar => "calendar",
+            Self::Ban => "ban",
+            Self::Download => "download",
+            Self::Sun => "sun",
+            Self::Volume2 => "volume-2",
+            Self::VolumeX => "volume-x",
+            Self::WifiOff => "wifi-off",
+            Self::EthernetPort => "ethernet-port",
+            Self::Mic => "mic",
+            Self::MicOff => "mic-off",
+            Self::SkipForward => "skip-forward",
+            Self::SkipBack => "skip-back",
+            Self::ArrowBigUp => "arrow-big-up",
+            Self::Delete => "delete",
+            Self::CornerDownLeft => "corner-down-left",
+            Self::Undo2 => "undo-2",
+            Self::Redo2 => "redo-2",
+            Self::TriangleAlert => "triangle-alert",
+            Self::PanelLeft => "panel-left",
+            Self::PanelRight => "panel-right",
+        }
+    }
+
+    /// The icon a lucide kebab name names, as [`Self::name`] spells it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|icon| icon.name() == name)
+    }
+}
+
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
 /// system; [`draw_icon`] scales to the requested rect.
 pub const LUCIDE_VIEWBOX: f64 = 24.0;
@@ -920,6 +1153,31 @@ mod tests {
     /// "non-empty" without matching against internal enum shapes.
     fn element_count(p: &BezPath) -> usize {
         p.elements().iter().count()
+    }
+
+    /// `ALL` lists every variant (the enum's source is the census), and
+    /// every name finds its icon again.
+    #[test]
+    fn every_icon_is_listed_and_found_by_its_name() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub enum Icon {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("the Icon enum");
+        let declared = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//") && line.ends_with(','))
+            .count();
+        assert_eq!(Icon::ALL.len(), declared, "Icon::ALL misses a variant");
+        let names: std::collections::HashSet<_> = Icon::ALL.iter().map(|i| i.name()).collect();
+        assert_eq!(names.len(), Icon::ALL.len(), "two icons share a name");
+        for icon in Icon::ALL {
+            assert_eq!(Icon::from_name(icon.name()), Some(icon));
+        }
+        assert_eq!(Icon::LayoutGrid.name(), "layout-grid");
+        assert_eq!(Icon::Settings2.name(), "settings-2");
     }
 
     #[test]

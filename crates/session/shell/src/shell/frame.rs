@@ -2128,6 +2128,8 @@ impl FrameBuilder {
             .configured_theme
             .clone()
             .in_window(&self.windows.active());
+        self.text_renderer
+            .set_distinct_letters(self.theme.tokens.typography.distinct_letters);
     }
 
     /// Entering a workspace enters its temperature: the neutral material

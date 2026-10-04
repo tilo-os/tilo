@@ -116,6 +116,7 @@ pub(super) fn block_runs(block: &BlockView) -> BlockRuns {
             color,
             background,
             baseline,
+            kind: None,
         });
     }
     if runs.is_empty() {
@@ -181,6 +182,7 @@ pub(super) fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRu
             color,
             background,
             baseline,
+            kind: None,
         });
     }
     if runs.is_empty() {
@@ -308,6 +310,7 @@ fn running_head_runs_with(block: &BlockView, display: FieldDisplay) -> Vec<RichS
             color,
             background: None,
             baseline: BaselineShift::None,
+            kind: None,
         });
         start = end;
     }

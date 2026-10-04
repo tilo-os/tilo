@@ -69,11 +69,13 @@ impl Resource for PdfViewer {
                 anchor: Some(format!("pdf.annotation:{}", anno.id)),
                 title: format!("Annotation on page {}", anno.page.saturating_add(1)),
                 text: anno.author.clone(),
+                ..Default::default()
             })
             .chain(state.comments.iter().map(|comment| SearchEntry {
                 anchor: Some(format!("pdf.comment:{}", comment.id)),
                 title: "Comment".into(),
                 text: comment.author.clone(),
+                ..Default::default()
             }))
             .collect()
     }
