@@ -7,29 +7,34 @@
 //! searches — and from the geocoder as a slow page that arrives when the
 //! background lookup lands ([`PlaceSearch`]).
 //!
-//! A hit's activation id is an app-local path ([`PlaceHit`]) that the app
-//! resolves in `SearchSource::activate_search_result`. Saved places sit under
-//! the `maps-saved` anchor, so the palette can narrow a search to them.
+//! A hit invokes the effect that opens it on the row it names ([`PlaceHit`]):
+//! the place, the point of interest or the recent search, which the provider
+//! resolves even when the window's published page leaves it out. Saved
+//! places sit under the `maps-saved` anchor, so the palette can narrow a
+//! search to them.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use ui::framework::LiveRow;
 use ui::icons::Icon;
 use ui::search::{
     PagePoll, PendingToken, ScopeDecl, SearchCursor, SearchPage, SearchProvider, SearchQuery,
     SearchResult,
 };
+use ui::tilo_actions::{ActionAddress, Resource};
+use ui::tilo_resource::Effect as _;
 
 use crate::geo;
 use crate::model::{Category, LatLon, Place};
+use crate::resource::MapsEffect;
 
 /// The anchor saved places sit under: the "Saved places" search scope.
 pub const SAVED_SCOPE: &str = "maps-saved";
-const PLACE_PREFIX: &str = "maps-place";
-const POI_PREFIX: &str = "maps-poi";
-const GEOCODED_PREFIX: &str = "maps-geo";
-const RECENT_PREFIX: &str = "maps-recent";
+const PLACE_ROW: &str = "maps.place:";
+const POI_ROW: &str = "maps.poi:";
+const HISTORY_ROW: &str = "maps.search-history:";
 
 /// Live answers kept for queries the palette may still poll.
 const MAX_ANSWERS: usize = 16;
@@ -50,30 +55,42 @@ pub enum PlaceHit {
 }
 
 impl PlaceHit {
-    fn action_id(&self, saved: bool) -> String {
+    /// The published row the hit opens.
+    pub fn resource_id(&self) -> String {
         match self {
-            Self::Place(id) if saved => format!("{SAVED_SCOPE}/{id}"),
-            Self::Place(id) => format!("{PLACE_PREFIX}/{id}"),
-            Self::Poi(id) => format!("{POI_PREFIX}/{id}"),
-            Self::Geocoded(id) => format!("{GEOCODED_PREFIX}/{id}"),
-            Self::Recent(query) => format!("{RECENT_PREFIX}/{query}"),
+            Self::Place(id) | Self::Geocoded(id) => format!("{PLACE_ROW}{id}"),
+            Self::Poi(id) => format!("{POI_ROW}{id}"),
+            Self::Recent(query) => format!("{HISTORY_ROW}{query}"),
         }
     }
 
-    /// Parse an activation id this provider issued.
-    pub fn parse(action_id: &str) -> Option<Self> {
-        let (prefix, rest) = action_id.split_once('/')?;
-        if rest.is_empty() {
-            return None;
+    /// The effect activating the hit runs: a found place opens like one
+    /// on the map, once the app has taken it in.
+    pub fn effect(&self) -> MapsEffect {
+        match self {
+            Self::Place(id) | Self::Geocoded(id) => MapsEffect::OpenPlace { place: id.clone() },
+            Self::Poi(id) => MapsEffect::OpenPoi { poi: id.clone() },
+            Self::Recent(query) => MapsEffect::Search {
+                query: query.clone(),
+            },
         }
-        let rest = rest.to_string();
-        match prefix {
-            SAVED_SCOPE | PLACE_PREFIX => Some(Self::Place(rest)),
-            POI_PREFIX => Some(Self::Poi(rest)),
-            GEOCODED_PREFIX => Some(Self::Geocoded(rest)),
-            RECENT_PREFIX => Some(Self::Recent(rest)),
-            _ => None,
-        }
+    }
+
+    /// The published action the hit invokes.
+    pub fn address(&self) -> ActionAddress {
+        ActionAddress::new(self.resource_id(), self.effect().id())
+    }
+
+    /// The row the hit's action rides on, labelled `label`.
+    fn resource(&self, label: &str) -> Resource {
+        let kind = match self {
+            Self::Place(_) | Self::Geocoded(_) => "maps.place",
+            Self::Poi(_) => "maps.poi",
+            Self::Recent(_) => "maps.search-history",
+        };
+        LiveRow::new(self.resource_id(), kind, label)
+            .effect(&self.effect())
+            .into_resource()
     }
 }
 
@@ -214,13 +231,17 @@ fn place_result(group: &str, place: &Place, hit: &PlaceHit, anchor: LatLon) -> S
     } else {
         format!("{}, {distance}", place.address)
     };
-    SearchResult::new(group, &place.name, hit.action_id(place.saved))
-        .with_subtitle(subtitle)
-        .with_icon(if place.saved {
-            Icon::Star
-        } else {
-            place.category.icon()
-        })
+    let result = SearchResult::for_action(group, &place.name, hit.address());
+    let result = if place.saved {
+        result.within(format!("{SAVED_SCOPE}/{}", place.id))
+    } else {
+        result
+    };
+    result.with_subtitle(subtitle).with_icon(if place.saved {
+        Icon::Star
+    } else {
+        place.category.icon()
+    })
 }
 
 /// Whether `place` answers `needle` (already lower case): by name, address,
@@ -259,10 +280,10 @@ impl PlaceSearchProvider {
                 .iter()
                 .take(limit)
                 .map(|query| {
-                    SearchResult::new(
+                    SearchResult::for_action(
                         "Recent searches",
                         query,
-                        PlaceHit::Recent(query.clone()).action_id(false),
+                        PlaceHit::Recent(query.clone()).address(),
                     )
                     .with_icon(Icon::History)
                 })
@@ -401,6 +422,42 @@ impl SearchProvider for PlaceSearchProvider {
     fn search_scopes(&self) -> Vec<ScopeDecl> {
         vec![ScopeDecl::new(SAVED_SCOPE, "Saved places")]
     }
+
+    /// The row a hit names, also when the window's published page leaves
+    /// it out: a place the map holds or the geocoder found, a point of
+    /// interest around the view, a recent search.
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        let local = &self.local;
+        let resource = &address.resource;
+        let (hit, label) = if let Some(id) = resource.strip_prefix(PLACE_ROW) {
+            if let Some(place) = local.places.iter().find(|place| place.id == id) {
+                (PlaceHit::Place(id.to_owned()), place.name.clone())
+            } else {
+                let exchange = self.exchange.borrow();
+                let place = exchange
+                    .answers
+                    .iter()
+                    .rev()
+                    .flat_map(|(_, places)| places.iter())
+                    .find(|place| place.id == id)?;
+                (PlaceHit::Geocoded(id.to_owned()), place.name.clone())
+            }
+        } else if let Some(id) = resource.strip_prefix(POI_ROW) {
+            let poi = local.pois.iter().find(|poi| poi.id == id)?;
+            (PlaceHit::Poi(id.to_owned()), poi.name.clone())
+        } else if let Some(query) = resource.strip_prefix(HISTORY_ROW) {
+            let query = local.recents.iter().find(|recent| *recent == query)?;
+            (PlaceHit::Recent(query.clone()), query.clone())
+        } else {
+            return None;
+        };
+        let resource = hit.resource(&label);
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
+    }
 }
 
 #[cfg(test)]
@@ -434,8 +491,8 @@ mod tests {
         let recents = provider.search_page(&SearchQuery::new(""), None, 10, 10);
         assert_eq!(recents.results.len(), 2);
         assert_eq!(
-            PlaceHit::parse(&recents.results[0].action_id),
-            Some(PlaceHit::Recent("Marienplatz".into()))
+            recents.results[0].action_address(),
+            Some(PlaceHit::Recent("Marienplatz".into()).address())
         );
 
         // A keyword finds the saved café at once; unreachable, nothing waits.
@@ -461,10 +518,14 @@ mod tests {
             panic!("answered");
         };
         assert_eq!(ready.results[0].title, "Marienhof");
-        assert_eq!(
-            PlaceHit::parse(&ready.results[0].action_id),
-            Some(PlaceHit::Geocoded("geo-1".into()))
-        );
+        let address = ready.results[0]
+            .action_address()
+            .expect("a published action");
+        assert_eq!(address, PlaceHit::Geocoded("geo-1".into()).address());
+        let row = provider
+            .resolve_action_resource(&address)
+            .expect("the provider resolves a found place's row");
+        assert_eq!(row.id.as_str(), "maps.place:geo-1");
         assert_eq!(
             search.geocoded("geo-1").map(|p| p.name),
             Some("Marienhof".into())
@@ -475,13 +536,11 @@ mod tests {
     fn saved_places_are_a_search_scope() {
         let provider = PlaceSearch::default().provider(local());
         assert_eq!(provider.search_scopes()[0].anchor, SAVED_SCOPE);
-        let saved_hit = PlaceHit::Place("cafe-glueck".into()).action_id(true);
+        let page = provider.search_page(&SearchQuery::new("Café"), None, 10, 10);
+        let saved_hit = page.results[0].anchor();
         assert!(ui::search::scope_contains(SAVED_SCOPE, &saved_hit));
-        assert_eq!(
-            PlaceHit::parse(&saved_hit),
-            Some(PlaceHit::Place("cafe-glueck".into()))
-        );
-        let other = PlaceHit::Place("marienplatz".into()).action_id(false);
+        let page = provider.search_page(&SearchQuery::new("Marienplatz"), None, 10, 10);
+        let other = page.results[0].anchor();
         assert!(!ui::search::scope_contains(SAVED_SCOPE, &other));
     }
 }

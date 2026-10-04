@@ -729,7 +729,7 @@ fn place_search_matches_ranks_and_labels_results() {
                 LatLon::new(48.141, 11.577),
             )],
         );
-        a.open_search_hit(PlaceHit::Geocoded("osm-w-1".into()));
+        a.open_place("osm-w-1").expect("a found place opens");
         assert_eq!(
             a.model.selected.as_deref(),
             Some("osm-w-1"),
@@ -875,21 +875,27 @@ fn platform_search_opens_finds_and_activates_places() {
                 .any(|scope| scope.label == "Saved places")
         );
 
-        // Activating a hit opens the place exactly as a click in the panel.
-        let hit = coffee
+        // A hit invokes the published effect that opens the place exactly
+        // as a click in the panel.
+        let address = coffee
             .results
             .iter()
             .find(|hit| hit.title == "Café Glück")
             .expect("café hit")
-            .action_id
-            .clone();
-        let mut doc = AutoCommit::new();
-        ui::search::capability::SearchSource::activate_search_result(
-            &mut a,
-            &hit,
-            &mut doc,
-            &automerge::ROOT,
+            .action_address()
+            .expect("a hit invokes a published action");
+        let row = provider
+            .resolve_action_resource(&address)
+            .expect("the hit's row resolves");
+        assert_eq!(row.id.as_str(), "maps.place:cafe-glueck");
+        assert!(row.actions.iter().any(|action| action.id == address.action));
+        assert_eq!(
+            crate::place_search::PlaceHit::Place("cafe-glueck".into()).effect(),
+            crate::resource::MapsEffect::OpenPlace {
+                place: "cafe-glueck".into()
+            }
         );
+        a.open_place("cafe-glueck").expect("the café opens");
         assert_eq!(a.model.selected.as_deref(), Some("cafe-glueck"));
     }
 
@@ -991,7 +997,13 @@ fn platform_search_opens_finds_and_activates_places() {
     // Opening a recent search from the platform search runs it again.
     {
         let mut a = app_at(1280.0, 720.0);
-        a.open_search_hit(PlaceHit::Recent("Marienplatz".to_string()));
+        assert_eq!(
+            crate::place_search::PlaceHit::Recent("Marienplatz".into()).effect(),
+            crate::resource::MapsEffect::Search {
+                query: "Marienplatz".into()
+            }
+        );
+        a.search_for("Marienplatz".to_string());
         assert_eq!(a.model.query, "Marienplatz", "the recent sets the query");
         assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
         assert!(

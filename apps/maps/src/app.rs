@@ -52,7 +52,7 @@ use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
-use crate::place_search::{LocalPlaces, PlaceHit, PlaceSearch};
+use crate::place_search::{LocalPlaces, PlaceSearch};
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
@@ -1207,36 +1207,30 @@ impl MapsApp {
         });
     }
 
-    /// Open a hit the platform search found.
-    fn open_search_hit(&mut self, hit: PlaceHit) {
-        match hit {
-            PlaceHit::Place(id) => {
-                if self.model.place(&id).is_some() {
-                    self.select_place(&id);
-                }
-            }
-            PlaceHit::Poi(id) => {
-                if self.pois.iter().any(|poi| poi.id == id) {
-                    self.select_poi_from_list(&id);
-                }
-            }
-            PlaceHit::Geocoded(id) => {
-                let Some(place) = self.place_search.geocoded(&id) else {
-                    return;
-                };
-                self.perform(&MapsAction::UpsertPlaces {
-                    places: vec![place.clone()],
-                });
-                self.perform(&MapsAction::CommitSearch {
-                    query: place.name.clone(),
-                });
-                self.select_place(&place.id);
-            }
-            PlaceHit::Recent(query) => {
-                self.model.query = query;
-                self.run_search(true);
-            }
+    /// Open place `id`: one the map holds, or one the geocoder found for
+    /// the platform search, which the map takes in (with its name as a
+    /// recent search) before opening it.
+    pub(crate) fn open_place(&mut self, id: &str) -> Result<(), &'static str> {
+        if self.model.place(id).is_none() {
+            let place = self
+                .place_search
+                .geocoded(id)
+                .ok_or("Map place is no longer available")?;
+            self.perform(&MapsAction::UpsertPlaces {
+                places: vec![place.clone()],
+            });
+            self.perform(&MapsAction::CommitSearch {
+                query: place.name.clone(),
+            });
         }
+        self.select_place(id);
+        Ok(())
+    }
+
+    /// Search for `query`, as a recent search or an agent asks.
+    pub(crate) fn search_for(&mut self, query: String) {
+        self.model.query = query;
+        self.run_search(false);
     }
 
     /// Local (offline) search: substring match over known places. Also kicks
@@ -5164,18 +5158,6 @@ impl ui::search::capability::SearchSource for MapsApp {
     /// the recent searches answer at once; the geocoder answers later.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.place_search.provider(self.local_places()))]
-    }
-
-    /// Show the place a hit names, as a click on it in the panel would.
-    fn activate_search_result(
-        &mut self,
-        action_id: &str,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) {
-        if let Some(hit) = PlaceHit::parse(action_id) {
-            self.open_search_hit(hit);
-        }
     }
 }
 
