@@ -1305,6 +1305,20 @@ pub fn route_input(
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
         state.release_personal_keyboard_focus();
+        // Another device of the person last placed this seat's pointer, on a
+        // window it shows. The host's cursor never left its spot, so the
+        // pointer goes back to what is under it before this input lands.
+        if state.take_personal_pointer_hold()
+            && !matches!(event, WindowEvent::CursorMoved { .. })
+            && let Some((x, y)) = state.client_input.pointer_position()
+        {
+            let _ = route_cursor_moved(
+                state,
+                fb,
+                chrome_captures_input(fb),
+                winit::dpi::PhysicalPosition::new(x, y),
+            );
+        }
     }
     match event {
         WindowEvent::CursorMoved { position, .. } => {

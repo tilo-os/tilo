@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use crate::shell::device_fabric::{PersonalFabricAction, WindowView};
+use crate::shell::device_fabric::{HardwareDecode, PersonalFabricAction, WindowView};
 use crate::shell::network::ShellNetwork;
 use crate::shell::personal_continuity::DeviceId;
 
@@ -33,11 +33,40 @@ pub struct WindowViewer {
     pub peer: u64,
     pub width: u32,
     pub height: u32,
+    /// The largest picture the viewer's hardware decoders take, by codec.
+    pub decode_limits: BTreeMap<media::StreamCodec, (u32, u32)>,
 }
 
 struct Viewing {
     views: Vec<WindowView>,
+    decode_limits: BTreeMap<media::StreamCodec, (u32, u32)>,
     at: Instant,
+}
+
+/// The limits a viewer reported, by codec; codecs this build does not know
+/// and codecs without a limit carry none.
+fn limits_of(decode: &[HardwareDecode]) -> BTreeMap<media::StreamCodec, (u32, u32)> {
+    decode
+        .iter()
+        .filter_map(|entry| {
+            Some((
+                media::StreamCodec::from_wire_label(&entry.codec)?,
+                entry.max?,
+            ))
+        })
+        .collect()
+}
+
+/// What this device's hardware decoders take, as `WindowViews` reports it.
+fn local_decode() -> Vec<HardwareDecode> {
+    let caps = media::realtime::local_capabilities();
+    caps.hardware_decode
+        .iter()
+        .map(|codec| HardwareDecode {
+            codec: codec.wire_label().to_owned(),
+            max: caps.hardware_decode_max.get(codec).copied(),
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -46,11 +75,24 @@ struct Inbound {
 }
 
 impl Inbound {
-    fn record(&mut self, source: DeviceId, views: Vec<WindowView>, now: Instant) {
+    fn record(
+        &mut self,
+        source: DeviceId,
+        views: Vec<WindowView>,
+        decode: &[HardwareDecode],
+        now: Instant,
+    ) {
         if views.is_empty() {
             self.devices.remove(&source);
         } else {
-            self.devices.insert(source, Viewing { views, at: now });
+            self.devices.insert(
+                source,
+                Viewing {
+                    views,
+                    decode_limits: limits_of(decode),
+                    at: now,
+                },
+            );
         }
     }
 
@@ -68,6 +110,7 @@ impl Inbound {
                     peer,
                     width: view.width,
                     height: view.height,
+                    decode_limits: viewing.decode_limits.clone(),
                 });
             }
         }
@@ -135,9 +178,9 @@ pub(crate) fn peer_handle(device: &DeviceId) -> Option<u64> {
 }
 
 /// Take what `source` says it shows now.
-pub(super) fn record(source: DeviceId, views: Vec<WindowView>) {
+pub(super) fn record(source: DeviceId, views: Vec<WindowView>, decode: &[HardwareDecode]) {
     if let Ok(mut state) = inbound().lock() {
-        state.record(source, views, Instant::now());
+        state.record(source, views, decode, Instant::now());
     }
 }
 
@@ -169,10 +212,16 @@ pub fn publish_window_views(network: &ShellNetwork, shown: Vec<(String, WindowVi
     let due = outbound()
         .lock()
         .map_or_else(|_| Vec::new(), |mut state| state.due(shown, Instant::now()));
+    if due.is_empty() {
+        return;
+    }
+    let decode = local_decode();
     for (host, views) in due {
-        if let Err(error) =
-            network.send_personal_fabric_action(&host, PersonalFabricAction::WindowViews { views })
-        {
+        let action = PersonalFabricAction::WindowViews {
+            views,
+            decode: decode.clone(),
+        };
+        if let Err(error) = network.send_personal_fabric_action(&host, action) {
             tracing::debug!(%error, "window views not sent");
         }
     }
@@ -237,21 +286,34 @@ mod tests {
         let start = Instant::now();
         let laptop = device(1);
         let phone = device(2);
-        inbound.record(laptop.clone(), vec![view(7), view(9)], start);
-        inbound.record(phone.clone(), vec![view(7)], start);
+        inbound.record(
+            laptop.clone(),
+            vec![view(7), view(9)],
+            &[HardwareDecode {
+                codec: "h264".into(),
+                max: Some((1920, 1088)),
+            }],
+            start,
+        );
+        inbound.record(phone.clone(), vec![view(7)], &[], start);
         let viewers = inbound.viewers(start);
         assert_eq!(viewers[&7].len(), 2);
         assert_eq!(viewers[&9].len(), 1);
         assert_eq!(viewers[&9][0].peer, peer_handle(&laptop).unwrap());
+        assert_eq!(
+            viewers[&9][0].decode_limits,
+            BTreeMap::from([(media::StreamCodec::H264, (1920, 1088))]),
+            "the viewer's decoder limit reaches the host"
+        );
 
         // A newer list replaces the older one entirely.
-        inbound.record(laptop, vec![view(9)], start);
+        inbound.record(laptop, vec![view(9)], &[], start);
         let viewers = inbound.viewers(start);
         assert_eq!(viewers[&7].len(), 1);
         assert_eq!(viewers[&7][0].device, phone);
 
         // An empty list ends that device's views at once.
-        inbound.record(phone, Vec::new(), start);
+        inbound.record(phone, Vec::new(), &[], start);
         assert!(!inbound.viewers(start).contains_key(&7));
 
         // Silence ends them at expiry.

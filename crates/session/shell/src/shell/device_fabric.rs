@@ -593,8 +593,11 @@ pub enum PersonalFabricAction {
     /// it shows it. The device running a listed window streams that one
     /// window here, and stops once a refresh no longer lists it or the
     /// refreshes stop. An empty list ends every stream to this device.
+    /// `decode` is what this device's hardware decoders take, so the host
+    /// encodes nothing they would hand back to the CPU.
     WindowViews {
         views: Vec<WindowView>,
+        decode: Vec<HardwareDecode>,
     },
 }
 
@@ -611,6 +614,25 @@ pub struct WindowView {
     pub tab: u64,
     pub width: u32,
     pub height: u32,
+}
+
+/// One codec a device decodes in hardware, with the largest picture its
+/// decoder takes when it has a limit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareDecode {
+    /// The codec's stream label (`h264`, `vp9`, `av1`, `hevc-main10`).
+    pub codec: String,
+    pub max: Option<(u32, u32)>,
+}
+
+impl HardwareDecode {
+    fn valid(&self) -> bool {
+        media::StreamCodec::from_wire_label(&self.codec).is_some()
+            && self.max.is_none_or(|(width, height)| {
+                (2..=MAX_WINDOW_VIEW_SIDE).contains(&width)
+                    && (2..=MAX_WINDOW_VIEW_SIDE).contains(&height)
+            })
+    }
 }
 
 impl WindowView {
@@ -816,12 +838,17 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::WindowViews { views } => {
+            PersonalFabricAction::WindowViews { views, decode } => {
                 let mut tabs = BTreeSet::new();
+                let mut codecs = BTreeSet::new();
                 if views.len() > MAX_WINDOW_VIEWS
                     || !views
                         .iter()
                         .all(|view| view.valid() && tabs.insert(view.tab))
+                    || decode.len() > media::StreamCodec::ALL.len()
+                    || !decode
+                        .iter()
+                        .all(|codec| codec.valid() && codecs.insert(codec.codec.as_str()))
                 {
                     return Err(FabricError::InvalidAction);
                 }
@@ -2357,18 +2384,28 @@ mod tests {
     fn window_views_are_bounded_distinct_and_sized() {
         let source = id("viewer");
         let target = id("host");
-        let envelope = |views: Vec<WindowView>| PersonalFabricActionEnvelope {
-            request_id: [5; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::WindowViews { views },
-        };
+        let envelope =
+            |views: Vec<WindowView>, decode: Vec<HardwareDecode>| PersonalFabricActionEnvelope {
+                request_id: [5; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::WindowViews { views, decode },
+            };
         let view = |tab, width, height| WindowView { tab, width, height };
         let ok = |views| {
-            envelope(views)
+            envelope(views, Vec::new())
                 .validate_at(&source, &target, 10_000)
                 .is_ok()
+        };
+        let decodes = |decode| {
+            envelope(vec![view(7, 1280, 800)], decode)
+                .validate_at(&source, &target, 10_000)
+                .is_ok()
+        };
+        let hw = |codec: &str, max| HardwareDecode {
+            codec: codec.into(),
+            max,
         };
 
         assert!(ok(Vec::new()), "an empty list ends every stream");
@@ -2386,6 +2423,18 @@ mod tests {
         assert!(!ok((1..=u64::try_from(MAX_WINDOW_VIEWS).unwrap() + 1)
             .map(|tab| view(tab, 100, 100))
             .collect()));
+
+        // A board's decoder limit travels with the list.
+        assert!(decodes(vec![
+            hw("h264", Some((1920, 1088))),
+            hw("av1", None)
+        ]));
+        assert!(!decodes(vec![hw("mjpeg", None)]), "a codec streams use");
+        assert!(!decodes(vec![hw("h264", Some((0, 1088)))]));
+        assert!(
+            !decodes(vec![hw("h264", None), hw("h264", Some((1280, 720)))]),
+            "one limit per codec"
+        );
     }
 
     #[test]

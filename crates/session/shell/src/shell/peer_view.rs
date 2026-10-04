@@ -66,6 +66,44 @@ pub enum PushOutcome {
     DecodeFailed,
 }
 
+/// Frames of streams that have no view yet, by `(source peer, surface)`.
+///
+/// A stream's start and its first frames travel separately, and the first
+/// frame is the keyframe a decoder must begin at. A frame that overtakes the
+/// start is held here and decoded as soon as the view mounts, instead of the
+/// viewer waiting for the next keyframe. Bounded: the first frames of a few
+/// streams, and nothing larger than a frame on the wire.
+#[derive(Default)]
+pub struct EarlyFrames {
+    held: HashMap<(u64, u64), Vec<Vec<u8>>>,
+}
+
+impl EarlyFrames {
+    const STREAMS: usize = 8;
+    const FRAMES: usize = 4;
+
+    /// Keep `frame` of a stream with no view, in arrival order.
+    pub fn hold(&mut self, key: (u64, u64), frame: Vec<u8>) {
+        if !self.held.contains_key(&key) && self.held.len() >= Self::STREAMS {
+            return;
+        }
+        let frames = self.held.entry(key).or_default();
+        if frames.len() < Self::FRAMES {
+            frames.push(frame);
+        }
+    }
+
+    /// The frames held for a stream whose view just mounted.
+    pub fn take(&mut self, key: (u64, u64)) -> Vec<Vec<u8>> {
+        self.held.remove(&key).unwrap_or_default()
+    }
+
+    /// Drop a stream that ended.
+    pub fn forget(&mut self, key: (u64, u64)) {
+        self.held.remove(&key);
+    }
+}
+
 /// A peer's announcement that one of its surfaces is streaming: which
 /// surface, which app's tab shows it, how it is encoded, and where input on
 /// the local view goes back to.
@@ -829,6 +867,32 @@ mod tests {
         aspect_fit_preserves_pixels_and_letterboxes();
         decoded_frame_paints_image_into_scene();
         empty_view_paints_placeholder_text_not_image();
+    }
+
+    #[test]
+    fn frames_ahead_of_their_stream_start_wait_bounded_in_order() {
+        let mut early = EarlyFrames::default();
+        for frame in 0..6_u8 {
+            early.hold((1, 2), vec![frame]);
+        }
+        assert_eq!(
+            early.take((1, 2)),
+            vec![vec![0], vec![1], vec![2], vec![3]],
+            "the first frames, keyframe first, and only a few"
+        );
+        assert!(early.take((1, 2)).is_empty());
+        for stream in 0..20 {
+            early.hold((stream, 0), vec![1]);
+        }
+        assert_eq!(
+            (0..20)
+                .filter(|stream| !early.take((*stream, 0)).is_empty())
+                .count(),
+            EarlyFrames::STREAMS
+        );
+        early.hold((3, 3), vec![1]);
+        early.forget((3, 3));
+        assert!(early.take((3, 3)).is_empty());
     }
 
     #[test]
