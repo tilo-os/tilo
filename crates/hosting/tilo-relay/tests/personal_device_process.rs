@@ -112,6 +112,7 @@ fn write_approver_fixture(
             FILE_WORKSPACE,
             tilo_relay::personal_continuity_workspace_id(&user),
         ],
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
     std::fs::write(
         root_dir.join("home-peers.json"),

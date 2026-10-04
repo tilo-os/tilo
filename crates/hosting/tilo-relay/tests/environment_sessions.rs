@@ -506,3 +506,85 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
     assert_eq!(gone, Refusal::UnknownSession);
     worker.serving.abort();
 }
+
+/// The relay's management status says what its workers run for
+/// environments, as they come and go: what a device stores in its
+/// home-peer registration and its Terminal filters relays by.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relay_says_whether_its_workers_run_environments() {
+    let provider = TestUser::fresh("Tilo hosting");
+    let relay_device = provider.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let worker_device = provider.enrol("worker", DeviceCapabilities::host());
+    let owner_laptop = provider.enrol("laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let worker_root = tempfile::tempdir().unwrap();
+    let relay = Relay::start(
+        RelayConfig {
+            state_root: state.path().to_path_buf(),
+            workspaces: vec![WorkspaceBinding {
+                id: WORKSPACE,
+                pin: true,
+                replication: tilo_relay::ReplicationIntent::FullWorkspace,
+                admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
+            }],
+            ..RelayConfig::default()
+        },
+        tilo_relay::daemon::RelayIdentity {
+            user_public_key: provider.user_pk,
+            device_signing_key: relay_device.sk.clone(),
+            device_cert: relay_device.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    relay
+        .set_workspace_membership(
+            WORKSPACE,
+            true,
+            vec![worker_device.device_pubkey(), owner_laptop.device_pubkey()],
+            state.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+    let endpoint = client_endpoint().await;
+    let status = || async {
+        tilo_relay::client::RelayClient::manage_home_peer(
+            &endpoint,
+            relay.node_addr(),
+            provider.user_pk,
+            relay_key,
+            owner_laptop.cert.clone(),
+            owner_laptop.sk.clone(),
+            RevocationList::new(),
+            tilo_relay::transport::HomePeerManagementRequest::Status,
+        )
+        .await
+        .unwrap()
+        .environments
+    };
+
+    assert_eq!(
+        status().await,
+        tilo_relay_protocol::RelayEnvironments::default()
+    );
+    let worker = start_worker(&relay, &provider, &worker_device, worker_root.path()).await;
+    assert_eq!(
+        status().await,
+        tilo_relay_protocol::RelayEnvironments {
+            sessions: true,
+            legacy_apps: true,
+        }
+    );
+    worker.serving.abort();
+    worker.client.close().await;
+    tilo_test_env::within("the departed worker to be withdrawn", async {
+        while status().await != tilo_relay_protocol::RelayEnvironments::default() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}

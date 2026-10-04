@@ -445,6 +445,7 @@ mod tests {
             user_public_key: identity_id.clone(),
             device_cert: None,
             relay_workspace_ids: vec![7],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         fs::write(
             &home_peers,

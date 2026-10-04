@@ -44,6 +44,13 @@ enum Cmd {
         #[arg(long)]
         service: String,
     },
+    /// Refresh every enrolled home peer's registration from its current
+    /// status: endpoint, and what its workers run for environments. A peer
+    /// that does not answer keeps its last registration.
+    HomePeerRefresh {
+        #[arg(long)]
+        identity_root: PathBuf,
+    },
     /// Rename an enrolled home peer after mutual authentication.
     HomePeerRename {
         #[arg(long)]
@@ -168,6 +175,7 @@ fn run() -> anyhow::Result<()> {
             service,
             label,
         } => cmd_home_peer(&identity_root, &device, &service, Some(label)),
+        Cmd::HomePeerRefresh { identity_root } => cmd_home_peer_refresh(&identity_root),
         Cmd::HomePeerRemove {
             identity_root,
             device,
@@ -247,13 +255,39 @@ fn cmd_home_peer(
     if let Some(label) = requested_label {
         update_home_peer_registry(identity_root, device, Some(label))?;
     }
-    refresh_home_peer_endpoint(
-        identity_root,
-        device,
-        device_key(service)?,
-        &response.relay_endpoint,
-    )?;
+    refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)?;
     println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+fn cmd_home_peer_refresh(identity_root: &std::path::Path) -> anyhow::Result<()> {
+    let path = identity_root.join("home-peers.json");
+    let registrations: Vec<tilo_relay::HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(&path)?)?;
+    let mut refreshed = 0usize;
+    for registration in &registrations {
+        let (device, service) = (
+            registration.device_node_id.as_str(),
+            registration.relay_service_node_id.as_str(),
+        );
+        let answered = remote_home_peer(
+            identity_root,
+            device,
+            service,
+            tilo_relay::transport::HomePeerManagementRequest::Status,
+        )
+        .and_then(|response| {
+            refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)
+        });
+        match answered {
+            Ok(()) => refreshed = refreshed.saturating_add(1),
+            Err(error) => eprintln!("{}: {error:#}", registration.label),
+        }
+    }
+    println!(
+        "{}",
+        serde_json::json!({ "refreshed": refreshed, "registered": registrations.len() })
+    );
     Ok(())
 }
 
@@ -282,8 +316,9 @@ fn refresh_home_peer_endpoint(
     identity_root: &std::path::Path,
     device: &str,
     service: [u8; 32],
-    endpoint: &iroh_base::EndpointAddr,
+    response: &tilo_relay::transport::HomePeerManagementResponse,
 ) -> anyhow::Result<()> {
+    let endpoint = &response.relay_endpoint;
     if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
         anyhow::bail!("home peer returned an invalid relay endpoint advertisement");
     }
@@ -297,6 +332,7 @@ fn refresh_home_peer_endpoint(
         })
         .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
     registration.relay_endpoint = Some(endpoint.clone());
+    registration.environments = response.environments;
     registration.schema_version = tilo_relay::HomePeerRegistration::CURRENT_SCHEMA;
     tilo_files::native::atomic::write_with_mode(
         &path,
@@ -376,6 +412,7 @@ fn cmd_home_peer_remove(
         label: "Removed".into(),
         files_ready: false,
         services: tilo_relay_protocol::ServiceCapabilities::default(),
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);
