@@ -1,32 +1,31 @@
-//! Git client as a [`tilo_resource::Resource`]: the diff preferences, the
-//! repository the record opens and the shared projection of its history
-//! sync; working-tree status and an in-flight transfer are live rows of the
-//! surface.
+//! Git client as a [`tilo_resource::Resource`]: the repository the record
+//! opens and the shared projection of its history sync; working-tree status
+//! and an in-flight transfer are live rows of the surface, and the diff
+//! preferences are the person's settings, switched by the surface's effects.
 
 use std::rc::Rc;
 
 use ui::framework::{
-    Command, EffectAnswer, EffectCx, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    Command, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
+use ui::tilo_actions::Resource as PublishedResource;
 use ui::tilo_resource::{Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    GIT_CLIENT_ACTION_TYPE, GitClientAction, GitClientEffect, document_bound_actions,
-    document_children, register, resolve_child,
+    GIT_CLIENT_ACTION_TYPE, GitClientAction, GitClientEffect, document_children, register,
+    resolve_child,
 };
 use crate::app::GitClientApp;
 use crate::doc::GitClientState;
 use crate::model::{DiffMap, RepoModel};
-use crate::settings::DiffLayout;
 
-/// The git client resource. Document state is the diff preferences, the
-/// repository the record opens and the shared repository projection;
-/// working-tree rows and in-flight fetch/push are live.
+/// The git client resource. Document state is the repository the record
+/// opens and the shared repository projection; working-tree rows and
+/// in-flight fetch/push are live.
 pub struct GitClient;
 
 impl Resource for GitClient {
@@ -43,10 +42,6 @@ impl Resource for GitClient {
 
     fn read(doc: &Doc) -> Result<GitClientState, ModelError> {
         Ok(GitClientState::from_doc(doc))
-    }
-
-    fn bound_actions(state: &GitClientState) -> Vec<ActionSpec> {
-        document_bound_actions(state.settings)
     }
 
     fn children(state: &GitClientState) -> Vec<PublishedResource> {
@@ -158,17 +153,6 @@ impl ResourceApp for GitClientShell {
         }
         Ok(())
     }
-
-    fn scenario(name: Option<&str>) -> Vec<Invoke<GitClient>> {
-        if name == Some("split") {
-            return Invoke::apply(&crate::actions::set_diff_layout_action(
-                DiffLayout::SideBySide,
-            ))
-            .into_iter()
-            .collect();
-        }
-        Vec::new()
-    }
 }
 
 /// `--stage-commit MESSAGE`: stage everything in the repository around the
@@ -190,6 +174,7 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
     fn attach(&mut self, cx: SurfaceCx<GitClient>) {
         let sample = cx.fixture::<SampleRepository>();
         self.attach_dispatcher(cx.dispatcher(), cx.mode(), sample.as_deref());
+        self.follow_preferences(cx.settings::<crate::settings::Settings>());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -202,6 +187,10 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
         cx: &mut EffectCx<GitClient, Self>,
     ) -> EffectAnswer {
         self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.preference_statuses()
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -217,7 +206,7 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
 mod tests {
     use super::*;
     use crate::doc::{SharedRepo, shared_fingerprint};
-    use crate::settings::Settings;
+    use crate::settings::{DiffLayout, Settings};
     use ui::automerge::AutoCommit;
     use ui::framework::testing::TestApp;
 
@@ -243,14 +232,13 @@ mod tests {
         (dir, path)
     }
 
-    /// The repository door carries the preferences and the projection's
-    /// history, branches and remotes with their item effects; the working
-    /// tree is not document state.
+    /// The repository door carries the projection's history, branches and
+    /// remotes with their item effects; the working tree is not document
+    /// state.
     #[test]
     fn the_repository_door_publishes_the_shared_projection() {
         let (model, _) = crate::sample::model();
         let mut doc = AutoCommit::new();
-        Settings::default().write(&mut doc);
         SharedRepo::write(&mut doc, &SharedRepo::from_model(&model));
         doc.commit();
 
@@ -258,12 +246,6 @@ mod tests {
         let published =
             ui::tilo_resource::publish::<GitClient>("git_client.repo", "renderer", &state);
         assert_eq!(published.kind, "git_client.repo");
-        for id in ["diff-layout", "syntax-highlight"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} is on the repository"
-            );
-        }
         for id in [
             "git_client.branches",
             "git_client.remotes",
@@ -299,8 +281,8 @@ mod tests {
     }
 
     /// Every screenshot is the framework's capture: the sample repository is
-    /// the scenario's fixture, the split layout its action, the screen and
-    /// open states the surface's staging, and changed files are live rows
+    /// the scenario's fixture, the split layout, the screen and open states
+    /// the surface's staging, and changed files are live rows
     /// that only view or run Effects.
     #[test]
     fn captures_stage_the_sample_and_publish_live_rows() {
@@ -322,7 +304,10 @@ mod tests {
         assert!(rows.iter().any(|row| row["action"] == "stage-file"));
 
         let split = TestApp::<GitClientShell>::capture(Some("split")).unwrap();
-        assert_eq!(split.state().settings.diff_layout, DiffLayout::SideBySide);
+        assert_eq!(
+            split.settings::<Settings>().get().diff_layout,
+            DiffLayout::SideBySide
+        );
 
         let mut narrow = TestApp::<GitClientShell>::capture(Some("narrow")).unwrap();
         assert_eq!(narrow.harness().inspection().viewport, [680, 860]);
@@ -362,9 +347,7 @@ mod tests {
     }
 
     /// A repository named on the command line is the record's, opened again
-    /// on the next launch; its projection reaches the document as content
-    /// from the repository, which no undo takes back, and opening writes no
-    /// preferences.
+    /// on the next launch; its projection reaches the document.
     #[test]
     fn a_launched_repository_is_the_records_and_its_projection_syncs() {
         let (_dir, path) = scratch_repository("scratch-repo");
@@ -381,27 +364,6 @@ mod tests {
             "the projection was written"
         );
         assert_eq!(state.repo.commits.len(), 1);
-        assert!(
-            !app.read_document(|doc| {
-                use ui::automerge::ReadDoc;
-                doc.get(&ui::automerge::ROOT, crate::settings::keys::SETTINGS)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            }),
-            "opening writes no preferences"
-        );
-
-        // A preference is one undo step.
-        app.call("diff-layout", serde_json::json!({})).unwrap();
-        assert_eq!(app.state().settings.diff_layout, DiffLayout::SideBySide);
-        assert!(app.undo());
-        assert_eq!(app.state().settings.diff_layout, DiffLayout::Unified);
-        assert_eq!(
-            app.state().repo.name,
-            "scratch-repo",
-            "the projection is nobody's undo step"
-        );
 
         let mut reopened = app.reopen().unwrap();
         reopened.settle();
@@ -517,10 +479,11 @@ mod tests {
         assert!(repo.find_branch("topic", git2::BranchType::Local).is_err());
     }
 
-    /// The app-bar layout control submits the preference action the
-    /// palette offers: one undo step, presented back to the control.
+    /// The app-bar layout control and the palette's effect switch the
+    /// person's diff preference: kept beside the document, changing no
+    /// document and on nobody's undo stack.
     #[test]
-    fn the_layout_control_edits_through_the_framework_door() {
+    fn diff_preferences_are_personal_settings() {
         fn bounds(node: &ui::headless::InspectionNode, target: &str) -> Option<vello::kurbo::Rect> {
             fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
                 if node.action_target.as_deref() == Some(target) {
@@ -535,23 +498,61 @@ mod tests {
         }
 
         let mut app = TestApp::<GitClientShell>::capture(None).unwrap();
-        let palette = app.agent_surface();
-        let offered = palette
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["resource"] == "git_client.repo" && row["action"] == "diff-layout")
-            .expect("the palette offers the layout");
-        assert_eq!(offered["label"], "Diff layout: side-by-side");
-
         let control = bounds(&app.harness().inspection().root, "git.diff-layout")
             .expect("the app bar exports its layout control")
             .center();
+        let before = app.peer_document().get_heads();
         app.harness().click_at(control.x, control.y);
         app.settle();
-        assert_eq!(app.state().settings.diff_layout, DiffLayout::SideBySide);
-        assert!(app.undo(), "the control's edit is one undo step");
-        assert_eq!(app.state().settings.diff_layout, DiffLayout::Unified);
+        let layout = |app: &TestApp<GitClientShell>| app.settings::<Settings>().get().diff_layout;
+        assert_eq!(layout(&app), DiffLayout::SideBySide);
+        assert!(!app.undo(), "a preference is no undo step");
+        assert_eq!(layout(&app), DiffLayout::SideBySide);
+        assert_eq!(
+            app.peer_document().get_heads(),
+            before,
+            "no document change"
+        );
+
+        // The palette offers each preference as an effect on the repository,
+        // labelled with what it switches to.
+        let (_dir, path) = scratch_repository("preferences-repo");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let offered_layout = |app: &mut TestApp<GitClientShell>| {
+            let palette = app.agent_surface();
+            palette
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["resource"] == "git_client.repo" && row["action"] == "diff-layout")
+                .map_or_else(
+                    || panic!("the palette offers the layout: {palette:#}"),
+                    |row| row["label"].clone(),
+                )
+        };
+        assert_eq!(offered_layout(&mut app), "Diff layout: side-by-side");
+        app.effect(&GitClientEffect::DiffLayout).unwrap();
+        assert_eq!(layout(&app), DiffLayout::SideBySide);
+        app.effect(&GitClientEffect::SyntaxHighlight).unwrap();
+        app.effect(&GitClientEffect::ShowWhitespace).unwrap();
+        app.effect(&GitClientEffect::WrapLines).unwrap();
+        let stored = app.settings::<Settings>().get();
+        assert!(!stored.syntax_highlight);
+        assert!(stored.show_whitespace);
+        assert!(stored.wrap_lines);
+
+        // A preference stored by another window or device shows here.
+        app.settings::<Settings>()
+            .set(&Settings {
+                diff_layout: DiffLayout::Unified,
+                ..stored
+            })
+            .unwrap();
+        app.settle();
+        assert_eq!(offered_layout(&mut app), "Diff layout: side-by-side");
+        app.effect(&GitClientEffect::DiffLayout).unwrap();
+        assert_eq!(offered_layout(&mut app), "Diff layout: unified");
     }
 
     /// Every host that mounts the client loads its messages.
