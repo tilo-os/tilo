@@ -98,7 +98,7 @@ impl Session {
 
         let mut doc = AutoCommit::new();
         let content = tilo_content::ContentStore::memory();
-        let mut app = PhotosApp::with_content(content.clone());
+        let mut app = editing(PhotosApp::with_content(content.clone()));
         app.open_path(&mut doc, &path);
         assert!(
             app.open_photo_id().is_some() && PhotosDoc::library(&doc).photos.len() == 1,
@@ -341,4 +341,9 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
             "the address resolved to bytes that are not the photograph it names"
         );
     }
+}
+
+/// `app`, editing through a test's dispatcher of the library.
+fn editing(app: PhotosApp) -> PhotosApp {
+    app.with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
 }

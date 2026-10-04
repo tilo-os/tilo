@@ -5,11 +5,8 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use tilo_content::ContentStore;
-use ui::framework::{
-    Dispatcher, Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
@@ -167,63 +164,6 @@ impl ResourceSurface<Photos> for PhotosApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("opened"));
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Photos>>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Photos>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &PhotosAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        if let Err(error) = self.try_dispatch_with_context(doc, type_id, action, context) {
-            tracing::warn!(error = %error, type_id, "photos action dispatch failed");
-        }
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &PhotosAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => dispatcher.apply_now_with(doc, action, context),
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
     }
 }
 
