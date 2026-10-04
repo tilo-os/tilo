@@ -426,3 +426,6 @@ history-day-earlier = Earlier
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
+
+widget-block-move-selection-up = Move selected blocks up
+widget-block-move-selection-down = Move selected blocks down
