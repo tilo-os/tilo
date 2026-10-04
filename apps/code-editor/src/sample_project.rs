@@ -1,16 +1,12 @@
-//! A bundled sample project. On first launch (and in `--shots` mode) the
-//! editor opens this to provide multi-file, syntax-highlighted content.
-//!
-//! The files are deliberately idiomatic small programs that exercise the
-//! highlighter across several languages: keywords, types, functions, strings,
-//! numbers, comments, macros/attributes.
+//! A bundled sample project, for `--shots` and the demo: a few small, idiomatic
+//! programs in several languages.
 
 use crate::model::Project;
 
 const MAIN_RS: &str = r#"//! Entry point for the `ferris-cli` demo.
 //!
-//! A tiny command-line tool that greets the world and counts primes —
-//! just enough to show off real syntax highlighting.
+//! Greets the world, then prints every prime below a limit that you can
+//! set with `--count`.
 
 use std::env;
 
@@ -128,9 +124,6 @@ cargo run -- --count 50
 - `src/main.rs` — argument parsing and the program entry point
 - `src/prime.rs` — a sieve of Eratosthenes
 - `src/greeter.rs` — greeting helpers
-
-> **Note:** this project is bundled with the editor as a live highlighting
-> sample. Edit it freely — changes stay in this session.
 ";
 
 const CONFIG_JSON: &str = r#"{
@@ -161,7 +154,7 @@ exec ./target/release/ferris-cli --count "${COUNT}"
 "#;
 
 const APP_PY: &str = r#"#!/usr/bin/env python3
-"""A small Python twin of the Rust demo, for multi-language highlighting."""
+"""A small Python version of the Rust demo."""
 
 from typing import List
 
