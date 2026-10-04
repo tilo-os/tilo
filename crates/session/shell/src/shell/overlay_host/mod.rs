@@ -5494,6 +5494,7 @@ impl ShellOverlayHost {
                         display_name = %event.display_name,
                         "session helper exited without a window the user asked to open"
                     );
+                    crate::shell::launcher::restart_session_helper(&event.package_id);
                     continue;
                 }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
