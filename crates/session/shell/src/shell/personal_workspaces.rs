@@ -230,11 +230,18 @@ impl PersonalWorkspaces {
             .fold(0.0_f64, f64::max);
         let mut appended = 0.0;
         for (room, entry) in &listed {
+            let fresh = !self.agreed.contains_key(room);
+            // Enrollment gives us a room ID before its real name arrives.
+            // Do not publish that provisional name as a rename on the owner's
+            // other devices. An adopted directory entry already has an agreed
+            // baseline, so its later local renames can still be published.
+            if fresh && tree.room_authority(*room) == RoomAuthority::Unpinned {
+                continue;
+            }
             if self.agreed.get(room) == Some(entry) {
                 continue;
             }
             let id = entry_id(*room);
-            let fresh = !self.agreed.contains_key(room);
             let written = self
                 .directory
                 .add_room_workspace(id, &room.to_string(), &entry.name)

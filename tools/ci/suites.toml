@@ -95,6 +95,7 @@ suites = [
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
+  "os/tests/test_cargo_freshness.py",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
@@ -408,6 +409,11 @@ suites = [
   "crates/platform/tilo-notify/web/notify.test.mjs",
   "crates/platform/tilo-secrets/web/secrets.test.mjs",
 ]
+
+[[group]]
+name = "browser-compute-web"
+inputs = ["crates/browser/tilo-browser-compute/"]
+suites = ["crates/browser/tilo-browser-compute/web/compute-domains.test.mjs"]
 
 [[group]]
 name = "browser-runtime-web"
@@ -898,6 +904,11 @@ reason = "boots the installed OS image in a VM and signs in"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-nearby-pairing.sh"
+reason = "boots two VMs (KVM) from the gated dev disk"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
@@ -952,8 +963,17 @@ suite = "os/tests/boot_performance_gate.sh"
 reason = "needs a running installed image"
 
 [[unrequired]]
+suite = "os/tests/boot_units_gate.sh"
+reason = "runs inside a booted guest, as root"
+
+[[unrequired]]
 suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
+
+[[unrequired]]
+suite = "os/tests/booted_app_update.sh"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
@@ -1045,6 +1065,11 @@ reason = "needs squashfs-tools, absent from the ci-fast image"
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/input-hotplug-check.sh"
+reason = "runs inside a booted guest's graphical session, partly as root"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
