@@ -3200,6 +3200,7 @@ impl CapnpBrokerState {
     }
 
     /// Stand in for an application's invocation stream on `peer_id`.
+    /// The fixture receives the full envelope, including its stable invocation UUID.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_invocations_for_test(
         &self,
@@ -3208,6 +3209,9 @@ impl CapnpBrokerState {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.insert(peer_id, tx);
+        }
+        if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
+            stable.insert(peer_id);
         }
         rx
     }
