@@ -23,7 +23,8 @@ env:
 
 jobs:
   refresh:
-    runs-on: runner
+    # The workspace test build does not fit beside a generic slot's caches.
+    runs-on: runner-disk-100g
     timeout-minutes: 120
     container:
       # Keep this identical to ci-nightly.yml. Updating visual baselines under a

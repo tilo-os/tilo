@@ -115,8 +115,10 @@ struct State {
     /// What the VM's base image was built with, for layer ABI checks.
     #[arg(long, default_value = "/usr/share/tilo-vm/base.json")]
     base: PathBuf,
-    /// `record` performs no side effects, and `record-device` none on a
-    /// machine whose own session runs as quickuser; for protocol tests only.
+    /// `record` performs no side effects, `record-device` none on a
+    /// machine whose own session runs as quickuser, and `record-login` none
+    /// on a laptop quickuser is logged in to through greetd; for protocol
+    /// tests only.
     #[arg(long, value_enum, default_value_t = Backend::Systemd)]
     apply: Backend,
 }
@@ -126,6 +128,7 @@ enum Backend {
     Systemd,
     Record,
     RecordDevice,
+    RecordLogin,
 }
 
 impl State {
@@ -145,6 +148,7 @@ impl State {
             Backend::Systemd => Box::new(SystemdApply::new(&self.root)),
             Backend::Record => Box::new(RecordingApply::default()),
             Backend::RecordDevice => Box::new(RecordingApply::with_device("quickuser")),
+            Backend::RecordLogin => Box::new(RecordingApply::with_login("quickuser")),
         };
         Daemon::new(&self.root, backend, manifest, base)
     }

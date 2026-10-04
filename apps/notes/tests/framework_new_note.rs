@@ -37,6 +37,32 @@ fn enter_on_the_focused_empty_state_button_creates_a_note() {
 }
 
 #[test]
+fn activating_new_note_as_assistive_technology_does_opens_a_document() {
+    let mut app = fresh();
+    app.harness()
+        .perform_named("notes.first_note", &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        page_count(&app),
+        1,
+        "an accessibility activation creates a page"
+    );
+    let roles: Vec<_> = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .map(|(_, node)| (node.role(), node.label().map(str::to_owned)))
+        .collect();
+    assert!(
+        roles
+            .iter()
+            .any(|(role, _)| *role == ui::accesskit::Role::Document),
+        "the new note's document is in the accessibility tree: {roles:?}"
+    );
+}
+
+#[test]
 fn the_sidebar_plus_creates_a_root_note() {
     let mut app = fresh();
     let tree = app.harness().targets()["page_tree"];

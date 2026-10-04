@@ -18,7 +18,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_break::{grapheme_indices, graphemes};
-use crate::text_edit::{Edit, EditCore, Motion, TypingRun};
+use crate::text_edit::{CaretWord, Edit, EditCore, Motion, TypingRun, word_at_caret};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -82,6 +82,9 @@ struct Autocorrection {
     replacement: String,
 }
 
+/// A correction offered for the word under the caret. `automatic` ones are
+/// confident enough that typing a word boundary applies them ("Space →");
+/// the rest are suggestions the person accepts by clicking the chip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AutocorrectionPreview {
     language: String,
@@ -89,7 +92,12 @@ struct AutocorrectionPreview {
     end: usize,
     original: String,
     replacement: String,
+    automatic: bool,
 }
+
+/// What the cached preview was computed for: language, word, its range, and
+/// whether the word had settled under the caret.
+type PreviewKey = (String, String, usize, usize, bool);
 
 /// A selected-text command requested from a field's context menu. The host can
 /// execute this asynchronously (translate, rewrite, explain, grammar review)
@@ -136,9 +144,6 @@ const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// visually quiet for this long after an edit so its underline does not
 /// flicker while the user is still forming it.
 const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
-/// External Hunspell sessions are persistent but still use IPC. Coalesce the
-/// prefixes of a rapidly typed non-English word while preserving prior spans.
-const EXTERNAL_SPELLCHECK_DELAY: Duration = Duration::from_millis(100);
 const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
@@ -288,8 +293,13 @@ pub struct TextInput {
     ignored_spellings: HashSet<String>,
     /// Caches both preview hits and misses so idle redraws never re-query a
     /// dictionary for the same caret word.
-    autocorrection_preview_key: Option<(String, String, usize, usize)>,
+    autocorrection_preview_key: Option<PreviewKey>,
     autocorrection_preview: Option<AutocorrectionPreview>,
+    /// The word under the caret and how long it has rested there; a settled
+    /// misspelled word gets a suggestion.
+    caret_word: CaretWord,
+    /// Where the last painted suggestion chip sits, for click-to-accept.
+    suggestion_chip: Option<Rect>,
     last_autocorrection: Option<Autocorrection>,
     text_actions: Vec<RegisteredTextAction>,
     pending_text_action: Option<TextActionRequest>,
@@ -466,6 +476,8 @@ impl TextInput {
             ignored_spellings: HashSet::new(),
             autocorrection_preview_key: None,
             autocorrection_preview: None,
+            caret_word: CaretWord::default(),
+            suggestion_chip: None,
             last_autocorrection: None,
             text_actions: Vec::new(),
             pending_text_action: None,
@@ -3284,6 +3296,7 @@ impl TextInput {
         let preview = self
             .autocorrection_preview
             .clone()
+            .filter(|preview| preview.automatic)
             .or_else(|| self.autocorrection_candidate())?;
         let (start, end) = (preview.start, preview.end);
         let (original, replacement) = (preview.original, preview.replacement);
@@ -3309,43 +3322,116 @@ impl TextInput {
     }
 
     fn refresh_autocorrection_preview(&mut self) {
-        if !self.autocorrect_enabled() || !self.is_focused || self.core.has_preedit() {
-            self.autocorrection_preview_key = None;
-            self.autocorrection_preview = None;
+        self.refresh_suggestion_at(crate::time::now());
+    }
+
+    fn clear_suggestion(&mut self) {
+        self.autocorrection_preview_key = None;
+        self.autocorrection_preview = None;
+    }
+
+    /// Offer a correction for the word under the caret: a confident
+    /// autocorrection as soon as the word ends at the caret, and an ordinary
+    /// suggestion for any misspelled word once it has rested under the caret
+    /// for [`SUGGESTION_SETTLE`](crate::text_edit::SUGGESTION_SETTLE) — a
+    /// pause at the end of a word or the caret coming back to an earlier one.
+    pub(super) fn refresh_suggestion_at(&mut self, now: Instant) {
+        let offers = self.autocorrect_enabled() || self.checks_spelling();
+        if !offers || !self.is_focused || self.core.has_preedit() {
+            self.caret_word.clear();
+            self.clear_suggestion();
             return;
         }
-        if !spellcheck::checks_in_process(&self.spell_language)
-            && self
-                .typing
-                .last_edit()
-                .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
-        {
-            self.autocorrection_preview_key = None;
-            self.autocorrection_preview = None;
-            return;
-        }
-        let Some((start, end)) = self.word_ending_at_caret() else {
-            self.autocorrection_preview_key = None;
-            self.autocorrection_preview = None;
+        self.caret_word
+            .observe(&self.text, self.core.selection(), now);
+        let Some((range, word)) = self.caret_word.current() else {
+            self.clear_suggestion();
             return;
         };
-        let Some(original) = self.text.get(start..end) else {
-            self.autocorrection_preview_key = None;
-            self.autocorrection_preview = None;
-            return;
-        };
+        let settled = self.caret_word.settled(now).is_some();
         let key = (
             self.spell_language.clone(),
-            original.to_string(),
-            start,
-            end,
+            word.to_owned(),
+            range.start,
+            range.end,
+            settled,
         );
         if self.autocorrection_preview_key.as_ref() == Some(&key) {
             return;
         }
-        let preview = self.autocorrection_candidate();
+        let preview = self.suggestion_for(range, settled);
         self.autocorrection_preview_key = Some(key);
         self.autocorrection_preview = preview;
+    }
+
+    fn suggestion_for(
+        &mut self,
+        range: Range<usize>,
+        settled: bool,
+    ) -> Option<AutocorrectionPreview> {
+        if self.autocorrect_enabled()
+            && range.end == self.core.caret()
+            && let Some(automatic) = self.autocorrection_candidate()
+        {
+            return Some(automatic);
+        }
+        if !settled || !self.checks_spelling() {
+            return None;
+        }
+        let original = self.text.get(range.clone())?.to_string();
+        let dictionary = self
+            .spell_dictionary
+            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+        if dictionary.contains(&original)
+            || self.ignored_spellings.contains(&original.to_lowercase())
+        {
+            return None;
+        }
+        // Check the word in its line so sentence-start capitals and names
+        // are judged the way the squiggles judge them.
+        let (line_start, _) = line_boundaries(&self.text, range.start);
+        let context = self.text.get(line_start..range.end)?;
+        let local = range.start.saturating_sub(line_start)..range.end.saturating_sub(line_start);
+        let misspelled = spellcheck::spans_for_language(&self.spell_language, context)
+            .into_iter()
+            .any(|(start, end)| start == local.start && end == local.end);
+        if !misspelled {
+            return None;
+        }
+        let replacement = spellcheck::suggestions_for_language(&self.spell_language, &original, 1)
+            .into_iter()
+            .next()
+            .filter(|replacement| *replacement != original)?;
+        Some(AutocorrectionPreview {
+            language: self.spell_language.clone(),
+            start: range.start,
+            end: range.end,
+            original,
+            replacement,
+            automatic: false,
+        })
+    }
+
+    /// Replace the previewed word with its correction (a click on the chip).
+    fn accept_suggestion(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        let Some(preview) = self.autocorrection_preview.take() else {
+            return false;
+        };
+        if self.text.get(preview.start..preview.end) != Some(preview.original.as_str()) {
+            self.clear_suggestion();
+            return false;
+        }
+        let previous_text = self.text.clone();
+        let obj_id = self.resolve_text_obj(state, root);
+        self.core.set_selection(preview.start, preview.end);
+        self.insert_str(&preview.replacement, state, obj_id.as_ref());
+        if obj_id.is_none() {
+            self.persist_first_path_edit(&previous_text, state, root);
+        }
+        self.clear_suggestion();
+        self.suggestion_chip = None;
+        self.spell_cache_key = None;
+        true
     }
 
     fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
@@ -3364,6 +3450,7 @@ impl TextInput {
             end,
             original,
             replacement,
+            automatic: true,
         })
     }
 
@@ -3423,15 +3510,6 @@ impl TextInput {
             self.spell_spans.clear();
             return;
         }
-        if !spellcheck::checks_in_process(&self.spell_language)
-            && self.is_focused
-            && self
-                .typing
-                .last_edit()
-                .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
-        {
-            return;
-        }
         let key = (self.spell_language.clone(), self.text.clone());
         if self.spell_cache_key.as_ref() == Some(&key) {
             return;
@@ -3463,23 +3541,8 @@ impl TextInput {
             return None;
         }
 
-        let is_word_char =
-            |character: char| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}');
-        let at_caret = self
-            .text
-            .get(self.core.caret()..)
-            .and_then(|tail| tail.chars().next())
-            .filter(|character| is_word_char(*character))
-            .map(|_| self.core.caret());
-        let before_caret = self
-            .text
-            .get(..self.core.caret())
-            .and_then(|head| head.char_indices().next_back())
-            .filter(|(_, character)| is_word_char(*character))
-            .map(|(byte, _)| byte);
-        let probe = at_caret.or(before_caret)?;
-        let range = word_boundaries(&self.text, probe);
-        (range.0 < range.1).then_some(range)
+        let range = word_at_caret(&self.text, self.core.caret())?;
+        Some((range.start, range.end))
     }
 
     fn spelling_span_is_visible(&self, start: usize, end: usize) -> bool {
@@ -3566,10 +3629,15 @@ impl TextInput {
         theme: &Theme,
     ) {
         self.refresh_autocorrection_preview();
+        self.suggestion_chip = None;
         let Some(preview) = self.autocorrection_preview.as_ref() else {
             return;
         };
-        let label = format!("Space → {}", preview.replacement);
+        let label = if preview.automatic {
+            format!("Space → {}", preview.replacement)
+        } else {
+            preview.replacement.clone()
+        };
         let size = theme.tokens.typography.scale.sm;
         let (text_width, text_height) = text_renderer.measure(&label, size, None);
         let pad_x = 8.0_f64;
@@ -3586,6 +3654,7 @@ impl TextInput {
             self.rect.y0 - height - 4.0
         };
         let rect = Rect::new(x, y, x + width, y + height);
+        self.suggestion_chip = Some(rect);
         let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -4199,6 +4268,23 @@ impl Widget for TextInput {
             }
         }
 
+        // A press on the suggestion chip accepts it instead of moving the caret.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && self.is_focused
+            && self
+                .suggestion_chip
+                .is_some_and(|chip| chip.contains(self.last_mouse_pos))
+            && self.accept_suggestion(ctx.state, ctx.path)
+        {
+            *ctx.handled = true;
+            self.notify_user_change();
+            return;
+        }
+
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
             WindowEvent::MouseWheel { delta, .. }
@@ -4532,13 +4618,24 @@ impl Widget for TextInput {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        if !self.checks_spelling() || !self.spell_active || !self.is_focused {
+        if !self.is_focused {
             return None;
         }
-        self.typing
-            .last_edit()
-            .map(|edited| edited + SPELL_EDIT_SETTLE)
-            .filter(|deadline| *deadline > crate::time::now())
+        let now = crate::time::now();
+        let squiggle = (self.checks_spelling() && self.spell_active)
+            .then(|| self.typing.last_edit())
+            .flatten()
+            .map(|edited| edited + SPELL_EDIT_SETTLE);
+        // The suggestion for the word under the caret appears without
+        // further input once that word settles.
+        let suggestion = (self.checks_spelling() || self.autocorrect_enabled())
+            .then(|| self.caret_word.deadline())
+            .flatten();
+        [squiggle, suggestion]
+            .into_iter()
+            .flatten()
+            .filter(|deadline| *deadline > now)
+            .min()
     }
 
     fn text_review(&self) -> Option<(usize, String)> {
@@ -4743,6 +4840,30 @@ impl crate::widget::controls::ActionControls for TextInput {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let mut bindings = self.field_action_bindings();
+        // The show/hide control changes only this field's own paint: a
+        // process-local view toggle, published through the semantic route.
+        if self.has_reveal_control()
+            && let Some(reveal) = Widget::test_id(&self.reveal)
+        {
+            bindings.push(ControlBindingMetadata::semantic(reveal));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+        self.reveal.set_enabled(!self.effectively_disabled());
+    }
+}
+
+impl TextInput {
+    /// The binding of the field's own value.
+    fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
@@ -4768,15 +4889,6 @@ impl crate::widget::controls::ActionControls for TextInput {
                 kind: ControlBindingKind::SemanticAction(control_id.to_string()),
             }]
         }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-        self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
 

@@ -1,0 +1,22 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -132,3 +132,8 @@
+ needless_borrow = "allow"
+ needless_borrows_for_generic_args = "allow"
+ 
++
++# Tilo: zlink-macros with its generated variants in a fixed order, so bootc
++# builds reproducibly (vendor/zlink-macros in the Tilo tree).
++[patch.crates-io]
++zlink-macros = { path = "/tilo-vendor/zlink-macros" }
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4429,8 +4429,6 @@
+ [[package]]
+ name = "zlink-macros"
+ version = "0.7.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2fc623b8323797bf2d48333e7633e143077dd92cc66d9cca170014b66c43b1b5"
+ dependencies = [
+  "proc-macro2",
+  "quote",

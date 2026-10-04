@@ -145,6 +145,7 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
 /// Build the entry from the package's own manifest: id, name,
 /// category, version come from inside the signed package, so a
 /// registry row cannot describe a package as something it is not.
+/// The entry keeps `previous`'s versions within `retention`.
 ///
 /// # Errors
 ///
@@ -162,6 +163,7 @@ pub fn build_entry(
     arch: Option<&str>,
     previous: Option<&registry_types::RegistryEntry>,
     metadata: Option<&EntryMetadata>,
+    retention: &registry_types::retention::RetentionPolicy,
 ) -> Result<registry_types::RegistryEntry> {
     let checked = check_package(tapp_bytes, signer.verifying_key().to_bytes())?;
     let binding = match platform {
@@ -226,6 +228,7 @@ pub fn build_entry(
         versions.push(version);
     }
     versions.sort_by(compare_registry_versions);
+    let mut versions = retention.retain(&versions);
     keep_newest_versions(&mut versions);
     let display_name = package.name.clone().unwrap_or_else(|| package.id.clone());
     let mut entry = registry_types::RegistryEntry {
@@ -465,6 +468,7 @@ fn compare_registry_versions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use registry_types::retention::RetentionPolicy;
 
     fn version(value: &str) -> registry_types::RegistryVersion {
         registry_types::RegistryVersion {
@@ -596,6 +600,7 @@ module = "{module}"
             Some("aarch64"),
             None,
             None,
+            &RetentionPolicy::default(),
         )
         .unwrap();
         let [version] = entry.versions.as_slice() else {
@@ -619,7 +624,17 @@ module = "{module}"
             Platform::Macos,
         ] {
             assert!(
-                build_entry(&bytes, url, &signer, platform, None, None, None).is_err(),
+                build_entry(
+                    &bytes,
+                    url,
+                    &signer,
+                    platform,
+                    None,
+                    None,
+                    None,
+                    &RetentionPolicy::default()
+                )
+                .is_err(),
                 "an android tapp must not bind as {}",
                 platform.wire()
             );
@@ -632,7 +647,8 @@ module = "{module}"
                 Platform::Android,
                 Some("x86_64"),
                 None,
-                None
+                None,
+                &RetentionPolicy::default(),
             )
             .is_err()
         );

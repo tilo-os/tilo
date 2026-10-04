@@ -158,6 +158,11 @@ pub struct Tools {
     /// A change of view asked for from outside the canvas (the zoom
     /// buttons), carried out by the canvas on its next frame.
     pub view: LocalState<Option<ViewRequest>>,
+    /// Keys pressed while a button or another control that does not type
+    /// had the focus, and that it left alone: the canvas's own (Escape,
+    /// Delete, the arrows, Enter), carried out by the canvas on its next
+    /// frame as if it had had the focus.
+    pub keys: LocalState<Vec<CanvasKey>>,
     /// Whether the sidebar of inspector, layers and history is shown.
     pub sidebar: LocalState<bool>,
     /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
@@ -188,10 +193,16 @@ pub struct Tools {
     pub taper: LocalState<f64>,
     /// What the eraser takes: whole strokes, or the paint under it.
     pub erasing: LocalState<Erasing>,
+    /// What the magic wand and the bucket find colour in: every layer as
+    /// shown, or the chosen layer alone.
+    pub sampling: LocalState<Sampling>,
     /// How crisp the eraser's edge is, `0..=1`.
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
     pub eraser_strength: LocalState<f64>,
+    /// How unlike a colour the magic wand and the bucket still take in,
+    /// `0..=1`.
+    pub tolerance: LocalState<f64>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
@@ -298,6 +309,14 @@ impl Loaded {
     }
 }
 
+/// A key for the canvas pressed while something else had the focus.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanvasKey {
+    pub key: ui::winit::keyboard::Key,
+    pub text: Option<String>,
+    pub modifiers: ui::winit::keyboard::ModifiersState,
+}
+
 /// A change of view the canvas makes when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewRequest {
@@ -307,6 +326,16 @@ pub enum ViewRequest {
     Fit,
     /// One artwork unit to a screen pixel.
     Actual,
+}
+
+/// Where the magic wand and the bucket look for colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sampling {
+    /// Every layer, as the artwork shows.
+    #[default]
+    All,
+    /// The chosen layer alone.
+    Layer,
 }
 
 /// What the eraser takes off.
@@ -335,6 +364,7 @@ impl Default for Tools {
             preview: LocalState::new(None),
             zoom: LocalState::new(1.0),
             view: LocalState::new(None),
+            keys: LocalState::new(Vec::new()),
             sidebar: LocalState::new(true),
             room: LocalState::new(0),
             stop: LocalState::new(0),
@@ -349,8 +379,10 @@ impl Default for Tools {
             smoothing: LocalState::new(round.smoothing),
             taper: LocalState::new(round.taper),
             erasing: LocalState::new(Erasing::Paint),
+            sampling: LocalState::new(Sampling::All),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
+            tolerance: LocalState::new(crate::author::TOLERANCE),
             // The canvas and the thumbnails never wait for a picture to
             // decode; a look or export asks the renderer to.
             renderer: Rc::new(RefCell::new(Renderer::impatient())),
@@ -380,6 +412,20 @@ const INK: &str = "#2b3f8f";
 const BRUSH_RANGE: (f64, f64) = (1.0, 120.0);
 
 impl Tools {
+    /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the
+    /// size slider's travel, as painters' hands expect. Whether `key` was
+    /// one of them.
+    pub fn size_key(&self, key: &str) -> bool {
+        let step = match key {
+            "]" => 0.05,
+            "[" => -0.05,
+            _ => return false,
+        };
+        let travel = self.size.with(|size| *size);
+        self.size.set((travel + step).clamp(0.0, 1.0));
+        true
+    }
+
     /// The brush width in artwork units.
     pub fn brush_size(&self) -> f64 {
         let travel = self.size.with(|size| size.clamp(0.0, 1.0));

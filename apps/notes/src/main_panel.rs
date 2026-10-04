@@ -763,6 +763,11 @@ impl MainPanel {
         self.editor.editor_mut().take_external_link_open()
     }
 
+    /// Images pasted into the open note since the last call.
+    pub fn take_pasted_images(&mut self) -> Vec<ui::widget::block_editor::ImagePasteRequest> {
+        self.editor.editor_mut().take_image_paste_requests()
+    }
+
     pub fn set_bottom_inset(&mut self, inset: f64) {
         let inset = inset.max(0.0);
         if (self.bottom_inset - inset).abs() > f64::EPSILON {

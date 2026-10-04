@@ -2,6 +2,11 @@
 """Explicit, local SDK app collection stages. See collection.md."""
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    raise SystemExit('macOS collection requires Python 3.11+; invoke an existing compatible interpreter explicitly')
+
 import argparse
 from contextlib import contextmanager
 import fcntl
@@ -11,7 +16,6 @@ import os
 from pathlib import Path
 import platform
 import subprocess
-import sys
 import tempfile
 import tomllib
 
@@ -133,7 +137,7 @@ def transaction(out, stage, resume, plan):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('stage', nargs='?', default='plan', choices=['plan', 'build', 'sign', 'package', 'verify', 'notarize'])
+    p.add_argument('stage', nargs='?', default='plan', choices=['plan', 'audit-runtime', 'build', 'sign', 'package', 'verify', 'notarize'])
     p.add_argument('--apps', default='', help='comma-separated catalog names; default all eligible SDK apps')
     p.add_argument('--arch', choices=['arm64', 'x86_64', 'universal'], default={'aarch64': 'arm64'}.get(platform.machine(), platform.machine()))
     p.add_argument('--mode', choices=['development', 'distribution'], default='development')
@@ -148,12 +152,29 @@ def parser():
     p.add_argument('--per-app', action='store_true')
     p.add_argument('--notary-profile', help='existing notarytool Keychain profile, never raw credentials')
     p.add_argument('--submit-to-apple', action='store_true', help='explicitly upload DMGs to Apple notary service')
+    p.add_argument('--runtime-binary', type=Path, help='audit-runtime: existing executable, inspected but never launched')
+    p.add_argument('--runtime-prefix', type=Path, help='audit-runtime: existing GStreamer prefix, not downloaded')
+    p.add_argument('--dependency-root', type=Path, action='append', default=[], help='audit-runtime: permitted dependency directory; repeatable')
+    p.add_argument('--minimum-macos', default='13.0', help='audit-runtime: required minimum OS; never changed automatically')
+    p.add_argument('--max-images', type=int, default=512, help='audit-runtime: maximum inspected Mach-O images (up to 2048)')
+    p.add_argument('--audit-seconds', type=int, default=120, help='audit-runtime: traversal time budget (up to 600 seconds)')
     return p
 
 
 def main():
     args = parser().parse_args()
     try:
+        if args.stage == 'audit-runtime':
+            if platform.system() != 'Darwin':
+                raise ValueError('audit-runtime requires macOS inspection tools; it never builds, signs or launches code')
+            if not args.runtime_binary or not args.runtime_prefix or not args.dependency_root:
+                raise ValueError('audit-runtime needs --runtime-binary, --runtime-prefix and --dependency-root')
+            from collection_runtime import AuditConfig, audit_runtime
+            report = audit_runtime(AuditConfig(args.runtime_binary, args.runtime_prefix, tuple(args.dependency_root),
+                                               args.arch, args.minimum_macos, args.max_images, args.audit_seconds))
+            print(json.dumps(report, indent=2, sort_keys=True))
+            # A static graph cannot approve an unqualified plugin runtime.
+            return 2
         plan = make_plan(ROOT, args.apps, args.arch, args.mode)
         if args.offline and args.mode == 'distribution':
             raise ValueError('distribution requires online secure timestamps; use development for offline signing')

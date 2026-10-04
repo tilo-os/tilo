@@ -18,6 +18,8 @@ exclude = [
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
+    "vendor/zlink-macros",
     "vendor/web-transport-quinn",
     "vendor/automerge",
 ]
@@ -42,6 +44,7 @@ members = [
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
+    "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
     "apps/hot-reload-demo",

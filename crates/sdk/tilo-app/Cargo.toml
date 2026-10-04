@@ -35,9 +35,6 @@ test-support = ["ui-core/test-support"]
 # choose each target's file choosers and notifications, and the native runner
 # turns the XDG portals on for Linux itself.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
-webview-wpe = ["tilo-runner-native?/webview-wpe"]
-# A web view; the SDK picks the engine (WPE WebKit on Linux).
-webview = ["webview-wpe"]
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
 mpris = ["tilo-runner-native?/mpris"]

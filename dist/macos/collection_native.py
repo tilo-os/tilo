@@ -87,11 +87,13 @@ def load_paths(binary, main, app, arch):
             continue
         # This adapter supports the SDK's two statically linked executables.
         # Frameworks and dylibs require a separate, reviewed signing adapter.
-        raise ValueError(f'external or unresolved/non-system library {value} in {binary}')
+        raise ValueError(f'external or unresolved/non-system library {value} in {binary}; '
+                         'use collection.py audit-runtime to inspect dependency/profile blockers before rebuilding; '
+                         'a reviewed relocation adapter is required')
     return dependencies
 
 
-def inspect_bundle(app, entry, architecture):
+def inspect_bundle_metadata(app, entry):
     if app.is_symlink() or not app.is_dir():
         raise ValueError(f'missing app or symlink bundle: {app}')
     binaries = machos(app)
@@ -104,12 +106,6 @@ def inspect_bundle(app, entry, architecture):
         raise ValueError(f'bundle identity/version/type mismatch: {app}')
     main = app / 'Contents/MacOS' / safe_name(info['CFBundleExecutable'])
     helper = app / 'Contents/MacOS/tilo-runtime-mcp'
-    # SDK assembler has precisely two code objects. Unknown helpers/frameworks
-    # need a reviewed per-process policy, never a blanket --deep signature.
-    unexpected = set((app / 'Contents/MacOS').iterdir()) - {main, helper}
-    unexpected.update(p for p in app.rglob('*') if p.is_file() and os.access(p, os.X_OK) and p not in binaries)
-    if set(binaries) != {main, helper} or main == helper or unexpected:
-        raise ValueError(f'unexpected or missing nested code in {app}; expected SDK app + tilo-runtime-mcp; use its specialized packager')
     if any(p.is_dir() and p.suffix in {'.app', '.framework', '.appex', '.xpc', '.bundle'} for p in app.rglob('*')):
         raise ValueError(f'unreviewed nested code bundle in {app}')
     manifest = app / 'Contents/Resources/tilo-app.toml'
@@ -122,6 +118,17 @@ def inspect_bundle(app, entry, architecture):
         raise ValueError(f'missing declared icon: {app}')
     if entry.get('icon_sha256') and (not icon or digest(app / 'Contents/Resources/AppIcon.icns') != entry['icon_sha256']):
         raise ValueError(f'bundled icon mismatch: {app}')
+    return main, helper, info, binaries
+
+
+def inspect_bundle(app, entry, architecture):
+    main, helper, info, binaries = inspect_bundle_metadata(app, entry)
+    # SDK assembler has precisely two code objects. Unknown helpers/frameworks
+    # need a reviewed per-process policy, never a blanket --deep signature.
+    unexpected = set((app / 'Contents/MacOS').iterdir()) - {main, helper}
+    unexpected.update(p for p in app.rglob('*') if p.is_file() and os.access(p, os.X_OK) and p not in binaries)
+    if set(binaries) != {main, helper} or main == helper or unexpected:
+        raise ValueError(f'unexpected or missing nested code in {app}; expected SDK app + tilo-runtime-mcp; use its specialized packager')
     expected = {'arm64', 'x86_64'} if architecture == 'universal' else {architecture}
     facts = []
     for binary in binaries:
@@ -173,7 +180,7 @@ def verify_signatures(app, identity, mode, architecture):
     for item in code + [app]:
         command = ['/usr/bin/codesign', '--verify', '--strict', '--all-architectures']
         if identity['sha1'] != '-':
-            command += ['-R', f'anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
+            command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
         run(command + [item])
         arches = ['arm64', 'x86_64'] if architecture == 'universal' else [architecture]
         for arch in arches:

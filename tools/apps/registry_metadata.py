@@ -65,10 +65,7 @@ def manifest(root: Path, app: str) -> dict:
 
 
 def fleet(root: Path) -> list[str]:
-    # Browser is an OS-integrated WPE application, deliberately outside the
-    # independently downloadable app fleet.
-    return sorted(path.parent.name for path in (root / "apps").glob("*/tilo-app.toml")
-                  if path.parent.name != "browser")
+    return sorted(path.parent.name for path in (root / "apps").glob("*/tilo-app.toml"))
 
 
 def languages(root: Path, app: str) -> list[str]:

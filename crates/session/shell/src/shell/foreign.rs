@@ -3428,6 +3428,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        let scale = state.surface_scale(id);
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
@@ -3438,13 +3439,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             && !is_visible_tab(&state.workspace_tree.read(), id)
         {
             if let Some((w, h)) = store().take_remote_configure(id, extent) {
-                configure_to(&toplevel, w, h, tiled);
+                configure_to(&toplevel, id, (w, h), scale, tiled);
                 sent = sent.saturating_add(1);
             }
             continue;
         }
         if let Some((w, h)) = store().take_pending_configure(id) {
-            configure_to(&toplevel, w, h, tiled);
+            configure_to(&toplevel, id, (w, h), scale, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
@@ -3462,7 +3463,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             continue;
         }
         let (w, h) = fallback;
-        configure_to(&toplevel, w, h, tiled);
+        configure_to(&toplevel, id, (w, h), scale, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
@@ -3481,8 +3482,30 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
 /// writes the pending state into the configure, so the size must be
 /// staged before the send, letting any other pending change (decoration mode) ride the same event.
 #[cfg(target_os = "linux")]
-fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
+fn configure_to(
+    toplevel: &ToplevelSurface,
+    id: SurfaceId,
+    size: (i32, i32),
+    scale: f64,
+    tiled: bool,
+) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+    let (w, h) = within_client_texture_limit(size, scale);
+    if (w, h) != size {
+        // Whatever laid the tab out this large is a defect: say so, but
+        // still send a size the client can render, since past the limit it
+        // loses its drawing surface and closes the window.
+        tracing::error!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            requested_width = size.0,
+            requested_height = size.1,
+            width = w,
+            height = h,
+            scale,
+            "a tab was laid out larger than a client can render; configuring it to the largest size it can draw",
+        );
+    }
     toplevel.with_pending_state(|pending| {
         pending.size = Some((w, h).into());
         // A tile has a neighbour or the screen edge on every side. Saying so
@@ -3502,6 +3525,29 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
         }
     });
     toplevel.send_configure();
+}
+
+/// Widest and tallest buffer, in physical pixels, a client is asked to
+/// render: the 2D texture limit every GPU guarantees (WebGPU's default
+/// `max_texture_dimension_2d`). A toolkit sized past it cannot create its
+/// drawing surface at all.
+pub const CLIENT_TEXTURE_LIMIT_PX: i32 = 8192;
+
+/// `size` (logical pixels) kept within [`CLIENT_TEXTURE_LIMIT_PX`] once the
+/// client renders it at `scale`.
+#[must_use]
+pub fn within_client_texture_limit(size: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the limit over a positive scale is at most the limit itself, well inside i32"
+    )]
+    let limit = ((f64::from(CLIENT_TEXTURE_LIMIT_PX) / scale).floor() as i32).max(1);
+    (size.0.min(limit), size.1.min(limit))
 }
 
 /// The size to configure an opening toplevel to when its tab was never

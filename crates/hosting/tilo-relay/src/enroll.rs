@@ -394,6 +394,35 @@ fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Create `directory` if needed and give it its parent's permission bits
+/// (including set-group-ID), so a directory an enrollment adds to the shared
+/// device-trust layout is reachable the way its parent is, whatever the umask
+/// this ran under. A directory this process neither owns nor could change is
+/// left as it is.
+fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let parent = directory
+            .parent()
+            .context("shared directory has no parent")?;
+        let wanted = std::fs::metadata(parent)?.mode() & 0o7777;
+        let current = std::fs::symlink_metadata(directory)?;
+        if !current.is_dir() {
+            bail!("{} is not a directory", directory.display());
+        }
+        // SAFETY: geteuid has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
+                .context("share the enrollment directory like its parent")?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether this process runs as the owner of `directory`.
 fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
     #[cfg(unix)]
@@ -875,20 +904,34 @@ fn commit_staged_personal_enrollment(
             .context("select the joined identity")?;
     }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
-    tilo_files::native::atomic::write(&paths.user_pubkey, &marker.user_public_key)?;
+    // The public key and certificates are public, whatever the umask this
+    // commit runs under: the session reads them to verify the device, and
+    // reaches the per-identity ones through a directory shared like its parent.
+    let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
+    tilo_files::native::atomic::write_with_mode(
+        &paths.user_pubkey,
+        &marker.user_public_key,
+        public,
+    )?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    tilo_files::native::atomic::write_creating_parent(
-        &paths.device_cert_for_user(&marker.user_public_key),
+    let per_user_cert = paths.device_cert_for_user(&marker.user_public_key);
+    share_directory_like_parent(
+        per_user_cert
+            .parent()
+            .context("per-user certificate has no directory")?,
+    )?;
+    tilo_files::native::atomic::write_with_mode(
+        &per_user_cert,
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
+        public,
     )?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
-    tilo_files::native::atomic::write(&paths.device_cert, &cert_bytes)?;
+    tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
     // A root-run (headless) enrollment wrote these as root. Restore each
     // one's directory owner and group before the marker is cleared, so
     // recovery repeats this step if it is interrupted. Parents come before
     // their children.
-    let per_user_cert = paths.device_cert_for_user(&marker.user_public_key);
     for path in [
         marker.identity_dir.join("fleets"),
         record.clone(),
@@ -1037,6 +1080,7 @@ fn register_home_peer(
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
         relay_workspace_ids: relay_workspace_ids.to_vec(),
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
     });
     if registrations.len() > 128 {
         bail!("home-peer registry is full");
@@ -1673,7 +1717,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         // projection, but still waits for
                                         // Finalized before changing its active
                                         // identity binding.
-                                        tilo_files::native::atomic::write(
+                                        tilo_user_identity::persist::write_public_key(
                                             &paths.user_pubkey,
                                             &response.payload.cert.user_public_key,
                                         )?;
@@ -1685,10 +1729,16 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
                                 if kind == EnrollmentKind::HomePeer {
+                                    let per_user_cert = paths.device_cert_for_user(
+                                        &response.payload.cert.user_public_key,
+                                    );
+                                    share_directory_like_parent(
+                                        per_user_cert
+                                            .parent()
+                                            .context("per-user certificate has no directory")?,
+                                    )?;
                                     tilo_user_identity::persist::write_device_cert(
-                                        &paths.device_cert_for_user(
-                                            &response.payload.cert.user_public_key,
-                                        ),
+                                        &per_user_cert,
                                         &response.payload.cert,
                                     )?;
                                     tilo_user_identity::persist::write_device_cert(
@@ -3080,10 +3130,32 @@ mod tests {
             // explicit retry may complete that exact transaction under its own
             // live lease rather than leaving mixed durable state.
             let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
-                retry_lease.validate().map_err(Into::into)
-            })
-            .unwrap();
+            // A root-run commit may run under a strict umask (the pairing
+            // helper's, or a script's); the public files stay readable.
+            // SAFETY: umask has no preconditions; this test process is alone.
+            let umask = unsafe { libc::umask(0o077) };
+            let recovered = recover_personal_enrollments(
+                identity_root.path(),
+                identity_dir.path(),
+                &paths,
+                |_| retry_lease.validate().map_err(Into::into),
+            );
+            // SAFETY: as above, restoring the previous mask.
+            unsafe { libc::umask(umask) };
+            recovered.unwrap();
+            for public in [
+                paths.user_pubkey.clone(),
+                paths.device_cert.clone(),
+                paths.device_cert_for_user(&root.verifying_key().to_bytes()),
+            ] {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(
+                    std::fs::metadata(&public).unwrap().permissions().mode() & 0o777,
+                    tilo_user_identity::persist::PUBLIC_FILE_MODE,
+                    "{} is not readable to the session",
+                    public.display()
+                );
+            }
             assert_eq!(
                 std::fs::read(&paths.user_pubkey).unwrap(),
                 root.verifying_key().to_bytes()
@@ -3197,6 +3269,7 @@ mod tests {
                 user_public_key: hex::encode(other_cert.user_public_key),
                 device_cert: Some(other_cert),
                 relay_workspace_ids: vec![7],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             tilo_files::native::atomic::write_creating_parent(
                 &tilo_relay::home_peer_registry_path(identity_root.path()),
@@ -3238,6 +3311,7 @@ mod tests {
                 user_public_key: hex::encode(cert.user_public_key),
                 device_cert: Some(cert),
                 relay_workspace_ids: vec![7],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             assert!(valid_home_peer_registration(&registration));
 
