@@ -118,7 +118,8 @@ env:
 
 jobs:
   plan:
-    runs-on: runner
+    # Orchestration only: it must not queue behind the test lanes.
+    runs-on: runner-quality
     timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
@@ -330,7 +331,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
