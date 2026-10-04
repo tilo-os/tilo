@@ -742,6 +742,69 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.effect_as(row, effect.id(), &serde_json::Map::new(), true)
     }
 
+    /// Start `effect` through the host door without waiting for it, as a
+    /// caller that may cancel it does, confirmed: the invocation its job
+    /// runs under.
+    ///
+    /// # Errors
+    /// The host's refusal, the effect's failure, or that it answered at
+    /// once and so started no job.
+    pub fn start_effect<E: Effect>(
+        &mut self,
+        effect: &E,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        self.start_effect_at(
+            <A::Resource as Resource>::KIND,
+            effect.id(),
+            &effect.arguments(),
+        )
+    }
+
+    /// [`Self::start_effect`] as the published child or live row `row`
+    /// offers it, bound to its arguments.
+    ///
+    /// # Errors
+    /// As [`Self::start_effect`].
+    pub fn start_effect_on<E: Effect>(
+        &mut self,
+        row: &str,
+        effect: &E,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        self.start_effect_at(row, effect.id(), &serde_json::Map::new())
+    }
+
+    fn start_effect_at(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, id),
+        };
+        let (invocation, started) = self
+            .harness()
+            .start_bound_job_for(None, &address, arguments, true)?;
+        self.last_effect = Some(invocation);
+        if started.completed().is_some() {
+            return Err(tilo_actions::DoorError::Failed(format!(
+                "`{id}` answered at once; it started no job"
+            )));
+        }
+        Ok(invocation)
+    }
+
+    /// Cancel the job of an effect [`Self::start_effect`] started, as its
+    /// caller does: what it ended as, `Cancelled` when it stopped. `None`
+    /// when it already finished.
+    pub fn cancel_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.harness().cancel_job(invocation)
+    }
+
     /// What the job of the last [`Self::effect`] reported, in order: its
     /// progress, then its result.
     pub fn effect_progress(&mut self) -> Vec<tilo_actions::InvocationUpdate> {
