@@ -132,6 +132,11 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
+    "widget_search_source": (
+        re.compile(r"\bSearchSource\s+for\b"),
+        "a content widget's own search provider beside the app's one search source; publish "
+        "SearchEntry values from Resource::search or ResourceSurface::search_entries",
+    ),
     "surface_document_actions": (
         re.compile(r"\bfn\s+publishes_document_actions\s*\("),
         "a surface publishing document actions of its own; bind edits to its view state with "
