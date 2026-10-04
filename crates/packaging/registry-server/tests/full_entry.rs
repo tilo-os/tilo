@@ -26,6 +26,7 @@ use registry_server::{
     AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, bind_and_run,
 };
 use registry_types::entry::MAX_ENTRY_VERSIONS;
+use registry_types::retention::{DEFAULT_RETAINED_PER_CHANNEL, RetentionPolicy};
 
 const PACKAGE_ID: &str = "so.tilo.agent";
 /// Identical in every release, so the registry holds it once.
@@ -172,24 +173,34 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
     tokio::task::spawn_blocking(move || {
         let base = format!("http://{addr}");
         let client = RegistryClient::new(&base).unwrap();
-        let releases: Vec<Vec<u8>> = (1..=MAX_ENTRY_VERSIONS + 1)
+        let releases: Vec<Vec<u8>> = (1..=MAX_ENTRY_VERSIONS + 2)
             .map(|minor| release(temp.path(), &publisher, minor))
             .collect();
-        let (full, [next]) = releases.split_at(MAX_ENTRY_VERSIONS) else {
-            unreachable!("one release past the limit");
+        let (full, [next, trimmed]) = releases.split_at(MAX_ENTRY_VERSIONS) else {
+            unreachable!("two releases past the limit");
+        };
+        let keep_all = RetentionPolicy {
+            releases: MAX_ENTRY_VERSIONS,
+            prereleases: MAX_ENTRY_VERSIONS,
         };
 
         // The entry fills up to its limit.
-        registry_client::publish(&client, &publisher, full, None, None).unwrap();
+        registry_client::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
         promote(&data_dir, &publisher_hex, &channel_key);
         let entry = client.entry(PACKAGE_ID).unwrap().unwrap();
         assert_eq!(entry.versions.len(), MAX_ENTRY_VERSIONS);
 
         // Release 129: the client drops the oldest version and the server
         // accepts that request, collects it and promotes it.
-        let submitted =
-            registry_client::publish(&client, &publisher, std::slice::from_ref(next), None, None)
-                .unwrap();
+        let submitted = registry_client::publish(
+            &client,
+            &publisher,
+            std::slice::from_ref(next),
+            None,
+            None,
+            &keep_all,
+        )
+        .unwrap();
         assert_eq!(
             submitted.first().and_then(|build| build.action),
             Some(registry_types::EntryAction::Update)
@@ -293,6 +304,28 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             .map(|entry| entry.unwrap().metadata().unwrap().len())
             .sum();
         assert!(staged_bytes < next.len() as u64, "{staged_bytes} bytes");
+
+        // Under the default retention the next release keeps only the newest
+        // versions, and the server accepts and promotes the shorter entry.
+        registry_client::publish(
+            &client,
+            &publisher,
+            std::slice::from_ref(trimmed),
+            None,
+            None,
+            &RetentionPolicy::default(),
+        )
+        .unwrap();
+        promote(&data_dir, &publisher_hex, &channel_key);
+        let entry = client.entry(PACKAGE_ID).unwrap().unwrap();
+        assert_eq!(entry.versions.len(), DEFAULT_RETAINED_PER_CHANNEL);
+        let newest = format!("1.{}.0", MAX_ENTRY_VERSIONS + 2);
+        assert!(
+            entry
+                .versions
+                .iter()
+                .any(|version| version.version == newest)
+        );
     })
     .await
     .unwrap();
