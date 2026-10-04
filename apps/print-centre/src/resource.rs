@@ -1,116 +1,240 @@
-//! Print Centre as a [`tilo_resource::Resource`]: print/scan jobs are Effects
-//! and View navigation; there is no collaborative document vocabulary.
+//! Print Centre as a resource: the print and scan defaults a person keeps
+//! across their devices. Printers, documents in the queues and scanners are
+//! this machine's live state, published as live rows; printing, scanning and
+//! the pages are the surface's [`PrintCentreEffect`]s.
 
-use serde::{Deserialize, Serialize};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource};
-use ui::widget::Element;
+use ui::framework::{
+    Effect, EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    RunMode, SurfaceCx, ViewCx,
+};
+use ui::prelude::*;
+use ui::tilo_resource::{self, Invoke};
 
-use crate::surface::{PrintCentre, resource_action};
+use crate::surface::PrintCentre;
 
-/// No collaborative document mutations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum EmptyDocAction {}
+/// Scan resolutions offered, in dots per inch.
+pub const SCAN_RESOLUTIONS: [u16; 3] = [150, 300, 600];
+/// Scan appearances offered.
+pub const SCAN_COLORS: [&str; 3] = ["color", "grayscale", "line-art"];
+/// Paper sources offered.
+pub const SCAN_SOURCES: [&str; 3] = ["flatbed", "feeder", "feeder-duplex"];
+/// Text recognition languages offered (ISO 639-2), with their names.
+pub const OCR_LANGUAGES: [(&str, &str); 4] = [
+    ("eng", "English"),
+    ("deu", "German"),
+    ("fra", "French"),
+    ("spa", "Spanish"),
+];
 
-impl Action for EmptyDocAction {
-    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
+/// How a person prints and scans unless they choose otherwise for one
+/// document. It follows them to every device.
+#[derive(Model, Clone, Debug, PartialEq)]
+pub struct PrintDefaults {
+    /// Print on both sides of the paper.
+    pub two_sided: bool,
+    /// Scan resolution, one of [`SCAN_RESOLUTIONS`].
+    pub scan_resolution: u16,
+    /// Scan appearance, one of [`SCAN_COLORS`].
+    pub scan_color: String,
+    /// Paper source, one of [`SCAN_SOURCES`].
+    pub scan_source: String,
+    /// Language text is recognized in, one of [`OCR_LANGUAGES`].
+    pub ocr_language: String,
+}
+
+impl Default for PrintDefaults {
+    fn default() -> Self {
+        Self {
+            two_sided: false,
+            scan_resolution: 300,
+            scan_color: SCAN_COLORS[0].to_owned(),
+            scan_source: SCAN_SOURCES[0].to_owned(),
+            ocr_language: OCR_LANGUAGES[0].0.to_owned(),
+        }
+    }
+}
+
+#[resource(kind = "print-centre.defaults", label = "Print Centre")]
+impl PrintDefaults {
+    /// Print on both sides.
+    #[action]
+    pub fn set_two_sided(&mut self, #[param("Whether to print on both sides")] two_sided: bool) {
+        self.two_sided = two_sided;
+    }
+
+    /// Set the scan resolution.
+    #[action]
+    pub fn set_scan_resolution(
+        &mut self,
+        #[param("Dots per inch: 150, 300 or 600")] dpi: u16,
+    ) -> Result<(), &'static str> {
+        if !SCAN_RESOLUTIONS.contains(&dpi) {
+            return Err("scan at 150, 300 or 600 dpi");
+        }
+        self.scan_resolution = dpi;
+        Ok(())
+    }
+
+    /// Set the scan appearance.
+    #[action]
+    pub fn set_scan_color(
+        &mut self,
+        #[param("color, grayscale or line-art")] color: String,
+    ) -> Result<(), &'static str> {
+        if !SCAN_COLORS.contains(&color.as_str()) {
+            return Err("scan in color, grayscale or line-art");
+        }
+        self.scan_color = color;
+        Ok(())
+    }
+
+    /// Set the paper source.
+    #[action]
+    pub fn set_scan_source(
+        &mut self,
+        #[param("flatbed, feeder or feeder-duplex")] source: String,
+    ) -> Result<(), &'static str> {
+        if !SCAN_SOURCES.contains(&source.as_str()) {
+            return Err("scan from the flatbed, feeder or feeder-duplex");
+        }
+        self.scan_source = source;
+        Ok(())
+    }
+
+    /// Set the text recognition language.
+    #[action]
+    pub fn set_ocr_language(
+        &mut self,
+        #[param("eng, deu, fra or spa")] language: String,
+    ) -> Result<(), &'static str> {
+        if !OCR_LANGUAGES.iter().any(|(code, _)| *code == language) {
+            return Err("recognize eng, deu, fra or spa");
+        }
+        self.ocr_language = language;
         Ok(())
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct PrintCentreState;
-
-/// The print-centre dashboard resource.
-pub struct PrintCentreResource;
-
-impl Resource for PrintCentreResource {
-    const KIND: &'static str = "print-centre.dashboard";
-    const LABEL: &'static str = "Print Centre";
-    const ACTION_TYPE: &'static str = "print_centre.action";
-
-    type State = PrintCentreState;
-    type Action = EmptyDocAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<EmptyDocAction>(Self::ACTION_TYPE);
+impl PrintDefaults {
+    /// The offered resolution's index, as the scan controls show it.
+    pub fn resolution_index(&self) -> usize {
+        SCAN_RESOLUTIONS
+            .iter()
+            .position(|dpi| *dpi == self.scan_resolution)
+            .unwrap_or(1)
     }
 
-    fn read(_doc: &Doc) -> Result<PrintCentreState, ModelError> {
-        Ok(PrintCentreState)
+    pub fn color_index(&self) -> usize {
+        SCAN_COLORS
+            .iter()
+            .position(|color| *color == self.scan_color)
+            .unwrap_or_default()
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        [
-            (
-                "refresh",
-                "Refresh printers and documents",
-                OperationKind::Effect,
-                "refresh",
-            ),
-            (
-                "open-dashboard",
-                "Open dashboard",
-                OperationKind::View,
-                "dashboard",
-            ),
-            (
-                "open-queue",
-                "Open print queue",
-                OperationKind::View,
-                "queue",
-            ),
-            (
-                "open-history",
-                "Open print history",
-                OperationKind::View,
-                "history",
-            ),
-            (
-                "run-diagnostics",
-                "Run printer diagnostics",
-                OperationKind::View,
-                "diagnostics",
-            ),
-            (
-                "find-printers",
-                "Find network printers",
-                OperationKind::Effect,
-                "discover",
-            ),
-            (
-                "print-document",
-                "Print a document",
-                OperationKind::View,
-                "print",
-            ),
-            (
-                "scan-document",
-                "Scan a document",
-                OperationKind::View,
-                "scan",
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(id, label, kind, command)| resource_action(id, label, kind, command))
-        .collect()
+    pub fn source_index(&self) -> usize {
+        SCAN_SOURCES
+            .iter()
+            .position(|source| *source == self.scan_source)
+            .unwrap_or_default()
     }
+
+    pub fn language_index(&self) -> usize {
+        OCR_LANGUAGES
+            .iter()
+            .position(|(code, _)| *code == self.ocr_language)
+            .unwrap_or_default()
+    }
+}
+
+/// What Print Centre does on this machine: the pages it shows, and the work
+/// it asks of CUPS and SANE.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "print-centre.effects")]
+pub enum PrintCentreEffect {
+    /// Refresh printers and documents.
+    #[effect(permission = "read")]
+    Refresh,
+    /// Find network printers.
+    FindPrinters,
+    /// Open dashboard.
+    #[effect(view)]
+    OpenDashboard,
+    /// Open print queue.
+    #[effect(view)]
+    OpenQueue,
+    /// Open print history.
+    #[effect(view)]
+    OpenHistory,
+    /// Run printer diagnostics.
+    #[effect(view)]
+    RunDiagnostics,
+    /// Print a document.
+    ///
+    /// Asks for the document, then shows its preview and printing options.
+    #[effect(view)]
+    PrintDocument,
+    /// Scan a document.
+    #[effect(view)]
+    ScanDocument,
+    /// Open printer.
+    #[effect(view)]
+    OpenPrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Set as default printer.
+    SetDefaultPrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Pause printer.
+    ///
+    /// Documents wait until it is resumed.
+    PausePrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Resume printer.
+    ResumePrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Cancel document.
+    CancelDocument {
+        #[param("The print job's id")]
+        job: String,
+    },
+    /// Print again.
+    RetryDocument {
+        #[param("The print job's id")]
+        job: String,
+    },
+    /// Scan with a scanner.
+    #[effect(view)]
+    ScanWith {
+        #[param("The scanner's device name")]
+        scanner: String,
+    },
 }
 
 /// Framework app.
 pub struct PrintCentreShell;
 
 impl ResourceApp for PrintCentreShell {
-    type Resource = PrintCentreResource;
+    type Resource = PrintDefaults;
     const ID: &'static str = "so.tilo.print-centre";
     const TITLE: &'static str = "Print Centre";
     const ICON: Option<&'static str> = Some("print-centre");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| name.ends_with("narrow")) {
+            (520, 820)
+        } else {
+            (1280, 800)
+        }
     }
 
-    fn view(cx: &mut ViewCx<PrintCentreResource>) -> Element {
+    fn view(cx: &mut ViewCx<PrintDefaults>) -> Element {
         cx.surface(PrintCentre::new())
     }
 
@@ -134,47 +258,57 @@ impl ResourceApp for PrintCentreShell {
             "service-error-narrow",
         ]
     }
-}
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher. Queues and scanners stay on this machine.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<PrintCentreResource>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<PrintCentreResource>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+    /// A made-up studio printer, its documents and a scanner, instead of
+    /// asking the machine the screenshot is taken on.
+    fn fixture(fixture: &mut Fixture<PrintDefaults>) {
+        if let Some(snapshot) = crate::surface::scenario_snapshot(fixture.scenario()) {
+            fixture.provide(snapshot);
+        }
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted || self.framework.is_some()
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    /// Printing shows a document set to print on both sides.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<PrintDefaults>> {
+        if name.is_some_and(|name| name.starts_with("print")) {
+            vec![PrintDefaults::SET_TWO_SIDED.with(true)]
+        } else {
+            Vec::new()
+        }
     }
 }
 
-impl ResourceSurface<PrintCentreResource> for PrintCentre {
-    /// Queues and scanners are this machine's. An empty projection must not
-    /// clear a snapshot the surface already loaded.
-    fn present(&mut self, _state: &std::rc::Rc<PrintCentreState>) {}
+impl ResourceSurface<PrintDefaults, PrintCentreEffect> for PrintCentre {
+    fn present(&mut self, state: &std::rc::Rc<PrintDefaults>) {
+        self.present_defaults(state);
+    }
 
-    fn attach(&mut self, cx: SurfaceCx<PrintCentreResource>) {
-        self.actions.attach(cx.dispatcher());
-        self.mark_framework_hosted();
+    /// A live window asks CUPS and SANE; a screenshot shows its scenario's
+    /// made-up devices, or none.
+    fn attach(&mut self, cx: SurfaceCx<PrintDefaults>) {
+        self.dispatcher = Some(cx.dispatcher());
+        match cx.mode() {
+            RunMode::Live => self.refresh(),
+            RunMode::Capture => self.show(cx.fixture::<crate::surface::Snapshot>().as_deref()),
+            RunMode::Past => self.show(None),
+        }
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: PrintCentreEffect,
+        _cx: &mut EffectCx<PrintDefaults, Self>,
+    ) -> EffectAnswer {
+        self.perform(effect)?;
+        Ok(Effected::done())
+    }
+
+    /// The printers, documents and scanners CUPS and SANE reported.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.device_rows()
     }
 }
 
@@ -183,41 +317,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn publish_owns_dashboard_door() {
-        let published = ui::tilo_resource::publish::<PrintCentreResource>(
-            "print-centre",
-            "Print Centre",
-            &PrintCentreState,
+    fn defaults_follow_their_actions_and_refuse_what_is_not_offered() {
+        let mut app = TestApp::<PrintCentreShell>::capture(Some("empty")).unwrap();
+        assert_eq!(app.state(), PrintDefaults::default());
+        app.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(600))
+            .unwrap();
+        app.invoke(PrintDefaults::SET_SCAN_COLOR.with("grayscale".into()))
+            .unwrap();
+        app.invoke(PrintDefaults::SET_SCAN_SOURCE.with("feeder".into()))
+            .unwrap();
+        app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("fra".into()))
+            .unwrap();
+        app.invoke(PrintDefaults::SET_TWO_SIDED.with(true)).unwrap();
+        let state = app.state();
+        assert_eq!(
+            (
+                state.resolution_index(),
+                state.color_index(),
+                state.source_index(),
+                state.language_index(),
+                state.two_sided
+            ),
+            (2, 1, 1, 2, true)
         );
-        let ids: Vec<&str> = published
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for expected in ["refresh", "open-queue", "find-printers", "print-document"] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish: {ids:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn attach_hosted_surface_does_not_republish_the_dashboard_root() {
-        let mut centre = PrintCentre::demo(crate::surface::DemoScenario::Empty);
-        let doc = automerge::AutoCommit::new();
-        assert!(!centre.is_framework_hosted());
-        assert!(!centre.sink_is_hosted());
-        let standalone = ui::resources::resources(&centre, &doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, PrintCentreResource::KIND);
-
-        centre.mark_hosted_for_test();
-        assert!(centre.is_framework_hosted());
-        assert!(centre.sink_is_hosted());
-        assert!(
-            ui::resources::resources(&centre, &doc).is_empty(),
-            "hosted attach must not republish print-centre.dashboard"
-        );
+        // A resolution or language that is not offered changes nothing.
+        let _ = app.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(1200));
+        let _ = app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("klingon".into()));
+        assert_eq!(app.state(), state);
     }
 }

@@ -38,6 +38,7 @@ mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
@@ -1720,18 +1721,9 @@ impl ShellOverlayHost {
                 crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
                     .is_some()
             }),
-            LayerId::QuickSettings => {
-                flags.quick_settings
-                    && self.chrome.as_ref().is_some_and(|chrome| {
-                        matches!(
-                            chrome.borrow().quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Root
-                                | crate::shell::quick_settings::QsLevel::Notifications
-                                | crate::shell::quick_settings::QsLevel::Clipboard
-                                | crate::shell::quick_settings::QsLevel::Devices
-                        )
-                    })
-            }
+            // Every page publishes: the root, each drill-in, and the Wi-Fi
+            // password prompt that replaces the network list.
+            LayerId::QuickSettings => flags.quick_settings && self.chrome.is_some(),
             LayerId::NowPlaying => self.now_playing_published(),
             LayerId::ShortcutHelp => flags.shortcut_help,
             // Stacked; answered above.
@@ -2904,49 +2896,13 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The chrome as the shell narrator reads it: the overlay semantics
-    /// published to AT-SPI, the notification stack's live region, and the
-    /// hardware-key readout as a polite live status.
+    /// The chrome as the shell narrator reads it: the same semantics
+    /// published to AT-SPI, whose live regions carry the notification
+    /// banner, the hardware-key readout and a held pad's mapping.
     pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, Politeness, Role};
-        let mut root = Widget::accessibility(self)
-            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")));
-        if let Some(chrome) = self.chrome.as_ref()
-            && let Some(node) = self
-                .notification_stack
-                .accessibility(&ChromeNotifications::new(chrome))
-        {
-            root.children.push(node);
-        }
-        let readout = self.chrome.as_ref().and_then(|chrome| {
-            chrome
-                .borrow()
-                .osd
-                .filter(|osd| osd.is_live(Instant::now()))
-                .map(|osd| osd.caption())
-        });
-        root.children.push(
-            AccessNode::new(Role::StaticText)
-                .with_name(t("a11y-status-readout"))
-                .with_live(Politeness::Polite)
-                .with_value(readout.unwrap_or_default()),
-        );
-        let pad_map = self.chrome.as_ref().and_then(|chrome| {
-            chrome
-                .borrow()
-                .pad_map
-                .as_ref()
-                .map(|map| (map.name.clone(), map.narration()))
-        });
-        if let Some((name, narration)) = pad_map {
-            root.children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(name)
-                    .with_live(Politeness::Polite)
-                    .with_value(narration),
-            );
-        }
-        root
+        use ui::a11y::{AccessNode, Role};
+        Widget::accessibility(self)
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")))
     }
 
     /// Paint what a held pad's controls do, if a pad map is up.
@@ -3931,7 +3887,8 @@ impl ShellOverlayHost {
     }
 
     /// Shell chrome on screen that holds a secret: the administrator
-    /// authentication and network-secrets sheets, the quick-settings pane
+    /// authentication and network-secrets sheets, a shortcut step that asks
+    /// for a secret answer, the quick-settings pane
     /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
     /// for an `AirPlay` PIN or password, a Bluetooth pairing dialog, and the
     /// setup steps that restore or back up the identity (passphrases and a
@@ -3947,13 +3904,8 @@ impl ShellOverlayHost {
         {
             rects.push(rect);
         }
-        if self.portal_dialogs.view().is_some_and(|view| {
-            matches!(
-                view,
-                crate::shell::portal_dialog::DialogView::Authentication { .. }
-                    | crate::shell::portal_dialog::DialogView::NetworkSecrets { .. }
-            )
-        }) && let Some(layout) = self.portal_dialogs.layout(self.rect)
+        if self.portal_dialogs.holds_secret()
+            && let Some(layout) = self.portal_dialogs.layout(self.rect)
         {
             rects.push(layout.sheet);
         }
@@ -5498,6 +5450,7 @@ impl ShellOverlayHost {
                         display_name = %event.display_name,
                         "session helper exited without a window the user asked to open"
                     );
+                    crate::shell::launcher::restart_session_helper(&event.package_id);
                     continue;
                 }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
@@ -17642,10 +17595,15 @@ impl Widget for ShellOverlayHost {
                         } else if matches!(
                             state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Wifi
+                                | crate::shell::quick_settings::QsLevel::WifiDetails(_)
                         ) {
                             root.children.push(
-                                self.qs_wifi_pane
-                                    .accessibility_snapshot(&state.quick_settings),
+                                if let Some(prompt) = state.quick_settings.wifi_password.as_ref() {
+                                    self.wifi_password_accessibility(prompt)
+                                } else {
+                                    self.qs_wifi_pane
+                                        .accessibility_snapshot(&state.quick_settings)
+                                },
                             );
                         } else if matches!(
                             state.quick_settings.current_level(),
@@ -18174,6 +18132,8 @@ impl Widget for ShellOverlayHost {
                 }
             }
         }
+        self.append_modal_sheet_accessibility(&mut root);
+        root.children.extend(self.live_status_accessibility());
         Some(root)
     }
 
@@ -18184,9 +18144,17 @@ impl Widget for ShellOverlayHost {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
+            // A sheet's target never falls back to a pointer click: a stale
+            // one must not press whatever is now under its old bounds.
+            if !handled {
+                tracing::debug!(target, ?action, "a11y: sheet action not applied");
+            }
+            return true;
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }

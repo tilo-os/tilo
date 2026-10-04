@@ -149,7 +149,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
             self.assertIn('dist/app-release/verification-policy.json', workflow)
             self.assertNotIn('dist/app-release/work/**', workflow)
             self.assertIn('    branches: [main]', workflow)
-            publish = workflow.split('\n  publish:\n', 1)[1]
+            publish = workflow.split('\n  publish:\n', 1)[1] + (root / 'tools/apps/publish-collections.sh').read_text()
             self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
             # The digest itself is owned by release-apps.yml; require only that the
             # publisher runs in the immutable public release-tools image.

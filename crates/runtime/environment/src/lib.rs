@@ -520,13 +520,51 @@ pub enum Target {
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
+        /// Where the guest runs: this device unless it names a relay.
+        #[serde(default, skip_serializing_if = "Location::is_this_device")]
+        location: Location,
     },
 }
 
+/// Where an environment's guest runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Location {
+    /// On the device that asks.
+    #[default]
+    ThisDevice,
+    /// On a relay the person is a member of, named by its endpoint id
+    /// (hex). The device's supervisor carries the pty there.
+    Relay { relay: String },
+}
+
+impl Location {
+    pub fn is_this_device(&self) -> bool {
+        matches!(self, Self::ThisDevice)
+    }
+
+    /// Whether a relay's name is one a request may carry: a 32-byte endpoint
+    /// id in lowercase hex.
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::ThisDevice => true,
+            Self::Relay { relay } => {
+                relay.len() == 64
+                    && relay
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }
+        }
+    }
+}
+
 impl Target {
-    /// The default environment.
+    /// The default environment, on this device.
     pub fn default_environment() -> Self {
-        Self::Environment { record: None }
+        Self::Environment {
+            record: None,
+            location: Location::ThisDevice,
+        }
     }
 }
 
@@ -788,8 +826,32 @@ mod tests {
         assert_eq!(
             named,
             Target::Environment {
-                record: Some("work".into())
+                record: Some("work".into()),
+                location: Location::ThisDevice,
             }
+        );
+        let relay = "ab".repeat(32);
+        let on_relay: Target = serde_json::from_str(&format!(
+            r#"{{"kind":"environment","record":"work","location":{{"kind":"relay","relay":"{relay}"}}}}"#
+        ))
+        .unwrap();
+        assert!(matches!(
+            &on_relay,
+            Target::Environment { location: Location::Relay { relay: r }, .. } if *r == relay
+        ));
+        assert!(
+            serde_json::to_string(&Target::default_environment())
+                .unwrap()
+                .find("location")
+                .is_none(),
+            "this device is the default and is not spelled out"
+        );
+        assert!(Location::Relay { relay }.is_valid());
+        assert!(
+            !Location::Relay {
+                relay: "home".into()
+            }
+            .is_valid()
         );
         assert_eq!(
             serde_json::from_str::<Target>(r#"{"kind":"host"}"#).unwrap(),

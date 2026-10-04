@@ -64,6 +64,11 @@ pub struct EditableLabel {
     last_press: Option<crate::time::Instant>,
     /// Take the width the row leaves.
     grow: bool,
+    /// A single press on the idle label begins an edit, as a document's
+    /// title does.
+    edits_on_click: bool,
+    /// Shown, dimmed, while the value is empty and no edit is open.
+    placeholder: Option<String>,
 }
 
 impl EditableLabel {
@@ -85,6 +90,8 @@ impl EditableLabel {
             renames: false,
             last_press: None,
             grow: false,
+            edits_on_click: false,
+            placeholder: None,
         }
     }
 
@@ -101,6 +108,22 @@ impl EditableLabel {
     #[must_use]
     pub fn renames_on_double_click(mut self) -> Self {
         self.renames = true;
+        self
+    }
+
+    /// Begin an edit on a single press, the way a document's title is
+    /// renamed in place. The edit still ends as every edit does: Enter or
+    /// a click away commits it once, Escape keeps the value.
+    #[must_use]
+    pub fn edits_on_click(mut self) -> Self {
+        self.edits_on_click = true;
+        self
+    }
+
+    /// What the idle label reads, dimmed, while its value is empty.
+    #[must_use]
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
         self
     }
 
@@ -172,6 +195,15 @@ impl EditableLabel {
         }
     }
 
+    /// What the idle label shows: its value, or the placeholder while the
+    /// value is empty.
+    fn shown_text(&self) -> &str {
+        match &self.placeholder {
+            Some(placeholder) if !self.editing && self.value.is_empty() => placeholder,
+            _ => self.current_text(),
+        }
+    }
+
     /// Ignored while editing so it doesn't stomp the user's typing.
     pub fn set_value(&mut self, value: &str) {
         if !self.editing {
@@ -232,9 +264,10 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
-    /// A second press on the idle label soon after the first begins an edit.
-    fn count_double_click(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.renames
+    /// A press on the idle label that begins an edit: any press with
+    /// [`Self::edits_on_click`], else the second of a double click.
+    fn begin_on_press(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !(self.renames || self.edits_on_click)
             || !matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -245,6 +278,12 @@ impl EditableLabel {
             )
             || !self.rect.contains(self.last_pointer)
         {
+            return;
+        }
+        if self.edits_on_click {
+            self.begin_edit();
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
             return;
         }
         let now = crate::time::now();
@@ -300,7 +339,7 @@ impl Widget for EditableLabel {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let (w, _) = text_renderer.measure_font(
-            self.current_text(),
+            self.shown_text(),
             self.size,
             None,
             TextWeight::Regular,
@@ -338,10 +377,17 @@ impl Widget for EditableLabel {
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
-        if self.value.is_empty() {
-            return;
-        }
-        let color = self.idle_color.unwrap_or(theme.text_primary);
+        let (shown, color) = if self.value.is_empty() {
+            match &self.placeholder {
+                Some(placeholder) => (placeholder.as_str(), theme.text_tertiary),
+                None => return,
+            }
+        } else {
+            (
+                self.value.as_str(),
+                self.idle_color.unwrap_or(theme.text_primary),
+            )
+        };
         let (top, _lh) = self.text_band();
         #[allow(
             clippy::arithmetic_side_effects,
@@ -355,7 +401,7 @@ impl Widget for EditableLabel {
         let width = self.rect.width() as f32 + 1.0;
         text_renderer.draw_style(
             scene,
-            &self.value,
+            shown,
             color,
             text_transform,
             Some(width),
@@ -369,7 +415,7 @@ impl Widget for EditableLabel {
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if !self.editing {
-            self.count_double_click(event, ctx);
+            self.begin_on_press(event, ctx);
             return;
         }
         match event {
@@ -442,7 +488,7 @@ impl Widget for EditableLabel {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.editing && self.rect.contains(point) {
+        if (self.editing || self.edits_on_click) && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
