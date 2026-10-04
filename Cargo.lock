@@ -7462,6 +7462,7 @@ dependencies = [
 name = "launcher"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -7470,6 +7471,7 @@ dependencies = [
  "hex",
  "landlock",
  "libc",
+ "libloading",
  "package-store",
  "runtime-bundle",
  "runtime-identity",
@@ -14653,6 +14655,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -14825,6 +14828,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",
+ "wasmparser 0.239.0",
  "workspace-hack",
  "zip",
 ]
@@ -15153,6 +15157,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "serde_json",
  "workspace-hack",
 ]
 
@@ -19985,6 +19990,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aho-corasick",
  "arrayvec",
+ "ash",
  "ashpd",
  "base16ct 0.2.0",
  "base16ct 1.0.0",

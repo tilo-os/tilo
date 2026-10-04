@@ -37,6 +37,8 @@ class AppSdkAffectedTests(unittest.TestCase):
             package(self.root, 'crates/ui', 'ui'),
             package(self.root, 'crates/session/shell', 'shell', ('ui',)),
             package(self.root, 'crates/dev/tilo-app-cli', 'tilo-app-cli'),
+            # The CLI builds this through a subprocess, not a Cargo dependency.
+            package(self.root, 'crates/browser/tilo-browser-compute', 'tilo-browser-compute'),
             package(self.root, 'apps/calculator', 'calculator', ('ui',)),
         ]}
 
@@ -52,6 +54,12 @@ class AppSdkAffectedTests(unittest.TestCase):
     def test_an_app_or_the_sdk_runs_the_lanes(self):
         self.assertTrue(self.check('apps/calculator/src/main.rs'))
         self.assertTrue(self.check('crates/dev/tilo-app-cli/src/main.rs'))
+
+    def test_private_compute_without_cargo_dependents_runs_the_lanes(self):
+        for path in ('crates/browser/tilo-browser-compute/src/lib.rs',
+                     'crates/browser/tilo-browser-compute/web/compute-worker.mjs'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
 
     def test_a_crate_no_app_reaches_skips_the_lanes(self):
         self.assertFalse(self.check('crates/session/shell/src/lib.rs'))
