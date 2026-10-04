@@ -114,7 +114,7 @@ pub(crate) const ORDER: [CreateField; 6] = [
 /// compact form: the labels stand beside their fields where the sheet has
 /// the room, so the whole draft fits a small window.
 pub(crate) fn form(make_input: fn() -> TextInput) -> Column {
-    let mut section = FormSection::new("");
+    let mut section = FormSection::untitled();
     for field in ORDER {
         let (label, help) = copy(field);
         let mut row = Field::new(label, DraftInput::new(field, make_input()));

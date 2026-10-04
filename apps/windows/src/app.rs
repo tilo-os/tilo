@@ -1257,7 +1257,7 @@ impl WindowsApp {
                 .map(|(index, app)| -> Element {
                     let mut row = ListRow::new(format!("windows-app-{}", app.id), &app.name)
                         .secondary(app.status.label())
-                        .meta(app.route.label())
+                        .badge(app.route.label())
                         .selected(self.page == Page::App && index == self.selected)
                         .on_view(queue(&self.intents, Intent::SelectApp(index)));
                     // Every app row carries a status dot, so the route
@@ -1513,6 +1513,7 @@ impl WindowsApp {
         page.sections.push(section("windows-open-with", open_with));
 
         // What it can reach.
+        let facts = ui::widget::PropertyColumn::new();
         let mut access: Vec<Element> = Vec::new();
         if vm {
             access.push(Box::new(secondary(&strings::t(
@@ -1543,7 +1544,7 @@ impl WindowsApp {
             }
         }
         if !reach.is_empty() {
-            access.push(Box::new(PropertyList::new(reach)));
+            access.push(Box::new(PropertyList::new(reach).shared_column(&facts)));
         }
         let boundary = if app.fallback_detail.trim().is_empty() {
             app.route.security_summary()
@@ -1572,7 +1573,7 @@ impl WindowsApp {
         }
         page.sections.push(section(
             "windows-about",
-            vec![Box::new(PropertyList::new(about))],
+            vec![Box::new(PropertyList::new(about).shared_column(&facts))],
         ));
 
         // Maintenance. Recovering a failed setup leads the page instead.

@@ -21,32 +21,6 @@ use crate::model::{Cell, QueryResult};
 /// A row of the table: its index in the result it shows.
 type RowIndex = usize;
 
-/// How many rows a column's share of the width is judged from.
-const SAMPLE_ROWS: usize = 200;
-
-/// The longest text that still asks for more room: past it a column elides.
-const WIDEST_TEXT: usize = 48;
-
-/// Room a column's text needs besides its characters: the cell padding and,
-/// in a header, the sort arrow.
-const PADDING_CHARS: usize = 4;
-
-/// A column's share of the pane's width, from the text it shows: the longest
-/// of its header and the rows it was judged from, in characters. Shares
-/// divide the whole width, so the columns always fill the pane and a pane too
-/// narrow for all of them elides each in proportion.
-pub fn column_share<'a>(header: &str, cells: impl IntoIterator<Item = &'a str>) -> f32 {
-    let longest = cells
-        .into_iter()
-        .map(|cell| cell.chars().count())
-        .chain(std::iter::once(header.chars().count()))
-        .max()
-        .unwrap_or(0)
-        .min(WIDEST_TEXT);
-    let chars = u16::try_from(longest + PADDING_CHARS).unwrap_or(u16::MAX);
-    f32::from(chars)
-}
-
 /// Let the node take the height its parent has left, rather than the height
 /// of its content: the table then scrolls within what it is given.
 pub fn fill_remaining_height(taffy: &mut TaffyTree<()>, node: NodeId) {
@@ -197,27 +171,16 @@ impl ResultsTable {
                     } else {
                         TextKind::Prose
                     };
-                    let shown: Vec<String> = result
-                        .rows
-                        .iter()
-                        .take(SAMPLE_ROWS)
-                        .filter_map(|row| row.get(index).map(Cell::display))
-                        .collect();
-                    let share = column_share(header, shown.iter().map(String::as_str));
-                    ColumnDef::new(
-                        format!("c{index}"),
-                        header.clone(),
-                        ColumnWidth::Flex(share),
-                    )
-                    .sortable(true)
-                    .with_kind(kind)
-                    .with_optional_text(
-                        move |row: &RowIndex| {
-                            let cell = rows.rows.get(*row)?.get(index)?;
-                            (!cell.is_null()).then(|| cell.display())
-                        },
-                        "NULL",
-                    )
+                    ColumnDef::new(format!("c{index}"), header.clone(), ColumnWidth::Auto)
+                        .sortable(true)
+                        .with_kind(kind)
+                        .with_optional_text(
+                            move |row: &RowIndex| {
+                                let cell = rows.rows.get(*row)?.get(index)?;
+                                (!cell.is_null()).then(|| cell.display())
+                            },
+                            "NULL",
+                        )
                 })
                 .collect()
         });
@@ -410,26 +373,6 @@ mod tests {
         );
         assert_eq!(compare_cells(None, Some(&Cell::Null)), Ordering::Equal);
         assert_eq!(compare_cells(Some(&Cell::Null), Some(&two)), Ordering::Less);
-    }
-
-    /// A column asks for its longest text plus room for padding and the sort arrow, and a very long text does not starve the others.
-    #[test]
-    fn a_column_asks_for_the_width_of_its_text() {
-        let short = column_share("id", ["1", "22"]);
-        let header = column_share("release_date", ["1995"]);
-        let cells = column_share("n", ["Strings at Dusk"]);
-        assert!(header > short, "a long header asks for more");
-        assert!(cells > short, "long cells ask for more");
-        assert!(
-            header >= 12.0 + 4.0,
-            "a header always has room for its own text"
-        );
-        let essay = "x".repeat(500);
-        let widest = column_share("body", [&essay[..WIDEST_TEXT]]);
-        assert!(
-            (column_share("body", [essay.as_str()]) - widest).abs() < f32::EPSILON,
-            "a very long text asks for no more than the widest"
-        );
     }
 
     /// The table is as wide as its pane, only as tall as its rows, and takes the room it has left when there are more rows than room.

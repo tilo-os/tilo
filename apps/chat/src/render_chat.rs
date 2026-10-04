@@ -237,6 +237,16 @@ fn presence_label(p: Presence) -> &'static str {
     }
 }
 
+/// The badge a member's avatar wears for their presence state.
+fn avatar_status(p: Presence) -> ui::widget::PresenceStatus {
+    match p {
+        Presence::Online => ui::widget::PresenceStatus::Online,
+        Presence::Idle => ui::widget::PresenceStatus::Away,
+        Presence::Dnd => ui::widget::PresenceStatus::Busy,
+        Presence::Offline => ui::widget::PresenceStatus::Offline,
+    }
+}
+
 /// A square `side` wide centred on `centre`.
 fn square(centre: Point, side: f64) -> Rect {
     Rect::from_center_size(centre, (side, side))
@@ -260,15 +270,14 @@ impl ChatApp {
         let sp = &theme.tokens.spacing;
         let c = &theme.tokens.colors;
         let target = ButtonFace::height(ControlSize::Regular, theme);
-        let toggle = square(
-            Point::new(band.x0 + f64::from(sp.s3) + target / 2.0, band.center().y),
-            target,
-        );
-        self.left_flap
-            .draw_toggle(scene, tf, tr, theme, toggle, self.hovered(toggle));
-        ChatApp::push_hit(hits, toggle, Hit::ToggleLeftFlap);
-
-        let title_x = toggle.x1 + f64::from(sp.s2);
+        // The sidebar toggle stays in the window's header row: beside the
+        // title while the drawer docks there, above it while it floats.
+        let toggle = self.left_flap.toggle_rect();
+        let title_x = if self.left_overlay() || toggle.width() <= 0.0 {
+            band.x0 + f64::from(sp.s3)
+        } else {
+            toggle.x1 + f64::from(sp.s2)
+        };
         let mut right = band.x1 - f64::from(sp.s3);
         if !self.inbox_open && self.can_participate() {
             let add = Rect::new(
@@ -826,11 +835,11 @@ impl ChatApp {
             theme.tokens.colors.surfaces.content,
         );
 
-        // Leave room for the sidebar toggle when the drawer is not docked
-        // open beside the conversation.
-        let target = ButtonFace::height(ControlSize::Regular, theme);
-        let left = if self.toggle_in_header() {
-            h.x0 + f64::from(sp.s3) + target + f64::from(sp.s2)
+        // Leave room for the sidebar toggle where it stands in this part of
+        // the row (the drawer is hidden or floats).
+        let toggle = self.left_flap.toggle_rect();
+        let left = if self.toggle_in_header() && toggle.x1 > h.x0 && !self.thread_is_page() {
+            toggle.x1 + f64::from(sp.s2)
         } else {
             h.x0 + self.chrome.gutter
         };
@@ -955,9 +964,11 @@ impl ChatApp {
         people.x0
     }
 
-    /// The sidebar toggle at the conversation header's leading edge while
-    /// the navigation drawer is hidden or floating. A thread pushed over a
-    /// narrow window has its own Back control instead.
+    /// The sidebar toggle at the header row's leading corner, where the
+    /// drawer's `header` placed it: over the docked drawer's title row, or
+    /// at the conversation header's leading edge while the drawer is hidden
+    /// or floats under the row. A thread pushed over a narrow window has its
+    /// own Back control instead.
     pub(crate) fn draw_flap_toggles(
         &self,
         scene: &mut Scene,
@@ -966,22 +977,10 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if self.thread_is_page() || !self.toggle_in_header() {
+        let toggle = self.left_flap.toggle_rect();
+        if self.thread_is_page() || toggle.width() <= 0.0 {
             return;
         }
-        // A floating drawer carries its own toggle while it is out.
-        if self.left_overlay() && self.left_flap.reveal() > 0.001 {
-            return;
-        }
-        let h = self.header_rect();
-        let target = ButtonFace::height(ControlSize::Regular, theme);
-        let toggle = square(
-            Point::new(
-                h.x0 + f64::from(theme.tokens.spacing.s3) + target / 2.0,
-                h.center().y,
-            ),
-            target,
-        );
         self.left_flap
             .draw_toggle(scene, tf, tr, theme, toggle, self.hovered(toggle));
         ChatApp::push_hit(hits, toggle, Hit::ToggleLeftFlap);
@@ -2360,7 +2359,9 @@ impl ChatApp {
             let face = ListRowFace::new(&display)
                 .secondary(&status)
                 .leading(RowLeading::Avatar(
-                    AvatarFace::new(&name, &person.id).presence(self.identity_colour(&person.id)),
+                    AvatarFace::new(&name, &person.id)
+                        .presence(self.identity_colour(&person.id))
+                        .status(avatar_status(person.status)),
                 ))
                 .selected(self.revealed_person.as_deref() == Some(person.id.as_str()));
             let row_h = face.height(ctx.text, theme);

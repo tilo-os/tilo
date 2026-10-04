@@ -743,7 +743,8 @@ impl ImagerApp {
                         .icon(Icon::Disc3)
                         .secondary(self.source_secondary(source))
                         .meta(fmt_size(source.size))
-                        .selected(true),
+                        .selected(true)
+                        .checked(true),
                 )],
             )));
         }
@@ -768,6 +769,7 @@ impl ImagerApp {
                             .secondary(self.source_secondary(source))
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
+                            .checked(self.recent_selected(index))
                             .on_activate(move || sink.borrow_mut().push(Command::Recent(index))),
                     ) as Box<dyn Widget>)
                 })
@@ -815,6 +817,7 @@ impl ImagerApp {
         .secondary(secondary)
         .meta(fmt_size(release.size))
         .selected(self.release_selected(index))
+        .checked(self.release_selected(index))
         .on_activate(move || sink.borrow_mut().push(command.clone()));
         if downloading {
             let sink = Rc::clone(&self.commands);
@@ -864,6 +867,7 @@ impl ImagerApp {
                         ))
                         .meta(fmt_size(drive.size))
                         .selected(self.selected == Some(index))
+                        .checked(self.selected == Some(index))
                         .on_activate(move || sink.borrow_mut().push(Command::Target(index))),
                 ) as Box<dyn Widget>
             })
