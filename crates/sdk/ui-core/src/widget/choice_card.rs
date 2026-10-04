@@ -3,21 +3,88 @@
 //! Use this for a small set of prominent paths such as import methods or
 //! setup choices. The face owns geometry, interaction feedback, typography,
 //! icon treatment, and semantics so those details cannot drift per app.
+//! [`ChoiceCard`] is the retained widget over the same face: the whole card
+//! is one pointer target and one keyboard focus stop, activated like a
+//! [`Button`](super::Button).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
+use winit::event::WindowEvent;
 
 use crate::a11y::AccessNode;
 use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_metrics::renderer_type_size;
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 
-use super::ActionRowFace;
 use super::button::ButtonInteract;
+use super::{ActionRowFace, AppModel, Button, ModelPath, TaffyTreeExt, Widget};
+
+/// The card's geometry, all from theme tokens.
+#[derive(Clone, Copy)]
+struct Geometry {
+    /// Inset between the card edge and its icon tile, text and chevron.
+    pad: f64,
+    icon_tile: f64,
+    icon_glyph: f64,
+    text_gap: f64,
+    chevron: f64,
+}
+
+impl Geometry {
+    fn of(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        Self {
+            pad: f64::from(spacing.s4),
+            icon_tile: f64::from(metrics.icon_lg + spacing.s4),
+            icon_glyph: f64::from(metrics.icon_md),
+            text_gap: f64::from(spacing.s1) / 2.0,
+            chevron: f64::from(metrics.icon_md),
+        }
+    }
+
+    /// The card at 1x: the tile with a full inset above and below reads as
+    /// one calm row rather than a cramped list item.
+    fn min_height(self) -> f64 {
+        self.icon_tile + 2.0 * self.pad
+    }
+
+    /// Where the title and description start, and how wide they may run.
+    fn text_span(self, rect: Rect) -> (f64, f64) {
+        let x = rect.x0 + self.pad + self.icon_tile + self.pad;
+        (
+            x,
+            (rect.x1 - self.pad - self.chevron - self.pad - x).max(0.0),
+        )
+    }
+}
+
+fn title_size(theme: &Theme) -> f32 {
+    theme.tokens.typography.scale.lg
+}
+
+fn description_size(theme: &Theme) -> f32 {
+    theme.tokens.typography.scale.base
+}
+
+/// The authored minimum, or both text lines plus padding once larger type
+/// needs more.
+fn card_height(theme: &Theme) -> f64 {
+    let geometry = Geometry::of(theme);
+    let text = f64::from(TextStyle::new(title_size(theme)).line_height_px())
+        + geometry.text_gap
+        + f64::from(TextStyle::new(description_size(theme)).line_height_px());
+    (text + 2.0 * geometry.pad)
+        .ceil()
+        .max(geometry.min_height())
+}
 
 #[derive(Clone, Debug)]
 pub struct ChoiceCardFace<'a> {
@@ -59,6 +126,12 @@ impl<'a> ChoiceCardFace<'a> {
     }
 
     #[must_use]
+    pub fn pressed(mut self, value: bool) -> Self {
+        self.interact.pressed = value;
+        self
+    }
+
+    #[must_use]
     pub fn focused(mut self, value: bool) -> Self {
         self.interact.focused = value;
         self
@@ -67,6 +140,12 @@ impl<'a> ChoiceCardFace<'a> {
     #[must_use]
     pub fn disabled(mut self, value: bool) -> Self {
         self.interact.disabled = value;
+        self
+    }
+
+    #[must_use]
+    fn interact(mut self, interact: ButtonInteract) -> Self {
+        self.interact = interact;
         self
     }
 
@@ -93,28 +172,34 @@ impl<'a> ChoiceCardFace<'a> {
             .accented(self.emphasized)
             .outlined(!self.emphasized)
             .hovered(self.interact.hovered)
+            .pressed(self.interact.pressed)
             .focused(self.interact.focused)
             .disabled(self.interact.disabled)
             .radius(f64::from(theme.tokens.radii.lg))
             .paint(scene, transform, theme);
 
-        let foreground = if self.emphasized {
+        // A pressed card drops to the shared active ground, where accent ink
+        // would no longer read.
+        let on_accent = self.emphasized && !self.interact.pressed;
+        let foreground = if on_accent {
             theme.tokens.colors.on_accent(4.5)
         } else {
             theme.tokens.colors.text_primary
         };
-        let secondary = if self.emphasized {
+        let secondary = if on_accent {
             foreground.with_alpha_factor(0.82)
         } else {
             theme.tokens.colors.text_dim
         };
+        let geometry = Geometry::of(theme);
+        let center_y = self.rect.center().y;
         let icon_tile = Rect::new(
-            self.rect.x0 + 14.0,
-            self.rect.center().y - 16.0,
-            self.rect.x0 + 46.0,
-            self.rect.center().y + 16.0,
+            self.rect.x0 + geometry.pad,
+            center_y - geometry.icon_tile / 2.0,
+            self.rect.x0 + geometry.pad + geometry.icon_tile,
+            center_y + geometry.icon_tile / 2.0,
         );
-        let tile_fill = if self.emphasized {
+        let tile_fill = if on_accent {
             crate::tokens::Colors::hairline_on(theme.accent_primary, 46)
         } else {
             theme.accent_primary.with_alpha_factor(0.14)
@@ -129,9 +214,12 @@ impl<'a> ChoiceCardFace<'a> {
         draw_icon(
             scene,
             transform,
-            icon_tile.inflate(-8.0, -8.0),
+            Rect::from_center_size(
+                icon_tile.center(),
+                (geometry.icon_glyph, geometry.icon_glyph),
+            ),
             self.icon,
-            if self.emphasized {
+            if on_accent {
                 foreground
             } else {
                 theme.accent_primary
@@ -139,43 +227,228 @@ impl<'a> ChoiceCardFace<'a> {
             LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        let text_x = icon_tile.x1 + 14.0;
-        let text_width = px((self.rect.x1 - text_x - 36.0).max(0.0));
+        let title_size = renderer_type_size(text_renderer, title_size(theme));
+        let description_size = renderer_type_size(text_renderer, description_size(theme));
+        let (text_x, text_width) = geometry.text_span(self.rect);
+        let text_width = px(text_width);
         let title = text_renderer.elide_to_width_weighted(
             self.title.as_ref(),
-            15.0,
+            title_size,
             text_width,
             TextWeight::Semibold,
         );
-        let description = text_renderer.elide_to_width(self.description.as_ref(), 12.0, text_width);
+        let description =
+            text_renderer.elide_to_width(self.description.as_ref(), description_size, text_width);
+        let (_, title_height) =
+            text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
+        let (_, description_height) = text_renderer.measure(&description, description_size, None);
+        let block = f64::from(title_height) + geometry.text_gap + f64::from(description_height);
+        let top = center_y - block / 2.0;
         text_renderer.draw_text_weighted(
             scene,
             &title,
-            15.0,
+            title_size,
             foreground,
-            transform.pre_translate(Vec2::new(text_x, self.rect.center().y - 16.0)),
+            transform.pre_translate(Vec2::new(text_x, top)),
             None,
             TextWeight::Semibold,
         );
         text_renderer.draw_text(
             scene,
             &description,
-            12.0,
+            description_size,
             secondary,
-            transform.pre_translate(Vec2::new(text_x, self.rect.center().y + 3.0)),
+            transform.pre_translate(Vec2::new(
+                text_x,
+                top + f64::from(title_height) + geometry.text_gap,
+            )),
             None,
         );
         draw_icon(
             scene,
             transform,
             Rect::from_center_size(
-                Point::new(self.rect.x1 - 22.0, self.rect.center().y),
-                (18.0, 18.0),
+                Point::new(
+                    self.rect.x1 - geometry.pad - geometry.chevron / 2.0,
+                    center_y,
+                ),
+                (geometry.chevron, geometry.chevron),
             ),
             Icon::ChevronRight,
             secondary,
             LUCIDE_DEFAULT_STROKE_PX,
         );
+    }
+}
+
+/// A full-width choice that opens its own flow: icon tile, title, a one-line
+/// description and a trailing chevron, all one target.
+///
+/// Activation follows [`Button`]: a click, Enter, Space or an assistive
+/// `Activate` writes `on_click_path` in the document.
+pub struct ChoiceCard {
+    icon: Icon,
+    title: String,
+    description: String,
+    emphasized: bool,
+    /// Owns hover, press, focus, enablement, activation and semantics; the
+    /// card paints its own face over that contract.
+    control: Button,
+    rect: Rect,
+}
+
+impl ChoiceCard {
+    pub fn new(
+        id: &str,
+        icon: Icon,
+        title: impl Into<String>,
+        description: impl Into<String>,
+        on_click_path: Option<&str>,
+    ) -> Self {
+        let title = title.into();
+        Self {
+            icon,
+            control: Button::new(id, &title, on_click_path),
+            title,
+            description: description.into(),
+            emphasized: false,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// Give the recommended path the accent surface.
+    #[must_use]
+    pub fn emphasized(mut self, value: bool) -> Self {
+        self.emphasized = value;
+        self
+    }
+
+    /// The height a card takes in `theme`, for hosts that reserve room for
+    /// a pinned stack of cards before laying it out.
+    pub fn height_for(theme: &Theme) -> f32 {
+        px(card_height(theme))
+    }
+
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.control = self.control.with_enabled(enabled);
+        self
+    }
+
+    fn face(&self) -> ChoiceCardFace<'_> {
+        ChoiceCardFace::new(
+            self.rect,
+            self.icon,
+            self.title.as_str(),
+            self.description.as_str(),
+        )
+        .emphasized(self.emphasized)
+        .interact(self.control.interact())
+    }
+}
+
+impl Widget for ChoiceCard {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.control.set_interaction_environment(environment);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(px(card_height(theme))),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::from_origin_size(
+            Point::new(
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+            ),
+            (f64::from(layout.size.width), f64::from(layout.size.height)),
+        );
+        self.control.apply_layout_external(self.rect);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        self.face().paint(scene, transform, text_renderer, theme);
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut super::EventCtx<'_>) {
+        self.control.handle_event(event, ctx);
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        root: &ModelPath,
+    ) -> bool {
+        self.control.perform_action(action, state, root)
+    }
+
+    fn name(&self) -> &'static str {
+        "ChoiceCard"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.control.test_id()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.control.cursor_shape(point)
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.control.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.control.is_focused()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.control.is_enabled()
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        self.control
+            .accessibility()
+            .map(|node| node.with_value(self.description.as_str()))
     }
 }
 
@@ -211,7 +484,7 @@ mod tests {
         }
 
         fn narrow_card_elides_copy_instead_of_wrapping_beyond_fixed_height() {
-            let rect = Rect::new(0.0, 0.0, 264.0, 56.0);
+            let rect = Rect::new(0.0, 0.0, 264.0, 72.0);
             let face = ChoiceCardFace::new(
                 rect,
                 Icon::Image,
@@ -220,17 +493,22 @@ mod tests {
             );
             let mut renderer = TextRenderer::new();
             let mut scene = Scene::new();
-            face.paint(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+            let theme = Theme::dark();
+            face.paint(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
             assert!(!scene.encoding().draw_tags.is_empty());
 
-            let available = px(rect.x1 - (rect.x0 + 46.0 + 14.0) - 36.0);
+            let available = px(Geometry::of(&theme).text_span(rect).1);
             let title = renderer.elide_to_width_weighted(
                 face.title.as_ref(),
-                15.0,
+                renderer_type_size(&renderer, title_size(&theme)),
                 available,
                 TextWeight::Semibold,
             );
-            let description = renderer.elide_to_width(face.description.as_ref(), 12.0, available);
+            let description = renderer.elide_to_width(
+                face.description.as_ref(),
+                renderer_type_size(&renderer, description_size(&theme)),
+                available,
+            );
             assert_ne!(title, face.title.as_ref());
             assert_ne!(description, face.description.as_ref());
             assert!(title.ends_with('…'));
@@ -239,5 +517,58 @@ mod tests {
 
         semantics_and_hit_testing_share_the_card_bounds();
         narrow_card_elides_copy_instead_of_wrapping_beyond_fixed_height();
+    }
+
+    #[test]
+    fn choice_card_is_one_focusable_target_that_writes_its_path() {
+        use automerge::{AutoCommit, ROOT, ReadDoc};
+
+        let mut card = ChoiceCard::new(
+            "setup.restore",
+            Icon::Archive,
+            "Restore from a backup",
+            "Use an encrypted backup file",
+            Some("setup.restore"),
+        );
+        assert!(card.is_focusable());
+        assert_eq!(card.test_id(), Some("setup.restore"));
+        let node = card.accessibility().expect("the card is announced");
+        assert_eq!(node.role, Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Restore from a backup"));
+        assert_eq!(node.value.as_deref(), Some("Use an encrypted backup file"));
+
+        let mut doc = AutoCommit::new();
+        assert!(card.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(matches!(
+            doc.get(ROOT, "setup.restore"),
+            Ok(Some((automerge::Value::Scalar(value), _)))
+                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+        ));
+
+        let mut disabled = ChoiceCard::new(
+            "setup.disabled",
+            Icon::Archive,
+            "Unavailable",
+            "Not offered here",
+            Some("setup.disabled"),
+        )
+        .with_enabled(false);
+        assert!(!disabled.is_enabled());
+        let mut doc = AutoCommit::new();
+        assert!(!disabled.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
+    }
+
+    #[test]
+    fn choice_card_grows_with_larger_type() {
+        let theme = Theme::dark();
+        let minimum = Geometry::of(&theme).min_height();
+        assert!((card_height(&theme) - minimum).abs() < f64::EPSILON);
+        let mut large = Theme::dark();
+        large.tokens.typography.scale = crate::tokens::TypeScale {
+            lg: 32.0,
+            base: 28.0,
+            ..large.tokens.typography.scale
+        };
+        assert!(card_height(&large) > minimum);
     }
 }

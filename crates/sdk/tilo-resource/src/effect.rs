@@ -32,18 +32,32 @@
 //! runs where it was invoked, and what it changes in the document it changes
 //! through ordinary actions. `tilo-app` runs the handler.
 //!
-//! Variant options: `label = "…"` (else the first doc line), `job` (runs in
-//! the background and reports progress, then its result), `cancellable`
-//! (a job the caller may cancel), `returns` (answers with a JSON value),
-//! `destructive` (asks for confirmation), `privileged` (hands out or shows
-//! a credential, such as copying a one-time code: asks for confirmation
-//! too) and `permission = "read"` (any
-//! participant may invoke it; the default needs write access). Field
+//! A variant that only changes what this participant sees — open a snippet,
+//! reveal a tag, show a result — is a `view`: published as a `View`
+//! operation (any reader may invoke it, a collaborator may not move someone
+//! else's view, repeating it is harmless), answered by the same handler.
+//!
+//! An effect that acts on one item — open *this* snippet, connect *this*
+//! connection — is offered on the item itself with its arguments bound
+//! ([`Effect::bound`]): a published child or a live row carries it, and
+//! invoking it there reaches the handler as that value. Such an effect is
+//! often `row`: offered only bound, never on the resource with an id for
+//! the caller to type.
+//!
+//! Variant options: `label = "…"` (else the first doc line), `view` (changes
+//! only what is shown; answers at once), `row` (offered only bound to the
+//! items it acts on), `job` (runs in the background and reports progress,
+//! then its result), `cancellable` (a job the caller may cancel), `returns`
+//! (answers with a JSON value), `destructive` (asks for confirmation),
+//! `privileged` (hands out or shows a credential, such as copying a one-time
+//! code: asks for confirmation too), `idempotent` (safe to repeat after an
+//! uncertain outcome) and `permission = "read"` (any participant may invoke
+//! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter.
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
-    OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
+    OperationKind, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -71,18 +85,21 @@ pub trait Effect: Sized + 'static {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, String>;
 
-    /// The published action of every effect.
+    /// The published action of every effect offered on the resource: all
+    /// but the `row` ones, which are offered only [bound](Self::bound).
     fn specs() -> Vec<ActionSpec> {
         Self::declarations()
             .into_iter()
+            .filter(|decl| !decl.row)
             .map(|decl| decl.spec(Self::OPERATION))
             .collect()
     }
 
     /// This effect with its arguments as one action that takes none: what a
-    /// live row offers (stop *this* process), answered by the vocabulary's
-    /// handler like any other invocation of the effect, under the same
-    /// contract as its declaration.
+    /// published child or a live row offers (open *this* snippet, stop
+    /// *this* process), answered by the vocabulary's handler like any other
+    /// invocation of the effect, under the same contract as its
+    /// declaration.
     fn bound(&self) -> ActionSpec {
         let id = self.id();
         let encoded = EncodedAction::encode_operation(
@@ -136,12 +153,18 @@ pub struct EffectDecl {
     pub label: &'static str,
     pub description: &'static str,
     pub params: Vec<ActionParam>,
+    /// `View` for an effect that only changes what its caller sees, else
+    /// `Effect`.
+    pub kind: OperationKind,
+    /// Offered only bound to the items it acts on, not on the resource.
+    pub row: bool,
     pub answers: Answers,
-    /// Asks for confirmation: deletes, overwrites, sends.
-    pub destructive: bool,
-    /// Hands out or shows a credential (copies a one-time code, reveals a
-    /// password): asks for confirmation, though nothing is lost.
-    pub privileged: bool,
+    /// How much harm invoking it can do: `Destructive` (deletes,
+    /// overwrites, sends) and `Privileged` (hands out or shows a credential)
+    /// ask for confirmation; a view is `None`.
+    pub risk: RiskLevel,
+    /// Safe to repeat after an uncertain outcome.
+    pub idempotent: bool,
     pub permission: PermissionRequirement,
 }
 
@@ -183,11 +206,16 @@ impl EffectDecl {
         params: Vec<ActionParam>,
         build: impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> ActionSpec {
+        let view = self.kind == OperationKind::View;
         let mut spec = ActionSpec::typed_operation(
             self.id,
             self.label,
             self.label,
-            OperationKind::Effect,
+            if view {
+                OperationKind::View
+            } else {
+                OperationKind::Effect
+            },
             operation,
             params,
             build,
@@ -195,16 +223,15 @@ impl EffectDecl {
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
         }
+        let base = if view {
+            ActionContract::view()
+        } else {
+            ActionContract::default()
+        };
         spec.contract = ActionContract {
             permission: self.permission,
-            risk: if self.destructive {
-                RiskLevel::Destructive
-            } else if self.privileged {
-                RiskLevel::Privileged
-            } else {
-                RiskLevel::Low
-            },
-            confirmation: if self.destructive || self.privileged {
+            risk: self.risk,
+            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
@@ -220,7 +247,12 @@ impl EffectDecl {
                 },
                 Answers::Nothing => ResultSpec::None,
             },
-            ..ActionContract::default()
+            retry: if view || self.idempotent {
+                RetryPolicy::Idempotent
+            } else {
+                base.retry
+            },
+            ..base
         };
         spec
     }
@@ -378,6 +410,63 @@ mod tests {
             Sample::Wipe { passes: 3 }
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    /// A vocabulary with presentation-only effects and effects offered only
+    /// on the items they act on.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.rows")]
+    enum Rows {
+        /// Open an item.
+        #[effect(view, row)]
+        Open { item: String },
+        /// Connect to an item.
+        #[effect(row, job, idempotent)]
+        Connect { item: String },
+        /// Search.
+        #[effect(view)]
+        Search,
+    }
+
+    #[test]
+    fn views_publish_as_views_and_row_effects_only_bound_to_their_item() {
+        let specs = Rows::specs();
+        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["search"],
+            "a row effect is not offered on the resource"
+        );
+        let search = &specs[0];
+        assert_eq!(search.kind, OperationKind::View);
+        assert_eq!(search.contract.permission, PermissionRequirement::Read);
+        assert_eq!(search.contract.risk, RiskLevel::None);
+        assert_eq!(search.contract.retry, RetryPolicy::Idempotent);
+
+        let open = Rows::Open { item: "a".into() };
+        let bound = open.bound();
+        assert_eq!(
+            (bound.id.as_str(), bound.kind),
+            ("open", OperationKind::View)
+        );
+        assert!(bound.params().is_empty());
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.rows");
+        assert_eq!(Rows::from_payload(&encoded.payload).unwrap(), open);
+
+        let connect = Rows::Connect { item: "b".into() }.bound();
+        assert_eq!(connect.kind, OperationKind::Effect);
+        assert_eq!(connect.contract.permission, PermissionRequirement::Write);
+        assert_eq!(connect.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(
+            connect.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert_eq!(
+            Sample::specs()[0].contract.retry,
+            RetryPolicy::AtMostOnce,
+            "an effect is not repeated unless it says it may be"
+        );
     }
 
     #[test]

@@ -26,6 +26,9 @@ pub(super) struct FloatingRuntime {
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
     /// Whether the app wants its windows withheld from captures.
     pub capture_protected: bool,
+    /// Whether the last frame showed a secret field holding a value; the
+    /// windows are withheld while it does, whatever the app asked.
+    pub secret_on_screen: bool,
     /// What the shell was last told (it starts unprotected), so the
     /// request goes out once per change.
     pub capture_protection_sent: bool,
@@ -42,6 +45,7 @@ impl FloatingRuntime {
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
             capture_protected: false,
+            secret_on_screen: false,
             capture_protection_sent: false,
         }
     }
@@ -60,6 +64,29 @@ impl App {
     #[must_use]
     pub fn capture_protected(&self) -> bool {
         self.floating.capture_protected
+    }
+
+    /// Record whether the frame just drawn shows a secret field with a
+    /// value, masked or shown. Such a frame is withheld from captures like a
+    /// protected app's, so a typed password never reaches a screenshot or a
+    /// screen share.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(dead_code, reason = "only the native runner draws frames")
+    )]
+    pub(crate) fn set_secret_on_screen(&mut self, shown: bool) {
+        self.floating.secret_on_screen = shown;
+    }
+
+    /// What the shell should withhold: everything the app asked for, and
+    /// any window while it shows a secret.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(dead_code, reason = "only the native runner draws frames")
+    )]
+    #[must_use]
+    pub(crate) fn wants_capture_protection(&self) -> bool {
+        self.floating.capture_protected || self.floating.secret_on_screen
     }
 }
 
@@ -141,13 +168,14 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
-        if self.floating.capture_protection_sent != self.floating.capture_protected {
+        let protected = self.wants_capture_protection();
+        if self.floating.capture_protection_sent != protected {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
-                    protected: self.floating.capture_protected,
+                    protected,
                 },
             )?;
-            self.floating.capture_protection_sent = self.floating.capture_protected;
+            self.floating.capture_protection_sent = protected;
         }
         while let Some(mode) = self.root_widget.take_capture_studio_request() {
             let mode = match mode {

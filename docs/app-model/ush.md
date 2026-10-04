@@ -301,10 +301,16 @@ session behave as if the kernel refused the filter.
 - **The network is filtered by address.** See the end of
   [The network](#the-network). Unix sockets are not network traffic: a
   granted directory holding one reaches whatever listens on it.
-- **Images are not fetched from the registry yet.** The supervisor
-  materialises images through the package store (`materialized_tree`), from
-  the system app store, the user's store and the shelf in the user's synced
-  files; CI catalog images that ship with neither are not fetched.
+## Where images come from
+
+An image the record names is looked for, in order, in the system app store,
+the user's store, the shelf in the user's synced files, and the OCI registry
+CI publishes env-runtimes and catalog tools to
+(`registry.tilo.so/tilo/env-runtime` and `tilo/env-tools`, cached under
+`$XDG_CACHE_HOME/tilo/env-images`; a relay names its own repositories in
+`$TILO_USH_IMAGE_SOURCES`). Only a tool none of them has is built. Where an
+image came from earns it no trust: it opens when the CI key the system store
+names, or one of your devices, signed it.
 
 ## Images your other devices built
 
@@ -331,8 +337,14 @@ included — without being built again:
   home peer, which serves them by content hash when a device reads one, so no
   new protocol or peer service is involved. Nothing on the shelf is trusted:
   the store checks each package is the image asked for and admits it by its
-  publisher, as it does a registry's. A session with no synced files mounted
-  neither shares nor fetches, and builds what it lacks.
+  publisher, as it does a registry's.
+- **Where the supervisor finds your synced files.** `tilo-ush` runs as the
+  `tilo-ush.service` user unit, started with no workspace in its environment
+  and in the host's mount namespace, so it reads your synced files where the
+  Files app does: the filesystem daemon's mount at `/var/workspace`
+  (`$TILO_WORKSPACE_ROOT` when a session names another; a relay names the
+  member's shelf in `$TILO_USH_IMAGE_SHELF`). A device without that mount
+  neither shares nor fetches through the shelf.
 
 ## Verifying it yourself
 
