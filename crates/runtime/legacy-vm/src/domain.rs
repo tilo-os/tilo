@@ -44,7 +44,12 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
     let memory = &config.memory;
     // q35 hot-plugs only into empty root ports, and libvirt adds ports just
     // for the devices it knows at definition time: shares need spares.
-    let hotplug_ports = "<controller type='pci' model='pcie-root-port'/>".repeat(HOTPLUG_PORTS);
+    // Naming any PCI controller makes libvirt want the root complex named
+    // first.
+    let hotplug_ports = format!(
+        "<controller type='pci' index='0' model='pcie-root'/>{}",
+        "<controller type='pci' model='pcie-root-port'/>".repeat(HOTPLUG_PORTS)
+    );
     Ok(format!(
         "<domain type='kvm'{namespace}>\
 <name>{name}</name>\
