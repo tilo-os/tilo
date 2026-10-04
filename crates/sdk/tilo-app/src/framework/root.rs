@@ -860,6 +860,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 output,
             )));
         }
+        // An effect reads the resource as the document stands, though no
+        // frame has run since a collaborator's change arrived.
+        if let Err(error) = self.live.sync(doc) {
+            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
+        }
         if let Some(started) = self.effects.start(op)? {
             return Ok(Some(started));
         }
