@@ -540,7 +540,9 @@ fn the_shells_secret_prompts_are_never_captured() {
         fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
         for (state, secret) in [
             (OnboardingVisualState::Intro, false),
-            (OnboardingVisualState::Connect, true),
+            (OnboardingVisualState::Existing, false),
+            (OnboardingVisualState::NearbyCode, true),
+            (OnboardingVisualState::Restore, true),
             (OnboardingVisualState::Protect, false),
             (OnboardingVisualState::Backup, true),
             (OnboardingVisualState::BackupVerified, true),
