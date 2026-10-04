@@ -28,8 +28,9 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, PressOutcome, ScrollMetrics,
-    StatTileFace, Tone, Trend, card_column_width, card_columns,
+    Banner, BannerContent, BannerKind, Button, ButtonFace, ControlSize, EmptyState,
+    EmptyStateContent, PressOutcome, ScrollMetrics, StatTileFace, Trend, card_column_width,
+    card_columns,
 };
 
 use super::{Core, ForecastNotice, SunArc, scroll_track, wheel_dx, wheel_dy, wheel_step};
@@ -69,9 +70,39 @@ impl Core {
                 )
             },
         );
+        let mut children = Vec::new();
+        if let Some(hit) = self.retry_rect {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(RETRY)
+                    .with_description("Fetch the forecast again")
+                    .with_hashed_key(RETRY_KEY)
+                    .with_bounds(hit),
+            );
+        }
+        let group = |name: &str, tiles: Vec<Tile>| {
+            AccessNode::new(Role::Group)
+                .with_name(name)
+                .with_children(tiles.iter().map(Tile::access_node).collect())
+        };
+        if let Some(snapshot) = self.model.snapshot_for(location.id) {
+            children.push(group(
+                "Current conditions",
+                reading_tiles(snapshot, self.units, true),
+            ));
+        }
+        if let Some(aq) = self.model.selected_air_quality().filter(|aq| aq.has_any()) {
+            children.push(group("Air quality", air_tiles(aq)));
+        }
         node.with_name(format!("{} forecast", location.name))
             .with_description(detail)
             .with_keyed_action_routes("weather-detail")
+            .with_children(children)
+    }
+
+    /// Fetch the selected place's forecast again after a failed update.
+    pub fn retry(&mut self) {
+        self.refresh_selected();
     }
 
     pub fn draw_detail(
@@ -85,6 +116,7 @@ impl Core {
         self.detail_rect = rect;
         self.body_rect = rect;
         self.wheel_step = wheel_step(theme);
+        self.retry_rect = None;
 
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
 
@@ -92,30 +124,16 @@ impl Core {
             self.max_scroll = 0.0;
             self.hourly_max_scroll = 0.0;
             self.hourly_viewport = Rect::ZERO;
-            let title = if self.model.locations.is_empty() {
-                "Add a place to see its forecast"
-            } else {
-                "Choose a place to see its forecast"
-            };
-            let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
-                icon::draw_icon(
-                    ctx.scene,
-                    ctx.transform,
-                    Sky::PartlyCloudy,
-                    true,
-                    r,
-                    ctx.theme,
+            // With no places at all, the list's empty state is the one that
+            // speaks; the forecast column stays bare beside it.
+            if !self.model.locations.is_empty() {
+                EmptyState::paint(
+                    ctx,
+                    rect,
+                    &EmptyStateContent::new("Choose a place to see its forecast"),
+                    self.last_mouse,
                 );
-            };
-            EmptyState::paint(
-                ctx,
-                rect,
-                &EmptyStateContent {
-                    illustration: Some(&glyph),
-                    ..EmptyStateContent::new(title)
-                },
-                self.last_mouse,
-            );
+            }
             return;
         };
 
@@ -156,7 +174,10 @@ impl Core {
         };
         if let Some(notice) = &page.notice {
             let r = place(notice.height, &mut y);
-            Banner::paint(ctx, r, &notice.content(), self.last_mouse);
+            self.retry_rect = notice
+                .paint(ctx, r, self.last_mouse)
+                .map(|hit| hit.intersect(self.body_rect))
+                .filter(|hit| hit.area() > 0.0);
         }
         let Some(snap) = page.snapshot else {
             ctx.text_role(
@@ -341,6 +362,13 @@ impl Core {
     }
 
     fn handle_detail_press(&mut self) -> bool {
+        if self
+            .retry_rect
+            .is_some_and(|hit| hit.contains(self.last_mouse))
+        {
+            self.retry();
+            return true;
+        }
         for (bar, track, metrics, horizontal) in [
             (
                 &mut self.hourly_bar,
@@ -505,28 +533,75 @@ fn section_heading(ctx: &mut PaintCtx<'_>, title: &str, at: Point) {
     ctx.text_role(title, TextRole::Heading, ctx.theme.text_primary, at, None);
 }
 
-/// The lasting problem with the forecast on screen, above it.
+/// The lasting problem with the forecast on screen, above it: a banner, and
+/// beside it the Retry button when trying again can fix it.
 struct Notice {
     kind: ForecastNotice,
+    /// The Retry button's width, or `None` when the notice offers none.
+    retry_w: Option<f64>,
     height: f64,
 }
 
+/// The label of the button that fetches the forecast again.
+const RETRY: &str = "Retry";
+
+/// The Retry button's key among the forecast's accessible children.
+pub const RETRY_KEY: &str = "weather.retry";
+
 impl Notice {
     fn new(ctx: &mut PaintCtx<'_>, kind: ForecastNotice, width: f64) -> Self {
-        let mut notice = Self { kind, height: 0.0 };
-        notice.height = banner_height(ctx, &notice.content(), width);
+        let theme = ctx.theme;
+        let retry_w = matches!(kind, ForecastNotice::UpdateFailed).then(|| {
+            ButtonFace::new(Rect::ZERO, RETRY)
+                .control_size(ControlSize::Regular)
+                .intrinsic_width(ctx.text, theme)
+                .ceil()
+        });
+        let mut notice = Self {
+            kind,
+            retry_w,
+            height: 0.0,
+        };
+        let banner_w = notice.banner_width(width, theme);
+        notice.height = banner_height(ctx, &notice.content(), banner_w)
+            .max(ButtonFace::height(ControlSize::Regular, theme));
         notice
+    }
+
+    /// The banner's width in a row `width` wide: all of it, less the Retry
+    /// button and the gap before it.
+    fn banner_width(&self, width: f64, theme: &Theme) -> f64 {
+        self.retry_w.map_or(width, |button| {
+            (width - button - f64::from(theme.tokens.spacing.s3)).max(1.0)
+        })
     }
 
     fn content(&self) -> BannerContent<'static> {
         match self.kind {
             ForecastNotice::UpdateFailed => {
                 BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
-                    .with_message(Some("Check your connection, then refresh."))
+                    .with_message(Some("Check your connection and try again."))
             }
             ForecastNotice::Offline => BannerContent::new(BannerKind::Warning, "You're offline")
                 .with_message(Some("This is the last forecast saved on this device.")),
         }
+    }
+
+    /// Paint the banner and its Retry button into `r`. Returns where the
+    /// button takes a pointer, when it shows.
+    fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, pointer: Point) -> Option<Rect> {
+        let theme = ctx.theme;
+        let banner = Rect::new(r.x0, r.y0, r.x0 + self.banner_width(r.width(), theme), r.y1);
+        Banner::paint(ctx, banner, &self.content(), pointer);
+        let width = self.retry_w?;
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let top = r.center().y - height / 2.0;
+        let rect = Rect::new(r.x1 - width, top, r.x1, top + height);
+        let face = ButtonFace::new(rect, RETRY).control_size(ControlSize::Regular);
+        let hit = face.hit_rect(theme);
+        let face = face.hovered(hit.contains(pointer));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+        Some(hit)
     }
 }
 
@@ -687,7 +762,6 @@ struct Tile {
     unit: Option<String>,
     /// A word that qualifies the value ("High", "WSW"), under it.
     note: Option<String>,
-    tone: Option<Tone>,
 }
 
 impl Tile {
@@ -697,7 +771,6 @@ impl Tile {
             value: value.into(),
             unit: None,
             note: None,
-            tone: None,
         }
     }
 
@@ -711,9 +784,19 @@ impl Tile {
         self
     }
 
-    fn tone(mut self, tone: Tone) -> Self {
-        self.tone = Some(tone);
-        self
+    /// The tile as a screen reader hears it: the label, then the value with
+    /// its unit and qualifier ("Wind: 18 km/h, WSW").
+    fn access_node(&self) -> AccessNode {
+        let mut value = self.value.clone();
+        if let Some(unit) = &self.unit {
+            value = format!("{value} {unit}");
+        }
+        if let Some(note) = &self.note {
+            value = format!("{value}, {note}");
+        }
+        AccessNode::new(Role::Group)
+            .with_name(self.label)
+            .with_value(value)
     }
 
     fn face(&self) -> StatTileFace<'_> {
@@ -723,9 +806,6 @@ impl Tile {
         }
         if let Some(note) = &self.note {
             face = face.change(note, Trend::Flat);
-        }
-        if let Some(tone) = self.tone {
-            face = face.tone(tone);
         }
         face
     }
@@ -785,31 +865,7 @@ impl Tiles {
         units: Units,
         with_sun: bool,
     ) -> Self {
-        let Some(snap) = snapshot else {
-            return Self::new(ctx, width, Vec::new(), 0.0);
-        };
-        let cur = &snap.current;
-        let mut tiles = vec![
-            Tile::new(
-                "Feels like",
-                format!("{}°", snap.temp_in(cur.apparent, units).round() as i64),
-            ),
-            Tile::new(
-                "Wind",
-                format!("{}", snap.wind_in(cur.wind_speed, units).round() as i64),
-            )
-            .unit(units.wind_suffix())
-            .note(units::compass(cur.wind_direction)),
-            Tile::new("Humidity", format!("{}", cur.humidity.round() as i64)).unit("%"),
-            Tile::new("Precipitation", format!("{:.1}", cur.precipitation)).unit("mm"),
-            Tile::new("Pressure", format!("{}", cur.pressure.round() as i64)).unit("hPa"),
-            Tile::new("UV index", format!("{}", cur.uv_index.round() as i64))
-                .note(uv_word(cur.uv_index)),
-        ];
-        if with_sun && let Some(today) = snap.daily.first() {
-            tiles.push(Tile::new("Sunrise", hhmm(&today.sunrise)));
-            tiles.push(Tile::new("Sunset", hhmm(&today.sunset)));
-        }
+        let tiles = snapshot.map_or_else(Vec::new, |snap| reading_tiles(snap, units, with_sun));
         Self::new(ctx, width, tiles, 0.0)
     }
 
@@ -823,6 +879,34 @@ impl Tiles {
                 .paint(ctx, Rect::new(x, y, x + tile_w, y + self.tile_h));
         }
     }
+}
+
+/// The current readings: feels like, wind, humidity, precipitation,
+/// pressure and UV; sunrise and sunset too when `with_sun`.
+fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Tile> {
+    let cur = &snap.current;
+    let mut tiles = vec![
+        Tile::new(
+            "Feels like",
+            format!("{}°", snap.temp_in(cur.apparent, units).round() as i64),
+        ),
+        Tile::new(
+            "Wind",
+            format!("{}", snap.wind_in(cur.wind_speed, units).round() as i64),
+        )
+        .unit(units.wind_suffix())
+        .note(units::compass(cur.wind_direction)),
+        Tile::new("Humidity", format!("{}", cur.humidity.round() as i64)).unit("%"),
+        Tile::new("Precipitation", format!("{:.1}", cur.precipitation)).unit("mm"),
+        Tile::new("Pressure", format!("{}", cur.pressure.round() as i64)).unit("hPa"),
+        Tile::new("UV index", format!("{}", cur.uv_index.round() as i64))
+            .note(uv_word(cur.uv_index)),
+    ];
+    if with_sun && let Some(today) = snap.daily.first() {
+        tiles.push(Tile::new("Sunrise", hhmm(&today.sunrise)));
+        tiles.push(Tile::new("Sunset", hhmm(&today.sunset)));
+    }
+    tiles
 }
 
 // ---- 7-day forecast -----------------------------------------------------
@@ -917,9 +1001,13 @@ impl DayColumns {
             |text: &str, style: &TextStyle| f64::from(ctx.text.measure_style(text, None, style).0);
         let mut label_w = width("Tomorrow", &body);
         let mut temp_w: f64 = 0.0;
+        // The condition column shows only where the week's longest condition
+        // fits whole, so no day's condition is cut short.
+        let mut cond_w = width("Mainly clear", &body);
         if let Some(snap) = snapshot {
             for (i, d) in snap.daily.iter().enumerate() {
                 label_w = label_w.max(width(&day_label(i, d), &body));
+                cond_w = cond_w.max(width(Sky::label(d.weather_code), &body));
                 let lo = snap.temp_in(d.temp_min, units).round() as i64;
                 let hi = snap.temp_in(d.temp_max, units).round() as i64;
                 temp_w = temp_w
@@ -931,7 +1019,7 @@ impl DayColumns {
             label_w: label_w.ceil(),
             icon_edge: (2.0 * caption_h).round(),
             drop,
-            cond_min_w: width("Mainly clear", &body).ceil(),
+            cond_min_w: cond_w.ceil(),
             precip_w: (drop + f64::from(theme.tokens.spacing.s1) + width("100%", &caption)).ceil(),
             uv_w: width("UV 10", &caption).ceil(),
             wind_w: width(&format!("100 {}", units.wind_suffix()), &caption).ceil(),
@@ -973,16 +1061,21 @@ pub(super) struct DayRowGeometry {
 
 impl DayRowGeometry {
     /// One column grid for every row between `x0` and `x1`, with the
-    /// theme's steps between neighbours: `s3` between siblings (label,
-    /// glyph, extras, precipitation, temperatures), `s2` between a value and
-    /// its own bar. Optional columns show only when they keep that gap.
+    /// theme's steps between neighbours: `s4` between the day and its glyph,
+    /// `s3` between the other siblings (glyph, extras, precipitation,
+    /// temperatures), `s2` between a value and its own bar. Optional columns
+    /// show only when they keep that gap.
     pub(super) fn new(
         x0: f64,
         x1: f64,
         columns: &DayColumns,
         spacing: &ui::tokens::spacing::Spacing,
     ) -> Self {
-        let (s2, s3) = (f64::from(spacing.s2), f64::from(spacing.s3));
+        let (s2, s3, s4) = (
+            f64::from(spacing.s2),
+            f64::from(spacing.s3),
+            f64::from(spacing.s4),
+        );
         let s16 = f64::from(spacing.s16);
         let c = *columns;
         let dw = x1 - x0;
@@ -992,7 +1085,7 @@ impl DayRowGeometry {
         let lo_x = bar_x0 - s2;
         let precip_right = lo_x - c.temp_w - s3;
         let precip_left = precip_right - c.precip_w;
-        let icon_x0 = x0 + c.label_w + s3;
+        let icon_x0 = x0 + c.label_w + s4;
         let icon_x1 = icon_x0 + c.icon_edge;
         let cond_x = icon_x1 + s3;
         let show_precip = precip_left >= icon_x1 + s3;
@@ -1234,23 +1327,7 @@ impl Air {
                 height,
             };
         };
-        let value =
-            |v: Option<f64>| v.map_or_else(|| "—".to_string(), |v| format!("{}", v.round() as i64));
-        let mut european = Tile::new("European AQI", value(aq.european_aqi));
-        if let Some(index) = aq.european_aqi {
-            european = european
-                .note(api::european_aqi_band(index))
-                .tone(aqi_tone(index));
-        }
-        let tiles = vec![
-            european,
-            Tile::new("US AQI", value(aq.us_aqi)),
-            Tile::new("PM2.5", value(aq.pm2_5)).unit("µg/m³"),
-            Tile::new("PM10", value(aq.pm10)).unit("µg/m³"),
-            Tile::new("NO₂", value(aq.nitrogen_dioxide)).unit("µg/m³"),
-            Tile::new("O₃", value(aq.ozone)).unit("µg/m³"),
-        ];
-        let tiles = Tiles::new(ctx, width, tiles, lead);
+        let tiles = Tiles::new(ctx, width, air_tiles(aq), lead);
         let height = tiles.height;
         Self {
             tiles: Some(tiles),
@@ -1274,14 +1351,23 @@ impl Air {
     }
 }
 
-/// What a European AQI reading means for the person: good and fair air are
-/// fine, moderate is worth knowing, anything worse is a warning.
-fn aqi_tone(aqi: f64) -> Tone {
-    match aqi.round() as i64 {
-        i64::MIN..=40 => Tone::Success,
-        41..=60 => Tone::Warning,
-        _ => Tone::Danger,
+/// The air-quality readings: the two indices, the European one with its
+/// band, then the pollutants.
+fn air_tiles(aq: &AirQuality) -> Vec<Tile> {
+    let value =
+        |v: Option<f64>| v.map_or_else(|| "—".to_string(), |v| format!("{}", v.round() as i64));
+    let mut european = Tile::new("European AQI", value(aq.european_aqi));
+    if let Some(index) = aq.european_aqi {
+        european = european.note(api::european_aqi_band(index));
     }
+    vec![
+        european,
+        Tile::new("US AQI", value(aq.us_aqi)),
+        Tile::new("PM2.5", value(aq.pm2_5)).unit("µg/m³"),
+        Tile::new("PM10", value(aq.pm10)).unit("µg/m³"),
+        Tile::new("NO₂", value(aq.nitrogen_dioxide)).unit("µg/m³"),
+        Tile::new("O₃", value(aq.ozone)).unit("µg/m³"),
+    ]
 }
 
 // =====================================================================

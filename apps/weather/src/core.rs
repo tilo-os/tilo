@@ -21,6 +21,8 @@
 
 mod detail;
 
+pub use detail::RETRY_KEY;
+
 use std::collections::HashMap;
 use ui::time::{Duration, Instant};
 
@@ -172,6 +174,9 @@ pub struct Core {
     body_bar: Scrollbar,
     body_track: Rect,
     body_content_h: f64,
+    /// Where the out-of-date notice's Retry button takes a pointer, while
+    /// it shows.
+    retry_rect: Option<Rect>,
 
     // --- detail: the horizontally-scrollable 24h strip ---
     hourly_scroll_x: f64,
@@ -241,6 +246,7 @@ impl Core {
             body_bar: Scrollbar::vertical(),
             body_track: Rect::ZERO,
             body_content_h: 0.0,
+            retry_rect: None,
             hourly_scroll_x: 0.0,
             hourly_max_scroll: 0.0,
             hourly_viewport: Rect::ZERO,
@@ -657,7 +663,7 @@ impl Core {
             self.search.set_status(None);
         } else if self.search_pending() {
             self.search.set_suggestions(Vec::new());
-            self.search.set_status(Some("Searching".to_string()));
+            self.search.set_status(Some("Searching…".to_string()));
         } else {
             self.search.set_suggestions(Vec::new());
             self.search
@@ -964,16 +970,31 @@ impl Core {
             self.search_field_rect = Rect::ZERO;
         }
 
-        if self.model.locations.is_empty() {
+        // A typed query opens the suggestions (the matches, the search in
+        // flight, or no match); they replace the saved places while they
+        // show, so they never stand half over a row.
+        let suggesting = self.search.is_editing() && !self.search_query.trim().is_empty();
+        if self.model.locations.is_empty() || suggesting {
             self.list_rect = Rect::ZERO;
             self.row_h = 0.0;
-            self.empty_action = if self.search.is_editing() {
+            self.empty_action = if self.search.is_editing() || !self.model.locations.is_empty() {
                 None
             } else {
+                let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
+                    crate::icon::draw_icon(
+                        ctx.scene,
+                        ctx.transform,
+                        Sky::PartlyCloudy,
+                        true,
+                        r,
+                        ctx.theme,
+                    );
+                };
                 EmptyState::paint(
                     ctx,
                     Rect::new(rect.x0, top, rect.x1, rect.y1),
                     &EmptyStateContent {
+                        illustration: Some(&glyph),
                         action_label: Some("Add place"),
                         ..EmptyStateContent::new("No places yet")
                     },
@@ -1008,6 +1029,15 @@ impl Core {
             .then(|| self.row_at(self.last_mouse))
             .flatten();
 
+        // Where the place at `index` stands in the list as it shows: its own
+        // slot, the drop slot while it is dragged, or its reflowed slot.
+        let slot = |index: usize| -> usize {
+            if Some(index) == dragging {
+                return self.reorder.insertion().unwrap_or(index);
+            }
+            let rows = (self.reorder.item_shift(index, &metrics) / self.row_h).round() as isize;
+            index.saturating_add_signed(rows)
+        };
         let t = ctx.transform;
         ctx.scene
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &list);
@@ -1027,8 +1057,11 @@ impl Core {
                 ..Interaction::default()
             };
             let mut face = text.face(loc, i == selected, interaction);
-            if i + 1 < count && dragging.is_none() {
-                face = face.separator(i + 1 == selected);
+            // Separators follow the order the rows stand in, so a held drag
+            // keeps them between its reflowed neighbours.
+            let below = slot(i) + 1;
+            if below < count {
+                face = face.separator(slot(selected) == below);
             }
             let swipe = self.swipe_dx_for(i);
             if swipe > 0.0 {
@@ -1470,7 +1503,8 @@ impl Core {
         };
         let x = self.list_rect.center().x.max(row_h);
         let start = Point::new(x, top + (from as f64 + 0.5) * row_h);
-        let target = Point::new(x, start.y + 1.6 * row_h);
+        // Past the last place, the drop rule showing just above the ghost.
+        let target = Point::new(x, start.y + 2.2 * row_h);
         // Grab the row at its vertical centre so the ghost sits on the cursor.
         self.reorder.begin(id, from, row_h / 2.0, start);
         self.last_mouse = target;

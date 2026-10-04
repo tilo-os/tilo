@@ -282,4 +282,21 @@ impl Widget for DetailPane {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().detail_accessibility(self.rect))
     }
+
+    /// The forecast's one accessible control: the out-of-date notice's
+    /// Retry button.
+    fn perform_action_at(
+        &mut self,
+        action: &Action,
+        key_path: &[u64],
+        _state: &mut AppModel,
+        _path: &ModelPath,
+    ) -> bool {
+        let retry = ui::a11y::hash_key(&crate::core::RETRY_KEY);
+        if !matches!(action, Action::Activate) || key_path.last() != Some(&retry) {
+            return false;
+        }
+        self.core.borrow_mut().retry();
+        true
+    }
 }
