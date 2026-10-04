@@ -3203,6 +3203,7 @@ impl ShellNetwork {
         }
         let message = tilo_actions::remote::RemoteActionMessage::Invoke(
             tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target,
                 argument,
@@ -8229,6 +8230,7 @@ mod tests {
         let frame = tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::Invoke(
                 tilo_actions::remote::InvokeRequest {
+                    on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
                     target: tilo_actions::remote::RemoteActionTarget {
                         provider: format!("workspace:{enrolled}"),
@@ -8336,6 +8338,7 @@ mod tests {
 
             let id = tilo_actions::InvocationId::new();
             let request = RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 invocation: id,
                 target: RemoteActionTarget {
                     provider: "9".into(),

@@ -1718,6 +1718,8 @@ impl App {
                 context: attributed.clone(),
                 admitted,
                 refused: None,
+                outstanding: std::collections::HashSet::new(),
+                deferred: None,
             },
         );
         let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
@@ -1791,7 +1793,14 @@ impl App {
                 },
             },
         };
-        let update = match &continuation {
+        let update = match continuation {
+            // Its edits are still being admitted by the host: it answers
+            // once they all are, or one is refused.
+            Some(mut continuation) if !continuation.outstanding.is_empty() => {
+                continuation.deferred = Some((id, update));
+                self.actions.acting_for.insert(invocation, continuation);
+                return;
+            }
             Some(continuation) => continuation.settle(update),
             None => update,
         };
@@ -1963,6 +1972,7 @@ impl App {
         send(
             request_id,
             tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: tilo_actions::remote::OWN_PROVIDER.into(),
@@ -2577,6 +2587,7 @@ impl App {
             };
             self.admit_application_launch(request_id, invocation)?;
             let request = tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::application_open_target(&room, &launch.app_id),
                 argument: launch.argument(),
@@ -2829,6 +2840,38 @@ impl App {
         // An edit an effect submitted is applied for the effect's invoker,
         // in its context, as far as the invoker was admitted.
         let acting = on_behalf_of.and_then(|id| self.actions.acting_for.get(&id).cloned());
+        // With the workspace's broker at hand it admits the edit for the
+        // invoker, with their own grants, under the component's published
+        // address.
+        if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
+            && self.collaboration.manager.is_connected()
+        {
+            let result = self
+                .actions
+                .bound_publication
+                .alias(&target.binding, &target.address.address.resource)
+                .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                .and_then(|alias| {
+                    self.send_follow_up(
+                        running,
+                        &tilo_actions::ActionAddress::new(
+                            alias,
+                            target.address.address.action.clone(),
+                        ),
+                        &intent.arguments,
+                        acting.context.clone(),
+                    )
+                });
+            self.note_continuation(on_behalf_of, &result);
+            if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
+                self.root_widget.as_mut(),
+                target,
+                &result,
+            ) {
+                tracing::warn!(?error, "bound control feedback unavailable");
+            }
+            return result.is_ok();
+        }
         let actor = acting.as_ref().map_or_else(
             || self.collaboration.local_author.0.clone(),
             |acting| acting.invoker.actor.clone(),
@@ -3267,6 +3310,28 @@ impl App {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
+            // With the workspace's broker at hand it admits the edit for the
+            // invoker, with their own grants.
+            if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
+                && self.collaboration.manager.is_connected()
+            {
+                let result = self.send_follow_up(
+                    running,
+                    &intent.address,
+                    &intent.arguments,
+                    acting.context.clone(),
+                );
+                self.note_continuation(on_behalf_of, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    self.root_widget.as_mut(),
+                    &intent.address,
+                    &result,
+                );
+                if result.is_ok() {
+                    dispatched = dispatched.saturating_add(1);
+                }
+                continue;
+            }
             let json = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -3303,6 +3368,101 @@ impl App {
             }
         }
         dispatched
+    }
+
+    /// Ask the broker to admit an edit the effect invocation `running`
+    /// submitted for its invoker: it decides with the invoker's grants and,
+    /// when they allow it, hands it back here as theirs.
+    fn send_follow_up(
+        &mut self,
+        running: tilo_actions::InvocationId,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        context: Option<tilo_actions::ActionContext>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let request_id = self.take_broker_request_id()?;
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: Some(running),
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                address: address.clone(),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            context,
+            confirmation: None,
+            revision: None,
+        };
+        self.actions
+            .broker_requests
+            .insert(BrokerReply::Receipt(request.invocation), request_id);
+        self.actions.follow_ups.insert(request_id, running);
+        if let Some(continuation) = self.actions.acting_for.get_mut(&running) {
+            continuation.outstanding.insert(request_id);
+        }
+        self.collaboration
+            .manager
+            .send(CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            });
+        Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+
+    /// The broker answered the edit request `request_id` an effect
+    /// submitted: a refusal fails the effect, and the effect's held answer
+    /// goes out once its last edit is settled. Whether it was one.
+    pub(super) fn settle_follow_up(
+        &mut self,
+        request_id: u64,
+        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
+    ) -> bool {
+        let Some(running) = self.actions.follow_ups.remove(&request_id) else {
+            return false;
+        };
+        let refusal = match result {
+            Err(reason) => Some(tilo_actions::ActionFailure {
+                code: "permission_denied".into(),
+                message: reason.clone(),
+                details: None,
+                retryable: false,
+            }),
+            Ok((_, tilo_actions::InvocationUpdate::Failed { error, .. })) => Some(error.clone()),
+            Ok((_, tilo_actions::InvocationUpdate::Cancelled { .. })) => {
+                Some(tilo_actions::ActionFailure {
+                    code: "follow_up_cancelled".into(),
+                    message: "an edit the effect submitted was cancelled".into(),
+                    details: None,
+                    retryable: false,
+                })
+            }
+            Ok(_) => None,
+        };
+        let Some(continuation) = self.actions.acting_for.get_mut(&running) else {
+            return true;
+        };
+        continuation.outstanding.remove(&request_id);
+        if continuation.refused.is_none() {
+            continuation.refused = refusal;
+        }
+        if !continuation.outstanding.is_empty() || continuation.deferred.is_none() {
+            return true;
+        }
+        let Some(continuation) = self.actions.acting_for.remove(&running) else {
+            return true;
+        };
+        let Some((wire_id, update)) = continuation.deferred.clone() else {
+            return true;
+        };
+        let update = continuation.settle(update);
+        if self.queue_documents_before_terminal() {
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id: wire_id,
+                    update,
+                });
+        }
+        true
     }
 
     /// Keep why an edit the running effect `on_behalf_of` submitted was
@@ -3440,7 +3600,15 @@ impl App {
                 // What the effect's completion submitted is applied for its
                 // invoker before its caller learns it finished.
                 self.dispatch_control_invocations();
-                if let Some(continuation) = self.actions.acting_for.get(&invocation) {
+                if let Some(continuation) = self.actions.acting_for.get_mut(&invocation) {
+                    if !continuation.outstanding.is_empty() {
+                        // It answers once the host admitted its edits.
+                        continuation.deferred = Some((pending.wire_id, update));
+                        self.actions.bound_invocations.remove(&invocation);
+                        self.actions.directed_invocations.remove(&invocation);
+                        changed = true;
+                        continue;
+                    }
                     update = continuation.settle(update);
                 }
             }
@@ -3463,11 +3631,14 @@ impl App {
                 });
             changed = true;
         }
-        // An invocation that ended however it ended runs for nobody.
+        // An invocation that ended however it ended runs for nobody, once
+        // the edits it submitted are settled.
         let directed = &self.actions.directed_invocations;
-        self.actions
-            .acting_for
-            .retain(|invocation, _| directed.contains_key(invocation));
+        self.actions.acting_for.retain(|invocation, continuation| {
+            directed.contains_key(invocation)
+                || !continuation.outstanding.is_empty()
+                || continuation.deferred.is_some()
+        });
         let local_invocations = self
             .actions
             .local_invocations

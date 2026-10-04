@@ -112,6 +112,7 @@ impl Door {
         answer(self.host.invoke(
             caller,
             InvokeRequest {
+                on_behalf_of: None,
                 invocation: InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: workspace_provider(&ROOM.to_string()),

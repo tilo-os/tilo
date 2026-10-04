@@ -76,6 +76,11 @@ pub(crate) struct Continuation {
     pub(crate) admitted: tilo_actions::PermissionRequirement,
     /// Why an edit the effect submitted was refused: the effect then fails.
     pub(crate) refused: Option<tilo_actions::ActionFailure>,
+    /// The edits it submitted that the host is still admitting, by request.
+    pub(crate) outstanding: std::collections::HashSet<u64>,
+    /// The effect's answer, held until those edits are admitted or refused:
+    /// the wire id to send it under, and the answer.
+    pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
 }
 
 impl Continuation {

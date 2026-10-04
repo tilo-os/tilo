@@ -5305,6 +5305,8 @@ impl FrameHarness {
                 invoker,
                 context: Some(context),
                 refused: None,
+                outstanding: std::collections::HashSet::new(),
+                deferred: None,
             }
         });
         let started = match &delivered {

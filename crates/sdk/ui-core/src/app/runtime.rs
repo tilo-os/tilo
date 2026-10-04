@@ -149,6 +149,9 @@ pub(super) struct ActionRuntime {
         tilo_actions::InvocationId,
         crate::invocation_scope::Continuation,
     >,
+    /// Each edit an effect submitted for its invoker that the host is still
+    /// admitting, by broker request, to the effect invocation it continues.
+    pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -206,6 +209,7 @@ impl ActionRuntime {
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
             acting_for: std::collections::HashMap::new(),
+            follow_ups: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),

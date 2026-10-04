@@ -274,6 +274,7 @@ impl Browser {
     ) -> Result<serde_json::Value, String> {
         let invocation = InvocationId::new();
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: AGENTS_PROVIDER.into(),

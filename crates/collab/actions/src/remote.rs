@@ -295,6 +295,11 @@ pub struct InvokeRequest {
     /// refuses a target that no longer exists at it rather than guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// The live invocation this request continues: an edit an effect
+    /// submits while running for someone else. The host admits it as that
+    /// invocation's original caller, with their grants, never as the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<InvocationId>,
 }
 
 /// Explicit confirmation carried with an invocation.
@@ -1322,6 +1327,7 @@ mod tests {
 
     fn archive(invocation: InvocationId) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: "7".into(),
@@ -1376,6 +1382,7 @@ mod tests {
                 }),
             },
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 argument: InvokeArgument::Json(arguments),
                 context: Some(ActionContext::for_resource(
                     "Archive",
@@ -1386,10 +1393,12 @@ mod tests {
                 ..archive(invocation)
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 argument: InvokeArgument::Text("hello".into()),
                 ..archive(invocation)
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 confirmation: Some(Confirmation::Phrase("delete it".into())),
                 ..archive(invocation)
             }),

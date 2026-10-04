@@ -1130,6 +1130,9 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
+    /// Who it was admitted for, as the door knew them; `None` for a caller
+    /// known otherwise (a certified peer), whose effect submits no edits.
+    caller: Option<tilo_actions::remote::Caller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
@@ -1210,6 +1213,51 @@ impl CallerInvocation {
             }
         }
         intent
+    }
+}
+
+impl CapnpBrokerState {
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs: who an edit its effect
+    /// submits is admitted for. `None` when the connection runs no such
+    /// invocation, or its caller was known only by certificate.
+    /// Who an invoke continuing a running invocation is admitted for: that
+    /// invocation's own caller, with their grants. `None` for any other
+    /// request; the refusal to answer with when the connection runs no such
+    /// invocation.
+    fn continued_caller(
+        &self,
+        peer_id: u64,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Result<tilo_actions::remote::Caller, Box<tilo_actions::remote::RemoteActionMessage>>>
+    {
+        let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = message else {
+            return None;
+        };
+        let running = invoke.on_behalf_of?;
+        Some(self.continuing_caller(peer_id, running).ok_or_else(|| {
+            Box::new(tilo_actions::remote::RemoteActionMessage::Receipt(
+                tilo_actions::remote::InvocationReceipt {
+                    invocation: invoke.invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionHostError::NotPermitted,
+                    },
+                },
+            ))
+        }))
+    }
+
+    pub(crate) fn continuing_caller(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Caller> {
+        self.pending_invocations
+            .lock()
+            .ok()?
+            .values()
+            .find(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
+            .and_then(|pending| pending.caller.clone())
     }
 }
 
@@ -1475,6 +1523,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                caller: None,
                 execution: None,
                 argument: request.argument.as_deref(),
                 actor: &admitted.broker_actor(),
@@ -2361,6 +2410,10 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// Who the invocation is admitted for, when the door knows them as a
+    /// caller: kept with the running invocation, so an edit its effect
+    /// submits is admitted for them too.
+    caller: Option<&'a tilo_actions::remote::Caller>,
     execution: Option<ExecutionScope>,
     argument: Option<&'a str>,
     actor: &'a BrokerActor,
@@ -3746,6 +3799,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    caller: None,
                     execution: None,
                     argument,
                     actor,
@@ -4203,6 +4257,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                caller: None,
                 execution: None,
                 argument,
                 actor: &BrokerActor::person(actor),
@@ -4312,6 +4367,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            caller,
             execution,
             argument,
             actor,
@@ -4499,6 +4555,7 @@ impl CapnpBrokerState {
         registry.insert(
             id,
             PendingInvocation {
+                caller: caller.cloned(),
                 activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
@@ -5055,6 +5112,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                caller: None,
                 execution: None,
                 argument,
                 actor: &BrokerActor::agent(run.agent_id),
@@ -6315,19 +6373,24 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // A delegated agent is its own principal already; any other
-        // connection is an application, which acts as itself.
-        let caller = if current.agent_id.is_some() {
-            person.clone()
-        } else {
-            match self
-                .state
-                .app_door(&person, &route.app_id, &request.message)
-            {
-                Ok(caller) => caller,
-                Err(refusal) => return reply_frame(*refusal, results),
-            }
-        };
+        // An edit an effect submits while running for someone is theirs.
+        let caller =
+            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
+                match continued {
+                    Ok(caller) => caller,
+                    Err(refused) => return reply_frame(*refused, results),
+                }
+            } else if current.agent_id.is_some() {
+                person.clone()
+            } else {
+                match self
+                    .state
+                    .app_door(&person, &route.app_id, &request.message)
+                {
+                    Ok(caller) => caller,
+                    Err(refusal) => return reply_frame(*refusal, results),
+                }
+            };
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -8076,6 +8139,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -8112,6 +8176,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -8140,6 +8205,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -13938,6 +14004,7 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            caller: None,
             activity: None,
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),
