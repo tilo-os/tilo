@@ -1182,10 +1182,6 @@ impl ui::widget::Widget for SnippetsApp {
         Some(self)
     }
 
-    fn test_id(&self) -> Option<&str> {
-        Some("snippets.application")
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -2819,6 +2815,18 @@ mod tests {
         app.settle();
     }
 
+    /// Activate the control labelled `label` as assistive technology does.
+    fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
+        let harness = app.harness();
+        let node = harness
+            .a11y_node_named(label)
+            .unwrap_or_else(|| panic!("no control labelled {label:?}"));
+        harness
+            .perform_a11y_action(node, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+    }
+
     /// The value of the snippet body's editor, as assistive technology reads it.
     fn body_shown(app: &mut TestApp<SnippetsShell>) -> String {
         app.harness()
@@ -2884,7 +2892,8 @@ mod tests {
             app.state().into_iter().find(|s| s.title == title).unwrap()
         };
         click(&mut app, "Open Plain");
-        click(&mut app, "Star snippet");
+        // A screen reader reaches the custom-drawn toolbar as a click does.
+        activate(&mut app, "Star snippet");
         assert!(id(&app, "Plain").favorite);
         assert!(app.undo(), "the star is one undo step");
         assert!(!id(&app, "Plain").favorite);
