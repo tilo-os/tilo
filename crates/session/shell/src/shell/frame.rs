@@ -4314,6 +4314,37 @@ mod tests {
         assert_eq!(queries, 1, "one editable query");
     }
 
+    #[test]
+    fn assistive_technology_sets_the_open_palettes_query() {
+        // The palette is published inside the host's tree, so setting its
+        // query from outside reaches the host first; it must still be typed.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.host_mut().set_palette_visible(true);
+        fb.host_mut().set_palette_focus(true);
+        fb.host_mut().force_palette_settled();
+        fb.relayout();
+        let update = fb.build_a11y_tree_update(None, 1.0);
+        let (query_id, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::TextInput
+                    && node.supports_action(ui::accesskit::Action::SetValue)
+            })
+            .cloned()
+            .expect("the open palette publishes its query");
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        assert!(fb.dispatch_a11y_action(
+            query_id,
+            &ui::a11y::Action::SetValue("photos".into()),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(fb.host().palette_query(), "photos");
+    }
+
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));

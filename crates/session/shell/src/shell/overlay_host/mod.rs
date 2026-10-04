@@ -15959,6 +15959,10 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
         .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
 }
 
+/// The semantic target of the open palette's query field, as the palette
+/// widget publishes it.
+const PALETTE_QUERY_TARGET: &str = "command-palette:query";
+
 impl Widget for ShellOverlayHost {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
@@ -18193,6 +18197,21 @@ impl Widget for ShellOverlayHost {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        // The palette is published inside this host's tree (see
+        // `accessibility_represents_child`), so its query's semantic target
+        // arrives here, not at the palette widget. Setting it is typing it:
+        // the results are recomputed for the new text.
+        if target == PALETTE_QUERY_TARGET && self.palette_visible {
+            let before = self.palette.query().to_string();
+            let handled = self
+                .palette
+                .perform_semantic_action(target, action, state, path);
+            if handled && self.palette.query() != before && self.pending_palette_action.is_none() {
+                let (doc, root) = ui::doc::document(state, path);
+                self.refresh_search_results(doc, root);
+            }
+            return handled;
+        }
         if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
             // A sheet's target never falls back to a pointer click: a stale
             // one must not press whatever is now under its old bounds.
