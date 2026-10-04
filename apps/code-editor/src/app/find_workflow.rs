@@ -68,12 +68,26 @@ impl Findable for FindTarget<'_> {
             .whole_word(options.whole_word);
         let matches = matches_in(&text, &query);
         let ranges = byte_ranges(&text, &matches);
+        // A find again after an edit keeps the emphasised match; a new
+        // query reveals its first one.
+        self.app.find_current = self.app.find_current.filter(|i| *i < matches.len());
         self.app.find_matches = matches;
-        self.app.find_current = None;
         self.app
             .editor
-            .set_find_matches(&self.app.find_matches, None);
+            .set_find_matches(&self.app.find_matches, self.app.find_current);
         ranges
+    }
+
+    fn content_revision(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.app
+            .session
+            .active_buffer()
+            .map(|b| b.node)
+            .hash(&mut hash);
+        self.text().hash(&mut hash);
+        hash.finish()
     }
 
     fn reveal(&mut self, index: usize) {
@@ -181,30 +195,13 @@ impl CodeApp {
         }
     }
 
-    /// Keep the highlights true to the buffer while it changes under an open
-    /// bar: an edit that adds or removes a match is a new search.
-    pub(super) fn refresh_find(&mut self, doc: &AutoCommit) {
+    /// A closed bar paints no matches. While it is open, the bar itself
+    /// finds again whenever the buffer's text changes
+    /// ([`Findable::content_revision`]), so its counter and the highlights
+    /// follow every edit in the same frame.
+    pub(super) fn refresh_find(&mut self) {
         if !self.find_open {
             self.clear_find_matches();
-            return;
         }
-        let Some(node) = self.session.active_buffer().map(|b| b.node) else {
-            return;
-        };
-        let text = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
-        let options = self.find.options();
-        let query = Query::new(self.find.query())
-            .case_sensitive(options.match_case)
-            .whole_word(options.whole_word);
-        let fresh = matches_in(&text, &query);
-        if fresh == self.find_matches {
-            return;
-        }
-        self.find_current = self.find_current.filter(|i| *i < fresh.len());
-        self.find_matches = fresh;
-        self.editor
-            .set_find_matches(&self.find_matches, self.find_current);
-        // The bar's counter follows on its next drive, keeping its place.
-        self.find.refresh();
     }
 }

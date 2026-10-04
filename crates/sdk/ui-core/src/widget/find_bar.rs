@@ -121,6 +121,15 @@ pub trait Findable {
     fn step(&mut self, _forward: bool) -> bool {
         false
     }
+
+    /// A number that changes whenever the content under the bar changes (an
+    /// edit, a page's text arriving). The bar finds again on its next
+    /// [`FindBar::drive`] when it moved, keeping the current match, so the
+    /// counter never lags the content. The default never changes; such a view
+    /// calls [`FindBar::refresh`] itself.
+    fn content_revision(&self) -> u64 {
+        0
+    }
 }
 
 /// Paint one match highlight over `rect`, the span of the matched glyphs —
@@ -246,6 +255,8 @@ pub struct FindBar {
     focused: bool,
     /// The query and options the matches were last found for.
     searched: Option<(String, FindOptions)>,
+    /// The findable's [`Findable::content_revision`] the matches were found in.
+    searched_revision: u64,
 }
 
 impl Default for FindBar {
@@ -287,6 +298,7 @@ impl FindBar {
             replace_focused: false,
             focused: false,
             searched: None,
+            searched_revision: 0,
         }
     }
 
@@ -484,7 +496,9 @@ impl FindBar {
             self.research(target, self.current);
         } else if pending.search || stale {
             self.research(target, Some(0));
-        } else if pending.refresh {
+        } else if pending.refresh
+            || (self.searched.is_some() && self.searched_revision != target.content_revision())
+        {
             // Content changed under the bar: the counter follows, the view
             // stays where the person is reading.
             self.research_quietly(target, self.current);
@@ -527,6 +541,7 @@ impl FindBar {
     fn research_quietly(&mut self, target: &mut dyn Findable, keep: Option<usize>) {
         let found = target.find(self.field.value(), self.options);
         self.searched = Some((self.field.value().to_owned(), self.options));
+        self.searched_revision = target.content_revision();
         if self.engine_results && found.is_empty() && !self.field.value().is_empty() {
             return;
         }
@@ -539,6 +554,7 @@ impl FindBar {
     fn research(&mut self, target: &mut dyn Findable, keep: Option<usize>) {
         let found = target.find(self.field.value(), self.options);
         self.searched = Some((self.field.value().to_owned(), self.options));
+        self.searched_revision = target.content_revision();
         if self.engine_results && found.is_empty() && !self.field.value().is_empty() {
             // The engine answers later, through `set_results`.
             return;
@@ -1691,6 +1707,47 @@ mod host_driven_tests {
             Some((2, 3)),
             "the count follows; the place stays"
         );
+    }
+
+    /// An editable buffer that reports a revision for every edit.
+    struct Buffer(Log, u64);
+
+    impl Findable for Buffer {
+        fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+            self.0.find(query, options)
+        }
+        fn reveal(&mut self, index: usize) {
+            self.0.reveal(index);
+        }
+        fn content_revision(&self) -> u64 {
+            self.1
+        }
+    }
+
+    #[test]
+    fn an_edit_under_an_open_bar_updates_the_counter_on_the_next_drive() {
+        let mut buffer = Buffer(
+            Log {
+                text: "fn fn".into(),
+                ..Log::default()
+            },
+            1,
+        );
+        let mut bar = FindBar::new();
+        bar.set_query("fn");
+        bar.drive(&mut buffer);
+        bar.next();
+        bar.drive(&mut buffer);
+        assert_eq!(bar.position(), Some((2, 2)));
+        buffer.0.text.push_str(" fn");
+        buffer.1 += 1;
+        bar.drive(&mut buffer);
+        assert_eq!(
+            bar.position(),
+            Some((2, 3)),
+            "the count follows the edit without a refresh; the place stays"
+        );
+        assert_eq!(buffer.0.current, Some(1), "the view is not moved");
     }
 
     #[test]

@@ -4884,7 +4884,9 @@ impl PdfApp {
                     let text = self.text_for_card(request.page + 1, text);
                     self.raster_text.insert(request.page + 1, text);
                     if self.search_active {
-                        self.recompute_matches();
+                        // The bar finds again over the grown text, so the
+                        // counter and the matches move together.
+                        self.drive_find_bar();
                     }
                     self.dirty = true;
                 }
@@ -6274,7 +6276,13 @@ impl ui::widget::Findable for PdfApp {
     ) -> Vec<ui::widget::FindMatch> {
         self.search_case_sensitive = options.match_case;
         self.search_whole_word = options.whole_word;
+        // Finding again over grown text keeps the emphasised match; a new
+        // query reveals its first one.
+        let current = self.active_match;
         self.recompute_matches_for(query);
+        if current < self.match_count() {
+            self.active_match = current;
+        }
         (0..self.match_count())
             .map(|i| ui::widget::FindMatch::new(i, i + 1))
             .collect()
@@ -6298,6 +6306,14 @@ impl ui::widget::Findable for PdfApp {
         self.raster_matches.clear();
         self.active_match = 0;
         self.dirty = true;
+    }
+
+    /// The searchable text grows as page text layers arrive from the worker;
+    /// the bar finds again, so its counter follows.
+    fn content_revision(&self) -> u64 {
+        let document = self.raster_document.as_ref().map_or(0, |doc| doc.id);
+        let pages = u64::try_from(self.raster_text.len()).unwrap_or(u64::MAX);
+        document.rotate_left(32) ^ pages
     }
 }
 

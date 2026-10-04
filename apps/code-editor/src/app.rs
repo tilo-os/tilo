@@ -3062,7 +3062,7 @@ impl Widget for CodeApp {
         self.poll_lsp();
 
         self.check_disk_staleness();
-        self.refresh_find(state);
+        self.refresh_find();
         self.reconcile_tabs();
         self.refresh_diagnostics(state);
         self.refresh_status();
