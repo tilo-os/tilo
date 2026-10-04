@@ -43,6 +43,39 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
+## Run it in CI
+
+`.forgejo/workflows/vm-acceptance.yml` (Dev / VM acceptance) runs the suite on a
+`runner-disk-100g` runner, whose KVM the dev disk and legacy guest boots already use, so
+a run needs no laptop memory:
+
+```bash
+fgj workflow run vm-acceptance.yml -r main                       # every check on main
+fgj workflow run vm-acceptance.yml -r main -f ref=<sha> -f only=window,A03 \
+  -f outputs=1920x1080@1,1280x800@1.25 -f gl=off
+```
+
+It also runs nightly on main, and on pull requests that change this directory: with only
+the checks of the changed check modules (and of the modules importing from them), just
+`provenance` when only this README or unit tests changed, and every check when anything
+else changed (`ci_select.py`).
+
+The disk is what CI published for the commit: its dev disk (`tilo-vm-disk/main-<sha7>-ci`)
+when a lane published one, else its dev image (`tilo-vm:main-<sha7>-ci-x86_64`, pushed by
+Build / OS dev for every main commit), installed with `os/dev/build-image.sh` exactly as
+Release / Dev VM disk installs it. A commit without either (a pull request, or main while
+its image still builds) is tested on the newest main commit before it that has one; the
+summary names it, and P01 checks against it. The workflow writes the provenance record
+itself, so P01 means the same as on a laptop.
+
+The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
+libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks) from the runner's packages, and runs `run.py` as an
+unprivileged user (root cannot hand passt its socket in a session). The runners have no
+GPU, so `gl=auto` creates the VM without virgl and the report records the software
+renderer; frame-timing checks gated to real display hardware report that. The report
+(`report.md`, `report.json`, shots, frame traces) is the run's artifact, `report.md` its
+job summary, and the job fails unless every check passes.
+
 ## Provenance
 
 A dev image does not carry the commit it was built from, so `build-disk.sh` writes
