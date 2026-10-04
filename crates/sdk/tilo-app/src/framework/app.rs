@@ -543,7 +543,8 @@ fn prepare_app<A: ResourceApp>(
 }
 
 /// Hand a prepared component what its launch named: the arguments, and the
-/// file the first one names when the app opens its type.
+/// file the first one names when the app opens its type and it is a path
+/// rather than a URL.
 ///
 /// # Errors
 /// A file of a type the app opens that cannot be read.
@@ -553,7 +554,12 @@ pub(crate) fn hand_launch(
     arguments: &[String],
     prepared: &mut PreparedComponentInputs,
 ) -> Result<(), LaunchError> {
-    if let Some(path) = arguments.first().map(std::path::Path::new)
+    // A URL (`https://…`, `file://…`) is an argument for the app to resolve,
+    // not a path on this device.
+    if let Some(path) = arguments
+        .first()
+        .filter(|argument| !argument.contains("://"))
+        .map(std::path::Path::new)
         && let Some(file) = launched_file(definition, path)?
     {
         prepared.context.provide_open_file(file);
