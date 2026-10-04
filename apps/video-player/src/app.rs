@@ -2288,12 +2288,6 @@ impl PlayerApp {
 
     fn handle_app_pointer(&mut self, state: &mut AutoCommit) -> bool {
         self.drawer.resolve(self.rect);
-        if self.library_visible && self.drawer.scrim_contains(self.last_cursor) {
-            // A press on the scrim dismisses the sheet.
-            self.request_library_hide();
-            self.dirty = true;
-            return true;
-        }
         let in_list = self.library_list_rect.contains(self.last_cursor);
         if self.library_visible && self.drawer.sidebar_contains(self.last_cursor) {
             if self.library_close_rect.contains(self.last_cursor) {
@@ -2645,6 +2639,20 @@ impl Widget for PlayerApp {
             return;
         }
         self.dirty |= history_hovered != self.history.is_hovered();
+        // The library drawer reads its own dismissals (a press on the scrim,
+        // Escape); the library's hide action is what closes it, so the
+        // drawer stays open until that action lands.
+        self.drawer.resolve(self.rect);
+        let drawer_open = self.drawer.is_open();
+        if self.drawer.handle_event(event, ctx) {
+            if drawer_open && !self.drawer.is_open() {
+                self.drawer.open();
+                self.request_library_hide();
+            }
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -4183,12 +4191,12 @@ mod tests {
         assert!(press_at(&mut app, close_button));
         let close = ui::widget::controls::take_control_invocation(&mut *app).expect("close");
         assert_eq!(close.address.action, "hide-library");
-        // So does a press on the scrim, which no control under it receives.
-        assert!(press_at(&mut app, Point::new(40.0, 400.0)));
-        let dismissed = ui::widget::controls::take_control_invocation(&mut *app).expect("scrim");
-        assert_eq!(dismissed.address.action, "hide-library");
+        // So does a press on the scrim, which the drawer reads and no control
+        // under it receives: its hide action closes the library.
+        assert!(app.library_visible);
+        Framed::harness_mut(&mut app).click_at(40.0, 400.0);
+        assert!(!app.library_visible, "the scrim press hid the library");
         // With the sheet closed the same press reaches the player.
-        app.perform_resource_operation(PlayerOperation::HideLibrary);
         assert!(!press_at(&mut app, Point::new(40.0, 400.0)));
     }
 
