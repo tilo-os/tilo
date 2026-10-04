@@ -242,6 +242,14 @@ impl PeerSync {
     }
 }
 
+impl Drop for Session {
+    /// The brokers save the workspace on the state writer thread; the next
+    /// session to take the profile lock must find those saves on disk.
+    fn drop(&mut self) {
+        persist::wait_for_saves_within(Duration::from_secs(10));
+    }
+}
+
 impl Drop for PeerSync {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);

@@ -30,6 +30,8 @@ FROM ${RPMS_REF} AS rpms
 FROM ${BASE_REF} AS rootfs
 ARG GENERATION
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # systemd-boot comes out of the digest-pinned RPM snapshot, not the network, so
 # this stage builds the same way the desktop image does — and stays buildable
 # when Fedora's `updates` metalink is serving repodata checksums that 404 on

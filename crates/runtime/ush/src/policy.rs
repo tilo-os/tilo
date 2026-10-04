@@ -94,6 +94,40 @@ impl Policy {
         out
     }
 
+    /// The hosts the guest may reach, as their grants spell them (`*`,
+    /// `example.com`, `.example.com`), as of `now`. The same evaluation the
+    /// launcher gives an app's `NetHost` capabilities: a grant names a host,
+    /// and `decide_capability` must still allow it.
+    pub fn net_hosts(&self, now: Option<u64>) -> Vec<String> {
+        let actor = Self::actor();
+        let mut out: Vec<String> = Vec::new();
+        for cap in &self.capabilities {
+            if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
+                continue;
+            }
+            let Scope::NetHost(host) = &cap.scope else {
+                continue;
+            };
+            let resource = ResourceRef::NetHost(host.clone());
+            if decide_capability(&actor, &resource, Verb::Read, &self.capabilities, now)
+                != CapDecision::Allow
+            {
+                continue;
+            }
+            if !out.contains(host) {
+                out.push(host.clone());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// What the guest's network allows, as of `now`.
+    pub fn egress(&self, now: Option<u64>) -> tilo_egress::EgressPolicy {
+        let hosts = self.net_hosts(now);
+        tilo_egress::EgressPolicy::from_grants(hosts.iter().map(String::as_str))
+    }
+
     /// Is `path` reachable at `verb`? The question `scan` and the broker ask.
     pub fn permits(&self, path: &Path, verb: Verb, now: Option<u64>) -> bool {
         let actor = Self::actor();
@@ -163,6 +197,35 @@ mod tests {
         expiring.capabilities[0].expiry = Expiry::AtUnix(500);
         assert_eq!(expiring.trusted_dirs(Some(499)).len(), 1);
         assert!(expiring.trusted_dirs(Some(501)).is_empty());
+    }
+
+    #[test]
+    fn host_grants_become_the_egress_policy_and_expire() {
+        let mut policy = Policy::new(vec![
+            tilo_environment::host_grant("github.com").unwrap(),
+            tilo_environment::host_grant("*.crates.io").unwrap(),
+            dir_grant(Path::new("/var/home/you/src"), true).unwrap(),
+        ]);
+        assert_eq!(policy.net_hosts(Some(1_000)), [".crates.io", "github.com"]);
+        let egress = policy.egress(Some(1_000));
+        assert!(egress.allows("static.crates.io").is_some());
+        assert!(egress.allows("github.com").is_some());
+        assert!(egress.allows("example.com").is_none());
+
+        policy.capabilities[0].expiry = Expiry::AtUnix(500);
+        assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
+
+        // A host grant for another app grants this guest nothing.
+        let mut other = tilo_environment::host_grant("example.com").unwrap();
+        other.subject = Subject::Principal(Principal::App("so.tilo.other".into()));
+        assert!(Policy::new(vec![other]).net_hosts(Some(1)).is_empty());
+
+        let any = Policy::new(vec![tilo_environment::host_grant("*").unwrap()]);
+        assert_eq!(any.egress(Some(1)), tilo_egress::EgressPolicy::Any);
+        assert_eq!(
+            Policy::default().egress(Some(1)),
+            tilo_egress::EgressPolicy::none()
+        );
     }
 
     #[test]
