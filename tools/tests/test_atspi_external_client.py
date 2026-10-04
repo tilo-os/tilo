@@ -72,5 +72,22 @@ class ManifestScenarioTests(unittest.TestCase):
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
 
 
+class AppDrivingTests(unittest.TestCase):
+    def test_names_are_read_from_gdbus_variants(self):
+        tree = {
+            "/root": "(<'App Store'>,)",
+            "/a": "(<'Update all'>,)",
+            "/b": "(<''>,)",
+            "/c": "(<'Settings, offered by a test registry'>,)",
+        }
+        original = CLIENT.AtspiClient.tree
+        CLIENT.AtspiClient.tree = lambda self, limit=0: tree
+        try:
+            names = CLIENT.app_names("unix:path=/x", ":1.2")
+        finally:
+            CLIENT.AtspiClient.tree = original
+        self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
+
+
 if __name__ == "__main__":
     unittest.main()

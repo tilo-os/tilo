@@ -13,7 +13,7 @@ use tilo_actions::{
 
 pub const STORE_BROWSE_OPERATION_TYPE: &str = "store.browse";
 pub const BROWSE_RESOURCE_ID: &str = "store:filters";
-const SOURCE_FILTERS: [&str; 4] = ["All", "Tilo", "Flatpak", "On device"];
+const SOURCE_FILTERS: [&str; 5] = ["All", "Tilo", "Flatpak", "On device", "Updates"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowseOperation {
@@ -98,7 +98,7 @@ pub fn resource(categories: &[String]) -> Resource {
     .with_action(typed(
         "set-source",
         "Filter apps by source",
-        "All, Tilo, Flatpak, or Installed",
+        "All, Tilo, Flatpak, On device, or Updates",
         vec![
             ActionParam::required("source", ParamType::Text, "App source")
                 .with_choices(SOURCE_FILTERS),

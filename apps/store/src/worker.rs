@@ -46,6 +46,8 @@ pub enum Request {
     /// `Request` (and the channel that carries them) sized to the common
     /// case instead of the rare, heavy one.
     Act(Box<StoreItem>, ActionKind),
+    /// Update each app in turn, reporting progress, then refresh once.
+    UpdateAll(Vec<StoreItem>),
     SubmitReport {
         registry_name: String,
         envelope: ReportEnvelope,
@@ -101,7 +103,10 @@ impl StoreWorker {
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref, search_index))
+            .spawn({
+                let pending = Arc::clone(&pending);
+                move || run(&request_rx, &snapshot_tx, opened_ref, search_index, pending)
+            })
             .expect("spawn store worker");
         Self {
             requests: request_tx,
@@ -152,6 +157,9 @@ impl StoreWorker {
 
 struct State {
     host: Option<app_host::client::BlockingClient>,
+    /// The UI's count of snapshots still to come; a request sends one, and
+    /// a progress report adds its own.
+    pending: Arc<AtomicUsize>,
     opened_ref: Option<FlatpakRef>,
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
@@ -172,6 +180,7 @@ fn run(
     snapshots: &mpsc::Sender<Snapshot>,
     opened_ref: Option<FlatpakRef>,
     search_index: StoreSearchIndex,
+    pending: Arc<AtomicUsize>,
 ) {
     let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
@@ -183,6 +192,7 @@ fn run(
                 error
             })
             .ok(),
+        pending,
         opened_ref,
         base_items: Vec::new(),
         installed: Vec::new(),
@@ -331,6 +341,7 @@ fn handle(
                 operation_error,
             )
         }
+        Request::UpdateAll(items) => update_all(&items, invocation, state, snapshots, staging),
         Request::SubmitReport {
             registry_name,
             envelope,
@@ -410,6 +421,74 @@ fn handle(
                 result,
                 "Appeal submitted",
             )
+        }
+    }
+}
+
+/// Update every item in turn without launching any, report each step, and
+/// finish the invocation with what happened.
+fn update_all(
+    items: &[StoreItem],
+    invocation: Option<tilo_actions::InvocationId>,
+    state: &mut State,
+    snapshots: &mpsc::Sender<Snapshot>,
+    staging: &std::path::Path,
+) -> bool {
+    let total = items.len();
+    let mut failures = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        state.pending.fetch_add(1, Ordering::Relaxed);
+        let progress = format!(
+            "Updating {} of {total}: {}…",
+            index.saturating_add(1),
+            item.name
+        );
+        if !send(
+            snapshots,
+            state,
+            state.base_items.clone(),
+            &progress,
+            None,
+            None,
+        ) {
+            return false;
+        }
+        let action = match item.source {
+            StoreSource::Flathub => ActionKind::FlatpakUpdate,
+            StoreSource::Tilo { .. } => ActionKind::Update,
+        };
+        let outcome = crate::actions::execute_with_host(state.host.as_ref(), item, action, staging);
+        if !outcome.ok {
+            failures.push(format!("{}: {}", item.name, outcome.status_line));
+        }
+    }
+    refresh(state);
+    let summary = update_all_summary(total, &failures);
+    let operation_error = (!failures.is_empty()).then(|| summary.clone());
+    send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &summary,
+        None,
+        None,
+        invocation,
+        operation_error,
+    )
+}
+
+fn update_all_summary(total: usize, failures: &[String]) -> String {
+    let apps = if total == 1 { "app" } else { "apps" };
+    match failures {
+        [] => format!("Updated {total} {apps}."),
+        [first, rest @ ..] => {
+            let updated = total.saturating_sub(failures.len());
+            let more = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" (and {} more failed)", rest.len())
+            };
+            format!("Updated {updated} of {total} {apps}; {first}{more}")
         }
     }
 }
@@ -776,9 +855,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn update_all_reports_what_it_updated_and_the_first_failure() {
+        assert_eq!(update_all_summary(1, &[]), "Updated 1 app.");
+        assert_eq!(update_all_summary(3, &[]), "Updated 3 apps.");
+        assert_eq!(
+            update_all_summary(3, &["Notes: install refused".into()]),
+            "Updated 2 of 3 apps; Notes: install refused"
+        );
+        assert_eq!(
+            update_all_summary(3, &["Notes: offline".into(), "Clocks: offline".into()]),
+            "Updated 1 of 3 apps; Notes: offline (and 1 more failed)"
+        );
+    }
+
     fn state_with_items(items: Vec<StoreItem>, search_index: StoreSearchIndex) -> State {
         State {
             host: None,
+            pending: Arc::new(AtomicUsize::new(0)),
             opened_ref: None,
             base_items: items,
             installed: Vec::new(),

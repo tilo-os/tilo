@@ -96,6 +96,20 @@ impl Resource for Store {
                 ..tilo_actions::ActionContract::default()
             }));
         }
+        if let Ok(update_all) = ActionSpec::operation(
+            crate::app::UPDATE_ALL_ACTION,
+            "Update all apps",
+            OperationKind::Effect,
+            crate::app::UPDATE_ALL_OPERATION_TYPE,
+            &"",
+        ) {
+            ops.push(update_all.with_contract(tilo_actions::ActionContract {
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: false },
+                result: ResultSpec::Job,
+                ..tilo_actions::ActionContract::default()
+            }));
+        }
         // Search apps — View with no document delta (device-local browse).
         ops.extend(
             crate::browse_actions::resource(&[])
@@ -245,7 +259,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
     )]
-    fn resource_publish_owns_catalog_door_and_hosted_keeps_only_live_extras() {
+    fn resource_publish_owns_catalog_door_and_hosted_publishes_the_live_catalogue() {
         let mut doc = AutoCommit::new();
         StoreDocumentAction::CreateReportDraft {
             app_id: "so.tilo.notes".into(),
@@ -334,8 +348,23 @@ mod tests {
             "hosted must not republish store.catalog beside ResourceRoot: {:?}",
             extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
         );
-        assert_eq!(extras.len(), 1);
-        assert_eq!(extras[0].kind, "store.install-job");
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "store.install-job"),
+            "hosted carries the live install job"
+        );
+        // Every card binds an action of its app's resource; hosted extras
+        // must resolve them or the window publishes no actions at all.
+        for item in app.visible_items() {
+            let address =
+                ui::tilo_actions::ActionAddress::new(format!("app:{}", item.id), "show-details");
+            assert!(
+                ui::tilo_actions::door::resolve(&extras, &address).is_some(),
+                "{} is not resolvable in the hosted extras",
+                item.id
+            );
+        }
 
         let door = provide_resources(&state);
         assert_eq!(door[0].kind, "store.catalog");

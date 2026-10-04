@@ -796,6 +796,25 @@ fn refresh_binding() -> Option<ActionBinding<()>> {
     ActionBinding::unit_for(&resource, "refresh").ok()
 }
 
+/// Update every installed app a source offers a newer version of.
+fn update_all_binding() -> Option<ActionBinding<()>> {
+    let spec = ActionSpec::operation(
+        UPDATE_ALL_ACTION,
+        "Update all apps",
+        OperationKind::Effect,
+        UPDATE_ALL_OPERATION_TYPE,
+        &"",
+    )
+    .ok()?;
+    let resource = Resource::new("store", "store.catalog", "App Store").with_action(spec);
+    ActionBinding::unit_for(&resource, UPDATE_ALL_ACTION).ok()
+}
+
+/// The `store.catalog` action that updates every app with an update.
+pub const UPDATE_ALL_ACTION: &str = "update-all";
+/// Its operation type.
+pub const UPDATE_ALL_OPERATION_TYPE: &str = "store.update-all";
+
 fn detail_binding(item: &StoreItem) -> Option<ActionBinding<()>> {
     let spec = ActionSpec::operation(
         "show-details",
@@ -974,6 +993,7 @@ pub struct StoreApp {
     root: Option<Box<dyn Widget>>,
     pending_lifecycle_actions: Vec<(String, ActionKind, tilo_actions::InvocationId)>,
     pending_lifecycle_refresh: Option<tilo_actions::InvocationId>,
+    pending_lifecycle_update_all: Option<(Vec<String>, tilo_actions::InvocationId)>,
     pending_lifecycle_remote: Vec<(RemoteIntent, tilo_actions::InvocationId)>,
     completed_invocations: Vec<tilo_actions::InvocationUpdate>,
     pending_search: Option<String>,
@@ -1055,6 +1075,7 @@ impl StoreApp {
             root: None,
             pending_lifecycle_actions: Vec::new(),
             pending_lifecycle_refresh: None,
+            pending_lifecycle_update_all: None,
             pending_lifecycle_remote: Vec::new(),
             completed_invocations: Vec::new(),
             pending_search: None,
@@ -1107,6 +1128,26 @@ impl StoreApp {
 
     pub fn take_lifecycle_refresh(&mut self) -> Option<tilo_actions::InvocationId> {
         self.pending_lifecycle_refresh.take()
+    }
+
+    pub fn take_lifecycle_update_all(
+        &mut self,
+    ) -> Option<(Vec<String>, tilo_actions::InvocationId)> {
+        self.pending_lifecycle_update_all.take()
+    }
+
+    /// The installed apps a source offers a newer version of, with the
+    /// action that updates each.
+    pub fn updatable(&self) -> Vec<(&StoreItem, ActionKind)> {
+        self.items
+            .iter()
+            .filter(|item| item.installed.update_available())
+            .filter_map(|item| {
+                let action = item.action_kind(self.flatpak_available);
+                matches!(action, ActionKind::Update | ActionKind::FlatpakUpdate)
+                    .then_some((item, action))
+            })
+            .collect()
     }
 
     pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, tilo_actions::InvocationId)> {
@@ -3053,7 +3094,11 @@ impl StoreApp {
                         .with_scaled_size(13.0)
                         .with_color(theme.text_dim),
                 ))
-                .push(Box::new(search))
+                .push(Box::new(search));
+            if let Some(banner) = self.build_updates_banner(theme) {
+                header = header.push(banner);
+            }
+            header = header
                 .push(Box::new(
                     Row::new()
                         .no_wrap()
@@ -3138,6 +3183,9 @@ impl StoreApp {
             .with_gap(theme.tokens.spacing.s3);
         header = header.push(title_row);
         header = header.push(Box::new(search));
+        if let Some(banner) = self.build_updates_banner(theme) {
+            header = header.push(banner);
+        }
         if self.operation_error.is_some() && !self.items.is_empty() {
             header = header.push(Box::new(
                 Container::new().with_background().with_child(Box::new(
@@ -3957,6 +4005,7 @@ impl Widget for StoreApp {
         &[
             crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
             "store.refresh",
+            UPDATE_ALL_OPERATION_TYPE,
             "store.app",
             "store.remote",
             "store.remote-form",
@@ -4269,20 +4318,31 @@ impl StoreApp {
             .find_map(|resource| find_snapshot_resource(resource, id))
     }
 
-    /// Hosted-only: in-flight install / refresh status. Never a second
-    /// `store.catalog` root — document ops stay on [`tilo_resource::publish`].
+    /// Hosted-only: the live catalogue (browse, navigation, the apps by
+    /// publisher, remotes) and in-flight install / refresh status, beside the
+    /// document root [`tilo_resource::publish`] owns. Never a second
+    /// `store.catalog` root. Every card on screen binds an action of its
+    /// app's resource, so the apps must be published here too: a binding
+    /// the published tree does not resolve withholds the window's whole
+    /// action surface.
     pub(crate) fn live_progress_extras(&self) -> Vec<Resource> {
-        if self.status_line.is_empty() {
-            return Vec::new();
-        }
-        vec![Resource::new(
-            "store:latest-job",
-            "store.install-job",
-            self.status_line.clone(),
-        )]
+        self.live_catalogue_children()
     }
 
-    fn live_catalogue_children(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    /// The apps whose cards the current page shows.
+    fn shown_page_ids(&self) -> Vec<&str> {
+        let visible = self.visible_items();
+        let page_count = visible.len().div_ceil(PAGE_SIZE).max(1);
+        let page = self.catalog_page.min(page_count.saturating_sub(1));
+        visible
+            .into_iter()
+            .skip(page.saturating_mul(PAGE_SIZE))
+            .take(PAGE_SIZE)
+            .map(|item| item.id.as_str())
+            .collect()
+    }
+
+    fn live_catalogue_children(&self) -> Vec<Resource> {
         let mut children = Vec::new();
         children.push(crate::browse_actions::resource(&self.category_labels()));
         let mut navigation =
@@ -4301,8 +4361,16 @@ impl StoreApp {
         children.push(navigation);
 
         let mut publishers: HashMap<String, Resource> = HashMap::new();
+        // The shown page first, so every card's binding resolves, then the
+        // rest of the catalogue up to the bound.
+        let shown = self.shown_page_ids();
         let mut snapshot_items = self.items.iter().collect::<Vec<_>>();
-        snapshot_items.sort_by(|left, right| left.id.cmp(&right.id));
+        snapshot_items.sort_by(|left, right| {
+            let rank = |item: &StoreItem| !shown.contains(&item.id.as_str());
+            rank(left)
+                .cmp(&rank(right))
+                .then_with(|| left.id.cmp(&right.id))
+        });
         for item in snapshot_items.into_iter().take(RESOURCE_SNAPSHOT_LIMIT) {
             let resource = store_app_resource(item, self.flatpak_available);
             let publisher_id = item
@@ -4556,7 +4624,7 @@ impl StoreApp {
         } else {
             root.children.push(live);
         }
-        root.children.extend(self.live_catalogue_children(doc));
+        root.children.extend(self.live_catalogue_children());
     }
 }
 
@@ -4780,7 +4848,7 @@ impl StoreApp {
             return Ok(false);
         }
         match type_id {
-            "store.refresh" | "store.app" => {
+            "store.refresh" | "store.app" | UPDATE_ALL_OPERATION_TYPE => {
                 Err("store operations require the lifecycle-capable operation host".into())
             }
             _ => Ok(false),
@@ -4809,6 +4877,9 @@ impl StoreApp {
             }
             self.pending_lifecycle_refresh = Some(invocation);
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if type_id == UPDATE_ALL_OPERATION_TYPE {
+            return self.admit_update_all(invocation).map(Some);
         }
         if type_id == "store.report-export" {
             if self.report_export.is_some() {
@@ -5018,6 +5089,86 @@ impl StoreApp {
     }
 }
 
+impl StoreApp {
+    /// Queue one update of every app with an update, as a single operation.
+    fn admit_update_all(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<ui::widget::ResourceOperationStart, String> {
+        if self.active_operation.is_some() || self.pending_lifecycle_update_all.is_some() {
+            return Err("a package operation is already in progress".into());
+        }
+        let updatable = self.updatable();
+        let Some((first, action)) = updatable
+            .first()
+            .map(|(item, action)| (item.id.clone(), *action))
+        else {
+            return Err("every installed app is up to date".into());
+        };
+        let ids: Vec<String> = updatable.iter().map(|(item, _)| item.id.clone()).collect();
+        self.status_line = format!(
+            "Updating {} app{}…",
+            ids.len(),
+            if ids.len() == 1 { "" } else { "s" }
+        );
+        self.active_operation = Some((first, action));
+        self.operation_error = None;
+        self.structure_dirty = true;
+        self.pending_lifecycle_update_all = Some((ids, invocation));
+        Ok(ui::widget::ResourceOperationStart::Accepted)
+    }
+
+    /// "N updates available" with the Update all button, when any app has
+    /// an update.
+    fn build_updates_banner(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
+        let updatable = self.updatable();
+        if updatable.is_empty() {
+            return None;
+        }
+        let count = updatable.len();
+        let names = updatable
+            .iter()
+            .take(3)
+            .map(|(item, _)| item.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = count.saturating_sub(3);
+        let summary = if more == 0 {
+            format!(
+                "{count} update{} available: {names}",
+                if count == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("{count} updates available: {names} and {more} more")
+        };
+        let mut button = ui::widget::Button::new("store.update-all", "Update all", None)
+            .with_icon(Icon::Refresh)
+            .fit_content(40.0)
+            .tooltip("Install the newest version of every app listed under Updates");
+        if let Some(binding) = update_all_binding() {
+            button = button.on_action(binding);
+        }
+        if self.active_operation.is_some() {
+            button = button.with_enabled(false);
+        }
+        Some(Box::new(
+            Row::new()
+                .no_wrap()
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(
+                            Text::new(&summary)
+                                .with_scaled_size(13.0)
+                                .with_color(theme.text_dim),
+                        )),
+                ))
+                .push(Box::new(button.primary())),
+        ))
+    }
+}
+
 fn operation_error_summary() -> &'static str {
     "The last operation failed. Refresh the catalogue and try again."
 }
@@ -5087,6 +5238,69 @@ mod tests {
             item("Chess", StoreSource::Flathub, "Games", InstalledState::Not),
         ]);
         app
+    }
+
+    /// Installed apps with a newer catalogue version, the system image's
+    /// among them, are listed under Updates and updated by one operation.
+    #[test]
+    fn update_all_queues_every_app_with_an_update() {
+        let mut app = seeded_app();
+        let installed = |version: &str, available: &str, user_managed| InstalledState::Installed {
+            version: version.into(),
+            available: available.into(),
+            pinned: false,
+            user_managed,
+        };
+        for (id, state) in [
+            // The image's copy, which the user store has not shadowed yet.
+            ("id.terminal", installed("0.1.0", "0.1.62530+gabc", false)),
+            ("id.notes", installed("1.0.0", "1.2.0", true)),
+        ] {
+            app.items
+                .iter_mut()
+                .find(|item| item.id == id)
+                .unwrap()
+                .installed = state;
+        }
+        app.set_active_filter(SourceFilter::Updates);
+        let names: Vec<&str> = app
+            .visible_items()
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(app.build_updates_banner(&Theme::default()).is_some());
+
+        let mut doc = AutoCommit::new();
+        let start = |app: &mut StoreApp, doc: &mut AutoCommit| {
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    UPDATE_ALL_OPERATION_TYPE,
+                    &serde_json::to_vec(&"").unwrap(),
+                ),
+                doc,
+                &automerge::ROOT,
+            )
+        };
+        assert_eq!(
+            start(&mut app, &mut doc).unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        assert_eq!(app.status_line(), "Updating 2 apps…");
+        let (mut ids, _) = app.take_lifecycle_update_all().unwrap();
+        ids.sort();
+        assert_eq!(ids, ["id.notes", "id.terminal"]);
+        assert!(
+            start(&mut app, &mut doc).is_err(),
+            "a second update-all waits for the first"
+        );
+        assert!(app.take_lifecycle_actions().is_empty(), "no app is opened");
+
+        let mut current = seeded_app();
+        assert!(current.build_updates_banner(&Theme::default()).is_none());
+        assert!(start(&mut current, &mut doc).is_err(), "nothing to update");
     }
 
     /// Source, installed and category filters, search ranking and the category list.

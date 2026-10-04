@@ -2735,6 +2735,9 @@ jobs:
             # What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root,
             # on this architecture, built on exactly this lane's image.
             ./os/dev/check-dev-vm.sh --arch '${{ matrix.arch }}' --base-digest "$dev_base_digest"
+            # The image's apps are installed packages: Settings updates from
+            # a registry, launches as the new version, and rolls back.
+            RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh
           fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed

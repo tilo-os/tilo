@@ -14472,6 +14472,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-app-registry"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "package-store",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tilo-app-package",
+ "tilo-clock",
+ "workspace-hack",
+]
+
+[[package]]
 name = "test-http"
 version = "0.1.0"
 dependencies = [
