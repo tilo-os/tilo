@@ -2144,6 +2144,12 @@ impl VelloDrmBridge {
         if let Some(error) = self.take_device_error() {
             return Err(error);
         }
+        if self.target.poisoned {
+            // A failed direct frame must not leave the next attempt with a
+            // target that refuses to render.
+            let (width, height) = self.target.size;
+            self.reconstruct_target(width, height)?;
+        }
         if (target.width, target.height) != self.target.size {
             return Err(BridgeError::InvalidSize(format!(
                 "imported scanout target is {}x{}, expected {}x{}",
@@ -8119,6 +8125,73 @@ mod tests {
         for (index, pixel) in rgba.chunks_exact(4).enumerate() {
             assert_eq!(pixel, &[0xE0, 0x10, 0x20, 0xFF], "pixel {index}");
         }
+    }
+
+    /// One direct frame that missed its deadline -- a cold shader cache, a busy GPU -- poisons
+    /// the target. The retry after the readback presenter stood in must render again, or a single
+    /// slow frame keeps the output on the per-frame readback for the rest of the session.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_direct_frame_after_a_missed_deadline_renders_again() {
+        let mut bridge = required_bridge(128, 96);
+        let (device, _) = bridge.gpu();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("direct-retry-target"),
+            size: wgpu::Extent3d {
+                width: 128,
+                height: 96,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target = ui::dmabuf_import::ImportedRenderTarget {
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            texture,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: 128,
+            height: 96,
+            stride: 128 * 4,
+        };
+        let scene = rect_scene(128, 96, Color::WHITE);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        bridge.target.completion_test = Some(test);
+        assert!(matches!(
+            bridge.paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                deadline,
+                white,
+                &[]
+            ),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert!(
+            bridge.target.poisoned,
+            "the fixture must reach the poisoned state"
+        );
+
+        let stats = bridge
+            .paint_imported_until(
+                &scene,
+                version(2, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("the retried direct frame renders");
+        assert_eq!(stats.revision, 2);
+        assert!(!bridge.target.poisoned);
     }
 
     /// wgpu answers an uncaptured validation error by panicking, and the compositor aborts on

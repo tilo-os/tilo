@@ -396,6 +396,45 @@ fn client_followup_deadline(pump_needed: bool, now: Instant) -> Option<Instant> 
     pump_needed.then_some(now)
 }
 
+/// Where the client phase of one loop iteration spent its time, for the
+/// `SLOW-ITER` line: a stall there names its step instead of the whole phase.
+struct ClientSteps {
+    last: Instant,
+    steps: [(&'static str, Duration); 8],
+    len: usize,
+}
+
+impl ClientSteps {
+    fn start() -> Self {
+        Self {
+            last: Instant::now(),
+            steps: [("", Duration::ZERO); 8],
+            len: 0,
+        }
+    }
+
+    fn mark(&mut self, step: &'static str) {
+        let now = Instant::now();
+        if let Some(slot) = self.steps.get_mut(self.len) {
+            *slot = (step, now.saturating_duration_since(self.last));
+            self.len = self.len.saturating_add(1);
+        }
+        self.last = now;
+    }
+}
+
+impl std::fmt::Display for ClientSteps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, (step, elapsed)) in self.steps.iter().take(self.len).enumerate() {
+            if index > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{step}={elapsed:?}")?;
+        }
+        Ok(())
+    }
+}
+
 fn dispatch_wayland_clients_fairly(
     display: &mut Display<State>,
     state: &mut State,
@@ -11126,10 +11165,12 @@ pub fn run() {
 
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.
+        let mut client_steps = ClientSteps::start();
         if let Some(portal) = portal_backend.as_ref() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        client_steps.mark("selection");
         let pump_epoch = foreign::client_pump_epoch();
         let dispatch_started = Instant::now();
         let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
@@ -11155,18 +11196,22 @@ pub fn run() {
         // released transactions here as well as at tick start; otherwise a
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
+        client_steps.mark("dispatch");
         let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         if capture_ready {
             injected_redraw_pending = true;
         }
+        client_steps.mark("capture_barriers");
         // A screenshot after input waits for the clients in it to answer
         // the input; their answers were just dispatched, and the pings it
         // sends go out with this flush.
         publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &mut state);
+        client_steps.mark("snapshot");
         if let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: flush_clients error: {err}");
             break;
         }
+        client_steps.mark("flush");
         // A newly dispatched xdg_toplevel request can arrive after this
         // tick's paint decision. Its tab may already have a placement from
         // the retained chrome tree, but waiting for a *future painted frame*
@@ -11182,6 +11227,7 @@ pub fn run() {
             }
             injected_redraw_pending = true;
         }
+        client_steps.mark("configures");
         let client_changed = foreign::client_pump_epoch() != pump_epoch;
         // A frame callback that arrived without a new buffer, title, or
         // configure is not a present and not another pump. Release it here,
@@ -11206,8 +11252,9 @@ pub fn run() {
         if (loop_timing || t_work_done > Duration::from_millis(100))
             && t_work_done > Duration::from_millis(100)
         {
+            client_steps.mark("idle_callbacks");
             eprintln!(
-                "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
+                "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?} ({})",
                 t_work_done,
                 t_input_done,
                 pump_total,
@@ -11216,6 +11263,7 @@ pub fn run() {
                     .unwrap_or_default(),
                 t_testctl_done.checked_sub(t_paint_done).unwrap_or_default(),
                 t_work_done.checked_sub(t_testctl_done).unwrap_or_default(),
+                client_steps,
             );
         }
 
