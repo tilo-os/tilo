@@ -296,7 +296,7 @@ impl<R: Resource> SurfaceCx<R> {
     /// What the window's launch named (paths, URLs), as
     /// [`ViewCx::launch_arguments`](super::ViewCx::launch_arguments).
     pub fn launch_arguments(&self) -> &[String] {
-        &self.run.arguments
+        &self.run.launched.arguments
     }
 
     /// The id of the app the surface is part of, which its presence keys

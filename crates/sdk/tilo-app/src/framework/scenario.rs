@@ -62,8 +62,15 @@ pub(crate) struct Fixtures {
 pub(crate) struct Run {
     pub(crate) mode: RunMode,
     pub(crate) fixtures: Rc<Fixtures>,
-    /// What the launch named: paths, URLs.
-    pub(crate) arguments: Rc<[String]>,
+    /// What the launch that opened the window named.
+    pub(crate) launched: Rc<Launched>,
+}
+
+/// The arguments and the file a launch handed the app.
+#[derive(Default)]
+pub(crate) struct Launched {
+    pub(crate) arguments: Vec<String>,
+    pub(crate) file: Option<ui_core::application::OpenFile>,
 }
 
 impl Run {
@@ -74,22 +81,26 @@ impl Run {
                 content,
                 ..Fixtures::default()
             }),
-            arguments: Rc::from([]),
+            launched: Rc::default(),
         }
-    }
-
-    /// This run, launched naming `arguments`.
-    pub(crate) fn launched_on(mut self, arguments: &[String]) -> Self {
-        self.arguments = Rc::from(arguments);
-        self
     }
 
     pub(crate) fn past() -> Self {
         Self {
             mode: RunMode::Past,
             fixtures: Rc::default(),
-            arguments: Rc::from([]),
+            launched: Rc::default(),
         }
+    }
+
+    /// The same run, opened by a launch that named `launched`.
+    pub(crate) fn launched(mut self, launched: Launched) -> Self {
+        self.launched = Rc::new(launched);
+        self
+    }
+
+    pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
+        super::launch::LaunchInput::new(&self.launched.arguments, self.launched.file.as_ref())
     }
 
     pub(crate) fn fixture<T: 'static>(&self) -> Option<Rc<T>> {
@@ -223,7 +234,7 @@ impl<R: Resource> Fixture<R> {
                 content: self.content,
                 _directory: self.directory,
             }),
-            arguments: Rc::from([]),
+            launched: Rc::default(),
         }
     }
 
