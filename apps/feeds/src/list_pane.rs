@@ -14,6 +14,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
+use ui::surface::{ContentEdge, content_edge_fade};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
@@ -183,6 +184,7 @@ impl Core {
             .map(|a| a.id)
             .collect();
         let row_h = ListRowFace::new("Ag")
+            .two_line_title()
             .secondary("Ag")
             .meta("Ag")
             .height(text, theme);
@@ -213,9 +215,14 @@ impl Core {
         }
         let scroll = self.list.scroll();
         // Rows span the column, as a list in a section does, so their text
-        // shares the column title's edge; the trailing gutter stays free for
-        // the scroll bar.
-        let x1 = viewport.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter);
+        // shares the column title's edge; while the list overflows, the
+        // trailing gutter stays free for the scroll bar.
+        let overflows = self.list.content > viewport.height();
+        let x1 = if overflows {
+            viewport.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter)
+        } else {
+            viewport.x1
+        };
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &viewport);
         let first = ((scroll - inset) / row_h).floor().max(0.0) as usize;
@@ -234,6 +241,14 @@ impl Core {
             );
         }
         scene.pop_layer();
+        // Rows fade into the column where more can scroll in.
+        let ground = theme.tokens.colors.surfaces.content;
+        if scroll > 0.0 {
+            content_edge_fade(scene, t, viewport, ContentEdge::Top, ground);
+        }
+        if scroll + viewport.height() < self.list.content {
+            content_edge_fade(scene, t, viewport, ContentEdge::Bottom, ground);
+        }
         self.list.scroller.draw_bar_overlay(scene, t, theme);
     }
 
@@ -253,6 +268,7 @@ impl Core {
             label: star_label(article),
         }];
         let face = ListRowFace::new(&article.title)
+            .two_line_title()
             .secondary(self.row_secondary(article))
             .meta(&time)
             .emphasized(!article.read)
@@ -264,6 +280,11 @@ impl Core {
             });
         let star_rect = face.action_rects(rect, ctx.theme).first().copied();
         let face = face.hovered_action(star_rect.filter(|r| r.contains(self.pointer)).map(|_| 0));
+        let face = if article.starred {
+            face.mark(Icon::Star)
+        } else {
+            face
+        };
         let face = match next {
             Some(next) => face.separator(self.selected == Some(next)),
             None => face,

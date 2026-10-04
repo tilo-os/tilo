@@ -13,6 +13,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
+use ui::surface::{ContentEdge, content_edge_fade};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::time::Instant;
@@ -288,6 +289,13 @@ impl Core {
         self.reader
             .scroller
             .set_content_size(area.width() as f32, content as f32);
+        // The page fades into its paper where more can scroll in.
+        if scroll > 0.0 {
+            content_edge_fade(scene, t, area, ContentEdge::Top, palette.ground);
+        }
+        if scroll + area.height() < content {
+            content_edge_fade(scene, t, area, ContentEdge::Bottom, palette.ground);
+        }
         self.reader.scroller.draw_bar_overlay(scene, t, &page_theme);
     }
 

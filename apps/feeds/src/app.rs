@@ -2652,7 +2652,7 @@ impl ui::widget::Decorator for FeedsApp {
             let mut core = self.core.borrow_mut();
             if let Some(open) = core.menu.as_mut() {
                 open.menu.layout_within(text, theme);
-                Widget::draw(&mut open.menu, scene, transform, text, theme, presence);
+                Widget::draw_overlay(&mut open.menu, scene, transform, text, theme, presence);
             }
         }
         self.paint_toast(scene, transform, text, theme);
