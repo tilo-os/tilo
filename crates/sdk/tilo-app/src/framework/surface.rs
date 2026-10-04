@@ -686,8 +686,11 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         {
             return Ok(Some(started));
         }
+        // The surface answers its operations as its effect vocabulary; only
+        // the toolkit's own widgets inside it (a button bound to a view)
+        // answer theirs, never the surface by hand.
         let before = doc.pending_ops();
-        let started = self.surface.start_operation(op, doc, path);
+        let started = ui_core::widget::start_in_children(&mut self.surface, op, doc, path);
         refuse_raw_writes(doc, before, "start_operation");
         started
     }
@@ -738,8 +741,9 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         {
             return Some(update);
         }
-        self.surface
-            .poll_resource_operation(invocation, cancellation_requested, doc, path)
+        self.surface.children_mut().into_iter().find_map(|child| {
+            child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+        })
     }
 }
 
