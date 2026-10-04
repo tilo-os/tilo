@@ -11,7 +11,7 @@ use crate::model::{ConnId, Connection};
 use crate::net::{self, Transfer};
 
 /// How often the tunnels are probed.
-const INTERVAL_SECS: f64 = 1.0;
+const INTERVAL: ui::time::Duration = ui::time::Duration::from_secs(1);
 
 /// What one probe read.
 pub struct Reading {
@@ -52,7 +52,7 @@ impl Prober {
         if self.running.is_some()
             || self
                 .last
-                .is_some_and(|last| now.duration_since(last).as_secs_f64() < INTERVAL_SECS)
+                .is_some_and(|last| now.duration_since(last) < INTERVAL)
         {
             return;
         }
