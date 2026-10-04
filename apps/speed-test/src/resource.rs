@@ -32,6 +32,8 @@ pub struct Measurement {
     pub upload: f64,
     /// The server that answered.
     pub server: String,
+    /// The device that ran it, as its host names it.
+    pub device: String,
 }
 
 #[resource(kind = "so.tilo.speed-test", label = "Internet speed test")]
@@ -46,6 +48,7 @@ impl SpeedTest {
         #[param("Download speed in megabits per second")] download: f64,
         #[param("Upload speed in megabits per second")] upload: f64,
         #[param("The server that answered")] server: String,
+        #[param("The device that ran it")] device: String,
     ) {
         let measurement = Measurement {
             at_ms: cx.now_ms(),
@@ -54,6 +57,7 @@ impl SpeedTest {
             download,
             upload,
             server,
+            device,
         };
         self.results.push(cx.id(), measurement);
         let excess = self.results.len().saturating_sub(KEPT);
@@ -127,6 +131,7 @@ impl ResourceApp for SpeedTestShell {
                 download,
                 upload,
                 "Cloudflare · LHR".to_owned(),
+                "capture-device".to_owned(),
             ))
         };
         match name {
@@ -153,7 +158,14 @@ mod tests {
             #[expect(clippy::cast_precision_loss, reason = "a small run count")]
             let download = run as f64;
             replica
-                .apply(SpeedTest::RECORD.with((10.0, 1.0, download, 50.0, "Cloudflare".into())))
+                .apply(SpeedTest::RECORD.with((
+                    10.0,
+                    1.0,
+                    download,
+                    50.0,
+                    "Cloudflare".into(),
+                    "laptop".into(),
+                )))
                 .expect("record");
         }
         let state = replica.state().expect("state");
