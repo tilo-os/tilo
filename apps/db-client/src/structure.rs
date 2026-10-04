@@ -10,7 +10,6 @@ use ui::widget::{Column, Decorator, Element, Scrollable, Section, Text, Widget};
 
 use crate::link::Link;
 use crate::model::TableInfo;
-use crate::results::column_share;
 
 #[derive(Clone)]
 struct ColumnRow {
@@ -35,16 +34,13 @@ struct IndexRow {
     columns: String,
 }
 
-/// A column that takes the share of the width its header and cells ask for.
+/// A column sized to its header and cells.
 fn column<Row: Clone + 'static>(
     key: &str,
     header: &str,
-    rows: &[Row],
     text: impl Fn(&Row) -> String + Send + Sync + 'static,
 ) -> ColumnDef<Row> {
-    let shown: Vec<String> = rows.iter().map(&text).collect();
-    let share = column_share(header, shown.iter().map(String::as_str));
-    ColumnDef::new(key, header, ColumnWidth::Flex(share)).with_text(text)
+    ColumnDef::new(key, header, ColumnWidth::Auto).with_text(text)
 }
 
 fn table<Row: Clone + 'static>(
@@ -78,16 +74,14 @@ fn columns_table(info: &TableInfo) -> DataTable<ColumnRow> {
     table(
         "db.structure.columns",
         vec![
-            column("name", "Name", &rows, |row: &ColumnRow| row.name.clone()),
-            column("type", "Type", &rows, |row: &ColumnRow| {
-                row.declared.clone()
-            })
-            .with_kind(ui::text_render::TextKind::Identifier),
-            column("nullable", "Nullable", &rows, |row: &ColumnRow| {
+            column("name", "Name", |row: &ColumnRow| row.name.clone()),
+            column("type", "Type", |row: &ColumnRow| row.declared.clone())
+                .with_kind(ui::text_render::TextKind::Identifier),
+            column("nullable", "Nullable", |row: &ColumnRow| {
                 row.nullable.to_owned()
             }),
-            column("key", "Key", &rows, |row: &ColumnRow| row.key.to_owned()),
-            column("default", "Default", &rows, |row: &ColumnRow| {
+            column("key", "Key", |row: &ColumnRow| row.key.to_owned()),
+            column("default", "Default", |row: &ColumnRow| {
                 row.default.clone().unwrap_or_else(|| "None".to_owned())
             })
             .with_kind(ui::text_render::TextKind::Code)
@@ -116,11 +110,11 @@ fn keys_table(info: &TableInfo) -> Option<DataTable<KeyRow>> {
         table(
             "db.structure.keys",
             vec![
-                column("constraint", "Constraint", &rows, |row: &KeyRow| {
+                column("constraint", "Constraint", |row: &KeyRow| {
                     row.constraint.to_owned()
                 }),
-                column("column", "Column", &rows, |row: &KeyRow| row.column.clone()),
-                column("references", "References", &rows, |row: &KeyRow| {
+                column("column", "Column", |row: &KeyRow| row.column.clone()),
+                column("references", "References", |row: &KeyRow| {
                     row.references.clone().unwrap_or_else(|| "None".to_owned())
                 })
                 .with_kind(ui::text_render::TextKind::Identifier)
@@ -145,13 +139,9 @@ fn indexes_table(info: &TableInfo) -> Option<DataTable<IndexRow>> {
         table(
             "db.structure.indexes",
             vec![
-                column("name", "Index", &rows, |row: &IndexRow| row.name.clone()),
-                column("unique", "Unique", &rows, |row: &IndexRow| {
-                    row.unique.to_owned()
-                }),
-                column("columns", "Columns", &rows, |row: &IndexRow| {
-                    row.columns.clone()
-                }),
+                column("name", "Index", |row: &IndexRow| row.name.clone()),
+                column("unique", "Unique", |row: &IndexRow| row.unique.to_owned()),
+                column("columns", "Columns", |row: &IndexRow| row.columns.clone()),
             ],
             rows,
         )
