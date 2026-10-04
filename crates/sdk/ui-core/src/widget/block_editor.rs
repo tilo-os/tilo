@@ -10329,25 +10329,28 @@ impl BlockEditor {
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
-        use winit::event::{ElementState, KeyEvent};
+        use winit::event::{ElementState, Ime, KeyEvent};
         use winit::keyboard::Key;
 
         if self.slash_menu.is_visible() {
             return;
         }
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(c),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return;
+        let character = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => c.as_str(),
+            // Browser beforeinput delivers ordinary text as a commit. Preedit
+            // and larger insertions remain text, not command activation.
+            WindowEvent::Ime(Ime::Commit(text)) => text.as_str(),
+            _ => return,
         };
-        if c.as_str() != "/" {
+        if character != "/" {
             return;
         }
         let Some(focused_idx) = self.focused else {
@@ -10359,16 +10362,20 @@ impl BlockEditor {
         if !can_open {
             return;
         }
-        let caret_byte = self
-            .blocks
-            .get(focused_idx)
-            .map_or(0, |b| b.line.cursor_pos());
+        // Typing replaces a local selection at its normalized start, which
+        // can precede the caret for a forward selection.
+        let trigger_byte = self.blocks.get(focused_idx).map_or(0, |block| {
+            block
+                .line
+                .selection_range()
+                .map_or(block.line.cursor_pos(), |(start, _)| start)
+        });
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
-        self.slash_open_at = Some(caret_byte);
-        self.slash_anchor_caret = Some((focused_idx, caret_byte));
+        self.slash_open_at = Some(trigger_byte);
+        self.slash_anchor_caret = Some((focused_idx, trigger_byte));
     }
 
     /// Focus whichever editable block a left click lands on first, so the
