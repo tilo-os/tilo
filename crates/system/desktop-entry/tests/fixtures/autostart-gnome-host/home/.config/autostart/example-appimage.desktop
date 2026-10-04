@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Example AppImage
+Exec=/home/user/Applications/Example.AppImage
+Terminal=false
