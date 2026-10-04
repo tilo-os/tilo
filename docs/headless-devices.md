@@ -35,7 +35,8 @@ onboarding does:
 
 ```sh
 tilo-identity create --acknowledge-no-recovery-service \
-  --backup ~/tilo-identity-backup.tilo-identity --passphrase-file ~/pass.txt
+  --backup ~/tilo-identity-backup.tilo-identity --passphrase-file ~/pass.txt \
+  --restart-session
 ```
 
 - `--backup PATH` writes the passphrase-encrypted recovery file onboarding's
@@ -46,8 +47,10 @@ tilo-identity create --acknowledge-no-recovery-service \
 - `--no-backup-i-understand` creates the identity without one. Write it later
   with `tilo-identity backup --to PATH`.
 
-Then restart the session so it runs as the new identity. On a board:
-`sudo systemctl restart tilo-board-headless-session@$USER`.
+`--restart-session` restarts the headless board session so it runs as the new
+identity; without it, run `tilo-identity restart-session` later (on a desktop,
+log out and back in instead). `status` says when the running session does not
+run as the identity yet.
 
 The identity is stored like onboarding stores it: in the desktop Secret
 Service when one answers, otherwise in a private file under
@@ -89,8 +92,25 @@ tilo-identity status
 ```
 
 The other device appears as `online in N room(s)` within a few seconds of both
-sessions running. Your workspaces appear on the new device as workspaces "From
-another device".
+sessions running. The first device's workspaces appear on the new device,
+first as "From another device" and then under their own names, with the apps
+open in them; later changes on either device follow.
+
+Apps that are open on one device are also opened on the other when
+"Allow Continuity from this device" and "App continuations" are switched on in
+Settings > Devices on both. Without a screen, the same switches are
+`{"continuity": {"enabled": true, "app_continuations": true}}` in
+`~/.config/tilo/settings.json`, read when the session starts.
+
+## Restarting the session
+
+```sh
+tilo-identity restart-session
+```
+
+It stops the board compositor in your own user manager, restarts
+`tilo-board-headless-session@$USER`, and waits until the new compositor
+reports in, so `status` afterwards shows what it runs as.
 
 ## Devices
 
@@ -134,6 +154,18 @@ device you are using; do it from another one.
 | `this device's key ... is missing` | `sudo systemctl start tilo-device-key-init.service`; make sure your account is in the `tilo-identity` group, then log in again. |
 | `online state unknown (session not running)` | Start or restart the Tilo session (`tilo-board-headless-session@$USER` on a board). |
 | A device shows `not a direct peer` | It was enrolled before devices recorded each other; pair it again. |
+| `the running session has no identity yet` | `tilo-identity restart-session`. |
+
+## Known limits
+
+- Without internet access the two devices find each other only after one of
+  them has connected to the other: device ids are resolved through iroh's
+  public address lookup, and LAN-only mDNS discovery is off by default.
+- A device enrolled by another device holds only the identity's public record;
+  apps that need to sign as the identity (authored launches) do not start on
+  it yet, so a continued app may stay "Available elsewhere" there.
+- Revoking a device does not yet remove it from the other devices' direct-peer
+  lists; the revoked device is refused when it connects.
 
 See also [Device sync, remote control and serving mesh](device-mesh.md) and
 [Identity signing boundary](identity-security.md).

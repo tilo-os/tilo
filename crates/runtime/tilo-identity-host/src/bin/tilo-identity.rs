@@ -28,6 +28,8 @@ mod unix {
     const ENROLL: &str = "/usr/bin/tilo-enroll";
     const HELPER: &str = "/usr/libexec/tilo-home-peer-control";
     const BOARD_SESSION: &str = "tilo-board-headless-session";
+    /// The compositor unit the board session starts in the account's manager.
+    const BOARD_SESSION_BACKEND: &str = "tilo-board-session";
     /// Onboarding's minimum backup passphrase length.
     const MIN_PASSPHRASE: usize = 12;
     /// A presence snapshot older than this means the session stopped.
@@ -81,6 +83,10 @@ mod unix {
             /// Create the identity without a backup.
             #[arg(long)]
             no_backup_i_understand: bool,
+            /// Restart this account's headless board session afterwards, so
+            /// it runs as the new identity.
+            #[arg(long)]
+            restart_session: bool,
         },
         /// Write the passphrase-encrypted recovery backup of this identity.
         Backup {
@@ -126,6 +132,9 @@ mod unix {
             #[arg(long, value_enum, default_value_t = Elevate::Auto)]
             elevate: Elevate,
         },
+        /// Restart this account's headless board session so it runs as the
+        /// current identity, and wait for the new compositor.
+        RestartSession,
         /// List the devices certified for this identity.
         Devices,
         /// Revoke a device: it can no longer act as this identity.
@@ -253,12 +262,16 @@ mod unix {
                 backup,
                 passphrase_file,
                 no_backup_i_understand,
+                restart_session,
             } => create(
                 context,
-                acknowledge_no_recovery_service,
-                backup.as_deref(),
-                passphrase_file.as_deref(),
-                no_backup_i_understand,
+                &CreateOptions {
+                    acknowledged: acknowledge_no_recovery_service,
+                    backup: backup.as_deref(),
+                    passphrase_file: passphrase_file.as_deref(),
+                    no_backup: no_backup_i_understand,
+                    restart_session,
+                },
             ),
             Cmd::Backup {
                 to,
@@ -292,6 +305,16 @@ mod unix {
                 timeout,
                 elevate,
             ),
+            Cmd::RestartSession => {
+                refuse_root()?;
+                restart_board_session()?;
+                emit(
+                    context,
+                    &json!({ "session_restarted": true, "next": "check with `tilo-identity status`" }),
+                    "Restarted the session.\nnext: check with `tilo-identity status`",
+                );
+                Ok(())
+            }
             Cmd::Devices => devices(context),
             Cmd::Revoke {
                 device,
@@ -526,11 +549,25 @@ mod unix {
     }
 
     fn status_next_steps(
+        identity: &ActiveIdentity,
         cert: Option<&DeviceCert>,
-        running: bool,
+        session: Option<&personal_devices::PresenceSnapshot>,
         rows: &[DeviceRow],
     ) -> Vec<String> {
+        let running = session.is_some();
         let mut next = Vec::new();
+        if let Some(session) = session
+            && session.identity.as_deref() != Some(identity.id.as_str())
+        {
+            next.push(format!(
+                "the running session {}; {}",
+                session.identity.as_ref().map_or_else(
+                    || "has no identity yet".to_string(),
+                    |other| format!("runs as another identity ({other})")
+                ),
+                restart_hint()
+            ));
+        }
         if cert.is_none() {
             next.push(format!(
                 "this device holds no valid certificate for the identity; {}",
@@ -633,7 +670,12 @@ mod unix {
         )
         .map(|rooms| rooms.len())
         .unwrap_or_default();
-        let next = status_next_steps(cert.as_ref(), running, &rows);
+        let next = status_next_steps(
+            &identity,
+            cert.as_ref(),
+            snapshot.as_ref().filter(|_| running),
+            &rows,
+        );
         let value = json!({
             "identity": {
                 "id": identity.id,
@@ -647,6 +689,7 @@ mod unix {
                 "can_approve_devices": cert.capabilities.can_admit_devices,
             })),
             "session_running": running,
+            "session_identity": snapshot.as_ref().filter(|_| running).and_then(|snapshot| snapshot.identity.clone()),
             "presence_refreshed_unix_ms": snapshot.as_ref().map(|snapshot| snapshot.refreshed_unix_ms),
             "shared_rooms_received": rooms,
             "devices": rows,
@@ -769,14 +812,31 @@ mod unix {
         Ok(info)
     }
 
-    fn create(
-        context: &Context,
+    #[derive(Clone, Copy)]
+    struct CreateOptions<'a> {
         acknowledged: bool,
-        backup: Option<&Path>,
-        passphrase_file: Option<&Path>,
+        backup: Option<&'a Path>,
+        passphrase_file: Option<&'a Path>,
         no_backup: bool,
-    ) -> anyhow::Result<()> {
+        restart_session: bool,
+    }
+
+    /// Everything `create` refuses before it touches anything.
+    fn create_preflight(context: &Context, options: &CreateOptions<'_>) -> anyhow::Result<()> {
+        let CreateOptions {
+            acknowledged,
+            backup,
+            no_backup,
+            restart_session,
+            ..
+        } = *options;
         refuse_root()?;
+        if restart_session && !board_session_installed() {
+            return Err(guided(
+                "--restart-session restarts a headless board session, and this machine has none",
+                "leave it out and log out and back in after creating the identity",
+            ));
+        }
         if !acknowledged {
             return Err(guided(
                 "a Tilo identity has no escrow or reset service: losing every device that holds \
@@ -807,6 +867,17 @@ mod unix {
                  account is in the tilo-identity group (`id -nG`; log in again after adding it)",
             ));
         }
+        Ok(())
+    }
+
+    fn create(context: &Context, options: &CreateOptions<'_>) -> anyhow::Result<()> {
+        create_preflight(context, options)?;
+        let CreateOptions {
+            backup,
+            passphrase_file,
+            restart_session,
+            ..
+        } = *options;
         // Collect the passphrase before minting, so a typo cannot leave an
         // identity without the backup that was asked for.
         let passphrase = backup
@@ -845,10 +916,23 @@ mod unix {
             }
             _ => None,
         };
-        let next = restart_hint();
+        if restart_session {
+            restart_board_session()
+                .context("the identity was created, but the session restart failed")?;
+        }
+        let next = if restart_session {
+            "check with `tilo-identity status`; then pair your other devices".to_string()
+        } else {
+            restart_hint()
+        };
         emit(
             context,
-            &json!({ "identity": pubkey_hex, "backup": backed_up, "next": next }),
+            &json!({
+                "identity": pubkey_hex,
+                "backup": backed_up,
+                "session_restarted": restart_session,
+                "next": next,
+            }),
             &format!(
                 "Created the identity {pubkey_hex}.\n{}next: {next}",
                 backed_up.as_ref().map_or_else(
@@ -880,13 +964,76 @@ mod unix {
 
     fn restart_hint() -> String {
         if board_session_installed() {
-            format!(
-                "restart the session so it runs as this identity: sudo systemctl restart {}",
-                board_session_unit()
-            )
+            "restart the session so it runs as this identity: tilo-identity restart-session".into()
         } else {
             "log out and back in so the session runs as this identity".into()
         }
+    }
+
+    /// The main process of this account's running board compositor, or 0.
+    fn board_compositor_pid() -> u32 {
+        Command::new("systemctl")
+            .args(["--user", "show", "--property=MainPID", "--value"])
+            .arg(format!("{BOARD_SESSION_BACKEND}.service"))
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|pid| pid.trim().parse().ok())
+            .unwrap_or_default()
+    }
+
+    /// Restart this account's headless board session and wait until a new
+    /// compositor runs. The compositor is a unit of the account's own
+    /// manager; it is stopped first so a restart of the system unit cannot
+    /// leave the previous compositor (and its identity) running beside it.
+    fn restart_board_session() -> anyhow::Result<()> {
+        if !board_session_installed() {
+            return Err(guided(
+                "this machine has no headless board session to restart",
+                "log out and back in so the session runs as this identity",
+            ));
+        }
+        let before = board_compositor_pid();
+        let _ = Command::new("systemctl")
+            .args(["--user", "stop"])
+            .arg(format!("{BOARD_SESSION_BACKEND}.service"))
+            .status();
+        let status = Command::new("sudo")
+            .args(["systemctl", "restart", &board_session_unit()])
+            .status()
+            .context("run systemctl")?;
+        if !status.success() {
+            return Err(guided(
+                format!("restarting {} failed", board_session_unit()),
+                format!(
+                    "check `systemctl status {}` and `journalctl -u {}`",
+                    board_session_unit(),
+                    board_session_unit()
+                ),
+            ));
+        }
+        let restarted_ms = (now_ms() / 1000).saturating_mul(1000);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .context("clock overflow")?;
+        while std::time::Instant::now() < deadline {
+            let now = board_compositor_pid();
+            // The new compositor has started and published its presence,
+            // so `status` right after this reports what it runs as.
+            if now != 0
+                && now != before
+                && presence()
+                    .0
+                    .is_some_and(|snapshot| snapshot.refreshed_unix_ms >= restarted_ms)
+            {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Err(guided(
+            "the board session did not start a new compositor within 30s",
+            format!("check `journalctl -u {}`", board_session_unit()),
+        ))
     }
 
     fn pair(
@@ -937,16 +1084,7 @@ mod unix {
             .find_map(|line| serde_json::from_str::<Value>(line).ok())
             .unwrap_or(Value::Null);
         if restart_session {
-            let status = Command::new("sudo")
-                .args(["systemctl", "restart", &board_session_unit()])
-                .status()
-                .context("run systemctl")?;
-            if !status.success() {
-                bail!(
-                    "the device joined, but restarting {} failed",
-                    board_session_unit()
-                );
-            }
+            restart_board_session().context("the device joined, but the session restart failed")?;
         }
         let next = if restart_session {
             "check the link with `tilo-identity status`".to_string()

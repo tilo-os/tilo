@@ -228,6 +228,9 @@ pub struct PresenceSnapshot {
     pub schema_version: u16,
     /// This session's device key, lowercase hex.
     pub local_device: String,
+    /// The identity the session runs as, lowercase hex; absent while it
+    /// runs without one.
+    pub identity: Option<String>,
     /// Wall-clock milliseconds when the session last refreshed this file. A
     /// stale value means the session stopped.
     pub refreshed_unix_ms: u64,
@@ -314,6 +317,7 @@ mod tests {
         let snapshot = PresenceSnapshot {
             schema_version: PresenceSnapshot::CURRENT_SCHEMA,
             local_device: "11".repeat(32),
+            identity: Some("33".repeat(32)),
             refreshed_unix_ms: 5,
             devices: vec![DevicePresence {
                 device: "22".repeat(32),

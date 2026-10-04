@@ -3143,6 +3143,7 @@ impl ShellNetwork {
         let snapshot = PresenceSnapshot {
             schema_version: PresenceSnapshot::CURRENT_SCHEMA,
             local_device: hex::encode(local),
+            identity: self.personal_continuity_user.map(hex::encode),
             refreshed_unix_ms: now_unix_seconds().saturating_mul(1000),
             devices: rows.clone(),
         };

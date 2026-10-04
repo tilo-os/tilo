@@ -634,8 +634,8 @@ mod tests {
         for answer in &answers {
             device_replica.handle(&PeerOrigin::hub(1), answer);
         }
-        let tree = device_handle.read();
-        let names: Vec<_> = tree
+        let names: Vec<_> = device_handle
+            .read()
             .desktop
             .workspaces
             .iter()
