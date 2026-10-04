@@ -3,12 +3,16 @@
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::ActionSpec;
+use ui::icons::Icon;
+use ui::search::SearchRequest;
+use ui::tilo_actions::{ActionBinding, ActionSpec};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
-use ui::widget::Element;
+use ui::tokens::SpacingStep;
+use ui::widget::{Button, ButtonRole, Element, NavShell, Spacer};
 
 use crate::actions::{
-    TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view, register,
+    ADD_ACCOUNT_OPERATION, TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view,
+    register,
 };
 use crate::app::AuthenticatorApp;
 use crate::doc::AuthDoc;
@@ -68,7 +72,40 @@ impl Resource for Totp {
     }
 }
 
-/// Framework app: the authenticator widget over [`Totp`].
+/// The header's primary action: the vault's own "Add account" operation, the
+/// one the palette and agents invoke, which the content answers by opening the
+/// add sheet.
+fn add_button() -> Button {
+    let button = Button::new("totp-add", "Add account", None)
+        .with_icon(Icon::Plus)
+        .role(ButtonRole::Primary);
+    let vault = tilo_actions::Resource::new(Totp::KIND, Totp::KIND, Totp::LABEL)
+        .with_action(add_account_view());
+    match ActionBinding::unit_for(&vault, ADD_ACCOUNT_OPERATION) {
+        Ok(binding) => button.on_action(binding),
+        Err(error) => {
+            tracing::warn!(%error, "authenticator: the add operation is not bindable");
+            button
+        }
+    }
+}
+
+/// The capture scenarios: the list, and each state the app has a screen for.
+const SCENARIOS: &[&str] = &[
+    "list",
+    "hover",
+    "copied",
+    "empty",
+    "add",
+    "add-advanced",
+    "provision",
+    "missing-secret",
+    "persistence-error",
+    "expiring",
+];
+
+/// Framework app: the navigation shell, whose header row carries the search
+/// and add buttons, around the authenticator widget over [`Totp`].
 pub struct TotpShell;
 
 impl ResourceApp for TotpShell {
@@ -79,7 +116,32 @@ impl ResourceApp for TotpShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        cx.surface(AuthenticatorApp::new())
+        // The header's actions are for a vault with accounts in it: with none,
+        // the empty state asks for the first one and the header stays quiet.
+        let has_accounts = cx.local(true);
+        let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(cx.search_button(SearchRequest::this_app()))
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        let add = cx.switch(&has_accounts, |_, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(add_button())
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        Box::new(
+            NavShell::new()
+                .content(cx.surface(AuthenticatorApp::new().with_account_signal(has_accounts)))
+                .content_header("Accounts", vec![search, add]),
+        )
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
     }
 }
 
@@ -90,6 +152,10 @@ impl ResourceSurface<Totp> for AuthenticatorApp {
 
     fn attach(&mut self, cx: SurfaceCx<Totp>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -154,9 +220,8 @@ impl ActionSink {
     }
 }
 
-/// Live launch with capture protection for one-time codes.
+/// The launch specification of the framework app: live window, `--shots` and
+/// the other standard modes.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
     ui::framework::launch_spec::<TotpShell>()
 }
