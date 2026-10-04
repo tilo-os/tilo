@@ -12,6 +12,8 @@ mod hosted_topology;
 mod live_identity_tests;
 mod native_enrollment;
 mod native_ingress;
+mod record_content;
+pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
@@ -1259,6 +1261,7 @@ pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
+    record_content: record_content::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1837,6 +1840,7 @@ impl ShellNetwork {
             native_enrollment: native_enrollment::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
+            record_content: record_content::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
@@ -2173,7 +2177,9 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
-            | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
+            | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
+            | NeighbourMsg::RecordContentWant { cluster_id, .. }
+            | NeighbourMsg::RecordContentPiece { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
         };
         room.and_then(RoomId::parse)
@@ -6407,6 +6413,10 @@ impl ShellNetwork {
                     self.queue_channel_governance(InboundChannelGovernance::Ack { room, ack });
                 }
             }
+            message @ (NeighbourMsg::RecordContentWant { .. }
+            | NeighbourMsg::RecordContentPiece { .. }) => {
+                self.dispatch_record_content(ws, peer, message);
+            }
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -6615,8 +6625,10 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceStreamEnd { source_peer, .. }
             | NeighbourMsg::SurfaceFrame { source_peer, .. } => Some(*source_peer),
             NeighbourMsg::ScrollbackRequest { requester, .. }
-            | NeighbourMsg::PersonalContinuityRequest { requester, .. } => Some(*requester),
-            NeighbourMsg::ScrollbackResponse { responder, .. } => Some(*responder),
+            | NeighbourMsg::PersonalContinuityRequest { requester, .. }
+            | NeighbourMsg::RecordContentWant { requester, .. } => Some(*requester),
+            NeighbourMsg::ScrollbackResponse { responder, .. }
+            | NeighbourMsg::RecordContentPiece { responder, .. } => Some(*responder),
             NeighbourMsg::PersonalContinuityCheckpoint { publisher, .. } => Some(*publisher),
             NeighbourMsg::SyncReq { .. }
             | NeighbourMsg::SyncResp { .. }
@@ -7287,6 +7299,7 @@ pub(crate) fn shell_network_for_test(
         native_enrollment: native_enrollment::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
+        record_content: record_content::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
