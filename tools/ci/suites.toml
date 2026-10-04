@@ -924,6 +924,11 @@ reason = "boots two VMs (KVM) from the gated dev disk"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-slow-frame-launch.sh"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"

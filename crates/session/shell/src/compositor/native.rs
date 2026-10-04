@@ -8284,6 +8284,9 @@ pub fn run() {
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
     // verbose aggregate line for development runs.
     let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // A developer override: every painted frame takes as long as on a slow
+    // machine, so per-frame layout steps see real long frame times.
+    let mut frame_stall = super::frame_stall::FrameStall::from_process_env();
     let mut pump_checkpoint = Instant::now();
     let mut pump_slowest = ("start", Duration::ZERO);
     macro_rules! pump_checkpoint {
@@ -11314,6 +11317,9 @@ pub fn run() {
             state.client_cursor.send_frame_callbacks(
                 u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
             );
+            if let Some(stall) = frame_stall.as_mut() {
+                stall.stall();
+            }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.

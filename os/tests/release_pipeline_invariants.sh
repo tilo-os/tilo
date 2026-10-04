@@ -466,6 +466,16 @@ grep -Fq './os/dev/test-nearby-pairing.sh "$TILO_DISK"' "$os" \
   && ok 'the OS gate pairs a first-boot device with a nearby trusted one and surfaces helper failures' \
   || bad 'nearby pairing from first-boot onboarding has no real-boot gate'
 
+# Apps opened on a slow machine keep their windows: the dev gate signs in
+# again with every frame stalled as on a slow laptop and opens apps. The stall
+# is a developer override that release compositors never read.
+grep -Fq './os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130' "$os" \
+  && grep -Fq 'TILO_TEST_FRAME_STALL_MS' "$repo/os/dev/test-slow-frame-launch.sh" \
+  && grep -Fq '"TILO_TEST_FRAME_STALL_MS",' "$repo/crates/session/shell/src/compositor/dev_env.rs" \
+  && grep -Fq 'super::dev_env::DEV_ENV_OVERRIDES' "$repo/crates/session/shell/src/compositor/frame_stall.rs" \
+  && ok 'the dev gate opens apps at a slow machine'"'"'s frame times, behind the developer-override gate' \
+  || bad 'apps opened on a slow machine have no real-boot gate'
+
 python3 "$repo/tools/apps/app_release.py" --collection default > /dev/null \
   && python3 "$repo/tools/apps/app_release.py" --collection recovery > /dev/null \
   && ok 'named app collections resolve against the live manifest catalogue' \
