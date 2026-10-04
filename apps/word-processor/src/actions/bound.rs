@@ -65,21 +65,6 @@ pub(crate) fn declarations(resources: &[Resource]) -> Vec<ActionDecl<Document>> 
     decls
 }
 
-/// `resources` without their document operations: what a view may publish
-/// beside the document itself (moving its caret, finding, going to a hit).
-pub(crate) fn view_only(resources: Vec<Resource>) -> Vec<Resource> {
-    resources
-        .into_iter()
-        .filter_map(|mut resource| {
-            resource
-                .actions
-                .retain(|spec| spec.kind != OperationKind::Document);
-            resource.children = view_only(std::mem::take(&mut resource.children));
-            (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
-        })
-        .collect()
-}
-
 fn declaration(spec: &ActionSpec) -> Option<ActionDecl<Document>> {
     if spec.kind != OperationKind::Document {
         return None;

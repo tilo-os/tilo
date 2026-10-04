@@ -738,3 +738,30 @@ fn reopening_a_file_changed_elsewhere_reads_it_again() {
     );
     assert_eq!(paragraphs(&app), ["Edited: First draft"]);
 }
+
+/// Saving the document to its own file records what the file now holds, so
+/// opening it again reads nothing back in.
+#[test]
+fn a_file_saved_here_is_not_read_again() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("notes.md");
+    std::fs::write(&path, "First draft\n").unwrap();
+    let file = path.to_string_lossy().into_owned();
+
+    let mut app = TestApp::<WordProcessorApp>::launched(&[&file]).unwrap();
+    app.harness().type_text("Edited: ");
+    app.effect_confirmed(&word_processor::effects::WordProcessorEffect::Save { path: None })
+        .unwrap();
+    for _ in 0..5 {
+        app.harness().relayout();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap().trim(),
+        "Edited: First draft"
+    );
+    let versions = app.versions().len();
+    let app = app.relaunch(&[&file]).unwrap();
+    assert_eq!(paragraphs(&app), ["Edited: First draft"]);
+    assert_eq!(app.versions().len(), versions, "nothing was read back in");
+}
