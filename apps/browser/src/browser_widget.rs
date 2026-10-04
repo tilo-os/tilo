@@ -8095,6 +8095,194 @@ mod tests {
     /// admitted through the resource operation lane, answered by the engine
     /// and reported through the invocation's terminal update.
     #[test]
+    fn agent_page_actions_reach_the_engine_and_answer_as_untrusted_data() {
+        fn page_on(url: &str) -> (Arc<TestEngine>, BrowserWidget, AutoCommit, ObjId) {
+            let engine = TestEngine::new();
+            engine.send(WebViewCommand::Navigate(url.into()));
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let (doc, root) = synced(&mut widget);
+            (engine, widget, doc, root)
+        }
+        fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
+            ui::resources::resources(widget, doc)[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.page")
+                .unwrap()
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("browser.page offers {id}"))
+                .clone()
+        }
+        fn run(
+            id: &str,
+            args: &serde_json::Value,
+        ) -> (PageRequest, ui::tilo_actions::InvocationUpdate) {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            let action = page_action(&widget, &doc, id);
+            let encoded = action.build_json(args.as_object().unwrap()).unwrap();
+            let invocation = ui::tilo_actions::InvocationId::new();
+            assert!(matches!(
+                widget
+                    .start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            invocation,
+                            action.kind,
+                            &encoded.type_id,
+                            &encoded.payload,
+                        ),
+                        &mut doc,
+                        &root,
+                    )
+                    .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            let request = engine
+                .commands()
+                .into_iter()
+                .find_map(|command| match command {
+                    WebViewCommand::Page { request, .. } => Some(request),
+                    _ => None,
+                })
+                .expect("the request reached the engine");
+            widget.sync(&mut doc, &root);
+            let update = widget
+                .poll_resource_operation(invocation, false, &doc, &root)
+                .expect("answered");
+            if let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+                assert!(
+                    action.contract.result.validate(output).is_ok(),
+                    "{id}: {output:?}"
+                );
+            }
+            (request, update)
+        }
+
+        // Phase `agent_actions_publish_untrusted_programmatic_contracts`.
+        {
+            let (_, widget, doc, _) = page_on("https://shop.test/");
+            for id in [
+                "changes",
+                "element_at",
+                "wait_settled",
+                "console",
+                "network",
+                "fill_secret",
+            ] {
+                let action = page_action(&widget, &doc, id);
+                assert!(action.contract.validate_declaration().is_empty(), "{id}");
+                assert!(action.contract.is_programmatic(), "{id}");
+                assert!(
+                    action
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == UNTRUSTED_CONTENT_TAG),
+                    "{id} answers with page content"
+                );
+                let looks = id != "fill_secret";
+                assert_eq!(
+                    action.kind,
+                    if looks {
+                        OperationKind::View
+                    } else {
+                        OperationKind::Effect
+                    },
+                    "{id}"
+                );
+            }
+            let secret = page_action(&widget, &doc, "fill_secret");
+            let text = secret
+                .params()
+                .iter()
+                .find(|param| param.name == "text")
+                .unwrap();
+            assert_eq!(text.ty, ParamType::Secret, "kept out of logs and history");
+        }
+
+        // Phase `typed_agent_requests_reach_the_engine`.
+        {
+            let cases = [
+                ("changes", serde_json::json!({}), PageRequest::Changes),
+                (
+                    "element_at",
+                    serde_json::json!({"x": 12.5, "y": 40}),
+                    PageRequest::At { x: 12.5, y: 40.0 },
+                ),
+                (
+                    "wait_settled",
+                    serde_json::json!({}),
+                    PageRequest::Settle {
+                        quiet_ms: PAGE_SETTLE_QUIET_MS,
+                        timeout_ms: PAGE_SETTLE_TIMEOUT_MS,
+                    },
+                ),
+                (
+                    "console",
+                    serde_json::json!({"since": 7}),
+                    PageRequest::Console { since: 7 },
+                ),
+                (
+                    "network",
+                    serde_json::json!({}),
+                    PageRequest::Network { since: 0 },
+                ),
+                (
+                    "fill_secret",
+                    serde_json::json!({"element": "d1e4", "text": "hunter2"}),
+                    PageRequest::Fill {
+                        element: "d1e4".into(),
+                        text: "hunter2".into(),
+                        secret: true,
+                    },
+                ),
+                (
+                    "submit",
+                    serde_json::json!({"element": "d1e4", "cross_origin": true}),
+                    PageRequest::Submit {
+                        element: "d1e4".into(),
+                        cross_origin: true,
+                    },
+                ),
+                (
+                    "fill",
+                    serde_json::json!({"element": "d1e4", "text": "ada"}),
+                    PageRequest::Fill {
+                        element: "d1e4".into(),
+                        text: "ada".into(),
+                        secret: false,
+                    },
+                ),
+            ];
+            for (id, args, expected) in cases {
+                let (request, update) = run(id, &args);
+                assert_eq!(request, expected, "{id}");
+                assert!(
+                    matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+                    "{id}: {update:?}"
+                );
+            }
+        }
+
+        // Phase `findings_answer_as_data_marked_as_web_content`.
+        {
+            let (_, update) = run("network", &serde_json::json!({}));
+            let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                panic!("succeeded");
+            };
+            let value = output.value.unwrap();
+            assert_eq!(value["provenance"], "web-content");
+            assert_eq!(value["data"]["entries"], serde_json::json!([]));
+            let (_, update) = run("element_at", &serde_json::json!({"x": 1, "y": 2}));
+            let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                panic!("succeeded");
+            };
+            assert_eq!(output.value.unwrap()["data"]["x"], 1.0);
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
