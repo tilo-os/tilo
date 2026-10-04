@@ -247,7 +247,7 @@ fn normalize_port(p: &str) -> String {
 /// A one-line label for a zone in the palette.
 fn zone_label(z: &Zone, is_default: bool) -> String {
     if is_default {
-        format!("{} — {} · active", z.kind.name(), z.target.label())
+        format!("{} — {}, active", z.kind.name(), z.target.label())
     } else {
         format!("{} — {}", z.kind.name(), z.target.label())
     }

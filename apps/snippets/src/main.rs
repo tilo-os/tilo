@@ -1,14 +1,6 @@
 //! Snippets — standard Tilo application entry point.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    reason = "app-local arithmetic"
-)]
 #![cfg_attr(
     test,
     allow(
@@ -22,21 +14,6 @@
     )
 )]
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::widget::Widget;
-
-// The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
-// may fail, so the alias is fallible even where this one isn't.
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(snippets::app_root_for_shot(
-        args.scenario.as_deref().unwrap_or_default(),
-    ))
-}
-
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -44,28 +21,8 @@ fn install_locales() -> Result<(), ui::i18n::I18nError> {
     ui::i18n::I18nManager::install_system("en-US", snippets::LOCALES)
 }
 
-fn wants_standalone() -> bool {
-    std::env::args().any(|arg| {
-        [
-            "--shots",
-            "--responsive-matrix",
-            "--native-audit",
-            "--headless",
-        ]
-        .iter()
-        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
-    })
-}
-
-fn shot_spec() -> LaunchSpec {
-    LaunchSpec::new("so.tilo.snippets", snippets::app_root)
-        .history(&snippets::framework_history::HISTORY)
-        .shot_root(shot_root)
-        .scenarios(&["narrow", "detail", "empty"])
-        .configure_app(|app| snippets::actions::register(app.action_registry_mut()))
-}
-
-/// Run the native Snippets application.
+/// Run Snippets: the live window, `--shots` and the other launch modes all
+/// go through the framework.
 ///
 /// # Panics
 /// Panics if the embedded locale catalogs are invalid (covered by a startup test).
@@ -75,10 +32,6 @@ fn shot_spec() -> LaunchSpec {
 )]
 pub fn main() {
     install_locales().expect("valid bundled Snippets locales");
-    if wants_standalone() {
-        ui::launch::run_or_exit(&shot_spec());
-        return;
-    }
     ui::launch::run_or_exit(&snippets::launch_spec());
 }
 
