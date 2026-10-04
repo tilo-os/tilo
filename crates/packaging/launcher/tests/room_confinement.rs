@@ -46,6 +46,7 @@ fn manifest() -> MinimalManifest {
         // expected at all.
         kind: "app".to_string(),
         runtime: None,
+        optional_runtimes: Vec::new(),
         entrypoint: Entrypoint {
             bin: "bin/roomtest".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
