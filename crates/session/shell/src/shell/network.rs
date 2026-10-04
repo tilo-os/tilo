@@ -2169,6 +2169,35 @@ impl ShellNetwork {
                 .is_ok()
     }
 
+    /// Send one window's stream traffic on `workspace_topic` to exactly
+    /// `viewers` (peer handles) over the direct media route, and to nobody
+    /// else in the room.
+    pub fn publish_legacy_to(
+        &self,
+        workspace_topic: u64,
+        msg: NeighbourMsg,
+        viewers: Vec<u64>,
+    ) -> bool {
+        if !matches!(
+            msg,
+            NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceFrame { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::PermissionGrant { .. }
+        ) {
+            return false;
+        }
+        self.join_topic(workspace_topic)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::PublishSurfaceTo {
+                    ws: workspace_topic,
+                    msg,
+                    viewers,
+                })
+                .is_ok()
+    }
+
     /// Publish owner-side stream traffic to the room currently being viewed.
     /// The receiver retains that concrete topic and uses
     /// [`Self::publish_legacy_message`] for all input replies.
@@ -7735,6 +7764,7 @@ mod tests {
                 hdr_static_metadata: None,
                 bit_depth: 8,
                 app_id: "test.app".into(),
+                tab: 0,
             });
             net.publish_workspace_control_input(
                 &direct,
@@ -9417,6 +9447,7 @@ mod tests {
                 colorimetry: None,
                 hdr_static_metadata: None,
                 bit_depth: 8,
+                tab: 0,
             };
             net.queue_legacy_message(42, start);
             for ts in 2..=20 {
