@@ -37,7 +37,7 @@ fn supported(device: &crate::gpu::DeviceHandle) -> bool {
     reason = "wgpu marks pipeline cache creation unsafe; see the SAFETY note"
 )]
 fn create(device: &crate::gpu::DeviceHandle, data: Option<&[u8]>) -> wgpu::PipelineCache {
-    // SAFETY: `data` is either absent or a blob `publish` wrote from
+    // SAFETY: `data` is either absent or a blob the session published from
     // `PipelineCache::get_data` for an adapter with this cache key. wgpu
     // checks its own header (adapter key, driver, checksum) before the
     // driver sees it and `fallback` starts empty on any mismatch; the
@@ -62,44 +62,17 @@ pub fn seeded(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> 
     }
     let dir = crate::host::environment().paths.pipeline_seed.clone()?;
     let file = seed_file(&dir, &device.adapter.get_info())?;
-    let data = std::fs::read(file).ok()?;
+    let (dir, name) = tilo_files::file_at(&file).ok()?;
+    let data = tilo_files::blocking::read(&dir, &name).ok()?;
     Some(create(device, Some(&data)))
 }
 
-/// An empty pipeline cache for the session to fill and then [`publish`].
+/// An empty pipeline cache for the session to fill and then publish: what
+/// `cache.get_data()` returns afterwards, written to [`seed_file`] in the
+/// directory the launcher binds.
 #[must_use]
 pub fn empty(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
     supported(device).then(|| create(device, None))
-}
-
-/// Write `cache` as the seed for `device` under `dir`, replacing any older
-/// one atomically, readable by everyone and writable by its owner only.
-///
-/// # Errors
-///
-/// The I/O error that kept the seed from being written, or `Ok(false)` when
-/// the backend has no cache data to share.
-pub fn publish(
-    device: &crate::gpu::DeviceHandle,
-    cache: &wgpu::PipelineCache,
-    dir: &Path,
-) -> std::io::Result<bool> {
-    let Some(file) = seed_file(dir, &device.adapter.get_info()) else {
-        return Ok(false);
-    };
-    let Some(data) = cache.get_data() else {
-        return Ok(false);
-    };
-    std::fs::create_dir_all(dir)?;
-    let staging = file.with_extension("tmp");
-    std::fs::write(&staging, &data)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
-    }
-    std::fs::rename(&staging, &file)?;
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -107,7 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_seed_is_keyed_by_adapter_and_round_trips() {
+    fn the_seed_is_keyed_by_adapter_and_filled_by_vello() {
         let info = |vendor, device| wgpu::AdapterInfo {
             name: "test".into(),
             vendor,
@@ -133,7 +106,8 @@ mod tests {
         gl.backend = wgpu::Backend::Gl;
         assert_eq!(seed_file(dir, &gl), None);
 
-        // The real thing, where a GPU with pipeline caches is available.
+        // The real thing, where a GPU with pipeline caches is available:
+        // building vello into an empty cache leaves data to publish.
         let mut context = crate::gpu::RenderContext::new();
         let Some(index) = pollster::block_on(context.device(None)) else {
             return;
@@ -142,7 +116,6 @@ mod tests {
         let Some(cache) = empty(device) else {
             return;
         };
-        let tmp = tempfile::tempdir().unwrap();
         let _ = vello::Renderer::new(
             &device.device,
             vello::RendererOptions {
@@ -153,9 +126,9 @@ mod tests {
             },
         )
         .unwrap();
-        if publish(device, &cache, tmp.path()).unwrap() {
-            let file = seed_file(tmp.path(), &device.adapter.get_info()).unwrap();
-            assert!(std::fs::metadata(file).unwrap().len() > 0);
-        }
+        assert!(
+            cache.get_data().is_some_and(|data| !data.is_empty()),
+            "vello's pipelines must land in the cache the session publishes"
+        );
     }
 }
