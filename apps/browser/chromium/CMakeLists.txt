@@ -78,6 +78,10 @@ elseif(UNIX)
   add_executable(tilo-chromium-host src/host.cc src/renderer.cc src/main_linux.cc)
   tilo_target(tilo-chromium-host)
   target_link_libraries(tilo-chromium-host PRIVATE libcef_lib)
+  # libcef.so's own dependencies (ATK, CUPS, NSS, X11 extensions) are resolved
+  # where the engine runs; the image checks them there. The builder need not
+  # carry them just to link the host.
+  target_link_options(tilo-chromium-host PRIVATE -Wl,--allow-shlib-undefined)
   set_target_properties(tilo-chromium-host PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   COPY_FILES(tilo-chromium-host "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "${TILO_OUTPUT_DIR}")
   COPY_FILES(tilo-chromium-host "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "${TILO_OUTPUT_DIR}")
