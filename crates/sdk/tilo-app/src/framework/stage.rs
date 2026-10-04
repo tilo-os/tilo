@@ -152,3 +152,36 @@ fn root_instance<A: ResourceApp>(harness: &FrameHarness) -> Result<u64, LaunchEr
         .component_instance_id()
         .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", A::TITLE)))
 }
+
+/// How long each of `frames` frames of `A`'s capture of `scenario` takes to
+/// sync, lay out and draw, after one frame that warms the text caches: what
+/// a `--bench` command reports. Where no native runner is linked (a browser
+/// page) there is no headless capture to time.
+///
+/// # Errors
+/// Returns why the capture could not be built, or that this build has no
+/// headless capture.
+pub fn time_frames<A: ResourceApp>(
+    scenario: Option<&str>,
+    frames: usize,
+) -> Result<Vec<ui_core::time::Duration>, String> {
+    #[cfg(tilo_native_runner)]
+    {
+        let mut app = super::testing::HeadlessApp::<A>::capture(scenario)
+            .map_err(|error| error.to_string())?;
+        let harness = app.harness();
+        harness.relayout();
+        Ok((0..frames)
+            .map(|_| {
+                let start = ui_core::time::now();
+                harness.relayout();
+                start.elapsed()
+            })
+            .collect())
+    }
+    #[cfg(not(tilo_native_runner))]
+    {
+        let _ = (scenario, frames);
+        Err("timing frames needs the native runner's headless capture".into())
+    }
+}
