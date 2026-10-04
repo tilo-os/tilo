@@ -54,6 +54,15 @@ bundle_publisher=$(sed -n 's/^publisher_hex = "\([0-9a-fA-F]\{64\}\)"$/\1/p' \
     /usr/lib/tilo-runtime/2026.07/bundle.toml)
 test "${#bundle_publisher}" -eq 64
 grep -Fxiq "$bundle_publisher" /etc/tilo/runtime-bundle-trusted-publishers.txt
+# The ush supervisor runs these: a relay environment's pty bridge, the relay
+# picker's asker, and the legacy VM service behind app shims.
+for program in /usr/libexec/tilo-ush /usr/libexec/tilo-relay-environment \
+               /usr/libexec/tilo-relay-offers /usr/bin/tilo-legacy; do
+    test -x "$program"
+    test "$(rpm -qf "$program")" = "$(rpm -q tilo-session-apps)"
+done
+/usr/libexec/tilo-relay-environment --help >/dev/null
+/usr/libexec/tilo-relay-offers --help >/dev/null
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f "/usr/lib/systemd/user/$unit.service"
     test -f "/usr/lib/systemd/user/$unit.socket"

@@ -62,6 +62,41 @@ pub struct PersonalWorkspaces {
     /// Where the directory and `agreed` survive a restart; `None` keeps
     /// them in memory only.
     store: Option<PathBuf>,
+    /// What the tree offered the last time [`Self::publish_local`] ran to
+    /// the end with everything written. While the tree offers the same and
+    /// neither the directory nor `agreed` moved since, running it again
+    /// would write nothing, so it is skipped.
+    published: Option<PublishInputs>,
+    /// How often [`Self::publish_local`] compared the tree against the
+    /// directory instead of answering from `published`.
+    #[cfg(test)]
+    publish_passes: usize,
+}
+
+/// The parts of a tree [`PersonalWorkspaces::publish_local`] reads.
+#[derive(PartialEq, Eq)]
+struct PublishInputs {
+    listed: BTreeMap<RoomId, Listed>,
+    /// Every workspace room of the tree, in its order.
+    order: Vec<RoomId>,
+    /// The listed rooms still waiting for their governor to be pinned.
+    unpinned: Vec<RoomId>,
+}
+
+impl PublishInputs {
+    fn of(tree: &WorkspaceTree, person: &str) -> Self {
+        let listed = member_workspaces(tree, person);
+        let unpinned = listed
+            .keys()
+            .copied()
+            .filter(|room| tree.room_authority(*room) == RoomAuthority::Unpinned)
+            .collect();
+        Self {
+            listed,
+            order: tree.desktop.workspaces.iter().map(|w| w.room).collect(),
+            unpinned,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -170,6 +205,9 @@ impl PersonalWorkspaces {
             agreed: BTreeMap::new(),
             agreed_order: Vec::new(),
             store: None,
+            published: None,
+            #[cfg(test)]
+            publish_passes: 0,
         }
     }
 
@@ -204,6 +242,7 @@ impl PersonalWorkspaces {
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self.published = None;
         self
     }
 
@@ -211,8 +250,21 @@ impl PersonalWorkspaces {
     /// directory: new and renamed workspaces, ones deleted here, and a new
     /// order. Returns whether the directory changed, which is when the
     /// other devices need a new snapshot.
+    ///
+    /// Called every frame tick, so when neither the tree's workspaces nor the
+    /// directory changed since the last call it only compares the tree with
+    /// what it offered then.
     pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
-        let listed = member_workspaces(tree, person);
+        let inputs = PublishInputs::of(tree, person);
+        if self.published.as_ref() == Some(&inputs) {
+            return false;
+        }
+        #[cfg(test)]
+        {
+            self.publish_passes = self.publish_passes.saturating_add(1);
+        }
+        let listed = &inputs.listed;
+        let mut complete = true;
         let mut changed = false;
         if let Some(label) = self.label.clone() {
             let registered = self
@@ -220,8 +272,12 @@ impl PersonalWorkspaces {
                 .devices()
                 .iter()
                 .any(|(device, known)| *device == self.device && *known == label);
-            if !registered && self.directory.register_device(self.device, &label).is_ok() {
-                changed = true;
+            if !registered {
+                if self.directory.register_device(self.device, &label).is_ok() {
+                    changed = true;
+                } else {
+                    complete = false;
+                }
             }
         }
         let next_order = entries_of(&self.directory)
@@ -229,12 +285,19 @@ impl PersonalWorkspaces {
             .filter_map(|(_, entry)| entry.order)
             .fold(0.0_f64, f64::max);
         let mut appended = 0.0;
-        for (room, entry) in &listed {
+        for (room, entry) in listed {
+            let fresh = !self.agreed.contains_key(room);
+            // Enrollment gives us a room ID before its real name arrives.
+            // Do not publish that provisional name as a rename on the owner's
+            // other devices. An adopted directory entry already has an agreed
+            // baseline, so its later local renames can still be published.
+            if fresh && tree.room_authority(*room) == RoomAuthority::Unpinned {
+                continue;
+            }
             if self.agreed.get(room) == Some(entry) {
                 continue;
             }
             let id = entry_id(*room);
-            let fresh = !self.agreed.contains_key(room);
             let written = self
                 .directory
                 .add_room_workspace(id, &room.to_string(), &entry.name)
@@ -253,6 +316,7 @@ impl PersonalWorkspaces {
                     changed = true;
                 }
                 Err(error) => {
+                    complete = false;
                     tracing::warn!(%error, %room, "personal workspace could not be listed");
                 }
             }
@@ -276,6 +340,8 @@ impl PersonalWorkspaces {
         if changed {
             self.persist();
         }
+        // A write that failed is tried again on the next call.
+        self.published = complete.then_some(inputs);
         changed
     }
 
@@ -340,6 +406,7 @@ impl PersonalWorkspaces {
     /// and the person's order, and drop workspaces deleted on another device
     /// or no longer shown on this one. Returns whether `tree` changed.
     pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
+        self.published = None;
         let entries = entries_of(&self.directory);
         let mut changed = false;
         let mut shown_here: Vec<RoomId> = Vec::new();
@@ -435,6 +502,7 @@ impl PersonalWorkspaces {
         {
             return false;
         }
+        self.published = None;
         self.persist();
         true
     }
@@ -452,6 +520,7 @@ impl PersonalWorkspaces {
         author: &DeviceCert,
         now_ns: u64,
     ) -> Result<(), DirectoryError> {
+        self.published = None;
         self.directory
             .apply_incremental(update, author, &RevocationList::new(), now_ns)?;
         self.persist();

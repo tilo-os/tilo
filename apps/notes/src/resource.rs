@@ -376,6 +376,6 @@ impl ResourceSurface<Notebook> for NotesApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Notebook>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_framework(cx.dispatcher(), cx.save_status());
     }
 }

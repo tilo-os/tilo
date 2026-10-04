@@ -247,6 +247,15 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    fn the_manifest_asks_for_the_engine_runtime_this_build_drives() {
+        let expected = format!(
+            "\noptional-runtimes = [\"{}\"]\n",
+            ui::webview::chromium::runtime::RUNTIME_REF
+        );
+        assert!(include_str!("../tilo-app.toml").contains(&expected));
+    }
+
+    #[test]
     fn resource_publish_owns_navigation_and_hosted_keeps_no_duplicate_root() {
         let state = BrowserState::default();
         let published = ui::tilo_resource::publish::<Browser>("browser", "Browser", &state);

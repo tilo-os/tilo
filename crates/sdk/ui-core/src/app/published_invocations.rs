@@ -30,19 +30,21 @@ impl super::App {
     ) -> Result<Option<ResourceInvocationScope>, tilo_actions::DoorError> {
         let Some(lease) = lease else { return Ok(None) };
         use crate::bound_dispatch::legacy_document::{LocalResourceTarget, select_local_target};
-        let owner = if let Some(target) = self
+        let scope = if let Some(target) = self
             .actions
             .bound_publication
             .target(address)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)?
         {
-            crate::history_mode::HistoryOwner::component(target.binding)
+            ResourceInvocationScope::for_bound_target(target, lease)
         } else {
             match select_local_target(self.root_widget.as_ref(), &self.state.doc, address)? {
                 LocalResourceTarget::Component(target) => {
-                    crate::history_mode::HistoryOwner::component(target.binding)
+                    ResourceInvocationScope::for_bound_target(target, lease)
                 }
-                LocalResourceTarget::Legacy(target) => target.owner,
+                LocalResourceTarget::Legacy(target) => {
+                    ResourceInvocationScope::for_owner(target.owner, lease)
+                }
                 LocalResourceTarget::Outer => {
                     return Err(tilo_actions::DoorError::Failed(
                         "required invocation has no canonical record owner".into(),
@@ -50,9 +52,7 @@ impl super::App {
                 }
             }
         };
-        ResourceInvocationScope::for_owner(owner, lease)
-            .map(Some)
-            .map_err(tilo_actions::DoorError::Failed)
+        scope.map(Some).map_err(tilo_actions::DoorError::Failed)
     }
     pub(crate) fn require_published_invocation_authorizer(&mut self) {
         self.actions.published_invocations.required = true;

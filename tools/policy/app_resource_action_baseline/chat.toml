@@ -1,0 +1,8 @@
+# Audited ceilings of apps/chat (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/chat/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+"apps/chat/src/main.rs" = 1

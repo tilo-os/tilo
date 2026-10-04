@@ -92,6 +92,7 @@ impl Resource for Document {
                 params: decl.params,
                 permission: decl.permission,
                 destructive: decl.destructive,
+                answers: decl.answers,
                 build: decl.build,
             })
             .collect();

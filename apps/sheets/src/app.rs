@@ -5532,6 +5532,12 @@ impl Widget for SheetsApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta, event_ctx.scale_factor, event_ctx.handled);
             }
+            WindowEvent::Ime(ime) if !self.palette.is_open() => {
+                if self.grid.ime(ime) {
+                    self.pending.redraw = true;
+                    *event_ctx.handled = true;
+                }
+            }
             WindowEvent::KeyboardInput { .. } => {
                 let mut ctx = PaletteRouteCtx {
                     path: event_ctx.path,
@@ -5554,6 +5560,17 @@ impl Widget for SheetsApp {
 
     fn name(&self) -> &'static str {
         "SheetsApp"
+    }
+
+    /// A cell being edited takes input-method composition.
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.grid
+            .is_editing()
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.grid.ime_cell_rect()
     }
 
     /// The worksheet is a custom-painted cell canvas, so surface the active
@@ -9532,6 +9549,65 @@ pub(crate) mod tests {
             },
         );
         handled
+    }
+
+    /// A cell edit takes an input-method composition: shown at the caret,
+    /// typed into the cell only on commit; Backspace removes whole clusters.
+    #[test]
+    fn cell_edit_composes_with_the_input_method_and_deletes_whole_clusters() {
+        use winit::event::Ime;
+        use winit::keyboard::NamedKey;
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 20)); // A21, empty
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event("a"),
+            Modifiers::default()
+        ));
+        assert!(app.grid.is_editing());
+        assert_eq!(
+            app.ime_purpose(),
+            Some(winit::window::ImePurpose::Normal),
+            "the editing cell asks for the input method"
+        );
+        assert!(app.ime_cursor_rect().is_some());
+
+        let ime = |app: &mut SheetsApp, doc: &mut AutoCommit, ime: Ime| {
+            feed(app, doc, &WindowEvent::Ime(ime), Modifiers::default())
+        };
+        assert!(ime(
+            &mut app,
+            &mut doc,
+            Ime::Preedit("にほ".into(), Some((3, 3)))
+        ));
+        assert_eq!(
+            app.grid.edit_shown(),
+            Some(("aにほ".to_owned(), 2)),
+            "the composition shows at the caret, the caret inside it"
+        );
+        assert_eq!(app.grid.active_display_raw(), "a", "but is not typed yet");
+        assert!(ime(&mut app, &mut doc, Ime::Commit("日本".into())));
+        assert_eq!(app.grid.active_display_raw(), "a日本");
+
+        // A combined letter, an emoji with a skin tone and a flag each go in
+        // as one character and come out with one Backspace.
+        for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+            assert!(ime(&mut app, &mut doc, Ime::Commit(typed.into())));
+        }
+        assert_eq!(app.grid.active_display_raw(), "a日本e\u{301}👍🏽🇩🇪");
+        let backspace = named_event(NamedKey::Backspace);
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本e\u{301}👍🏽");
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本");
+
+        // A committed composition replaces the selection.
+        app.grid.set_edit_caret(1, false);
+        app.grid.set_edit_caret(3, true);
+        assert!(ime(&mut app, &mut doc, Ime::Commit("x".into())));
+        assert_eq!(app.grid.active_display_raw(), "ax");
     }
 
     /// Ctrl+K opens the palette, which captures arrows and handles go-to-cell.

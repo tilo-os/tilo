@@ -19,15 +19,17 @@ def disk_floor(path):
         raise ValueError('20 GiB free disk floor reached; stopped owned stage')
 
 
-def bounded_build(command, env):
-    disk_floor(ROOT)
-    child = subprocess.Popen(command, cwd=ROOT, env=env, start_new_session=True)
+def bounded_build(command, env, *, cwd=None, seconds=1800, stdout=None, stderr=None):
+    directory = cwd or ROOT
+    disk_floor(directory)
+    child = subprocess.Popen(command, cwd=directory, env=env, start_new_session=True,
+                             stdout=stdout, stderr=stderr)
     started = time.monotonic()
     try:
         while child.poll() is None:
-            disk_floor(ROOT)
-            if time.monotonic() - started > 1800:
-                raise ValueError('build exceeded 30 minute per-app bound; reuse Cargo cache on retry')
+            disk_floor(directory)
+            if time.monotonic() - started > seconds:
+                raise ValueError(f'build exceeded {seconds} second bound; reuse compiled cache on retry')
             time.sleep(1)
         if child.returncode:
             raise ValueError(f'build failed with exit {child.returncode}')
@@ -64,6 +66,9 @@ def build_environment(args, work):
     env = dict(os.environ)
     env.update(CARGO=str(shim), CARGO_NET_OFFLINE='true', RUSTUP_AUTO_INSTALL='0', MACOSX_DEPLOYMENT_TARGET='13.0',
                RUSTC_WRAPPER=str(guard.resolve()), CARGO_BUILD_JOBS='1', CLOUD_RUSTC_JOBS='2')
+    # Rust #157750: stripping proc-macros can misalign LINKEDIT, rejected by
+    # macOS 27 dyld. Keep build-time tools unstripped; app release flags stay.
+    env['CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP'] = 'none'
     # Share the guard's default lock namespace; never invent another budget.
     env.pop('CLOUD_RUSTC_LOCK_DIR', None)
     return env
@@ -107,6 +112,7 @@ def build(args, plan, work):
     if shim.exists():
         shim.unlink()
     return {'apps': facts, 'origin': 'existing SDK outputs' if args.reuse_bundles else 'SDK build',
+            'host_dependency_strip': 'none' if environment else None,
             'notarized': False}
 
 
@@ -135,7 +141,7 @@ def verify_image(path, identity):
     run(['/usr/bin/hdiutil', 'verify', path])
     command = ['/usr/bin/codesign', '--verify', '--strict']
     if identity['sha1'] != '-':
-        command += ['-R', f'anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
+        command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
     run(command + [path])
 
 
