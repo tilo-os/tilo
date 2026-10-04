@@ -4,7 +4,9 @@
 //!
 //! - `guard status` — the enforcement in place right now, read back
 //!   from the kernel and the session, not the configuration that asked for
-//!   it. A Landlock ruleset that only partially applied says so.
+//!   it. A Landlock ruleset that only partially applied says so; the network
+//!   line comes from connecting to an address nothing granted, and to a
+//!   granted host ([`network_report`]).
 //! - `scan <path>` — everything establishable about a path (which image it
 //!   comes from, executable/setuid/setgid, granted-dir membership) with no
 //!   verdict and no claim that clean means safe.
@@ -21,6 +23,94 @@ use landlock::{ABI, Access, AccessFs, BitFlags, CompatLevel};
 pub use sandbox_core::landlock::LandlockOutcome;
 use sandbox_core::landlock::{FsRule, RulesetSpec, outcome_from_status};
 use tilo_clock::unix_now;
+
+/// An address no grant names, for the network test: a public resolver's,
+/// so where egress were not enforced the connection would succeed rather
+/// than merely time out.
+pub const UNLISTED_PROBE: &str = "1.1.1.1:443";
+
+/// How long a network test may take.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The network lines of `guard status`: what the session says it enforces,
+/// then what connecting from in here shows.
+pub fn network_report(status: &crate::broker::NetworkStatus) -> Vec<String> {
+    use crate::broker::NetworkStatus;
+    let mut lines = Vec::new();
+    let hosts = match status {
+        NetworkStatus::Unrestricted => {
+            lines.push("network     : unrestricted (a * grant), from its own namespace".into());
+            return lines;
+        }
+        NetworkStatus::Offline => {
+            lines.push(
+                "network     : none (nothing is granted; `perm allow-host HOST` adds a host)"
+                    .into(),
+            );
+            Vec::new()
+        }
+        NetworkStatus::Filtered { hosts } if hosts.is_empty() => {
+            lines.push(
+                "network     : none granted (`perm allow-host HOST` adds a host); \
+                 enforced by nftables"
+                    .into(),
+            );
+            Vec::new()
+        }
+        NetworkStatus::Filtered { hosts } => {
+            lines.push(format!(
+                "network     : only {} (named by the session's resolver, enforced by nftables)",
+                hosts.join(", ")
+            ));
+            hosts.clone()
+        }
+    };
+    lines.push(format!("  tested    : {}", probe_unlisted()));
+    match hosts.iter().find(|h| !h.starts_with('.')) {
+        Some(host) => lines.push(format!("  tested    : {}", probe_granted(host))),
+        None if !hosts.is_empty() => {
+            lines.push("  tested    : no exact host to try (only domain grants)".into());
+        }
+        None => {}
+    }
+    lines
+}
+
+fn probe_unlisted() -> String {
+    let Ok(addr) = UNLISTED_PROBE.parse::<std::net::SocketAddr>() else {
+        return "no address to try".into();
+    };
+    match std::net::TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
+        Ok(_) => format!("{UNLISTED_PROBE} (not granted) CONNECTED: egress is NOT enforced"),
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::ConnectionRefused => {
+                format!("{UNLISTED_PROBE} (not granted) refused")
+            }
+            std::io::ErrorKind::NetworkUnreachable => {
+                format!("{UNLISTED_PROBE} (not granted) unreachable: no route out")
+            }
+            _ => format!("{UNLISTED_PROBE} (not granted) failed: {e}"),
+        },
+    }
+}
+
+fn probe_granted(host: &str) -> String {
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<std::net::SocketAddr> = match (host, 443).to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(e) => return format!("{host} (granted) did not resolve: {e}"),
+    };
+    let Some(first) = addrs.first() else {
+        return format!("{host} (granted) resolved to nothing");
+    };
+    match std::net::TcpStream::connect_timeout(first, PROBE_TIMEOUT) {
+        Ok(_) => format!("{host}:443 (granted, {}) reached", first.ip()),
+        Err(e) => format!(
+            "{host} (granted) resolved to {}, but port 443 did not connect: {e}",
+            first.ip()
+        ),
+    }
+}
 
 /// Where quarantined files go: the environment's own `/var/lib`, which
 /// outlives the session and is nowhere on the host's paths.

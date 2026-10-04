@@ -9,7 +9,8 @@
 //!
 //! The record is the only package manifest there is: `pkg install` builds a
 //! tool image through a [`ToolBuilder`] and appends it with
-//! [`Environment::ADD_TOOL`]; `perm trust-dir` is [`Environment::GRANT_DIR`].
+//! [`Environment::ADD_TOOL`]; `perm trust-dir` is [`Environment::GRANT_DIR`]
+//! and `perm allow-host` is [`Environment::ALLOW_HOST`].
 //! History and undo come from the record layer.
 
 #![cfg_attr(
@@ -56,7 +57,7 @@ pub struct Environment {
     pub runtime: RuntimeRef,
     /// Tools built for [`Self::runtime`], topmost last.
     pub tools: Vec<ToolRef>,
-    /// `FsPath` (and `NetHost`) grants, subject [`RUNTIME_APP_ID`].
+    /// `FsPath` and `NetHost` grants, subject [`RUNTIME_APP_ID`].
     pub grants: Json<Vec<CapOverride>>,
     /// Whether the home survives the session.
     pub home: HomePolicy,
@@ -163,6 +164,19 @@ impl Environment {
         #[param("Writable")] write: bool,
     ) -> Result<(), String> {
         let grant = dir_grant(Path::new(&path), write)?;
+        self.grants.0.retain(|c| c.id != grant.id);
+        self.grants.0.push(grant);
+        Ok(())
+    }
+
+    /// Allow host.
+    ///
+    /// Lets the guest resolve and connect to a host: `example.com`, a
+    /// domain and everything under it (`*.example.com`), or `*` for any
+    /// host. Allowing a host again replaces the earlier grant.
+    #[action]
+    pub fn allow_host(&mut self, #[param("Host")] host: String) -> Result<(), String> {
+        let grant = host_grant(&host)?;
         self.grants.0.retain(|c| c.id != grant.id);
         self.grants.0.push(grant);
         Ok(())
@@ -407,6 +421,74 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     .granted_by(Principal::Person("local".to_owned())))
 }
 
+/// A host as a `NetHost` grant spells it: `*`, `example.com`, or
+/// `.example.com` for the domain and everything under it (`*.example.com`
+/// is accepted and written that way). Lower-case, no trailing dot.
+///
+/// # Errors
+/// Returns the reason when `host` is not a host name: empty, an address
+/// (egress is decided by name, so a literal would bypass the resolver that
+/// decides), or characters DNS names do not carry.
+pub fn normalize_host(host: &str) -> Result<String, String> {
+    let trimmed = host.trim().trim_end_matches('.');
+    if trimmed == "*" {
+        return Ok("*".to_owned());
+    }
+    let (domain, name) = match trimmed
+        .strip_prefix("*.")
+        .or_else(|| trimmed.strip_prefix('.'))
+    {
+        Some(rest) => (true, rest),
+        None => (false, trimmed),
+    };
+    let name = name.to_ascii_lowercase();
+    if name.parse::<std::net::IpAddr>().is_ok() || name.starts_with('[') {
+        return Err(format!(
+            "{host:?} is an address; hosts are allowed by name (example.com), so the \
+             resolver that decides what the guest reaches cannot be bypassed"
+        ));
+    }
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
+        return Err(format!(
+            "{host:?} is not a host: name one (example.com), a domain with everything \
+             under it (*.example.com), or * for any host"
+        ));
+    }
+    Ok(if domain { format!(".{name}") } else { name })
+}
+
+/// The grant id for a host: stable, so allowing it again replaces one
+/// record instead of adding another.
+pub fn host_grant_id(host: &str) -> String {
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, host.as_bytes());
+    format!("ush-host-{:016x}", std::hash::Hasher::finish(&hasher))
+}
+
+/// The capability that lets the guest reach `host` — a `NetHost` grant
+/// against [`RUNTIME_APP_ID`], what the permissions panel shows and revokes.
+///
+/// # Errors
+/// Returns the reason when `host` is not a host (see [`normalize_host`]).
+pub fn host_grant(host: &str) -> Result<CapOverride, String> {
+    let host = normalize_host(host)?;
+    Ok(CapOverride::grant(
+        Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
+        Scope::NetHost(host.clone()),
+        Verb::Read,
+    )
+    .with_id(host_grant_id(&host))
+    .granted_by(Principal::Person("local".to_owned())))
+}
+
 /// Whether `cap` is a grant this record should carry: a `Grant` for
 /// [`RUNTIME_APP_ID`]. A `Restrict` written elsewhere is honoured by the
 /// evaluator, but never introduces a path.
@@ -626,6 +708,45 @@ mod tests {
             r.apply(Environment::REVOKE_GRANT.with(cap.id.clone()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn host_grants_are_capabilities_in_the_shared_spelling() {
+        let mut r = replica();
+        r.apply(Environment::ALLOW_HOST.with("GitHub.com.".into()))
+            .unwrap();
+        r.apply(Environment::ALLOW_HOST.with("*.crates.io".into()))
+            .unwrap();
+        r.apply(Environment::ALLOW_HOST.with("github.com".into()))
+            .unwrap();
+        let env = r.state().unwrap();
+        assert_eq!(env.grants.0.len(), 2, "allowing again replaces the grant");
+        let scopes: Vec<&Scope> = env.grants.0.iter().map(|c| &c.scope).collect();
+        assert_eq!(
+            scopes,
+            [
+                &Scope::NetHost(".crates.io".into()),
+                &Scope::NetHost("github.com".into())
+            ]
+        );
+        assert!(env.grants.0.iter().all(is_runtime_grant));
+        // The record's spelling is the evaluator's: a leading dot covers
+        // the domain and everything under it.
+        assert!(collab_types::caps::host_covers(
+            ".crates.io",
+            "static.crates.io"
+        ));
+
+        assert_eq!(normalize_host(" * ").unwrap(), "*");
+        for bad in ["", "1.1.1.1", "::1", "[::1]", "a b", "-x.com", "x..com"] {
+            assert!(
+                r.apply(Environment::ALLOW_HOST.with(bad.into())).is_err(),
+                "{bad:?} must not be allowed"
+            );
+        }
+        let id = host_grant_id("github.com");
+        r.apply(Environment::REVOKE_GRANT.with(id)).unwrap();
+        assert_eq!(r.state().unwrap().grants.0.len(), 1);
     }
 
     #[test]

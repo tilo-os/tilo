@@ -61,6 +61,8 @@ pub struct Layer {
     pub texture: f64,
     /// Held still: the pointer passes through its marks to those beneath.
     pub locked: bool,
+    /// Colour and tone adjustments of everything on the layer.
+    pub adjust: Option<Adjust>,
     /// The layer this layer masks, or empty for an ordinary layer. A mask's
     /// marks are drawn in greys: where it is light that layer shows, where
     /// it is dark it is hidden. Hiding the mask turns it off.
@@ -183,6 +185,24 @@ pub enum Shape {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dab_length: Option<f64>,
     },
+    /// A PNG, JPEG or WebP in the frame `x, y, width, height`.
+    Image {
+        /// File path, content address or `data:` URI.
+        src: String,
+        x: f64,
+        y: f64,
+        /// Units; absent: a unit per pixel, or the other side's aspect.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        width: f64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        height: f64,
+        /// Fractions `[x, y, w, h]` of the picture shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crop: Option<[f64; 4]>,
+        /// Degrees turned inside the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        straighten: Option<f64>,
+    },
 }
 
 /// A colour gradient across a mark.
@@ -266,6 +286,58 @@ pub struct Style {
     /// shading that melts into what is under it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feather: Option<f64>,
+    /// Colour and tone adjustments: a picture's pixels, a shape's colours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<Adjust>,
+}
+
+/// Non-destructive colour and tone adjustments, applied in this order:
+/// white balance, exposure, contrast, curve, highlights and
+/// shadows, hue, saturation, vibrance, grayscale, invert; then blur,
+/// sharpen and vignette. Absent or zero leaves a step out.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Adjust {
+    /// Stops, -5 to 5. Others -1 to 1 unless noted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contrast: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadows: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<f64>,
+    /// Saturation sparing strong colours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrance: Option<f64>,
+    /// Degrees, -180 to 180.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<f64>,
+    /// Warmer +.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Magenta +.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<f64>,
+    /// Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets
+    /// black and white points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<Vec<[f64; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grayscale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invert: Option<bool>,
+    /// Radius in units, 0-200 (pictures and paint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f64>,
+    /// 0-1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharpen: Option<f64>,
+    /// Edges darker +, lighter -.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vignette: Option<f64>,
 }
 
 /// The blend modes a mark may use.
@@ -435,22 +507,40 @@ impl Artwork {
                 .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
                 && mark.inked()
                 && mark.hit(point)
-                && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
+                && self.clipped_in(mark, point)
         })
     }
 
-    /// The mark `mark` is cut to, if any.
-    pub fn clip_of(&self, mark: &Mark) -> Option<&Mark> {
-        (!mark.clip.is_empty())
-            .then(|| self.mark(&mark.clip))
-            .flatten()
+    /// The marks `mark` is cut to: the mark its clip names, or the members
+    /// of the group it names; none when it is not cut.
+    pub fn clips_of(&self, mark: &Mark) -> Vec<&Mark> {
+        if mark.clip.is_empty() {
+            return Vec::new();
+        }
+        match self.mark(&mark.clip) {
+            Some(clip) => vec![clip],
+            None => self
+                .members(&mark.clip)
+                .filter(|member| member.id != mark.id)
+                .collect(),
+        }
+    }
+
+    /// Whether `point` is inside what `mark` is cut to (anywhere when it is
+    /// not cut).
+    pub fn clipped_in(&self, mark: &Mark, point: Point) -> bool {
+        let clips = self.clips_of(mark);
+        clips.is_empty() || clips.iter().any(|clip| clip.hit(point))
     }
 
     /// What of `mark` can show: its bounds, cut to its clip's.
     pub fn visible_bounds(&self, mark: &Mark) -> Rect {
         let bounds = mark.bounds();
-        self.clip_of(mark)
-            .map_or(bounds, |clip| bounds.intersect(clip.bounds()))
+        self.clips_of(mark)
+            .iter()
+            .map(|clip| clip.bounds())
+            .reduce(|a, b| a.union(b))
+            .map_or(bounds, |clip| bounds.intersect(clip))
     }
 
     /// The members of group `id`, bottom to top: its own marks and those of
@@ -509,6 +599,42 @@ fn finite(values: &[f64]) -> bool {
     values
         .iter()
         .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
+}
+
+/// Why a picture cannot be shown, in words an agent can act on.
+fn image_problem(shape: &Shape) -> Option<String> {
+    let Shape::Image {
+        src,
+        x,
+        y,
+        width,
+        height,
+        crop,
+        straighten,
+    } = shape
+    else {
+        return None;
+    };
+    let (frame, width, height) = ([*x, *y, *width, *height], *width, *height);
+    if ui::tilo_actions::content_hash(src).is_none() {
+        Some("an image's src is a file path, content address or data: URI".into())
+    } else if !finite(&frame) || width <= 0.0 || height <= 0.0 {
+        Some("an image needs finite x, y and a positive width and height".into())
+    } else if crop.is_some_and(|[x, y, w, h]| {
+        ![x, y, w, h].iter().all(|v| v.is_finite())
+            || x < 0.0
+            || y < 0.0
+            || w <= 0.0
+            || h <= 0.0
+            || x + w > 1.0 + 1e-9
+            || y + h > 1.0 + 1e-9
+    }) {
+        Some("crop is [x, y, w, h] fractions of the picture, inside 0..1, w and h positive".into())
+    } else if straighten.is_some_and(|angle| !(-45.0..=45.0).contains(&angle)) {
+        Some("straighten is -45 to 45 degrees".into())
+    } else {
+        None
+    }
 }
 
 impl Shape {
@@ -606,6 +732,7 @@ impl Shape {
                     None
                 }
             }
+            Self::Image { .. } => image_problem(self),
             Self::Stroke { points, size, .. } => {
                 if points.is_empty() || points.len() > MAX_POINTS {
                     Some(format!("a stroke needs 1 to {MAX_POINTS} points"))
@@ -662,6 +789,7 @@ impl Shape {
             Self::Path { .. } => "path",
             Self::Text { .. } => "text",
             Self::Stroke { .. } => "stroke",
+            Self::Image { .. } => "image",
         }
     }
 
@@ -690,6 +818,13 @@ impl Shape {
             Self::Line { points } => polyline(points, false),
             Self::Path { d } => BezPath::from_svg(d).unwrap_or_default(),
             Self::Text { .. } => self.text_box().unwrap_or_default().to_path(0.1),
+            Self::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => Rect::new(*x, *y, x + width, y + height).to_path(0.1),
             Self::Stroke { points, .. } => {
                 let mut path = BezPath::new();
                 for (index, point) in points.iter().enumerate() {
@@ -711,7 +846,10 @@ impl Shape {
     /// Whether the shape is a closed region that can be filled.
     pub fn closed(&self) -> bool {
         match self {
-            Self::Rect { .. } | Self::Ellipse { .. } | Self::Polygon { .. } => true,
+            Self::Rect { .. }
+            | Self::Ellipse { .. }
+            | Self::Polygon { .. }
+            | Self::Image { .. } => true,
             Self::Path { d } => d.trim_end().ends_with(['z', 'Z']),
             Self::Line { .. } | Self::Text { .. } | Self::Stroke { .. } => false,
         }
@@ -753,6 +891,14 @@ impl Shape {
                 Self::Path {
                     d: path_data(&path),
                 }
+            }
+            Self::Image { .. } => {
+                let mut moved = self.clone();
+                if let Self::Image { x, y, .. } = &mut moved {
+                    *x += dx;
+                    *y += dy;
+                }
+                moved
             }
             Self::Text { .. } => {
                 let mut moved = self.clone();
@@ -879,6 +1025,22 @@ impl Shape {
             }
             Self::Polygon { points: at } => Self::Polygon { points: points(at) },
             Self::Line { points: at } => Self::Line { points: points(at) },
+            Self::Image { .. } => {
+                let mut image = self.clone();
+                if let Self::Image {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } = &mut image
+                {
+                    [*x, *y] = map([*x, *y]);
+                    *width *= sx;
+                    *height *= sy;
+                }
+                image
+            }
             Self::Path { d } => {
                 let mut path = BezPath::from_svg(d).ok()?;
                 path.apply_affine(affine);
@@ -1047,7 +1209,10 @@ impl Mark {
     /// others to its shape.
     pub fn inked(&self) -> bool {
         let style = &self.style;
-        style.fill.is_some() || style.stroke.is_some() || style.gradient.is_some()
+        style.fill.is_some()
+            || style.stroke.is_some()
+            || style.gradient.is_some()
+            || matches!(self.shape, Shape::Image { .. })
     }
 
     /// Whether the mark is an eraser: it takes paint off its layer and has
@@ -1133,9 +1298,10 @@ impl Mark {
         }
         let local = self.affine().inverse() * point;
         match &self.shape {
-            Shape::Text { .. } | Shape::Rect { .. } | Shape::Ellipse { .. } => {
-                self.shape.path().contains(local)
-            }
+            Shape::Text { .. }
+            | Shape::Rect { .. }
+            | Shape::Ellipse { .. }
+            | Shape::Image { .. } => self.shape.path().contains(local),
             Shape::Polygon { .. } | Shape::Path { .. } if self.shape.closed() => {
                 self.shape.path().contains(local) || self.near_outline(local, 4.0)
             }
