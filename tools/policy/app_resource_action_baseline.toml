@@ -100,8 +100,6 @@
 
 [ratchets.empty_action_vocabulary]
 "apps/clocks/src/resource.rs" = 1
-"apps/imager/src/setup/actions.rs" = 1
-"apps/imager/src/setup/import_actions.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]
