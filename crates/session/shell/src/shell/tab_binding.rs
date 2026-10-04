@@ -727,27 +727,68 @@ pub fn relocate_foreign_toplevel(
         return rename_tab_for_app_id(tree, surface_id, &app_id)
             && rename_tab_for_title(tree, surface_id, title);
     }
+    // The window keeps its identity through the move: the replacement tab
+    // takes the old tab's id, and when the window had a group of its own and
+    // gets one again, that group keeps its id too. A launch that activates
+    // its token a few seconds after mapping (Chromium) otherwise saw its
+    // window's group vanish and a new one appear in its place. A window bound
+    // into an existing tab takes that tab, and with it that tab's id.
+    let previous = if matches!(placement, Placement::IntoTab(_)) {
+        None
+    } else {
+        tree.desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|tab| {
+                        matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if *id == surface_id)
+                    })
+                    .map(|tab| (tab.id, group.id, group.tabs.len() == 1))
+            })
+    };
     if !close_tab_for_destroyed_surface(tree, surface_id) {
         return false;
     }
     let tab_id = adopt_toplevel_at(tree, surface_id, Some(app_id), placement);
+    let mut regrouped = None;
+    let mut titled = false;
     for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
-                let titled = if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    tab.title = title.to_string();
-                    true
-                } else {
-                    false
+                let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+                    continue;
                 };
-                if titled {
-                    mark_tree_changed(tree);
-                    return true;
+                tab.title = title.to_string();
+                titled = true;
+                if let Some((old_tab, old_group, was_alone)) = previous {
+                    tab.id = old_tab;
+                    if group.active_tab == tab_id {
+                        group.active_tab = old_tab;
+                    }
+                    if was_alone && group.tabs.len() == 1 && group.id != old_group {
+                        regrouped = Some((group.id, old_group));
+                        group.id = old_group;
+                    }
                 }
             }
         }
     }
-    false
+    if let Some((minted, kept)) = regrouped {
+        for active in tree.desktop.active_group.values_mut() {
+            if *active == minted {
+                *active = kept;
+            }
+        }
+    }
+    if titled {
+        mark_tree_changed(tree);
+    }
+    titled
 }
 
 /// Rewrite only a foreign tab's client-provided visible title.  App identity
@@ -1397,6 +1438,60 @@ mod tests {
                     "a later matching window must not replace the token-bound surface"
                 );
                 crate::shell::launcher::clear_pending_placements();
+            }
+
+            // Phase `a_late_activation_moves_the_window_without_replacing_its_group`.
+            // Chromium maps its window, then activates its launch token seconds
+            // later. The move to the launch's placement keeps the window's tab
+            // and group ids: a group that vanished and reappeared under a new
+            // id lost every reference to it (A08).
+            {
+                crate::shell::launcher::clear_pending_placements();
+                let mut tree = WorkspaceTree::bootstrap_demo();
+                let first = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+                let tab = adopt_toplevel_at(
+                    &mut tree,
+                    0xc0de,
+                    Some("chromium-browser".into()),
+                    Placement::NewGroup,
+                );
+                let group = group_of(&tree, 0xc0de).id;
+                let groups_before = tree.desktop.workspaces[0].strips[0].window_groups.len();
+
+                assert!(relocate_foreign_toplevel(
+                    &mut tree,
+                    0xc0de,
+                    Placement::RightOf(first),
+                    "Chromium",
+                ));
+                let strip = &tree.desktop.workspaces[0].strips[0];
+                assert_eq!(
+                    group_of(&tree, 0xc0de).id,
+                    group,
+                    "the window keeps its group"
+                );
+                assert_eq!(tab_of(&tree, 0xc0de).id, tab, "and its tab");
+                assert_eq!(group_of(&tree, 0xc0de).active_tab, tab);
+                assert_eq!(tab_of(&tree, 0xc0de).title, "Chromium");
+                assert_eq!(
+                    strip.window_groups.len(),
+                    groups_before,
+                    "no group is added"
+                );
+                assert_eq!(
+                    strip.window_groups.iter().position(|g| g.id == group),
+                    strip
+                        .window_groups
+                        .iter()
+                        .position(|g| g.id == first)
+                        .map(|i| i + 1),
+                    "it moved where the launch asked for it"
+                );
+                assert_eq!(
+                    tree.desktop.active_group_for(strip.id),
+                    Some(group),
+                    "and stays the focused group"
+                );
             }
 
             // Phase `a_window_whose_tab_vanished_is_still_placed`.
