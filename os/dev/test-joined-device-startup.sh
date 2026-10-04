@@ -18,6 +18,7 @@
 #      primary record, no root key on disk, the device certificate unchanged.
 #   4. An authored app (Notes) opens, and its launch leaves the public record
 #      as it was rather than giving it a secret it does not have.
+#   5. A note typed there is saved, and Notes says "Saved".
 #
 # Usage: os/dev/test-joined-device-startup.sh DISK_QCOW2 [--out DIR] [--display gl|2d]
 #
@@ -167,6 +168,20 @@ fi
   && cp -f "$TILO_RUN/joined-notes.png" "$out/" 2>/dev/null || true
 "$vm" ssh "grep -q '\"schema_version\": 1' $(printf '%q' "$record")" \
   || die "launching an app rewrote the joined identity record to reference a secret"
+# A note written on the joined device is durable, and Notes says so: the
+# keyboard types it, and the save state reads "Saved", never "Not saved".
+joined_sentence='Written on the joined device.'
+"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/joined-notes' \
+  > "$out/notes-type.txt" 2>&1 || {
+  cat "$out/notes-type.txt" >&2
+  die "Notes on the joined device opened no note to type into"
+}
+"$vm" type "$joined_sentence"
+"$vm" ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$joined_sentence' --state /tmp/joined-notes --status Saved" \
+  > "$out/notes-saved.txt" 2>&1 || {
+  cat "$out/notes-saved.txt" >&2
+  die "a note written on the joined device is not saved"
+}
 # Still the desktop once startup settles: nothing replaced it afterwards.
 "$vm" ssh /usr/libexec/tilo/native-atspi-smoke.sh established \
   || die "the joined device's desktop did not stay up"
