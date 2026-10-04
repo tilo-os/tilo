@@ -33,7 +33,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
-use crate::widget::{Actions, Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
+use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
 
 /// The banner's metrics, from the theme.
 #[derive(Clone, Copy, Debug)]
@@ -204,6 +204,24 @@ fn geometry(
     text: &mut TextRenderer,
     theme: &Theme,
 ) -> Geometry {
+    let secondary = content
+        .secondary_action
+        .map(|label| action_face(Rect::ZERO, label, false).intrinsic_width(text, theme));
+    let main = content
+        .action
+        .map(|label| action_face(Rect::ZERO, label, true).intrinsic_width(text, theme));
+    geometry_with(content, [secondary, main], width, text, theme)
+}
+
+/// [`geometry`] with the actions' widths given: `[secondary, main]`. The
+/// retained banner measures its own buttons.
+fn geometry_with(
+    content: &BannerContent<'_>,
+    actions: [Option<f64>; 2],
+    width: f64,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Geometry {
     let m = Metrics::of(theme);
     let control_h = ButtonFace::height(ControlSize::Small, theme);
     let trailing = if content.dismissible {
@@ -215,13 +233,7 @@ fn geometry(
     let body_x0 = m.pad_x;
     let body_x1 = (width - m.pad_x - trailing).max(body_x0 + 1.0);
     let body_w = body_x1 - body_x0;
-    let mut widths = Vec::new();
-    if let Some(label) = content.secondary_action {
-        widths.push(action_face(Rect::ZERO, label, false).intrinsic_width(text, theme));
-    }
-    if let Some(label) = content.action {
-        widths.push(action_face(Rect::ZERO, label, true).intrinsic_width(text, theme));
-    }
+    let widths: Vec<f64> = actions.iter().flatten().copied().collect();
     let actions_w = widths.iter().sum::<f64>()
         + m.related * crate::num::f64_of_usize(widths.len().saturating_sub(1));
     let leading = m.icon + m.gap;
@@ -281,7 +293,7 @@ fn geometry(
         rects.push(Rect::new(x - w, actions_top, x, actions_top + control_h));
         x -= w + m.related;
     }
-    let (action, secondary_action) = match (content.action, content.secondary_action) {
+    let (action, secondary_action) = match (actions[1], actions[0]) {
         (Some(_), Some(_)) => (rects.first().copied(), rects.get(1).copied()),
         (Some(_), None) => (rects.first().copied(), None),
         (None, Some(_)) => (None, rects.first().copied()),
@@ -520,13 +532,17 @@ impl BannerNotice {
 }
 
 // ---------------------------------------------------------------------------
-// Retained parts: the body (icon and text) and the row that wraps it with
-// the actions.
+// Retained parts: the body, a measured leaf with the banner's whole geometry.
 // ---------------------------------------------------------------------------
 
-/// The icon, title and message: a measured leaf.
+/// The well, icon, title and message: a measured leaf as tall as the whole
+/// banner at its width, laid out by the same geometry as the immediate
+/// painter, so the banner's buttons go where [`Banner::paint`] puts them.
 struct BannerBody {
     notice: BannerNotice,
+    /// The measured widths of the banner's buttons: `[secondary, main]`.
+    actions: [Option<f64>; 2],
+    dismissible: bool,
     rect: Rect,
     theme: Theme,
     dirty: bool,
@@ -534,25 +550,16 @@ struct BannerBody {
 }
 
 impl BannerBody {
-    fn text_width(&self, width: f64) -> f32 {
-        let m = Metrics::of(&self.theme);
-        crate::num::f32_of_f64((width - m.icon - m.gap).max(1.0))
+    fn content(&self) -> BannerContent<'_> {
+        let n = &self.notice;
+        BannerContent::new(n.kind, &n.title)
+            .with_icon(n.icon.unwrap_or_else(|| n.kind.default_icon()))
+            .with_message(n.message.as_deref())
+            .dismissible(self.dismissible)
     }
 
-    fn heights(&self, text: &mut TextRenderer, width: f64) -> (f64, f64) {
-        let tw = self.text_width(width);
-        let title_h = f64::from(
-            text.measure_style(&self.notice.title, Some(tw), &title_style(&self.theme))
-                .1,
-        );
-        let message_h = self.notice.message.as_ref().map_or(0.0, |message| {
-            f64::from(self.theme.tokens.spacing.s1)
-                + f64::from(
-                    text.measure_style(message, Some(tw), &message_style(&self.theme))
-                        .1,
-                )
-        });
-        (title_h, message_h)
+    fn geometry(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> Geometry {
+        geometry_with(&self.content(), self.actions, width, text, theme)
     }
 }
 
@@ -564,15 +571,12 @@ impl Widget for BannerBody {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = theme.clone();
-        let m = Metrics::of(theme);
         let node = taffy.leaf_node(Style {
-            flex_grow: 1.0,
-            flex_shrink: 1.0,
-            flex_basis: length(crate::num::f32_of_f64(m.icon + m.gap + m.text_basis)),
-            min_size: Size {
-                width: length(crate::num::f32_of_f64(m.icon + m.gap)),
+            size: Size {
+                width: percent(1.0_f32),
                 height: auto(),
             },
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -588,15 +592,18 @@ impl Widget for BannerBody {
         let m = Metrics::of(&self.theme);
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
-            taffy::AvailableSpace::MinContent => crate::num::f32_of_f64(m.icon + m.gap),
+            taffy::AvailableSpace::MinContent => {
+                crate::num::f32_of_f64(m.icon + m.gap + 2.0 * m.pad_x)
+            }
             taffy::AvailableSpace::MaxContent => {
-                crate::num::f32_of_f64(m.icon + m.gap + m.text_basis)
+                crate::num::f32_of_f64(m.icon + m.gap + m.text_basis + 2.0 * m.pad_x)
             }
         });
-        let (title_h, message_h) = self.heights(text, f64::from(width));
+        let theme = self.theme.clone();
+        let g = self.geometry(text, &theme, f64::from(width));
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64((title_h + message_h).max(m.icon)),
+            height: crate::num::f32_of_f64(g.height.ceil()),
         }
     }
 
@@ -617,34 +624,24 @@ impl Widget for BannerBody {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.rect.width() <= 0.0 {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let m = Metrics::of(theme);
-        let (title_h, message_h) = self.heights(text, self.rect.width());
-        let text_h = title_h + message_h;
-        let icon = Rect::from_center_size(
-            Point::new(self.rect.x0 + m.icon / 2.0, self.rect.center().y),
-            (m.icon, m.icon),
-        );
-        let origin = Point::new(
-            self.rect.x0 + m.icon + m.gap,
-            self.rect.center().y - text_h / 2.0,
-        );
-        let n = &self.notice;
-        let content = BannerContent::new(n.kind, &n.title)
-            .with_icon(n.icon.unwrap_or_else(|| n.kind.default_icon()))
-            .with_message(n.message.as_deref());
-        let place = BodyPlace {
-            icon,
-            text: origin,
-            text_width: self.text_width(self.rect.width()),
-            title_h,
-        };
+        let mut ctx = PaintCtx::new(scene, transform, text, theme);
+        paint_well(&mut ctx, self.rect);
+        let g = self.geometry(ctx.text, theme, self.rect.width());
+        let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        let origin = self.rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let content = self.content();
         paint_body(
-            &mut PaintCtx::new(scene, transform, text, theme),
+            &mut ctx,
             &content,
-            place,
+            BodyPlace {
+                icon: g.icon + origin,
+                text: g.text + origin,
+                text_width: g.text_width,
+                title_h: g.title_h,
+            },
         );
     }
 
@@ -669,135 +666,6 @@ impl Widget for BannerBody {
     }
 }
 
-/// The body and the actions, in one row that wraps the actions under the
-/// body when there is no room beside it.
-struct BannerMain {
-    body: BannerBody,
-    actions: Option<Actions>,
-    nodes: Vec<NodeId>,
-    rect: Rect,
-}
-
-impl Widget for BannerMain {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let m = Metrics::of(theme);
-        self.nodes = vec![self.body.build_layout(taffy, theme, node_map)];
-        if let Some(actions) = &mut self.actions {
-            self.nodes
-                .push(actions.build_layout(taffy, theme, node_map));
-        }
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_wrap: taffy::FlexWrap::Wrap,
-                align_items: Some(taffy::AlignItems::Center),
-                justify_content: Some(taffy::JustifyContent::FlexEnd),
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                flex_basis: length(0.0_f32),
-                min_size: Size {
-                    width: length(0.0_f32),
-                    height: auto(),
-                },
-                gap: Size {
-                    width: length(crate::num::f32_of_f64(m.gap)),
-                    height: length(crate::num::f32_of_f64(m.row_gap)),
-                },
-                ..Default::default()
-            },
-            &self.nodes,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = layout_rect(taffy, node, origin);
-        let origin = self.rect.origin();
-        if let Some(&node) = self.nodes.first() {
-            self.body.apply_layout(taffy, node, origin);
-        }
-        if let (Some(actions), Some(&node)) = (&mut self.actions, self.nodes.get(1)) {
-            actions.apply_layout(taffy, node, origin);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.body.draw(scene, transform, text, theme, presence);
-        if let Some(actions) = &mut self.actions {
-            actions.draw(scene, transform, text, theme, presence);
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        if let (Some(actions), Some(&node)) = (&mut self.actions, self.nodes.get(1)) {
-            actions.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        }
-    }
-
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
-        self.actions
-            .as_mut()
-            .is_some_and(|actions| actions.update(state, path))
-    }
-
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        if let Some(actions) = &mut self.actions {
-            actions.sync(state, path);
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.body];
-        if let Some(actions) = &self.actions {
-            out.push(actions);
-        }
-        out
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.body];
-        if let Some(actions) = &mut self.actions {
-            out.push(actions);
-        }
-        out
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.actions
-            .as_mut()
-            .is_some_and(Widget::take_structure_dirty)
-    }
-
-    fn name(&self) -> &'static str {
-        "BannerRow"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Banner — retained.
 // ---------------------------------------------------------------------------
@@ -805,7 +673,9 @@ impl Widget for BannerMain {
 /// An inline semantic alert with a title, an optional message, up to two
 /// actions and an optional dismiss control.
 pub struct Banner {
-    main: BannerMain,
+    body: BannerBody,
+    secondary: Option<Button>,
+    action: Option<Button>,
     dismiss: Option<Button>,
     id: Option<String>,
     /// Absent: the banner collapses, and with it its gap in the parent.
@@ -819,6 +689,7 @@ pub struct Banner {
     /// Set by the dismiss control's action; read on the next sync.
     dismiss_requested: Rc<Cell<bool>>,
     on_dismiss: Option<Box<dyn FnMut()>>,
+    /// The body's node, then one per button, in [`Widget::children`] order.
     nodes: Vec<NodeId>,
     rect: Rect,
     layout_dirty: bool,
@@ -833,18 +704,17 @@ impl Banner {
     fn from_notice(notice: Option<BannerNotice>) -> Self {
         let shown = notice.is_some();
         Self {
-            main: BannerMain {
-                body: BannerBody {
-                    notice: notice.unwrap_or_else(|| BannerNotice::neutral("")),
-                    rect: Rect::ZERO,
-                    theme: Theme::dark(),
-                    dirty: true,
-                    layout_dirty: true,
-                },
-                actions: None,
-                nodes: Vec::new(),
+            body: BannerBody {
+                notice: notice.unwrap_or_else(|| BannerNotice::neutral("")),
+                actions: [None, None],
+                dismissible: false,
                 rect: Rect::ZERO,
+                theme: Theme::dark(),
+                dirty: true,
+                layout_dirty: true,
             },
+            secondary: None,
+            action: None,
             dismiss: None,
             id: None,
             shown,
@@ -888,13 +758,13 @@ impl Banner {
 
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.main.body.notice.message = Some(message.into());
+        self.body.notice.message = Some(message.into());
         self
     }
 
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
-        self.main.body.notice.icon = Some(icon);
+        self.body.notice.icon = Some(icon);
         self
     }
 
@@ -913,22 +783,14 @@ impl Banner {
     /// banner sizes it; the button keeps its role.
     #[must_use]
     pub fn with_action(mut self, button: Button) -> Self {
-        let button = button.control_size(ControlSize::Small);
-        self.main.actions = Some(match self.main.actions.take() {
-            Some(actions) => actions.replace_primary(button),
-            None => Actions::new(button),
-        });
+        self.action = Some(button.control_size(ControlSize::Small));
         self
     }
 
     /// A second action, before the main one.
     #[must_use]
     pub fn with_secondary_action(mut self, button: Button) -> Self {
-        let button = button.control_size(ControlSize::Small);
-        self.main.actions = Some(match self.main.actions.take() {
-            Some(actions) => actions.secondary(button),
-            None => Actions::new(button),
-        });
+        self.secondary = Some(button.control_size(ControlSize::Small));
         self
     }
 
@@ -943,6 +805,7 @@ impl Banner {
                 .control_size(ControlSize::Small)
                 .on_view(move || requested.set(true)),
         );
+        self.body.dismissible = true;
         self
     }
 
@@ -976,7 +839,7 @@ impl Banner {
 
     /// The effective leading icon (override or severity default).
     pub fn icon(&self) -> Icon {
-        let notice = &self.main.body.notice;
+        let notice = &self.body.notice;
         notice.icon.unwrap_or_else(|| notice.kind.default_icon())
     }
 
@@ -984,8 +847,8 @@ impl Banner {
     pub fn set_notice(&mut self, notice: Option<BannerNotice>) {
         match notice {
             Some(notice) => {
-                if !self.shown || self.dismissed || self.main.body.notice != notice {
-                    self.main.body.notice = notice;
+                if !self.shown || self.dismissed || self.body.notice != notice {
+                    self.body.notice = notice;
                     self.shown = true;
                     self.dismissed = false;
                     self.changed();
@@ -1003,8 +866,8 @@ impl Banner {
     fn changed(&mut self) {
         self.layout_dirty = true;
         self.dirty = true;
-        self.main.body.layout_dirty = true;
-        self.main.body.dirty = true;
+        self.body.layout_dirty = true;
+        self.body.dirty = true;
     }
 
     fn dismiss_now(&mut self) {
@@ -1074,6 +937,50 @@ impl Banner {
     fn visible(&self) -> bool {
         self.shown && !self.dismissed
     }
+
+    /// The banner's buttons in child order: secondary, main, dismiss.
+    fn buttons_mut(&mut self) -> impl Iterator<Item = &mut Button> {
+        [&mut self.secondary, &mut self.action, &mut self.dismiss]
+            .into_iter()
+            .flatten()
+    }
+
+    /// Put every button where the body's geometry says, for the body laid
+    /// out at `self.body.rect`.
+    fn place_buttons(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let rect = self.body.rect;
+        if rect.width() <= 0.0 {
+            return;
+        }
+        let g = self.body.geometry(text, theme, rect.width());
+        let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+        let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let place = |button: &mut Option<Button>, at: Option<Rect>| {
+            if let (Some(button), Some(at)) = (button, at) {
+                button.apply_layout_external(at + origin);
+            }
+        };
+        place(&mut self.secondary, g.secondary_action);
+        place(&mut self.action, g.action);
+        place(&mut self.dismiss, g.dismiss);
+    }
+}
+
+/// A button's width as it measures itself.
+fn button_width(button: &mut Button, text: &mut TextRenderer) -> f64 {
+    let size = Widget::measure(
+        button,
+        taffy::Size {
+            width: None,
+            height: None,
+        },
+        taffy::Size {
+            width: taffy::AvailableSpace::MaxContent,
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        text,
+    );
+    f64::from(size.width)
 }
 
 impl Widget for Banner {
@@ -1086,7 +993,10 @@ impl Widget for Banner {
     ) -> bool {
         let before = self.visible();
         self.poll_source();
-        let mut changed = self.main.update(state, path);
+        let mut changed = false;
+        for button in self.buttons_mut() {
+            changed |= button.update(state, path);
+        }
         if self.dismiss_requested.take() {
             self.dismiss_now();
         }
@@ -1099,9 +1009,8 @@ impl Widget for Banner {
         if self.dismiss_requested.take() {
             self.dismiss_now();
         }
-        self.main.sync(state, path);
-        if let Some(dismiss) = &mut self.dismiss {
-            dismiss.sync(state, path);
+        for button in self.buttons_mut() {
+            button.sync(state, path);
         }
     }
 
@@ -1111,14 +1020,50 @@ impl Widget for Banner {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut nodes = vec![self.main.build_layout(taffy, theme, node_map)];
-        if let Some(dismiss) = &mut self.dismiss {
-            nodes.push(dismiss.build_layout(taffy, theme, node_map));
+        let mut nodes = vec![self.body.build_layout(taffy, theme, node_map)];
+        let mut buttons = Vec::new();
+        for button in self.buttons_mut() {
+            buttons.push(button.build_layout(taffy, theme, node_map));
         }
-        let node = taffy.parent_node(self.style(theme), &nodes);
+        // The buttons are placed by the banner's geometry, out of the flow.
+        for &node in &buttons {
+            if let Ok(style) = taffy.style(node) {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                style.size = Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                };
+                let _ = taffy.set_style(node, style);
+            }
+        }
+        nodes.extend(buttons);
+        let node = taffy.parent_node(self.style(), &nodes);
         self.nodes = nodes;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let mut changed = self.adjust_layout_style(taffy, node);
+        // The body's height depends on the buttons' widths: measure them.
+        let widths = [
+            self.secondary.as_mut().map(|b| button_width(b, text)),
+            self.action.as_mut().map(|b| button_width(b, text)),
+        ];
+        if widths != self.body.actions {
+            self.body.actions = widths;
+            if let Some(&body) = self.nodes.first() {
+                let _ = taffy.mark_dirty(body);
+            }
+            changed = true;
+        }
+        changed
     }
 
     fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
@@ -1150,11 +1095,8 @@ impl Widget for Banner {
         }
         self.layout_dirty = false;
         let origin = self.rect.origin();
-        if let Some(&main) = self.nodes.first() {
-            self.main.apply_layout(taffy, main, origin);
-        }
-        if let (Some(dismiss), Some(&node)) = (&mut self.dismiss, self.nodes.get(1)) {
-            dismiss.apply_layout(taffy, node, origin);
+        if let Some(&body) = self.nodes.first() {
+            self.body.apply_layout(taffy, body, origin);
         }
     }
 
@@ -1169,11 +1111,11 @@ impl Widget for Banner {
         if !self.visible() || self.rect.width() <= 0.0 {
             return;
         }
-        paint_well(&mut PaintCtx::new(scene, transform, text, theme), self.rect);
+        self.place_buttons(text, theme);
+        self.body.draw(scene, transform, text, theme, presence);
         let on_well = theme.on_ground(well(theme));
-        self.main.draw(scene, transform, text, &on_well, presence);
-        if let Some(dismiss) = &mut self.dismiss {
-            dismiss.draw(scene, transform, text, &on_well, presence);
+        for button in self.buttons_mut() {
+            button.draw(scene, transform, text, &on_well, presence);
         }
     }
 
@@ -1185,30 +1127,33 @@ impl Widget for Banner {
         if !self.visible() {
             return;
         }
-        if let Some(&main) = self.nodes.first() {
-            self.main
-                .handle_event(event, &mut ctx.reborrow(ctx.path, main));
+        let nodes: Vec<NodeId> = self.nodes.iter().skip(1).copied().collect();
+        for (button, node) in self.buttons_mut().zip(nodes) {
+            button.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if *ctx.handled {
                 return;
             }
         }
-        if let (Some(dismiss), Some(&node)) = (&mut self.dismiss, self.nodes.get(1)) {
-            dismiss.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.main];
-        if let Some(dismiss) = &self.dismiss {
-            out.push(dismiss);
+        let mut out: Vec<&dyn Widget> = vec![&self.body];
+        for button in [&self.secondary, &self.action, &self.dismiss]
+            .into_iter()
+            .flatten()
+        {
+            out.push(button);
         }
         out
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.main];
-        if let Some(dismiss) = &mut self.dismiss {
-            out.push(dismiss);
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.body];
+        for button in [&mut self.secondary, &mut self.action, &mut self.dismiss]
+            .into_iter()
+            .flatten()
+        {
+            out.push(button);
         }
         out
     }
@@ -1226,36 +1171,24 @@ impl Widget for Banner {
         Ok(started)
     }
 
-    fn take_structure_dirty(&mut self) -> bool {
-        self.main.take_structure_dirty()
-    }
-
     fn is_layout_dirty(&self) -> bool {
-        self.layout_dirty
-            || self.main.body.is_layout_dirty()
-            || self
-                .main
-                .actions
-                .as_ref()
-                .is_some_and(Widget::is_layout_dirty)
-            || self.dismiss.as_ref().is_some_and(Widget::is_layout_dirty)
+        self.layout_dirty || self.body.is_layout_dirty()
     }
 
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.main.body.needs_redraw()
-            || self.main.actions.as_ref().is_some_and(Widget::needs_redraw)
-            || self.dismiss.as_ref().is_some_and(Widget::needs_redraw)
+            || self.body.needs_redraw()
+            || [&self.secondary, &self.action, &self.dismiss]
+                .into_iter()
+                .flatten()
+                .any(Widget::needs_redraw)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        self.main.body.mark_drawn();
-        if let Some(actions) = &mut self.main.actions {
-            actions.mark_drawn();
-        }
-        if let Some(dismiss) = &mut self.dismiss {
-            dismiss.mark_drawn();
+        self.body.mark_drawn();
+        for button in self.buttons_mut() {
+            button.mark_drawn();
         }
     }
 
@@ -1278,7 +1211,7 @@ impl Widget for Banner {
         }
         // A banner is a live status region: the reader announces it when it
         // appears. Errors and warnings are assertive; the rest polite.
-        let notice = &self.main.body.notice;
+        let notice = &self.body.notice;
         let mut node = AccessNode::new(Role::Group)
             .with_name(notice.title.clone())
             .with_live(notice.kind.politeness());
@@ -1294,30 +1227,30 @@ impl Widget for Banner {
 
 impl crate::undo::UndoPoints for Banner {
     fn needs_commit(&self) -> bool {
-        self.main
-            .actions
-            .as_ref()
-            .is_some_and(|actions| crate::undo::needs_commit(actions))
+        [&self.secondary, &self.action]
+            .into_iter()
+            .flatten()
+            .any(|button| crate::undo::needs_commit(button))
     }
     fn on_commit(&mut self) {
-        if let Some(actions) = &mut self.main.actions {
-            crate::undo::on_commit(actions);
+        for button in [&mut self.secondary, &mut self.action]
+            .into_iter()
+            .flatten()
+        {
+            crate::undo::on_commit(button);
         }
     }
 }
 
 impl Banner {
-    fn style(&self, theme: &Theme) -> Style {
-        let m = Metrics::of(theme);
-        let pad_x = crate::num::f32_of_f64(m.pad_x);
-        let pad_y = crate::num::f32_of_f64(m.pad_y);
+    fn style(&self) -> Style {
         Style {
             display: if self.visible() {
                 taffy::Display::Flex
             } else {
                 taffy::Display::None
             },
-            align_items: Some(taffy::AlignItems::Center),
+            flex_direction: taffy::FlexDirection::Column,
             flex_shrink: 0.0,
             size: Size {
                 width: percent(1.0_f32),
@@ -1325,17 +1258,7 @@ impl Banner {
             },
             min_size: Size {
                 width: length(0.0_f32),
-                height: length(crate::num::f32_of_f64(m.min_height)),
-            },
-            padding: taffy::Rect {
-                left: length(pad_x),
-                right: length(pad_x),
-                top: length(pad_y),
-                bottom: length(pad_y),
-            },
-            gap: Size {
-                width: length(crate::num::f32_of_f64(m.gap)),
-                height: length(0.0_f32),
+                height: auto(),
             },
             ..Default::default()
         }
