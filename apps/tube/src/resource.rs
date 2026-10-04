@@ -1,7 +1,7 @@
 //! Tube as a [`tilo_resource::Resource`]: the library that syncs — likes,
-//! the shared queue, subscriptions, comment likes and replies, and playback
-//! settings — is document state. What the catalogue fetched, the screen on
-//! show and the person's watch history are not.
+//! the shared queue, subscriptions, and comment likes and replies — is
+//! document state. What the catalogue fetched, the screen on show, and the
+//! person's watch history and playback preferences are not.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -14,13 +14,8 @@ use ui::framework::{
 use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::action::SettingFlag;
-use crate::actions::{
-    QUALITY_OPTIONS, TUBE_ACTION_TYPE, TubeAction, TubeEffect, document_children, setting_key,
-    skip_mode_key,
-};
+use crate::actions::{TUBE_ACTION_TYPE, TubeAction, TubeEffect, document_children};
 use crate::app::TubeApp;
-use crate::model::{Category, Settings, SkipMode};
 
 /// One reply to a comment.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,7 +34,6 @@ pub struct TubeShared {
     pub comment_likes: BTreeMap<String, bool>,
     /// Replies by comment id, then reply id.
     pub comment_replies: BTreeMap<String, BTreeMap<String, Reply>>,
-    pub settings: Settings,
 }
 
 impl TubeShared {
@@ -101,8 +95,6 @@ impl Tube {
         ActionRef::new("set-comment-liked", &["comment", "liked"]);
     pub const REPLY_TO_COMMENT: ActionRef<Tube, (String, String)> =
         ActionRef::new("reply-to-comment", &["comment", "text"]);
-    pub const SET_PREFERRED_QUALITY: ActionRef<Tube, String> =
-        ActionRef::new("set-preferred-quality", &["quality"]);
 }
 
 fn map_at(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
@@ -155,40 +147,6 @@ fn read_replies(doc: &Doc, tube: &ObjId) -> BTreeMap<String, BTreeMap<String, Re
         .collect()
 }
 
-fn read_settings(doc: &Doc, settings: &ObjId, into: &mut Settings) {
-    for (setting, slot) in [
-        (SettingFlag::SponsorBlock, &mut into.sponsorblock_enabled),
-        (SettingFlag::DeArrow, &mut into.dearrow_enabled),
-        (SettingFlag::DeArrowTitles, &mut into.dearrow_titles),
-        (SettingFlag::DeArrowThumbnails, &mut into.dearrow_thumbnails),
-        (SettingFlag::ReturnDislike, &mut into.return_dislike_enabled),
-        (SettingFlag::Autoplay, &mut into.autoplay),
-        (SettingFlag::ShowComments, &mut into.show_comments),
-    ] {
-        if let Some(flag) = bool_at(doc, settings, setting_key(setting)) {
-            *slot = flag;
-        }
-    }
-    if let Some(quality) = str_at(doc, settings, "preferred_quality")
-        && QUALITY_OPTIONS.contains(&quality.as_str())
-    {
-        into.preferred_quality = quality;
-    }
-    let Some(categories) = map_at(doc, settings, "sponsor_categories") else {
-        return;
-    };
-    for category in Category::ALL {
-        let mode = str_at(doc, &categories, category.api_key()).and_then(|stored| {
-            [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled]
-                .into_iter()
-                .find(|mode| skip_mode_key(*mode) == stored)
-        });
-        if let Some(mode) = mode {
-            into.categories.insert(category.api_key().to_string(), mode);
-        }
-    }
-}
-
 fn read_shared(doc: &Doc) -> TubeShared {
     let mut shared = TubeShared::default();
     let Some(tube) = map_at(doc, &ROOT, "tube") else {
@@ -199,9 +157,6 @@ fn read_shared(doc: &Doc) -> TubeShared {
     shared.subscriptions = bool_map(doc, &tube, "subscriptions");
     shared.comment_likes = bool_map(doc, &tube, "comment_likes");
     shared.comment_replies = read_replies(doc, &tube);
-    if let Some(settings) = map_at(doc, &tube, "settings") {
-        read_settings(doc, &settings, &mut shared.settings);
-    }
     shared
 }
 
@@ -292,6 +247,7 @@ impl ResourceSurface<Tube, TubeEffect> for TubeApp {
             .is_live()
             .then(|| cx.person::<crate::history::WatchHistory>())
             .flatten();
+        self.follow_preferences(cx.settings::<crate::model::Settings>());
         // Only a live window pairs and syncs devices, with the app's secret
         // store and the devices paired on this one.
         #[cfg(feature = "grayjay-sync")]
@@ -402,17 +358,64 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_controls_change_the_shared_library() {
-        let mut app = TestApp::<TubeShell>::capture(Some("settings")).unwrap();
-        let autoplay = app.state().settings.autoplay;
+    fn the_settings_controls_change_the_persons_preferences_not_the_library() {
+        use crate::model::{Category, Settings, SkipMode};
+        // A live window: a capture's controls start no effects.
+        let mut app = TestApp::<TubeShell>::for_person(&"ad".repeat(32)).unwrap();
+        app.effect(&TubeEffect::ShowScreen {
+            screen: "settings".into(),
+        })
+        .unwrap();
+        app.harness().relayout();
+        let preferences = app.settings::<Settings>();
+        let autoplay = preferences.get().autoplay;
+        let library = app.peer_document().save();
         click(&mut app, "switch_autoplay");
-        assert_eq!(app.state().settings.autoplay, !autoplay);
+        app.settle();
+        assert_eq!(preferences.get().autoplay, !autoplay);
         click(&mut app, &format!("mode_{}", Category::Sponsor.api_key()));
+        app.settle();
         assert_eq!(
-            app.state().settings.mode_of(Category::Sponsor),
+            preferences.get().mode_of(Category::Sponsor),
             SkipMode::Show,
             "the mode pill cycles Auto-skip to Show"
         );
+        assert_eq!(
+            preferences.scope(),
+            ui::storage::Scope::Personal,
+            "they follow the person to their devices"
+        );
+        assert_eq!(
+            app.peer_document().save(),
+            library,
+            "collaborators on the library never see them"
+        );
+
+        // Agents reach the same preferences through effects.
+        app.effect(&TubeEffect::SetPreferredQuality {
+            quality: "720p".into(),
+        })
+        .unwrap();
+        assert_eq!(preferences.get().preferred_quality, "720p");
+        assert!(
+            app.effect(&TubeEffect::SetPreferredQuality {
+                quality: "8k".into()
+            })
+            .is_err(),
+            "a quality Tube cannot play is refused"
+        );
+        app.effect(&TubeEffect::SetPreference {
+            preference: "dearrow".into(),
+            enabled: false,
+        })
+        .unwrap();
+        assert!(!preferences.get().dearrow_enabled);
+        app.effect(&TubeEffect::SetSegmentHandling {
+            category: Category::Filler.api_key().into(),
+            mode: "skip".into(),
+        })
+        .unwrap();
+        assert_eq!(preferences.get().mode_of(Category::Filler), SkipMode::Skip);
     }
 
     #[test]
@@ -509,8 +512,6 @@ mod tests {
         let comment = crate::actions::comment_key("vid_donut", &video.comments[0]);
         app.invoke(Tube::SET_COMMENT_LIKED.with((comment.clone(), true)))
             .unwrap();
-        app.invoke(Tube::SET_PREFERRED_QUALITY.with("720p".into()))
-            .unwrap();
         // The queue and replies are ordered by an authoritative host, which
         // this test host is not: they arrive as the host applied them.
         assert!(
@@ -550,12 +551,6 @@ mod tests {
                 text: "Agreed".into(),
                 active: true
             }
-        );
-        assert_eq!(state.settings.preferred_quality, "720p");
-        assert!(
-            app.invoke(Tube::SET_PREFERRED_QUALITY.with("8k".into()))
-                .is_err(),
-            "a quality Tube cannot play is refused"
         );
 
         // The reply is published beneath the library, and can be retracted.
