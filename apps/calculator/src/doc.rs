@@ -60,7 +60,7 @@ pub fn visible_ids(doc: &AutoCommit, collection: &str) -> Vec<String> {
     ids.into_iter().map(|(_, id)| id).collect()
 }
 
-pub(crate) fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
+pub fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
     let Some(rows) = map_at(doc, HISTORY) else {
         return Vec::new();
     };
@@ -78,7 +78,7 @@ pub(crate) fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
         })
         .collect()
 }
-pub(crate) fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
+pub fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
     let Some(rows) = map_at(doc, collection) else {
         return Vec::new();
     };
