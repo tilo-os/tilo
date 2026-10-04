@@ -86,16 +86,19 @@ fn matrix(affine: Affine) -> String {
 /// The artwork as an SVG document, on its ground when `ground`. `painted`
 /// renders a painted layer alone over transparency as a PNG, which the
 /// document embeds. A text mark with an entry in `outlines` is written as
-/// that geometry instead of as text.
+/// that geometry instead of as text; an image mark with one in `pictures`
+/// embeds that picture (its crop, turn and grade as shown) in its frame.
 pub fn export(
     art: &Artwork,
     ground: bool,
     mut painted: impl FnMut(&Layer) -> Option<Vec<u8>>,
     outlines: BTreeMap<String, BezPath>,
+    pictures: BTreeMap<String, Embedded>,
     dabbed: BTreeMap<String, (Vec<u8>, Rect)>,
 ) -> String {
     let mut out = Writer {
         outlines,
+        pictures,
         dabbed,
         ..Writer::default()
     };
@@ -142,7 +145,12 @@ pub fn export(
                     continue;
                 }
                 out.enter_group(&mark.group);
-                out.mark(art, mark, &palette);
+                // Shapes' colours as their adjustments grade them; a
+                // picture comes graded.
+                let steps =
+                    crate::render::grades_of(&[mark.style.adjust.as_ref(), layer.adjust.as_ref()]);
+                let graded = crate::render::graded_mark(mark, &palette, &steps);
+                out.mark(art, &graded, &palette);
             }
         }
         out.enter_group("");
@@ -164,6 +172,13 @@ pub fn export(
     svg
 }
 
+/// A picture embedded in the document: its bytes and their type.
+pub struct Embedded {
+    pub bytes: Vec<u8>,
+    /// `image/png` or `image/jpeg`.
+    pub mime: &'static str,
+}
+
 #[derive(Default)]
 struct Writer {
     defs: String,
@@ -171,6 +186,8 @@ struct Writer {
     clips: BTreeSet<String>,
     /// Text marks written as their letters' outlines, by id.
     outlines: BTreeMap<String, BezPath>,
+    /// Image marks' pictures as shown, by id.
+    pictures: BTreeMap<String, Embedded>,
     /// How many paths text has been set along.
     text_paths: usize,
     /// Strokes laid in dabs (pencil, charcoal, airbrush, a soft eraser) as
@@ -232,11 +249,8 @@ impl Writer {
                 path_data(&silhouette(mark))
             ),
         };
-        let cover = match art.clip_of(mark) {
-            Some(clip) => {
-                self.clip_def(clip);
-                format!(r#"<g clip-path="url(#c-{})">{cover}</g>"#, clip.id)
-            }
+        let cover = match self.clip_def(art, mark) {
+            Some(name) => format!(r#"<g clip-path="url(#c-{name})">{cover}</g>"#),
             None => cover,
         };
         let (w, h) = (num(art.width), num(art.height));
@@ -248,29 +262,39 @@ impl Writer {
         let _ = write!(self.body, r#"<g mask="url(#e-{})">{inner}</g>"#, mark.id);
     }
 
-    /// The clip path `clip`'s silhouette makes, written into the defs once.
-    fn clip_def(&mut self, clip: &Mark) {
-        if self.clips.insert(clip.id.clone()) {
-            let transform = if clip.transform.is_some() {
-                format!(r#" transform="{}""#, matrix(clip.affine()))
-            } else {
-                String::new()
-            };
-            let _ = write!(
-                self.defs,
-                r#"<clipPath id="c-{}"><path d="{}"{transform}/></clipPath>"#,
-                clip.id,
-                path_data(&silhouette(clip)),
-            );
+    /// The clip path of what `mark` is cut to (a mark, or a group's
+    /// members), written into the defs once; its name.
+    fn clip_def(&mut self, art: &Artwork, mark: &Mark) -> Option<String> {
+        let clips = art.clips_of(mark);
+        if clips.is_empty() {
+            return None;
         }
+        // A group's id may hold `/`, which an SVG id may not.
+        let name = mark.clip.replace('/', "--");
+        if self.clips.insert(name.clone()) {
+            let mut paths = String::new();
+            for clip in &clips {
+                let transform = if clip.transform.is_some() {
+                    format!(r#" transform="{}""#, matrix(clip.affine()))
+                } else {
+                    String::new()
+                };
+                let _ = write!(
+                    paths,
+                    r#"<path d="{}"{transform}/>"#,
+                    path_data(&silhouette(clip))
+                );
+            }
+            let _ = write!(self.defs, r#"<clipPath id="c-{name}">{paths}</clipPath>"#);
+        }
+        Some(name)
     }
 
     fn mark(&mut self, art: &Artwork, mark: &Mark, palette: &[tilo_wet_media::Pigment]) {
         let style = &mark.style;
         let mut wrap = String::new();
-        if let Some(clip) = art.mark(&mark.clip).filter(|_| !mark.clip.is_empty()) {
-            self.clip_def(clip);
-            let _ = write!(wrap, r#" clip-path="url(#c-{})""#, clip.id);
+        if let Some(name) = self.clip_def(art, mark) {
+            let _ = write!(wrap, r#" clip-path="url(#c-{name})""#);
         }
         if let Some(blend) = style
             .blend
@@ -359,6 +383,54 @@ impl Writer {
         filters
     }
 
+    /// An image mark: its picture as shown, in its frame, and its border.
+    fn picture(
+        &mut self,
+        mark: &Mark,
+        style: &Style,
+        attrs: &str,
+        palette: &[tilo_wet_media::Pigment],
+    ) {
+        let Shape::Image {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = &mark.shape
+        else {
+            return;
+        };
+        let named = |text: &Option<String>| text.as_deref().and_then(|text| colour(text, palette));
+        let place = format!(
+            r#" x="{}" y="{}" width="{}" height="{}""#,
+            num(*x),
+            num(*y),
+            num(*width),
+            num(*height)
+        );
+        let _ = write!(self.body, "<g{attrs}>");
+        if let Some(picture) = self.pictures.get(&mark.id) {
+            let _ = write!(
+                self.body,
+                r#"<image{place} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
+                picture.mime,
+                base64::engine::general_purpose::STANDARD.encode(&picture.bytes)
+            );
+        }
+        if style.stroke_width > 0.0
+            && let Some(line) = named(&style.stroke)
+        {
+            let _ = write!(
+                self.body,
+                r#"<rect{place} fill="none"{} stroke-width="{}"/>"#,
+                paint_attr("stroke", line),
+                num(style.stroke_width)
+            );
+        }
+        self.body.push_str("</g>");
+    }
+
     fn element(&mut self, mark: &Mark, style: &Style, palette: &[tilo_wet_media::Pigment]) {
         let mut attrs = format!(r#" id="{}""#, mark.id);
         if let Some(transform) = mark.transform {
@@ -368,6 +440,10 @@ impl Writer {
             let _ = write!(attrs, r#" opacity="{}""#, num(style.opacity()));
         }
         let named = |text: &Option<String>| text.as_deref().and_then(|text| colour(text, palette));
+        if matches!(mark.shape, Shape::Image { .. }) {
+            self.picture(mark, style, &attrs, palette);
+            return;
+        }
         if let Shape::Stroke { .. } = mark.shape {
             if let Some((png, area)) = self.dabbed.get(&mark.id) {
                 let image = image_element(&attrs, png, *area);
@@ -475,7 +551,7 @@ impl Writer {
                 self.text(shape, attrs);
                 Ok(())
             }
-            Shape::Stroke { .. } => Ok(()),
+            Shape::Stroke { .. } | Shape::Image { .. } => Ok(()),
         };
     }
 

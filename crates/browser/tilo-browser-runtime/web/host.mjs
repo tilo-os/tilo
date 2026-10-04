@@ -12,6 +12,8 @@ import {recoverableClose} from './close-recovery.mjs';
 import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
+import {createPresentedSource} from './panorama.mjs';
+export {createPanorama} from './panorama.mjs';
 import {createLegacyWindows} from './legacy-windows.mjs';
 import {createNodeApps} from './node-apps.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -88,6 +90,7 @@ export async function mountDesktop(target,options={}) {
   // The room's live layer as this mount publishes through it (a certified
   // peer's `live` view: only the mount acted in last speaks), else the peer's.
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
+  const capture=createPresentedSource({audience:JSON.stringify([config.profile,config.device,config.room]),app:config.app,canvas,layer:liveLayer,valid:()=>fontMountValid()});
   let media,semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
@@ -237,7 +240,7 @@ export async function mountDesktop(target,options={}) {
   }
   function onCrash(crash){
     // The module is stopped: nothing on this page may call into it again.
-    crashed=true;surface.inert=true;
+    crashed=true;surface.inert=true;capture.close();
     const action=crashAction(crash,crash.tab!=null&&crashes.record(config.room,crash));
     report({phase:'crashed',crashedWindow:crash.tab??null,error:crash.message,restarting:action==='restart'&&options.restartOnCrash!==false});
     if(action==='restart'&&options.restartOnCrash!==false)setTimeout(()=>location.reload(),250);
@@ -245,6 +248,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
+      capture.close();
       crashListeners.delete(onCrash);
       media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;legacyWindows?.close();legacyWindows=undefined;nodeApps?.close();nodeApps=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
@@ -288,7 +292,14 @@ export async function mountDesktop(target,options={}) {
     if(!registry.current(token))throw Error('mount disposed');
     runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.room)));
     crashListeners.add(onCrash);
-    id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
+    id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>{
+      // Pin pixels and geometry while this presentation is still current,
+      // before another presentation or a queued page callback can replace it.
+      // This path reads only JS/Canvas state, never re-enters the WASM mount.
+      const state=JSON.parse(raw);
+      if(state.phase)capture.present(state);
+      queueMicrotask(()=>update(raw));
+    });
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
     const clearModifiers=()=>{if(inputScope.capture())runtime.modifiers(id,false,false,false,false);};
@@ -384,7 +395,7 @@ export async function mountDesktop(target,options={}) {
     await presented;
     if(!active())throw Error('mount disposed');
     return {retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
-      state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
+      state:()=>lastState,canvas,captureSource:capture.handle,get editor(){return editor;},semantics:accessibility,requestSemantics,
       get navigation(){return navigation?.controller;},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),

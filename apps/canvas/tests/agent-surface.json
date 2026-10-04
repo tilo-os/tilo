@@ -173,6 +173,41 @@
             {
               "type": "object",
               "required": [
+                "action",
+                "src",
+                "pixels",
+                "title"
+              ],
+              "properties": {
+                "src": {
+                  "type": "string",
+                  "description": "The picture's content address."
+                },
+                "pixels": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "Its size in pixels."
+                },
+                "title": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "const": "open-picture"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Start a new artwork from a picture: sized to it, the picture its first mark (`picture`) on its one layer. Everything the artwork held before is replaced, as one step."
+            },
+            {
+              "type": "object",
+              "required": [
                 "action"
               ],
               "properties": {
@@ -420,7 +455,7 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
@@ -748,6 +783,59 @@
                     },
                     "additionalProperties": false,
                     "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "src",
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "src": {
+                        "type": "string",
+                        "description": "File path, content address or `data:` URI."
+                      },
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "width": {
+                        "type": "number",
+                        "description": "Units; absent: a unit per pixel, or the other side's aspect."
+                      },
+                      "height": {
+                        "type": "number"
+                      },
+                      "crop": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "Fractions `[x, y, w, h]` of the picture shown."
+                      },
+                      "straighten": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Degrees turned inside the frame."
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "image"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "A PNG, JPEG or WebP in the frame `x, y, width, height`."
                   }
                 ],
                 "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
@@ -987,7 +1075,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Cut to this mark's shape (opacity 0 hides that mark), or `selection`."
+                "description": "Cut to this mark's or group's shape (opacity 0 hides it), or `selection`."
               },
               "transform": {
                 "type": [
@@ -1015,7 +1103,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Rename a layer, change its medium, opacity, visibility or lock, or move it to the front, back, forward or backward.",
+    "description": "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -1124,6 +1212,20 @@
         "nullable": true
       },
       {
+        "name": "adjust",
+        "ty": "object",
+        "required": false,
+        "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears."
+        },
+        "nullable": true
+      },
+      {
         "name": "mask",
         "ty": "text",
         "required": false,
@@ -1172,7 +1274,7 @@
     "action": "edit-marks",
     "resource_kind": "canvas.artwork",
     "label": "Edit marks",
-    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge.",
+    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
     "operation": "Document",
     "params": [
       {
@@ -1206,302 +1308,13 @@
         "name": "shape",
         "ty": "object",
         "required": false,
-        "description": "Replace the geometry (e.g. edit a path's `d`).",
+        "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`).",
         "schema": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "x",
-                    "y",
-                    "width",
-                    "height"
-                  ],
-                  "properties": {
-                    "x": {
-                      "type": "number"
-                    },
-                    "y": {
-                      "type": "number"
-                    },
-                    "width": {
-                      "type": "number"
-                    },
-                    "height": {
-                      "type": "number"
-                    },
-                    "radius": {
-                      "type": "number"
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "rect"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "An axis-aligned rectangle; `radius` rounds its corners."
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "cx",
-                    "cy",
-                    "rx",
-                    "ry"
-                  ],
-                  "properties": {
-                    "cx": {
-                      "type": "number"
-                    },
-                    "cy": {
-                      "type": "number"
-                    },
-                    "rx": {
-                      "type": "number"
-                    },
-                    "ry": {
-                      "type": "number"
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "ellipse"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "An ellipse around its centre."
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "points"
-                  ],
-                  "properties": {
-                    "points": {
-                      "type": "array",
-                      "items": {
-                        "type": "array",
-                        "items": {
-                          "type": "number"
-                        },
-                        "minItems": 2,
-                        "maxItems": 2
-                      }
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "polygon"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "A closed polygon through `points` (`[[x, y], …]`)."
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "points"
-                  ],
-                  "properties": {
-                    "points": {
-                      "type": "array",
-                      "items": {
-                        "type": "array",
-                        "items": {
-                          "type": "number"
-                        },
-                        "minItems": 2,
-                        "maxItems": 2
-                      }
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "line"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "An open polyline through `points`, drawn with the stroke colour."
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "d"
-                  ],
-                  "properties": {
-                    "d": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "path"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "x",
-                    "y",
-                    "text",
-                    "size"
-                  ],
-                  "properties": {
-                    "x": {
-                      "type": "number"
-                    },
-                    "y": {
-                      "type": "number"
-                    },
-                    "text": {
-                      "type": "string"
-                    },
-                    "size": {
-                      "type": "number"
-                    },
-                    "font": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "description": "`sans`, `serif`, `mono` or a family `media` lists under fonts."
-                    },
-                    "weight": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ],
-                      "minimum": 0,
-                      "maximum": 65535,
-                      "description": "100 to 900; 400 regular, 700 bold, any value between."
-                    },
-                    "italic": {
-                      "type": "boolean"
-                    },
-                    "align": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "description": "`start`, `center` or `end` at `x`."
-                    },
-                    "line_height": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "Times size (1.2)."
-                    },
-                    "width": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "Wrap width."
-                    },
-                    "tracking": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "Letter spacing in thousandths of the size: 80 opens up capitals, negative tightens."
-                    },
-                    "path": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "description": "SVG path data the baseline follows instead of starting at x, y; align sets the words at its start, middle or end."
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "text"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "Text, first baseline at `y`; `\\n` breaks lines."
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "kind",
-                    "points",
-                    "size"
-                  ],
-                  "properties": {
-                    "points": {
-                      "type": "array",
-                      "items": {
-                        "type": "array",
-                        "items": {
-                          "type": "number"
-                        }
-                      }
-                    },
-                    "size": {
-                      "type": "number"
-                    },
-                    "forks": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ],
-                      "minimum": 0,
-                      "maximum": 4294967295,
-                      "description": "A limb that lifts to a point and forks this many times (1-6) into ever thinner twigs: a branch or bare tree in one stroke."
-                    },
-                    "spread": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "With `forks`: how widely the twigs splay, in degrees (default 35)."
-                    },
-                    "dabs": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ],
-                      "minimum": 0,
-                      "maximum": 4294967295,
-                      "description": "Instead of one line, this many short dabs (1-600) of `size` scattered along the points: foliage, flowers, broken light."
-                    },
-                    "scatter": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "With `dabs`: how far they stray either side of the path, in units (default twice `size`)."
-                    },
-                    "dab_length": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick that lifts to a point, as grass is painted."
-                    },
-                    "kind": {
-                      "type": "string",
-                      "const": "stroke"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
-                }
-              ]
-            }
+          "type": [
+            "object",
+            "null"
           ],
-          "description": "Replace the geometry (e.g. edit a path's `d`)."
+          "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`)."
         },
         "nullable": true
       },
@@ -1679,13 +1492,13 @@
         "name": "clip",
         "ty": "text",
         "required": false,
-        "description": "Cut to this mark's shape; empty uncuts.",
+        "description": "Cut to this mark's or group's shape; empty uncuts.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Cut to this mark's shape; empty uncuts."
+          "description": "Cut to this mark's or group's shape; empty uncuts."
         },
         "nullable": true
       },
@@ -1969,6 +1782,175 @@
         "nullable": true
       },
       {
+        "name": "flip",
+        "ty": "text",
+        "required": false,
+        "description": "`horizontal` or `vertical`: mirror about each centre.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`horizontal` or `vertical`: mirror about each centre."
+        },
+        "nullable": true
+      },
+      {
+        "name": "crop",
+        "ty": "array",
+        "required": false,
+        "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "straighten",
+        "ty": "number",
+        "required": false,
+        "description": "Images: degrees, -45 to 45, to level it.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Images: degrees, -45 to 45, to level it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "adjust",
+        "ty": "object",
+        "required": false,
+        "description": "Colour and tone; given steps replace, `{}` clears.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "exposure": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Stops, -5 to 5. Others -1 to 1 unless noted."
+            },
+            "contrast": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "highlights": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "shadows": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "saturation": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "vibrance": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Saturation sparing strong colours."
+            },
+            "hue": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Degrees, -180 to 180."
+            },
+            "temperature": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Warmer +."
+            },
+            "tint": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Magenta +."
+            },
+            "curve": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "description": "Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets black and white points."
+            },
+            "grayscale": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "invert": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "blur": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Radius in units, 0-200 (pictures and paint)."
+            },
+            "sharpen": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "0-1."
+            },
+            "vignette": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Edges darker +, lighter -."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Colour and tone; given steps replace, `{}` clears."
+        },
+        "nullable": true
+      },
+      {
         "name": "smooth",
         "ty": "number",
         "required": false,
@@ -2055,21 +2037,51 @@
     "resource": "canvas.artwork",
     "action": "export",
     "resource_kind": "canvas.artwork",
-    "label": "Export PNG",
-    "description": "Render the artwork at full size as a PNG and answer with its content address.",
+    "label": "Export picture",
+    "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP and answer with its content address.",
     "operation": "Effect",
     "params": [
       {
         "name": "scale",
         "ty": "number",
         "required": false,
-        "description": "Pixels per artwork unit, 0.25 to 4 (default 1).",
+        "description": "Pixels per artwork unit, 0.05 to 4 (default 1).",
         "schema": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Pixels per artwork unit, 0.25 to 4 (default 1)."
+          "description": "Pixels per artwork unit, 0.05 to 4 (default 1)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "format",
+        "ty": "text",
+        "required": false,
+        "description": "`png` (default), `jpeg` or `webp` (lossless).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`png` (default), `jpeg` or `webp` (lossless)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "quality",
+        "ty": "integer",
+        "required": false,
+        "description": "JPEG quality, 1 to 100 (default 90).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255,
+          "description": "JPEG quality, 1 to 100 (default 90)."
         },
         "nullable": true
       }
@@ -2156,6 +2168,7 @@
                       "align",
                       "set-reference",
                       "import-svg",
+                      "open",
                       "select",
                       "use-selection",
                       "combine"
@@ -2190,6 +2203,38 @@
                     "properties": {
                       "action": {
                         "oneOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "src",
+                              "pixels",
+                              "title"
+                            ],
+                            "properties": {
+                              "src": {
+                                "type": "string"
+                              },
+                              "pixels": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 4294967295
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "open-picture"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
                           {
                             "type": "object",
                             "required": [
@@ -2549,6 +2594,27 @@
     "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
     "operation": "View",
     "params": []
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "open",
+    "resource_kind": "canvas.artwork",
+    "label": "Open picture",
+    "description": "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "path",
+        "ty": "text",
+        "required": true,
+        "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI.",
+        "schema": {
+          "type": "string",
+          "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
+        },
+        "nullable": false
+      }
+    ]
   },
   {
     "resource": "canvas.artwork",
@@ -3167,7 +3233,7 @@
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
-    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
+    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
     "operation": "Document",
     "params": [
       {
@@ -3236,6 +3302,39 @@
             "null"
           ],
           "description": "Ground colour, `#rrggbb`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "crop",
+        "ty": "array",
+        "required": false,
+        "description": "Crop to `[x, y, width, height]`; marks move with it.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Crop to `[x, y, width, height]`; marks move with it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "fit",
+        "ty": "text",
+        "required": false,
+        "description": "Crop to what this mark or group shows.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Crop to what this mark or group shows."
         },
         "nullable": true
       }
@@ -3442,10 +3541,28 @@
     ]
   },
   {
+    "resource": "tilo.control:canvas-add-picture",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Add picture",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "tilo.control:canvas-dock-fold",
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Fold the layers and history away",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-layer-adjust-fold",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Show the layer's adjustments",
     "description": null,
     "operation": "View",
     "params": []

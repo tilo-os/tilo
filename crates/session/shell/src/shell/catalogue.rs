@@ -228,6 +228,14 @@ pub fn available_apps_generation() -> u64 {
     CATALOGUE_REVISION.load(Ordering::Relaxed)
 }
 
+/// Make the cached catalogue `apps`, as a fresh listing would.
+#[cfg(test)]
+pub(crate) fn replace_for_test(apps: Vec<CatalogueApp>) {
+    DISK_CACHE_LOADED.store(true, Ordering::Relaxed);
+    *lock_catalogue() = Some((apps, Instant::now()));
+    CATALOGUE_REVISION.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Drop the cached catalogue and force the next read to refetch.
 /// Called after an install so the app that just arrived stops being
 /// offered as available.
