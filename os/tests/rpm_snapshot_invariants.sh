@@ -198,10 +198,12 @@ has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArc
   'fingerprint resolve verifies architecture-specific RPM package-set provenance'
 has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
   'OS CI resolves RPMS_REF by fingerprint before building'
+has "$repo/os/dev/await-rpm-snapshot.sh" 'resolve="$repo/os/dev/resolve-rpm-snapshot.sh"' \
+  'waiting for an in-flight snapshot still resolves through the verified resolver'
 for consumer in "$image_workflow" "$relay_workflow"; do
   resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
   if grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' <<<"$resolver_job" \
-    && grep -Fq './os/dev/resolve-rpm-snapshot.sh' <<<"$resolver_job" \
+    && grep -Fq './os/dev/await-rpm-snapshot.sh' <<<"$resolver_job" \
     && grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' <<<"$resolver_job" \
     && ! grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' <<<"$resolver_job" \
     && ! grep -Fq 'enable-openid-connect: true' <<<"$resolver_job"; then
