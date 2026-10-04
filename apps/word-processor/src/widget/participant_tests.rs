@@ -17,8 +17,8 @@ fn pid(name: &str) -> ParticipantId {
 
 /// A synced widget over paragraphs `texts`, with the body block ids in order.
 fn widget_with(texts: &[&str]) -> (WordProcessorWidget, ui::State, Vec<String>) {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     for (i, text) in texts.iter().enumerate() {
         if i > 0 {
@@ -314,7 +314,7 @@ fn participant_presence_uses_the_block_key_and_byte_offsets() {
     assert_eq!(presence.len(), 2);
     let selector_p = presence.iter().find(|p| p.participant == selector).unwrap();
     let typist_p = presence.iter().find(|p| p.participant == typist).unwrap();
-    assert_eq!(typist_p.key, block_presence_key(false, &ids[0]));
+    assert_eq!(typist_p.key, block_presence_key(&ids[0]));
     assert_eq!(typist_p.label.as_deref(), Some("Agent for Ada"));
     // "hé" is 3 bytes.
     assert_eq!(typist_p.payload, ui::PresencePayload::Caret { pos: 3 });
@@ -447,9 +447,9 @@ fn assert_keyboard_action_parity(
     keyboard.sync(&mut state.doc, &state.root);
     keyboard.lifecycle.focused = true;
 
-    let mut agent_state = ui::State::new();
+    let mut agent_state = crate::initialized_state();
     agent_state.doc = state.doc.clone();
-    let mut agent_widget = WordProcessorWidget::new();
+    let mut agent_widget = WordProcessorWidget::detached();
     agent_widget.sync(&mut agent_state.doc, &agent_state.root);
     let agent = pid("parity-agent");
     let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
@@ -928,7 +928,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
 fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view() {
     let (mut wp, state, _) = widget_with(&["first paragraph"]);
     ui::collaboration::participants::set_participant_host(&mut wp, true);
-    let own = wp.publish_resources(&state.doc);
+    let own = wp.own_resources(&state.doc);
     let tree = {
         let _scope =
             ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));
@@ -950,9 +950,9 @@ fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view
         out
     };
     assert_eq!(ids(&tree), ids(&own));
-    let spec = tree[0]
-        .actions
+    let spec = tree
         .iter()
+        .flat_map(|resource| &resource.actions)
         .find(|spec| spec.id == "insert-table")
         .expect("insert-table at the worker caret");
     let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {

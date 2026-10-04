@@ -16,9 +16,7 @@ use ui::framework::{
 };
 use ui::prelude::Effect;
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{
-    self, ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry,
-};
+use ui::tilo_resource::{self, ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -104,11 +102,6 @@ impl Resource for Ebook {
 /// Books: the reader widget is the surface over the [`Ebook`] library.
 pub struct EbookShell;
 
-/// Open the book whose bytes the content store holds as `content`, shelving
-/// it first: what a launch on a book takes.
-const OPEN_STORED: ActionRef<Ebook, (String, String)> =
-    ActionRef::new("open-stored", &["content", "name"]);
-
 impl ResourceApp for EbookShell {
     type Resource = Ebook;
     const ID: &'static str = "so.tilo.ebook";
@@ -190,7 +183,10 @@ pub(crate) fn launch_file(input: &LaunchInput<'_>) -> Option<Invoke<Ebook>> {
         return None;
     };
     match content.put(file.bytes()) {
-        Ok(hash) => Some(OPEN_STORED.with((hash, file.name().to_owned()))),
+        Ok(content) => Some(Invoke::effect(&BooksEffect::OpenStored {
+            content,
+            name: file.name().to_owned(),
+        })),
         Err(error) => {
             tracing::warn!(%error, name = file.name(), "ebook: a handed book could not be kept");
             None

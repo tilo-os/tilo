@@ -1482,30 +1482,15 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
 }
 
 fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> {
-    use tilo_doc_codecs::FormatProvider;
     if markdown.chars().count() > MAX_ACTION_TEXT_CHARS {
         return Err(EditingError::Invalid("pasted Markdown is too long".into()));
     }
-    let mut scratch = AutoCommit::new();
-    let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
-    let mut ids = tilo_doc::model::try_seeded_id_gen(&scratch, &containers)
-        .map_err(|error| EditingError::Invalid(error.to_string()))?;
-    {
-        let mut dm = tilo_doc::DocMut {
-            doc: &mut scratch,
-            c: &containers,
-            ids: &mut ids,
-        };
-        // Pasted Markdown references no content this document keeps.
-        tilo_doc_codecs::MarkdownCodec
-            .import(
-                markdown.as_bytes(),
-                &mut dm,
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
-    }
-    let snapshot = tilo_doc::model::materialize(&scratch, &containers);
+    // Pasted Markdown references no content this document keeps.
+    let snapshot = tilo_document::action::imported_snapshot(
+        tilo_document::action::ImportFormat::Markdown,
+        markdown.as_bytes(),
+    )
+    .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     let mut blocks: Vec<ClipBlock> = snapshot
         .blocks
         .into_iter()
@@ -2168,8 +2153,8 @@ mod tests {
 
     /// A bound widget whose body holds `paragraphs`; returns the body ids.
     fn writer(paragraphs: &[&str]) -> (ui::State, crate::WordProcessorWidget, Vec<String>) {
-        let mut state = ui::State::new();
-        let mut wp = crate::WordProcessorWidget::new();
+        let mut state = crate::initialized_state();
+        let mut wp = crate::WordProcessorWidget::detached();
         wp.sync(&mut state.doc, &state.root);
         for (index, text) in paragraphs.iter().enumerate() {
             if index > 0 {

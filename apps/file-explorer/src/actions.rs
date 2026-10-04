@@ -16,18 +16,11 @@
 //! projections and issues their typed control requests without duplicating a
 //! second durable record store.
 //!
-//! Unhosted favourites and zoom stay in the user's Files config directory.
-//! Inline rename uses a process-local [`ui::widget::TextInput`]; it is a
-//! proposed external mutation until committed, not content that another peer
-//! should see or undo.
-//!
-//! A framework-hosted surface submits view preferences and bookmark paths
-//! through [`crate::resource::ActionSink`], which calls
-//! `Dispatcher::apply_now_with`. Standalone, `--shots`, and these tests keep
-//! the local host and do not write that document. Listing rows and disk
-//! places stay on the widget. `take_committed_action` stays empty on that
-//! unhosted path; external work is surfaced through the canonical resource
-//! operation lifecycle and its typed status/result updates.
+//! What the Files document holds is the person's bookmarked places, changed
+//! only through [`crate::resource::FilesDocAction`]; view preferences are the
+//! person's settings. Inline rename uses a process-local
+//! [`ui::widget::TextInput`]; it is a proposed external mutation until
+//! committed, not content that another peer should see or undo.
 
 #[cfg(test)]
 mod tests {
@@ -36,7 +29,6 @@ mod tests {
 
     use crate::FileExplorerWidget;
     use crate::command::FileCommand;
-    use crate::favorites::UserDirs;
 
     /// Interaction state, filesystem operations and preferences never materialise in the shared document; resources expose typed local operations.
     #[test]
@@ -84,26 +76,6 @@ mod tests {
                 0,
                 "filesystem mutations are not fabricated as CRDT actions"
             );
-        }
-
-        // --- phase: preferences_stay_in_user_config_not_the_shared_document ---
-        {
-            let config = tempfile::tempdir().unwrap();
-            let home = tempfile::tempdir().unwrap();
-            let mut files = FileExplorerWidget::with_persistence_dirs(
-                Some(config.path().to_path_buf()),
-                Some(home.path().to_path_buf()),
-                UserDirs::default(),
-            );
-            let mut document = AutoCommit::new();
-            files.sync(&mut document, &ROOT);
-
-            assert!(files.apply_command(FileCommand::AddFavorite(home.path().join("Projects"))));
-            assert!(files.apply_command(FileCommand::ZoomIn));
-
-            assert!(config.path().join("favorites").exists());
-            assert!(config.path().join("zoom").exists());
-            assert_eq!(document.keys(&ROOT).count(), 0);
         }
 
         // --- phase: resources_expose_typed_local_operations_without_crdt_actions ---

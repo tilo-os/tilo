@@ -576,6 +576,26 @@ impl BrowserTabs {
         }
     }
 
+    /// Keep every tab's visits in the person's browsing history.
+    pub(crate) fn attach_history(
+        &mut self,
+        record: &ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+    ) {
+        for tab in &mut self.tabs {
+            tab.widget.attach_history(record.clone());
+        }
+    }
+
+    /// Fill every tab's forms from the person's address book.
+    pub(crate) fn attach_address_book(
+        &mut self,
+        book: &ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        for tab in &mut self.tabs {
+            tab.widget.attach_address_book(book.clone());
+        }
+    }
+
     /// The page the person is looking at.
     pub(crate) fn active_page(&self) -> &BrowserWidget {
         self.active()
@@ -696,7 +716,6 @@ impl BrowserTabs {
             .set_window_fullscreen_active(window_fullscreen_active);
         self.observed_active_content_fullscreen = false;
         self.clear_fullscreen_hint();
-        self.active_mut().refresh_shared_history();
         self.active_mut().activate_session_uri();
         self.dirty = true;
     }
