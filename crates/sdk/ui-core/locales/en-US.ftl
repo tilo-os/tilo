@@ -274,6 +274,7 @@ block-editor-code-exit-hint = Ctrl+Enter to leave code
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
 block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
+widget-breadcrumb = Path
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children

@@ -194,8 +194,6 @@ pub(super) enum ButtonKind {
         name: String,
         active: bool,
     },
-    /// A labelled on/off command (bold, italic): a lift while on.
-    Toggle { label: String, active: bool },
     /// One segment of a segmented strip. Consecutive segments of one
     /// `group` on one row paint as one strip.
     Segment {
@@ -326,7 +324,11 @@ impl Chrome {
 /// icon set has one.
 pub(super) fn insert_tools() -> [(String, Option<Icon>, Hit); 5] {
     [
-        (tr("slides-tool-text"), None, Hit::Insert(ElementKind::Text)),
+        (
+            tr("slides-tool-text"),
+            Some(Icon::Type),
+            Hit::Insert(ElementKind::Text),
+        ),
         (
             tr("slides-tool-rectangle"),
             Some(Icon::Square),
@@ -373,17 +375,16 @@ impl SlidesApp {
     /// Every label the chrome reserves a measured slot for this frame.
     pub(super) fn chrome_label_set(&self) -> Vec<(String, Measure)> {
         let button = |s: String| (s, Measure::Button { icon: false });
+        let command = |s: String| (s, Measure::Button { icon: true });
         let mut set = vec![
             (tr("slides-present"), Measure::Button { icon: true }),
             (self.deck.title.clone(), Measure::Heading),
             (String::new(), Measure::FontInput),
-            button(tr("slides-bring-front")),
-            button(tr("slides-send-back")),
-            button(tr("slides-duplicate")),
-            button(tr("slides-delete")),
+            command(tr("slides-bring-front")),
+            command(tr("slides-send-back")),
+            command(tr("slides-duplicate")),
+            command(tr("slides-delete")),
             button(tr("slides-custom-colour")),
-            button(tr("slides-bold")),
-            button(tr("slides-italic")),
         ];
         set.extend(insert_tools().into_iter().map(|(label, icon, _)| {
             (
@@ -1042,8 +1043,9 @@ impl SlidesApp {
             Self::push_section_label(m, labels, x0, &mut y, &tr("slides-font"));
             let field_w = m.width("", Measure::FontInput).min(x1 - x0);
             *font_input = Some(Rect::new(x0, y, x0 + field_w, y + m.control_h));
-            let bold_w = m.width(&tr("slides-bold"), Measure::Button { icon: false });
-            let italic_w = m.width(&tr("slides-italic"), Measure::Button { icon: false });
+            // Bold and italic are square glyph toggles.
+            let bold_w = m.control_h;
+            let italic_w = m.control_h;
             let toggles_w = bold_w + m.s1 + italic_w;
             let toggles_y = if field_w + m.s2 + toggles_w <= x1 - x0 + 0.5 {
                 y
@@ -1058,16 +1060,18 @@ impl SlidesApp {
             );
             buttons.push(UiButton {
                 rect: bold,
-                kind: ButtonKind::Toggle {
-                    label: tr("slides-bold"),
+                kind: ButtonKind::Icon {
+                    icon: Icon::Bold,
+                    name: tr("slides-bold"),
                     active: el.bold,
                 },
                 hit: Hit::ToggleBold,
             });
             buttons.push(UiButton {
                 rect: Rect::new(x1 - italic_w, toggles_y, x1, toggles_y + m.control_h),
-                kind: ButtonKind::Toggle {
-                    label: tr("slides-italic"),
+                kind: ButtonKind::Icon {
+                    icon: Icon::Italic,
+                    name: tr("slides-italic"),
                     active: el.italic,
                 },
                 hit: Hit::ToggleItalic,
@@ -1087,17 +1091,25 @@ impl SlidesApp {
         let actions = [
             (
                 tr("slides-bring-front"),
+                Icon::BringToFront,
                 ButtonRole::Secondary,
                 Hit::BringFront,
             ),
-            (tr("slides-send-back"), ButtonRole::Secondary, Hit::SendBack),
+            (
+                tr("slides-send-back"),
+                Icon::SendToBack,
+                ButtonRole::Secondary,
+                Hit::SendBack,
+            ),
             (
                 tr("slides-duplicate"),
+                Icon::Copy,
                 ButtonRole::Secondary,
                 Hit::DuplicateElement,
             ),
             (
                 tr("slides-delete"),
+                Icon::Trash2,
                 ButtonRole::Destructive,
                 Hit::DeleteElement,
             ),
@@ -1105,11 +1117,11 @@ impl SlidesApp {
         let half = (x1 - x0 - m.s2) / 2.0;
         let widest = actions
             .iter()
-            .map(|(label, ..)| m.width(label, Measure::Button { icon: false }))
+            .map(|(label, ..)| m.width(label, Measure::Button { icon: true }))
             .fold(0.0_f64, f64::max);
         let cols = if widest <= half + 0.5 { 2 } else { 1 };
         let cell = if cols == 2 { half } else { x1 - x0 };
-        for (i, (label, role, hit)) in actions.into_iter().enumerate() {
+        for (i, (label, icon, role, hit)) in actions.into_iter().enumerate() {
             let col = (i % cols) as f64;
             let row = (i / cols) as f64;
             let x = x0 + col * (cell + m.s2);
@@ -1118,7 +1130,7 @@ impl SlidesApp {
                 rect: Rect::new(x, top, x + cell, top + m.control_h),
                 kind: ButtonKind::Command {
                     label,
-                    icon: None,
+                    icon: Some(icon),
                     role,
                 },
                 hit,
@@ -1586,13 +1598,6 @@ impl SlidesApp {
                     Some(icon) => face.icon(*icon),
                     None => face,
                 };
-                Button::paint(scene, t, tr, theme, &face);
-            }
-            ButtonKind::Toggle { label, active } => {
-                let face = ButtonFace::new(b.rect, label)
-                    .role(ButtonRole::Plain)
-                    .toggled(*active)
-                    .hovered(hovered);
                 Button::paint(scene, t, tr, theme, &face);
             }
             ButtonKind::Segment { .. } => {

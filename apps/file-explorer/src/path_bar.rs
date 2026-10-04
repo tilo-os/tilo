@@ -16,8 +16,10 @@
 //! navigation, Tab-complete, click-to-accept, theming, selection/clipboard)
 //! is the toolkit's, not hand-rolled here.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
@@ -31,7 +33,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Autocomplete, AutocompleteOutcome, Breadcrumb, Suggestion, Widget};
 
-use crate::breadcrumbs::breadcrumb_components;
+use crate::breadcrumbs::{breadcrumb_components, breadcrumb_root_icon};
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::t;
 use crate::model::format_path;
@@ -43,7 +45,8 @@ pub struct PathBar {
     targets: Vec<PathBuf>,
     /// The trail's node in the last layout, so events reach it at its rect.
     crumbs_node: Option<NodeId>,
-    last_cursor: Point,
+    /// The trail asked to be edited (a click on its empty space).
+    edit_requested: Rc<Cell<bool>>,
     /// The editable field + completion popover (edit mode).
     field: Autocomplete,
     editing: bool,
@@ -66,7 +69,7 @@ impl PathBar {
             crumbs: Breadcrumb::new(Vec::new()),
             targets: Vec::new(),
             crumbs_node: None,
-            last_cursor: Point::ZERO,
+            edit_requested: Rc::new(Cell::new(false)),
             field: Autocomplete::new()
                 .with_id("files.path_input")
                 .with_placeholder(&t("files-path-placeholder")),
@@ -110,11 +113,21 @@ impl PathBar {
         }
         let sink = self.sink.clone();
         let goto = targets.clone();
-        self.crumbs = Breadcrumb::new(labels).on_navigate(move |index| {
-            if let Some(target) = goto.get(index) {
-                push(&sink, FileCommand::Navigate(target.clone()));
-            }
-        });
+        let edit = Rc::clone(&self.edit_requested);
+        self.crumbs = Breadcrumb::new(labels)
+            .root_icon(breadcrumb_root_icon(
+                &self.current,
+                self.home.as_deref(),
+                &self.workspace_roots,
+            ))
+            .on_navigate(move |index| {
+                if let Some(target) = goto.get(index) {
+                    push(&sink, FileCommand::Navigate(target.clone()));
+                }
+            })
+            // A click on the trail's empty space turns it into the editable
+            // location.
+            .on_edit_requested(move || edit.set(true));
         self.targets = targets;
     }
 
@@ -152,28 +165,17 @@ impl Widget for PathBar {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The trail fills the bar, so it truncates against the real width.
+        // The trail takes the bar's width and height, so it truncates against
+        // the real width.
         let crumbs = self.crumbs.build_layout(taffy, theme, node_map);
         let height = Dimension::length(theme.tokens.metrics.min_pointer_target);
-        // `set_style` and `new_with_children` only fail for a node of another
-        // tree; the trail's node was just built in this one.
+        // `new_with_children` only fails for a node of another tree; the
+        // trail's node was just built in this one.
         #[allow(
             clippy::unwrap_used,
             reason = "the trail's node was just created in this same tree"
         )]
         let node = {
-            taffy
-                .set_style(
-                    crumbs,
-                    Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height,
-                        },
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
             taffy
                 .new_with_children(
                     Style {
@@ -266,26 +268,10 @@ impl Widget for PathBar {
                 AutocompleteOutcome::None => {}
             }
         } else {
-            if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
             let node = self.crumbs_node.unwrap_or(ctx.node_id);
             self.crumbs
                 .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            // A press on the trail's empty area (not on an ancestor) turns it
-            // into the editable location.
-            if !*ctx.handled
-                && matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: winit::event::ElementState::Pressed,
-                        button: winit::event::MouseButton::Left,
-                        ..
-                    }
-                )
-                && self.rect.contains(self.last_cursor)
-            {
+            if self.edit_requested.replace(false) {
                 *ctx.handled = true;
                 self.begin_edit();
             }

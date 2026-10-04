@@ -87,8 +87,17 @@ impl Chrome {
         move || commands.borrow_mut().push_back(command)
     }
 
-    /// The header's controls, in the order they read: the mode switch, change
-    /// navigation, then the file actions with the one primary action last.
+    /// The mode switch, which leads the header row: the content's mode,
+    /// with no title beside it.
+    pub(crate) fn mode_switch(&self) -> Element {
+        let chrome = self.clone();
+        Box::new(ModelView::from_state(&self.header, move |header| {
+            chrome.mode(*header)
+        }))
+    }
+
+    /// The header's actions, in the order they read: change navigation,
+    /// then the file actions with the one primary action last.
     pub(crate) fn actions(&self) -> Vec<Element> {
         let chrome = self.clone();
         vec![Box::new(ModelView::from_state(
@@ -97,30 +106,35 @@ impl Chrome {
         ))]
     }
 
-    fn controls(&self, header: Header) -> Element {
-        let compact = header.compact;
-        let merge_label = if compact {
+    fn mode(&self, header: Header) -> Element {
+        let merge_label = if header.compact {
             t("toolbar-merge-short")
         } else {
             t("toolbar-merge")
         };
-        let mode = ToggleGroup::new(
-            vec![Segment::new(t("toolbar-diff")), Segment::new(merge_label)],
-            usize::from(header.mode == Mode::Merge),
-        )
-        .with_style(SegmentedStyle::Segmented)
-        .control_size(ControlSize::Small)
-        .on_view("diffmerge.mode", {
-            let mut diff = self.request(Command::Mode(Mode::Diff));
-            let mut merge = self.request(Command::Mode(Mode::Merge));
-            move |index| {
-                if index == 0 {
-                    diff();
-                } else {
-                    merge();
+        Box::new(
+            ToggleGroup::new(
+                vec![Segment::new(t("toolbar-diff")), Segment::new(merge_label)],
+                usize::from(header.mode == Mode::Merge),
+            )
+            .with_style(SegmentedStyle::Segmented)
+            .control_size(ControlSize::Small)
+            .on_view("diffmerge.mode", {
+                let mut diff = self.request(Command::Mode(Mode::Diff));
+                let mut merge = self.request(Command::Mode(Mode::Merge));
+                move |index| {
+                    if index == 0 {
+                        diff();
+                    } else {
+                        merge();
+                    }
                 }
-            }
-        });
+            }),
+        )
+    }
+
+    fn controls(&self, header: Header) -> Element {
+        let compact = header.compact;
         let step = |id: &str, icon: Icon, name: String, command: Command| {
             Button::icon_only(id, icon, &name)
                 .control_size(ControlSize::Small)
@@ -148,7 +162,6 @@ impl Chrome {
         Box::new(
             Row::new()
                 .no_wrap()
-                .push(Box::new(mode))
                 .push(Box::new(step(
                     "diffmerge.previous-change",
                     Icon::ChevronUp,

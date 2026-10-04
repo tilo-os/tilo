@@ -106,10 +106,11 @@ pub(crate) enum Request {
     ListMenu,
     /// The open article's menu (read state, tags).
     ArticleMenu,
-    /// A feed's menu, anchored on its sidebar row.
-    /// A feed's menu: the row it acts on (its lift), and the point a
-    /// right click opened it at.
+    /// A feed's menu: the row it acts on (its lift), and the point it opens
+    /// at (the pointer, or under the row or its More button).
     FeedMenu(Id, Rect, Option<Point>),
+    /// The person folded (`true`) or unfolded a folder in the sidebar.
+    SetFolderCollapsed(Id, bool),
     SetFont(ReadFont),
     SetPaper(ReadTheme),
     /// The reading scale as a percentage.
@@ -1464,6 +1465,19 @@ impl Core {
             Request::ArticleMenu => self.open_article_menu(),
             Request::FeedMenu(id, row, None) => self.open_feed_menu(id, row),
             Request::FeedMenu(id, row, Some(at)) => self.open_feed_menu_at(id, row, at),
+            Request::SetFolderCollapsed(id, collapsed) => {
+                let unchanged = self
+                    .store
+                    .folders_sorted()
+                    .iter()
+                    .any(|folder| folder.id == id && folder.collapsed == collapsed);
+                if !unchanged {
+                    self.perform_action(
+                        doc,
+                        &crate::actions::set_folder_collapsed_action(id, collapsed),
+                    );
+                }
+            }
             Request::SetFont(font) => self.bump_setting(doc, |s| s.font = font),
             Request::SetPaper(paper) => self.bump_setting(doc, |s| s.theme = paper),
             Request::SetScale(percent) => {

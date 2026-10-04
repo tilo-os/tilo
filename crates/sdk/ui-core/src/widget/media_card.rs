@@ -9,8 +9,11 @@
 //! the two never look the same.
 //!
 //! Art that is not loaded yet, or does not exist, is generated: a smooth
-//! neutral gradient with the title's initials sized from the tile, or the
-//! app's icon for an app.
+//! neutral gradient with the initials of the title (or of the name an
+//! art-only card is seeded with) sized from the tile, or the app's icon for
+//! an app. Art can also be a mosaic of covers (a playlist), the icon of a
+//! kind of thing (a podcast, a folder), or painted by the app from theme
+//! values. An artist is a circle ([`MediaAspect::Circle`]).
 //!
 //! [`MediaGrid`] reflows cards into columns from the available width, with
 //! every row's text block as tall as its tallest so titles line up, or into
@@ -48,6 +51,8 @@ pub enum MediaAspect {
     Portrait,
     /// A photo's own width / height.
     Ratio(f64),
+    /// A person or an artist: a disc.
+    Circle,
 }
 
 impl MediaAspect {
@@ -58,20 +63,42 @@ impl MediaAspect {
             Self::Wide => 16.0 / 9.0,
             Self::Portrait => 2.0 / 3.0,
             Self::Ratio(r) if r.is_finite() && r > 0.0 => r,
-            Self::Square | Self::Ratio(_) => 1.0,
+            Self::Square | Self::Circle | Self::Ratio(_) => 1.0,
         }
     }
 }
 
+/// Paints a card's art into the rect it is given, from theme values.
+pub type ArtPainter<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
+
 /// What a card's art is.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum MediaArt<'a> {
     /// A decoded picture, cover-fitted.
     Image(&'a peniko::ImageData),
     /// An app's icon, fitted inside a quiet tile.
     AppIcon(&'a AppImage),
+    /// Up to four covers in a 2×2 mosaic (a playlist, a collection).
+    Mosaic(&'a [peniko::ImageData]),
+    /// The icon of a kind of thing (a podcast, a folder) on the neutral tile.
+    Kind(Icon),
+    /// Painted by the app into the art's rect, from theme values.
+    Paint(ArtPainter<'a>),
     /// No art (yet): the generated gradient and initials.
     Placeholder,
+}
+
+impl std::fmt::Debug for MediaArt<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Image(_) => f.write_str("Image"),
+            Self::AppIcon(_) => f.write_str("AppIcon"),
+            Self::Mosaic(images) => write!(f, "Mosaic({})", images.len()),
+            Self::Kind(icon) => write!(f, "Kind({icon:?})"),
+            Self::Paint(_) => f.write_str("Paint"),
+            Self::Placeholder => f.write_str("Placeholder"),
+        }
+    }
 }
 
 /// An overlay mark on the art.
@@ -85,6 +112,9 @@ pub enum MediaBadge<'a> {
     Live,
     /// Available offline, at the top-trailing corner.
     Downloaded,
+    /// A short tag at the top-leading corner ("New", "Explicit"), a badge
+    /// in its chip style.
+    Tag(&'a str, crate::widget::ChipStyle),
 }
 
 /// How large the cards of a grid are, in lines of body text so they grow
@@ -126,6 +156,8 @@ struct MediaMetrics {
     progress: f64,
     action: f64,
     icon: f64,
+    mark: f64,
+    mark_gap: f64,
 }
 
 impl MediaMetrics {
@@ -144,6 +176,8 @@ impl MediaMetrics {
             progress: f64::from(metrics.chrome_rule_px) * 3.0,
             action: f64::from(metrics.bar_height),
             icon: f64::from(metrics.icon_md),
+            mark: f64::from(metrics.icon_sm),
+            mark_gap: f64::from(spacing.s1),
         }
     }
 
@@ -158,7 +192,11 @@ pub struct MediaCardFace<'a> {
     art: MediaArt<'a>,
     aspect: MediaAspect,
     title: Option<&'a str>,
+    /// Seeds the placeholder's initials on an art-only card.
+    seed: Option<&'a str>,
     meta: [Option<&'a str>; 2],
+    /// A mark after the first meta line (verified).
+    meta_mark: Option<Icon>,
     badges: &'a [MediaBadge<'a>],
     hover_action: Option<Icon>,
     selected: bool,
@@ -172,12 +210,30 @@ impl<'a> MediaCardFace<'a> {
             art,
             aspect: MediaAspect::Square,
             title: None,
+            seed: None,
             meta: [None, None],
+            meta_mark: None,
             badges: &[],
             hover_action: None,
             selected: false,
             interaction: Interaction::default(),
         }
+    }
+
+    /// The name an art-only card's placeholder takes its initials from (a
+    /// photo's place, an album's name).
+    #[must_use]
+    pub fn seed(mut self, name: &'a str) -> Self {
+        self.seed = Some(name);
+        self
+    }
+
+    /// A mark after the first meta line: a verified channel, an explicit
+    /// album.
+    #[must_use]
+    pub fn meta_mark(mut self, icon: Icon) -> Self {
+        self.meta_mark = Some(icon);
+        self
     }
 
     #[must_use]
@@ -301,8 +357,10 @@ impl<'a> MediaCardFace<'a> {
         }
 
         let art = self.art_rect(rect);
-        paint_art(ctx, &m, art, self.art, self.title.unwrap_or_default());
-        seat(ctx, art, m.radius);
+        let radius = self.art_radius(&m, art);
+        let name = self.title.or(self.seed).unwrap_or_default();
+        paint_art(ctx, &m, art, radius, self.art, name);
+        seat(ctx, art, radius);
         for badge in self.badges {
             paint_badge(ctx, &m, art, *badge);
         }
@@ -322,7 +380,7 @@ impl<'a> MediaCardFace<'a> {
             icon.draw(ctx.scene, ctx.transform, glyph, theme.text_primary);
         }
         if self.interaction.focused && !self.interaction.disabled {
-            crate::widget::paint_focus_ring(ctx.scene, ctx.transform, art, m.radius, theme);
+            crate::widget::paint_focus_ring(ctx.scene, ctx.transform, art, radius, theme);
         }
 
         if let Some(title) = self.title {
@@ -340,11 +398,36 @@ impl<'a> MediaCardFace<'a> {
                 y += title_line;
             }
             let meta_line = MediaMetrics::line(ctx.text, &m.meta);
-            for meta in self.meta.iter().flatten() {
-                let line = ctx.text.elide_to_width_style(meta, width, &m.meta);
+            for (index, meta) in self.meta.iter().flatten().enumerate() {
+                let mark = if index == 0 { self.meta_mark } else { None };
+                let mark_w = mark.map_or(0.0, |_| m.mark + m.mark_gap);
+                let line = ctx.text.elide_to_width_style(
+                    meta,
+                    crate::num::f32_of_f64((f64::from(width) - mark_w).max(1.0)),
+                    &m.meta,
+                );
                 ctx.text(&line, &m.meta, theme.text_dim, Point::new(rect.x0, y), None);
+                if let Some(icon) = mark {
+                    let (w, _) = ctx.text.measure_style(&line, None, &m.meta);
+                    let glyph = Rect::new(
+                        rect.x0 + f64::from(w) + m.mark_gap,
+                        y + (meta_line - m.mark) / 2.0,
+                        rect.x0 + f64::from(w) + m.mark_gap + m.mark,
+                        y + (meta_line + m.mark) / 2.0,
+                    );
+                    icon.draw(ctx.scene, ctx.transform, glyph, theme.text_dim);
+                }
                 y += meta_line;
             }
+        }
+    }
+
+    /// The art's corner radius: a disc for [`MediaAspect::Circle`].
+    fn art_radius(&self, m: &MediaMetrics, art: Rect) -> f64 {
+        if self.aspect == MediaAspect::Circle {
+            art.width().min(art.height()) / 2.0
+        } else {
+            m.radius
         }
     }
 
@@ -362,14 +445,21 @@ impl<'a> MediaCardFace<'a> {
             match badge {
                 MediaBadge::Duration(d) => value.push((*d).to_owned()),
                 MediaBadge::Progress(p) => {
-                    value.push(format!("{}% watched", (p.clamp(0.0, 1.0) * 100.0).round()));
+                    // Neutral words: a book is read, the rest is played.
+                    let done = if self.aspect == MediaAspect::Portrait {
+                        "read"
+                    } else {
+                        "played"
+                    };
+                    value.push(format!("{}% {done}", (p.clamp(0.0, 1.0) * 100.0).round()));
                 }
                 MediaBadge::Live => value.push("Live".to_owned()),
                 MediaBadge::Downloaded => value.push("Downloaded".to_owned()),
+                MediaBadge::Tag(tag, _) => value.push((*tag).to_owned()),
             }
         }
         let mut node = AccessNode::new(Role::Button)
-            .with_optional_name(self.title.map(str::to_owned))
+            .with_optional_name(self.title.or(self.seed).map(str::to_owned))
             .with_bounds(rect)
             .with_state(
                 AccessState::new()
@@ -400,36 +490,97 @@ fn seat(ctx: &mut PaintCtx<'_>, art: Rect, radius: f64) {
 /// The seated edge's strength: the control hairline (HIG §9.5).
 const SEAT_ALPHA: u8 = 26;
 
-fn paint_art(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, kind: MediaArt<'_>, title: &str) {
+fn paint_art(
+    ctx: &mut PaintCtx<'_>,
+    m: &MediaMetrics,
+    art: Rect,
+    radius: f64,
+    kind: MediaArt<'_>,
+    title: &str,
+) {
     let theme = ctx.theme;
     let colors = &theme.tokens.colors;
+    let neutral_tile = |ctx: &mut PaintCtx<'_>| {
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(art, radius),
+        );
+    };
     match kind {
         MediaArt::Image(image) => {
-            crate::image_store::paint_image_cover(ctx.scene, ctx.transform, art, image, m.radius);
+            crate::image_store::paint_image_cover(ctx.scene, ctx.transform, art, image, radius);
         }
         MediaArt::AppIcon(icon) => {
-            let raised = colors.surfaces.raised;
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                raised,
-                None,
-                &RoundedRect::from_rect(art, m.radius),
-            );
+            neutral_tile(ctx);
             let side = art.width().min(art.height()) * 0.6;
             let slot = Rect::from_center_size(art.center(), (side, side));
             if !crate::icons::draw_app_image(ctx.scene, ctx.transform, slot, icon) {
-                paint_placeholder(ctx, m, art, title);
+                paint_placeholder(ctx, m, art, radius, title);
             }
         }
-        MediaArt::Placeholder => paint_placeholder(ctx, m, art, title),
+        MediaArt::Kind(icon) => {
+            neutral_tile(ctx);
+            let side = art.width().min(art.height()) * 0.36;
+            let slot = Rect::from_center_size(art.center(), (side, side));
+            icon.draw(ctx.scene, ctx.transform, slot, theme.text_tertiary);
+        }
+        MediaArt::Mosaic(images) if !images.is_empty() => {
+            let clip = RoundedRect::from_rect(art, radius);
+            ctx.scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &clip,
+            );
+            let half = Point::new(art.center().x, art.center().y);
+            let quads = if images.len() < 4 {
+                vec![art]
+            } else {
+                vec![
+                    Rect::new(art.x0, art.y0, half.x, half.y),
+                    Rect::new(half.x, art.y0, art.x1, half.y),
+                    Rect::new(art.x0, half.y, half.x, art.y1),
+                    Rect::new(half.x, half.y, art.x1, art.y1),
+                ]
+            };
+            for (quad, image) in quads.iter().zip(images) {
+                crate::image_store::paint_image_cover(ctx.scene, ctx.transform, *quad, image, 0.0);
+            }
+            ctx.scene.pop_layer();
+        }
+        MediaArt::Paint(painter) => {
+            let clip = RoundedRect::from_rect(art, radius);
+            ctx.scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &clip,
+            );
+            neutral_tile(ctx);
+            painter(ctx, art);
+            ctx.scene.pop_layer();
+        }
+        MediaArt::Mosaic(_) | MediaArt::Placeholder => {
+            paint_placeholder(ctx, m, art, radius, title);
+        }
     }
 }
 
 /// One smooth diagonal gradient (no stacked rects, so no seams) between two
 /// steps of the raised surface, with the title's initials sized from the
 /// tile.
-fn paint_placeholder(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, title: &str) {
+fn paint_placeholder(
+    ctx: &mut PaintCtx<'_>,
+    m: &MediaMetrics,
+    art: Rect,
+    radius: f64,
+    title: &str,
+) {
     let theme = ctx.theme;
     let colors = &theme.tokens.colors;
     let raised = colors.surfaces.raised;
@@ -440,7 +591,7 @@ fn paint_placeholder(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, title:
         ctx.transform,
         &Brush::Gradient(wash),
         None,
-        &RoundedRect::from_rect(art, m.radius),
+        &RoundedRect::from_rect(art, radius),
     );
     let initials = crate::widget::initials_for_name(title);
     if initials.is_empty() {
@@ -542,6 +693,19 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
             let glyph = Rect::from_center_size(disc.center(), (m.icon * 0.75, m.icon * 0.75));
             Icon::Download.draw(ctx.scene, ctx.transform, glyph, theme.text_primary);
         }
+        MediaBadge::Tag(label, style) => {
+            let h = crate::widget::BadgeFace::height(theme);
+            let w = crate::widget::BadgeFace::intrinsic_width(label, ctx.text, theme);
+            let rect = Rect::new(
+                art.x0 + pad,
+                art.y0 + pad,
+                art.x0 + pad + w,
+                art.y0 + pad + h,
+            );
+            crate::widget::BadgeFace::new(rect, label)
+                .style(style)
+                .paint(ctx.scene, ctx.transform, ctx.text, theme);
+        }
         MediaBadge::Progress(share) => {
             let share = share.clamp(0.0, 1.0);
             let track = Rect::new(art.x0, art.y1 - m.progress, art.x1, art.y1);
@@ -587,6 +751,12 @@ pub enum MediaSource {
         url: String,
     },
     AppIcon(AppImage),
+    /// Up to four covers in a mosaic.
+    Mosaic(Vec<peniko::ImageData>),
+    /// The icon of a kind of thing on the neutral tile.
+    Kind(Icon),
+    /// Painted by the app from theme values.
+    Paint(Box<dyn Fn(&mut PaintCtx<'_>, Rect)>),
     Placeholder,
 }
 
@@ -597,6 +767,7 @@ pub enum OwnedBadge {
     Progress(f64),
     Live,
     Downloaded,
+    Tag(String, crate::widget::ChipStyle),
 }
 
 impl OwnedBadge {
@@ -606,6 +777,7 @@ impl OwnedBadge {
             Self::Progress(p) => MediaBadge::Progress(*p),
             Self::Live => MediaBadge::Live,
             Self::Downloaded => MediaBadge::Downloaded,
+            Self::Tag(tag, style) => MediaBadge::Tag(tag, *style),
         }
     }
 }
@@ -616,7 +788,9 @@ pub struct MediaCard {
     loaded: Option<peniko::ImageData>,
     aspect: MediaAspect,
     title: Option<String>,
+    seed: Option<String>,
     meta: Vec<String>,
+    meta_mark: Option<Icon>,
     badges: Vec<OwnedBadge>,
     hover_action: Option<(Icon, String, Box<dyn FnMut()>)>,
     pressed_action: bool,
@@ -640,7 +814,9 @@ impl MediaCard {
             loaded,
             aspect: MediaAspect::Square,
             title: None,
+            seed: None,
             meta: Vec::new(),
+            meta_mark: None,
             badges: Vec::new(),
             hover_action: None,
             pressed_action: false,
@@ -662,6 +838,20 @@ impl MediaCard {
     #[must_use]
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    /// See [`MediaCardFace::seed`].
+    #[must_use]
+    pub fn seed(mut self, name: impl Into<String>) -> Self {
+        self.seed = Some(name.into());
+        self
+    }
+
+    /// See [`MediaCardFace::meta_mark`].
+    #[must_use]
+    pub fn meta_mark(mut self, icon: Icon) -> Self {
+        self.meta_mark = Some(icon);
         self
     }
 
@@ -715,6 +905,9 @@ impl MediaCard {
         let art = match (&self.loaded, &self.source) {
             (Some(image), _) => MediaArt::Image(image),
             (None, MediaSource::AppIcon(icon)) => MediaArt::AppIcon(icon),
+            (None, MediaSource::Mosaic(images)) => MediaArt::Mosaic(images),
+            (None, MediaSource::Kind(icon)) => MediaArt::Kind(*icon),
+            (None, MediaSource::Paint(painter)) => MediaArt::Paint(painter.as_ref()),
             _ => MediaArt::Placeholder,
         };
         let mut face = MediaCardFace::new(art)
@@ -725,8 +918,14 @@ impl MediaCard {
         if let Some(title) = &self.title {
             face = face.title(title);
         }
+        if let Some(seed) = &self.seed {
+            face = face.seed(seed);
+        }
         for line in &self.meta {
             face = face.meta(line);
+        }
+        if let Some(mark) = self.meta_mark {
+            face = face.meta_mark(mark);
         }
         if let Some((icon, _, _)) = &self.hover_action {
             face = face.hover_action(*icon);
@@ -965,7 +1164,8 @@ activation_controls!(MediaCard, activation);
 
 /// Lay `aspects` (width / height) out in justified rows `width` wide: each
 /// row is filled at `target_height`, then scaled so it spans the width
-/// exactly. The last row keeps the target height instead of stretching.
+/// exactly. The last row keeps the target height instead of stretching,
+/// capped at the height of the row above it.
 /// Returns one rect per item, relative to the origin.
 #[must_use]
 pub fn justified_rows(aspects: &[f64], width: f64, target_height: f64, gap: f64) -> Vec<Rect> {
@@ -976,6 +1176,7 @@ pub fn justified_rows(aspects: &[f64], width: f64, target_height: f64, gap: f64)
     let ratio = |a: f64| if a.is_finite() && a > 0.0 { a } else { 1.0 };
     let mut y = 0.0;
     let mut start = 0;
+    let mut previous: Option<f64> = None;
     while start < aspects.len() {
         let mut end = start;
         let mut row_ratio = 0.0;
@@ -992,8 +1193,10 @@ pub fn justified_rows(aspects: &[f64], width: f64, target_height: f64, gap: f64)
         let height = if full {
             (width - gaps) / row_ratio
         } else {
-            target_height
+            // A short last row is never taller than the row above it.
+            target_height.min(previous.unwrap_or(target_height))
         };
+        previous = Some(height);
         let mut x = 0.0;
         for &aspect in &aspects[start..end] {
             let w = ratio(aspect) * height;
@@ -1060,8 +1263,24 @@ impl MediaGrid {
         })
     }
 
+    /// How many columns fit `width`. A short section keeps the columns its
+    /// width chose, so two cards are no wider than two of a full row.
     pub fn columns_for_width(&self, width: f64) -> usize {
-        card_columns(width, self.extent, self.column_gap).min(self.cards.len().max(1))
+        card_columns(width, self.extent, self.column_gap)
+    }
+
+    /// `count` loading cards at `aspect`: skeletons with the art and the
+    /// full text block of a card (a title and a meta line).
+    pub fn loading(count: usize, aspect: MediaAspect) -> Self {
+        let mut grid = Self::new(Vec::new());
+        grid.cards = (0..count)
+            .map(|_| {
+                Box::new(crate::widget::Skeleton::new(
+                    crate::widget::SkeletonShape::Media(aspect),
+                )) as Element
+            })
+            .collect();
+        grid
     }
 }
 
