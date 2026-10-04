@@ -1326,7 +1326,7 @@ impl State {
                     }
                 }
                 Err(e) => {
-                    if !matches!(e, ProbeError::NoRenderNodes) {
+                    if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
                         crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
                     }
                     tracing::warn!(
