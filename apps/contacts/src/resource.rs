@@ -12,16 +12,13 @@
 use std::rc::Rc;
 
 use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, OperationKind, PROMPTED_PARAM, ParamType,
-    Resource as PublishedResource,
-};
+use ui::tilo_actions::{ActionParam, PROMPTED_PARAM, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    CONTACTS_ACTION_TYPE, ContactsAction, book_effect_specs, contact_resource_id,
+    CONTACTS_ACTION_TYPE, ContactsAction, ContactsEffect, contact_resource_id,
     create_contact_action, open_contact_address, open_group_address, ordered_groups,
     publish_children, register, resolve_child, split_name,
 };
@@ -85,13 +82,6 @@ impl Resource for Contacts {
 
     fn child(state: &ContactsState, id: &str) -> Option<PublishedResource> {
         resolve_child(&state.contacts, id)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        book_effect_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     /// Every contact is found by anything it holds — name, organisation,
@@ -264,7 +254,15 @@ impl ResourceApp for ContactsShell {
     }
 }
 
-impl ResourceSurface<Contacts> for ContactsApp {
+impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
+    fn effect(
+        &mut self,
+        effect: ContactsEffect,
+        cx: &mut ui::framework::EffectCx<Contacts, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
     fn present(&mut self, state: &Rc<ContactsState>) {
         self.present_book(state);
     }
@@ -301,6 +299,7 @@ mod tests {
         group_resource_id,
     };
     use ui::framework::testing::TestApp;
+    use ui::tilo_actions::OperationKind;
 
     fn has_control(app: &mut TestApp<ContactsShell>, label: &str) -> bool {
         app.harness()
@@ -392,12 +391,10 @@ mod tests {
         let state = ContactsState { contacts };
 
         let book = ui::tilo_resource::publish::<Contacts>(Contacts::KIND, "Contacts", &state);
-        for id in ["new-contact", "import-vcard", "export-all-vcard"] {
-            assert!(
-                book.actions.iter().any(|action| action.id == id),
-                "{id} is on the book"
-            );
-        }
+        assert!(
+            book.actions.iter().any(|action| action.id == "new-contact"),
+            "new-contact is on the book"
+        );
         assert!(find(&book, FAVORITES_RESOURCE_ID).is_some());
         let ada = find(&book, &contact_resource_id(state.contacts[0].id)).unwrap();
         for id in [
