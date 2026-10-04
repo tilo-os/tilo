@@ -1775,10 +1775,10 @@ impl ThemesApp {
 mod tests {
     use super::*;
     use crate::model::demo_catalog;
+    use ui::framework::HostDelivery as _;
     use ui::headless::Framed;
     use ui::prelude::TestApp;
     use ui::tilo_resource::Invoke;
-    use ui::widget::HostDelivery as _;
 
     /// The surface showing `catalog`, with the first preset applied.
     fn presented(catalog: Vec<ThemeSpec>) -> ThemesApp {

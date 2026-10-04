@@ -462,7 +462,7 @@ mod open_with_tests {
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             route.actions(),
@@ -1067,7 +1067,7 @@ mod command_path_tests {
                         &serde_json::json!({}),
                     )
                     .unwrap(),
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
+                    Some(ui::framework::Effected::Done(_))
                 ),
                 "{command} is routed through the canonical door"
             );
@@ -1123,7 +1123,7 @@ mod command_path_tests {
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(
             w.last_trash_undo.is_none(),
@@ -1270,7 +1270,7 @@ mod command_path_tests {
                 &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(w.collab_panel.is_some(), "availability route opens details");
     }
@@ -1770,7 +1770,7 @@ mod command_path_tests {
                 &automerge::ROOT,
             );
             match started {
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(output))) => output.value,
+                Ok(Some(ui::framework::Effected::Done(output))) => output.value,
                 other => panic!("{action} completes at once: {other:?}"),
             }
         };
@@ -2052,12 +2052,7 @@ mod command_path_tests {
             &mut doc,
             &automerge::ROOT,
         )
-        .map(|started| {
-            matches!(
-                started,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            )
-        })
+        .map(|started| matches!(started, Some(ui::framework::Effected::Done(_))))
     }
 
     #[cfg(unix)]
@@ -3381,7 +3376,7 @@ mod command_path_tests {
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
@@ -3854,8 +3849,8 @@ mod responsive_body_tests {
     use super::*;
     use std::collections::HashMap;
     use taffy::prelude::*;
+    use ui::framework::HostDelivery as _;
     use ui::theme::Theme;
-    use ui::widget::HostDelivery as _;
 
     include!("../native_proof_tests.rs");
 
@@ -5051,7 +5046,7 @@ mod injected_startup_tests {
                 &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             widget.current_path, mount,

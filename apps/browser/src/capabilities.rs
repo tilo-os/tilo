@@ -412,7 +412,7 @@ impl Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::widget::HostDelivery as _;
+    use ui::framework::HostDelivery as _;
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
     }

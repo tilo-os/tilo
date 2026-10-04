@@ -578,7 +578,7 @@ mod tests {
                     &ROOT
                 )
                 .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
+                Some(ui::framework::Effected::Done(_))
             ));
             assert_eq!(
                 app.current_path(),

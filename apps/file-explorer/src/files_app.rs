@@ -9192,9 +9192,9 @@ pub(crate) mod published {
     use super::FileExplorerWidget;
     use crate::effects::FilesEffect;
     use crate::resource::{FileExplorer, FilesState};
+    use ui::framework::HostDelivery as _;
     use ui::tilo_actions::Resource;
     use ui::tilo_resource::{Effect as _, Resource as _};
-    use ui::widget::HostDelivery as _;
 
     /// The published tree: one root, as the framework publishes it, with the
     /// places the window shows.
@@ -9247,9 +9247,9 @@ pub(crate) mod published {
         )
     }
 
-    /// How an operation started: done at once with its output, or accepted
+    /// How an operation started: done at once with its output, or pending
     /// to finish later.
-    pub(crate) type Started = ui::widget::ResourceOperationStart;
+    pub(crate) type Started = ui::framework::Effected;
 
     /// Start the encoded operation on the window as the surface host does:
     /// the effect vocabulary to the surface's handler, anything else to the
@@ -9268,11 +9268,11 @@ pub(crate) mod published {
         if type_id == FilesEffect::OPERATION {
             return Ok(Some(
                 match files.run_effect(FilesEffect::from_payload(payload)?)? {
-                    super::Ran::Done(value) => Started::Completed(ui::tilo_actions::ActionOutput {
+                    super::Ran::Done(value) => Started::Done(ui::tilo_actions::ActionOutput {
                         value,
                         ..ui::tilo_actions::ActionOutput::default()
                     }),
-                    super::Ran::Pending => Started::Accepted,
+                    super::Ran::Pending => Started::Pending,
                 },
             ));
         }

@@ -4387,7 +4387,7 @@ fn windows_native_and_hosted_terminal_paths() {
         let command = r#"powershell.exe -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; 'NATIVE_SIZE={0}x{1}' -f $s.Width,$s.Height""#;
         let arguments = serde_json::to_vec(command).unwrap();
         assert!(
-            ui::widget::HostDelivery::start_encoded(
+            ui::framework::HostDelivery::start_encoded(
                 &mut widget,
                 ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",

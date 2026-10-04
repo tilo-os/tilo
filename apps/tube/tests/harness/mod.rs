@@ -23,7 +23,7 @@
 )]
 
 use std::collections::HashMap;
-use ui::widget::HostDelivery as _;
+use ui::framework::HostDelivery as _;
 
 use taffy::prelude::*;
 use ui::permissions::PermissionContext;

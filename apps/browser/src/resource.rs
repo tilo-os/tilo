@@ -412,12 +412,12 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
     fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
         let invocation = cx.invocation().unwrap_or_default();
         match self.page_mut().admit(invocation, effect.operation())? {
-            ui::widget::ResourceOperationStart::Completed(output) => Ok(Effected::Done(output)),
-            ui::widget::ResourceOperationStart::Accepted => {
+            Effected::Pending => {
                 let reply = cx.reply();
                 self.page_mut().answer_later(invocation, reply);
                 Ok(Effected::Pending)
             }
+            Effected::Done(output) => Ok(Effected::Done(output)),
         }
     }
 

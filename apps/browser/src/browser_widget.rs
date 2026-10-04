@@ -5631,10 +5631,10 @@ impl BrowserWidget {
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         operation: BrowserOperation,
-    ) -> Result<ui::widget::ResourceOperationStart, String> {
+    ) -> Result<ui::framework::Effected, String> {
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
-            return Ok(ui::widget::ResourceOperationStart::Accepted);
+            return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(
             &operation,
@@ -5649,7 +5649,7 @@ impl BrowserWidget {
             }
             if self.active_pip {
                 self.begin_pip_probe();
-                return Ok(ui::widget::ResourceOperationStart::Completed(local_output(
+                return Ok(ui::framework::Effected::Done(local_output(
                     "Picture in Picture closed.",
                 )));
             }
@@ -5660,7 +5660,7 @@ impl BrowserWidget {
             self.resource_pip_invocation = Some(invocation);
             self.resource_pip_request = Some(request_id);
             self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
-            return Ok(ui::widget::ResourceOperationStart::Accepted);
+            return Ok(ui::framework::Effected::Pending);
         }
         if !is_navigation {
             let is_history_pause_toggle =
@@ -5703,7 +5703,7 @@ impl BrowserWidget {
             } else {
                 output
             };
-            return Ok(ui::widget::ResourceOperationStart::Completed(output));
+            return Ok(ui::framework::Effected::Done(output));
         }
         if self.resource_navigation_invocation.is_some()
             || self.resource_navigation_result.is_some()
@@ -5713,7 +5713,7 @@ impl BrowserWidget {
         self.perform_browser_operation(operation)?;
         self.resource_navigation_invocation = Some(invocation);
         self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
-        Ok(ui::widget::ResourceOperationStart::Accepted)
+        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -5739,8 +5739,8 @@ impl AppWidget for BrowserWidget {
 #[cfg(test)]
 mod architecture_tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
     use ui::tilo_actions::OperationKind;
-    use ui::widget::HostDelivery as _;
 
     /// What the window does for the effect an encoded invocation names.
     fn effect_operation(payload: &[u8]) -> BrowserOperation {
@@ -6043,7 +6043,7 @@ mod architecture_tests {
                 )
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
+            let Some(ui::framework::Effected::Done(output)) = result else {
                 panic!("Stop must complete immediately");
             };
             assert!(stop.contract.result.validate(&output).is_ok());
@@ -6814,9 +6814,9 @@ mod architecture_tests {
 )]
 mod tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
     use ui::tilo_actions::{ActionSpec, OperationKind};
     use ui::webview::PageKey;
-    use ui::widget::HostDelivery as _;
 
     /// What the window does for the effect an encoded invocation names.
     fn effect_operation(payload: &[u8]) -> BrowserOperation {
@@ -6881,7 +6881,7 @@ mod tests {
                 .admit(invocation, effect_operation(&encoded.payload))
                 .map(Some)?
             {
-                Some(ui::widget::ResourceOperationStart::Accepted) => Ok(invocation),
+                Some(ui::framework::Effected::Pending) => Ok(invocation),
                 other => Err(format!("a page action must be accepted, got {other:?}")),
             }
         }
@@ -8795,7 +8795,7 @@ mod tests {
                 w.admit(invocation, BrowserOperation::TogglePictureInPicture)
                     .map(Some)
                     .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
+                Some(ui::framework::Effected::Pending)
             );
             assert!(w.poll_invocation(invocation).is_none());
             w.sync(&mut doc, &root);
@@ -8813,7 +8813,7 @@ mod tests {
                     .admit(invocation, BrowserOperation::TogglePictureInPicture)
                     .map(Some)
                     .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
+                Some(ui::framework::Effected::Pending)
             ));
             unavailable.sync(&mut doc, &root);
             assert!(matches!(
@@ -9056,7 +9056,7 @@ mod tests {
                 w.admit(invocation, effect_operation(&encoded.payload))
                     .map(Some)
                     .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
+                Some(ui::framework::Effected::Pending)
             );
             assert_eq!(
                 engine.current_uri().as_deref(),
@@ -9078,10 +9078,7 @@ mod tests {
                 )
                 .map(Some)
                 .unwrap();
-            assert!(matches!(
-                started,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
+            assert!(matches!(started, Some(ui::framework::Effected::Done(_))));
             assert_eq!(w.library_filter.get(), "tilo example");
         }
 
@@ -9194,7 +9191,7 @@ mod tests {
                 .admit(invocation, BrowserOperation::ClearHistory)
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            let Some(ui::framework::Effected::Done(output)) = started else {
                 panic!("clearing in-memory local history is synchronous");
             };
             assert!(clear_history.contract.result.validate(&output).is_ok());
@@ -9217,7 +9214,7 @@ mod tests {
                 )
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            let Some(ui::framework::Effected::Done(output)) = started else {
                 panic!("the engine accepted the site-data request synchronously");
             };
             assert!(clear_site_data.contract.result.validate(&output).is_ok());
@@ -9271,7 +9268,7 @@ mod tests {
                 )
                 .map(Some)
                 .unwrap();
-            let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            let Some(ui::framework::Effected::Done(output)) = started else {
                 panic!("history pausing changes only this running browser");
             };
             assert!(toggle.contract.result.validate(&output).is_ok());

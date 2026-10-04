@@ -774,10 +774,9 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
             .unwrap();
         // The published tree follows the record on the next frame.
         frame.relayout();
-        match started {
-            ui::widget::ResourceOperationStart::Completed(output) => output,
-            ui::widget::ResourceOperationStart::Accepted => panic!("{action} completes"),
-        }
+        started
+            .completed()
+            .unwrap_or_else(|| panic!("{action} completes"))
     };
     invoke(
         &mut visitor,
