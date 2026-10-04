@@ -29,20 +29,19 @@ def job(name: str) -> str:
 
 
 class AppSdkWorkflow(unittest.TestCase):
-    def test_every_pull_request_reports_policy_and_web(self) -> None:
-        pull_request = re.search(r"^  pull_request:\n((?:    .*\n)*)", TRIGGERS, re.M).group(1)
-        push = re.search(r"^  push:\n((?:    .*\n|      .*\n)*)", TRIGGERS, re.M).group(1)
-        self.assertNotIn("paths:", pull_request)
-        self.assertIn("paths:", push)
-        for name in ("policy", "builder"):
-            self.assertIn("    needs: [changes]\n", job(name))
-            self.assertIn("    if: needs.changes.outputs.relevant == 'true'\n", job(name))
+    def test_pull_requests_and_pushes_share_one_path_list(self) -> None:
+        def paths(event: str) -> list[str]:
+            body = re.search(rf"^  {event}:\n((?:    .*\n)*)", TRIGGERS, re.M).group(1)
+            return re.findall(r'^      - "(.+)"$', body, re.M)
+
+        self.assertIn("crates/**", paths("push"))
+        self.assertEqual(paths("pull_request"), paths("push"))
 
     def test_jobs_test_the_same_main(self) -> None:
         for name in ("policy", "linux", "web"):
             body = job(name)
             self.assertEqual(body.count("uses: ./.forgejo/actions/merge-main"), 1, name)
-            self.assertIn("main: ${{ needs.changes.outputs.main }}", body, name)
+            self.assertIn("main: ${{ needs.builder.outputs.main }}", body, name)
 
     def test_macos_stays_disabled_until_a_runner_serves_it(self) -> None:
         self.assertIn("    if: false\n", job("macos"))
