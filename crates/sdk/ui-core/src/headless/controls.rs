@@ -141,6 +141,138 @@ impl FrameHarness {
         crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
     }
 
+    /// Resolve only a currently mounted publication owner, exact app instance
+    /// and record. The alias is never decoded without its host/lifetime registry.
+    /// Reads the retained frame without input, wake draining or document edits.
+    pub fn published_action_locus(
+        &self,
+        instance: crate::application::InstanceId,
+        app: &str,
+        record: &str,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<Rect> {
+        self.retained_action_geometry()?;
+        let target = self.bound_publication.target(address).ok()??;
+        if target.binding.instance_id != instance
+            || target.binding.app_id != app
+            || target.binding.checkout.id.as_str() != record
+        {
+            return None;
+        }
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        )
+        .ok()?;
+        let snapshot = snapshots
+            .iter()
+            .find(|s| s.binding.same_component(&target.binding))?;
+        let mut result = Vec::new();
+        self.visit_publication_locus(
+            self.root.as_ref(),
+            &target,
+            &snapshot.resources,
+            &mut result,
+        );
+        if result.len() == 1 {
+            result.pop().flatten()
+        } else {
+            None
+        }
+    }
+
+    fn visit_publication_locus(
+        &self,
+        widget: &dyn crate::widget::Widget,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        resources: &[tilo_actions::Resource],
+        result: &mut Vec<Option<Rect>>,
+    ) {
+        if widget
+            .callback_binding()
+            .is_some_and(|b| b.same_component(&target.binding))
+        {
+            // Nested foreign owners cannot contribute a same-named control.
+            // Their independent geometry must be observed through their own alias.
+            fn foreign_owner(
+                widget: &dyn crate::widget::Widget,
+                owner: &crate::bound_dispatch::CallbackBinding,
+            ) -> bool {
+                if widget
+                    .callback_binding()
+                    .is_some_and(|b| !b.same_component(owner))
+                {
+                    return true;
+                }
+                let mut foreign = false;
+                widget.for_each_child(&mut |child| {
+                    foreign |= foreign_owner(child, owner);
+                });
+                foreign
+            }
+            if foreign_owner(widget, &target.binding) {
+                result.push(None);
+                return;
+            }
+            let mut tree = SemanticTree::new();
+            tree.refresh_bound(
+                widget,
+                &self.node_map,
+                &self.bindings.semantic_node_names(&self.node_map),
+                self.focused,
+                resources,
+            );
+            let bindings = crate::widget::controls::control_action_bindings(widget);
+            result.push(
+                crate::action_locus::resource_bounds(&tree, &bindings, &target.address.address)
+                    .and_then(|(bounds, node)| self.clipped_publication_bounds(bounds, node)),
+            );
+            return;
+        }
+        widget.for_each_child(&mut |child| {
+            self.visit_publication_locus(child, target, resources, result);
+        });
+    }
+
+    fn clipped_publication_bounds(&self, bounds: Rect, node: u64) -> Option<Rect> {
+        let pointer = *self.node_map.get(&taffy::NodeId::from(node))?;
+        fn visit(
+            widget: &dyn crate::widget::Widget,
+            pointer: *const dyn crate::widget::Widget,
+            bounds: Rect,
+            matches: &mut Vec<Rect>,
+        ) {
+            if std::ptr::addr_eq(std::ptr::from_ref(widget), pointer) {
+                matches.push(bounds);
+                return;
+            }
+            // Painting clips ordinary children, including ancestors outside
+            // the publication owner. Use the retained widget path, not just
+            // the semantic path (which omits non-accessible wrappers).
+            let bounds = if let Some(clip) = widget.child_clip_rect() {
+                if ![clip.x0, clip.y0, clip.x1, clip.y1]
+                    .into_iter()
+                    .all(f64::is_finite)
+                    || clip.width() <= 0.0
+                    || clip.height() <= 0.0
+                {
+                    return;
+                }
+                bounds.intersect(clip)
+            } else {
+                bounds
+            };
+            if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                return;
+            }
+            widget.for_each_child(&mut |child| visit(child, pointer, bounds, matches));
+        }
+        let mut matches = Vec::new();
+        visit(self.root.as_ref(), pointer, bounds, &mut matches);
+        (matches.len() == 1).then(|| matches[0])
+    }
+
     fn retained_action_geometry(
         &self,
     ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
