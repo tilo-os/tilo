@@ -672,6 +672,16 @@ impl BrowserWidget {
     }
     /// Keep this window's visits in the person's browsing history, and show
     /// it.
+    /// Keep the download list in this device's settings, starting from the
+    /// list kept there.
+    pub(crate) fn attach_downloads(
+        &mut self,
+        store: ui::storage::Settings<crate::downloads::Stored>,
+    ) {
+        self.downloads = Downloads::load(store);
+        self.structure_dirty = true;
+    }
+
     pub(crate) fn attach_history(
         &mut self,
         record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
@@ -724,11 +734,7 @@ impl BrowserWidget {
         let settings = Settings::default();
         let history = History::default();
         let bookmarks = Bookmarks::default();
-        let downloads = if headless {
-            Downloads::default()
-        } else {
-            Downloads::load()
-        };
+        let downloads = Downloads::default();
         let initial_url = if is_supported_web_url(&settings.homepage) {
             settings.homepage.clone()
         } else {
@@ -3558,9 +3564,7 @@ impl BrowserWidget {
     }
 
     fn persist_downloads_now(&self) {
-        if !self.headless
-            && let Err(error) = self.downloads.save()
-        {
+        if let Err(error) = self.downloads.save() {
             tracing::warn!("browser download history was not persisted: {error}");
         }
     }

@@ -103,6 +103,14 @@ impl BrowserWindow {
         self.page.attach_dispatcher(dispatcher);
     }
 
+    /// Keep the page's downloads in this device's settings.
+    pub(crate) fn attach_downloads(
+        &mut self,
+        store: ui::storage::Settings<crate::downloads::Stored>,
+    ) {
+        self.page.attach_downloads(store);
+    }
+
     /// Keep the page's visits in the person's browsing history.
     pub(crate) fn attach_history(
         &mut self,
