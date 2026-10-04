@@ -26,6 +26,9 @@ pub struct Theme {
     pub density: f32,
     pub face: String,
     pub base_size: f32,
+    /// "Always distinguish similar letters": `Some(true)` always, `None`
+    /// with the typeface (on with Hyperlegible).
+    pub distinct_letters: Json<Option<bool>>,
     pub motion: f32,
     pub blur: f32,
     pub tint_opacity: f32,
@@ -44,6 +47,7 @@ impl Theme {
             density: document.density.spacing,
             face: document.type_.face.clone(),
             base_size: document.type_.base_size,
+            distinct_letters: Json(document.type_.distinct_letters),
             motion: document.motion.character,
             blur: document.material.blur,
             tint_opacity: document.material.tint_opacity,
@@ -73,6 +77,7 @@ impl Theme {
             type_: ThemeType {
                 face: self.face.clone(),
                 base_size: self.base_size,
+                distinct_letters: self.distinct_letters.0,
             },
             motion: ThemeMotion {
                 character: self.motion,
@@ -411,6 +416,19 @@ impl Studio {
         #[param("Font family")] face: String,
     ) -> Result<(), Refusal> {
         edit(self, &theme, |t| face.trim().clone_into(&mut t.face))
+    }
+
+    /// Set whether the theme sets I, l, 1 and 0, O apart in all text, or
+    /// leaves that to the typeface (on with Hyperlegible).
+    #[action]
+    pub fn set_distinct_letters(
+        &mut self,
+        theme: Id,
+        #[param("Whether similar letters are always told apart")] always: bool,
+    ) -> Result<(), Refusal> {
+        edit(self, &theme, |t| {
+            t.distinct_letters = Json(always.then_some(true))
+        })
     }
 
     /// Set the body text size every text role derives from.
