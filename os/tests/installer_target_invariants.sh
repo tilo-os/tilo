@@ -421,6 +421,10 @@ else
   bad "first-boot password hash grammar rejects valid installer output or accepts malformed input"
 fi
 
+if ! python3 -B "$repo_root/os/tests/test_installer_firstboot_runtime.py"; then
+  bad "installer does not provision firstboot accounts on older signed targets"
+fi
+
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
 for policy in \
   'TimeoutStartSec=30' \
