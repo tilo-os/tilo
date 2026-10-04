@@ -47,6 +47,7 @@ struct VariantOptions {
     cancellable: bool,
     returns: bool,
     destructive: bool,
+    view: bool,
     permission: Option<String>,
 }
 
@@ -66,9 +67,11 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.returns = true;
             } else if meta.path.is_ident("destructive") {
                 options.destructive = true;
+            } else if meta.path.is_ident("view") {
+                options.view = true;
             } else {
                 return Err(meta.error(
-                    "expected `label`, `job`, `cancellable`, `returns`, `destructive` or `permission`",
+                    "expected `label`, `job`, `cancellable`, `returns`, `destructive`, `view` or `permission`",
                 ));
             }
             Ok(())
@@ -131,6 +134,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .collect::<Vec<_>>()
             .join(" ");
         let permission = match options.permission.as_deref() {
+            None if options.view => quote!(Read),
             None | Some("write") => quote!(Write),
             Some("none") => quote!(None),
             Some("read") => quote!(Read),
@@ -191,6 +195,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(#krate::effect::Answers::Nothing)
         };
         let destructive = options.destructive;
+        let kind = if options.view {
+            quote!(View)
+        } else {
+            quote!(Effect)
+        };
         decls.push(quote! {
             #krate::effect::EffectDecl {
                 id: #id,
@@ -200,6 +209,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 answers: #answers,
                 destructive: #destructive,
                 permission: #krate::__private::PermissionRequirement::#permission,
+                kind: #krate::__private::OperationKind::#kind,
             }
         });
 
