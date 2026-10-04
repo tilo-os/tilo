@@ -36,7 +36,7 @@ use super::effect::Effects;
 use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
-use super::scenario::{Fixture, Run};
+use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
@@ -402,6 +402,14 @@ fn create<A: ResourceApp>(
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()),
     };
+    let file = context.take_open_file();
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
+    }
+    let run = run.launched(Launched {
+        arguments: context.take_launch_arguments(),
+        file,
+    });
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -417,12 +425,7 @@ fn create<A: ResourceApp>(
         },
         context.storage(),
     );
-    let file = context.take_open_file();
-    let arguments = context.take_launch_arguments();
-    if let Some(file) = &file {
-        file.report_opened(<A::Resource as Resource>::KIND);
-    }
-    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
+    for invoke in A::launch(&root.launch(), created) {
         root.dispatcher().invoke(invoke);
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
