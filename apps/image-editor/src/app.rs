@@ -363,7 +363,6 @@ pub struct ImageEditorApp {
     header_buttons: Vec<(ToolbarCommand, Button)>,
     /// The History button: the app owns the window's one header row, so
     /// History lives in it instead of a bar of its own.
-    history: Button,
     empty_state: EmptyState,
     toolbar_pending: Rc<Cell<Option<ToolbarCommand>>>,
     /// A screenshot asked for the toolbar's More menu; opened once the
@@ -461,7 +460,6 @@ impl ImageEditorApp {
             toolbar_toggles: (false, false),
             inspector_text: InspectorText::default(),
             header_buttons,
-            history: ui::widget::history_button(),
             empty_state,
             toolbar_pending: pending,
             staged_overflow: false,
@@ -1506,7 +1504,6 @@ impl ImageEditorApp {
         self.header_buttons
             .iter_mut()
             .map(|(_, button)| button)
-            .chain(std::iter::once(&mut self.history))
             .collect()
     }
     fn run_toolbar(&mut self, state: &mut AutoCommit, command: ToolbarCommand) {
@@ -1721,27 +1718,11 @@ impl ImageEditorApp {
             };
         }
         x -= gap;
-        // History shows its name while the toolbar has room for every
-        // command, and only its icon when that keeps a command out of More.
-        let history_label = ui::i18n::I18nManager::lookup_plain("standalone-history-title");
         let trailing_end = x - (s4 - s2);
         let title_style = theme.text(TextRole::Title);
         let toolbar_h = f64::from(metrics.min_pointer_target);
-        for compact in [false, true] {
-            self.history.set_compact_toolbar_presentation(compact);
-            let history_face = if compact {
-                ButtonFace::icon_only(Rect::ZERO, ui::icons::Icon::History, &history_label)
-            } else {
-                ButtonFace::new(Rect::ZERO, &history_label).icon(ui::icons::Icon::History)
-            };
-            let history_w = history_face.intrinsic_width(tr, theme);
-            self.history.apply_layout_external(Rect::new(
-                trailing_end - history_w,
-                control_y,
-                trailing_end,
-                control_y + control_h,
-            ));
-            let trailing_x0 = trailing_end - history_w;
+        for _compact in [false, true] {
+            let trailing_x0 = trailing_end;
             // The project's name, unless the window is too narrow to read it.
             let room = (trailing_x0 - band.x0) * 0.4;
             self.title = if has_image && room >= f64::from(metrics.min_pointer_target) * 3.0 {
@@ -2538,7 +2519,6 @@ impl Widget for ImageEditorApp {
                 button.draw(s, a, tr, theme, presence);
             }
         }
-        self.history.draw(s, a, tr, theme, presence);
 
         // The canvas, the graph, or the empty state.
         let main = if self.graph_shown() {
@@ -2590,12 +2570,10 @@ impl Widget for ImageEditorApp {
 
     /// The History button is shown to the window, which then draws no
     /// History bar of its own.
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(&self.history);
-    }
+    fn for_each_child(&self, _visitor: &mut dyn FnMut(&dyn Widget)) {}
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.history]
+        Vec::new()
     }
 
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -3348,7 +3326,6 @@ impl Widget for ImageEditorApp {
             .header_buttons
             .iter()
             .map(|(_, button)| button)
-            .chain(std::iter::once(&self.history))
             .filter(|button| button.get_rect().area() > 0.0)
             .filter_map(Widget::accessibility)
             .collect::<Vec<_>>();
@@ -3657,7 +3634,6 @@ impl ImageEditorApp {
         for (_, button) in &self.header_buttons {
             out.extend(ui::resources::resources(button, doc));
         }
-        out.extend(ui::resources::resources(&self.history, doc));
         out
     }
 
