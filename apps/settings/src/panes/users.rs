@@ -240,24 +240,12 @@ impl Default for UsersPane {
 impl UsersPane {
     pub fn new() -> Self {
         let (identities, identity_admin) = identities_for_display();
-        Self {
-            users: users_for_display(),
+        Self::assemble(
+            users_for_display(),
             identities,
-            user_admin: Arc::new(AccountsServiceAdmin),
-            identity_admin: identity_admin.map(|a| Arc::new(a) as Arc<dyn IdentityAdmin>),
-            password_buffer: Arc::new(Mutex::new(String::new())),
-            form_open: false,
-            confirm_remove_user: None,
-            confirm_remove_identity: None,
-            error: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
-        }
+            Arc::new(AccountsServiceAdmin),
+            identity_admin.map(|a| Arc::new(a) as Arc<dyn IdentityAdmin>),
+        )
     }
 
     #[cfg(any(test, not(feature = "thin")))]
@@ -267,11 +255,20 @@ impl UsersPane {
         user_admin: Arc<dyn UserAdmin>,
         identity_admin: Arc<dyn IdentityAdmin>,
     ) -> Self {
+        Self::assemble(users, identities, user_admin, Some(identity_admin))
+    }
+
+    fn assemble(
+        users: Vec<DeviceUser>,
+        identities: Vec<IdentitySummary>,
+        user_admin: Arc<dyn UserAdmin>,
+        identity_admin: Option<Arc<dyn IdentityAdmin>>,
+    ) -> Self {
         Self {
             users,
             identities,
             user_admin,
-            identity_admin: Some(identity_admin),
+            identity_admin,
             password_buffer: Arc::new(Mutex::new(String::new())),
             form_open: false,
             confirm_remove_user: None,

@@ -288,24 +288,10 @@ impl EmojiPanel {
 
     /// Replace the query.
     pub fn set_query(&mut self, query: &str) {
+        // A programmatic query leaves the caret after the text, as typing would.
         self.search.set_query(query);
-        self.seat_caret_at_end();
         let _ = self.search.take_dirty();
         self.tones = None;
-    }
-
-    /// The field keeps its caret where it was when its text is replaced, so
-    /// a query set from the keys would leave the caret over the first letter.
-    /// Seat it after the text, as typing would.
-    fn seat_caret_at_end(&mut self) {
-        // The field is a local buffer; the action path wants a document to
-        // lend, which a local buffer never touches.
-        let mut scratch = automerge::AutoCommit::new();
-        let end = ui::a11y::Action::SetSelection {
-            anchor: usize::MAX,
-            focus: usize::MAX,
-        };
-        Widget::perform_action(&mut self.search, &end, &mut scratch, &automerge::ROOT);
     }
 
     /// The best matches for the query, best first.
