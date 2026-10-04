@@ -9,8 +9,9 @@
 //! char-addressed). It is deliberately UI-free: no rendering, no CRDT handle.
 //!
 //! Every text field uses it: [`TextInput`] (and through it every form field,
-//! `RichTextLine` and `BlockEditor`), the WYSIWYG [`RichTextEditor`], and the
-//! app-specific editors. Laid-out geometry — visual/bidi arrow motion, wrapped
+//! `RichTextLine` and `BlockEditor`), the transient query fields of palettes
+//! and menus ([`QueryComposition`]), [`NameField`], and the app-specific
+//! editors. Laid-out geometry — visual/bidi arrow motion, wrapped
 //! Up/Down, Home/End of a soft-wrapped row — stays in the widget, which feeds
 //! the resolved position back through [`EditCore::motion_to`] or
 //! [`EditCore::place_position`]; the core owns everything logical, which is
@@ -19,7 +20,8 @@
 //! [`TypingRun`] is the one idle timer that closes a burst of typing into a
 //! single undo entry.
 //!
-//! [`RichTextEditor`]: crate::widget::RichTextEditor
+//! [`NameField`]: crate::widget::name_field::NameField
+//! [`QueryComposition`]: crate::query_text::QueryComposition
 //! [`TextInput`]: crate::widget::TextInput
 
 use std::borrow::Cow;
@@ -516,11 +518,7 @@ impl EditCore {
     /// The caret clamped into `text` and onto a char boundary — where the
     /// composition is shown.
     fn preedit_at(&self, text: &str) -> usize {
-        let mut at = self.sel.cursor.min(text.len());
-        while !text.is_char_boundary(at) {
-            at = at.saturating_sub(1);
-        }
-        at
+        text.floor_char_boundary(self.sel.cursor)
     }
 
     /// `text` with the composition shown at the caret.
