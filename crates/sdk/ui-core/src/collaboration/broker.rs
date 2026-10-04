@@ -540,6 +540,10 @@ impl SdkCommand {
             | Self::ToRoute(_, CollabRequest::Document { mutation, .. }) => {
                 Some(mutation.data().len())
             }
+            // Content a record references travels like its documents: its
+            // own budget, retried when full, never closing the connection.
+            Self::Primary(CollabRequest::OfferContent { bytes, .. })
+            | Self::ToRoute(_, CollabRequest::OfferContent { bytes, .. }) => Some(bytes.len()),
             _ => None,
         }
     }
@@ -737,6 +741,11 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::OfferContent { hash, bytes } => {
+            meter.string_capacity(hash);
+            meter.bytes(bytes);
+        }
+        CollabRequest::WantContent { hash } => meter.string_capacity(hash),
         CollabRequest::PublishActions { app_id, actions } => {
             meter.string_capacity(app_id);
             meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
@@ -1240,6 +1249,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
+        CollabEvent::RecordContent { route, hash, bytes } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            meter.string_capacity(hash);
+            meter.bytes(bytes);
+        }
         CollabEvent::RealtimeCommandResult { result, .. } => match result {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
@@ -3472,6 +3489,7 @@ async fn ensure_sdk_route(
         },
         spawn_presence_stream(&channel, inbound_tx),
     );
+    spawn_content_stream(&channel, spec.clone(), inbound_tx).await;
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed && let Err(error) = channel.request_document_snapshot().await {
@@ -3491,6 +3509,39 @@ async fn ensure_sdk_route(
         },
     );
     Ok(())
+}
+
+/// Bridge content arriving for `channel`'s record into
+/// [`CollabEvent::RecordContent`] on `inbound_tx`. A host that keeps no
+/// record content refuses the subscription, and its apps keep their content
+/// to themselves.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_content_stream(
+    channel: &runtime_collab::ChannelHandle,
+    route: RouteSpec,
+    inbound_tx: &InboundBridge,
+) {
+    let Ok(stream) = channel.subscribe_blobs().await else {
+        return;
+    };
+    let inbound_tx = inbound_tx.clone();
+    tokio::task::spawn_local(async move {
+        while let Ok(event) = stream.read().await {
+            if !inbound_tx
+                .send_document(CollabEvent::RecordContent {
+                    route: route.clone(),
+                    hash: event.hash,
+                    bytes: event.bytes,
+                })
+                .await
+            {
+                break;
+            }
+        }
+    });
 }
 
 /// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
@@ -4940,6 +4991,16 @@ async fn dispatch_sdk_request(
             return send_document_mutation(route, signer, mutation, authorization, inbound_tx)
                 .await
                 .is_ok();
+        }
+        CollabRequest::OfferContent { hash, bytes } => {
+            if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
+                tracing::warn!(%error, %hash, "collab: offering record content failed");
+            }
+        }
+        CollabRequest::WantContent { hash } => {
+            if let Err(error) = route.channel.want_blob(&hash).await {
+                tracing::debug!(%error, %hash, "collab: asking for record content failed");
+            }
         }
         CollabRequest::RequestDocumentSnapshot => {
             if route.committed {
