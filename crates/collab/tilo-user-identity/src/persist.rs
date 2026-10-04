@@ -427,6 +427,29 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     write_public_file(path, pubkey)
 }
 
+/// The directories public identity files live in get this mode whatever the
+/// writer's umask, keeping a setgid bit inherited from their parent: under
+/// `sudo tilo-enroll install-cert` a new `device/certs` was otherwise `0700`.
+const PUBLIC_DIR_MODE: u32 = 0o755;
+
+fn create_public_dir(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(path)?;
+    // The umask applies to a mode given at creation; set it afterwards.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let inherited = fs::metadata(path)?.permissions().mode() & 0o7000;
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(inherited | PUBLIC_DIR_MODE),
+        )?;
+    }
+    Ok(())
+}
+
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
 /// [`PUBLIC_FILE_MODE`].
 ///
@@ -984,7 +1007,7 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    fs::create_dir_all(parent)?;
+    create_public_dir(parent)?;
     write_public_file(path, &bytes)?;
     Ok(())
 }
@@ -1894,5 +1917,35 @@ mod tests {
                 seed
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_identity_files_are_readable_whatever_the_writers_umask() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-local umask, restored before the assertions.
+        let previous = unsafe { libc::umask(0o077) };
+        let pubkey = dir.path().join("user-identity/pubkey.bin");
+        fs::create_dir_all(pubkey.parent().unwrap()).unwrap();
+        write_public_key(&pubkey, &[7; 32]).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [3; 32],
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        crate::sign_device_cert(&mut cert, &root).unwrap();
+        let cert_path = dir.path().join("device/certs/one.bin");
+        write_device_cert(&cert_path, &cert).unwrap();
+        unsafe { libc::umask(previous) };
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&pubkey), 0o644);
+        assert_eq!(mode(&cert_path), 0o644);
+        assert_eq!(mode(cert_path.parent().unwrap()), 0o755);
     }
 }
