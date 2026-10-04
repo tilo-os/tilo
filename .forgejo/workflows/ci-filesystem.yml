@@ -172,8 +172,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # The same Cargo environment as check.yml's x86 test shards (asserted by
+  # tools/tests/test_ci_filesystem_workflow.py). The compiler cache keys every
+  # unit by all CARGO_* variables, and this workflow never runs on main, so it
+  # only reuses compiler outputs that main's check runs store.
+  CARGO_BUILD_JOBS: "8"
   CARGO_HOME: /cargo-home
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
   # Deny warnings through per-target flags. Cargo joins these with the
