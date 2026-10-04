@@ -710,6 +710,9 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         }
         if let Shape::Stroke { size, .. } = &mark.shape {
             fields.insert("size".into(), round(*size).into());
+            if let Some(brush) = &mark.style.brush {
+                fields.insert("brush".into(), brush.clone().into());
+            }
         }
         if let Shape::Image {
             crop, straighten, ..

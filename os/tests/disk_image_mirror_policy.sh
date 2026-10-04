@@ -38,6 +38,7 @@ cat >"$work/bin/python3" <<'EOF'
 #!/bin/bash
 if [[ ${1:-} == -u && ${2:-} == */hold-loop-partition-nodes.py ]]; then shift; fi
 if [[ ${1:-} == */check-composefs-verity.py ]]; then exit 0; fi
+if [[ ${1:-} == */check-disk-sectors.py ]]; then exit 0; fi
 if [[ ${1:-} == */hold-loop-partition-nodes.py ]]; then
   printf 'READY\n'
   read -r release

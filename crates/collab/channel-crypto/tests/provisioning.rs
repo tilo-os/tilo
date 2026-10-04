@@ -408,6 +408,53 @@ fn a_member_asking_again_within_a_second_is_admitted_again() {
     assert!(opens(&member, artifact, &sealed));
 }
 
+/// A device that starts over with no state (a page whose storage was
+/// cleared) asks with a fresh key package. Its earlier instance may have
+/// minted requests ahead of the clock; the steward still admits the fresh
+/// one rather than keep it waiting behind an admission it cannot use.
+#[test]
+fn a_member_starting_over_behind_its_earlier_requests_is_admitted_again() {
+    let channel = ChannelId::new();
+    let owner = Device::new(1);
+    let laptop = Device::new(2);
+    let mut steward = steward(&owner, channel);
+    let allowed = allowed(&[&laptop]);
+    let mut earlier = laptop.member(channel, &owner);
+    // Asked again and again within one second: the requests ran ahead.
+    let _ = request(&mut earlier, &laptop, 100);
+    let _ = request(&mut earlier, &laptop, 100);
+    let ahead = request(&mut earlier, &laptop, 100);
+    assert!(ahead.issued_at > 100);
+    steward
+        .reconcile(
+            &allowed,
+            &requests(vec![(&laptop, ahead.clone())]),
+            &vault(),
+        )
+        .unwrap();
+
+    // The same device starts over, with none of its earlier state, at the
+    // same second.
+    let restarted = Device::new(2);
+    let mut fresh = restarted.member(channel, &owner);
+    let again = request(&mut fresh, &restarted, 100);
+    assert!(again.issued_at < ahead.issued_at);
+    let readmitted = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, again)]), &vault())
+        .unwrap();
+    assert_eq!(readmitted.admitted, vec![laptop.public()]);
+    deliver(&mut steward, &mut fresh, &restarted);
+    let artifact = ArtifactId::new();
+    let sealed = seal(&steward, artifact, b"after starting over");
+    assert!(opens(&fresh, artifact, &sealed));
+
+    // The earlier admission's request, replayed, admits nothing.
+    let replayed = steward
+        .reconcile(&allowed, &requests(vec![(&laptop, ahead)]), &vault())
+        .unwrap();
+    assert!(replayed.admitted.is_empty());
+}
+
 #[test]
 fn a_request_naming_another_device_is_refused() {
     let channel = ChannelId::new();

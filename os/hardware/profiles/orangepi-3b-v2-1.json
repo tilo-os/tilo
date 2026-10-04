@@ -5,6 +5,10 @@
   "devicetree": "rockchip/rk3566-orangepi-3b-v2.1.dtb",
   "system_firmware": [],
   "always_on": true,
+  "kernel_args": [
+    "earlycon",
+    "console=ttyS2,1500000n8"
+  ],
   "boot_modules": [
     "sdhci-of-dwcmshc",
     "mmc_block",

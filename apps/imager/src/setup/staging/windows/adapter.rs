@@ -28,7 +28,11 @@ fn io_err(error: impl std::fmt::Display) -> String {
 }
 
 fn take_snapshot(drive: DriveLetter) -> Result<Snapshot, String> {
-    let out = sys::powershell(&scripts::snapshot(drive), PROBE_TIMEOUT)?;
+    parse_snapshot_program(&scripts::snapshot(drive))
+}
+
+fn parse_snapshot_program(script: &str) -> Result<Snapshot, String> {
+    let out = sys::powershell(script, PROBE_TIMEOUT)?;
     let json: serde_json::Value =
         serde_json::from_slice(&out).map_err(|e| format!("snapshot JSON: {e}"))?;
     storage::parse_snapshot(&json)
@@ -121,6 +125,7 @@ fn bounce(slot: &mut Option<AlignedBuf>, len: usize) -> IoResult<&mut [u8]> {
 /// [`Platform::system_disk`] and requires it to agree with Windows.
 pub struct WindowsPlatform {
     elevated: bool,
+    geometry_only: bool,
     drive: DriveLetter,
     efi_ready: Cell<bool>,
     target: RefCell<Option<RawTarget>>,
@@ -207,6 +212,7 @@ impl WindowsPlatform {
     pub fn read_only() -> IoResult<Self> {
         Ok(Self {
             elevated: false,
+            geometry_only: false,
             drive: sys::windows_drive().map_err(io_err)?,
             efi_ready: Cell::new(false),
             target: RefCell::new(None),
@@ -219,11 +225,20 @@ impl WindowsPlatform {
     pub fn elevated() -> IoResult<Self> {
         let platform = Self {
             elevated: true,
+            geometry_only: false,
             drive: sys::windows_drive().map_err(io_err)?,
             efi_ready: Cell::new(false),
             target: RefCell::new(None),
         };
         platform.ensure_efi_privilege()?;
+        Ok(platform)
+    }
+
+    /// Final installed-OS firmware handoff needs fresh disk geometry, not
+    /// shrink capacity. Retain Windows/native/GPT cross-checks on every read.
+    pub fn elevated_final_boot() -> IoResult<Self> {
+        let mut platform = Self::elevated()?;
+        platform.geometry_only = true;
         Ok(platform)
     }
 
@@ -251,7 +266,11 @@ impl WindowsPlatform {
     /// The system disk as the native layout reports it, cross-checked against
     /// the Storage cmdlets (and, elevated, against the on-disk GPT).
     fn current(&self) -> IoResult<(Disk, Snapshot)> {
-        let snapshot = take_snapshot(self.drive)?;
+        let snapshot = if self.geometry_only {
+            parse_snapshot_program(&scripts::geometry_snapshot(self.drive))?
+        } else {
+            take_snapshot(self.drive)?
+        };
         let disk = system_layout(self.drive)?;
         storage::cross_check(&disk, &snapshot)?;
         if self.elevated {

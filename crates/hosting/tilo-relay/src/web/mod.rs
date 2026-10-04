@@ -51,7 +51,7 @@ use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
     API_PREFIX, AgentLiveGrantRequest, EventsRequest, HostInfo, MAX_AGENT_ID_BYTES, MAX_POLL_MS,
-    MAX_REQUEST_BYTES, SESSION_HEADER, SessionFinish, live_room,
+    MAX_REQUEST_BYTES, NodeInfo, SESSION_HEADER, SessionFinish, live_room,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -787,6 +787,12 @@ async fn route(
     };
     match route {
         "/host" => Ok(encoded(&web.host_info)),
+        "/node" => {
+            authed()?;
+            Ok(encoded(&NodeInfo {
+                session: sessions.context().node_session.get().copied(),
+            }))
+        }
         "/certify" => {
             let request: CertificationRequest = decode(&bytes)?;
             Ok(encoded(
@@ -879,12 +885,6 @@ async fn route(
             let request: InputRequest = decode(&bytes)?;
             if !request.valid() {
                 return Err(status(StatusCode::BAD_REQUEST, "input out of bounds"));
-            }
-            if !request.supported() {
-                return Err(status(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "the native peer has no wheel or clipboard input endpoint",
-                ));
             }
             legacy_input(web, &session.peer, request).await
         }

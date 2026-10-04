@@ -75,6 +75,9 @@ pub struct EngineConfig {
     pub hw_policy: HwPolicy,
     /// Starting output volume, `0.0..=1.0`.
     pub volume: f32,
+    /// Whether the engine plays sound at all. Without it no audio stream is
+    /// decoded and no audio device is opened.
+    pub audio_output: bool,
 }
 
 impl Default for EngineConfig {
@@ -83,6 +86,7 @@ impl Default for EngineConfig {
             acceptance: FrameAcceptance::Rgba,
             hw_policy: HwPolicy::from_env(),
             volume: 0.8,
+            audio_output: true,
         }
     }
 }
@@ -102,6 +106,17 @@ impl EngineConfig {
     #[must_use]
     pub fn silent(mut self) -> Self {
         self.volume = 0.0;
+        self
+    }
+
+    /// Decode pictures only: thumbnails, export and the editor's preview,
+    /// which never make a sound. No audio stream is decoded and no audio
+    /// device is opened, so a machine without one, or an audio server that
+    /// is busy or gone, never stops a picture.
+    #[must_use]
+    pub fn frames_only(mut self) -> Self {
+        self.volume = 0.0;
+        self.audio_output = false;
         self
     }
 
@@ -279,9 +294,11 @@ impl MediaEngine {
         }
         #[cfg(gst_decode)]
         {
-            if let Some(gst) =
-                crate::gst_backend::GstState::new(config.acceptance, config.hw_policy)
-            {
+            if let Some(gst) = crate::gst_backend::GstState::new(
+                config.acceptance,
+                config.hw_policy,
+                config.audio_output,
+            ) {
                 return Self {
                     handoff_id: Self::next_handoff_id(),
                     handoff_controller_bus_name: None,

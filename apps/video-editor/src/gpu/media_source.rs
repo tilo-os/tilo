@@ -115,7 +115,7 @@ impl MediaFrameSource {
             sources: Self::index(project),
             pool: SessionPool::for_editor(),
             software: SessionPool::new(
-                EngineConfig::default().software_only().silent(),
+                EngineConfig::default().software_only().frames_only(),
                 2,
                 Duration::from_secs(30),
             ),
