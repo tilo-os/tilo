@@ -191,6 +191,13 @@ enum Command {
     Raw {
         json: String,
     },
+    /// Read what an open app holds through its `read` action: the resource
+    /// itself, or the nested `item` it lists.
+    Read {
+        app: String,
+        item: Option<String>,
+        json: bool,
+    },
 }
 
 impl Command {
@@ -207,6 +214,7 @@ impl Command {
                 | Self::ActionsStatus { .. }
                 | Self::ActionsCancel { .. }
                 | Self::Raw { .. }
+                | Self::Read { .. }
         )
     }
 }
@@ -334,6 +342,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "watch" => parse_watch(iter.next())?,
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
         "actions" => parse_actions_command(&mut iter)?,
+        "read" => parse_read(&mut iter)?,
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -348,6 +357,156 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     };
 
     Ok(Invocation { socket, command })
+}
+
+/// Parse `read APP [ITEM] [--json]`.
+fn parse_read<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command, ParseError> {
+    let mut json = false;
+    let mut words = Vec::new();
+    for rest in iter.by_ref() {
+        if rest == "--json" {
+            json = true;
+        } else {
+            words.push(rest.clone());
+        }
+    }
+    let mut words = words.into_iter();
+    let app = words.next().ok_or_else(|| {
+        ParseError::Usage("read APP [ITEM] requires an app id, such as so.tilo.notes".to_string())
+    })?;
+    let item = words.next();
+    if words.next().is_some() {
+        return Err(ParseError::Usage(
+            "read takes an app id and at most one item id".to_string(),
+        ));
+    }
+    Ok(Command::Read { app, item, json })
+}
+
+/// How long `read` waits for an open app's directory to list its `read`:
+/// the session answers a cold directory query on a later request.
+const READ_DISCOVERY_ATTEMPTS: u32 = 20;
+const READ_DISCOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The address of `app`'s `read` action in an enumeration answer.
+fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
+    answer
+        .get("actions")?
+        .as_array()?
+        .iter()
+        .find(|row| {
+            row.get("provider").and_then(serde_json::Value::as_str) == Some("app-actions")
+                && row.get("application").and_then(serde_json::Value::as_str) == Some(app)
+                && row.get("operation").and_then(serde_json::Value::as_str) == Some("read")
+        })
+        .and_then(|row| row.get("id")?.as_str().map(str::to_string))
+}
+
+/// `read APP [ITEM]`: find the open app's `read` action, invoke it, and
+/// print the typed value it answers.
+fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) -> u8 {
+    let enumerate = serde_json::json!({ "op": "actions_enumerate", "query": "read" }).to_string();
+    let mut id = None;
+    for attempt in 0..READ_DISCOVERY_ATTEMPTS {
+        let response = match round_trip(stream, &enumerate) {
+            Ok(response) => response,
+            Err(e) => {
+                eprintln!("tilo-control: socket round-trip: {e}");
+                return 2;
+            }
+        };
+        if response.get("err").is_some() {
+            return print_response(
+                &Command::ActionsList {
+                    query: "read".into(),
+                    json,
+                },
+                &response,
+            );
+        }
+        id = response
+            .get("answer")
+            .and_then(|answer| read_action_id(answer, app));
+        if id.is_some() {
+            break;
+        }
+        if attempt.saturating_add(1) < READ_DISCOVERY_ATTEMPTS {
+            std::thread::sleep(READ_DISCOVERY_PAUSE);
+        }
+    }
+    let Some(id) = id else {
+        eprintln!("error [unknown_action]: no open `{app}` offers `read`");
+        eprintln!(
+            "hint: open it with `tilo-control actions invoke applications {app}`; \
+             `tilo-control actions list read` shows what the desktop can read now"
+        );
+        return 1;
+    };
+    let mut args = serde_json::Map::new();
+    if let Some(item) = item {
+        args.insert("item".into(), item.into());
+    }
+    let invoke = serde_json::json!({
+        "op": "actions_invoke",
+        "provider": "app-actions",
+        "id": id,
+        "args": args,
+    })
+    .to_string();
+    let response = match round_trip(stream, &invoke) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("tilo-control: socket round-trip: {e}");
+            return 2;
+        }
+    };
+    print_read_answer(&response, json)
+}
+
+/// Print the value a `read` answered, or why it did not.
+fn print_read_answer(response: &serde_json::Value, json: bool) -> u8 {
+    if let Some(err) = response.get("err") {
+        let code = err
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        eprintln!("error [{code}]: {msg}");
+        return 1;
+    }
+    let update = response
+        .pointer("/answer/receipt/update")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    match update.get("state").and_then(serde_json::Value::as_str) {
+        Some("succeeded") => {
+            let value = update
+                .pointer("/output/value")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let out = if json {
+                value.to_string()
+            } else {
+                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+            };
+            println!("{out}");
+            0
+        }
+        Some("failed") => {
+            let error = update.get("error").cloned().unwrap_or_default();
+            let code = error
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("action_failed");
+            let msg = error.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            eprintln!("error [{code}]: {msg}");
+            1
+        }
+        _ => {
+            println!("{}", response.get("answer").cloned().unwrap_or_default());
+            0
+        }
+    }
 }
 
 /// Parse `state-dump [--pretty]` and `windows [--json]`, the two reads of
@@ -626,6 +785,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         } => json!({ "op": "pinch", "fingers": fingers, "scale": scale, "steps": steps }),
         Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
         Command::StateDump { .. } | Command::Windows { .. } => json!({ "op": "state_dump" }),
+        Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
         }
@@ -869,6 +1029,10 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
+        Command::Read { .. } => {
+            // Answered by `run_read`, which owns its two round trips.
+            println!("{response}");
+        }
         Command::Raw { .. } => {
             // For raw passthrough, dump the response JSON verbatim
             // so the caller can pipe it into `jq` without
@@ -977,6 +1141,9 @@ fn print_usage() {
          \x20                               enrolled device\n\
          \x20 actions status INVOCATION_ID  latest state and output of a running action\n\
          \x20 actions cancel INVOCATION_ID  request cooperative cancellation\n\
+         \x20 read APP [ITEM] [--json]      what an open app holds, as typed data: the\n\
+         \x20                               resource itself, or the ITEM it lists\n\
+         \x20                               (e.g. `read so.tilo.notes`, then a page's item)\n\
          \x20 windows [--json]              open windows: workspace/strip, group, tab, app\n\
          \x20                               (`*` marks the one in front)\n\
          \x20 state-dump [--pretty]         the whole workspace_tree + chrome as JSON\n\
@@ -1070,6 +1237,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    if let Command::Read { app, item, json } = &invocation.command {
+        let code = run_read(&mut stream, app, item.as_deref(), *json);
+        return if code == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(code)
+        };
+    }
 
     let response = match round_trip(&mut stream, &cmd_json) {
         Ok(v) => v,
@@ -1300,6 +1476,47 @@ mod tests {
             assert!(!parse(input).unwrap().command.is_semantic(), "{input:?}");
         }
         assert!(parse(&["windows", "--pretty"]).is_err());
+    }
+
+    #[test]
+    fn read_finds_the_apps_read_action_and_parses_its_item() {
+        assert_eq!(
+            parse(&["read", "so.tilo.notes", "notes.page:1", "--json"])
+                .unwrap()
+                .command,
+            Command::Read {
+                app: "so.tilo.notes".into(),
+                item: Some("notes.page:1".into()),
+                json: true,
+            }
+        );
+        assert!(parse(&["read"]).is_err(), "an app id is required");
+        assert!(parse(&["read", "a", "b", "c"]).is_err());
+        assert!(
+            parse(&["read", "so.tilo.notes"])
+                .unwrap()
+                .command
+                .is_semantic()
+        );
+
+        let answer = serde_json::json!({"actions": [
+            {"provider": "applications", "id": "so.tilo.notes", "application": null, "operation": null},
+            {"provider": "app-actions", "id": "other", "application": "so.tilo.files", "operation": "read"},
+            {"provider": "app-actions", "id": "x", "application": "so.tilo.notes", "operation": "render"},
+            {"provider": "app-actions", "id": "wanted", "application": "so.tilo.notes", "operation": "read"},
+        ]});
+        assert_eq!(
+            read_action_id(&answer, "so.tilo.notes").as_deref(),
+            Some("wanted")
+        );
+        assert_eq!(read_action_id(&answer, "so.tilo.chat"), None);
+
+        let succeeded = serde_json::json!({"answer": {"receipt": {"update": {
+            "state": "succeeded", "output": {"value": {"pages": []}}}}}});
+        assert_eq!(print_read_answer(&succeeded, true), 0);
+        let failed = serde_json::json!({"answer": {"receipt": {"update": {
+            "state": "failed", "error": {"code": "action_failed", "message": "no note"}}}}});
+        assert_eq!(print_read_answer(&failed, true), 1);
     }
 
     /// `windows` reads the tree in the desktop's own terms, and marks the
