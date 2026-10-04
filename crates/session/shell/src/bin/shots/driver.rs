@@ -1406,6 +1406,7 @@ impl ShellDriver {
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
+            "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
             "projection" => self.scene_projection(),
             "window-switcher" => self.scene_window_switcher(),
@@ -1790,6 +1791,42 @@ impl ShellDriver {
             st.bump();
         });
         self.relayout();
+    }
+
+    /// The launchpad a moment after its Notes card is clicked: Notes is
+    /// opening, and no launcher stands between the card and the app.
+    fn scene_launchpad_notes_card(&mut self) {
+        fn card_bounds(widget: &dyn Widget, card: &str) -> Option<Rect> {
+            if widget.name() == "CollaborationLaunchpad" {
+                return widget
+                    .accessibility()?
+                    .children
+                    .into_iter()
+                    .find_map(|node| {
+                        let bounds = node.bounds?;
+                        (node.name.as_deref() == Some(card))
+                            .then(|| Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+                    });
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| card_bounds(child, card))
+        }
+        self.scene_launchpad();
+        let _ = self.paint_settled();
+        let card = card_bounds(self.host(), "Notes").unwrap_or(Rect::ZERO);
+        assert!(
+            card.area() > 0.0,
+            "launchpad-notes-card scene: the launchpad shows no Notes card"
+        );
+        self.click_at(card.center());
+        // The live frame loop's pump takes the card's choice from the
+        // document; `step_frames` alone only runs `update`.
+        let root = self.root_obj.clone();
+        self.fb.pump_apps(&mut self.state, &root);
+        self.step_frames(12);
+        self.fb.host_mut().force_palette_settled();
     }
 
     /// The invite card (`peer_sync_overlay.rs`), reached the way a person
@@ -2585,6 +2622,7 @@ impl ShellDriver {
         "ws-settings-agents",
         "collaborators",
         "launchpad",
+        "launchpad-notes-card",
         "peer-sync",
         "projection",
         "window-switcher",
