@@ -584,6 +584,15 @@ pub enum SlidesAction {
     /// Rewrite the deck's first-format text elements as rich text, in place
     /// and once (see [`SlidesDoc::upgrade`]).
     UpgradeText,
+    /// Replace the whole deck — its title, theme and every slide — with
+    /// another: a presentation file opened into it. One change, so one undo
+    /// puts the previous deck back. Imported geometry is kept as the file
+    /// has it; only the deck's aggregate limits bound it.
+    ReplaceDeck {
+        title: String,
+        palette: String,
+        slides: Vec<SlideData>,
+    },
 }
 
 const MAX_DECK_SLIDES: usize = 10_000;
@@ -610,6 +619,44 @@ pub fn deck_within_aggregate_limits(deck: &crate::model::Deck) -> bool {
         }
     }
     elements <= MAX_TOTAL_ELEMENTS && text <= MAX_TOTAL_TEXT_CHARS && assets <= MAX_TOTAL_ASSET_REFS
+}
+
+/// The deck a [`SlidesAction::ReplaceDeck`] writes, refused when it has no
+/// slide, names a slide or element twice, or exceeds the deck's limits.
+fn replacement_deck(
+    title: &str,
+    palette: &str,
+    slides: &[SlideData],
+) -> Result<crate::model::Deck, ActionError> {
+    if slides.is_empty() {
+        return Err(refused("a deck needs at least one slide"));
+    }
+    if !exact_palette(palette) {
+        return Err(refused("the deck theme is invalid"));
+    }
+    let mut slide_ids = std::collections::BTreeSet::new();
+    let mut element_ids = std::collections::BTreeSet::new();
+    for slide in slides {
+        if !valid_id(&slide.id) || !slide_ids.insert(slide.id.as_str()) {
+            return Err(refused("the deck names a slide twice"));
+        }
+        if slide
+            .elements
+            .iter()
+            .any(|element| !valid_id(&element.id) || !element_ids.insert(element.id.as_str()))
+        {
+            return Err(refused("the deck names an element twice"));
+        }
+    }
+    let deck = crate::model::Deck {
+        title: title.to_owned(),
+        palette: PaletteKind::from_str(palette),
+        slides: slides.iter().map(SlideData::to_slide).collect(),
+    };
+    if !deck_within_aggregate_limits(&deck) {
+        return Err(refused("the deck exceeds the deck limits"));
+    }
+    Ok(deck)
 }
 
 fn refused(reason: &str) -> ActionError {
@@ -990,13 +1037,23 @@ impl Action for SlidesAction {
             SlidesAction::SetSlideText { slide, title, body } => {
                 return set_slide_text(doc, slide, [title.as_deref(), body.as_deref()]);
             }
+            SlidesAction::ReplaceDeck {
+                title,
+                palette,
+                slides,
+            } => {
+                let deck = replacement_deck(title, palette, slides)?;
+                SlidesDoc::seed(doc, &deck);
+                return Ok(());
+            }
             _ => {}
         }
         let deck = deck_for_action(doc)?;
         match self {
             SlidesAction::EditElementText { .. }
             | SlidesAction::SetSlideText { .. }
-            | SlidesAction::UpgradeText => {}
+            | SlidesAction::UpgradeText
+            | SlidesAction::ReplaceDeck { .. } => {}
             SlidesAction::InsertSlide { at, slide } => {
                 if *at > deck.slides.len() || deck.slides.len() >= MAX_DECK_SLIDES {
                     return Err(refused("slide insertion position or deck size is invalid"));
@@ -1323,6 +1380,15 @@ pub fn insert_slide_with_order_action(slide: &Slide, rank: i64) -> SlidesAction 
     SlidesAction::InsertSlideWithOrder {
         slide: SlideData::from_slide(slide),
         rank,
+    }
+}
+
+/// Replace the whole deck with `deck`.
+pub fn replace_deck_action(deck: &crate::model::Deck) -> SlidesAction {
+    SlidesAction::ReplaceDeck {
+        title: deck.title.clone(),
+        palette: deck.palette.as_str().to_owned(),
+        slides: deck.slides.iter().map(SlideData::from_slide).collect(),
     }
 }
 
@@ -2570,7 +2636,7 @@ mod tests {
     /// After `sync`, the app's in-memory deck and the document carry the
     /// identical slide/element ids (the document was seeded from the deck).
     fn seeded() -> (SlidesApp, AutoCommit) {
-        let mut app = SlidesApp::demo(None);
+        let mut app = SlidesApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         (app, doc)
@@ -2579,7 +2645,7 @@ mod tests {
     /// A demo app mirroring `doc`, exactly as the live app is once `sync`
     /// has reloaded the shared deck.
     fn app_for(doc: &AutoCommit) -> SlidesApp {
-        let mut app = SlidesApp::demo(None);
+        let mut app = SlidesApp::sample();
         let mut mirror = doc.clone();
         app.sync(&mut mirror, &ROOT);
         app

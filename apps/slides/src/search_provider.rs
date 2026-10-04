@@ -324,7 +324,7 @@ mod tests {
 
         // Case `search_address_resolves_through_the_published_resource_tree`.
         {
-            let mut app = crate::app::SlidesApp::demo(None);
+            let mut app = crate::app::SlidesApp::sample();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
             let target = ui::resources::resources(&app, &doc)[0].children[2]
