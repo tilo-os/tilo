@@ -400,6 +400,35 @@ mod tests {
         }
     }
 
+    /// Undo takes back what the launch did in the record — opening the
+    /// repository — but not the projection read from the repository on
+    /// disk, which is nobody's edit.
+    #[test]
+    fn undoing_the_launch_keeps_the_repository_projection() {
+        let (_dir, path) = scratch_repository("undo-repo");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        assert_eq!(app.state().repo.name, "undo-repo");
+
+        let mut undone = 0;
+        while app.undo() {
+            undone += 1;
+            assert!(undone < 16, "the launch's steps run out");
+        }
+        app.settle();
+        let state = app.state();
+        assert!(undone > 0, "opening the repository is an undo step");
+        assert_eq!(
+            state.repository, None,
+            "undo took back opening the repository"
+        );
+        assert_eq!(
+            state.repo.name, "undo-repo",
+            "the projection survives every undo"
+        );
+        assert_eq!(state.repo.commits.len(), 1);
+    }
+
     /// The client's effects are published on the repository and on the
     /// items they act on, and every one reaches the repository on disk:
     /// staging a changed file through its row, committing, creating and
