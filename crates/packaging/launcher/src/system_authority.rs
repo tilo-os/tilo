@@ -1,7 +1,7 @@
 //! What the device's control panel reaches of the system it controls.
 //!
 //! Settings is a client of the system's authorities — `NetworkManager`,
-//! `BlueZ`, logind, timedated, `PipeWire`, CUPS, bootc — not a second
+//! `BlueZ`, logind, timedated, `PipeWire`, bootc — not a second
 //! implementation of them. Those authorities answer on the system bus, on
 //! their own sockets and through their own command-line clients, and each one
 //! decides what the person may change (polkit, group membership). An ordinary
@@ -17,7 +17,12 @@
 //! - the system bus through its own filtered `xdg-dbus-proxy`, which lets
 //!   the app talk only to the named authorities ([`SYSTEM_BUS_FILTER_ARGS`]);
 //!   there is no raw-bus fallback, a failed proxy leaves the bus absent;
-//! - the `PipeWire` and CUPS sockets, when the host runs them.
+//! - the `PipeWire` socket, when the session runs it (printing stays behind
+//!   the Print portal: no sandbox reaches the print spooler's socket);
+//! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
+//!   connected displays, input devices), read-only, with every
+//!   subdirectory (capabilities, identity projections, service sockets)
+//!   masked by an empty tmpfs.
 //!
 //! The rest of the sandbox is unchanged: no network namespace of its own, the
 //! same seccomp profile, Landlock rules for exactly the paths bound here.
@@ -82,14 +87,40 @@ pub struct SystemAuthorityPlan {
     pub sockets: Vec<SocketBind>,
     /// Set when the filtered system bus is bound.
     pub system_bus: bool,
+    /// The compositor's runtime state directory, bound read-only.
+    pub runtime_state: Option<RuntimeState>,
+}
+
+/// The compositor publishes what it sees of the hardware (displays, input
+/// devices) as files it replaces atomically, so the directory is bound, not
+/// the files: a bound file would keep showing the inode it was bound to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeState {
+    pub dir: PathBuf,
+    /// The directory's subdirectories, each hidden under an empty tmpfs.
+    pub masked: Vec<PathBuf>,
+}
+
+/// The compositor's runtime state directory for a session of `uid`, with its
+/// subdirectories to mask. `None` when the compositor has published nothing.
+fn runtime_state(uid: u32) -> Option<RuntimeState> {
+    runtime_state_in(PathBuf::from(format!("/run/user/{uid}/tilo")))
+}
+
+fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
+    let mut masked: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    masked.sort();
+    Some(RuntimeState { dir, masked })
 }
 
 /// The host sockets the control panel's clients use, for a session of `uid`.
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
-    vec![
-        PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
-        PathBuf::from("/run/cups/cups.sock"),
-    ]
+    vec![PathBuf::from(format!("/run/user/{uid}/pipewire-0"))]
 }
 
 /// The upstream system bus address.
@@ -127,6 +158,7 @@ pub fn resolve(
             });
         }
     }
+    plan.runtime_state = runtime_state(uid);
     let guard = spawn_system_bus_proxy(uid);
     if let Some(guard) = &guard {
         plan.sockets.push(SocketBind {
@@ -178,6 +210,13 @@ pub fn push_binds(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
             socket.sandbox.display().to_string(),
         ]);
     }
+    if let Some(state) = &plan.runtime_state {
+        let dir = state.dir.display().to_string();
+        argv.extend(["--ro-bind".to_string(), dir.clone(), dir]);
+        for masked in &state.masked {
+            argv.extend(["--tmpfs".to_string(), masked.display().to_string()]);
+        }
+    }
     if plan.system_bus {
         argv.extend([
             "--setenv".to_string(),
@@ -195,6 +234,9 @@ pub fn push_landlock_rules(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
     }
     for socket in &plan.sockets {
         argv.extend(["--rw".to_string(), socket.sandbox.display().to_string()]);
+    }
+    if let Some(state) = &plan.runtime_state {
+        argv.extend(["--ro".to_string(), state.dir.display().to_string()]);
     }
 }
 
@@ -239,6 +281,10 @@ mod tests {
                 sandbox: SANDBOX_SYSTEM_BUS.into(),
             }],
             system_bus: true,
+            runtime_state: Some(RuntimeState {
+                dir: "/run/user/1000/tilo".into(),
+                masked: vec!["/run/user/1000/tilo/services".into()],
+            }),
         };
         let mut binds = Vec::new();
         push_binds(&mut binds, &plan);
@@ -254,6 +300,11 @@ mod tests {
                 "--bind",
                 "/run/user/1000/tilo/dbus-proxy/7-system.sock",
                 SANDBOX_SYSTEM_BUS,
+                "--ro-bind",
+                "/run/user/1000/tilo",
+                "/run/user/1000/tilo",
+                "--tmpfs",
+                "/run/user/1000/tilo/services",
                 "--setenv",
                 "DBUS_SYSTEM_BUS_ADDRESS",
                 "unix:path=/run/dbus/system_bus_socket",
@@ -269,8 +320,27 @@ mod tests {
                 "--ro",
                 "/etc",
                 "--rw",
-                SANDBOX_SYSTEM_BUS
+                SANDBOX_SYSTEM_BUS,
+                "--ro",
+                "/run/user/1000/tilo",
             ]
         );
+    }
+
+    #[test]
+    fn the_runtime_state_shows_its_files_and_hides_every_subdirectory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("tilo");
+        for sub in ["capabilities", "identity-projections", "services"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(dir.join("display-state.json"), b"{}").unwrap();
+        let state = runtime_state_in(dir.clone()).unwrap();
+        assert_eq!(state.dir, dir);
+        assert_eq!(
+            state.masked,
+            ["capabilities", "identity-projections", "services"].map(|sub| dir.join(sub))
+        );
+        assert!(runtime_state_in(root.path().join("absent")).is_none());
     }
 }
