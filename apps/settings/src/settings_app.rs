@@ -150,6 +150,7 @@ pub struct SettingsApp {
     speakers: panes::speakers::SpeakersArea,
     agent_models: panes::agent_models::AgentModelsArea,
     device_mesh: panes::device_mesh::DeviceMeshArea,
+    audio: panes::audio::AudioArea,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -195,6 +196,7 @@ impl SettingsApp {
             speakers: panes::speakers::SpeakersArea::new(&cx),
             agent_models: panes::agent_models::AgentModelsArea::new(&cx),
             device_mesh: panes::device_mesh::DeviceMeshArea::new(&cx),
+            audio: panes::audio::AudioArea::new(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -463,6 +465,7 @@ impl SettingsApp {
         self.speakers = panes::speakers::SpeakersArea::new(&cx);
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
+        self.audio = panes::audio::AudioArea::new(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
@@ -537,6 +540,10 @@ impl SettingsApp {
         &self.device_mesh
     }
 
+    pub(crate) fn audio(&self) -> &panes::audio::AudioArea {
+        &self.audio
+    }
+
     /// What the panes reach of the host.
     pub(crate) fn host(&self) -> &crate::host::PaneCx {
         &self.cx
@@ -585,16 +592,9 @@ impl SettingsApp {
             Category::DeviceMesh => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.device_mesh.model(),
             ))),
-            Category::Sound if !self.cx.reaches_devices() => Box::new(
-                crate::scenarios::audio_pane()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
-            Category::Sound => Box::new(
-                panes::audio::AudioPane::new()
-                    .with_command_state(&self.local_pane_command)
-                    .with_operation_status(&self.local_operation_status),
-            ),
+            Category::Sound => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                self.audio.model(),
+            ))),
             Category::Speakers => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.speakers.model(),
             ))),
@@ -783,193 +783,6 @@ impl SettingsApp {
                 }
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::Network(operation)));
-                Ok(())
-            }
-            crate::actions::AUDIO_OPERATION_TYPE => {
-                let operation: crate::actions::AudioOperation =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                let graph = media::audio::enumerate();
-                self.select(Category::Sound);
-                let validated: Result<(), String> = match operation.clone() {
-                    crate::actions::AudioOperation::SetOutputVolume { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("output volume must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetOutputMuted { .. } => Ok(()),
-                    crate::actions::AudioOperation::SetInputVolume { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("input volume must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetBalance { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("output balance must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetMono { .. }
-                    | crate::actions::AudioOperation::SetEchoCancellation { .. }
-                    | crate::actions::AudioOperation::SetSystemSounds { .. } => Ok(()),
-                    crate::actions::AudioOperation::SetSystemSoundVolume { value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("system sound volume must be between 0 and 1".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetSoundTheme { theme } => {
-                        if media::event_sound::installed_themes()
-                            .iter()
-                            .any(|installed| installed.id == theme)
-                        {
-                            Ok(())
-                        } else {
-                            Err("that sound theme is not installed".into())
-                        }
-                    }
-                    crate::actions::AudioOperation::SetEventSound { event, .. } => {
-                        settings_store::system_sounds::SystemSoundEvent::from_key(&event)
-                            .map(|_| ())
-                            .ok_or_else(|| "unknown system sound event".to_string())
-                    }
-                    crate::actions::AudioOperation::SetDeviceProfile {
-                        device_id,
-                        profile_index,
-                    } => {
-                        let hardware = graph
-                            .hardware
-                            .iter()
-                            .find(|device| device.id == device_id)
-                            .ok_or_else(|| "audio hardware is no longer available".to_string())?;
-                        let profile = hardware
-                            .profiles
-                            .iter()
-                            .find(|profile| profile.index == profile_index && profile.available)
-                            .ok_or_else(|| "audio profile is no longer available".to_string())?;
-                        let _ = profile;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::RouteStream {
-                        stream_id,
-                        playback,
-                        device_id,
-                    } => {
-                        let stream_exists = if playback {
-                            graph
-                                .playback_streams
-                                .iter()
-                                .any(|stream| stream.id == stream_id)
-                        } else {
-                            graph
-                                .record_streams
-                                .iter()
-                                .any(|stream| stream.id == stream_id)
-                        };
-                        if !stream_exists {
-                            return Err("audio stream is no longer available".into());
-                        }
-                        let devices = if playback {
-                            &graph.sinks
-                        } else {
-                            &graph.sources
-                        };
-                        match device_id {
-                            None => {}
-                            Some(id) => devices
-                                .iter()
-                                .find(|device| device.id == id)
-                                .ok_or_else(|| "audio route is no longer available".to_string())
-                                .map(|_| ())?,
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetStreamVolume { stream_id, value } => {
-                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                            return Err("stream volume must be between 0 and 1".into());
-                        }
-                        let exists = graph
-                            .playback_streams
-                            .iter()
-                            .chain(&graph.record_streams)
-                            .any(|stream| stream.id == stream_id);
-                        if !exists {
-                            return Err("audio stream is no longer available".into());
-                        }
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SetStreamMuted { stream_id, muted } => {
-                        let exists = graph
-                            .playback_streams
-                            .iter()
-                            .chain(&graph.record_streams)
-                            .any(|stream| stream.id == stream_id);
-                        if !exists {
-                            return Err("audio stream is no longer available".into());
-                        }
-                        let _ = muted;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::ToggleDiagnostics
-                    | crate::actions::AudioOperation::TestChannel { .. }
-                    | crate::actions::AudioOperation::ToggleMicrophoneMeter => Ok(()),
-                    crate::actions::AudioOperation::SelectOutput { device_id } => {
-                        graph.sink_by_id(device_id).ok_or_else(|| {
-                            "audio output device is no longer available".to_string()
-                        })?;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::SelectInput { device_id } => {
-                        graph
-                            .sources
-                            .iter()
-                            .find(|device| device.id == device_id)
-                            .ok_or_else(|| {
-                                "audio input device is no longer available".to_string()
-                            })?;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::RoutePlayback {
-                        stream_id,
-                        device_id,
-                    } => {
-                        if !graph
-                            .playback_streams
-                            .iter()
-                            .any(|stream| stream.id == stream_id)
-                        {
-                            return Err("playback stream is no longer available".into());
-                        }
-                        graph.sink_by_id(device_id).ok_or_else(|| {
-                            "audio output device is no longer available".to_string()
-                        })?;
-                        Ok(())
-                    }
-                    crate::actions::AudioOperation::RouteRecording {
-                        stream_id,
-                        device_id,
-                    } => {
-                        if !graph
-                            .record_streams
-                            .iter()
-                            .any(|stream| stream.id == stream_id)
-                        {
-                            return Err("recording stream is no longer available".into());
-                        }
-                        graph
-                            .sources
-                            .iter()
-                            .find(|device| device.id == device_id)
-                            .ok_or_else(|| {
-                                "audio input device is no longer available".to_string()
-                            })?;
-                        Ok(())
-                    }
-                };
-                validated?;
-                self.local_pane_command
-                    .set(Some(crate::actions::LocalPaneCommand::Audio(operation)));
                 Ok(())
             }
             crate::actions::DISPLAY_OPERATION_TYPE => {
@@ -1267,7 +1080,6 @@ impl Widget for SettingsApp {
             crate::actions::OPEN_PANE_OPERATION_TYPE,
             crate::actions::ACCOUNT_OPERATION_TYPE,
             crate::actions::NETWORK_OPERATION_TYPE,
-            crate::actions::AUDIO_OPERATION_TYPE,
             crate::actions::DISPLAY_OPERATION_TYPE,
         ]
     }
@@ -1737,9 +1549,7 @@ impl SettingsApp {
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if matches!(
             type_id,
-            crate::actions::NETWORK_OPERATION_TYPE
-                | crate::actions::AUDIO_OPERATION_TYPE
-                | crate::actions::DISPLAY_OPERATION_TYPE
+            crate::actions::NETWORK_OPERATION_TYPE | crate::actions::DISPLAY_OPERATION_TYPE
         ) && kind == tilo_actions::OperationKind::Effect
         {
             let start = self.start_local_device_operation(kind, type_id, payload, doc, path)?;
@@ -1955,13 +1765,6 @@ mod tests {
                 (
                     crate::actions::NETWORK_OPERATION_TYPE,
                     serde_json::to_vec(&crate::actions::NetworkOperation::Refresh).unwrap(),
-                ),
-                (
-                    crate::actions::AUDIO_OPERATION_TYPE,
-                    serde_json::to_vec(&crate::actions::AudioOperation::SetOutputVolume {
-                        value: 0.5,
-                    })
-                    .unwrap(),
                 ),
                 (
                     crate::actions::DISPLAY_OPERATION_TYPE,
