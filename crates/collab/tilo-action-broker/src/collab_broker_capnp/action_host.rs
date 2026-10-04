@@ -57,6 +57,12 @@ fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
     Ok(())
 }
 
+struct LaunchDestination {
+    workspace: Workspace,
+    app_id: String,
+    record: Option<String>,
+}
+
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
     #[must_use]
@@ -891,7 +897,7 @@ impl CapnpBrokerState {
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
         {
-            return self.invoke_launchable(caller, request);
+            return self.invoke_launchable(caller, origin, request);
         }
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, origin, request);
@@ -913,6 +919,7 @@ impl CapnpBrokerState {
     fn invoke_launchable(
         self: &Arc<Self>,
         caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let reservation = match self.remote_invocations.lock() {
@@ -932,7 +939,7 @@ impl CapnpBrokerState {
             }
             Ok(Reservation::Reserved) => {}
         }
-        let (workspace, app_id) = match self.admit_launchable(caller, request) {
+        let destination = match self.admit_launchable(caller, request) {
             Ok(admitted) => admitted,
             Err(error) => {
                 if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -941,6 +948,7 @@ impl CapnpBrokerState {
                 return Pending::ready(Err(error));
             }
         };
+        let origin = origin.cloned();
         let (completer, answer) = pending();
         let state = Arc::clone(self);
         let caller = caller.clone();
@@ -951,8 +959,13 @@ impl CapnpBrokerState {
         let spawned = std::thread::Builder::new()
             .name("tilo-launchable-invoke".into())
             .spawn(move || {
-                let started =
-                    state.relaunch_and_deliver(&completer, &caller, &workspace, &app_id, &request);
+                let started = state.relaunch_and_deliver(
+                    &completer,
+                    &caller,
+                    &destination,
+                    origin.as_ref(),
+                    &request,
+                );
                 let result = match state.remote_invocations.lock() {
                     Ok(mut ledger) => match started {
                         Ok(job) => {
@@ -993,9 +1006,9 @@ impl CapnpBrokerState {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Result<(Workspace, String), ActionHostError> {
+    ) -> Result<LaunchDestination, ActionHostError> {
         let address = &request.target.address;
-        let (room, app_id, offered) =
+        let (room, app_id, record, offered) =
             if let Some((room, app_id)) = application_provider(&request.target.provider) {
                 let offered = self
                     .published_surfaces()
@@ -1007,7 +1020,7 @@ impl CapnpBrokerState {
                             action.resource == address.resource && action.action == address.action
                         })
                     });
-                (room.to_owned(), app_id.to_owned(), offered)
+                (room.to_owned(), app_id.to_owned(), None, offered)
             } else {
                 let retained = self
                     .launchable
@@ -1020,7 +1033,12 @@ impl CapnpBrokerState {
                         action.resource == address.resource && action.action == address.action
                     })
                     .ok_or(ActionHostError::UnknownAction)?;
-                (retained.route.cluster_id, retained.app_id, Some(offered))
+                (
+                    retained.route.cluster_id,
+                    retained.app_id,
+                    Some(retained.route.record_id),
+                    Some(offered),
+                )
             };
         // Only a caller on this machine launches apps on this desktop.
         if caller.room().is_none() {
@@ -1053,7 +1071,11 @@ impl CapnpBrokerState {
                 return Err(ActionHostError::ConfirmationRequired);
             }
         }
-        Ok((workspace, app_id))
+        Ok(LaunchDestination {
+            workspace,
+            app_id,
+            record,
+        })
     }
 
     /// Launch `app_id` unless it already publishes the action, then deliver
@@ -1063,33 +1085,44 @@ impl CapnpBrokerState {
         &self,
         completer: &Completer<Result<InvocationReceipt, ActionHostError>>,
         caller: &Caller,
-        workspace: &Workspace,
-        app_id: &str,
+        destination: &LaunchDestination,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
         const POLL: std::time::Duration = std::time::Duration::from_millis(50);
-        let room = workspace.room.to_string();
+        let room = destination.workspace.room.to_string();
+        let app_id = &destination.app_id;
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
         let deadline = std::time::Instant::now().checked_add(timeout);
         let mut launched = false;
         loop {
+            self.check_launch_origin(caller, origin, &room)?;
             if completer.is_abandoned() {
                 return Err(ActionHostError::Unavailable {
                     reason: "the caller stopped waiting for admission".into(),
                 });
             }
-            if let Some(peer_id) = self.ready_publisher(app_id, &room, address) {
+            if let Some(peer_id) =
+                self.ready_publisher(app_id, &room, destination.record.as_deref(), address)
+            {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
-                return self.start_for(caller, None, None, None, &delivered);
+                return self.start_for(caller, None, None, origin, &delivered);
             }
             if !launched {
-                self.launch_retained(app_id, workspace).map_err(|reason| {
-                    ActionHostError::Refused {
+                // Re-read the launch policy immediately before the actual host call.
+                let current = self.admit_launchable(caller, request)?;
+                if current.workspace.room != destination.workspace.room
+                    || current.app_id != *app_id
+                    || current.record != destination.record
+                {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                self.launch_retained(app_id, &current.workspace)
+                    .map_err(|reason| ActionHostError::Refused {
                         reason: format!("{app_id} could not be launched: {reason}"),
-                    }
-                })?;
+                    })?;
                 launched = true;
                 continue;
             }
@@ -1104,6 +1137,49 @@ impl CapnpBrokerState {
             }
             std::thread::sleep(POLL);
         }
+    }
+
+    /// Recheck the original signed custody while an asynchronous launch waits.
+    /// The numeric dispatcher checks it again when capturing the actual offer.
+    fn check_launch_origin(
+        &self,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        room: &str,
+    ) -> Result<(), ActionHostError> {
+        check_execution(caller)?;
+        if !self.is_accepting() {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let admitted = match origin {
+            Some(super::published_invocation::InvocationCaller::Certified {
+                caller: original,
+                ..
+            }) => {
+                if original.room != room {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                Some(self.current_action_caller(original).map_err(refusal)?)
+            }
+            Some(super::published_invocation::InvocationCaller::Local { route, admitted }) => {
+                if route.cluster_id != room {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                Some(
+                    self.revalidate_admission(route, admitted)
+                        .map_err(|error| refusal(error.to_string()))?,
+                )
+            }
+            None => None,
+        };
+        if let Some(admitted) = admitted {
+            let expected = admitted.broker_actor();
+            let actual = BrokerActor::for_caller(caller);
+            if expected.id != actual.id || expected.is_agent != actual.is_agent {
+                return Err(ActionHostError::NotPermitted);
+            }
+        }
+        Ok(())
     }
 
     /// Start `app_id` in `workspace` through the host's launcher, or the one
@@ -1125,6 +1201,7 @@ impl CapnpBrokerState {
         &self,
         app_id: &str,
         room: &str,
+        record: Option<&str>,
         address: &tilo_actions::ActionAddress,
     ) -> Option<u64> {
         let subscribers = self.invocation_subscribers.lock().ok()?;
@@ -1135,6 +1212,7 @@ impl CapnpBrokerState {
                 surface.live
                     && surface.app_id == app_id
                     && surface.route.cluster_id == room
+                    && record.is_none_or(|record| surface.route.record_id == record)
                     && subscribers.contains_key(&surface.peer_id)
                     && surface.actions.iter().any(|action| {
                         action.resource == address.resource && action.action == address.action
