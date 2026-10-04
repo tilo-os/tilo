@@ -594,14 +594,6 @@ pub struct TubeModel {
     /// page. Newest first, capped.
     #[serde(default)]
     pub notices: Vec<String>,
-    /// Whether the Ctrl+K global command palette overlay is open.
-    #[serde(default)]
-    pub palette_open: bool,
-    /// Device-local palette query mirrored from the toolkit's local text
-    /// binding for rendering; opening the palette never clobbers top-bar text
-    /// and neither query enters the collaborative document.
-    #[serde(default)]
-    pub palette_query: String,
     /// Provenance of the on-screen catalogue (sample vs live).
     #[serde(default)]
     pub data_source: DataSource,
@@ -679,8 +671,6 @@ impl Default for TubeModel {
             liked: Vec::new(),
             comment_likes: BTreeMap::new(),
             notices: Vec::new(),
-            palette_open: false,
-            palette_query: String::new(),
             data_source: DataSource::default(),
             search_hits_query: String::new(),
             search_hits: Vec::new(),

@@ -1104,6 +1104,15 @@ pub trait Widget {
             .find_map(Widget::take_action_palette_request)
     }
 
+    /// One-shot request to open the host's search palette, the same one the
+    /// platform search shortcut opens. An app's own search button latches it
+    /// so search stays one shared host surface rather than an app overlay.
+    fn take_search_request(&mut self) -> bool {
+        self.children_mut()
+            .into_iter()
+            .any(Widget::take_search_request)
+    }
+
     /// `point` is logical coords, same space as [`Widget::get_rect`];
     /// `None` defers to the default arrow. The host hit-tests the whole
     /// tree via `node_map` and picks the smallest-area claim, so containers
