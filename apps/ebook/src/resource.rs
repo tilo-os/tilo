@@ -85,6 +85,10 @@ impl Resource for Ebook {
         )
     }
 
+    fn child(state: &EbookState, id: &str) -> Option<PublishedResource> {
+        crate::actions::document_child(&state.entries, &state.annotations, id)
+    }
+
     fn search(state: &EbookState) -> Vec<SearchEntry> {
         state
             .entries

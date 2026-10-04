@@ -207,7 +207,7 @@ pub struct Tools {
     /// What the last file request came to, said beside the title.
     pub notice: LocalState<Option<String>>,
     /// The artworks opened or saved lately, newest first.
-    pub recents: LocalState<Vec<crate::document::Recent>>,
+    pub recents: LocalState<crate::document::RecentArtworks>,
     /// The welcome over a blank artwork was put away.
     pub welcomed: LocalState<bool>,
     /// What was chosen from the artwork's menu, until it is carried out.
@@ -372,7 +372,7 @@ impl Default for Tools {
             files: LocalState::new(None),
             file: LocalState::new(None),
             notice: LocalState::new(None),
-            recents: LocalState::new(Vec::new()),
+            recents: LocalState::new(crate::document::RecentArtworks::default()),
             welcomed: LocalState::new(false),
             menu: LocalState::new(String::new()),
             export: crate::panels::export::Choices::default(),

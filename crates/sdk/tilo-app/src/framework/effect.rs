@@ -252,6 +252,20 @@ pub struct EffectCx<R: Resource, H = ()> {
     env: EffectEnv<R>,
     invocation: Option<InvocationId>,
     started: Option<Started<R, H>>,
+    /// The resource's document while a surface's handler answers an
+    /// invocation, lent to it for reading.
+    document: Option<Rc<RefCell<tilo_resource::Doc>>>,
+    /// The lent document's heads, taken when it was lent.
+    heads: Vec<ui_core::automerge::ChangeHash>,
+}
+
+/// The resource as it was at a past version a view asked for: its
+/// document there, the heads that name it and the name a caller gives it
+/// back ([`EffectCx::version`]).
+pub struct DocumentVersion {
+    pub doc: tilo_resource::Doc,
+    pub heads: Vec<ui_core::automerge::ChangeHash>,
+    pub name: String,
 }
 
 impl<R: Resource, H: 'static> EffectCx<R, H> {
@@ -260,7 +274,48 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             env,
             invocation,
             started: None,
+            document: None,
+            heads: Vec::new(),
         }
+    }
+
+    /// The resource's document as it is now, to read what a view answers
+    /// with: the state at its heads, a selection's measurements, a picture
+    /// of it. Only a surface's handler answering an invocation has it; a
+    /// job's completion, which runs later, reads the live state instead.
+    /// Changes go through the dispatcher, never here.
+    pub fn document(&self) -> Option<std::cell::Ref<'_, tilo_resource::Doc>> {
+        self.document.as_ref().map(|document| document.borrow())
+    }
+
+    /// The heads of the document as it is now; empty without one.
+    pub fn heads(&self) -> Vec<ui_core::automerge::ChangeHash> {
+        self.heads.clone()
+    }
+
+    /// The resource at `version`, as a caller names one: a change id from
+    /// its history (or enough of one) or a checkpoint's name.
+    ///
+    /// # Errors
+    /// Returns why `version` names no version of this document, or that
+    /// the handler has no document to read.
+    pub fn version(&self, version: &str) -> Result<DocumentVersion, String> {
+        let document = self
+            .document
+            .as_ref()
+            .ok_or_else(|| "this effect has no document to read".to_owned())?;
+        let mut doc = document
+            .try_borrow_mut()
+            .map_err(|_| "read a past version before borrowing the document".to_owned())?;
+        let heads = ui_core::history_source::steps::resolve(&mut doc, version)?;
+        let past = doc
+            .fork_at(&heads)
+            .map_err(|error| format!("version {version:?} is not in this document: {error}"))?;
+        Ok(DocumentVersion {
+            doc: past,
+            name: super::history::version_name(&heads),
+            heads,
+        })
     }
 
     /// Where the effect's document changes go: ordinary actions, checked,
@@ -959,6 +1014,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         &mut self,
         op: &ResourceOperation<'_>,
         host: &mut H,
+        doc: Option<&mut tilo_resource::Doc>,
         handle: impl FnOnce(&mut H, E, &mut EffectCx<R, H>) -> EffectAnswer,
     ) -> Result<Option<ResourceOperationStart>, String> {
         // An invocation in a caller's custody stays with handlers that
@@ -979,10 +1035,24 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         }
         let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
+        // The document is lent to the handler for reading and returned the
+        // moment it answers, whatever it answered.
+        let lent = doc.map(|doc| {
+            cx.heads = doc.get_heads();
+            (Rc::new(RefCell::new(std::mem::take(&mut *doc))), doc)
+        });
+        cx.document = lent.as_ref().map(|(document, _)| Rc::clone(document));
         let answer = {
             let _acting = ActingFor::enter(Some(request.invocation));
             handle(host, effect, &mut cx)
         };
+        cx.document = None;
+        if let Some((document, doc)) = lent {
+            *doc = match Rc::try_unwrap(document) {
+                Ok(document) => document.into_inner(),
+                Err(shared) => std::mem::take(&mut *shared.borrow_mut()),
+            };
+        }
         let started = cx.started.take();
         match (answer?, started, job) {
             (Effected::Done(output), started, false) => {
@@ -1093,7 +1163,7 @@ impl<R: Resource, E: Effect> ViewHandler<R> for Handler<R, E> {
     ) -> Result<Option<ResourceOperationStart>, String> {
         let handle = &mut self.handle;
         self.runner
-            .start(op, &mut (), |(), effect, cx| handle(effect, cx))
+            .start(op, &mut (), None, |(), effect, cx| handle(effect, cx))
     }
 
     fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
@@ -1504,7 +1574,7 @@ mod tests {
             &payload,
         );
         runner
-            .start(&op, &mut (), |(), _, cx| {
+            .start(&op, &mut (), None, |(), _, cx| {
                 cx.dispatcher().effect(&Work::Ping);
                 Ok(cx.thread(
                     |_| (),
@@ -1558,7 +1628,7 @@ mod tests {
         );
         let (stopped, observed) = channel();
         let started = runner
-            .start(&op, &mut (), |(), _, cx| {
+            .start(&op, &mut (), None, |(), _, cx| {
                 Ok(cx.thread(
                     move |progress| {
                         while !progress.is_cancelled() {
@@ -1588,6 +1658,51 @@ mod tests {
         );
     }
 
+    /// A handler reads the document it answers about, now and at a past
+    /// version, and the document is back with its owner once it answered.
+    #[test]
+    fn a_handler_reads_the_document_now_and_at_a_version() {
+        use ui_core::automerge::{ReadDoc, transaction::Transactable};
+        let mut runner = runner();
+        let mut doc = tilo_resource::Doc::new();
+        doc.put(ui_core::automerge::ROOT, "count", 1_i64).unwrap();
+        let first = tilo_resource::history::commit_stamped(&mut doc).unwrap();
+        doc.put(ui_core::automerge::ROOT, "count", 2_i64).unwrap();
+        tilo_resource::history::commit_stamped(&mut doc);
+        let payload = payload(&Work::Ping);
+        let op = ResourceOperation::local(
+            InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        let count = |doc: &tilo_resource::Doc| {
+            doc.get(ui_core::automerge::ROOT, "count")
+                .unwrap()
+                .and_then(|(value, _)| value.as_i64())
+        };
+        let answered = runner
+            .start(&op, &mut (), Some(&mut doc), |(), _, cx| {
+                let now = count(&cx.document().expect("lent to the handler"));
+                let past = cx.version(&first.to_string())?;
+                assert_eq!(past.heads, vec![first]);
+                Ok(Effected::value([now, count(&past.doc)]))
+            })
+            .unwrap();
+        assert!(matches!(
+            answered,
+            Some(ResourceOperationStart::Completed(output))
+                if output.value == Some(serde_json::json!([2, 1]))
+        ));
+        assert_eq!(count(&doc), Some(2), "the document is back with its owner");
+        let refused = runner
+            .start(&op, &mut (), None, |(), _, cx| {
+                cx.version(&first.to_string()).map(|_| Effected::done())
+            })
+            .unwrap_err();
+        assert!(refused.contains("no document"), "{refused}");
+    }
+
     #[test]
     fn an_effect_declared_immediate_cannot_answer_later() {
         let mut runner = runner();
@@ -1599,14 +1714,14 @@ mod tests {
             &payload,
         );
         let refused = runner
-            .start(&op, &mut (), |(), _, cx| {
+            .start(&op, &mut (), None, |(), _, cx| {
                 let _reply = cx.reply();
                 Ok(Effected::Pending)
             })
             .unwrap_err();
         assert!(refused.contains("#[effect(job)]"), "{refused}");
         let answered = runner
-            .start(&op, &mut (), |(), _, _| Ok(Effected::value("pong")))
+            .start(&op, &mut (), None, |(), _, _| Ok(Effected::value("pong")))
             .unwrap();
         assert!(matches!(
             answered,

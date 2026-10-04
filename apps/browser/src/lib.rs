@@ -6,7 +6,8 @@
 )]
 
 //! Browser library root: the [`BrowserShell`] framework app, whose surface
-//! is the tabbed [`BrowserTabs`] workspace of [`BrowserWidget`] pages.
+//! is a [`BrowserWindow`] showing one [`BrowserWidget`] page. Other pages are
+//! other Browser instances in the desktop's tabs.
 //!
 //! The browser is deliberately small: it is chrome (address bar,
 //! navigation, progress, filter loading) around the `ui` toolkit's
@@ -43,9 +44,8 @@ pub mod address_overlay;
 pub mod autofill;
 mod back_hold;
 pub mod blocker;
-pub mod browser_tab_strip;
-pub mod browser_tabs;
 pub mod browser_widget;
+pub mod browser_window;
 pub mod browsing_mode;
 mod credentials;
 mod daily_controls;
@@ -59,14 +59,12 @@ mod page_menu;
 pub mod private_window;
 pub mod resource;
 pub mod search_provider;
-pub mod session;
 pub mod settings;
 mod site_controls;
 pub mod storage;
 
-pub use browser_tab_strip::BrowserTabStrip;
-pub use browser_tabs::BrowserTabs;
 pub use browser_widget::BrowserWidget;
+pub use browser_window::BrowserWindow;
 
 mod capabilities;
 mod live_capture;
