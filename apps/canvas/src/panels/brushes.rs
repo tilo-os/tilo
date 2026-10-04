@@ -87,6 +87,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             transform: None,
             group: String::new(),
             clip: String::new(),
+            area: String::new(),
         }],
         ..Artwork::default()
     }

@@ -1075,7 +1075,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Cut to this mark's or group's shape (opacity 0 hides it), or `selection`."
+                "description": "Cut to this mark's or group's shape (opacity 0 hides it), to `selection` (its area now) or to an area's SVG path data."
               },
               "transform": {
                 "type": [
@@ -1492,13 +1492,13 @@
         "name": "clip",
         "ty": "text",
         "required": false,
-        "description": "Cut to this mark's or group's shape; empty uncuts.",
+        "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Cut to this mark's or group's shape; empty uncuts."
+          "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts."
         },
         "nullable": true
       },
@@ -2760,7 +2760,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette. Or `selection`."
+                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette. Or `selection` (its area now), or an area's SVG path data."
               }
             },
             "additionalProperties": false,

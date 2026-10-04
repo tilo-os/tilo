@@ -13,8 +13,8 @@ use ui::vello::kurbo::{Affine, Rect};
 use ui::vello::peniko::Color;
 
 use crate::media;
-use crate::model::Mark;
 use crate::model::{Artwork, Layer, Shape};
+use crate::model::{Mark, path_data};
 use crate::render::{Options, Renderer};
 use crate::resource::{Compare, Export, Inspect, Look};
 
@@ -734,6 +734,23 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         if !mark.clip.is_empty() {
             fields.insert("clip".into(), mark.clip.clone().into());
         }
+        if let Some(area) = mark.area() {
+            // Kept inside an area (the selection it was laid in): its box,
+            // and with `full` its outline.
+            let inside = ui::vello::kurbo::Shape::bounding_box(&area);
+            fields.insert(
+                "inside".into(),
+                json!([
+                    whole(inside.x0),
+                    whole(inside.y0),
+                    whole(inside.width()),
+                    whole(inside.height())
+                ]),
+            );
+            if full {
+                fields.insert("area".into(), path_data(&area).into());
+            }
+        }
         if full {
             fields.insert("shape".into(), json!(mark.shape));
             fields.insert("style".into(), json!(mark.style));
@@ -1097,7 +1114,7 @@ fn mark_fields(old: &Mark, new: &Mark) -> Vec<String> {
         (old.shape != new.shape, "shape"),
         (old.transform != new.transform, "transform"),
         (old.group != new.group, "group"),
-        (old.clip != new.clip, "clip"),
+        (old.clip != new.clip || old.area != new.area, "clip"),
     ] {
         if differs {
             fields.push(name.to_owned());

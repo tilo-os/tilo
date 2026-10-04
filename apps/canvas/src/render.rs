@@ -683,7 +683,7 @@ impl Renderer {
         let palette = preset.palette;
         let marks: Vec<Painted> = art
             .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, &art.clips_of(mark), &palette, scale))
+            .flat_map(|mark| wet_marks(mark, wet_cut(art, mark).as_ref(), &palette, scale))
             .collect();
         let mut key = blake3::Hasher::new();
         for mark in &marks {
@@ -710,7 +710,7 @@ impl Renderer {
             entry.image = Some(image(pixels, canvas.width, canvas.height));
             entry.key = key;
         }
-        let strokes = wet.map(|wet| wet_marks(wet, &art.clips_of(wet), &palette, scale));
+        let strokes = wet.map(|wet| wet_marks(wet, wet_cut(art, wet).as_ref(), &palette, scale));
         let shown = shown_painting(
             &mut self.wet,
             entry,
@@ -1074,11 +1074,9 @@ fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
 }
 
 /// The outline a stroke's paint is cut to, in cells: its clip's silhouette.
-fn clip_contours(clips: &[&Mark], scale: f64) -> Vec<Vec<(f32, f32)>> {
-    clips
-        .iter()
-        .flat_map(|clip| contours(&silhouette(clip), Affine::scale(scale) * clip.affine()))
-        .collect()
+fn clip_contours(cut: Option<&BezPath>, scale: f64) -> Vec<Vec<(f32, f32)>> {
+    cut.map(|outline| contours(outline, Affine::scale(scale)))
+        .unwrap_or_default()
 }
 
 /// The outline of what a mark is cut to, in artwork units: its clip's
@@ -1091,6 +1089,23 @@ fn clip_path(clips: &[&Mark]) -> BezPath {
         path.extend(outline);
     }
     path
+}
+
+/// The outlines `mark` is cut to, in artwork units: what its clip names
+/// and the area it is kept inside. It shows only where all of them cover.
+pub fn cuts(art: &Artwork, mark: &Mark) -> Vec<BezPath> {
+    let clips = art.clips_of(mark);
+    (!clips.is_empty())
+        .then(|| clip_path(&clips))
+        .into_iter()
+        .chain(mark.area())
+        .collect()
+}
+
+/// The one outline a painted mark is kept inside (the medium keeps a
+/// stroke inside one): its area, else what its clip names.
+fn wet_cut(art: &Artwork, mark: &Mark) -> Option<BezPath> {
+    cuts(art, mark).pop()
 }
 
 /// A stroke's points in cells, with their pressure.
@@ -1114,7 +1129,7 @@ fn cell_points(points: &[Vec<f64>], to_cells: Affine) -> Vec<WetPoint> {
 
 /// What a mark is as paint: a laid-in region, a stroke, or both. A stroke
 /// stays inside `clip` when it is cut to one.
-fn wet_marks(mark: &Mark, clip: &[&Mark], palette: &[Pigment], scale: f64) -> Vec<Painted> {
+fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f64) -> Vec<Painted> {
     let style = &mark.style;
     let to_cells = Affine::scale(scale) * mark.affine();
     let params = style
@@ -1429,14 +1444,13 @@ fn draw_mark(
         &graded
     };
     let mut layers = 0;
-    let clips = art.clips_of(mark);
-    if !clips.is_empty() {
+    for outline in cuts(art, mark) {
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
             transform,
-            &clip_path(&clips),
+            &outline,
         );
         layers += 1;
     }
@@ -1523,16 +1537,9 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     );
     // Cut to its clip inside the erasing group, so only what it covers
     // within the clip is taken out.
-    let clips = art.clips_of(mark);
-    let clipped = !clips.is_empty();
-    if clipped {
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &clip_path(&clips),
-        );
+    let cuts = cuts(art, mark);
+    for outline in &cuts {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, outline);
     }
     if crate::brushes::Preset::Eraser.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
         draw_dabbed(mark, &[], scene, cx, Compose::SrcOver);
@@ -1545,7 +1552,7 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
             &silhouette(mark),
         );
     }
-    if clipped {
+    for _ in &cuts {
         scene.pop_layer();
     }
     scene.pop_layer();

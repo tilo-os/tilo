@@ -5,8 +5,8 @@
 //! The selection is kept with the artwork like the reference picture: it
 //! syncs and undoes, and is never drawn into the artwork. What is made from
 //! it is ordinary data: a fill or outline is a path mark, a mask is a layer
-//! of grey marks, a stroke kept inside the selection is cut to a mark of its
-//! shape. Nothing is a pixel buffer.
+//! of grey marks, a stroke kept inside the selection keeps its area. Nothing
+//! is a pixel buffer.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
@@ -436,26 +436,6 @@ pub(crate) fn remove_layer_marks(
         doc::remove(doc, doc::MARKS, &mark.id)?;
     }
     Ok(())
-}
-
-/// The mark strokes and shapes cut to the selection are cut to, on
-/// `layer`: one of the selection's shape that draws nothing itself, made
-/// once per shape and layer. Its id.
-pub(crate) fn selection_cut(
-    doc: &mut Doc,
-    art: &Artwork,
-    layer: &str,
-) -> Result<String, ActionError> {
-    let (shape, _) = selected_shape(art)?;
-    let id = derived_id("cut", &(&shape, layer), 0);
-    if art.mark(&id).is_none() {
-        let bottom = art.marks_of(layer).map(|mark| mark.order.as_str()).min();
-        let mut cut = placed(id.clone(), "Selection".into(), shape, Style::default());
-        layer.clone_into(&mut cut.layer);
-        cut.order = order::between(None, bottom);
-        doc::write_mark(doc, &cut)?;
-    }
-    Ok(id)
 }
 
 impl Combine {

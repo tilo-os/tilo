@@ -80,8 +80,10 @@ the artwork as the window shows it, every layer kind alike, and resolve to
 plain geometry where the action is authored, so every replica applies the
 same area. Shift adds, Alt subtracts, both intersect; grow, feather and
 invert refine it. What is made of it is ordinary data: a fill or outline is a
-path mark, paint kept inside it is cut to a mark of its shape
-(`clip: "selection"`, and the brush does it while there is a selection), and
+path mark, paint kept inside it carries that area with it (`clip:
+"selection"`, and the brush does it while there is a selection; `inspect`
+shows the box it is kept `inside`, and `edit-marks` with `clip: ""` lets it
+out), and
 `mask`/`clear` draw white or black into the layer's mask. A mask is a layer of
 grey marks (`<layer>-mask`) the layer is shown through, so brushes, shapes and
 selections all edit it; it inverts, switches off and goes with its layer. A
