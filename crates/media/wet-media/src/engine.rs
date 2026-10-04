@@ -128,7 +128,7 @@ pub struct Stroke {
     pub paint: Paint,
     pub opacity: f32,
     /// Paint into the layer while it is still wet (blending, bleeding),
-    /// rather than over a dried layer.
+    /// rather than over paint that has dried.
     pub wet: bool,
     /// Per-mark parameter overrides on top of the preset.
     #[serde(default)]
