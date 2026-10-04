@@ -2056,9 +2056,11 @@ COPY \
 # disk-image.sh seeds these native units; custom installers additionally stage
 # their own /etc handoff so they can install older independently signed targets.
 COPY --chmod=0755 os/usr/libexec/tilo-firstboot-user \
-    os/usr/libexec/tilo-firstboot-autologin-cleanup /usr/libexec/
+    os/usr/libexec/tilo-firstboot-autologin-cleanup \
+    os/usr/libexec/tilo-session-recovery /usr/libexec/
 COPY os/usr/lib/systemd/system/tilo-firstboot-user.service \
-    os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service /usr/lib/systemd/system/
+    os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
+    os/usr/lib/systemd/system/tilo-session-recovery.service /usr/lib/systemd/system/
 COPY os/etc/greetd/config.toml /usr/share/tilo/greetd-config.toml
 # A measured installer UKI must not try to persist its transient TPM identity
 # to the read-only live ESP. These conditions stop both systemd setup phases
