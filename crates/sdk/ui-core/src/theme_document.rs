@@ -63,6 +63,12 @@ impl ThemeDensity {
 pub struct ThemeType {
     pub face: String,
     pub base_size: f32,
+    /// "Always distinguish similar letters": set I, l, 1 and 0, O apart in
+    /// all text, not only in identifiers, codes and links. `None` follows
+    /// the face: on with Hyperlegible, off otherwise
+    /// ([`Self::distinguishes_letters`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distinct_letters: Option<bool>,
 }
 
 impl ThemeType {
@@ -72,6 +78,17 @@ impl ThemeType {
     pub const ADMITTED: std::ops::RangeInclusive<f32> = 10.0..=24.0;
     /// Band a theme is built at; a value outside it is clamped.
     pub const USABLE: std::ops::RangeInclusive<f32> = 12.0..=18.0;
+
+    /// Whether this type sets every look-alike letter apart: the
+    /// document's own choice, else on exactly when the face is Hyperlegible
+    /// — the face people choose to tell letters apart.
+    #[must_use]
+    pub fn distinguishes_letters(&self) -> bool {
+        self.distinct_letters.unwrap_or_else(|| {
+            crate::tokens::UiFace::from_name(&self.face)
+                == Some(crate::tokens::UiFace::Hyperlegible)
+        })
+    }
 }
 
 /// The character of the shared UI springs: `0` calm, `1` the stock snappy
@@ -156,6 +173,7 @@ impl ThemeDocument {
             type_: ThemeType {
                 face: crate::text_render::UI_SANS_FAMILY.into(),
                 base_size: ThemeType::BASE_SIZE,
+                distinct_letters: None,
             },
             motion: ThemeMotion { character: 1.0 },
             material: ThemeMaterial {

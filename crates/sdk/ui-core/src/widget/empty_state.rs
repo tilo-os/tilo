@@ -440,6 +440,9 @@ pub struct EmptyState {
     action_focused: bool,
     layout_style: StackStyle,
     scroll_content: bool,
+    /// What the last draw showed (rect, action hovered, focused, enabled);
+    /// while it still holds there is nothing to redraw.
+    drawn: Option<(Rect, bool, bool, bool)>,
 }
 
 impl EmptyState {
@@ -464,7 +467,19 @@ impl EmptyState {
             action_focused: false,
             layout_style: StackStyle::layout(&Theme::default()),
             scroll_content: false,
+            drawn: None,
         }
+    }
+
+    /// The state a draw paints: where, whether the action is hovered or
+    /// focused, and whether it is enabled.
+    fn painted_state(&self) -> (Rect, bool, bool, bool) {
+        (
+            self.rect,
+            self.action_label.is_some() && self.action_rect.contains(self.last_cursor),
+            self.action_focused,
+            self.is_enabled(),
+        )
     }
 
     /// Something failed to load or open: `title` says what, `detail` says
@@ -645,6 +660,8 @@ impl Widget for EmptyState {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_style = StackStyle::layout(theme);
+        // A rebuild may bring a new theme or text scale.
+        self.drawn = None;
         // Auto height contributes wrapped content to a Scrollable's extent;
         // the percentage minimum still fills a normal definite-height pane.
         let node = taffy.leaf_node(Style {
@@ -771,6 +788,14 @@ impl Widget for EmptyState {
 
     fn is_focused(&self) -> bool {
         self.action_focused
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.drawn != Some(self.painted_state())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = Some(self.painted_state());
     }
 
     fn perform_action(
