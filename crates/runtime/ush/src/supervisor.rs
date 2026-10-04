@@ -436,6 +436,10 @@ pub enum ServeRequest {
     /// The environments there are, for Terminal's picker and its
     /// environments panel.
     ListEnvironments,
+    /// The person allowed Terminal's Host target, for `expiry` (the shell's
+    /// permission prompt answers with this). Only a caller outside every app
+    /// sandbox — the shell — may record it.
+    AllowHost { expiry: collab_types::caps::Expiry },
     /// Make a new environment on the default environment's runtime, with
     /// nothing added and nothing granted. Answers with every environment.
     CreateEnvironment { name: String },
@@ -517,6 +521,8 @@ pub enum ServeResponse {
     Environments {
         environments: Vec<EnvironmentEntry>,
     },
+    /// The allow was recorded.
+    Allowed,
 }
 
 /// Decide one request: the environment record it names (`None` for the
@@ -668,6 +674,9 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             target: Target::Host,
             ..
         } => return serve_host(stream, &mut writer, store, &caller, &req),
+        ServeRequest::AllowHost { expiry } => {
+            return reply(&mut writer, &allow_host(&caller, store, *expiry), None);
+        }
         ServeRequest::OpenSession { .. } => {}
     }
     let environment = match decide_serve(&req) {
@@ -744,6 +753,26 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     Ok(())
 }
 
+/// Record the person's allow for Terminal's Host target. Only a caller
+/// outside every app sandbox — the shell, which put the prompt up — may.
+fn allow_host(
+    caller: &crate::host::Caller,
+    store: &Store,
+    expiry: collab_types::caps::Expiry,
+) -> ServeResponse {
+    if *caller != crate::host::Caller::Session {
+        return ServeResponse::Denied {
+            reason: "only the session's own shell records this allow".into(),
+        };
+    }
+    match crate::host::HostPolicy::record_allow(store, crate::host::TERMINAL_APP_ID, expiry) {
+        Ok(()) => ServeResponse::Allowed,
+        Err(e) => ServeResponse::Denied {
+            reason: format!("the allow could not be recorded: {e}"),
+        },
+    }
+}
+
 /// Answer a request about the environments themselves.
 fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
     let records = Records::at(store.records_root());
@@ -786,6 +815,15 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
                         .unwrap_or_default()
                         .to_owned(),
                 ),
+                "grant-dir" => Environment::GRANT_DIR.with((
+                    args.get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    args.get("write")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )),
                 other => {
                     return Err(format!(
                         "`{other}` is not an environment action an app may ask for here"
@@ -794,7 +832,9 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
             };
             records.apply(record, invoke).map_err(|e| e.to_string())?;
         }
-        ServeRequest::ListEnvironments | ServeRequest::OpenSession { .. } => {}
+        ServeRequest::ListEnvironments
+        | ServeRequest::OpenSession { .. }
+        | ServeRequest::AllowHost { .. } => {}
     }
     let mut out = Vec::new();
     for key in records.keys().map_err(|e| e.to_string())? {
@@ -825,7 +865,7 @@ fn serve_host(
     else {
         return Ok(());
     };
-    let policy = crate::host::HostPolicy::load(&crate::host::HostPolicy::path(store));
+    let policy = crate::host::HostPolicy::in_force(store);
     let ownership = crate::host::SessionOwnership::discover();
     if let Err(denied) =
         crate::host::decide_host(caller, *requested_by, &ownership, &policy, Some(unix_now()))
@@ -842,6 +882,7 @@ fn serve_host(
         };
         return reply(writer, &response, None);
     }
+    crate::host::HostPolicy::spend_one_time(crate::host::TERMINAL_APP_ID);
     let term = term.as_deref().unwrap_or("xterm-256color");
     let (cols, rows) = (*cols, *rows);
     let Some(account) = crate::host::login_account() else {
@@ -1304,6 +1345,35 @@ mod tests {
         )
         .unwrap();
         assert!(renamed.iter().any(|entry| entry.name == "Prose"));
+
+        let granted_dir = dir.path().join("src");
+        std::fs::create_dir_all(&granted_dir).unwrap();
+        let granted = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "grant-dir".into(),
+                args: serde_json::json!({"path": granted_dir.display().to_string(), "write": true}),
+            },
+            &store,
+        )
+        .unwrap();
+        let entry = granted.iter().find(|e| e.key == writing.key).unwrap();
+        assert_eq!(
+            entry.grants,
+            vec![(granted_dir.display().to_string(), true)]
+        );
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "grant-dir".into(),
+                    args: serde_json::json!({"path": "/usr", "write": true}),
+                },
+                &store,
+            )
+            .is_err(),
+            "the record's own rules still refuse what the guest builds itself"
+        );
         assert!(
             directory(
                 &ServeRequest::EnvironmentAction {

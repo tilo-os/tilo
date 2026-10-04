@@ -271,7 +271,9 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         ServeResponse::Denied { reason } | ServeResponse::HostNotAllowed { reason } => {
             panic!("the service refused the session: {reason}")
         }
-        ServeResponse::Environments { .. } => panic!("a session request answered with a list"),
+        ServeResponse::Environments { .. } | ServeResponse::Allowed => {
+            panic!("a session request answered with something else")
+        }
     }
     let fd = fd.expect("no pty descriptor arrived with the reply");
     (stream, fd)
