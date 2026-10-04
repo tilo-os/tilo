@@ -58,6 +58,8 @@ pub struct DatePicker {
     navigator: bool,
     /// Days that hold something (an event, a note): a dot under the number.
     marked: HashSet<NaiveDate>,
+    /// The day the host calls today; `None` reads the toolkit clock.
+    today: Option<NaiveDate>,
 }
 
 impl DatePicker {
@@ -76,6 +78,7 @@ impl DatePicker {
             is_focused: false,
             navigator: false,
             marked: HashSet::new(),
+            today: None,
         }
     }
 
@@ -93,6 +96,20 @@ impl DatePicker {
     pub fn marked(mut self, dates: impl IntoIterator<Item = NaiveDate>) -> Self {
         self.set_marked(dates);
         self
+    }
+
+    /// The day the today ring marks, from the host's own notion of today
+    /// (its time zone, a staged capture). Without it the picker reads
+    /// `ui::clock::today()`.
+    #[must_use]
+    pub fn with_today(mut self, today: NaiveDate) -> Self {
+        self.today = Some(today);
+        self
+    }
+
+    /// Replace the host's today; see [`Self::with_today`].
+    pub fn set_today(&mut self, today: NaiveDate) {
+        self.today = Some(today);
     }
 
     /// Replace the marked days; see [`Self::marked`].
@@ -714,7 +731,7 @@ impl DatePicker {
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
-        let today = crate::clock::today();
+        let today = self.today.unwrap_or_else(crate::clock::today);
         let (vy, vm) = self.month_view;
 
         for (date, cell_rect) in &self.day_rects {
@@ -722,41 +739,29 @@ impl DatePicker {
             let is_selected = *date == self.selected;
             let is_today = *date == today && is_in_view_month;
 
+            // A day is a disc: the selection fill, the today ring and the
+            // focus ring share one circle inside the cell.
+            let disc = day_disc(*cell_rect);
             if is_selected {
-                let pad = cell_rect.height().min(cell_rect.width()) * 0.1;
-                let inner = Rect::new(
-                    cell_rect.x0 + pad,
-                    cell_rect.y0 + pad,
-                    cell_rect.x1 - pad,
-                    cell_rect.y1 - pad,
-                );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.detail));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
                     tokens.colors.intent.inverted,
                     None,
-                    &shape,
+                    &disc,
                 );
             }
 
             // On top of the cell fill, below the text, so it's visible even
             // when selected.
             if is_today {
-                let pad = cell_rect.height().min(cell_rect.width()) * 0.1;
-                let inner = Rect::new(
-                    cell_rect.x0 + pad,
-                    cell_rect.y0 + pad,
-                    cell_rect.x1 - pad,
-                    cell_rect.y1 - pad,
-                );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.detail));
+                let ring = vello::kurbo::Circle::new(disc.center, disc.radius - 0.5);
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
                     tokens.colors.border_focus,
                     None,
-                    &shape,
+                    &ring,
                 );
             }
 
@@ -789,7 +794,7 @@ impl DatePicker {
                     transform,
                     tokens.colors.border_focus,
                     None,
-                    &crate::surface::edge_outline(*cell_rect, f64::from(tokens.radii.detail)),
+                    &vello::kurbo::Circle::new(disc.center, disc.radius + 1.0),
                 );
             }
             text_renderer.draw_style(
@@ -820,6 +825,13 @@ fn month_name_en(m: u32) -> &'static str {
         12 => "December",
         _ => "",
     }
+}
+
+/// The disc a day stands on: centred in its cell, a tenth of the cell in
+/// from its shorter side.
+fn day_disc(cell: Rect) -> vello::kurbo::Circle {
+    let side = cell.height().min(cell.width());
+    vello::kurbo::Circle::new(cell.center(), side * 0.4)
 }
 
 #[cfg(test)]
