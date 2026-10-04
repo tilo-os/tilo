@@ -612,7 +612,7 @@ pub struct BlockEditor {
     /// Images pasted into the editor, for its host to store and place after
     /// the caret: the editor holds text, and an image becomes a block once
     /// the host keeps its bytes with the document.
-    pasted_images: Vec<crate::clipboard::ClipboardImage>,
+    pasted_images: Vec<ImagePasteRequest>,
     /// Painted copy controls for fenced-code runs. Each tuple retains the
     /// inclusive block range so pointer and accessibility activation copy the
     /// exact source, including newlines, without touching document state.
@@ -3154,13 +3154,8 @@ impl BlockEditor {
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
             return true;
         }
-        if command == "paste" {
-            let prior = self.document_selection;
-            self.document_selection = prior.or(image_selection);
-            if self.paste_image() {
-                return true;
-            }
-            self.document_selection = prior;
+        if command == "paste" && self.paste_image() {
+            return true;
         }
         // An unavailable clipboard must never turn Paste into Delete.
         let replacement = if command == "paste" {
@@ -3519,6 +3514,15 @@ impl BlockEditor {
                         *ctx.handled = true;
                         return true;
                     }
+                    let replacement = if cutting {
+                        String::new()
+                    } else {
+                        let Some(text) = clipboard_paste() else {
+                            *ctx.handled = true;
+                            return true;
+                        };
+                        text
+                    };
                     let end = self.blocks[index].text().len();
                     self.select_document_range(
                         DocumentPosition {
@@ -3530,11 +3534,7 @@ impl BlockEditor {
                             byte: end,
                         },
                     );
-                    if cutting {
-                        self.replace_document_selection("");
-                    } else {
-                        self.handle_document_selection_ctrl_key(logical_key);
-                    }
+                    self.replace_document_selection(&replacement);
                     *ctx.handled = true;
                     return true;
                 }
@@ -3701,17 +3701,67 @@ impl BlockEditor {
         self.pending_external_link_opens.pop()
     }
 
-    /// The images pasted since the last call, oldest first, for the host to
-    /// store with the document and insert after the focused block.
+    /// Images for legacy hosts which insert after the caret. Canonical hosts
+    /// use [`Self::take_image_paste_requests`] to replace the captured selection.
     pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
+        self.take_image_paste_requests()
+            .into_iter()
+            .map(|request| request.image)
+            .collect()
+    }
+
+    /// Drain image intents without changing text. The host validates the image
+    /// and applies asset storage and the captured replacement in one action.
+    pub fn take_image_paste_requests(&mut self) -> Vec<ImagePasteRequest> {
         std::mem::take(&mut self.pasted_images)
     }
 
-    /// Paste the clipboard's image, when it holds one and the caret is in
-    /// prose (code and tables take text). A selection is replaced, as a text
-    /// paste replaces it.
+    fn image_paste_target(&self) -> Option<ImagePasteTarget> {
+        let index = self.focused?;
+        let block = self.blocks.get(index)?;
+        let preview = self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing);
+        let selection = self
+            .document_selection
+            .filter(|selection| selection.anchor != selection.cursor)
+            .map(DocumentSelection::ordered)
+            .or_else(|| {
+                let (start, end) = if preview {
+                    (0, block.text().len())
+                } else {
+                    block.line.selection_range()?
+                };
+                (start != end).then_some((
+                    DocumentPosition {
+                        block: index,
+                        byte: start,
+                    },
+                    DocumentPosition {
+                        block: index,
+                        byte: end,
+                    },
+                ))
+            });
+        let Some((start, mut end)) = selection else {
+            return Some(ImagePasteTarget::After(block.id.clone()));
+        };
+        if end.byte == 0 && end.block > start.block {
+            end.block = end.block.saturating_sub(1);
+            end.byte = self.blocks.get(end.block)?.text().len();
+        }
+        let selected = self.blocks.get(start.block..=end.block)?;
+        Some(ImagePasteTarget::Replace {
+            blocks: selected.iter().map(Block::content).collect(),
+            start_byte: start.byte,
+            end_byte: end.byte,
+        })
+    }
+
+    /// Queue an image intent in prose without deleting any selected content.
     fn paste_image(&mut self) -> bool {
-        if self.read_only {
+        if self.read_only || self.is_composing() {
             return false;
         }
         let in_prose = self
@@ -3729,10 +3779,10 @@ impl BlockEditor {
         let Some(image) = crate::clipboard_paste_image() else {
             return false;
         };
-        if self.document_selection.is_some() {
-            self.replace_document_selection("");
-        }
-        self.pasted_images.push(image);
+        let Some(target) = self.image_paste_target() else {
+            return false;
+        };
+        self.pasted_images.push(ImagePasteRequest { image, target });
         self.dirty = true;
         true
     }
@@ -3990,6 +4040,26 @@ impl BlockEditor {
 pub struct DocumentPosition {
     pub block: usize,
     pub byte: usize,
+}
+
+/// A clipboard image and its original target. Capturing the intent never edits
+/// the document; hosts must validate bytes before applying a replacement.
+#[derive(Debug, Clone)]
+pub struct ImagePasteRequest {
+    pub image: crate::clipboard::ClipboardImage,
+    pub target: ImagePasteTarget,
+}
+
+/// Stable IDs and source snapshots prevent a delayed paste from deleting a
+/// different selection or text inserted by a collaborator.
+#[derive(Debug, Clone)]
+pub enum ImagePasteTarget {
+    After(String),
+    Replace {
+        blocks: Vec<BlockContent>,
+        start_byte: usize,
+        end_byte: usize,
+    },
 }
 
 /// Direction-preserving document selection. [`Self::ordered`] provides its

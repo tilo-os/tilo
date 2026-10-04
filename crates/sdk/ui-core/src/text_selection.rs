@@ -334,7 +334,9 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
 /// Pull the current clipboard contents as a UTF-8 string. Returns
 /// `None` when the clipboard is empty / unavailable / non-text.
 pub fn clipboard_paste() -> Option<String> {
-    clipboard().text(ClipboardTarget::Clipboard)
+    clipboard()
+        .text(ClipboardTarget::Clipboard)
+        .filter(|text| !text.is_empty())
 }
 
 /// The image on the clipboard, when another app copied one (a screenshot,
@@ -361,6 +363,16 @@ pub fn clipboard_paste_primary() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_clipboard_is_unavailable_but_whitespace_is_content() {
+        let (services, _) = crate::host::HostServices::recording();
+        let _host = crate::host::enter(&services);
+        clipboard_copy("");
+        assert_eq!(clipboard_paste(), None);
+        clipboard_copy(" \n");
+        assert_eq!(clipboard_paste().as_deref(), Some(" \n"));
+    }
 
     #[cfg(windows)]
     #[test]
