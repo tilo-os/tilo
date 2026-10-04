@@ -388,6 +388,31 @@ impl Toolbar {
         self.open_menu(false);
     }
 
+    /// Open the menu of the command at `index`, anchored to it (a stage
+    /// hook that shows a command's menu, like [`Self::open_overflow`]).
+    pub fn open_command_menu(&mut self, index: usize) {
+        if self.is_shown(index) {
+            self.open_item_menu(index, false);
+        }
+    }
+
+    /// The menu the toolbar has open, if any: a command's own menu with the
+    /// command's index, or the More menu with `None`.
+    pub fn shown_menu(&self) -> Option<(Option<usize>, &ContextMenu)> {
+        if let Some((index, menu)) = &self.item_menu {
+            return Some((Some(*index), menu));
+        }
+        self.menu.is_open().then_some((None, &self.menu))
+    }
+
+    /// Close whatever menu the toolbar has open: another surface (a
+    /// palette, a sheet) takes over the window.
+    pub fn close_menus(&mut self) {
+        self.menu.close();
+        self.item_menu = None;
+        self.pressed = None;
+    }
+
     /// Where the item at `index` stands, while it is shown in the row.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
         self.item_rects

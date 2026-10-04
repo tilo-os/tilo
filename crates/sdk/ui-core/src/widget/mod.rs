@@ -2404,7 +2404,7 @@ pub use chart::{
     TrendRange, TrendStyle,
 };
 pub(crate) mod chart_labels;
-mod chart_legend;
+pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,

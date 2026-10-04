@@ -1,56 +1,47 @@
 //! The window chrome around the grid: the command bar, the formula bar and the
 //! sheet tabs, plus the transient status bubble and the loading state.
 //!
-//! Everything is laid out from measured role line boxes and spacing tokens, and
-//! painted through the toolkit's faces (`ButtonFace`, `SegmentedFace`,
-//! `StatusBubble`), so a control looks and sizes like its retained twin.
-//! The bars stand on the window ground; the command bar is separated from the
-//! formula bar by one hairline and the sheet tabs from the grid by another.
+//! The command bar is the toolkit's `Toolbar` in the window's header row
+//! (`HeaderRowFace`), with the window's History control in its corner.
+//! Everything else is laid out from measured role line boxes and spacing
+//! tokens, and painted through the toolkit's faces (`ButtonFace`,
+//! `SegmentedFace`, `FieldFace`), so a control looks and sizes like its
+//! retained twin. The bars stand on the window ground; the command bar is
+//! separated from the formula bar by one hairline and the sheet tabs from the
+//! grid by another.
 
 use super::annotations::CardMetrics;
 use super::{
-    Affine, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, OpenMenu, Point, PresenceCtx,
-    PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole, TextStyle, Theme,
-    Widget, count_f64, tab_palette_color,
+    Affine, AutoCommit, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, Point,
+    PresenceCtx, PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole,
+    TextStyle, Theme, Widget, WindowEvent, count_f64, tab_palette_color,
 };
+use ui::chrome::HeaderRowFace;
 use ui::icons::Icon;
 use ui::surface::separator;
 use ui::widget::toolbar;
+use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle,
+    ButtonFace, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle, Toolbar,
 };
 
 /// Reference label the name box is sized for, so it never resizes with the
 /// selection and always fits a two-corner range reference.
 const NAME_BOX_REFERENCE: &str = "ZZ999:ZZ999";
 
-/// The command bar's commands in order: label, the menu it opens, the action
-/// it fires. The first two are menus and never leave the bar; the rest move
-/// into the More menu, in order, when the window is too narrow for them. One
-/// table feeds layout, paint, the label pre-measurement and the More menu, so
-/// a button is always exactly as wide as the text it paints.
-pub(super) const BAR_COMMANDS: [(&str, Option<OpenMenu>, Option<MenuItem>); 6] = [
-    ("File", Some(OpenMenu::File), None),
-    ("Format", Some(OpenMenu::Format), None),
-    ("Bold", None, Some(MenuItem::ToggleBold)),
-    ("AutoSum", None, Some(MenuItem::AutoSum)),
-    ("Formulas", None, Some(MenuItem::ToggleFormulaView)),
-    ("Document settings", None, Some(MenuItem::OpenDocSettings)),
-];
-
-/// How many of the commands never leave the bar.
-const PINNED_COMMANDS: usize = 2;
-
-/// Accessible name of the overflow button.
-pub(super) const MORE_LABEL: &str = "More commands";
-
-/// One button of the command bar.
-pub(super) struct MenuButton {
-    pub rect: Rect,
-    pub label: String,
-    /// `None` for the commands that fire an action instead of opening a menu.
-    pub item: Option<MenuItem>,
-    pub opens: Option<OpenMenu>,
+/// Where each command stands in the command bar's [`Toolbar`]: File and
+/// Format open menus and never leave the bar; the rest move into the
+/// toolbar's More menu, from the end, when the window is too narrow.
+pub(super) mod bar {
+    pub const FILE: usize = 0;
+    pub const FORMAT: usize = 1;
+    pub const BOLD: usize = 3;
+    #[cfg(test)]
+    pub const SETTINGS: usize = 6;
+    /// Every command, without the separator.
+    #[cfg(test)]
+    pub const COMMANDS: [usize; 6] = [FILE, FORMAT, BOLD, 4, FORMULAS, SETTINGS];
+    pub const FORMULAS: usize = 5;
 }
 
 /// Chrome metrics resolved once per frame from the renderer that paints the
@@ -74,8 +65,8 @@ pub(super) struct ChromeMetrics {
     pub fx_w: f64,
     /// Measured width of [`NAME_BOX_REFERENCE`] in `Body`.
     pub name_box_label_w: f64,
-    /// Intrinsic width of every command button, by label.
-    pub command_w: HashMap<String, f64>,
+    /// Height of the window's header row, where the command bar stands.
+    pub header_h: f64,
     /// Width of every sheet tab's name in the chosen tab's strong `Label`.
     pub tab_label_w: HashMap<String, f64>,
     /// Theme spacing tokens.
@@ -95,14 +86,9 @@ pub(super) struct ChromeMetrics {
 }
 
 impl ChromeMetrics {
-    /// Resolve every chrome metric for `theme` against `tr`. `commands` and
-    /// `tabs` are the strings `relayout` will size a slot for.
-    pub(super) fn resolve(
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        commands: &[&str],
-        tabs: &[String],
-    ) -> Self {
+    /// Resolve every chrome metric for `theme` against `tr`. `tabs` are the
+    /// sheet names `relayout` will size a slot for.
+    pub(super) fn resolve(tr: &mut TextRenderer, theme: &Theme, tabs: &[String]) -> Self {
         let label = theme.text(TextRole::Label);
         let body = theme.text(TextRole::Body);
         let (_, lh_label) = tr.measure_style("Ag", None, &label);
@@ -110,16 +96,6 @@ impl ChromeMetrics {
         let (_, lh_caption) = tr.measure_style("Ag", None, &theme.text(TextRole::Caption));
         let (fx_w, _) = tr.measure_style("fx", None, &label.clone().with_italic(true));
         let (name_box_label_w, _) = tr.measure_style(NAME_BOX_REFERENCE, None, &body);
-        let command_w = commands
-            .iter()
-            .map(|command| {
-                let width = ButtonFace::new(Rect::ZERO, command)
-                    .role(ButtonRole::Plain)
-                    .control_size(ControlSize::Small)
-                    .intrinsic_width(tr, theme);
-                ((*command).to_owned(), width)
-            })
-            .collect();
         let strong = label.strong();
         let tab_label_w = tabs
             .iter()
@@ -136,7 +112,7 @@ impl ChromeMetrics {
             lh_caption: f64::from(lh_caption),
             fx_w: f64::from(fx_w),
             name_box_label_w: f64::from(name_box_label_w),
-            command_w,
+            header_h: HeaderRowFace::height(theme),
             tab_label_w,
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),
@@ -165,7 +141,7 @@ impl ChromeMetrics {
             lh_caption: 16.0,
             fx_w: 14.0,
             name_box_label_w: 80.0,
-            command_w: HashMap::new(),
+            header_h: HeaderRowFace::height(&theme),
             tab_label_w: HashMap::new(),
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),
@@ -185,23 +161,10 @@ impl ChromeMetrics {
         count_f64(label.chars().count()) * 7.0 * self.scale
     }
 
-    /// A command button: its intrinsic width.
-    pub(super) fn command_w(&self, label: &str) -> f64 {
-        self.command_w
-            .get(label)
-            .copied()
-            .unwrap_or_else(|| self.estimate(label) + 2.0 * self.s3)
-    }
-
     /// How much the chrome text has grown past the 1× reference; scales the
     /// floors and ceilings that bound text-driven slots.
     pub(super) fn text_growth(&self) -> f64 {
         self.scale.max(1.0)
-    }
-
-    /// Command bar: a small control with `s2` above and below.
-    pub(super) fn toolbar_h(&self) -> f64 {
-        self.control_h + 2.0 * self.s2
     }
 
     /// Formula bar: a field with `s1` above and below.
@@ -258,22 +221,13 @@ impl ChromeMetrics {
 }
 
 impl SheetsApp {
-    /// Every chrome string `relayout` reserves a slot for, so
-    /// [`ChromeMetrics::resolve`] can measure each one in the style it is
-    /// painted in: the commands, then the sheet names.
-    fn chrome_labels(&self) -> (Vec<&'static str>, Vec<String>) {
-        (
-            BAR_COMMANDS.iter().map(|(label, ..)| *label).collect(),
-            self.sheet_names.clone(),
-        )
-    }
-
     /// Re-resolve the chrome metrics against the renderer about to paint. A
     /// change re-runs `relayout` immediately, so the frame that follows paints
     /// (and later hit-tests) the measured geometry rather than the fallback.
     pub(super) fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let (commands, tabs) = self.chrome_labels();
-        let metrics = ChromeMetrics::resolve(tr, theme, &commands, &tabs);
+        self.sync_command_bar();
+        self.chrome_theme = theme.clone();
+        let metrics = ChromeMetrics::resolve(tr, theme, &self.sheet_names);
         // The tab being renamed grows with the name typed into it.
         let mut rename_moved = false;
         if let Some(rename) = &mut self.tab_rename {
@@ -299,8 +253,8 @@ impl SheetsApp {
     /// Lay out the bars, the grid and the sheet tabs inside the window.
     pub(super) fn relayout(&mut self) {
         let r = self.rect;
+        self.lay_out_command_bar();
         let m = &self.metrics;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.toolbar_h());
         self.formula_rect = Rect::new(
             r.x0,
             self.toolbar_rect.y1,
@@ -310,7 +264,7 @@ impl SheetsApp {
         self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
         // The annotation dock stands between the grid and the tabs, so the
         // grid gives up the height instead of a card covering its cells.
-        let (dock_h, dock_cards) = self.dock_layout(Rect::new(
+        let (dock_h, dock_cards, dock_w) = self.dock_layout(Rect::new(
             r.x0,
             self.formula_rect.y1,
             r.x1,
@@ -318,10 +272,11 @@ impl SheetsApp {
         ));
         self.dock_cards = dock_cards;
         self.dock_rect = Rect::new(r.x0, self.tabs_rect.y0 - dock_h, r.x1, self.tabs_rect.y0);
+        self.dock_scroll
+            .set_viewport(self.dock_rect, &self.chrome_theme);
+        self.dock_scroll.set_content_size(dock_w, dock_h);
         self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.dock_rect.y0);
         self.grid.rect = self.grid_rect;
-
-        self.menu_buttons = Self::command_buttons(m, self.toolbar_rect);
 
         // Formula bar: name box, fx, field, all on one centre line at one
         // field height.
@@ -369,48 +324,126 @@ impl SheetsApp {
         self.relayout_overlays();
     }
 
-    /// Command bar: each button is its intrinsic width on one centre line,
-    /// `s2` apart. What does not fit after the pinned menus moves into the
-    /// More menu, whose button takes the last slot.
-    fn command_buttons(m: &ChromeMetrics, bar: Rect) -> Vec<MenuButton> {
-        let mut buttons = Vec::new();
-        let by = bar.y0 + (bar.height() - m.control_h) / 2.0;
-        let x0 = bar.x0 + m.s3;
-        let right = bar.x1 - m.s3;
-        let widths: Vec<f64> = BAR_COMMANDS
-            .iter()
-            .map(|(label, ..)| m.command_w(label))
-            .collect();
-        let all: f64 =
-            widths.iter().sum::<f64>() + m.s2 * count_f64(widths.len().saturating_sub(1));
-        let overflowing = x0 + all > right;
-        // The More button is square; leave room for it when anything spills.
-        let reserve = if overflowing { m.control_h + m.s2 } else { 0.0 };
-        let mut x = x0;
-        let mut shown = 0;
-        for (index, (label, opens, item)) in BAR_COMMANDS.into_iter().enumerate() {
-            let w = widths.get(index).copied().unwrap_or(0.0);
-            if index >= PINNED_COMMANDS && x + w + reserve > right {
-                break;
-            }
-            buttons.push(MenuButton {
-                rect: Rect::new(x, by, x + w, by + m.control_h),
-                label: label.to_owned(),
-                item,
-                opens,
-            });
-            x += w + m.s2;
-            shown = index + 1;
+    /// The header row across the top of the window: the command bar in its
+    /// actions band and, when the host offers it, the window's History
+    /// control in the trailing corner. What does not fit moves into the
+    /// toolbar's own More menu.
+    fn lay_out_command_bar(&mut self) {
+        let theme = &self.chrome_theme;
+        let face = HeaderRowFace::new(self.rect, theme)
+            .with_inset_title()
+            .with_history_if(self.history.is_shown());
+        self.toolbar_rect = face.row;
+        self.history_rect = face.history_rect();
+        let chip = face.metrics().chip;
+        let band = face.actions;
+        let y0 = band.center().y - chip / 2.0;
+        self.toolbar
+            .lay_out_at(Rect::new(band.x0, y0, band.x1, y0 + chip), theme);
+    }
+
+    /// The command bar: File and Format open their menus, Bold and Formulas
+    /// are toggles, and each command reports what it runs through `slot`.
+    pub(super) fn build_command_bar(slot: &CommandSlot) -> Toolbar {
+        let file = menu_rows(slot, Self::file_menu_rows());
+        let run = |item: MenuItem| {
+            let slot = std::sync::Arc::clone(slot);
+            move || post(&slot, item.clone())
+        };
+        Toolbar::new(Orientation::Horizontal)
+            .push_menu("File", file)
+            .with_priority(1)
+            .push_menu("Format", Vec::new())
+            .with_priority(1)
+            .push_separator()
+            .push_icon_toggle(Icon::Bold, "Bold", false, run(MenuItem::ToggleBold))
+            .push_button("AutoSum", run(MenuItem::AutoSum))
+            .push_toggle("Formulas", false, run(MenuItem::ToggleFormulaView))
+            .with_accessible_name("Show formulas")
+            .push_icon(
+                Icon::Settings,
+                "Document settings",
+                run(MenuItem::OpenDocSettings),
+            )
+    }
+
+    /// Bring the bar's toggles and the Format menu's check marks in line
+    /// with the sheet.
+    pub(super) fn sync_command_bar(&mut self) {
+        let formulas = self.grid.formula_view();
+        self.toolbar.set_active(bar::BOLD, self.active_cell_bold);
+        self.toolbar.set_active(bar::FORMULAS, formulas);
+        self.toolbar.set_accessible_name(
+            bar::FORMULAS,
+            if formulas {
+                "Show calculated results"
+            } else {
+                "Show formulas"
+            },
+        );
+        let rows = self.format_menu_rows();
+        if self.format_rows_shown.as_ref() != Some(&rows) {
+            self.toolbar
+                .set_menu(bar::FORMAT, menu_rows(&self.command_slot, rows.clone()));
+            self.format_rows_shown = Some(rows);
         }
-        if shown < BAR_COMMANDS.len() {
-            buttons.push(MenuButton {
-                rect: Rect::new(x, by, x + m.control_h, by + m.control_h),
-                label: MORE_LABEL.to_owned(),
-                item: None,
-                opens: Some(OpenMenu::More),
-            });
+    }
+
+    /// Route an event to the header row: the History control, then the
+    /// command bar. While one of the bar's menus is open the bar takes every
+    /// event; otherwise it keeps the presses that land on it and lets the
+    /// pointer's motion through to the sheet as well. Returns whether the
+    /// event was consumed.
+    pub(super) fn route_command_bar(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let hovered = self.history.is_hovered();
+        let took = self
+            .history
+            .handle_event(event, self.history_rect, ctx.scale_factor);
+        if hovered != self.history.is_hovered() {
+            self.pending.redraw = true;
         }
-        buttons
+        if took {
+            *ctx.handled = true;
+            self.pending.redraw = true;
+            return true;
+        }
+        let modal = self.toolbar.wants_pointer_capture();
+        let before = *ctx.handled;
+        self.toolbar
+            .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+        let ran = self.drain_command_bar(ctx.state);
+        let consumed = *ctx.handled && !before;
+        if consumed || ran {
+            self.pending.redraw = true;
+        }
+        if modal || self.toolbar.wants_pointer_capture() {
+            *ctx.handled = true;
+            return true;
+        }
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            *ctx.handled = before;
+            return false;
+        }
+        consumed || ran
+    }
+
+    /// Run the command the bar or one of its menus reported, if any.
+    pub(super) fn drain_command_bar(&mut self, doc: &mut AutoCommit) -> bool {
+        let item = self
+            .command_slot
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        let Some(item) = item else {
+            return false;
+        };
+        self.run_menu_item(doc, &item);
+        self.pending.redraw = true;
+        true
     }
 
     // --- painting ------------------------------------------------------------
@@ -423,56 +456,34 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         // While the workbook is still being read there is no selection, no
         // formula and no sheet to name: the bars keep their places, empty.
         let loading = self.is_loading();
-        self.draw_command_bar(scene, transform, tr, theme);
+        self.draw_command_bar(scene, transform, tr, theme, presence);
         self.draw_name_box(scene, transform, tr, theme, loading);
         self.draw_formula_field(scene, transform, tr, theme, loading);
         self.draw_sheet_tabs_strip(scene, transform, tr, theme, loading);
     }
 
-    /// Whether the command at `item` is a toggle that is on right now.
-    pub(super) fn command_is_toggled(&self, item: Option<&MenuItem>) -> bool {
-        item.is_some_and(|item| self.command_state(item))
-    }
-
-    /// Command bar: the commands as plain small buttons (a toggle that is on is
-    /// a lift, a menu that is open is pressed) over one hairline.
+    /// The header row: the command bar over one hairline, and the window's
+    /// History control in its corner. The bar's menus float within the
+    /// window, so its viewport is the window while it paints.
     fn draw_command_bar(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         toolbar::paint_band(scene, transform, theme, self.toolbar_rect);
-        for b in &self.menu_buttons {
-            let open = b.opens.is_some() && b.opens == Some(self.open_menu);
-            let on = self.command_is_toggled(b.item.as_ref());
-            if on {
-                // A toggle that is on is the lift of the bar's ground.
-                ui::chrome::paint_row_selection(
-                    scene,
-                    transform,
-                    b.rect,
-                    ui::chrome::SelectionState::new(true, false, false),
-                    theme.tokens.colors.surfaces.content,
-                    theme,
-                );
-            }
-            let face = if b.opens == Some(OpenMenu::More) {
-                ButtonFace::icon_only(b.rect, Icon::MoreHorizontal, MORE_LABEL)
-            } else {
-                ButtonFace::new(b.rect, &b.label)
-            }
-            .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small)
-            .hovered(!on && b.rect.contains(self.last_mouse))
-            .pressed(open);
-            Button::paint(scene, transform, tr, theme, &face);
-        }
+        let outer = presence.push_viewport(self.float_bounds());
+        self.toolbar.draw(scene, transform, tr, theme, presence);
+        presence.pop_viewport(outer);
+        self.history
+            .paint(scene, transform, tr, theme, self.history_rect);
     }
 
     /// The field face of the formula bar: its raised ground with the derived
@@ -848,3 +859,35 @@ pub(super) fn char_boundaries(
     }
     xs
 }
+
+/// What the command bar last ran, waiting for the app to act on it with the
+/// document in hand.
+pub(super) type CommandSlot = std::sync::Arc<std::sync::Mutex<Option<MenuItem>>>;
+
+/// Report `item` through `slot`.
+fn post(slot: &CommandSlot, item: MenuItem) {
+    if let Ok(mut pending) = slot.lock() {
+        *pending = Some(item);
+    }
+}
+
+/// A command menu's rows as toolkit menu rows that report through `slot`.
+fn menu_rows(slot: &CommandSlot, rows: Vec<MenuRow>) -> Vec<ui::widget::MenuItem> {
+    rows.into_iter()
+        .map(|(label, item, checked)| match item {
+            None => ui::widget::MenuItem::separator(),
+            Some(item) => {
+                let slot = std::sync::Arc::clone(slot);
+                let row = ui::widget::MenuItem::action(label, move || post(&slot, item.clone()));
+                match checked {
+                    Some(on) => row.with_checked(on),
+                    None => row,
+                }
+            }
+        })
+        .collect()
+}
+
+/// One row of a command menu: its label, what it runs (`None` for a
+/// separator) and its check state when it has one.
+pub(super) type MenuRow = (String, Option<MenuItem>, Option<bool>);
