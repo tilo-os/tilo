@@ -6,10 +6,12 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
+use ui::paint::PaintCtx;
+use ui::tokens::TextRole;
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
@@ -155,11 +157,10 @@ impl HistoryPreview for CalculatorPreview {
         Ok(())
     }
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
+        // The preview stands on the window ground the host paints.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
         // One rhythm: the panel gutter is `s4`, recorded rows step by `s3`.
         let pad = f64::from(theme.tokens.spacing.s4);
-        let row_gap = f64::from(theme.tokens.spacing.s3);
         let x = self.bounds.x0 + pad;
         let page = self.view.page.as_deref().unwrap_or("calculations");
         let mut y = self.bounds.y0 + pad
@@ -169,29 +170,32 @@ impl HistoryPreview for CalculatorPreview {
                 0.
             };
         if page == "calculations" {
+            let mut ctx = PaintCtx::new(scene, t, tr, theme);
             if self.model.history.is_empty() {
-                tr.draw_text(
-                    scene,
+                let room = Some(ui::num::f32_of_f64(self.bounds.width() - 2. * pad));
+                ctx.text_role(
                     "No calculations in this historical version",
-                    18.,
+                    TextRole::Body,
                     theme.tokens.colors.text_dim,
-                    t * Affine::translate((x, y)),
-                    Some((self.bounds.width() - 2. * pad) as f32),
+                    Point::new(x, y),
+                    room,
                 );
             }
-            // The live drawer's row height (`keypad::draw_recorded_row` seats a
-            // 13 px expression line over an 18 px result line in it).
-            let row_h = 70.;
+            let row_h = crate::keypad::recorded_row_height(theme);
+            let ground = theme.tokens.colors.surfaces.content;
             for entry in &self.model.history {
-                crate::keypad::draw_recorded_row(
-                    scene,
+                let row = Rect::new(x, y, self.bounds.x1 - pad, y + row_h);
+                crate::keypad::draw_recorded_row(&mut ctx, row, entry);
+                ui::surface::separator(
+                    ctx.scene,
                     t,
-                    tr,
-                    theme,
-                    Rect::new(x, y, self.bounds.x1 - pad, y + row_h),
-                    entry,
+                    row.x0,
+                    row.x1,
+                    row.y1,
+                    f64::from(theme.tokens.spacing.s3),
+                    ground,
                 );
-                y += row_h + row_gap;
+                y += row_h;
             }
         } else {
             let selected = page
@@ -213,31 +217,33 @@ impl HistoryPreview for CalculatorPreview {
                             crate::mathfield::MathField::detached(&row.expr),
                         )
                     });
-                    field.set_text_scale(theme.text_scale);
-                    field.set_rect(Rect::new(x, y, self.bounds.x1 - pad, y + 80.), tr);
+                    field.set_size(crate::mathfield::formula_size(theme, tr));
+                    let field_h = f64::from(theme.tokens.metrics.panel_row_height) * 2.0;
+                    field.set_rect(Rect::new(x, y, self.bounds.x1 - pad, y + field_h), tr);
                     let offset = field.scroll_offset();
                     field.scroll_by(self.view.scroll.0 - offset.0, self.view.scroll.1 - offset.1);
                     self.view.scroll = field.scroll_offset();
                     field.draw(scene, t, tr, theme, theme.text_primary, false);
-                    y += 90.;
-                    tr.draw_text(
-                        scene,
-                        if row.visible {
-                            "Recorded as visible"
-                        } else {
-                            "Recorded as hidden"
-                        },
-                        12.,
+                    y += field_h + f64::from(theme.tokens.spacing.s3);
+                    let mut ctx = PaintCtx::new(scene, t, tr, theme);
+                    let visibility = if row.visible {
+                        "Recorded as visible"
+                    } else {
+                        "Recorded as hidden"
+                    };
+                    ctx.text_role(
+                        visibility,
+                        TextRole::Caption,
                         theme.tokens.colors.text_dim,
-                        t * Affine::translate((x, y)),
+                        Point::new(x, y),
                         None,
                     );
-                    y += 28.;
+                    y += ctx.line_box(TextRole::Caption) + f64::from(theme.tokens.spacing.s4);
                     let area = Rect::new(
                         x,
                         y,
                         self.bounds.x1 - pad,
-                        (self.bounds.y1 - pad).max(y + 120.),
+                        (self.bounds.y1 - pad).max(y + field_h),
                     );
                     let mut model = self.model.clone();
                     if kind == "2d" {
@@ -290,12 +296,7 @@ impl HistoryPreview for CalculatorPreview {
                         self.model.surfaces.get(i)
                     }
                 })
-                .map(|row| {
-                    format!(
-                        "{kind}: {} · Recorded visibility: {}",
-                        row.expr, row.visible
-                    )
-                })
+                .map(|row| format!("{kind}: {}. Recorded visibility: {}", row.expr, row.visible))
                 .unwrap_or_default(),
             None if self.model.history.is_empty() => {
                 "No calculations in this historical version".into()
