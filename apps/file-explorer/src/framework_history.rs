@@ -245,29 +245,34 @@ impl ui::history_mode::HistoryPreview for FilePreview {
         theme: &ui::Theme,
     ) {
         use vello::kurbo::Affine;
-        let x = self.bounds.x0 + 20.0;
-        let mut y = self.bounds.y0 + 24.0 - self.view.scroll.1;
-        text.draw_text(
+        let sp = &theme.tokens.spacing;
+        let x = self.bounds.x0 + f64::from(sp.s6);
+        let width = (self.bounds.width() - 2.0 * f64::from(sp.s6)).max(0.0) as f32;
+        let mut y = self.bounds.y0 + f64::from(sp.s6) - self.view.scroll.1;
+        let title = theme.text(ui::TextRole::Subheading);
+        text.draw_style(
             scene,
             &self.title,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((x, y)),
-            Some((self.bounds.width() - 40.0).max(0.0) as f32),
+            Some(width),
+            &title,
         );
-        y += 32.0;
+        let body = theme.text(ui::TextRole::Body);
+        let (_, line_h) = text.measure_style("Ag", None, &body);
+        y += f64::from(text.measure_style("Ag", None, &title).1) + f64::from(sp.s4);
         for line in self.content.lines() {
             if y >= self.bounds.y0 && y < self.bounds.y1 {
-                text.draw_text(
+                text.draw_style(
                     scene,
                     line,
-                    theme.tokens.typography.scale.base,
                     theme.tokens.colors.text_primary,
                     transform * Affine::translate((x, y)),
-                    Some((self.bounds.width() - 40.0).max(0.0) as f32),
+                    Some(width),
+                    &body,
                 );
             }
-            y += 24.0;
+            y += f64::from(line_h) + f64::from(sp.s1);
         }
     }
     fn navigate(&mut self, command: ui::history_mode::PreviewNavigation) -> bool {
