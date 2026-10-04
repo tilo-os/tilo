@@ -1130,6 +1130,9 @@ impl Widget for MergeView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
         let editor = self.merged_editor.control();
         if editor.is_focused() || editor.rect().contains(self.cursor) {
             self.merged_editor.control_mut().handle_event(event, ctx);

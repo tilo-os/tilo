@@ -1666,8 +1666,8 @@ mod tests {
     }
 
     /// Taking a side is one action whichever way it is asked for: the
-    /// palette's conflict row, a click on the drawn chip, or the chip's
-    /// accessibility action. Each is one undo step, and typing in the merged
+    /// palette's conflict row or a click on the drawn chip. Each is one undo
+    /// step, and typing in the merged
     /// result afterwards is an edit of the document's text that stops sides
     /// from being taken.
     #[test]
@@ -1703,7 +1703,8 @@ mod tests {
         app.settle();
         assert_eq!(app.state().merged, before, "undo took exactly it back");
 
-        // A click on the drawn chip.
+        // A click on the drawn chip, in the merge view.
+        app.call("show-merge", serde_json::json!({})).unwrap();
         let theirs = target_bounds(&mut app, &format!("diffmerge.merge.resolve:{hunk}:theirs"))
             .expect("the take-theirs chip is drawn");
         app.harness().click_at(theirs.center().x, theirs.center().y);
@@ -1717,18 +1718,6 @@ mod tests {
         assert_ne!(state.merged, before);
         assert!(app.undo());
         app.settle();
-
-        // The accessibility action on the same chip.
-        let target = format!("diffmerge.merge.resolve:{hunk}:both");
-        assert!(target_bounds(&mut app, &target).is_some());
-        app.harness()
-            .perform_semantic_named("diffmerge.app", Some(&target), &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
-        assert_eq!(
-            app.read_document(MergeDoc::resolutions),
-            vec![(hunk, "both".to_string())]
-        );
 
         // Typing in the merged result.
         // The merged result fills the bottom of the window.
@@ -2350,6 +2339,43 @@ mod tests {
             bubble.y0 >= app.rect.y0 && bubble.y1 <= app.rect.y1,
             "narrow status bubble must remain vertically visible: {bubble:?} in {:?}",
             app.rect
+        );
+    }
+
+    /// A chip's accessibility action resolves its hunk through the same
+    /// path a click takes.
+    #[test]
+    fn a_chip_accessibility_action_resolves_its_hunk() {
+        let (app, state) = demo();
+        let mut app = merge_frame(app, state, (980.0, 720.0));
+        let (app, state) = Framed::split(&mut app);
+        let root = Widget::accessibility(&*app).expect("root semantics");
+        let merge = root
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Three-way merge"))
+            .expect("active merge content is not hidden behind toolbar chrome");
+        let target = merge
+            .children
+            .iter()
+            .filter_map(|child| child.action_target.clone())
+            .find(|target| target.ends_with(":both"))
+            .expect("a drawn resolution action is accessible");
+        let hunk: usize = target
+            .trim_start_matches("diffmerge.merge.resolve:")
+            .trim_end_matches(":both")
+            .parse()
+            .unwrap();
+        assert!(Widget::perform_semantic_action(
+            &mut *app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(
+            app.merge.model().hunks[hunk].resolution,
+            crate::model::Resolution::TookBoth
         );
     }
 
