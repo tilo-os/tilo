@@ -798,3 +798,105 @@ fn a_launch_invokes_a_view_effect_even_for_a_viewer() {
         "a viewer's launch fetches nothing"
     );
 }
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mailbox.disks")]
+pub enum DiskEffect {
+    /// Erase a disk.
+    #[effect(risk = "erase_risk")]
+    Erase { disk: String },
+}
+
+/// Erasing the system disk is destructive; any other disk is not.
+fn erase_risk(effect: &DiskEffect) -> tilo_app::tilo_actions::RiskLevel {
+    let DiskEffect::Erase { disk } = effect;
+    if disk == "system" {
+        tilo_app::tilo_actions::RiskLevel::Destructive
+    } else {
+        tilo_app::tilo_actions::RiskLevel::Low
+    }
+}
+
+/// A surface recording right now, so sending is not available.
+#[derive(Default)]
+struct Recorder {
+    tally: Tally,
+}
+
+impl Widget for Recorder {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.tally.build_layout(taffy, theme, nodes)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.tally.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    }
+
+    fn name(&self) -> &'static str {
+        "Recorder"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.tally.get_rect()
+    }
+}
+
+impl ResourceSurface<Mailbox> for Recorder {
+    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
+
+    fn availability(&self) -> Vec<EffectStatus> {
+        vec![EffectStatus::unavailable(
+            Mailbox::SEND,
+            "recording",
+            "Nothing is sent while recording",
+        )]
+    }
+}
+
+struct DiskApp;
+
+impl ResourceApp for DiskApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-disks";
+    const TITLE: &'static str = "Disks";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.effects(|effect: DiskEffect, cx| {
+            let DiskEffect::Erase { disk } = effect;
+            cx.invoke(Mailbox::FETCHED.with(format!("erased {disk}")));
+            Ok(Effected::done())
+        });
+        cx.surface(Recorder::default())
+    }
+}
+
+#[test]
+fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
+    let mut app = TestApp::<DiskApp>::new().unwrap();
+    app.effect(&DiskEffect::Erase { disk: "usb".into() })
+        .expect("erasing a stick needs no confirmation");
+    let unconfirmed = app.effect(&DiskEffect::Erase {
+        disk: "system".into(),
+    });
+    assert!(unconfirmed.is_err(), "the system disk asks first");
+    app.effect_confirmed(&DiskEffect::Erase {
+        disk: "system".into(),
+    })
+    .expect("confirmed, it runs");
+    app.settle();
+    assert_eq!(app.state().fetched, "erased system");
+
+    let refused = app
+        .invoke(Mailbox::SEND.with("hello".into()))
+        .expect_err("sending is unavailable while recording");
+    assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
+    assert!(app.state().outbox.is_empty());
+}

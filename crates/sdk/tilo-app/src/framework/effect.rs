@@ -538,9 +538,9 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
     }
 }
 
-/// What an effect looks like to callers right now, when it differs from its
-/// declaration: unavailable while the engine is offline, labelled "Stop
-/// recording" while recording.
+/// What an effect, or one of the resource's own actions, looks like to
+/// callers right now, when it differs from its declaration: unavailable
+/// while the engine is offline, labelled "Stop recording" while recording.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectStatus {
     id: &'static str,
@@ -582,7 +582,13 @@ impl EffectStatus {
         self
     }
 
-    fn overlay(&self, spec: &mut ActionSpec) {
+    /// The id of the action or effect this status is about.
+    pub(crate) fn id(&self) -> &'static str {
+        self.id
+    }
+
+    /// Show `spec` as this status says it is right now.
+    pub(crate) fn overlay(&self, spec: &mut ActionSpec) {
         if let Some(availability) = &self.availability {
             spec.contract.availability = availability.clone();
         }
